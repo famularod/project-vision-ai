@@ -67,6 +67,9 @@ for (const marker of [
   'exportBackupInParts',
   'openSelectedBackup',
   'materializeCompleteBackupState',
+  // A photo on neither the device nor the cloud is left out only with the
+  // owner's agreement (field test 28 Sep 2026).
+  'confirmUnavailablePhotos',
 ]) {
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
 }
@@ -75,6 +78,7 @@ for (const marker of [
   'createCompleteBackupParts',
   'validateBackupPartSet',
   'assertAllTaken',
+  'unavailablePhotosNotice',
 ]) {
   assert(backupWorkflow.includes(marker), `Device backup workflow must preserve ${marker}.`);
 }

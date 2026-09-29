@@ -44,19 +44,20 @@ export type BackupFileIO = Readonly<{
   makeDirectory: (uri: string) => Promise<void>;
 }>;
 
-export async function describeBackupAssetSource(
+type BackupAssetInput = Readonly<{
+  id: string;
+  kind: CompleteBackupPlainAsset['kind'];
+  relativePath: string;
+  uri: string;
+}>;
+
+/** The file to carry, or null when there is no file at its address. */
+export async function measureBackupAssetSource(
   io: BackupFileIO,
-  input: Readonly<{
-    id: string;
-    kind: CompleteBackupPlainAsset['kind'];
-    relativePath: string;
-    uri: string;
-  }>,
-): Promise<CompleteBackupAssetSource> {
+  input: BackupAssetInput,
+): Promise<CompleteBackupAssetSource | null> {
   const sizeBytes = await io.sizeOf(input.uri);
-  if (sizeBytes === null) {
-    throw new Error(`The required ${input.kind.replace('_', ' ')} file is unavailable.`);
-  }
+  if (sizeBytes === null) return null;
   return Object.freeze({
     id: input.id,
     kind: input.kind,
@@ -64,6 +65,52 @@ export async function describeBackupAssetSource(
     sizeBytes,
     read: () => io.readBytes(input.uri),
   });
+}
+
+export async function describeBackupAssetSource(
+  io: BackupFileIO,
+  input: BackupAssetInput,
+): Promise<CompleteBackupAssetSource> {
+  const source = await measureBackupAssetSource(io, input);
+  if (!source) {
+    throw new Error(`The required ${input.kind.replace('_', ' ')} file is unavailable.`);
+  }
+  return source;
+}
+
+/**
+ * A photo whose file is neither on this device nor downloadable from the
+ * cloud. The backup keeps its field update and leaves the photo out, with the
+ * owner's agreement, instead of refusing to back up anything at all.
+ */
+export type UnavailableBackupPhoto = Readonly<{ projectName: string; updateDate: string }>;
+
+const NOTICE_DATES_PER_PROJECT = 5;
+
+export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto[]): string {
+  const byProject = new Map<string, Map<string, number>>();
+  for (const photo of missing) {
+    const project = photo.projectName.trim() || 'No project';
+    const day = photo.updateDate.trim().slice(0, 10) || 'undated';
+    const days = byProject.get(project) ?? new Map<string, number>();
+    days.set(day, (days.get(day) ?? 0) + 1);
+    byProject.set(project, days);
+  }
+  const lines = [...byProject].map(([project, days]) => {
+    const count = [...days.values()].reduce((sum, value) => sum + value, 0);
+    const dates = [...days.keys()].sort();
+    const shown = dates.slice(0, NOTICE_DATES_PER_PROJECT).join(', ');
+    const more = dates.length > NOTICE_DATES_PER_PROJECT
+      ? ` and ${dates.length - NOTICE_DATES_PER_PROJECT} more`
+      : '';
+    return `${project}: ${count} ${count === 1 ? 'photo' : 'photos'}, from updates dated ${shown}${more}`;
+  });
+  const n = missing.length;
+  return (
+    `${n} ${n === 1 ? 'photo is' : 'photos are'} not on this device and could not be downloaded ` +
+    `from the cloud, so this backup will leave ${n === 1 ? 'it' : 'them'} out. ` +
+    `The field updates themselves are kept.\n\n${lines.join('\n')}`
+  );
 }
 
 export function backupPartFileName(stem: string, partIndex: number, partCount: number): string {
@@ -100,13 +147,25 @@ export async function exportBackupInParts(
     directory: string;
     fileStem: string;
     partAssetBudgetBytes?: number;
+    unavailablePhotos?: readonly UnavailableBackupPhoto[];
   }>,
   dependencies: CompleteBackupArchiveDependencies & Readonly<{
     io: BackupFileIO;
     share: (uri: string, partNumber: number, partCount: number) => Promise<void>;
     confirmPartCount: (partCount: number) => Promise<boolean>;
+    /** Required when any photo is unavailable; it is asked before anything else. */
+    confirmUnavailablePhotos?: (notice: string) => Promise<boolean>;
   }>,
 ): Promise<BackupPartsExportResult> {
+  const unavailable = input.unavailablePhotos ?? [];
+  if (unavailable.length > 0) {
+    if (!dependencies.confirmUnavailablePhotos) {
+      throw new Error(unavailablePhotosNotice(unavailable));
+    }
+    if (!(await dependencies.confirmUnavailablePhotos(unavailablePhotosNotice(unavailable)))) {
+      return { status: 'cancelled', partCount: 0 };
+    }
+  }
   assertBackupAssetsFitParts(input.sources);
   const partCount = countBackupParts(input.sources, input.partAssetBudgetBytes);
   if (partCount > 1 && !(await dependencies.confirmPartCount(partCount))) {

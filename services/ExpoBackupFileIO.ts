@@ -5,6 +5,8 @@ import type { BackupFileIO } from './DeviceBackupWorkflow';
 /** The device file system behind the backup workflow. */
 export const expoBackupFileIO: BackupFileIO = Object.freeze({
   async sizeOf(uri: string) {
+    // A cloud link is not a file on this device; the backup cannot read it.
+    if (!uri || /^https?:\/\//i.test(uri)) return null;
     const info = await FileSystem.getInfoAsync(uri);
     if (!info.exists) return null;
     // The parts service refuses a size that is not a whole, non-negative

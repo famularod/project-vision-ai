@@ -366,8 +366,9 @@ import {
 } from './services/CompleteBackupArchive';
 import { type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
 import {
-  decryptedBytesAssetProvider, describeBackupAssetSource, exportBackupInParts,
+  decryptedBytesAssetProvider, describeBackupAssetSource, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
+  type UnavailableBackupPhoto,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
@@ -10296,18 +10297,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     assetPrefix: string,
     sources: CompleteBackupAssetSource[],
     includeFiles: boolean,
+    unavailablePhotos: UnavailableBackupPhoto[] = [],
   ): Promise<ProjectUpdate> {
     const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
     const photos = [];
     for (const photo of hydrated.photos) {
-      // Records-only keeps the photo's metadata but carries no bytes and no
-      // asset id, so a restore never looks for a file this archive never had.
-      if (!includeFiles) {
-        photos.push({ ...photo, uri: '' });
-        continue;
-      }
       const assetId = `photo:${assetPrefix}:${photo.id}`;
-      sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+      const source = includeFiles ? await measureBackupAssetSource(expoBackupFileIO, {
         id: assetId,
         kind: 'photo',
         relativePath: sanitizeFilename(photo.fileName || filenameFromUri(
@@ -10316,7 +10312,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
           photo.mimeType || 'image/jpeg',
         )),
         uri: photo.uri,
-      }));
+      }) : null;
+      // Records-only, or a photo on neither this device nor the cloud, keeps
+      // the photo's metadata with no bytes and no asset id, so a restore never
+      // looks for a file this archive does not have.
+      if (!source) {
+        if (includeFiles) unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date });
+        photos.push({ ...photo, uri: '' });
+        continue;
+      }
+      sources.push(source);
       photos.push({
         ...photo,
         uri: '',
@@ -10328,6 +10333,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       photos,
     } as ProjectUpdate;
   }
+
+  const askToContinue = (title: string, message: string, continueLabel: string) => new Promise<boolean>(resolve => Alert.alert(
+    title, message,
+    [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) }, { text: continueLabel, onPress: () => resolve(true) }],
+    { cancelable: true, onDismiss: () => resolve(false) },
+  ));
 
   async function exportBackup(passphrase: string, includeFiles = true) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
@@ -10360,6 +10371,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Files are described here and read one backup part at a time later,
       // so the full backup never holds every photo in memory at once.
       const sources: CompleteBackupAssetSource[] = [];
+      const unavailablePhotos: UnavailableBackupPhoto[] = [];
       const backupUpdates = [];
       for (const update of savedUpdates) {
         backupUpdates.push(await prepareUpdateForCompleteBackup(
@@ -10367,6 +10379,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           `update:${update.id}`,
           sources,
           includeFiles,
+          unavailablePhotos,
         ));
       }
       const backupReferenceDocuments = [];
@@ -10427,6 +10440,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             `draft:${draft.id}`,
             sources,
             includeFiles,
+            unavailablePhotos,
           )
         : null;
       const backup = {
@@ -10490,18 +10504,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         backupId: uid(),
         directory: targetDirectory,
         fileStem,
+        unavailablePhotos,
       }, {
         io: expoBackupFileIO,
         randomBytes,
-        confirmPartCount: partCount => new Promise(resolve => Alert.alert(
-          `Backup needs ${partCount} files`,
-          multiPartBackupNotice(partCount),
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Continue', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) },
-        )),
+        confirmUnavailablePhotos: notice => askToContinue('Some photos are unavailable', notice, 'Back up without them'),
+        confirmPartCount: partCount => askToContinue(`Backup needs ${partCount} files`, multiPartBackupNotice(partCount), 'Continue'),
         share: (uri, partNumber, partCount) => Sharing.shareAsync(uri, {
           dialogTitle: partCount === 1
             ? 'Export Limited Vitruvius Device Backup'
@@ -10515,7 +10523,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Backup share sheet closed',
         `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination${
           exported.partCount > 1 ? `: all ${exported.partCount} parts, in one place` : ''
-        }. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
+        }.${unavailablePhotos.length ? ` ${unavailablePhotos.length} unavailable photo(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
       Alert.alert(
