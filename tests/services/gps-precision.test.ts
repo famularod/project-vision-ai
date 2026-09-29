@@ -375,7 +375,7 @@ describe('GPS prompts in the app', () => {
   });
 
   it('drops a pending fix when a save starts, and gives a GPS reason only for an accepted suggestion', () => {
-    expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*draftLocationCaptureGenerationRef\.current \+= 1;/);
+    expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = [^\n]*\n\s*draftLocationCaptureGenerationRef\.current \+= 1;/);
     expect(app).toContain('const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);');
   });
 
@@ -384,12 +384,21 @@ describe('GPS prompts in the app', () => {
     expect(app).toContain('const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;');
     expect(app).toContain('`GPS places you in ${pendingSuggestion.area.name}. Accept it to use it for this update.`');
     expect(app).toContain('label={`Accept Suggested Area: ${areaSuggestion.area.name}`}');
-    expect(app).toContain('const area = draftProjectAreas.find(item => item.id === suggestion.area.id);');
+    expect(app).toContain('const area = draftProjectAreas.find(item => item.id === draftAreaSuggestionEntry.suggestion.area.id);');
+    // Review pass 5: containment re-checked against the area as it is now.
+    expect(app).toContain('return withinRadius ? { area, distanceFeet, withinRadius } : null;');
+    // Review pass 5: a rejected suggestion never reads as the current area,
+    // and "suggested" shows only while a suggestion is pending.
+    expect(app).not.toContain('areaSuggestion?.area.name ||');
+    expect(app).toContain("status={update.areaStatus === 'suggested' && !pendingSuggestion");
     expect(app).toContain('if (areaId && !area) return;');
   });
 
   it('takes a new fix for a draft a save left open without GPS, and keeps the home-screen gate on the nearest area', () => {
-    expect(app.match(/recaptureOpenDraftLocationIfMissing\(\);/g)).toHaveLength(2);
+    // Review pass 5: only the draft whose pending fix the save dropped.
+    expect(app.match(/recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/g)).toHaveLength(2);
+    expect(app).toContain('const droppedPendingFix = draftLocationCapturePendingIdRef.current === draftSnapshot.id;');
+    expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
     expect(app).toContain('const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;');
   });
 

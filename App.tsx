@@ -5390,6 +5390,8 @@ function AppShell() {
   draftRef.current = draft;
   const draftLocationCaptureGenerationRef = useRef(0);
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
+  /** The draft whose fix is still pending, if any. */
+  const draftLocationCapturePendingIdRef = useRef<string | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
     photo: UpdatePhoto;
@@ -6771,12 +6773,24 @@ useEffect(() => {
   );
   // Only this draft's suggestion, with the area as it is now; an area deleted
   // since the fix is not offered (review pass 4).
+  // Containment is re-checked against the area now, since its point or
+  // radius may have been re-saved (review pass 5).
   const draftAreaSuggestion = useMemo(() => {
     if (draftAreaSuggestionEntry?.draftId !== draft.id) return null;
-    const { suggestion } = draftAreaSuggestionEntry;
-    const area = draftProjectAreas.find(item => item.id === suggestion.area.id);
-    return area ? { ...suggestion, area } : null;
-  }, [draft.id, draftAreaSuggestionEntry, draftProjectAreas]);
+    const area = draftProjectAreas.find(item => item.id === draftAreaSuggestionEntry.suggestion.area.id);
+    if (!area || !hasSavedAreaLocation(area)) return null;
+    if (typeof draft.gpsLatitude !== 'number' || typeof draft.gpsLongitude !== 'number') return null;
+    const distanceFeet = distanceBetweenCoordinatesFeet(
+      { latitude: draft.gpsLatitude, longitude: draft.gpsLongitude },
+      area,
+    );
+    const withinRadius = isConfidentlyInsideArea({
+      distanceFeet,
+      accuracyMeters: draft.gpsAccuracy,
+      radiusFeet: area.radiusFeet,
+    });
+    return withinRadius ? { area, distanceFeet, withinRadius } : null;
+  }, [draft.id, draft.gpsLatitude, draft.gpsLongitude, draft.gpsAccuracy, draftAreaSuggestionEntry, draftProjectAreas]);
 
   const selectedWorkspaceProjectAreas = useMemo(
     () => projectAreasForProject({
@@ -6896,6 +6910,12 @@ useEffect(() => {
     const generation = draftLocationCaptureGenerationRef.current + 1;
     draftLocationCaptureGenerationRef.current = generation;
     const target = createDraftLocationCaptureTarget(targetDraft, generation);
+    draftLocationCapturePendingIdRef.current = target.draftId;
+    const settle = () => {
+      if (draftLocationCaptureGenerationRef.current === generation) {
+        draftLocationCapturePendingIdRef.current = null;
+      }
+    };
     const targetAreas = projectAreasForProject({
       projectAreas,
       projectName: targetDraft.projectName,
@@ -6981,14 +7001,18 @@ useEffect(() => {
         'GPS could not be captured. Choose Project Area manually.',
       );
       return null;
+    } finally {
+      settle();
     }
   }
 
-  // The save drops a pending fix; a draft left open without GPS takes a new
-  // one (review pass 4).
-  function recaptureOpenDraftLocationIfMissing() {
-    if (typeof draftRef.current.gpsLatitude === 'number') return;
-    draftLocationCaptureRef.current = captureDraftLocation(draftRef.current);
+  // A save drops the draft's pending fix. Only that draft, still open and
+  // still without GPS, takes a new one: re-fixing any GPS-less draft would
+  // stamp today's location on an older update's photos (review pass 5).
+  function recaptureDroppedDraftLocation(savedDraftId: string, droppedPendingFix: boolean) {
+    const openDraft = draftRef.current;
+    if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;
+    draftLocationCaptureRef.current = captureDraftLocation(openDraft);
   }
 
   async function waitForDraftLocationCapture() {
@@ -7936,7 +7960,9 @@ useEffect(() => {
     setFieldUpdateSaving(true);
     // A fix landing during the write would make the saved draft look edited
     // and keep it open (review pass 3); this draft's pending fix is dropped.
+    const droppedPendingFix = draftLocationCapturePendingIdRef.current === draftSnapshot.id;
     draftLocationCaptureGenerationRef.current += 1;
+    draftLocationCapturePendingIdRef.current = null;
     const now = new Date().toISOString();
     const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
     const idempotencyKey = draftSnapshot.idempotencyKey ||
@@ -7990,7 +8016,7 @@ useEffect(() => {
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
-      recaptureOpenDraftLocationIfMissing();
+      recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
 
@@ -8000,7 +8026,7 @@ useEffect(() => {
       setDraftSavedAt(null);
       setScreen('ProjectWorkspace');
     } else {
-      recaptureOpenDraftLocationIfMissing();
+      recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
     }
 
     try {
@@ -15257,10 +15283,11 @@ function AddPhotosScreen({
     correctionPenalty: number;
   } | null>(null);
   const documents = update.documents || [];
+  // The draft's own area only; a pending suggestion is shown separately, so a
+  // rejected one never reads as the current area (review pass 5).
   const areaName =
     selectedArea?.name ||
     update.selectedAreaName ||
-    areaSuggestion?.area.name ||
     'Unassigned / Unknown Area';
   // The reason describes the area shown, which is the suggestion only once
   // accepted (review pass 3: a new draft showed "Unassigned" with a GPS reason).
@@ -15398,8 +15425,12 @@ function AddPhotosScreen({
 
       <View style={styles.phase3AutoCard}>
         <AreaRow
-          areaName={pendingSuggestion && update.areaStatus !== 'confirmed' ? pendingSuggestion.area.name : areaName}
-          status={update.areaStatus || (areaSuggestion ? 'suggested' : 'unknown')}
+          areaName={pendingSuggestion && update.areaStatus === 'suggested' && areaName === 'Unassigned / Unknown Area'
+            ? pendingSuggestion.area.name
+            : areaName}
+          status={update.areaStatus === 'suggested' && !pendingSuggestion
+            ? 'unknown'
+            : update.areaStatus || (areaSuggestion ? 'suggested' : 'unknown')}
           onChange={() => setAreaSheetOpen(true)}
         />
         <RecipientSummaryRow
