@@ -39,11 +39,13 @@ export function distanceBetweenCoordinatesFeet(from: GpsPoint, to: GpsPoint): nu
 export function findProjectAreaSuggestions(
   currentLocation: GpsFix | null,
   projectAreas: readonly ProjectArea[],
+  options: Readonly<{ diagnose?: boolean }> = {},
 ): AreaSuggestion[] {
   const savedLocationAreas = projectAreas.filter(hasSavedAreaLocation);
 
   if (!currentLocation || savedLocationAreas.length === 0) {
-    if (typeof __DEV__ !== 'undefined' && __DEV__ && currentLocation && projectAreas.length > 0) {
+    const diagnose = options.diagnose ?? true;
+    if (diagnose && typeof __DEV__ !== 'undefined' && __DEV__ && currentLocation && projectAreas.length > 0) {
       console.warn(
         'PIE_GPS_MATCH_DIAGNOSTIC no_saved_project_area_coordinates',
         {

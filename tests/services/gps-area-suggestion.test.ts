@@ -11,7 +11,7 @@ import {
 import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
 import { applyFixToDraft, areaChangeLocationFields } from '../../services/DraftFix';
-import { extractGPSEvidence } from '../../services/PIEEvidenceFusion';
+import { extractGPSEvidence, findEvidenceConflicts } from '../../services/PIEEvidenceFusion';
 import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
@@ -473,5 +473,71 @@ describe('Save GPS and area changes', () => {
     expect(areaChangeLocationFields({ ...draft, locationCapturedAt: null }, lot).locationCapturedAt).toBeNull();
     expect(areaChangeLocationFields({}, lot)).toMatchObject({ selectedAreaId: 'lot', gpsLatitude: null, distanceFromSelectedAreaFeet: null });
     expect(areaChangeLocationFields(draft, null)).toMatchObject({ selectedAreaId: null, selectedAreaName: null });
+  });
+});
+
+// Review pass 12.
+describe('GPS evidence against the update’s area', () => {
+  const update = (areaName: string, feetNorth: number, accuracy: number) => ({
+    id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+    recipients: { contactIds: [] }, selectedAreaName: areaName,
+    gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: accuracy,
+    locationCapturedAt: '2026-09-29T15:00:00Z',
+  });
+
+  it('does not recommend a larger area around the nearer one you are in', () => {
+    const room = area('room', 0, 100, { name: 'Room A' });
+    const building = area('building', 210, 250, { name: 'Building B' });
+    const gps = extractGPSEvidence({
+      projectName: '2321 Compliance Project',
+      updates: [update('Room A', 90, 5) as never],
+      projectAreas: [room, building],
+    });
+    expect(gps.nearestMappedArea).toBe('Room A');
+    expect(gps.recommendedArea).toBe('Room A');
+  });
+
+  it('raises no area conflict against "Unassigned / Unknown Area", but does against a named area', () => {
+    const evidence = (updateArea: string) => ({
+      scheduleReconciliation: { warnings: [] },
+      scheduleEvidence: [],
+      issueEvidence: [],
+      photoEvidence: [],
+      gpsEvidence: { recommendedArea: 'North Lot' },
+      userUpdateEvidence: [{ areaName: updateArea }],
+      projectName: '2321 Compliance Project',
+    }) as never;
+    const ids = (updateArea: string) => findEvidenceConflicts(evidence(updateArea)).map(item => item.id);
+    expect(ids(UNASSIGNED_AREA_NAME)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+    expect(ids('South Lot')).toContain('pie-evidence-conflict-gps-update-area-mismatch');
+  });
+
+  it('keeps an update with a late photo ahead of an earlier update elsewhere', () => {
+    const photoAt = (id: string, time: string) => ({
+      id, uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '',
+      actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: time,
+    });
+    const yard = {
+      ...update('Yard', 0, 5), id: 'u-yard', locationCapturedAt: '2026-09-29T16:00:00.000Z',
+      photos: [photoAt('p-late', '2026-09-29T17:30:00.000Z')],
+    };
+    const roof = {
+      id: 'u-roof', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'Roof', photos: [photoAt('p-roof', '2026-09-29T17:00:00.000Z')],
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [yard as never, roof as never], scheduleItems: [],
+    });
+    expect(summary.currentArea).toBe('Yard');
+  });
+
+  it('logs the unmapped-areas diagnostic only where asked', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const unmapped = [area('lot', 0, 175, { locationCapturedAt: null })];
+    findProjectAreaSuggestions({ ...ORIGIN, accuracy: 5 }, unmapped, { diagnose: false });
+    expect(warn).not.toHaveBeenCalled();
+    findProjectAreaSuggestions({ ...ORIGIN, accuracy: 5 }, unmapped);
+    expect(warn).toHaveBeenCalledTimes(typeof __DEV__ !== 'undefined' && __DEV__ ? 1 : 0);
+    warn.mockRestore();
   });
 });

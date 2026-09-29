@@ -58,6 +58,8 @@ type LocationCandidate = {
   distanceFromSelectedAreaFeet: number | null;
   locationCapturedAt: string | null;
   occurredAt: string | null;
+  /** When this candidate was last true, for ordering only (GPS review pass 12). */
+  orderAt?: string | null;
   source: ProjectLocationSource;
 };
 
@@ -228,9 +230,24 @@ function locationCandidates(updates: ProjectUpdate[]): LocationCandidate[] {
     .filter((candidate): candidate is LocationCandidate => Boolean(candidate))
     .sort(
       (left, right) =>
-        dateTimeValue(right.locationCapturedAt || right.occurredAt) -
-        dateTimeValue(left.locationCapturedAt || left.occurredAt),
+        dateTimeValue(right.orderAt || right.locationCapturedAt || right.occurredAt) -
+        dateTimeValue(left.orderAt || left.locationCapturedAt || left.occurredAt),
     );
+}
+
+/**
+ * An update with a fix stands for its photos without GPS of their own, which
+ * are not candidates themselves; it is as recent as the latest of them, so a
+ * late photo keeps its update ahead of an earlier one (GPS review pass 12).
+ */
+function updateOrderAt(update: ProjectUpdate): string | null {
+  if (!hasGpsCoordinates(update)) return null;
+  const times = [update.locationCapturedAt, ...update.photos.map(photo => photo.locationCapturedAt)]
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)));
+  return times.reduce<string | null>(
+    (latest, value) => (latest === null || Date.parse(value) > Date.parse(latest) ? value : latest),
+    null,
+  );
 }
 
 function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | null {
@@ -248,6 +265,7 @@ function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | nul
     distanceFromSelectedAreaFeet: update.distanceFromSelectedAreaFeet ?? null,
     locationCapturedAt: update.locationCapturedAt ?? null,
     occurredAt: update.date,
+    orderAt: updateOrderAt(update),
     source: update.id.startsWith('draft-') ? 'current-draft' : 'typed-update',
   };
 }

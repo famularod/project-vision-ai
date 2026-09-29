@@ -6880,33 +6880,6 @@ useEffect(() => {
     ]);
   }
 
-  function confirmSuggestedArea() {
-    if (!draftAreaSuggestion) {
-      Alert.alert(
-        'No suggestion yet',
-        'Refresh GPS Location first, then confirm the suggested area.',
-      );
-
-      return;
-    }
-
-    const snapshot =
-      draft.gpsLatitude !== null &&
-      draft.gpsLatitude !== undefined &&
-      draft.gpsLongitude !== null &&
-      draft.gpsLongitude !== undefined
-        ? {
-            latitude: draft.gpsLatitude,
-            longitude: draft.gpsLongitude,
-            accuracy: draft.gpsAccuracy ?? null,
-            capturedAt:
-              draft.locationCapturedAt || new Date().toISOString(),
-          }
-        : null;
-
-    applyAreaAndLocationToDraft(draftAreaSuggestion.area, snapshot);
-    setLocationStatus('Project Area confirmed');
-  }
 
   function changeDraftArea(areaId: string) {
     const area =

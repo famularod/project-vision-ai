@@ -27,7 +27,8 @@ import {
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
-import { findClosestProjectArea } from './AreaSuggestion';
+import { findProjectAreaSuggestions } from './AreaSuggestion';
+import { UNASSIGNED_AREA_NAME } from './DraftAreaPresentation';
 import {
   classifyDAVEBlocker,
   classifyDAVEIssue,
@@ -685,12 +686,15 @@ export function extractGPSEvidence({
   const nearest = latest &&
     typeof latest.latitude === 'number' &&
     typeof latest.longitude === 'number'
-    // Accuracy-aware, and only areas with a saved point (GPS review pass 11:
-    // before, a fix near an edge or the placeholder point raised a conflict).
-    ? findClosestProjectArea(
+    // The nearest area centre among areas with a saved point, inside only if
+    // the whole error margin fits (GPS review passes 11-12: a fix near an edge
+    // or the placeholder point, or a larger area around a nearer one, raised a
+    // false conflict).
+    ? findProjectAreaSuggestions(
         { latitude: latest.latitude, longitude: latest.longitude, accuracy: latest.accuracy ?? null },
         projectAreas,
-      )
+        { diagnose: false },
+      )[0] ?? null
     : null;
   const recommendedArea = nearest?.withinRadius
     ? nearest.area.name
@@ -1082,7 +1086,10 @@ export function findEvidenceConflicts(
 
   const gpsArea = evidence.gpsEvidence.recommendedArea;
   const recentUpdateArea = evidence.userUpdateEvidence[0]?.areaName;
-  if (gpsArea && recentUpdateArea && !sameArea(gpsArea, recentUpdateArea)) {
+  // "Unassigned / Unknown Area" names no area, so GPS cannot contradict it
+  // (GPS review pass 12; reachable once fixes were kept).
+  const updateNamesArea = Boolean(recentUpdateArea) && !sameArea(recentUpdateArea || '', UNASSIGNED_AREA_NAME);
+  if (gpsArea && recentUpdateArea && updateNamesArea && !sameArea(gpsArea, recentUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',
