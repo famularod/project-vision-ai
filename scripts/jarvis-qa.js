@@ -7740,8 +7740,11 @@ if (
   );
 }
 
+// The priority order moved to services/DraftAreaPresentation.ts in the GPS
+// review (29 Sep 2026); App.tsx must still render it.
+const draftAreaPresentationSource = readFile('services/DraftAreaPresentation.ts');
 if (
-  hasAll(app, [
+  hasAll(draftAreaPresentationSource, [
     'exact-gps-area',
     'gps-radius',
     'schedule',
@@ -7749,6 +7752,7 @@ if (
     'user-selection',
     'locationSource',
   ]) &&
+  hasAll(app, ['draftAreaPresentation(', 'areaView.reason']) &&
   hasAny(app, ['areaSuggestion', 'selectedArea', 'Current Area'])
 ) {
   pass(

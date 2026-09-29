@@ -104,10 +104,14 @@ assert(
     app.includes('gpsCandidates.topCandidates.length === 0'),
   'Multiple similar GPS matches must preserve only the narrowed top-2-to-3 candidate set.',
 );
+// The area-suggestion rules moved to services/AreaSuggestion.ts in the GPS
+// review (29 Sep 2026).
+const areaSuggestionSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'AreaSuggestion.ts'), 'utf8');
 assert(
-  app.includes('PIE_GPS_MATCH_DIAGNOSTIC no_saved_project_area_coordinates') &&
-    app.includes('totalProjectAreas') &&
-    app.includes('missingSavedCoordinates') &&
+  areaSuggestionSource.includes('PIE_GPS_MATCH_DIAGNOSTIC no_saved_project_area_coordinates') &&
+    areaSuggestionSource.includes('totalProjectAreas') &&
+    areaSuggestionSource.includes('missingSavedCoordinates') &&
+    !areaSuggestionSource.includes('PIE_GPS_MATCH_DIAGNOSTIC coordinates') &&
     !app.includes('PIE_GPS_MATCH_DIAGNOSTIC coordinates'),
   'Dev GPS diagnostics must flag missing saved project-area coordinates without exposing raw coordinates.',
 );

@@ -20,8 +20,14 @@ export type RecentLocationFix<T> = Readonly<{
 export function createRecentLocationFix<T>(
   takeFix: () => Promise<T | null>,
   maxAgeMs: number,
-  now: () => number = Date.now,
+  options: Readonly<{
+    now?: () => number;
+    /** Whether a fix is good enough to reuse; a poor one serves only its caller (review pass 7). */
+    keep?: (fix: T) => boolean;
+  }> = {},
 ): RecentLocationFix<T> {
+  const now = options.now ?? Date.now;
+  const keep = options.keep ?? (() => true);
   let last: { fix: T; at: number } | null = null;
   let pending: Promise<T | null> | null = null;
 
@@ -34,7 +40,7 @@ export function createRecentLocationFix<T>(
       if (recent) return Promise.resolve(recent.fix);
       if (!pending) {
         const request = takeFix().then(fix => {
-          last = fix === null ? null : { fix, at: now() };
+          last = fix === null || !keep(fix) ? null : { fix, at: now() };
           return fix;
         });
         pending = request;

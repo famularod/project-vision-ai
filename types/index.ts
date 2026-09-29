@@ -39,6 +39,8 @@ export type UpdatePhoto = {
   cloudPreviewUri?: string | null;
   cloudPreviewSignedUrlExpiresAt?: string | null;
   continuityAnchor?: PhotoContinuityAnchor | null;
+  /** Chosen from the photo library: taken at an unknown place, so it never takes the draft's GPS fix. */
+  pickedFromLibrary?: boolean;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;

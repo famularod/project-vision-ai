@@ -268,7 +268,7 @@ describe('a recent location fix', () => {
   it('shares one pending fix, reuses it for its age, then takes a new one', async () => {
     let clock = 0;
     const takeFix = jest.fn(async () => ({ at: clock }));
-    const recent = createRecentLocationFix(takeFix, 60_000, () => clock);
+    const recent = createRecentLocationFix(takeFix, 60_000, { now: () => clock });
 
     expect(recent.fresh()).toBeNull();
     const [first, second] = await Promise.all([recent.get(), recent.get()]);
@@ -288,7 +288,7 @@ describe('a recent location fix', () => {
 
   it('does not keep "no fix", so allowing location takes effect at once', async () => {
     const takeFix = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ at: 1 });
-    const recent = createRecentLocationFix(takeFix, 60_000, () => 0);
+    const recent = createRecentLocationFix(takeFix, 60_000, { now: () => 0 });
     await expect(recent.get()).resolves.toBeNull();
     expect(recent.fresh()).toBeNull();
     await expect(recent.get()).resolves.toEqual({ at: 1 });
@@ -298,14 +298,17 @@ describe('a recent location fix', () => {
     const takeFix = jest.fn()
       .mockRejectedValueOnce(new Error('kCLErrorLocationUnknown'))
       .mockResolvedValueOnce({ at: 1 });
-    const recent = createRecentLocationFix(takeFix, 60_000, () => 0);
+    const recent = createRecentLocationFix(takeFix, 60_000, { now: () => 0 });
     await expect(recent.get()).rejects.toThrow('kCLErrorLocationUnknown');
     expect(recent.fresh()).toBeNull();
     await expect(recent.get()).resolves.toEqual({ at: 1 });
   });
 });
 
-describe('GPS prompts in the app', () => {
+// Wiring in App.tsx. The rules themselves are unit-tested in
+// gps-area-suggestion.test.ts; these pin where App calls them (review
+// pass 7: count-only checks let real regressions through).
+describe('GPS wiring in the app', () => {
   const fs = jest.requireActual('fs') as typeof import('fs');
   const path = jest.requireActual('path') as typeof import('path');
   const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
@@ -319,96 +322,72 @@ describe('GPS prompts in the app', () => {
     expect(app).toContain('accuracy: Location.Accuracy = Location.Accuracy.High');
     expect(app).not.toContain('Location.Accuracy.Balanced');
     expect(app).toContain('getCurrentLocationSnapshot(Location.Accuracy.Highest)');
-  });
-
-  it('saves an area point onto the latest copy of the area, one fix at a time', () => {
-    expect(app).toContain('const current = projectAreasCurrentRef.current.find(area => area.id === areaId);');
-    expect(app).toContain('if (areaGpsSaveInFlightRef.current.has(areaId)) return;');
-    expect(app).toContain('areaGpsSaveInFlightRef.current.delete(areaId);');
-  });
-
-  it('says when iOS Precise Location is off instead of asking to try again', () => {
     expect(app).toContain("preciseLocationOff: permission.ios?.accuracy === 'reduced'");
     expect(app).toContain('if (snapshot.preciseLocationOff) {');
   });
 
-  it('gives photos added before a slow fix that fix, and shares one fix for home-screen detection', () => {
-    expect(app).toContain('withDraftGps(photo, gpsFields)');
-    expect(app).toContain('overviewLocationFixRef.current.fresh()');
+  it('saves an area point onto the latest copy of the area, one fix per area, only if the area exists', () => {
+    expect(app).toContain('const current = projectAreasCurrentRef.current.find(area => area.id === areaId);');
+    expect(app).toMatch(/async function saveCurrentLocationForArea\(areaId: string\) \{\n\s+if \(!areaGpsSaveInFlight\.tryStart\(areaId\)\) return;\n\s+try \{/);
+    expect(app).toMatch(/\} finally \{\n\s+areaGpsSaveInFlight\.finish\(areaId\);\n\s+\}\n\s+\}/);
+    expect(app).toContain('if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;');
   });
 
-  // Review pass 2: a draft was started and its fix requested in one handler,
-  // before draftRef rendered, so the fix was checked against the previous
-  // draft and always discarded.
+  // Review pass 2: the fix was checked against the previous draft and discarded.
   it('captures GPS for the draft just started, against its own project’s areas', () => {
     expect(app).not.toContain('captureDraftLocation();');
     expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(2);
-    expect(app.match(/captureDraftLocation\(nextDraft\)/g)).toHaveLength(2);
-    expect(app).toContain('const target = createDraftLocationCaptureTarget(targetDraft, generation);');
+    expect(app.match(/draftLocationCaptureRef\.current = captureDraftLocation\(nextDraft\);/g)).toHaveLength(2);
+    expect(app).toContain('const generation = draftFixTracker.start(targetDraft.id);');
     expect(app).toContain('projectName: targetDraft.projectName,');
   });
 
-  it('builds new photos from the draft as it is when the camera or picker returns', () => {
-    expect(app).not.toContain('withDraftPhotoContext(await photoFromAsset(asset), draft)');
-    expect(app.match(/withDraftPhotoContext\(await photoFromAsset\(asset\), draftRef\.current\)/g)).toHaveLength(2);
-    expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
-  });
-
-  it('keeps the draft’s own area when the fix lands, and says "saved" only for an area that still exists', () => {
+  it('writes the landed fix as GPS only, keeping the draft’s area and filling photos without GPS', () => {
+    expect(app).toMatch(/handedToDraft = true;\n\s+setDraft\(prev => \{\n\s+settle\(\);/);
+    expect(app).toContain('if (!handedToDraft) settle();');
     expect(app).toContain('...gpsFields,');
-    expect(app).toContain("prev.areaStatus === 'confirmed' || selectedArea");
-    expect(app).toContain('if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;');
-    expect(app).toContain('formatGpsAccuracy(areaPointAccuracyMeters(area))');
-  });
-
-  // Review pass 3.
-  it('shows a suggestion only on the draft whose fix produced it', () => {
-    expect(app).toContain('if (draftAreaSuggestionEntry?.draftId !== draft.id) return null;');
-    expect(app).toContain('reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null');
-    expect(app).not.toContain('setDraftAreaSuggestion(');
-  });
-
-  it('suggests the nearest area that contains you, and gives new photos the draft’s fix', () => {
-    expect(app).toContain('return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;');
-    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
     expect(app).toContain('photos: prev.photos.map(photo => withDraftGps(photo, gpsFields)),');
+    expect(app).toContain("prev.areaStatus === 'confirmed' || selectedArea");
+    expect(app).toContain('reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null');
   });
 
-  it('drops a pending fix when a save starts, and gives a GPS reason only for an accepted suggestion', () => {
-    expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = [^\n]*\n\s*draftLocationCaptureGenerationRef\.current \+= 1;/);
-    expect(app).toContain('const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);');
+  it('adds photos from the draft as it is when the camera or picker returns', () => {
+    expect(app).not.toContain('withDraftPhotoContext(await photoFromAsset(asset), draft)');
+    expect(app).toContain('photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));');
+    expect(app).toContain('...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),');
+    expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
+    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
+    expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),');
+    expect(app).toContain('...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),');
   });
 
-  // Review pass 4.
-  it('names a pending suggestion on Add Photos, and offers only an area that still exists', () => {
-    expect(app).toContain('const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;');
-    expect(app).toContain('`GPS places you in ${pendingSuggestion.area.name}. Accept it to use it for this update.`');
-    expect(app).toContain('label={`Accept Suggested Area: ${areaSuggestion.area.name}`}');
-    expect(app).toContain('const area = draftProjectAreas.find(item => item.id === draftAreaSuggestionEntry.suggestion.area.id);');
-    // Review pass 5: containment re-checked against the area as it is now.
-    expect(app).toContain('return withinRadius ? { area, distanceFeet, withinRadius } : null;');
-    // Review pass 5: a rejected suggestion never reads as the current area,
-    // and "suggested" shows only while a suggestion is pending.
-    expect(app).not.toContain('areaSuggestion?.area.name ||');
-    // Review pass 6: "Area auto-detected" only for the accepted suggestion.
-    expect(app).toContain('status={areaRowStatus}');
-    expect(app).toMatch(/const areaRowStatus: ProjectUpdate\['areaStatus'\] = suggestionIsShown\n\s+\? 'confirmed'/);
+  it('drops a pending fix when a save starts, and re-fixes only a draft left open by that save', () => {
+    expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = draftFixTracker\.beginSave\(draftSnapshot\.id\);/);
+    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
+    expect(app).toMatch(/setScreen\('ProjectWorkspace'\);\n\s+\} else \{\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/);
+    expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
+  });
+
+  it('shows the suggestion and area state from the tested rules, re-read every render', () => {
+    expect(app).toMatch(/const draftAreaSuggestion = currentDraftAreaSuggestion\(\{\n\s+entry: draftAreaSuggestionEntry,\n\s+draft,\n\s+areas: draftProjectAreas,\n\s+\}\);/);
+    expect(app).toContain('const areaView = draftAreaPresentation({');
+    expect(app).toContain('Why: {areaView.reason}');
+    expect(app).toContain('areaName={areaView.areaRowName}');
+    expect(app).toContain('status={areaView.areaRowStatus}');
+    expect(app).toContain('onPress={() => onChangeArea(offeredSuggestion.area.id)}');
     expect(app).toContain('if (areaId && !area) return;');
   });
 
-  it('takes a new fix for a draft a save left open without GPS, and keeps the home-screen gate on the nearest area', () => {
-    // Review pass 5: only the draft whose pending fix the save dropped.
-    expect(app.match(/recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/g)).toHaveLength(2);
-    expect(app).toContain('const droppedPendingFix = draftLocationCapturePendingIdRef.current === draftSnapshot.id;');
-    expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
-    // Review pass 6: pending until the fix is written into the draft.
-    expect(app).toMatch(/handedToDraft = true;\n\s+setDraft\(prev => \{\n\s+settle\(\);/);
-    expect(app).toContain('if (!handedToDraft) settle();');
-    expect(app).toContain('const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;');
+  it('gates home-screen detection on the nearest centre across projects, with a shared fix', () => {
+    expect(app).toMatch(/const suggestion = findProjectAreaSuggestions\(snapshot, projectAreas\)\[0\] \|\| null;\n(?:.*\n){0,24}\s+if \(!suggestion\?\.withinRadius \|\| gpsCandidates\.topCandidates\.length === 0\)/);
+    expect(app).not.toContain('findClosestProjectArea(snapshot, projectAreas)');
+    expect(app).toContain('overviewLocationFixRef.current.fresh()');
+    expect(app).toContain('keep: fix => fix !== null && !isAreaPointImprecise(fix.accuracy),');
+    expect(app).toContain('clearWinnerMarginFeet(');
   });
 
-  it('decides an area suggestion with the unit-safe rule', () => {
-    expect(app).toContain('withinRadius: isConfidentlyInsideArea({');
-    expect(app).toContain('clearWinnerMarginFeet(');
+  it('shows each area point’s precision on the Locations lists and the area panel', () => {
+    expect(app.match(/areaPointPrecisionLabel\(area\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(app).toContain('formatGpsAccuracy(areaPointAccuracyMeters(area))');
   });
 });
