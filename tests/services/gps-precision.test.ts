@@ -363,7 +363,7 @@ describe('GPS prompts in the app', () => {
 
   // Review pass 3.
   it('shows a suggestion only on the draft whose fix produced it', () => {
-    expect(app).toContain('draftAreaSuggestionEntry?.draftId === draft.id ? draftAreaSuggestionEntry.suggestion : null');
+    expect(app).toContain('if (draftAreaSuggestionEntry?.draftId !== draft.id) return null;');
     expect(app).toContain('reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null');
     expect(app).not.toContain('setDraftAreaSuggestion(');
   });
@@ -377,6 +377,20 @@ describe('GPS prompts in the app', () => {
   it('drops a pending fix when a save starts, and gives a GPS reason only for an accepted suggestion', () => {
     expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*draftLocationCaptureGenerationRef\.current \+= 1;/);
     expect(app).toContain('const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);');
+  });
+
+  // Review pass 4.
+  it('names a pending suggestion on Add Photos, and offers only an area that still exists', () => {
+    expect(app).toContain('const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;');
+    expect(app).toContain('`GPS places you in ${pendingSuggestion.area.name}. Accept it to use it for this update.`');
+    expect(app).toContain('label={`Accept Suggested Area: ${areaSuggestion.area.name}`}');
+    expect(app).toContain('const area = draftProjectAreas.find(item => item.id === suggestion.area.id);');
+    expect(app).toContain('if (areaId && !area) return;');
+  });
+
+  it('takes a new fix for a draft a save left open without GPS, and keeps the home-screen gate on the nearest area', () => {
+    expect(app.match(/recaptureOpenDraftLocationIfMissing\(\);/g)).toHaveLength(2);
+    expect(app).toContain('const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;');
   });
 
   it('decides an area suggestion with the unit-safe rule', () => {

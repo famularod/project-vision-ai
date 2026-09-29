@@ -5316,8 +5316,7 @@ function AppShell() {
   // A suggestion belongs to the draft whose fix produced it (review pass 3).
   const [draftAreaSuggestionEntry, setDraftAreaSuggestionEntry] =
     useState<{ draftId: string; suggestion: AreaSuggestion } | null>(null);
-  const draftAreaSuggestion =
-    draftAreaSuggestionEntry?.draftId === draft.id ? draftAreaSuggestionEntry.suggestion : null;
+
 
   const [locationStatus, setLocationStatus] =
     useState<string | null>(null);
@@ -6693,7 +6692,9 @@ useEffect(() => {
 
       try {
         const snapshot = recentFix ? recentFix.fix : await overviewLocationFixRef.current.get();
-        const suggestion = findClosestProjectArea(snapshot, projectAreas);
+        // Nearest centre, across every project: a nearer area of another
+        // project must still make this uncertain (review pass 4).
+        const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;
 
         if (!mounted) return;
 
@@ -6768,6 +6769,14 @@ useEffect(() => {
     }),
     [activeSavedUpdates, draft.projectName, projectAreas, scheduleItems],
   );
+  // Only this draft's suggestion, with the area as it is now; an area deleted
+  // since the fix is not offered (review pass 4).
+  const draftAreaSuggestion = useMemo(() => {
+    if (draftAreaSuggestionEntry?.draftId !== draft.id) return null;
+    const { suggestion } = draftAreaSuggestionEntry;
+    const area = draftProjectAreas.find(item => item.id === suggestion.area.id);
+    return area ? { ...suggestion, area } : null;
+  }, [draft.id, draftAreaSuggestionEntry, draftProjectAreas]);
 
   const selectedWorkspaceProjectAreas = useMemo(
     () => projectAreasForProject({
@@ -6975,6 +6984,13 @@ useEffect(() => {
     }
   }
 
+  // The save drops a pending fix; a draft left open without GPS takes a new
+  // one (review pass 4).
+  function recaptureOpenDraftLocationIfMissing() {
+    if (typeof draftRef.current.gpsLatitude === 'number') return;
+    draftLocationCaptureRef.current = captureDraftLocation(draftRef.current);
+  }
+
   async function waitForDraftLocationCapture() {
     const pending = draftLocationCaptureRef.current;
     if (!pending) return;
@@ -7016,6 +7032,8 @@ useEffect(() => {
   function changeDraftArea(areaId: string) {
     const area =
       draftProjectAreas.find(item => item.id === areaId) || null;
+    // An area removed since it was offered must not clear the draft's area.
+    if (areaId && !area) return;
 
     applyAreaAndLocationToDraft(area);
     setLocationStatus(
@@ -7972,6 +7990,7 @@ useEffect(() => {
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
+      recaptureOpenDraftLocationIfMissing();
       return;
     }
 
@@ -7980,6 +7999,8 @@ useEffect(() => {
       setDraft(createDraft(queuedUpdate.projectName));
       setDraftSavedAt(null);
       setScreen('ProjectWorkspace');
+    } else {
+      recaptureOpenDraftLocationIfMissing();
     }
 
     try {
@@ -15244,16 +15265,21 @@ function AddPhotosScreen({
   // The reason describes the area shown, which is the suggestion only once
   // accepted (review pass 3: a new draft showed "Unassigned" with a GPS reason).
   const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);
+  // No mapped area chosen yet: the suggestion is named until accepted
+  // (review pass 4: it showed only as "Unassigned / Unknown Area").
+  const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;
   const locationSource = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 'exact-gps-area' : 'gps-radius'
-    : selectedArea
-      ? 'user-selection'
-      : scheduleRecommendation
-        ? 'schedule'
-        : 'last-active-area';
+    : pendingSuggestion
+      ? 'gps-pending'
+      : selectedArea
+        ? 'user-selection'
+        : scheduleRecommendation
+          ? 'schedule'
+          : 'last-active-area';
   const confidenceScore = Math.max(
     0,
-    (suggestionIsShown ? (areaSuggestion?.withinRadius ? 90 : 70) : selectedArea ? 80 : 45) -
+    (suggestionIsShown ? (areaSuggestion?.withinRadius ? 90 : 70) : pendingSuggestion ? 60 : selectedArea ? 80 : 45) -
       (walkCorrectionMemory?.correctionPenalty || 0),
   );
   const repeatPhotoGuidance =
@@ -15307,6 +15333,8 @@ function AddPhotosScreen({
         <Text style={styles.locationDetailText}>
           Why: {locationSource === 'exact-gps-area'
             ? 'GPS places you inside this saved area.'
+            : locationSource === 'gps-pending' && pendingSuggestion
+              ? `GPS places you in ${pendingSuggestion.area.name}. Accept it to use it for this update.`
             : locationSource === 'gps-radius'
               ? 'This is the nearest saved area within the GPS recommendation range.'
               : locationSource === 'schedule'
@@ -15318,7 +15346,7 @@ function AddPhotosScreen({
         ) : null}
         {areaSuggestion && areaSuggestion.area.id !== selectedArea?.id ? (
           <SecondaryButton
-            label="Accept Suggested Area"
+            label={`Accept Suggested Area: ${areaSuggestion.area.name}`}
             icon="location-outline"
             onPress={() => onChangeArea(areaSuggestion.area.id)}
           />
@@ -15370,7 +15398,7 @@ function AddPhotosScreen({
 
       <View style={styles.phase3AutoCard}>
         <AreaRow
-          areaName={areaName}
+          areaName={pendingSuggestion && update.areaStatus !== 'confirmed' ? pendingSuggestion.area.name : areaName}
           status={update.areaStatus || (areaSuggestion ? 'suggested' : 'unknown')}
           onChange={() => setAreaSheetOpen(true)}
         />
