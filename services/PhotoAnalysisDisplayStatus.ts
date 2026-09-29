@@ -3,13 +3,15 @@ import type { UpdatePhoto } from '../types';
 type PhotoIntelligence = NonNullable<UpdatePhoto['photoIntelligence']>;
 
 /**
- * How long an "Analyzing" state is believable. The phone gives up on an
- * analysis after ANALYSIS_TIMEOUT_SECONDS (135 s); an older "Analyzing" on
- * the desktop means the phone finished (or stopped) after it had already
- * synced the update, and the result never reached the cloud (code review
+ * How long an "Analyzing" state is believable. The state is stamped when a
+ * photo is added, and the photos of one pick (up to 10) are analysed one
+ * after another, each for up to 120 s plus sign-in retries, so the last of a
+ * batch can honestly still be analysing well past 10 minutes (review pass 8,
+ * 28 Sep 2026). Past 30 minutes, the phone finished or stopped after it had
+ * synced the update and the result never reached the cloud (code review
  * 27 Sep 2026).
  */
-export const STALE_ANALYZING_AFTER_MS = 10 * 60 * 1000;
+export const STALE_ANALYZING_AFTER_MS = 30 * 60 * 1000;
 
 export type PhotoAnalysisDisplayStatus = Readonly<{
   label: string;

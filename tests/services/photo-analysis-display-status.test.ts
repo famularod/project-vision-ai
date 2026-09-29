@@ -22,9 +22,11 @@ describe('desktop photo analysis status', () => {
       .toBe('Baseline only');
   });
 
-  it('shows a recent analysis as Analyzing', () => {
+  it('shows a recent analysis as Analyzing, including the last photo of a 10-photo batch', () => {
     expect(photoAnalysisDisplayStatus({ status: 'analyzing', updatedAt: ago(60_000) }, NOW))
       .toEqual({ label: 'Analyzing', tone: 'neutral' });
+    expect(photoAnalysisDisplayStatus({ status: 'analyzing', updatedAt: ago(20 * 60_000) }, NOW).label)
+      .toBe('Analyzing');
   });
 
   it('names an Analyzing too old to be real, instead of showing it forever', () => {
