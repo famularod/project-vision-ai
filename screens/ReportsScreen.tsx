@@ -150,6 +150,7 @@ export function ReportsScreen({
   onEmailReport,
   onTextReport,
   onDownloadWordReport,
+  onOutlookReport,
   onResolveDrawingPreview,
   onResolvePhotoPreview,
 }: {
@@ -212,6 +213,11 @@ export function ReportsScreen({
   onEmailReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
   onTextReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
   onDownloadWordReport: (
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+  ) => Promise<ReportCommunicationOutcome>;
+  /** Send from the work account in Outlook, with the Word report attached. */
+  onOutlookReport: (
     report: PIEReportDraft,
     drawingReferences: readonly ReportDrawingReference[],
   ) => Promise<ReportCommunicationOutcome>;
@@ -646,6 +652,10 @@ export function ReportsScreen({
               completeCommunication(report =>
                 onDownloadWordReport(report, drawingReferences));
             }}
+            onOutlookReport={() => {
+              completeCommunication(report =>
+                onOutlookReport(report, drawingReferences));
+            }}
           />
     </ScreenCard>
   );
@@ -851,6 +861,7 @@ function PIEReporterPreview({
   onEmailReport,
   onTextReport,
   onDownloadWordReport,
+  onOutlookReport,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -884,6 +895,7 @@ function PIEReporterPreview({
   onEmailReport: () => void;
   onTextReport: () => void;
   onDownloadWordReport: () => void;
+  onOutlookReport: () => void;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1135,6 +1147,7 @@ function PIEReporterPreview({
           <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} disabled={communicationPending} />
           <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
           <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
+          <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
         </View>
       ) : null}
 
