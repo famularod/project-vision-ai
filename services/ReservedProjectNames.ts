@@ -1,4 +1,5 @@
 import { LEGACY_NON_PROJECT_SHELL_NAMES } from './CrossDeviceVisibility';
+import { legacyProjectNameKey } from './OperationalProjectIdentity';
 
 // Project names from an earlier version of the app. On every launch App.tsx
 // adds these names to the deleted-project list (the work-container names from
@@ -25,9 +26,18 @@ const RESERVED_LEGACY_PROJECT_KEYS = new Set(
   [...LEGACY_WORK_CONTAINER_PROJECT_NAMES, ...LEGACY_NON_PROJECT_SHELL_NAMES].map(reservedKey),
 );
 
+// The launch-time document migration matches by document key, which ignores
+// punctuation and spacing, so "3-Hour Fire Wall" or "Canopy-A" would have
+// its documents moved to the old parent project on every launch (audit A3
+// pass 3). Those names are reserved as well.
+const RESERVED_LEGACY_DOCUMENT_KEYS = new Set(
+  [...LEGACY_WORK_CONTAINER_PROJECT_NAMES, ...LEGACY_NON_PROJECT_SHELL_NAMES].map(legacyProjectNameKey),
+);
+
 export function isReservedLegacyProjectName(name: string | null | undefined) {
   const key = reservedKey(name);
-  return key.length > 0 && RESERVED_LEGACY_PROJECT_KEYS.has(key);
+  return key.length > 0 &&
+    (RESERVED_LEGACY_PROJECT_KEYS.has(key) || RESERVED_LEGACY_DOCUMENT_KEYS.has(legacyProjectNameKey(key)));
 }
 
 function reservedKey(value: string | null | undefined) {

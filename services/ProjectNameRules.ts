@@ -1,3 +1,5 @@
+import { legacyProjectNameKey } from './OperationalProjectIdentity';
+
 /**
  * Rules for a typed project name and for project changes still waiting in the
  * offline queue (whole-app audit A3, 30 Sep 2026).
@@ -19,7 +21,8 @@ export type ProjectNameAvailability =
   | Readonly<{ kind: 'available' }>
   | Readonly<{ kind: 'deleted'; deletedAt: string | null }>
   | Readonly<{ kind: 'archived'; projectName: string }>
-  | Readonly<{ kind: 'exists' }>;
+  | Readonly<{ kind: 'exists' }>
+  | Readonly<{ kind: 'similar'; projectName: string }>;
 
 /**
  * Whether a typed name can start a new project. A deleted project's name is
@@ -27,7 +30,11 @@ export type ProjectNameAvailability =
  * it vanished on the next refresh and its updates were dropped from the upload
  * queue without a word: it is refused with the reason until the cloud can
  * record that a deletion was cleared (owner question Q12). An archived name is
- * offered for reopening instead of "Already added".
+ * offered for reopening instead of "Already added". A name that differs from
+ * another project's only in punctuation or spacing ("Lot 5" and "Lot-5") is
+ * refused too: phone documents, cover photos and the delete cascade are keyed
+ * by legacyProjectNameKey, so the two projects would share documents and
+ * deleting one would remove the other's (audit A3 pass 3).
  */
 export function projectNameAvailability({
   projectName,
@@ -52,7 +59,20 @@ export function projectNameAvailability({
   const archived = archivedProjects.find(name => nameKey(name) === key);
   if (archived) return { kind: 'archived', projectName: archived };
   if (projects.some(name => nameKey(name) === key)) return { kind: 'exists' };
+  const documentKey = legacyProjectNameKey(projectName);
+  const similar = [
+    ...projects,
+    ...archivedProjects,
+    ...deletedProjectNames,
+    ...tombstones.filter(candidate => candidate.entityType === 'project').map(candidate => candidate.recordId),
+  ].find(name => name.trim() && legacyProjectNameKey(name) === documentKey);
+  if (similar) return { kind: 'similar', projectName: similar.trim() };
   return { kind: 'available' };
+}
+
+export function similarProjectNameMessage(projectName: string, similarTo: string): string {
+  return `${projectName} is too close to ${similarTo}. The app files documents by project name with ` +
+    'punctuation and spacing ignored, so the two projects would share documents. Please choose a different name.';
 }
 
 export function deletedProjectNameMessage(projectName: string, deletedOn: string | null): string {

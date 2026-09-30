@@ -349,13 +349,13 @@ import {
 } from './services/AutomaticSyncState';
 import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
 import { buildProjectDeletionCascade, buildProjectDeletionOperations, projectDeletionTakesUpdate,
-  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject,
+  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject, referenceDocumentDeletedWithProject,
   scheduleItemMatchesProject as scheduleItemMatchesDeletedProject, selectProjectDeletionFallback,
   PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
   PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
 import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
-import { deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges } from './services/ProjectNameRules';
+import { deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges, similarProjectNameMessage } from './services/ProjectNameRules';
 import {
   FileSizePreflightError,
   hashExpoFileSha256,
@@ -8759,6 +8759,10 @@ function addProject(projectName: string) {
     Alert.alert('Already added', `${trimmed} is already in your project list.`);
     return false;
   }
+  if (availability.kind === 'similar') {
+    Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName));
+    return false;
+  }
 
   setProjects(prev => [trimmed, ...prev]);
   setProjectRecords(prev => [{ name: trimmed }, ...prev]);
@@ -8863,7 +8867,7 @@ function addProject(projectName: string) {
             savedAt: deletedAt,
           };
           const explicitlyOwnedReferenceDocuments = referenceDocuments.filter(document =>
-            referenceDocumentMatchesDeletedProject(
+            referenceDocumentDeletedWithProject( // a shared schedule's file stays (audit A3 pass 3)
               document,
               projectName,
               authorityProjectId(projectName),

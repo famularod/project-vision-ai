@@ -28,6 +28,10 @@ const mockListArchivedProjects = jest.fn((): Promise<{ ok: boolean; configured: 
 const mockCreateProject = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+// An archive of a project the cloud has no row for reads as already absent.
+const mockUpdateProject = jest.fn((..._args: unknown[]): Promise<{ ok: boolean; configured: boolean; stubbed: boolean; data: unknown }> =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false, data: null }),
+);
 const mockArchiveProjectUpdate = jest.fn((..._args: unknown[]) =>
   Promise.resolve({
     ok: true,
@@ -70,6 +74,7 @@ const mockRecordDAVEStorageCleanupAttempt = jest.fn((..._args: unknown[]) =>
 
 jest.mock('../../services/SupabaseService', () => ({
   createProject: (...args: unknown[]) => mockCreateProject(...args),
+  updateProject: (...args: unknown[]) => mockUpdateProject(...args),
   // A queued create first checks the cloud for the name (audit A3 pass 2): none unless a test says so.
   listProjects: () => Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }),
   listArchivedProjects: () => mockListArchivedProjects(),
@@ -257,6 +262,50 @@ describe('offline queue corruption recovery', () => {
     mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([queueItem('unread-list')]));
     await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 1 });
     expect(mockCreateProject).not.toHaveBeenCalled();
+  });
+
+  it('keeps a close queued behind its own project create until the create lands (audit A3 pass 3)', async () => {
+    const create = queueItem('Yard');
+    const close: SyncQueueItem = {
+      ...queueItem('close-yard'),
+      id: 'project-update-yard',
+      operation: 'update',
+      payload: { previousName: 'Recovered Yard', archived: true },
+      changedAt: '2026-07-18T12:05:00.000Z',
+    };
+    // The create's name check cannot read the lists; the close then finds no cloud row.
+    mockListArchivedProjects.mockResolvedValueOnce({
+      ok: false, configured: true, stubbed: false, data: [], error: 'Network request failed',
+    });
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([create, close]));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 2 });
+    expect(mockCreateProject).not.toHaveBeenCalled();
+    expect(mockUpdateProject).toHaveBeenCalledTimes(1);
+    expect((await getOfflineQueue()).map(item => item.id)).toEqual([create.id, close.id]);
+
+    // Next pass: the create lands, then the close archives the new row.
+    mockUpdateProject.mockImplementation(async (..._args: unknown[]) => ({
+      ok: true, configured: true, stubbed: false,
+      data: mockCreateProject.mock.calls.length ? { id: 'p-yard', name: 'Recovered Yard', archived: true } : null,
+    }));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 0, errors: [] });
+    expect(mockCreateProject).toHaveBeenCalledTimes(1);
+    expect(mockUpdateProject).toHaveBeenCalledTimes(2);
+    expect(mockUpdateProject).toHaveBeenLastCalledWith(expect.objectContaining({ previousName: 'Recovered Yard', archived: true }));
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    mockUpdateProject.mockReset();
+    mockUpdateProject.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: null });
+  });
+
+  it('still drops a close for a project the cloud never had when no create is queued', async () => {
+    const close: SyncQueueItem = {
+      ...queueItem('close-gone'),
+      operation: 'update',
+      payload: { previousName: 'Recovered Gone', archived: true },
+    };
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([close]));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 0, errors: [] });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
   it('drains active work before scanning unrelated legacy quarantines', async () => {

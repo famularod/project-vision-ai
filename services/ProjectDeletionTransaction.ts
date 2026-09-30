@@ -70,6 +70,7 @@ type ReferenceDocumentLike = Readonly<{
   id: string;
   projectId?: string | null;
   projectName?: string | null;
+  projectNames?: readonly unknown[] | null;
 }>;
 type ScheduleItemLike = Readonly<{
   id: string;
@@ -251,11 +252,21 @@ export function buildProjectDeletionCascade<
   const removedProjectDocuments = projectDocuments.filter(document =>
     projectDocumentMatchesProject(document, projectName, authorityProjectId),
   );
-  const remainingReferenceDocuments = referenceDocuments.filter(document =>
-    !referenceDocumentMatchesProject(document, projectName, authorityProjectId),
-  );
+  // A document shared with other projects stays with them, as the cloud's
+  // delete does: this project leaves its list and the next one becomes its
+  // project name. Removing it (and writing a deletion record) hid a combined
+  // schedule from the projects still using it (audit A3 pass 3).
+  const sharedReferenceDocuments = new Map(referenceDocuments.flatMap(document => {
+    const shared = withoutDeletedSharedProject(document, projectName);
+    return shared ? [[document.id, shared] as const] : [];
+  }));
+  const remainingReferenceDocuments = referenceDocuments.flatMap(document => {
+    const shared = sharedReferenceDocuments.get(document.id);
+    if (shared) return [shared];
+    return referenceDocumentMatchesProject(document, projectName, authorityProjectId) ? [] : [document];
+  });
   const removedReferenceDocuments = referenceDocuments.filter(document =>
-    referenceDocumentMatchesProject(document, projectName, authorityProjectId),
+    referenceDocumentDeletedWithProject(document, projectName, authorityProjectId),
   );
   const remainingProjectAreas = projectAreas.filter(area =>
     !projectMatches(area.projectName),
@@ -390,6 +401,34 @@ export function buildProjectDeletionOperations<
   ];
   if (cascade.draftReplaced) operations.push(setJson(keys.activeDraft, cascade.nextDraft));
   return operations;
+}
+
+/**
+ * Mirrors dave_delete_project_atomically (migration 20260726030000): a
+ * document whose projectNames list has more than one project and includes the
+ * deleted one keeps the others, with the first of them as its project name.
+ */
+export function withoutDeletedSharedProject<TReferenceDocument extends ReferenceDocumentLike>(
+  document: TReferenceDocument,
+  projectName: string,
+): TReferenceDocument | null {
+  const projectNames = Array.isArray(document.projectNames)
+    ? document.projectNames.filter((name): name is string => typeof name === 'string')
+    : [];
+  const target = normalizedScope(projectName);
+  if (projectNames.length <= 1 || !projectNames.some(name => normalizedScope(name) === target)) return null;
+  const remaining = projectNames.filter(name => normalizedScope(name) !== target);
+  return { ...document, projectNames: remaining, projectName: remaining[0] ?? null };
+}
+
+/** Removed with the project: explicitly its own and not shared with another project. */
+export function referenceDocumentDeletedWithProject(
+  document: ReferenceDocumentLike,
+  projectName: string,
+  authorityProjectId: string,
+): boolean {
+  return !withoutDeletedSharedProject(document, projectName) &&
+    referenceDocumentMatchesProject(document, projectName, authorityProjectId);
 }
 
 export function referenceDocumentMatchesProject(

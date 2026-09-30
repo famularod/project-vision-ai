@@ -4165,9 +4165,31 @@ async function uploadProjectQueueItem(
         ? await deleteProject({ name: payload.name || payload.previousName || '' })
         : await updateProject(payload);
 
-  if (result.ok && !result.stubbed) return 'uploaded';
+  if (result.ok && !result.stubbed) {
+    // A close finds no cloud row while the project's own create, queued ahead
+    // of it offline, has not landed yet (for example its name check could not
+    // read the lists). Dropping the close let the create make the project
+    // active on the next pass (whole-app audit A3 pass 3); it waits instead.
+    if (
+      item.operation === 'update' && payload.archived === true && !result.data &&
+      await projectCreateStillQueued(payload.previousName || payload.name || '')
+    ) {
+      return 'Project close is waiting for the project to reach the cloud.';
+    }
+    return 'uploaded';
+  }
 
   return result.error || result.message || 'Project sync is waiting for Supabase.';
+}
+
+async function projectCreateStillQueued(name: string): Promise<boolean> {
+  const key = name.trim().toLowerCase();
+  if (!key) return false;
+  const queue = await getOfflineQueue().catch(() => null);
+  if (!queue) return true;
+  return queue.some(candidate =>
+    candidate.entity === 'project' && candidate.operation === 'create' &&
+    String((candidate.payload as Partial<ProjectCreatePayload>)?.name || '').trim().toLowerCase() === key);
 }
 
 /**

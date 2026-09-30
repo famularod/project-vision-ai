@@ -3,8 +3,10 @@ import type { SyncQueueItem } from './SyncService';
 /**
  * Work queued for one project that has not reached the cloud. Closing the
  * project while it waits is allowed: field updates still upload to a closed
- * project, while its tasks and documents wait until it is reopened (audit A7
- * M2). The count lets Close Project say so before the owner confirms.
+ * project (audit A7 M2). Tasks and documents queued before the close sit
+ * ahead of it in the queue, so they normally upload first; only one whose own
+ * upload fails waits until the project is reopened (audit A3 pass 3). The
+ * count lets Close Project say so before the owner confirms.
  */
 export type QueuedProjectWork = Readonly<{
   updates: number;
@@ -62,7 +64,7 @@ export function closeProjectMessage(projectName: string, waiting: QueuedProjectW
     lines.push(`${plural(waiting.updates, 'field update')} still waiting to upload will upload after it closes.`);
   }
   if (waiting.tasksAndDocuments > 0) {
-    lines.push(`${plural(waiting.tasksAndDocuments, 'task or document change')} waiting to upload will wait until you reopen it.`);
+    lines.push(`${plural(waiting.tasksAndDocuments, 'task or document change')} waiting to upload normally upload${waiting.tasksAndDocuments === 1 ? 's' : ''} first; if one cannot, it waits until you reopen the project.`);
   }
   return lines.join('\n\n');
 }

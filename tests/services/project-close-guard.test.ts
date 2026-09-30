@@ -41,7 +41,13 @@ describe('queued work named on Close Project (audit A7 M2)', () => {
     expect(closeProjectMessage('Fire Pump House', { updates: 1, tasksAndDocuments: 2 })).toBe(
       'Fire Pump House will move to Archived Projects.\n\n' +
       '1 field update still waiting to upload will upload after it closes.\n\n' +
-      '2 task or document changes waiting to upload will wait until you reopen it.',
+      '2 task or document changes waiting to upload normally upload first; if one cannot, it waits until you reopen the project.',
+    );
+    // Queued ahead of the close, tasks and documents normally upload in the
+    // same pass; the message no longer says they wait (audit A3 pass 3).
+    expect(closeProjectMessage('Fire Pump House', { updates: 0, tasksAndDocuments: 1 })).toBe(
+      'Fire Pump House will move to Archived Projects.\n\n' +
+      '1 task or document change waiting to upload normally uploads first; if one cannot, it waits until you reopen the project.',
     );
   });
 });
