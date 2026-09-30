@@ -5739,7 +5739,7 @@ useEffect(() => {
       .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
   }, [startupHydration.retryAttempt]);
 
-  useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
+  const scheduleCloudDownloadPending = useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
     retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
     localLoaded: scheduleItemsLocalLoaded, localAuthorityReady: scheduleItemsLoaded, localAuthorityRef: scheduleItemsAuthorityRef, resetLocalLoaded: () => { setScheduleItemsLocalLoaded(false); markScheduleItemsAuthorityReady(false); },
     readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
@@ -13820,6 +13820,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ScheduleScreen
               contentStyle={contentStyle}
               screenshotImportAvailable={scheduleScreenshotOcrAvailable}
+              cloudDownloadPending={scheduleCloudDownloadPending}
               scheduleItems={authoritativeScheduleItems}
               savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
@@ -19156,6 +19157,7 @@ function UpdateOverflowMenu({
 function ScheduleScreen({
   contentStyle,
   screenshotImportAvailable,
+  cloudDownloadPending = false,
   scheduleItems,
   savedUpdates,
   projectAreas,
@@ -19188,6 +19190,7 @@ function ScheduleScreen({
 }: {
   contentStyle: StyleProp<ViewStyle>;
   screenshotImportAvailable: boolean;
+  cloudDownloadPending?: boolean;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
@@ -19759,9 +19762,12 @@ function ScheduleScreen({
           />
         )
       : (
+          // Not "import one" while the cloud's tasks have not arrived (audit A2 M5).
           <EmptyState
-            title="No schedule items yet"
-            text="Import a CSV/text schedule or add a schedule item manually."
+            title={cloudDownloadPending ? 'Tasks not downloaded yet' : 'No schedule items yet'}
+            text={cloudDownloadPending
+              ? 'The first download from the cloud did not finish. Vitruvius keeps retrying; Settings › Sync Now retries now.'
+              : 'Import a CSV/text schedule or add a schedule item manually.'}
           />
         );
   const taskEditor = (
