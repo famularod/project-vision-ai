@@ -393,6 +393,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
+import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport } from './services/ProjectPhotoTransport';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
@@ -5976,6 +5977,14 @@ useEffect(() => {
     setReferenceDocuments(repair.documents);
     void Promise.all(repair.changed.map(document => queueReferenceDocumentRecord(document))).catch(() => undefined);
   }, [referenceDocuments, referenceDocumentsLoaded, scheduleItems, scheduleItemsLoaded, startupHydrationReady]);
+  useEffect(() => { // shared records of documents deleted on Build 228 or earlier (audit A7 pass 4)
+    if (!startupHydrationReady || !projectDocumentsLoaded || !referenceDocumentsLoaded) return;
+    const orphanIds = legacyOrphanedProjectDocumentBridges(referenceDocuments, projectDocuments).map(document => document.id);
+    if (orphanIds.length === 0) return;
+    markReferenceDocumentsAuthorityReady(true);
+    setReferenceDocuments(prev => prev.filter(document => !orphanIds.includes(document.id)));
+    void Promise.all(orphanIds.map(id => removeOperationalRecordFromSyncQueue('reference_document', id))).catch(() => undefined);
+  }, [projectDocuments, projectDocumentsLoaded, referenceDocuments, referenceDocumentsLoaded, startupHydrationReady]);
 
   useStringStoragePersistence({
     enabled: startupHydrationReady && displayNameLoaded,
@@ -11407,71 +11416,96 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const title = sensitive
       ? 'Archive compliance-sensitive document?'
       : 'Delete project document?';
+    // The owner chooses this phone only or every device (owner answer Q14, audit A7 pass 4).
     const message = sensitive
       ? `${document.name} is categorized as ${document.category}. It will be hidden from active project documents.`
-      : `${document.name} will be removed from active project documents on this device.`;
+      : `Delete from This Device removes ${document.name} from this phone; a copy already shared stays on your other devices. Delete from All Devices also removes the shared copy from the iPad, the web and the cloud. This cannot be undone.`;
+    const sharedRecord = findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current);
+    const sharedWithAnotherDocument = Boolean(sharedRecord) && projectDocumentsCurrentRef.current.some(item =>
+      item.id !== documentId && (item.referenceDocumentId === sharedRecord?.id || item.id === sharedRecord?.id));
 
-    Alert.alert(
-      title,
-      message,
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: sensitive ? `Archive ${document.category}` : 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
-              'not_recorded';
-            if (!sensitive) {
-              const cleanup = await deleteOwnedProjectDocument(document);
-              localFileCleanupStatus = cleanup.status;
-            }
-            const archivedAt = new Date().toISOString();
+    const removeFromDevice = async () => {
+      let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
+        'not_recorded';
+      if (!sensitive) {
+        const cleanup = await deleteOwnedProjectDocument(document);
+        localFileCleanupStatus = cleanup.status;
+      }
+      const archivedAt = new Date().toISOString();
 
-            setProjectDocuments(prev =>
-              sensitive
-                ? prev.map(item =>
-                    item.id === documentId
-                      ? {
-                          ...item,
-                          isArchived: true,
-                          archivedAt,
-                          updatedAt: archivedAt,
-                        }
-                      : item,
-                  )
-                : prev.filter(item => item.id !== documentId),
-            );
+      setProjectDocuments(prev =>
+        sensitive
+          ? prev.map(item =>
+              item.id === documentId
+                ? {
+                    ...item,
+                    isArchived: true,
+                    archivedAt,
+                    updatedAt: archivedAt,
+                  }
+                : item,
+            )
+          : prev.filter(item => item.id !== documentId),
+      );
+      if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
+        bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
+        remainingDocuments: projectDocumentsCurrentRef.current.filter(item => item.id !== documentId),
+        isQueued: async id => (await getOfflineQueue()).some(item => item.entity === 'reference_document' && (item.payload as { id?: string }).id === id),
+        withdraw: async id => { await removeOperationalRecordFromSyncQueue('reference_document', id); setReferenceDocuments(prev => prev.filter(item => item.id !== id)); },
+      }).catch(() => undefined);
 
-            setDraft(prev => ({
-              ...prev,
-              documents: (prev.documents || []).filter(
-                item => item.id !== documentId,
-              ),
-            }));
+      setDraft(prev => ({
+        ...prev,
+        documents: (prev.documents || []).filter(
+          item => item.id !== documentId,
+        ),
+      }));
 
-            setSavedUpdates(prev =>
-              prev.map(update => ({
-                ...update,
-                documents: (update.documents || []).filter(
-                  item => item.id !== documentId,
-                ),
-              })),
-            );
+      setSavedUpdates(prev =>
+        prev.map(update => ({
+          ...update,
+          documents: (update.documents || []).filter(
+            item => item.id !== documentId,
+          ),
+        })),
+      );
 
-            if (!sensitive && localFileCleanupStatus === 'unavailable') {
-              Alert.alert(
-                'Document removed',
-                'The document record was removed. Its older local file was already unavailable and was left untouched.',
-              );
-            }
-          },
-        },
-      ],
-    );
+      if (!sensitive && localFileCleanupStatus === 'unavailable') {
+        Alert.alert(
+          'Document removed',
+          'The document record was removed. Its older local file was already unavailable and was left untouched.',
+        );
+      }
+    };
+    const removeFromAllDevices = () => {
+      if (!sharedRecord || sharedWithAnotherDocument) return void removeFromDevice();
+      void removeReferenceDocumentEverywhere(sharedRecord.id)
+        .then(removeFromDevice)
+        .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
+    };
+
+    Alert.alert(title, message, sensitive
+      ? [
+          { text: 'Cancel', style: 'cancel' },
+          { text: `Archive ${document.category}`, style: 'destructive', onPress: () => void removeFromDevice() },
+        ]
+      : [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete from This Device', style: 'destructive', onPress: () => void removeFromDevice() },
+          { text: 'Delete from All Devices', style: 'destructive', onPress: removeFromAllDevices },
+        ]);
+  }
+
+  // Deleted on every device: the durable deletion record first; the cloud
+  // then removes the row, its file and its ECOS index.
+  async function removeReferenceDocumentEverywhere(documentId: string) {
+    const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
+    rememberOperationalTombstones([tombstone]);
+    markReferenceDocumentsAuthorityReady(true);
+    const updated = referenceDocumentsCurrentRef.current.filter(item => item.id !== documentId);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void removeOperationalRecordFromSyncQueue('reference_document', documentId);
   }
 
   function deleteReferenceDocument(documentId: string) {
@@ -11491,15 +11525,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            void recordDAVESyncTombstone('reference_document', documentId)
-              .then(tombstone => {
-                rememberOperationalTombstones([tombstone]);
-                markReferenceDocumentsAuthorityReady(true);
-                const updated = referenceDocumentsCurrentRef.current
-                  .filter(item => item.id !== documentId);
-                referenceDocumentsCurrentRef.current = updated;
-                setReferenceDocuments(updated);
-                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+            void removeReferenceDocumentEverywhere(documentId)
+              .then(() => {
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -11541,15 +11568,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         {
           text: 'Delete PDF Only',
           onPress: () => {
-            void recordDAVESyncTombstone('reference_document', documentId)
-              .then(tombstone => {
-                rememberOperationalTombstones([tombstone]);
-                markReferenceDocumentsAuthorityReady(true);
-                const updated = referenceDocumentsCurrentRef.current
-                  .filter(item => item.id !== documentId);
-                referenceDocumentsCurrentRef.current = updated;
-                setReferenceDocuments(updated);
-                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+            void removeReferenceDocumentEverywhere(documentId)
+              .then(() => {
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {

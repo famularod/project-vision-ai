@@ -30,6 +30,12 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { LEGACY_WORK_CONTAINER_PROJECT_NAMES } from './ReservedProjectNames';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  isProjectDocumentBridge,
+  parseStoredProjectDocuments,
+  PROJECT_DOCUMENTS_STORAGE_KEY,
+  projectDocumentBridgeOrphaned,
+} from './ProjectDocumentBridge';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
   deletedDAVERecordIds,
@@ -2559,6 +2565,14 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
+    if (item.entity === 'reference_document' && await queuedBridgeDocumentWasDeleted(item)) {
+      // The phone document behind this shared record was deleted before it
+      // uploaded (audit A7 pass 4); see ProjectDocumentBridge.
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
     if (
       operationalTombstoneGate &&
       queueEntityUsesDAVESyncTombstones(item.entity) &&
@@ -2745,6 +2759,15 @@ async function loadLegacyDeletedProjectNames(): Promise<ReadonlySet<string>> {
   } catch {
     return new Set();
   }
+}
+
+async function queuedBridgeDocumentWasDeleted(item: SyncQueueItem): Promise<boolean> {
+  const document = (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData;
+  if (!document?.id || !isProjectDocumentBridge(document)) return false;
+  const projectDocuments = parseStoredProjectDocuments(
+    await AsyncStorage.getItem(PROJECT_DOCUMENTS_STORAGE_KEY).catch(() => null),
+  );
+  return projectDocuments !== null && projectDocumentBridgeOrphaned(document, projectDocuments);
 }
 
 function queueEntityUsesDAVESyncTombstones(
