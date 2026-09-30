@@ -30,6 +30,18 @@ const receiptRequire = specifier => {
 };
 new Function('module', 'exports', 'require', receiptCompiled)(receiptModule, receiptModule.exports, receiptRequire);
 
+// The photo merge keeps this device's own path and usable preview through a
+// shared helper (audit A7 M3, 30 Sep 2026).
+const transportSourcePath = path.join(root, 'services/ProjectPhotoTransport.ts');
+const transportCompiled = ts.transpileModule(fs.readFileSync(transportSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const transportModule = { exports: {} };
+new Function('module', 'exports', transportCompiled)(transportModule, transportModule.exports);
+
 const sourcePath = path.join(root, 'services/DAVECloudRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   compilerOptions: {
@@ -40,6 +52,7 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
 const moduleUnderTest = { exports: {} };
 const localRequire = specifier => {
   if (specifier === './DAVEProjectUpdateCloudReceipt') return receiptModule.exports;
+  if (specifier === './ProjectPhotoTransport') return transportModule.exports;
   return require(specifier);
 };
 new Function('module', 'exports', 'require', compiled)(

@@ -392,6 +392,7 @@ import {
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
+import { preserveLocalPhotoTransport } from './services/ProjectPhotoTransport';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -6250,24 +6251,13 @@ useEffect(() => {
           normalizedCloudUpdates.map(async cloudUpdate => {
             if (cloudUpdate.isArchived) return cloudUpdate;
             const localUpdate = currentById.get(cloudUpdate.id);
-            const photos = cloudUpdate.photos.map(cloudPhoto => {
-              const localPhoto = localUpdate?.photos.find(photo => photo.id === cloudPhoto.id);
-              const localUri = localPhoto ? resolveProjectPhotoUri(localPhoto) : '';
-              return localUri
-                ? {
-                    ...cloudPhoto,
-                    uri: localUri,
-                    cloudRecoveredAt: localPhoto?.cloudRecoveredAt || cloudPhoto.cloudRecoveredAt,
-                    cloudRecoveryStatus: localPhoto?.cloudRecoveryStatus || cloudPhoto.cloudRecoveryStatus,
-                    cloudSignedUrlExpiresAt:
-                      localPhoto?.cloudSignedUrlExpiresAt || cloudPhoto.cloudSignedUrlExpiresAt,
-                  }
-                : cloudPhoto;
+            // Every photo is judged on this device: a resolved path can still
+            // name a file that is not here (audit A7 M3).
+            return hydrateProjectUpdatePhotoPreviews({
+              ...cloudUpdate,
+              photos: cloudUpdate.photos.map(cloudPhoto =>
+                preserveLocalPhotoTransport(cloudPhoto, localUpdate, resolveProjectPhotoUri)),
             });
-            const cloudUpdateWithLocalPhotoCache = { ...cloudUpdate, photos };
-            return photos.some(photo => !resolveProjectPhotoDisplayUri(photo))
-              ? hydrateProjectUpdatePhotoPreviews(cloudUpdateWithLocalPhotoCache)
-              : cloudUpdateWithLocalPhotoCache;
           }),
         );
         if (!active || !refreshCommit.isCurrent()) return;

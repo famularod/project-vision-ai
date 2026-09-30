@@ -50,6 +50,7 @@ import {
   daveReferenceDocumentsNeedingCloudUpload,
   mergeDAVEReferenceDocumentRecoveryRecords,
 } from './DAVECloudRecovery';
+import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
 import {
   confirmProjectUpdateCloudDeletion,
   hasProjectUpdateDeletionIntent,
@@ -5003,8 +5004,11 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
 export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectUpdate>(
   update: TUpdate,
 ): Promise<TUpdate> {
-  const photos = await Promise.all(update.photos.map(async photo => {
-    if (await hasUsablePhotoUri(photo)) return photo;
+  const photos = await Promise.all(update.photos.map(async current => {
+    if (await hasUsablePhotoUri(current)) return current;
+    const relocated = await relocateLocalPhotoUri(current);
+    if (relocated) return { ...current, uri: relocated };
+    const photo = await withoutMissingPhotoPath(update, current);
     if (cloudPhotoPreviewIsFresh(photo)) return photo;
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
@@ -5028,15 +5032,45 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
   return { ...update, photos };
 }
 
-export function cloudPhotoPreviewIsFresh(
-  photo: Pick<UpdatePhoto, 'cloudPreviewUri' | 'cloudPreviewSignedUrlExpiresAt'>,
-  now = Date.now(),
-): boolean {
-  if (!photo.cloudPreviewUri?.trim()) return false;
-  const expiresAt = photo.cloudPreviewSignedUrlExpiresAt
-    ? new Date(photo.cloudPreviewSignedUrlExpiresAt).getTime()
-    : Number.NaN;
-  return Number.isFinite(expiresAt) && expiresAt > now;
+export { cloudPhotoPreviewIsFresh };
+
+/**
+ * Audit A7 M3: a path from another device, an older install or a purged cache
+ * is not a photo on this device, yet the display preferred it over the
+ * preview, so photos taken on the iPhone showed blank on the iPad and the
+ * reverse. A path this device cannot relocate is cleared when the device
+ * confirms no file is there (or a signed URL has expired), and kept when that
+ * cannot be told: a cleared path can leave this device's own file
+ * unreferenced for the photo cleanup. A cleared photo keeps a cloud storage
+ * path, without which the saved update would drop the photo.
+ */
+async function withoutMissingPhotoPath<TPhoto extends UpdatePhoto>(
+  update: ProjectUpdate,
+  photo: TPhoto,
+): Promise<TPhoto> {
+  const uri = photo.uri?.trim();
+  if (!uri) return photo;
+  if (!/^https?:\/\//i.test(uri) && !(await photoFileConfirmedMissing(uri))) {
+    return photo;
+  }
+  const recoveryCopy =
+    photo.cloudRecoveryStatus === 'cached' || photo.cloudRecoveryStatus === 'signed_url';
+  return {
+    ...photo,
+    uri: '',
+    cloudStoragePath: photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo),
+    ...(recoveryCopy ? { cloudRecoveryStatus: null, cloudSignedUrlExpiresAt: null } : {}),
+  };
+}
+
+async function photoFileConfirmedMissing(uri: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) return true;
+    return !info.isDirectory && 'size' in info && info.size === 0;
+  } catch {
+    return false;
+  }
 }
 
 export function projectPhotoPreviewTransform(

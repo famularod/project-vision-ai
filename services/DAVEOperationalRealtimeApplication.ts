@@ -12,6 +12,7 @@ import { reconcileCurrentScheduleDocuments } from './PIEScheduleReconciliation';
 import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision';
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
+import { preserveLocalPhotoTransport } from './ProjectPhotoTransport';
 import type { DeletedUpdateTombstone } from './updateService';
 import type { SyncQueueItem } from './SyncService';
 import type {
@@ -297,25 +298,6 @@ export function replaceOperationalRecord<T>(
   const merged = [...current];
   merged[index] = next;
   return merged;
-}
-
-function preserveLocalPhotoTransport(
-  cloudPhoto: UpdatePhoto,
-  localUpdate: OperationalProjectUpdate | undefined,
-  localPhotoUri: (photo: Partial<UpdatePhoto>) => string,
-): UpdatePhoto {
-  const localPhoto = localUpdate?.photos.find(photo => photo.id === cloudPhoto.id);
-  const uri = localPhoto ? localPhotoUri(localPhoto) : '';
-  return uri
-    ? {
-        ...cloudPhoto,
-        uri,
-        cloudRecoveredAt: localPhoto?.cloudRecoveredAt || cloudPhoto.cloudRecoveredAt,
-        cloudRecoveryStatus: localPhoto?.cloudRecoveryStatus || cloudPhoto.cloudRecoveryStatus,
-        cloudSignedUrlExpiresAt:
-          localPhoto?.cloudSignedUrlExpiresAt || cloudPhoto.cloudSignedUrlExpiresAt,
-      }
-    : cloudPhoto;
 }
 
 function queuedProjectTouches(item: SyncQueueItem, keys: Set<string>): boolean {

@@ -1,5 +1,6 @@
 import type { ProjectUpdate, ReferenceDocument, UpdatePhoto } from '../types';
 import { daveProjectUpdateMatchesCloudReceipt } from './DAVEProjectUpdateCloudReceipt';
+import { isCloudRecoveryCopy, withFresherPhotoPreview } from './ProjectPhotoTransport';
 
 export type DAVECloudRecoveryRecord = {
   id: string;
@@ -57,9 +58,14 @@ export function mergeDAVECloudRecoveredProjectUpdate<T extends ProjectUpdate>(
     projectId: local.projectId || cloud.projectId || null,
     photos: local.photos.map(localPhoto => {
       const cloudPhoto = cloudPhotos.get(normalizedId(localPhoto.id));
-      return cloudPhoto && cloudPhotoHasFreshRecovery(cloudPhoto, now)
-        ? mergePhotoRecoveryTransport(localPhoto, cloudPhoto)
-        : localPhoto;
+      if (!cloudPhoto) return localPhoto;
+      return withFresherPhotoPreview(
+        cloudPhotoHasFreshRecovery(cloudPhoto, now)
+          ? mergePhotoRecoveryTransport(localPhoto, cloudPhoto)
+          : localPhoto,
+        cloudPhoto,
+        now,
+      );
     }),
   } as T;
 
@@ -322,7 +328,11 @@ function cloudPhotoHasFreshRecovery(photo: UpdatePhoto, now: number) {
 function mergePhotoRecoveryTransport(local: UpdatePhoto, cloud: UpdatePhoto): UpdatePhoto {
   return {
     ...local,
-    uri: cloud.uri,
+    // Only a copy this device fetched replaces its own path. A cloud row's
+    // plain path is the uploading device's; taking it over a restored photo's
+    // new name left that copy unreferenced, so the photo cleanup could delete
+    // it 14 days after the restore (audit A7 M3).
+    uri: isCloudRecoveryCopy(cloud) || !local.uri?.trim() ? cloud.uri : local.uri,
     cloudStoragePath: cloud.cloudStoragePath || local.cloudStoragePath || null,
     cloudRecoveredAt: cloud.cloudRecoveredAt || local.cloudRecoveredAt || null,
     cloudRecoveryStatus: cloud.cloudRecoveryStatus || local.cloudRecoveryStatus || null,
