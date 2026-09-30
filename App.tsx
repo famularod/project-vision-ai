@@ -199,7 +199,7 @@ import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
 import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
-import { useNativeWorkspaceOwner, useNativeWorkspaceSignInPendingRef } from './components/native-workspace-owner';
+import { useNativeWorkspaceOwner, useNativeWorkspaceSignInPending, useNativeWorkspaceSignInPendingRef } from './components/native-workspace-owner';
 import { fieldUpdateSyncCategoryWithoutSession } from './services/FieldUpdateSessionWait';
 import { ProjectPhotoImage } from './components/ProjectPhotoImage';
 import { PhotoComparisonPreviewRow, SavedFieldUpdatesContext } from './components/photo-comparison-preview-row';
@@ -4843,6 +4843,7 @@ export default function App() {
 function AppShell() {
   const workspaceOwnerId = useNativeWorkspaceOwner();
   const signInPendingRef = useNativeWorkspaceSignInPendingRef(); // updates wait, not fail, offline (A4 pass 7 M1)
+  const workspaceSignInPending = useNativeWorkspaceSignInPending(); // Live updates resubscribe when it ends (A1 pass 2 #4).
   useFieldNoteBackgroundRetry(workspaceOwnerId ?? 'local-device'); // notes saved offline reach the desktop (audit A11)
   const hiddenSharedDocuments = useHiddenSharedDocuments(); // Delete from This Device (audit A8)
   const insets = useSafeAreaInsets();
@@ -6482,6 +6483,7 @@ useEffect(() => {
     scheduleItemsLoaded,
     startupHydrationReady,
     updatesLoaded,
+    workspaceSignInPending,
   ]);
 
   const activeProjects = useMemo(

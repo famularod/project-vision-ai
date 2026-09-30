@@ -19,12 +19,17 @@ const mockFailingSecureDeletes = new Set<string>();
 let mockDuringAsyncRead: ((key: string) => Promise<void>) | null = null;
 /** The open workspace's "sign-in pending" as the App's uploads read it (A4 pass 7 M1). */
 let mockSignInPendingRef: { readonly current: boolean } | null = null;
+/** Runs inside a Keychain removal, before the entry goes (A1 pass 2 #2). */
+let mockDuringSecureDelete: ((key: string) => Promise<void>) | null = null;
+/** Settings, rendered inside the open workspace when set (A1 pass 2 #1). */
+let mockSettingsProps: Record<string, unknown> | null = null;
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
   getItemAsync: jest.fn(async (key: string) => mockSecure.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => { mockSecure.set(key, value); }),
   deleteItemAsync: jest.fn(async (key: string) => {
+    if (mockDuringSecureDelete) await mockDuringSecureDelete(key);
     if (mockFailingSecureDeletes.has(key)) throw new Error('Keychain item could not be removed');
     mockSecure.delete(key);
   }),
@@ -99,6 +104,9 @@ jest.mock('../App', () => {
       null,
       React.createElement(OfflineSignInPendingBanner),
       React.createElement(Text, null, `WORKSPACE OPEN ${owner}`),
+      mockSettingsProps
+        ? React.createElement(require('../screens/AdminScreen').AdminScreen, mockSettingsProps)
+        : null,
     );
   }
   return { __esModule: true, default: WorkspaceMarker };
@@ -196,6 +204,8 @@ beforeEach(() => {
   mockWorkspaceMounts.length = 0;
   mockFailingSecureDeletes.clear();
   mockDuringAsyncRead = null;
+  mockDuringSecureDelete = null;
+  mockSettingsProps = null;
   network.mode = 'offline';
   network.calls = [];
 });
@@ -204,6 +214,7 @@ afterEach(async () => {
   // now and gets the server's refusal, which is final. Nothing is left to log
   // after the file ends (auth security review, 30 Sep 2026).
   mockDuringAsyncRead = null;
+  mockDuringSecureDelete = null;
   mockFailingSecureDeletes.clear();
   network.mode = 'reject';
   await client?.auth.stopAutoRefresh();
@@ -302,6 +313,9 @@ test('more than 7 days since the last refresh: today\'s lockout, nothing opens',
   const { screen, rtl } = launch();
 
   await rtl.waitFor(() => expect(screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+  // Said as it is (A1 pass 2 #3): it said "Authentication is still loading.
+  // Try opening this workspace again in a moment."
+  expect(screen.getByText('No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.')).toBeTruthy();
   await rtl.act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
   expect(mockWorkspaceMounts).toEqual([]);
   expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
@@ -324,6 +338,8 @@ test('a saved sign-in of another account never opens, and this phone\'s workspac
   const { screen, rtl } = launch();
 
   await rtl.waitFor(() => expect(screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+  // A1 pass 2 #3: the reason, not "Authentication is still loading".
+  expect(screen.getByText('No signal, and this phone was last used with a different account. Connect to the internet, then tap Retry.')).toBeTruthy();
   await rtl.act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
   expect(mockWorkspaceMounts).toEqual([]);
   expect(new Map(mockAsync)).toEqual(before);
@@ -747,5 +763,191 @@ describe('field updates saved while offline, sign-in pending (A4 pass 7 M1)', ()
     await expect(category({ missingReason: 'unknown' }, false, broken)).resolves.toBe('auth');
     await expect(category({ missingReason: 'expired_session' }, false, saved)).resolves.toBe('auth');
     await expect(category({ missingReason: 'storage_unavailable' }, false, saved)).resolves.toBe('auth');
+  });
+});
+
+// Whole-app audit A1 pass 2 review (30 Sep 2026): what David saw, end to end.
+describe('A1 pass 2 review', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const PENDING_ACCOUNT = 'Signed in as owner-a@example.com (offline, sign-in pending).';
+  const settingsProps = () => ({
+    localProjects: ['Canopy B'], savedUpdates: [], projectAreas: [], scheduleItems: [],
+    referenceDocuments: [], syncCleanupNotice: null, displayName: 'Dana', onDisplayNameChange: jest.fn(),
+    failedDocumentCount: 0, onRetryDocumentUploads: jest.fn(async () => ({ status: 'nothing_to_upload' })),
+    onBack: jest.fn(), onDiagnostics: jest.fn(), onBackup: jest.fn(), onRestore: jest.fn(),
+    onAddArea: jest.fn(() => true), onUpdateArea: jest.fn(), onDeleteArea: jest.fn(),
+    onUseCurrentLocationForArea: jest.fn(), onRemoveMissingPhotos: jest.fn(async () => undefined),
+    onRetryUpdateSync: jest.fn(async () => ({ status: 'failed' })), onApplyCloudConflictUpdate: jest.fn(),
+    onApplyCloudConflictScheduleItem: jest.fn(), onApplyCloudRecovery: jest.fn(),
+    onSaveCaptureMemory: jest.fn(async () => undefined),
+  });
+  type AlertButton = { text?: string; style?: string; onPress?: () => void };
+  function captureAlerts() {
+    const shown: { title: string; message: string; buttons: AlertButton[] }[] = [];
+    const { Alert } = require('react-native');
+    const spy = jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
+      const [title, message, buttons] = args as [string, string, AlertButton[] | undefined];
+      shown.push({ title, message, buttons: buttons ?? [] });
+    });
+    return { shown, spy };
+  }
+  const TIME_SEEN = (owner: string) => `@vitruvius/offline-sign-in/latest-time-seen/v1/${owner}`;
+
+  test('#1 Settings, open offline with the sign-in pending, shows the account signed in and both Sign Out choices', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    try {
+      await rtl.waitFor(() => expect(screen.getByTestId('offline-sign-in-pending-banner')).toBeTruthy(), OPEN);
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      // Not "Sign in to enable cloud sync" with a Sign In button (what David saw).
+      expect(screen.getByText('Sign Out')).toBeTruthy();
+      expect(screen.queryByText(/^Sign in to enable cloud sync/)).toBeNull();
+      // The banner, and Settings' connection status (it said "Needs Attention").
+      expect(screen.getAllByText('Offline, sign-in pending')).toHaveLength(2);
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByLabelText('Advanced and diagnostics')); });
+      expect(screen.getByText('Sign-in Pending')).toBeTruthy();
+      expect(screen.queryByText('No Session')).toBeNull();
+
+      // Sign Out: the Q21 choices. All Devices needs signal and signs nothing out.
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']), OPEN);
+      expect(alerts.shown[0].buttons.map(button => button.text)).toEqual([
+        'Sign Out of This Device', 'Sign Out of All Devices', 'Cancel',
+      ]);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out', 'Other devices not signed out']), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy();
+
+      // This Device, with no signal (owner answer Q13).
+      await rtl.act(async () => { alerts.shown[1].buttons[0].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toContain('Signed out on this device'), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    } finally {
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('#2 an offline Sign Out stays signed out when signal returns during it and a sign-in refresh is answered', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+
+    // The Sign Out has begun removing the saved sign-in when signal returns
+    // and auth-js's waiting retry runs. Before the fix the server answered it
+    // with fresh tokens, which auth-js saved back into the Keychain.
+    const refreshesBefore = network.calls.length;
+    let raced = false;
+    let retryWaiting = false;
+    let retryRan = false;
+    mockDuringSecureDelete = async key => {
+      if (raced || key !== `${tokenKey()}-code-verifier.meta`) return;
+      raced = true;
+      network.mode = 'online';
+      retryWaiting = mockSleepingRetries.size > 0;
+      wakeSleepingRetries();
+      // Answered by the server, or refused before it and waiting again.
+      for (let i = 0; i < 300 && !retryRan; i += 1) {
+        await pause(10);
+        retryRan = network.calls.length > refreshesBefore || mockSleepingRetries.size > 0;
+      }
+      await pause(50);
+    };
+    let result: { ok: boolean; code?: string } | undefined;
+    await rtl.act(async () => { result = await service.signOut(); });
+    expect(raced).toBe(true);
+    expect(retryWaiting).toBe(true);
+    expect(retryRan).toBe(true);
+    expect(result).toMatchObject({ ok: true, code: 'signed_out_on_this_device_only' });
+
+    await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+    // Every retry auth-js still has runs now, with signal.
+    for (let round = 0; round < 20; round += 1) {
+      await rtl.act(async () => { wakeSleepingRetries(); await pause(20); });
+    }
+    expect(screen.getByText(/^Sign in to /)).toBeTruthy();
+    expect(screen.queryByText(/WORKSPACE OPEN/)).toBeNull();
+    expect(mockWorkspaceMounts).toEqual(['owner-a']);
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+    expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBeNull();
+    // The signed-out sign-in's token never reached the server again.
+    expect(network.calls.length).toBe(refreshesBefore);
+    screen.unmount();
+  });
+
+  test('#5 a clock set back after the workspace was open offline is refused, and says so', async () => {
+    await saveSignIn('owner-a', 6 * 24);
+    await phoneWorkspaceOf('owner-a');
+    const first = launch();
+    await first.rtl.waitFor(() => expect(first.screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    first.screen.unmount();
+    await client?.auth.stopAutoRefresh();
+
+    // Five days back: the saved token (issued six days ago) alone looks one day old.
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 5 * 24 * HOUR * 1000);
+    try {
+      mockWorkspaceMounts.length = 0;
+      const second = launch();
+      await second.rtl.waitFor(() => expect(second.screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+      expect(second.screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy();
+      await second.rtl.act(async () => { await pause(300); });
+      expect(mockWorkspaceMounts).toEqual([]);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      second.screen.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('#5 a clock set back while open offline locks on return to the app', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    await rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(true), OPEN);
+
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 2 * HOUR * 1000);
+    try {
+      const { AppState } = require('react-native');
+      const listeners = (AppState.addEventListener as jest.Mock).mock.calls
+        .filter(([type]) => type === 'change')
+        .map(([, listener]) => listener as (state: string) => void);
+      await rtl.act(async () => {
+        listeners.forEach(listener => listener('active'));
+        await pause(50);
+      });
+      await rtl.waitFor(() => expect(screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy(), OPEN);
+      expect(screen.queryByText(/WORKSPACE OPEN/)).toBeNull();
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+    } finally {
+      clock.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('#5 a sign-in refresh the server answers clears the mark, so a clock since corrected does not lock', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    // Seen three days ahead once (the clock was wrong then).
+    mockAsync.set(TIME_SEEN('owner-a'), String(Date.now() + 3 * 24 * HOUR * 1000));
+    const first = launch();
+    await first.rtl.waitFor(() => expect(first.screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy(), OPEN);
+
+    // Signal: Retry opens the workspace on a refreshed sign-in.
+    network.mode = 'online';
+    await first.rtl.act(async () => { first.rtl.fireEvent.press(first.screen.getByText('Retry')); });
+    await first.rtl.waitFor(() => expect(first.screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 30_000 });
+    await first.rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(false), OPEN);
+    first.screen.unmount();
+    await client?.auth.stopAutoRefresh();
   });
 });

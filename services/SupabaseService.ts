@@ -398,6 +398,16 @@ function supabaseAuthStorageKey(url: string): string | undefined {
  */
 let lastSignInRefreshTransport: 'failed' | 'answered' | null = null;
 const signInRefreshFailureWaiters = new Set<() => void>();
+/**
+ * Whole-app audit A1 pass 2 #2: the refresh tokens of sign-ins a Sign Out
+ * with no signal removed from this phone. auth-js's guard against saving a
+ * refresh over a sign-out only notices its own sign-out, so a waiting retry
+ * answered while the Keychain entries were going saved the session back and
+ * reopened the workspace after "Signed out on this device". A refresh with
+ * one of these tokens now ends as if there were no signal, even when the
+ * answer arrives meanwhile: auth-js saves nothing.
+ */
+const refreshTokensSignedOutHere = new Set<string>();
 
 function fetchObservingSignInRefresh(
   input: Parameters<typeof fetch>[0],
@@ -405,10 +415,17 @@ function fetchObservingSignInRefresh(
 ): Promise<Response> {
   const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
   const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
+  const signedOutHere = refresh ? refreshTokenSignedOutHere(init?.body) : () => false;
   // Each attempt starts unknown: an earlier failure says nothing about a
   // refresh under way now (auth security review, 30 Sep 2026).
   if (refresh) lastSignInRefreshTransport = null;
-  return fetch(input, init).then(response => {
+  const request = signedOutHere()
+    ? Promise.reject(new TypeError('Network request failed'))
+    : fetch(input, init).then(response => {
+      if (signedOutHere()) throw new TypeError('Network request failed');
+      return response;
+    });
+  return request.then(response => {
     if (refresh) lastSignInRefreshTransport = 'answered';
     return response;
   }, error => {
@@ -420,8 +437,20 @@ function fetchObservingSignInRefresh(
   });
 }
 
+function refreshTokenSignedOutHere(body: unknown): () => boolean {
+  let token: unknown = null;
+  try {
+    token = typeof body === 'string' ? (JSON.parse(body) as { refresh_token?: unknown }).refresh_token : null;
+  } catch {
+    token = null;
+  }
+  return () => typeof token === 'string' && refreshTokensSignedOutHere.has(token);
+}
+
 export type SavedSignIn = Readonly<{
   ownerId: string;
+  /** For Settings while the sign-in is pending (A1 pass 2 #1). */
+  email?: string | null;
   /** When the server issued the saved token: its expiry minus its lifetime. */
   lastRefreshedAtMs: number;
   expiresAtMs: number;
@@ -429,6 +458,11 @@ export type SavedSignIn = Readonly<{
 
 /** The sign-in saved on this phone, read from the Keychain without the network. */
 export async function readSavedSignIn(): Promise<SavedSignIn | null> {
+  return (await readSavedSession())?.signIn ?? null;
+}
+
+/** With its refresh token, which stays in this module (A1 pass 2 #2). */
+async function readSavedSession(): Promise<Readonly<{ signIn: SavedSignIn; refreshToken: string }> | null> {
   if (!getSupabaseClient() || !SUPABASE_AUTH_STORAGE_KEY) return null;
   const raw = await supabaseAuthStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
   if (!raw) return null;
@@ -437,7 +471,7 @@ export async function readSavedSignIn(): Promise<SavedSignIn | null> {
       refresh_token?: unknown;
       expires_at?: unknown;
       expires_in?: unknown;
-      user?: { id?: unknown } | null;
+      user?: { id?: unknown; email?: unknown } | null;
     };
     const ownerId = typeof session.user?.id === 'string' ? session.user.id.trim() : '';
     if (!ownerId || typeof session.refresh_token !== 'string' || !session.refresh_token) return null;
@@ -445,11 +479,15 @@ export async function readSavedSignIn(): Promise<SavedSignIn | null> {
     const lifetime = typeof session.expires_in === 'number' && session.expires_in > 0
       ? session.expires_in
       : DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS;
-    return Object.freeze({
-      ownerId,
-      lastRefreshedAtMs: (session.expires_at - lifetime) * 1000,
-      expiresAtMs: session.expires_at * 1000,
-    });
+    return {
+      refreshToken: session.refresh_token,
+      signIn: Object.freeze({
+        ownerId,
+        email: typeof session.user?.email === 'string' && session.user.email ? session.user.email : null,
+        lastRefreshedAtMs: (session.expires_at - lifetime) * 1000,
+        expiresAtMs: session.expires_at * 1000,
+      }),
+    };
   } catch {
     return null;
   }
@@ -711,10 +749,10 @@ export async function signOut(
   // it is not tried again here; the library's retries take about 25 seconds.
   // A token within auth-js's refresh margin counts as expired: auth-js would
   // refresh it first.
-  const saved = await readSavedSignIn().catch(() => null);
+  const saved = await readSavedSession().catch(() => null);
   const unreachable = Boolean(
     saved &&
-    saved.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
+    saved.signIn.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
     lastSignInRefreshTransport === 'failed',
   );
   const error = unreachable ? null : (await client.auth.signOut({ scope })).error;
@@ -737,7 +775,7 @@ export async function signOut(
 
   // No signal (owner answer Q13): sign out on this phone. The server session
   // is not ended, then or later; no copy of its token stays on the phone.
-  return signOutOnThisPhone();
+  return signOutOnThisPhone(saved?.refreshToken ?? null);
 }
 
 const localAuthListeners = new Set<(event: string, session: Session | null) => void>();
@@ -749,8 +787,11 @@ const localAuthListeners = new Set<(event: string, session: Session | null) => v
  * exactly as an online sign-out does. Unsynced work goes with it and uploads
  * after this account signs in here again.
  */
-async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
+async function signOutOnThisPhone(refreshToken: string | null): Promise<SupabaseServiceResult<null>> {
   if (!SUPABASE_AUTH_STORAGE_KEY) return errorResult('Sign-in storage is not configured.');
+  // Before anything is removed, and in the same step as the no-signal check
+  // above: no refresh with this token is saved from here on (A1 pass 2 #2).
+  if (refreshToken) refreshTokensSignedOutHere.add(refreshToken);
   try {
     // The session itself goes last, so a failure before it leaves the sign-in
     // whole and "You are still signed in" true (auth security review).
@@ -758,6 +799,8 @@ async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
       await supabaseAuthStorage.removeItem(`${SUPABASE_AUTH_STORAGE_KEY}${suffix}`);
     }
   } catch {
+    // Still signed in, so its refresh may save again.
+    if (refreshToken) refreshTokensSignedOutHere.delete(refreshToken);
     return errorResult(
       'Vitruvius could not remove the saved sign-in from this phone. You are still signed in.',
     );

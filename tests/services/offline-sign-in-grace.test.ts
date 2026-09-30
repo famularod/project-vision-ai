@@ -11,12 +11,31 @@ jest.mock('../../services/SupabaseService', () => ({
   readSavedSignIn: (...args: unknown[]) => mockReadSavedSignIn(...args),
   awaitSavedSignInRefresh: (...args: unknown[]) => mockAwaitSavedSignInRefresh(...args),
 }));
+// Phone storage, where the latest time seen is kept (A1 pass 2 #5).
+const mockPhone = new Map<string, string>();
+let mockPhoneReadFails = false;
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: async (key: string) => {
+      if (mockPhoneReadFails) throw new Error('storage unavailable');
+      return mockPhone.get(key) ?? null;
+    },
+    setItem: async (key: string, value: string) => { mockPhone.set(key, value); },
+    removeItem: async (key: string) => { mockPhone.delete(key); },
+  },
+}));
 
 import {
+  clearLatestTimeSeen,
+  noteLatestTimeSeen,
   OFFLINE_LOOKUP_TIMEOUT_MS,
   OFFLINE_SIGN_IN_GRACE_MS,
   OFFLINE_SIGN_IN_GRACE_RECHECK_MS,
+  OFFLINE_SIGN_IN_REFUSAL_MESSAGES,
   offlineSignInGraceAllows,
+  offlineSignInGraceRefusal,
+  readLatestTimeSeen,
   watchOfflineSignInGrace,
   workspaceOwnerAfterFailedLookup,
 } from '../../services/OfflineSignInGrace';
@@ -144,5 +163,103 @@ describe('auth security review (30 Sep 2026)', () => {
     await jest.advanceTimersByTimeAsync(10 * OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
     expect(later).not.toHaveBeenCalled();
     expect(listeners.size).toBe(0);
+  });
+});
+
+describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
+  const DAY = 24 * 60 * MINUTE;
+  const TIME_SEEN = '@vitruvius/offline-sign-in/latest-time-seen/v1/owner-a';
+  beforeEach(() => {
+    mockPhone.clear();
+    mockPhoneReadFails = false;
+    mockReadSavedSignIn.mockReset();
+    mockAwaitSavedSignInRefresh.mockReset();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('#3 each refused offline opening has its reason, and each reason its plain message', () => {
+    const refusal = (input: Partial<Parameters<typeof offlineSignInGraceRefusal>[0]>) =>
+      offlineSignInGraceRefusal({ saved: saved('owner-a', 3_600_000), workspaceOwnerId: 'owner-a', nowMs: NOW, ...input });
+    expect(refusal({})).toBeNull();
+    expect(refusal({ saved: saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS + 1) })).toBe('expired');
+    expect(refusal({ saved: saved('owner-b', MINUTE) })).toBe('other_account');
+    expect(refusal({ saved: saved('owner-a', -6 * MINUTE) })).toBe('clock');
+    expect(refusal({ saved: null })).toBe('unconfirmed');
+    expect(refusal({ workspaceOwnerId: null })).toBe('unconfirmed');
+    expect(OFFLINE_SIGN_IN_REFUSAL_MESSAGES).toEqual({
+      expired: 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.',
+      other_account: 'No signal, and this phone was last used with a different account. Connect to the internet, then tap Retry.',
+      clock: 'The phone\'s clock looks wrong. Check Date & Time, then tap Retry.',
+      unconfirmed: 'No signal, and Vitruvius could not confirm your sign-in on this phone. Connect to the internet, then tap Retry.',
+    });
+  });
+
+  it('#3 the startup lookup says why it refused with no signal, and nothing when the refresh was not a network failure', async () => {
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 8 * DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW)).resolves.toEqual({ refused: 'expired' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-b', MINUTE));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW)).resolves.toEqual({ refused: 'other_account' });
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'rejected' });
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW)).resolves.toBeNull();
+    expect(mockPhone.size).toBe(0);
+  });
+
+  it('#5 the 7 days are no longer stretched by setting the clock back: the latest time seen is kept and checked', async () => {
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
+    // Token issued at NOW; opened offline six days later.
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 0));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + 6 * DAY))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+    expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 6 * DAY));
+    // The clock set back five days: the token alone looks a day old.
+    expect(offlineSignInGraceAllows({ saved: saved('owner-a', -DAY), workspaceOwnerId: 'owner-a', nowMs: NOW + DAY })).toBe(true);
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + DAY))
+      .resolves.toEqual({ refused: 'clock' });
+    // Ordinary drift (under 5 minutes) is not refused, and never lowers the mark.
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + 6 * DAY - 4 * MINUTE))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+    expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 6 * DAY));
+  });
+
+  it('#5 the mark is per account, cleared by a refresh, and a mark that cannot be read refuses nothing', async () => {
+    await noteLatestTimeSeen('owner-a', NOW + 3 * DAY);
+    expect(await readLatestTimeSeen('owner-a')).toBe(NOW + 3 * DAY);
+    expect(await readLatestTimeSeen('owner-b')).toBeNull();
+    await clearLatestTimeSeen('owner-a');
+    expect(await readLatestTimeSeen('owner-a')).toBeNull();
+
+    await noteLatestTimeSeen('owner-a', NOW + 3 * DAY);
+    mockPhoneReadFails = true;
+    expect(await readLatestTimeSeen('owner-a')).toBeNull();
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 14 * 3_600_000));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+  });
+
+  it('#5 while open offline, each passing check keeps the time, and a clock set back locks with its reason', async () => {
+    jest.useFakeTimers();
+    let now = NOW;
+    mockReadSavedSignIn.mockImplementation(async () => saved('owner-a', 14 * 3_600_000));
+    const onExpired = jest.fn();
+    watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired, now: () => now, appState: { addEventListener: () => undefined } });
+    now = NOW + 30 * MINUTE;
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 30 * MINUTE));
+    expect(onExpired).not.toHaveBeenCalled();
+    // Back two hours: still within 7 days of the token, but before a time seen.
+    now = NOW - 2 * 60 * MINUTE + 30 * MINUTE;
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(onExpired).toHaveBeenCalledWith('clock');
+
+    const expired = jest.fn();
+    mockReadSavedSignIn.mockImplementation(async () => saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS + MINUTE));
+    now = NOW + 60 * MINUTE;
+    watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired: expired, now: () => now, appState: { addEventListener: () => undefined } });
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(expired).toHaveBeenCalledWith('expired');
   });
 });

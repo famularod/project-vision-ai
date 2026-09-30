@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
+import { useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -42,6 +43,7 @@ import {
   getCurrentSessionAccessToken,
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
+  readSavedSignIn,
   signIn,
   signOut,
   SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
@@ -220,6 +222,25 @@ export function AdminScreen({
   const [capturePreviewDraft, setCapturePreviewDraft] = useState<DAVECaptureMemory>(() => createCapturePreviewDraft());
   const [capturePreviewSaved, setCapturePreviewSaved] = useState<DAVEConfirmedCaptureMemory | null>(null);
   const statusRefreshRunRef = useRef(0);
+  // Whole-app audit A1 pass 2 #1: open offline on a saved sign-in that could
+  // not refresh (owner answer Q13), the session lookup finds no session, and
+  // Settings said "Sign in to enable cloud sync" with a Sign In button and no
+  // Sign Out. The account is signed in here, pending its refresh.
+  const workspaceSignInPending = useNativeWorkspaceSignInPending();
+  const signInPending = workspaceSignInPending && !connectionStatus?.authenticated;
+  const [pendingAccountEmail, setPendingAccountEmail] = useState<string | null>(null);
+  const signedInHere = Boolean(connectionStatus?.authenticated) || signInPending;
+
+  useEffect(() => {
+    if (!workspaceSignInPending) return;
+    let active = true;
+    void readSavedSignIn().then(saved => {
+      if (active) setPendingAccountEmail(saved?.email ?? null);
+    }, () => undefined);
+    return () => {
+      active = false;
+    };
+  }, [workspaceSignInPending]);
 
   useEffect(() => {
     let active = true;
@@ -268,7 +289,9 @@ export function AdminScreen({
     connectionStatus?.clientReady &&
     connectionStatus.authenticated,
   );
-  const connectionLabel = isCheckingConnection
+  const connectionLabel = signInPending
+    ? 'Offline, sign-in pending'
+    : isCheckingConnection
     ? 'Checking…'
     : connected
       ? 'Connected'
@@ -380,10 +403,12 @@ export function AdminScreen({
             <Text style={styles.cardText} selectable>{syncAttemptMessage}</Text>
           ) : null}
 
-          {connectionStatus?.authenticated ? (
+          {signedInHere ? (
             <>
               <Text style={styles.cardText}>
-                Signed in as {connectionStatus.userEmail || 'your account'}.
+                {signInPending
+                  ? `Signed in as ${pendingAccountEmail || 'your account'} (offline, sign-in pending).`
+                  : `Signed in as ${connectionStatus?.userEmail || 'your account'}.`}
               </Text>
 
               <SecondaryButton
@@ -541,7 +566,7 @@ export function AdminScreen({
               <ScreenMetric label="Active Projects" value={localProjects.length} detail="Projects currently shown in Vitruvius" icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="AI Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Build" value={APP_BUILD_NUMBER} detail={`Version ${APP_VERSION} · True Photo Intelligence`} tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
-              <ScreenMetric label="Auth" value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={connectionStatus?.userEmail || 'No active account session'} tone={connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Auth" value={signInPending ? 'Sign-in Pending' : connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={signInPending ? `${pendingAccountEmail || 'Saved sign-in'}: offline, refreshes when there is signal` : connectionStatus?.userEmail || 'No active account session'} tone={signInPending ? 'warning' : connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
             </ScreenMetricGrid>
 
             <ScreenCard>

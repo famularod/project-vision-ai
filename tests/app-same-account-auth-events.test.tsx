@@ -19,6 +19,7 @@ import {
   getCurrentUser,
   readSavedSignIn,
   subscribeToAuthStateChange,
+  subscribeToDAVEOperationalChanges,
 } from '../services/SupabaseService';
 import { forgetFieldNoteDraft } from '../hooks/use-field-note-draft';
 
@@ -232,6 +233,26 @@ describe('the same account\'s sign-in events keep the open workspace', () => {
     await authEvent('TOKEN_REFRESHED', OWNER);
     await wait(300);
     expect(tree.getByLabelText('Field note').props.value).toBe(NOTE);
+    tree.unmount();
+  });
+
+  it('A1 pass 2 #4: live updates connect when the offline start\'s sign-in refreshes, without reopening the workspace', async () => {
+    await offlineStartOnSavedSignIn();
+    const subscribe = jest.mocked(subscribeToDAVEOperationalChanges);
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+    await waitFor(() => expect(subscribe).toHaveBeenCalled(), COLD);
+    await wait(500);
+    // While pending, the service has no refreshed sign-in to subscribe with
+    // and quietly does nothing (as SupabaseService does). Nothing retried it.
+    const whilePending = subscribe.mock.calls.length;
+    await wait(500);
+    expect(subscribe.mock.calls.length).toBe(whilePending);
+
+    await authEvent('TOKEN_REFRESHED', OWNER);
+    await waitFor(() => expect(tree.queryByText('Offline, sign-in pending')).toBeNull(), COLD);
+    await waitFor(() => expect(subscribe.mock.calls.length).toBe(whilePending + 1), COLD);
+    expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy();
     tree.unmount();
   });
 
