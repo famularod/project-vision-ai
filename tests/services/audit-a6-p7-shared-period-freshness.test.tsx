@@ -85,7 +85,15 @@ import {
   loadDAVEReportPeriod,
   type DAVEReportSnapshotCloud,
 } from '../../services/DAVEReportSnapshotRepository';
-import { forgetAllReportSessionState } from '../../services/ReportSessionState';
+import {
+  forgetAllReportSessionState,
+  ownReportSendTimes,
+  recallReportSessionState,
+  rememberOwnReportSend,
+  rememberReportAcknowledgement,
+  rememberReportApproval,
+  rememberReportEdits,
+} from '../../services/ReportSessionState';
 import type { ScheduleItem } from '../../types';
 
 const KEY = '@vitruvius/report-snapshots/v1:tower:project_manager';
@@ -304,13 +312,31 @@ async function phoneSendsInTheMorning() {
   await approveAndSend();
   return phone;
 }
-/** The iPad opens Reports, approves and sends, and is put down; the phone is shown again. */
+/**
+ * The iPad opens Reports, approves and sends, and is put down; the phone is shown again.
+ *
+ * Whole-app audit A6 pass 8 M1 (30 Sep 2026): the app session memory now
+ * also holds this device's own sends and the period each approval was given
+ * on. Both devices run in this one test process, so the iPad's visit (a new
+ * app session there) wiped the phone's memory and left the iPad's in its
+ * place; the phone's memory is now put back after it, as two devices have.
+ */
 async function ipadSends(scheduleItems: ScheduleItem[], phone: View) {
+  const sessionKey = 'daily_project_update|project_manager|tower';
+  const memory = recallReportSessionState(sessionKey);
+  const sends = [...ownReportSendTimes()];
   const ipad = open('ipad', scheduleItems);
   await approveAndSend();
   const sent = local('ipad') as DAVEReportSnapshot;
   await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(sent.deliveredAt), SLOW);
   ipad.unmount();
+  forgetAllReportSessionState();
+  if (memory?.edits) rememberReportEdits(sessionKey, memory.edits);
+  if (memory?.acknowledgement) rememberReportAcknowledgement(sessionKey, memory.acknowledgement);
+  if (memory?.approvedTextKey) {
+    rememberReportApproval(sessionKey, memory.approvedTextKey, memory.approvedFingerprint ?? null, memory.approvedPeriodSentAt ?? null);
+  }
+  sends.forEach(rememberOwnReportSend);
   showDevice('phone', phone);
   return sent;
 }

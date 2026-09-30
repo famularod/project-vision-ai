@@ -78,10 +78,12 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain('if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(snapshotToSave)) {');
     // Pass 3: the mark no longer waits on what the screen shows now; the started report's own fingerprint scopes it,
     // and (Q17) its own format's period, since both formats of the same projects share a fingerprint.
-    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod);");
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): with the started report's session key, so its approval moves to this send.
+    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);");
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
     // Approval waits for the baseline to load and never replaces one that could not be read.
-    expect(screen).toContain('const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;');
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and edits must be of the "since" section on screen.
+    expect(screen).toMatch(/const reportApprovalAllowed = reportApprovalPolicy\.allowed &&\n\s+reportFactsAreCurrent &&\n\s+reportEditsPeriodIsCurrent &&\n\s+snapshotScopeLoaded;/);
     // A6 pass 5: its own line, which a send does not clear.
     expect(screen).toMatch(/if \(snapshotLoadFailed\) \{\n(?:\s*\/\/.*\n)*\s+setSnapshotSaveError\(/);
   });
@@ -95,7 +97,8 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     rememberReportEdits('daily|pm|p', edits);
     rememberReportApproval('daily|pm|p', 'text-a');
     rememberReportAcknowledgement('daily|pm|p', { fingerprint: 'f2', ids: ['r1'] });
-    expect(recallReportSessionState('daily|pm|p')).toEqual({ edits, approvedTextKey: 'text-a', approvedFingerprint: null, acknowledgement: { fingerprint: 'f2', ids: ['r1'] } });
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): an approval also keeps the period it was given on (none here).
+    expect(recallReportSessionState('daily|pm|p')).toEqual({ edits, approvedTextKey: 'text-a', approvedFingerprint: null, approvedPeriodSentAt: null, acknowledgement: { fingerprint: 'f2', ids: ['r1'] } });
     expect(recallReportSessionState('daily|pm|other')).toBeNull();
     expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-a')).toBe(true);
     expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-b')).toBe(false);
@@ -117,11 +120,12 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
   it('is written only when the manager acts, and read on mount (pass 2: an effect had wiped it on remount)', () => {
     expect(screen).not.toContain('rememberReportSessionState(');
     // Pass 3: approval is decided in one place with the policy, so it is never restored while not allowed.
-    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && restoredReportApproval\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\)\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed\]\);/);
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and only on the period it was given on.
+    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && approvedReportPeriodSentAt\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\) === loadedPeriodSentAt\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt\]\);/);
     expect(screen).not.toMatch(/if \(reportApprovalAllowed\) return;\n\s+setReportApproved\(false\);/);
     expect(screen).toMatch(/const remembered = recallReportSessionState\(reportStateIdentityKey\);\n\s+setReportEditing\(false\);\n\s+setReportEdits\(remembered\?\.edits \?\? null\);\n\s+setReviewAcknowledgement\(remembered\?\.acknowledgement \?\? \{ fingerprint: '', ids: \[\] \}\);/);
-    // A6 pass 6: with the facts the approval was given on.
-    expect(screen).toContain('rememberReportApproval(reportStateIdentityKey, approvalTextKey, reportSourceFingerprint);');
+    // A6 pass 6: with the facts the approval was given on; A6 pass 8 M1 (30 Sep 2026): and the period.
+    expect(screen).toMatch(/rememberReportApproval\(\n\s+reportStateIdentityKey,\n\s+approvalTextKey,\n\s+reportSourceFingerprint,\n\s+reportPeriodSentAt\(previousReportSnapshotRef\.current\),\n\s+\);/);
     // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
     expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
     expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);

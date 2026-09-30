@@ -37,7 +37,9 @@ describe('A6 pass 4 lows', () => {
     // Owner answer Q17 (30 Sep 2026): the pending save and the shown snapshot are matched on the sent format's
     // period as well as the fingerprint (both formats of the same projects share a fingerprint); was the
     // fingerprint alone. Behaviour in owner-q17-report-period-per-format.
-    expect(screen).toMatch(/const markReportDelivered = \(sentFingerprint: string, sentPeriod: [^)]*\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && pending\.snapshot\.sourceFingerprint === sentFingerprint && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint\), \(\) => undefined\);\n\s+return;\n\s+\}/);
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): the mark also carries the started report's session key
+    // (sentStateKey), so the approval it sent moves to this send; the parameters are one per line.
+    expect(screen).toMatch(/const markReportDelivered = \(\n\s+sentFingerprint: string,\n\s+sentPeriod: [^\n]*,\n\s+sentStateKey: string,\n\s+\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && pending\.snapshot\.sourceFingerprint === sentFingerprint && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint, sentStateKey\), \(\) => undefined\);\n\s+return;\n\s+\}/);
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
   });
 });

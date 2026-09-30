@@ -52,7 +52,10 @@ describe('a report reads the same before and after it is sent', () => {
 
 describe('approval, review items and delivery on the Reports screen', () => {
   it('never restores approval while approval is not allowed, shows the review list until an allowed approval, and forgets a revoked approval when its item is marked reviewed', () => {
-    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && restoredReportApproval\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\)\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed\]\);/);
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): the remembered approval also
+    // has to be for the period on screen (approvedReportPeriodSentAt), so the
+    // effect reads it with the loaded period's send time (was restoredReportApproval).
+    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && approvedReportPeriodSentAt\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\) === loadedPeriodSentAt\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt\]\);/);
     expect(screen).not.toMatch(/if \(reportApprovalAllowed\) return;\n\s+setReportApproved\(false\);/);
     expect(screen).toContain('{!(reportApproved && reportApprovalAllowed) && advisoryItems.length > 0 ? (');
     expect(screen).toMatch(/rememberReportAcknowledgement\(reportStateIdentityKey, next\);\n(?:\s*\/\/.*\n)*\s+rememberReportApproval\(reportStateIdentityKey, null\);\n\s+\}, \[reportSourceFingerprint, reportStateIdentityKey, reviewAcknowledgement\]\);/);
@@ -60,7 +63,8 @@ describe('approval, review items and delivery on the Reports screen', () => {
 
   it('marks the started report delivered on every completed send, whatever the screen shows by then', () => {
     // Owner answer Q17 (30 Sep 2026): the mark also carries the started report's format period (was the fingerprint alone).
-    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint, startedPeriod\);\n\s+if \(\n\s+mountedRef\.current &&/);
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and the started report's session key, so its approval moves to this send.
+    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint, startedPeriod, startedStateKey\);\n\s+if \(\n\s+mountedRef\.current &&/);
     expect(screen).toMatch(/\) \{\n\s+setCommunicationError\(''\);\n\s+\}\n\s+\} catch \{/);
   });
 });

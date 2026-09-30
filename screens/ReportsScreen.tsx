@@ -78,16 +78,21 @@ import {
   markReportSnapshotDelivered,
   reportBaselineSnapshot,
   reportPeriodKey,
+  reportPeriodSentAfter,
   reportPeriodSentAt,
   reportSnapshotToSave,
 } from '../services/DAVEReportSnapshot';
 import {
   approvedReportFingerprint,
+  approvedReportPeriodSentAt,
+  ownReportSendTimes,
   recallReportSessionState,
+  rememberApprovedReportSent,
+  rememberOwnReportSend,
   rememberReportAcknowledgement,
   rememberReportApproval,
   rememberReportEdits,
-  restoredReportApproval,
+  type ReportSessionEdits,
 } from '../services/ReportSessionState';
 import {
   buildVitruviusCommitmentControl,
@@ -250,11 +255,7 @@ export function ReportsScreen({
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
-  const [reportEdits, setReportEdits] = useState<{
-    title: string;
-    body: string;
-    sourceFingerprint: string;
-  } | null>(null);
+  const [reportEdits, setReportEdits] = useState<ReportSessionEdits | null>(null);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
   // Its own line: a send clears the communication message, and this one must
@@ -454,15 +455,32 @@ export function ReportsScreen({
   );
   const reportFactsAreCurrent = !reportEdits ||
     reportEdits.sourceFingerprint === reportSourceFingerprint;
+  // When the report this period runs from was sent, and when the report the
+  // "since" section counts from was sent (whole-app audit A6 pass 8 M1): an
+  // approval stands only on the period it was given on, and edits only on
+  // the "since" section they were made from.
+  const loadedPeriodSentAt = reportPeriodSentAt(previousReportSnapshot);
+  const reportBaselineSentAt = snapshotScopeLoaded
+    ? reportPeriodSentAt(reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint))
+    : null;
+  const reportEditsPeriodIsCurrent = !reportEdits ||
+    !snapshotScopeLoaded ||
+    reportEdits.baselineSentAt === undefined ||
+    reportEdits.baselineSentAt === reportBaselineSentAt;
   // Approval waits for the owner's baseline to load (audit A6, pass 2: a tap
   // right after a project toggle approved a report built without its
   // period and replaced the stored snapshot).
-  const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;
+  const reportApprovalAllowed = reportApprovalPolicy.allowed &&
+    reportFactsAreCurrent &&
+    reportEditsPeriodIsCurrent &&
+    snapshotScopeLoaded;
   const reportApprovalMessage = !reportFactsAreCurrent
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : !snapshotScopeLoaded
         ? 'The reporting period is still loading.'
-        : reportApprovalPolicy.message;
+        : !reportEditsPeriodIsCurrent
+          ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
+          : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
@@ -473,11 +491,11 @@ export function ReportsScreen({
   reportStateIdentityKeyRef.current = reportStateIdentityKey;
   const reportSourceFingerprintRef = useRef(reportSourceFingerprint);
   reportSourceFingerprintRef.current = reportSourceFingerprint;
+  const reportEditsRef = useRef(reportEdits);
+  reportEditsRef.current = reportEdits;
   // The period the screen finished loading; the same period loading again is a re-read (A6 pass 7).
   const loadedPeriodKeyRef = useRef<string | null>(null);
   const approvalCheckRef = useRef<symbol | null>(null);
-  // When this device's own sends were made, so reading one back is never taken for the other device's.
-  const ownSendTimesRef = useRef(new Set<string>());
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
@@ -531,13 +549,16 @@ export function ReportsScreen({
         if (cancelled) return;
         if (refresh) {
           // A send in progress records its own report first; the next return reads again.
-          if (!pendingCommunicationTokenRef.current) showLaterSharedPeriod(period, loaded, shown, 'refresh');
+          if (!pendingCommunicationTokenRef.current) {
+            showLaterSharedPeriod(period, loaded, reportPeriodSentAt(shown), 'refresh');
+          }
           return;
         }
         setPreviousReportSnapshot(loaded.snapshot);
         setSharedPeriodCheck(loaded.shared);
         setSnapshotScopeLoaded(true);
         loadedPeriodKeyRef.current = reportPeriodKey(period);
+        forgetApprovalOfAnotherPeriod(loaded.snapshot);
       })
       .catch(() => {
         // A failed re-read keeps what is shown.
@@ -555,20 +576,20 @@ export function ReportsScreen({
   /**
    * Whole-app audit A6 pass 7 (30 Sep 2026): the other device's last report,
    * read again on return to the app, just before Approve and just before a
-   * send. When it was sent after the period `shown` runs from, the report
-   * counts from it: an approval given on the earlier period no longer
-   * stands, even where the text reads the same, and the owner is told why.
-   * Returns that later period, or null.
+   * send. When it was sent after `sinceSentAt` (the send the shown period,
+   * or the approval's, runs from), the report counts from it: an approval
+   * given on the earlier period no longer stands, even where the text reads
+   * the same, and the owner is told why. Returns that later period, or null.
    */
   const showLaterSharedPeriod = (
     period: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>,
     loaded: DAVEReportPeriodLoad,
-    shown: DAVEReportSnapshot | null,
+    sinceSentAt: string | null,
     moment: SharedPeriodMoment,
   ): DAVEReportSnapshot | null => {
     const onScreen = mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(period);
     if (onScreen) setSharedPeriodCheck(loaded.shared);
-    const later = laterSentReportPeriod(loaded.snapshot, shown, ownSendTimesRef.current);
+    const later = reportPeriodSentAfter(loaded.snapshot, sinceSentAt, ownReportSendTimes());
     if (!later || !onScreen) return later;
     if (laterSentReportPeriod(later, previousReportSnapshotRef.current)) {
       previousReportSnapshotRef.current = later;
@@ -576,8 +597,27 @@ export function ReportsScreen({
     }
     setReportApproved(false);
     rememberReportApproval(reportStateIdentityKeyRef.current, null);
-    setPeriodNotice(laterSharedReportNotice(later, reportSourceFingerprintRef.current, moment));
+    setPeriodNotice(laterSharedReportNotice(later, reportSourceFingerprintRef.current, moment, Boolean(reportEditsRef.current)));
     return later;
+  };
+
+  /**
+   * Whole-app audit A6 pass 8 M1 (30 Sep 2026): a remembered approval given
+   * on another period does not come back when Reports opens (the approval
+   * effect restores it only on the period it was given on). Approved on the
+   * phone at 10:00 and sent from the iPad at 12:00, it came back after a tab
+   * switch (the text read the same) and Copy sent the report again. When the
+   * other device's later send is why, it is forgotten and the owner is told,
+   * as on screen.
+   */
+  const forgetApprovalOfAnotherPeriod = (loaded: DAVEReportSnapshot | null) => {
+    const stateKey = reportStateIdentityKeyRef.current;
+    const remembered = recallReportSessionState(stateKey);
+    if (!remembered?.approvedTextKey) return;
+    const later = reportPeriodSentAfter(loaded, remembered.approvedPeriodSentAt ?? null, ownReportSendTimes());
+    if (!later) return;
+    rememberReportApproval(stateKey, null);
+    setPeriodNotice(laterSharedReportNotice(later, reportSourceFingerprintRef.current, 'refresh', Boolean(remembered.edits)));
   };
 
   // Approval covers the exact text and cited photos; a rebuild that leaves
@@ -592,12 +632,13 @@ export function ReportsScreen({
     // leaving the tab unmounted the screen and lost the approval). It is
     // decided in one place with the policy, so a remembered approval is
     // never restored while approval is not allowed (audit A6 pass 3: the
-    // review list was hidden with "Mark it reviewed to approve").
-    setReportApproved(reportApprovalAllowed && restoredReportApproval(
+    // review list was hidden with "Mark it reviewed to approve"), and only
+    // on the period it was given on (A6 pass 8 M1).
+    setReportApproved(reportApprovalAllowed && approvedReportPeriodSentAt(
       recallReportSessionState(reportStateIdentityKey),
       approvalTextKey,
-    ));
-  }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed]);
+    ) === loadedPeriodSentAt);
+  }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt]);
 
   useEffect(() => {
     if (
@@ -661,8 +702,15 @@ export function ReportsScreen({
       : null) ?? reportSourceFingerprint;
     // Only this format's period is marked (owner answer Q17).
     const startedPeriod = { scopeKey: reportSnapshotScopeKey, reportFormat };
-    // The period the approval was given on (whole-app audit A6 pass 7).
-    const startedShown = previousReportSnapshotRef.current;
+    const startedStateKey = reportStateIdentityKey;
+    // The period the approval was given on (whole-app audit A6 pass 7), as
+    // the approval remembers it (pass 8 M1: the screen's period is the one
+    // it loaded, which a tab switch could make the other device's).
+    const startedShownSentAt = reportPeriodSentAt(previousReportSnapshotRef.current);
+    const approvalPeriodSentAt = requireApproval
+      ? approvedReportPeriodSentAt(recallReportSessionState(reportStateIdentityKey), approvalTextKey)
+      : undefined;
+    const sinceSentAt = approvalPeriodSentAt === undefined ? startedShownSentAt : approvalPeriodSentAt;
     const communicationToken = Symbol(startedReportIdentity);
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
@@ -679,7 +727,7 @@ export function ReportsScreen({
         // Word review copy is not a send.
         if (requireApproval) {
           const loaded = await loadDAVEReportPeriod(startedPeriod.scopeKey, startedPeriod.reportFormat).catch(() => null);
-          if (loaded && showLaterSharedPeriod(startedPeriod, loaded, startedShown, 'send')) return;
+          if (loaded && showLaterSharedPeriod(startedPeriod, loaded, sinceSentAt, 'send')) return;
           if (!mountedRef.current) return;
         }
         const outcome = await communicate(startedReport);
@@ -687,7 +735,7 @@ export function ReportsScreen({
         // screen shows by now (a sync can land while the composer is open);
         // its own fingerprint and format's period scope the mark (audit A6
         // pass 3; owner answer Q17).
-        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod);
+        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -732,10 +780,10 @@ export function ReportsScreen({
     setApprovalChecking(true);
     setCommunicationError('');
     const period = { scopeKey: reportSnapshotScopeKey, reportFormat };
-    const shown = previousReportSnapshotRef.current;
+    const shownSentAt = reportPeriodSentAt(previousReportSnapshotRef.current);
     const checkedTextKey = approvalTextKey;
     void loadDAVEReportPeriod(period.scopeKey, period.reportFormat)
-      .then(loaded => showLaterSharedPeriod(period, loaded, shown, 'approve'))
+      .then(loaded => showLaterSharedPeriod(period, loaded, shownSentAt, 'approve'))
       .catch(() => null)
       .then(later => {
         if (approvalCheckRef.current !== check) return;
@@ -760,7 +808,13 @@ export function ReportsScreen({
     setCommunicationError('');
     setSnapshotSaveError('');
     setPeriodNotice('');
-    rememberReportApproval(reportStateIdentityKey, approvalTextKey, reportSourceFingerprint);
+    // The period it is given on (A6 pass 8 M1).
+    rememberReportApproval(
+      reportStateIdentityKey,
+      approvalTextKey,
+      reportSourceFingerprint,
+      reportPeriodSentAt(previousReportSnapshotRef.current),
+    );
     if (snapshotLoadFailed) {
       // The owner's baseline could not be read; approving must not replace it blind.
       setSnapshotSaveError(
@@ -807,28 +861,36 @@ export function ReportsScreen({
     : '';
 
   /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
-  const markReportDelivered = (sentFingerprint: string, sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>) => {
+  const markReportDelivered = (
+    sentFingerprint: string,
+    sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>,
+    sentStateKey: string,
+  ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
     if (pending && pending.snapshot.sourceFingerprint === sentFingerprint && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
-      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint), () => undefined);
+      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey), () => undefined);
       return;
     }
     const shown = previousReportSnapshotRef.current;
     if (shown && reportPeriodKey(shown) === sentPeriodKey) {
-      markSavedReportDelivered(shown, sentFingerprint);
+      markSavedReportDelivered(shown, sentFingerprint, sentStateKey);
       return;
     }
     // The screen moved to the other format (or other projects) while the send
     // was open. Both formats of the same projects share a fingerprint, so the
     // shown snapshot is never marked for it; the sent period's own is (Q17).
     void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
-      .then(saved => markSavedReportDelivered(saved, sentFingerprint), () => undefined);
+      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey), () => undefined);
   };
-  const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string) => {
+  const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string, sentStateKey: string) => {
     if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
     const delivered = markReportSnapshotDelivered(saved, new Date().toISOString());
-    ownSendTimesRef.current.add(delivered.deliveredAt as string);
+    // This device's send, kept for the app session so reading it back after
+    // a tab switch is never taken for the other device's; the approval it
+    // sent now stands on the period that send starts (A6 pass 8 M1).
+    rememberOwnReportSend(delivered.deliveredAt as string);
+    rememberApprovedReportSent(sentStateKey, reportPeriodSentAt(saved), delivered.deliveredAt as string);
     void saveDAVEReportSnapshot(delivered)
       .then(() => {
         if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
@@ -920,6 +982,8 @@ export function ReportsScreen({
                 title,
                 body: reportEdits?.body ?? pieReportDraft.body,
                 sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
+                // The "since" section these edits were made from (A6 pass 8 M1).
+                baselineSentAt: reportEdits ? reportEdits.baselineSentAt : reportBaselineSentAt,
               };
               setReportEdits(next);
               rememberReportEdits(reportStateIdentityKey, next);
@@ -929,6 +993,7 @@ export function ReportsScreen({
                 title: reportEdits?.title ?? pieReportDraft.title,
                 body,
                 sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
+                baselineSentAt: reportEdits ? reportEdits.baselineSentAt : reportBaselineSentAt,
               };
               setReportEdits(next);
               rememberReportEdits(reportStateIdentityKey, next);
@@ -1142,6 +1207,7 @@ function laterSharedReportNotice(
   later: DAVEReportSnapshot,
   currentFingerprint: string,
   moment: SharedPeriodMoment,
+  edited: boolean,
 ): string {
   const when = describeReportSendTime(reportPeriodSentAt(later) ?? '');
   if (later.deliveredAt !== null && later.sourceFingerprint === currentFingerprint) {
@@ -1149,9 +1215,31 @@ function laterSharedReportNotice(
       ? `Your other device already sent this report ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
       : `Your other device already sent this report ${when}. Approve it only if you want to send it a second time.`;
   }
+  // The owner's edited body still counts from the earlier report, so it is
+  // not said to cover what changed since (A6 pass 8 M1); the approval
+  // message says why it cannot be approved.
+  if (edited) return moment === 'send' ? `Your other device sent a report ${when}, so this report was not sent.` : '';
   return moment === 'send'
     ? `Your other device sent a report ${when}, so this report was not sent. It now covers what changed since then. Review it, then approve.`
     : `Your other device sent a report ${when}, so this report now covers what changed since then. Review it, then approve.`;
+}
+
+/**
+ * Edits made from another "since" section (whole-app audit A6 pass 8 M1):
+ * the edited body counts from `editedFrom`, the report now counts from
+ * `baselineSentAt`. The other device is named only when its later send is
+ * why (edits made before the period loaded, or before any report, say only
+ * that the period changed).
+ */
+function editedReportPeriodChangedMessage(editedFrom: string | null, baselineSentAt: string | null): string {
+  const otherDeviceSent = editedFrom !== null &&
+    baselineSentAt !== null &&
+    !ownReportSendTimes().has(baselineSentAt) &&
+    Date.parse(baselineSentAt) > Date.parse(editedFrom);
+  const reason = otherDeviceSent
+    ? `, because your other device sent a report ${describeReportSendTime(baselineSentAt)}`
+    : '';
+  return `The reporting period changed after you edited this report${reason}. Discard your edits and review what changed since then before you approve.`;
 }
 
 /** The report counts from this device's own copy: said with when that report was sent (A6 pass 7). */

@@ -11,8 +11,26 @@
  * (types, acknowledges, approves, edits again, discards) and read on
  * mount. Approval is restored only for the exact report text that was
  * approved.
+ *
+ * Whole-app audit A6 pass 8 M1 (30 Sep 2026): an approval or edit made
+ * before the other device sent was not tied to the reporting period it was
+ * made on. Approved on the phone at 10:00, sent from the iPad at 12:00, the
+ * approval came back after a tab switch and Copy sent the report again; an
+ * edited report kept its morning "since" section. Each now remembers its
+ * period: the approval when the report it counts from was sent, the edits
+ * when the report their "since" section counts from was sent.
  */
-export type ReportSessionEdits = Readonly<{ title: string; body: string; sourceFingerprint: string }>;
+export type ReportSessionEdits = Readonly<{
+  title: string;
+  body: string;
+  sourceFingerprint: string;
+  /**
+   * When the report the edited "since" section counts from was sent
+   * (reportPeriodSentAt of the baseline), or null for no earlier report.
+   * Absent: edits made before this was kept, taken as current.
+   */
+  baselineSentAt?: string | null;
+}>;
 
 export type ReportSessionAcknowledgement = Readonly<{ fingerprint: string; ids: readonly string[] }>;
 
@@ -22,6 +40,12 @@ export type ReportSessionState = Readonly<{
   approvedTextKey: string | null;
   /** The project facts that approval was given on, or null. */
   approvedFingerprint?: string | null;
+  /**
+   * When the report that approval's period runs from was sent
+   * (reportPeriodSentAt of the loaded period), or null for none. This
+   * device's own send of the approval moves it to that send.
+   */
+  approvedPeriodSentAt?: string | null;
   /** Review items acknowledged for one exact set of report facts. */
   acknowledgement: ReportSessionAcknowledgement | null;
 }>;
@@ -29,6 +53,8 @@ export type ReportSessionState = Readonly<{
 const EMPTY: ReportSessionState = { edits: null, approvedTextKey: null, acknowledgement: null };
 const REMEMBERED_SCOPES = 12;
 const store = new Map<string, ReportSessionState>();
+/** When this device sent reports in this app session, so reading one back is never taken for the other device's. */
+const ownSends = new Set<string>();
 
 function write(scopeKey: string, next: ReportSessionState): void {
   store.delete(scopeKey);
@@ -53,12 +79,33 @@ export function rememberReportApproval(
   scopeKey: string,
   approvedTextKey: string | null,
   approvedFingerprint: string | null = null,
+  approvedPeriodSentAt: string | null = null,
 ): void {
   write(scopeKey, {
     ...(recallReportSessionState(scopeKey) ?? EMPTY),
     approvedTextKey,
     approvedFingerprint: approvedTextKey ? approvedFingerprint : null,
+    approvedPeriodSentAt: approvedTextKey ? approvedPeriodSentAt : null,
   });
+}
+
+/**
+ * This device sent the approved report: its period now runs from that send,
+ * so the approval still stands on it (A6 pass 8 M1). Only the approval of
+ * the period that send closed moves.
+ */
+export function rememberApprovedReportSent(scopeKey: string, periodSentAt: string | null, sentAt: string): void {
+  const state = recallReportSessionState(scopeKey);
+  if (!state?.approvedTextKey || (state.approvedPeriodSentAt ?? null) !== periodSentAt) return;
+  write(scopeKey, { ...state, approvedPeriodSentAt: sentAt });
+}
+
+export function rememberOwnReportSend(sentAt: string): void {
+  ownSends.add(sentAt);
+}
+
+export function ownReportSendTimes(): ReadonlySet<string> {
+  return ownSends;
 }
 
 export function rememberReportAcknowledgement(
@@ -84,7 +131,19 @@ export function approvedReportFingerprint(state: ReportSessionState | null, appr
   return restoredReportApproval(state, approvalTextKey) ? state?.approvedFingerprint ?? null : null;
 }
 
+/**
+ * When the report the standing approval's period runs from was sent, or
+ * undefined when no approval of this text stands (A6 pass 8 M1).
+ */
+export function approvedReportPeriodSentAt(
+  state: ReportSessionState | null,
+  approvalTextKey: string,
+): string | null | undefined {
+  return restoredReportApproval(state, approvalTextKey) ? state?.approvedPeriodSentAt ?? null : undefined;
+}
+
 /** On sign-out: another account must not inherit this one's narrative or approval. */
 export function forgetAllReportSessionState(): void {
   store.clear();
+  ownSends.clear();
 }

@@ -189,9 +189,24 @@ export function laterSentReportPeriod(
   shown: DAVEReportSnapshot | null | undefined,
   ownSends: ReadonlySet<string> = new Set(),
 ): DAVEReportSnapshot | null {
-  const sentAt = reportPeriodSentAt(candidate);
-  if (!candidate || sentAt === null || ownSends.has(sentAt)) return null;
-  return reportPeriodIsLater(candidate, shown) ? candidate : null;
+  return reportPeriodSentAfter(candidate, reportPeriodSentAt(shown), ownSends);
+}
+
+/**
+ * `candidate` when its period runs from a report sent after `sentAt` (or
+ * `sentAt` is null: no report sent), else null; never one of `ownSends`.
+ * Whole-app audit A6 pass 8 M1 (30 Sep 2026): an approval is checked against
+ * the period it was given on, which it remembers as this send time.
+ */
+export function reportPeriodSentAfter(
+  candidate: DAVEReportSnapshot | null | undefined,
+  sentAt: string | null,
+  ownSends: ReadonlySet<string> = new Set(),
+): DAVEReportSnapshot | null {
+  const candidateSentAt = reportPeriodSentAt(candidate);
+  if (!candidate || candidateSentAt === null || ownSends.has(candidateSentAt)) return null;
+  const since = Date.parse(sentAt ?? '');
+  return periodSentTime(candidate) > (Number.isNaN(since) ? -Infinity : since) ? candidate : null;
 }
 
 /** "at 12:05 PM" today; "on Sep 29 at 12:05 PM" another day (with the year when it is not this year). */
