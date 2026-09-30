@@ -1,6 +1,6 @@
 /**
  * Whole-app audit A7 pass 5 (30 Sep 2026), documents attached to a field
- * update.
+ * update, and Sync Now's shared documents.
  *
  * M1 (a) Delete from This Device / All Devices took a document off a sent
  *    update on the phone only; nothing was queued, so the next refresh put
@@ -8,12 +8,15 @@
  * M1 (b) A document that uploaded after its update was sent read "Document
  *    upload failed · Retry" again after every refresh (the cloud copy holds
  *    the state the phone had when it sent the update), and on the iPad.
+ * L1 Sync Now merged shared documents with the phone's copy always winning,
+ *    so an edit made on the iPad or the web was not taken.
  *
  * Runs the App's own project_updates refresh closure, updateDocumentEverywhere,
- * retryProjectDocumentUpload, deleteProjectDocument and the new resend
- * helper, compiled from App.tsx, with the real SyncService queue (in-memory
- * storage), queue matcher, normalizers and realtime applier. Network is
- * mocked; no Supabase call is made.
+ * retryProjectDocumentUpload, deleteProjectDocument, the new resend helper and
+ * Sync Now's onApplyCloudRecovery closure, compiled from App.tsx, with the
+ * real SyncService queue (in-memory storage), queue matcher, normalizers,
+ * realtime applier and recovery merges. Network is mocked; no Supabase call
+ * is made.
  */
 const mockStorage = new Map<string, string>();
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -59,7 +62,11 @@ import {
   queueProjectUpdateRecord,
 } from '../../services/SyncService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
-import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
+import {
+  mergeDAVECloudRecoveryRecords,
+  mergeDAVEReferenceDocumentRecoveryRecords,
+  mergeLocalUpdateWithCloudCopy,
+} from '../../services/DAVECloudRecovery';
 import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
@@ -83,6 +90,10 @@ import {
   withDeviceDocumentUploadState,
   withoutFieldUpdateDocument,
 } from '../../services/FieldUpdateDocumentUploadState';
+import { normalizeReferenceDocuments } from '../../services/ReferenceDocumentRepository';
+import { isStartupReferenceDocumentRecord } from '../../services/StartupRecordValidation';
+import { deletedDAVERecordIds } from '../../services/DAVESyncTombstones';
+import { reconcileCurrentScheduleDocuments } from '../../services/PIEScheduleReconciliation';
 
 const realFetch = global.fetch;
 beforeAll(() => {
@@ -530,5 +541,36 @@ describe('the upload-state rules (FieldUpdateDocumentUploadState)', () => {
     expect(resent.map(update => [update.id, update.status, update.documents?.length])).toEqual([
       ['u-sent', 'queued', 0], ['u-queued', 'queued', 0], ['u-failed', 'failed', 0],
     ]);
+  });
+});
+
+describe('Sync Now takes the shared documents\' newer cloud copy (audit A7 pass 5 L1)', () => {
+  const PHONE_REFERENCE_FILE = 'file:///var/mobile/Containers/Data/Application/NEW/Documents/project-documents/ref-1.pdf';
+  const reference = (extra: Record<string, unknown>) => ({
+    id: 'ref-1', name: 'A-101.pdf', category: 'Drawing', importedAt: '2026-09-29T08:00:00.000Z',
+    storagePath: 'reference-documents/ref-1.pdf', projectName: 'P', uri: PHONE_REFERENCE_FILE, ...extra,
+  });
+
+  it('an edit made on the iPad after the phone\'s copy wins, and the phone keeps its own file', () => {
+    let referenceDocuments = normalizeReferenceDocuments([reference({ notes: 'old note', updatedAt: '2026-09-29T08:00:00.000Z' })]);
+    const apply = evaluate<(recovered: unknown) => void>(
+      transpile(`module.exports = recovered => ${blockAfter('onApplyCloudRecovery={recovered => {')}`),
+      {
+        setReferenceDocuments: (next: (previous: typeof referenceDocuments) => typeof referenceDocuments) => {
+          referenceDocuments = next(referenceDocuments);
+        },
+        reconcileCurrentScheduleDocuments, mergeDAVECloudRecoveryRecords, mergeDAVEReferenceDocumentRecoveryRecords,
+        normalizeReferenceDocuments, isStartupReferenceDocumentRecord, deletedDAVERecordIds,
+        markReferenceDocumentsAuthorityReady: jest.fn(),
+      },
+    );
+    const failed = 'not read';
+    apply({
+      collectionErrors: { updates: failed, projectAreas: failed, scheduleItems: failed, projects: failed, referenceDocuments: null },
+      referenceDocuments: [reference({ notes: 'note typed on the iPad', updatedAt: '2026-09-30T10:00:00.000Z', uri: '' })],
+      tombstones: [],
+    });
+    expect(referenceDocuments).toHaveLength(1);
+    expect(referenceDocuments[0]).toMatchObject({ notes: 'note typed on the iPad', uri: PHONE_REFERENCE_FILE });
   });
 });

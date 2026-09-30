@@ -484,7 +484,6 @@ import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
 import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
   mergeLocalUpdateWithCloudCopy,
-  mergeDAVECloudRecoveryRecords,
   mergeDAVEReferenceDocumentRecoveryRecords,
 } from './services/DAVECloudRecovery';
 import {
@@ -14071,7 +14070,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   markScheduleItemsAuthorityReady(true);
                 }
                 if (failed.referenceDocuments === null) {
-                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ // the newer copy wins, as in the refresh (A7 pass 5 L1)
                     local: previous,
                     cloud: normalizeReferenceDocuments(
                       recovered.referenceDocuments.filter(isStartupReferenceDocumentRecord),
