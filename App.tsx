@@ -8913,6 +8913,7 @@ function addProject(projectName: string) {
       );
       const { cascade, fallbackProject, replacementDraft } = deletionResult;
 
+      rememberOperationalTombstones(cascade.nextDAVESyncTombstones);
       deletedProjectNamesRef.current = cascade.nextDeletedProjectNames;
       deletedUpdateTombstonesRef.current = cascade.nextUpdateTombstones;
       savedUpdatesRef.current = cascade.remainingUpdates;
@@ -9051,7 +9052,10 @@ function addProject(projectName: string) {
           style: 'destructive',
           onPress: () => {
             void recordDAVESyncTombstone('project_area', areaId)
-              .then(() => removeOperationalRecordFromSyncQueue('project_area', areaId))
+              .then(tombstone => {
+                rememberOperationalTombstones([tombstone]);
+                return removeOperationalRecordFromSyncQueue('project_area', areaId);
+              })
               .then(() => {
                 markProjectAreasAuthorityReady(true);
                 setProjectAreas(prev => prev.filter(item => item.id !== areaId));
@@ -11433,7 +11437,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           style: 'destructive',
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
-              .then(() => {
+              .then(tombstone => {
+                rememberOperationalTombstones([tombstone]);
                 markReferenceDocumentsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
@@ -11495,7 +11500,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete PDF Only',
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
-              .then(() => {
+              .then(tombstone => {
+                rememberOperationalTombstones([tombstone]);
                 markReferenceDocumentsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
@@ -11529,17 +11535,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   advanceScheduleItemSyncGeneration(item.id);
                   cancelScheduleItemTextSync(item.id);
                 });
-                const deletedKeys = new Set(tombstones.map(tombstone =>
-                  `${tombstone.entityType}:${tombstone.recordId}`,
-                ));
-                const nextTombstones = [
-                  ...operationalSyncTombstonesRef.current.filter(tombstone =>
-                    !deletedKeys.has(`${tombstone.entityType}:${tombstone.recordId}`),
-                  ),
-                  ...tombstones,
-                ];
-                operationalSyncTombstonesRef.current = nextTombstones;
-                setOperationalSyncTombstones(nextTombstones);
+                rememberOperationalTombstones(tombstones);
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
@@ -11798,6 +11794,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     return syncScheduleItemRevision(latest, generation);
   }
 
+  /** This phone's own deletions reach the realtime applier at once, not at the next refresh (audit A7 pass 3). */
+  function rememberOperationalTombstones(tombstones: readonly DAVESyncTombstone[]) {
+    const keys = new Set(tombstones.map(tombstone => `${tombstone.entityType}:${tombstone.recordId}`));
+    const next = [
+      ...operationalSyncTombstonesRef.current.filter(tombstone => !keys.has(`${tombstone.entityType}:${tombstone.recordId}`)),
+      ...tombstones,
+    ];
+    operationalSyncTombstonesRef.current = next;
+    setOperationalSyncTombstones(next);
+  }
+
   function deleteScheduleItem(itemId: string) {
     const item = scheduleItemsCurrentRef.current.find(
       scheduleItem => scheduleItem.id === itemId,
@@ -11817,15 +11824,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             cancelScheduleItemTextSync(itemId);
             void recordDAVESyncTombstone('schedule_item', itemId)
               .then(tombstone => {
-                const nextTombstones = [
-                  ...operationalSyncTombstonesRef.current.filter(candidate =>
-                    candidate.entityType !== 'schedule_item' ||
-                    candidate.recordId !== itemId,
-                  ),
-                  tombstone,
-                ];
-                operationalSyncTombstonesRef.current = nextTombstones;
-                setOperationalSyncTombstones(nextTombstones);
+                rememberOperationalTombstones([tombstone]);
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('schedule_item', itemId),
                   clearScheduleItemSyncConflicts(itemId),
@@ -12908,11 +12907,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     scheduleIdentityRefresh();
+    let lastUserId: string | null | undefined;
     const unsubscribe = subscribeToAuthStateChange((event, session) => {
       // Defer client work until after Supabase's auth callback has returned.
-      photoAnalysisCoordinator.clear();
+      // A sign-out or another account drops photo analyses in progress; the
+      // hourly token refresh and a name save do not (whole-app audit A1 pass 1).
+      const userId = session?.user?.id ?? null;
+      const firstEvent = lastUserId === undefined;
+      const accountChanged = event === 'SIGNED_OUT' || (!firstEvent && userId !== lastUserId);
+      lastUserId = userId;
+      if (accountChanged) photoAnalysisCoordinator.clear();
+      // The account's name is taken at startup or with another account, not
+      // from the echo of this phone's own save, which trimmed the field while
+      // it was being typed ("David " then "Famularo" became "DavidFamularo").
       const accountName = accountDisplayNameForUser(session?.user);
-      if (accountName) setDisplayName(accountName);
+      if (accountName && (firstEvent || accountChanged)) setDisplayName(accountName);
       scheduleIdentityRefresh();
       // Updates stamped "Sign in required to sync" re-sync after a sign-in
       // anywhere, not only the photo-analysis modal (whole-app audit A4,
@@ -12921,8 +12930,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         setTimeout(() => startAutomaticSyncBackgroundTask('signed_in', hydrateQueuedUpdates), 0);
       }
       // Another account must not inherit this one's report narrative or
-      // approval (audit A6, pass 2).
-      if (event === 'SIGNED_OUT') forgetAllReportSessionState();
+      // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
+      if (accountChanged) forgetAllReportSessionState();
     });
 
     return () => {

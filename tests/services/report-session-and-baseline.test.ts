@@ -123,7 +123,9 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     expect(screen).toContain('rememberReportEdits(reportStateIdentityKey, null);');
     expect(screen).toContain('rememberReportAcknowledgement(reportStateIdentityKey, next);');
     expect(screen).toContain('Narrative edits are kept until you leave the app.');
-    expect(app).toContain("if (event === 'SIGNED_OUT') forgetAllReportSessionState();");
+    // A1 pass 1: on any change of account, whether or not a sign-out came first.
+    expect(app).toContain('if (accountChanged) forgetAllReportSessionState();');
+    expect(app).toContain("const accountChanged = event === 'SIGNED_OUT' || (!firstEvent && userId !== lastUserId);");
   });
 });
 

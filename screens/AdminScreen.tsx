@@ -952,10 +952,13 @@ export function AdminScreen({
   }
 
   function handleSignOut() {
-    const queuedCount = savedUpdates.filter(update => update.status === 'queued').length;
+    // Every unsynced item, not only updates still marked queued: failed
+    // updates and queued task, area and document changes were left out of the
+    // warning (whole-app audit A1 pass 1).
+    const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount);
     const message =
-      queuedCount > 0
-        ? `${queuedCount} update${queuedCount === 1 ? '' : 's'} still queued to sync will keep failing until you sign in again. Sign out anyway?`
+      unsyncedCount > 0
+        ? `${unsyncedCount} item${unsyncedCount === 1 ? ' is' : 's are'} not in the cloud yet. ${unsyncedCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
         : 'You will need to sign in again to resume cloud sync and photo intelligence.';
 
     Alert.alert('Sign Out', message, [
