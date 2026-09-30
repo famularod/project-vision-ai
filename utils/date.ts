@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROJECT_TIME_ZONE,
+  parseMonthNameDateParts,
   projectDateRelativeDays,
   type Instant,
   type ProjectTimeZone,
@@ -94,7 +95,14 @@ export function parseFlexibleDate(value: string) {
   }
 
   const usMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-  if (!usMatch) return null;
+  if (!usMatch) {
+    // "Jul 24, 2026": how schedule imports stored dates until 30 Sep 2026 (audit A5).
+    const named = parseMonthNameDateParts(trimmed);
+    if (!named) return null;
+    const date = new Date(named.year, named.month - 1, named.day);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
 
   const month = Number(usMatch[1]);
   const day = Number(usMatch[2]);

@@ -20,7 +20,7 @@ export const DEFAULT_PROJECT_TIME_ZONE = 'America/Los_Angeles' as ProjectTimeZon
 const DAY_MS = 86_400_000;
 const zonedFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
-type PlainDateParts = Readonly<{
+export type PlainDateParts = Readonly<{
   year: number;
   month: number;
   day: number;
@@ -31,6 +31,31 @@ type ZonedDateTimeParts = PlainDateParts & Readonly<{
   minute: number;
   second: number;
 }>;
+
+const MONTH_NAMES = [
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december',
+];
+
+/**
+ * "Jul 24, 2026", "July 24 2026" or "24 Jul 2026" as calendar parts. Schedule
+ * imports stored dates in this display form until 30 Sep 2026 (whole-app
+ * audit A5), so every date reader accepts it for the rows already saved.
+ */
+export function parseMonthNameDateParts(value: unknown): PlainDateParts | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().replace(/\s+/g, ' ');
+  const monthFirst = text.match(/^([A-Za-z]{3,9})\.? (\d{1,2}),? (\d{4})$/);
+  const dayFirst = text.match(/^(\d{1,2}) ([A-Za-z]{3,9})\.?,? (\d{4})$/);
+  const monthText = (monthFirst ? monthFirst[1] : dayFirst ? dayFirst[2] : '').toLowerCase();
+  if (!monthText) return null;
+  const monthIndex = MONTH_NAMES.findIndex(name => name === monthText || (monthText.length >= 3 && name.startsWith(monthText)));
+  if (monthIndex < 0) return null;
+  const day = Number(monthFirst ? monthFirst[2] : dayFirst![1]);
+  const year = Number(monthFirst ? monthFirst[3] : dayFirst![3]);
+  const parts = { year, month: monthIndex + 1, day };
+  return validPlainDateParts(parts) ? parts : null;
+}
 
 export function parsePlainDate(value: unknown): PlainDate | null {
   if (typeof value !== 'string') return null;
@@ -46,7 +71,7 @@ export function parsePlainDate(value: unknown): PlainDate | null {
           month: Number(us[1]),
           day: Number(us[2]),
         }
-      : null;
+      : parseMonthNameDateParts(text);
   if (!parts || !validPlainDateParts(parts)) return null;
   return formatPlainDateParts(parts);
 }

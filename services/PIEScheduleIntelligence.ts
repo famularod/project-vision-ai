@@ -13,6 +13,7 @@ import {
   daysUntilDate,
   dueStatusText,
   formatAppDate,
+  formatCalendarDate,
   parseFlexibleDate,
 } from '../utils/date';
 import {
@@ -677,7 +678,12 @@ function normalizeDate(value: string) {
 
   if (!parsed) return '';
 
-  return formatAppDate(value);
+  // Stored as MM/DD/YYYY, the form every date reader parses (due today,
+  // overdue, rollups, the brief), like MS Project rows and manual tasks.
+  // Until 30 Sep 2026 this stored the display form "Jul 24, 2026", which
+  // the readers could not parse, so imported tasks were never overdue
+  // (whole-app audit A5).
+  return formatCalendarDate(parsed);
 }
 
 function parseDuration(value: string) {

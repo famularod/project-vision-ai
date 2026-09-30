@@ -628,6 +628,7 @@ import {
 } from './services/ScheduleProgressInvariant';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
+  parseMonthNameDateParts,
   projectDateRelativeDays,
   projectTimeZoneOrDefault,
 } from './services/ProjectDateTime';
@@ -647,6 +648,7 @@ import {
   scheduleTaskGroupName,
 } from './services/DAVEIdentity';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
+import { mergeApprovedScheduleImportItems } from './services/ScheduleImportMerge';
 import {
   extractTextFromPdf,
   isDavePdfTextExtractionAvailable,
@@ -2471,6 +2473,15 @@ function parseFlexibleDate(value: string) {
       date.setHours(0, 0, 0, 0);
       return date;
     }
+  }
+
+  // "Jul 24, 2026": how schedule imports stored dates until 30 Sep 2026, so a
+  // saved row in that form is read and re-stored as MM/DD/YYYY (audit A5).
+  const named = parseMonthNameDateParts(trimmed);
+  if (named) {
+    const date = new Date(named.year, named.month - 1, named.day);
+    date.setHours(0, 0, 0, 0);
+    return date;
   }
 
   return null;
@@ -11624,8 +11635,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function setActiveScheduleDocument(documentId: string) {
     const updatedAt = new Date().toISOString();
+    const chosen = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    const chosenScope = new Set((chosen?.projectNames || []).map(name => name.trim().toLowerCase()).filter(Boolean));
+    // Only schedules for the same project step aside; another project's
+    // current schedule stays current (audit A5).
+    const competes = (document: ReferenceDocument) => {
+      const scope = (document.projectNames || []).map(name => name.trim().toLowerCase()).filter(Boolean);
+      return chosenScope.size === 0 ? scope.length === 0 : scope.some(name => chosenScope.has(name));
+    };
     const updated = referenceDocumentsCurrentRef.current.map(document =>
-      document.category === 'Schedules'
+      document.category === 'Schedules' && (document.id === documentId || competes(document))
         ? { ...document, isCurrent: document.id === documentId, updatedAt }
         : document,
     );
@@ -12531,30 +12550,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
     let synchronizedItems = scheduleItemsCurrentRef.current;
     if (approvedItems.length) {
       ensureScheduleParentProjects(approvedItems);
-      let next = [...scheduleItemsCurrentRef.current];
-      const additions: ScheduleItem[] = [];
-      approvedItems.forEach(importedItem => {
-        const match = findExactScheduleTaskForCompletionClaim(
-          importedItem as unknown as import('./types').ScheduleItem,
-          next as unknown as import('./types').ScheduleItem[],
-        ) as unknown as ScheduleItem | null;
-        if (match) {
-          next = next.map(item => item.id === match.id
-            ? normalizeScheduleItem(mergeReportedCompletionClaim(
-                item as unknown as import('./types').ScheduleItem,
-                importedItem as unknown as import('./types').ScheduleItem,
-              ) as unknown as Partial<ScheduleItem>)
-            : item);
-          return;
-        }
-        const identity = scheduleImportItemIdentity(
-          importedItem as unknown as import('./types').ScheduleItem,
-        );
-        const duplicate = [...next, ...additions].some(item =>
-          scheduleImportItemIdentity(item as unknown as import('./types').ScheduleItem) === identity,
-        );
-        if (!duplicate) additions.push(importedItem);
+      // Unchanged tasks move to this import and changed tasks keep the
+      // manager's confirmed progress (audit A5: a re-import hid most tasks).
+      const merged = mergeApprovedScheduleImportItems({
+        existing: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[],
+        imported: approvedItems as unknown as import('./types').ScheduleItem[],
+        completionMatch: findExactScheduleTaskForCompletionClaim,
+        mergeCompletion: (item, importedItem) => normalizeScheduleItem(
+          mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
+        ) as unknown as import('./types').ScheduleItem,
       });
+      const next = merged.next as unknown as ScheduleItem[];
+      const additions = merged.additions.map(item =>
+        normalizeScheduleItem(item as unknown as Partial<ScheduleItem>));
       synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
       const previousById = new Map(
         scheduleItemsCurrentRef.current.map(item => [item.id, item]),

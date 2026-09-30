@@ -153,10 +153,7 @@ export function selectAuthoritativeScheduleItems({
   scheduleDocuments?: ReferenceDocument[];
 }) {
   const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
-  const activeSchedules = scheduleSources
-    .filter(document => document.isCurrent)
-    .sort(compareScheduleDocumentAuthority)
-    .slice(0, 1);
+  const activeSchedules = currentScheduleDocumentWinners(scheduleSources);
   const activeScheduleSources = new Set(
     activeSchedules
       .flatMap(document => [document.name, document.originalFileName])
@@ -277,15 +274,45 @@ function selectLatestImportedScheduleBatches(
   });
 }
 
+/**
+ * The current schedule documents that drive intelligence: the newest
+ * marked-current schedule for each project. Two schedules compete only when
+ * they share a project name; schedules with no project names form one
+ * shared scope. Until 30 Sep 2026 a single app-wide winner was kept, so
+ * importing a second project's schedule hid the first project's whole
+ * schedule (whole-app audit A5).
+ */
+export function currentScheduleDocumentWinners<T extends ReferenceDocument>(
+  documents: readonly T[],
+): T[] {
+  const winners: T[] = [];
+  const claimed = new Set<string>();
+  let globalClaimed = false;
+  documents
+    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
+    .sort(compareScheduleDocumentAuthority)
+    .forEach(document => {
+      const scope = (document.projectNames || []).map(normalize).filter(Boolean);
+      if (scope.length === 0) {
+        if (globalClaimed) return;
+        globalClaimed = true;
+        winners.push(document);
+        return;
+      }
+      if (scope.some(name => claimed.has(name))) return;
+      scope.forEach(name => claimed.add(name));
+      winners.push(document);
+    });
+  return winners;
+}
+
 export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
   documents: readonly T[],
 ): T[] {
-  const winner = documents
-    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
-    .sort(compareScheduleDocumentAuthority)[0];
-  if (!winner) return [...documents];
+  const winners = new Set(currentScheduleDocumentWinners(documents).map(document => document.id));
+  if (winners.size === 0) return [...documents];
   return documents.map(document => scheduleDocumentIsScheduleLike(document)
-    ? { ...document, isCurrent: document.id === winner.id }
+    ? { ...document, isCurrent: winners.has(document.id) }
     : document);
 }
 

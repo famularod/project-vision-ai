@@ -1,0 +1,107 @@
+import type { ScheduleItem } from '../types';
+import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
+
+/**
+ * How an approved schedule import joins the tasks already saved.
+ *
+ * Whole-app audit A5 (30 Sep 2026): a revised file for a project that
+ * already had a schedule made most of its tasks vanish. An unchanged task
+ * was left out of the new batch as a duplicate, so its only copy belonged
+ * to the previous document, which the approval had just made inactive; a
+ * changed task came in as a fresh row at 0% while the project manager's
+ * progress stayed on the hidden old copy.
+ *
+ * Now an unchanged task that an earlier import owns moves to the new batch
+ * (its progress and confirmations intact), and a changed task takes the
+ * project manager's confirmed progress from the one earlier row for the
+ * same task in the same project and area. A completion claim that names an
+ * existing task still merges into it first, as before.
+ */
+export type ScheduleImportMergeResult = Readonly<{
+  /** The saved tasks, with re-homed and completion-merged rows replaced. */
+  next: ScheduleItem[];
+  /** The imported rows to add. */
+  additions: ScheduleItem[];
+  rehomedIds: readonly string[];
+  carriedProgressIds: readonly string[];
+}>;
+
+function key(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
+}
+
+function sameTask(left: ScheduleItem, right: ScheduleItem): boolean {
+  if (key(left.taskName) !== key(right.taskName)) return false;
+  if (key(left.scheduleProjectName || left.projectName) !== key(right.scheduleProjectName || right.projectName)) return false;
+  if (key(left.locationName) !== key(right.locationName)) return false;
+  const leftActivity = key(left.sourceActivityId);
+  const rightActivity = key(right.sourceActivityId);
+  return !leftActivity || !rightActivity || leftActivity === rightActivity;
+}
+
+export function mergeApprovedScheduleImportItems({
+  existing,
+  imported,
+  completionMatch,
+  mergeCompletion,
+}: {
+  existing: readonly ScheduleItem[];
+  imported: readonly ScheduleItem[];
+  /** An imported row that is a completion claim for one existing task. */
+  completionMatch: (importedItem: ScheduleItem, items: readonly ScheduleItem[]) => ScheduleItem | null;
+  mergeCompletion: (item: ScheduleItem, importedItem: ScheduleItem) => ScheduleItem;
+}): ScheduleImportMergeResult {
+  let next = [...existing];
+  const additions: ScheduleItem[] = [];
+  const rehomedIds: string[] = [];
+  const carriedProgressIds: string[] = [];
+
+  imported.forEach(importedItem => {
+    const match = completionMatch(importedItem, next);
+    if (match) {
+      next = next.map(item => item.id === match.id ? mergeCompletion(item, importedItem) : item);
+      return;
+    }
+    const identity = scheduleImportItemIdentity(importedItem);
+    if (additions.some(item => scheduleImportItemIdentity(item) === identity)) return;
+    const duplicate = next.find(item => scheduleImportItemIdentity(item) === identity);
+    if (duplicate) {
+      // An unchanged task an earlier import owns now belongs to this import;
+      // a task entered by hand keeps its own provenance and stays visible.
+      const owned = Boolean(key(duplicate.importBatchId) || key(duplicate.sourceDocumentId));
+      if (owned && key(duplicate.importBatchId) !== key(importedItem.importBatchId)) {
+        next = next.map(item => item.id === duplicate.id
+          ? {
+              ...item,
+              importBatchId: importedItem.importBatchId ?? item.importBatchId,
+              sourceDocumentId: importedItem.sourceDocumentId ?? item.sourceDocumentId,
+              importedFrom: importedItem.importedFrom ?? item.importedFrom,
+              importedAt: importedItem.importedAt ?? item.importedAt,
+            }
+          : item);
+        rehomedIds.push(duplicate.id);
+      }
+      return;
+    }
+    const predecessors = next.filter(item =>
+      item.progressSource === 'project_manager' &&
+      key(item.importBatchId) !== key(importedItem.importBatchId) &&
+      sameTask(item, importedItem));
+    if (predecessors.length === 1) {
+      const [predecessor] = predecessors;
+      additions.push({
+        ...importedItem,
+        percentComplete: predecessor.percentComplete,
+        status: predecessor.status,
+        progressSource: predecessor.progressSource,
+        progressConfirmedAt: predecessor.progressConfirmedAt ?? null,
+        progressConfirmedBy: predecessor.progressConfirmedBy ?? null,
+      });
+      carriedProgressIds.push(importedItem.id);
+      return;
+    }
+    additions.push(importedItem);
+  });
+
+  return { next, additions, rehomedIds, carriedProgressIds };
+}

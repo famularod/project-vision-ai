@@ -344,7 +344,9 @@ assert(
   'Schedule import should remain behind Manage Schedule after daily task metrics.',
 );
 assert(
-  scheduleScreenSource.includes('sections={groupedTaskSections}') &&
+  // 30 Sep 2026 (audit A5): the list renders collapsible sections built from groupedTaskSections.
+  scheduleScreenSource.includes('sections={mobileTaskSections}') &&
+  scheduleScreenSource.includes('groupedTaskSections') &&
     scheduleScreenSource.includes("const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks')") &&
     scheduleScreenSource.includes('if (aComplete !== bComplete)') &&
     scheduleScreenSource.includes('Schedule Sources') &&

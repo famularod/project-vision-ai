@@ -25,7 +25,7 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
@@ -597,7 +597,8 @@ export function buildDAVEWebTruthDiagnostics(
   ).length;
   const conflicts = [
     ...(duplicateTaskGroups.length ? [`${duplicateTaskGroups.length} duplicate task occurrence group${duplicateTaskGroups.length === 1 ? '' : 's'} need review.`] : []),
-    ...(currentSchedules.length > 1 ? ['More than one current schedule is visible after reconciliation.'] : []),
+    // One current schedule per project is expected; two for the same project is a conflict (audit A5).
+    ...(currentSchedules.length > currentScheduleDocumentWinners(currentSchedules).length ? ['More than one current schedule is visible for the same project after reconciliation.'] : []),
   ];
   return Object.freeze({
     projectCount: snapshot.projects.length,
