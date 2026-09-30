@@ -11601,6 +11601,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
+                dropDeletedPredecessors([...deletedItemIds]); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026))
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
                   ...relatedScheduleItems.map(item =>
@@ -11861,6 +11862,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setOperationalSyncTombstones(next);
   }
 
+  /** Surviving tasks drop the deleted ones from their dependencies, through the normal task update (audit A5; batch A5 pass 3 F7). */
+  function dropDeletedPredecessors(deletedItemIds: readonly string[]) {
+    dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, deletedItemIds).forEach(change => {
+      scheduleItemSyncWarningsRef.current.add(change.id); // no alert per successor offline (A5 pass 2)
+      updateScheduleItem(change.id, { dependencies: change.dependencies });
+    });
+  }
+
   function deleteScheduleItem(itemId: string) {
     const item = scheduleItemsCurrentRef.current.find(
       scheduleItem => scheduleItem.id === itemId,
@@ -11893,11 +11902,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     scheduleItem => scheduleItem.id !== itemId,
                   );
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
-                dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, itemId) // successors drop it (audit A5)
-                  .forEach(change => {
-                    scheduleItemSyncWarningsRef.current.add(change.id); // no alert per successor offline (A5 pass 2)
-                    updateScheduleItem(change.id, { dependencies: change.dependencies });
-                  });
+                dropDeletedPredecessors([itemId]);
               })
               .catch(() => {
                 Alert.alert(

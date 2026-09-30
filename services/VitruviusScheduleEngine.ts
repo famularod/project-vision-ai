@@ -201,22 +201,25 @@ export function applyVitruviusSchedulePreview(
 }
 
 /**
- * The dependency lists that change when a task is deleted: each successor
- * drops the deleted predecessor and keeps every other entry as stored
+ * The dependency lists that change when tasks are deleted: each successor
+ * drops the deleted predecessors and keeps every other entry as stored
  * (whole-app audit A5, 30 Sep 2026). The dangling reference was flagged
  * "Map predecessor" for good, kept the task in Attention and made the
- * finish-to-start calculation unsafe to apply.
+ * finish-to-start calculation unsafe to apply. Several ids at once give one
+ * change per successor: "Delete PDF + Items" left tasks another schedule
+ * still contains pointing at the tasks it deleted (A5 pass 3 F7).
  */
 export function dependencyChangesForDeletedTask(
   items: readonly Pick<ScheduleItem, 'id' | 'dependencies'>[],
-  deletedItemId: string,
+  deletedItemIds: string | readonly string[],
 ): Array<{ id: string; dependencies: ScheduleDependency[] }> {
-  const deletedId = deletedItemId.trim();
-  if (!deletedId) return [];
+  const deleted = new Set((typeof deletedItemIds === 'string' ? [deletedItemIds] : deletedItemIds)
+    .map(id => id.trim()).filter(Boolean));
+  if (deleted.size === 0) return [];
   return items.flatMap(item => {
-    if (item.id === deletedItemId || !Array.isArray(item.dependencies)) return [];
+    if (deleted.has(item.id.trim()) || !Array.isArray(item.dependencies)) return [];
     const kept = item.dependencies.filter(dependency =>
-      !(typeof dependency?.predecessorItemId === 'string' && dependency.predecessorItemId.trim() === deletedId));
+      !(typeof dependency?.predecessorItemId === 'string' && deleted.has(dependency.predecessorItemId.trim())));
     return kept.length === item.dependencies.length ? [] : [{ id: item.id, dependencies: kept }];
   });
 }

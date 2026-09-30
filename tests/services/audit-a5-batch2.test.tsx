@@ -261,6 +261,9 @@ describe('deleting a task', () => {
   });
 
   it('is wired after the task leaves the list, through the normal task update', () => {
-    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => scheduleItem\.id !== itemId\)\);\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, itemId\)[^\n]*\n\s+\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
+    // Round 2 (A5 pass 3 F7): the cleanup moved into dropDeletedPredecessors, shared with
+    // "Delete PDF + Items" (behaviour in audit-a5-p3-f7-batch-delete-dependencies).
+    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => scheduleItem\.id !== itemId\)\);\n\s+dropDeletedPredecessors\(\[itemId\]\);/);
+    expect(app).toMatch(/function dropDeletedPredecessors\(deletedItemIds: readonly string\[\]\) \{\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, deletedItemIds\)\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
   });
 });
