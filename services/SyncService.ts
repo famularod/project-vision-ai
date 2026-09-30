@@ -74,6 +74,7 @@ import {
   resolveOperationalProjectIdentity,
   resolveOperationalReferenceDocumentScope,
   type OperationalProjectIdentityAuthority,
+  type OperationalProjectIdentityResult,
 } from './OperationalProjectIdentity';
 import {
   createBoundedTaskRunner,
@@ -3756,6 +3757,8 @@ type ReferenceDocumentUploadSuccess = {
 type QueueUploadContext = {
   projectsAuthorityPromise?: ReturnType<typeof listProjects>;
   projectIdentityAuthority?: OperationalProjectIdentityAuthority;
+  archivedProjectsAuthorityPromise?: ReturnType<typeof listArchivedProjects>;
+  archivedProjectIdentityAuthority?: OperationalProjectIdentityAuthority;
   projectAreasAuthorityPromise?: ReturnType<typeof listProjectAreas>;
   projectAreasById?: Map<string, ProjectArea>;
   scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
@@ -3858,13 +3861,14 @@ async function prepareQueueItemProjectIdentity(
   if (item.entity === 'project_update') {
     const payload = item.payload as ProjectUpdateRecordPayload<Record<string, unknown>>;
     if (!payload.updateData) return item;
-    const resolved = resolveOperationalProjectIdentity(
-      {
-        projectId: payload.projectId || payload.updateData.projectId as string | null | undefined,
-        projectName: payload.projectName || payload.updateData.projectName as string | null | undefined,
-      },
-      authority,
-    );
+    const identity = {
+      projectId: payload.projectId || payload.updateData.projectId as string | null | undefined,
+      projectName: payload.projectName || payload.updateData.projectName as string | null | undefined,
+    };
+    const active = resolveOperationalProjectIdentity(identity, authority);
+    const resolved = active.ok
+      ? active
+      : await resolveArchivedProjectUpdateIdentity(identity, active, context);
     if (!resolved.ok) return resolved.error;
     nextPayload = {
       ...payload,
@@ -3916,6 +3920,38 @@ async function prepareQueueItemProjectIdentity(
     return { nextQueue, result: preparedItem };
   });
   return persisted || 'The saved item changed while its cloud project identity was being prepared.';
+}
+
+/**
+ * Audit A7 M2: a field update saved before its project was closed never
+ * uploaded, because identity is checked against active projects only. Close
+ * Project could even reach the cloud first: an update waits in the queue for
+ * its photos, so closing the project right after saving the last update
+ * stranded that update. A field update whose project is not active is
+ * looked up once among closed projects. Tasks and documents still need an
+ * active project.
+ */
+async function resolveArchivedProjectUpdateIdentity(
+  identity: Readonly<{ projectId?: string | null; projectName?: string | null }>,
+  activeFailure: Extract<OperationalProjectIdentityResult, { ok: false }>,
+  context: QueueUploadContext,
+): Promise<OperationalProjectIdentityResult> {
+  if (
+    activeFailure.code !== 'project_identity_required' &&
+    activeFailure.code !== 'project_identity_invalid'
+  ) {
+    return activeFailure;
+  }
+  context.archivedProjectsAuthorityPromise ??= listArchivedProjects();
+  const archived = await context.archivedProjectsAuthorityPromise;
+  if (!archived.ok || archived.stubbed || !Array.isArray(archived.data)) return activeFailure;
+  context.archivedProjectIdentityAuthority ??=
+    buildOperationalProjectIdentityAuthority(archived.data);
+  const resolved = resolveOperationalProjectIdentity(
+    identity,
+    context.archivedProjectIdentityAuthority,
+  );
+  return resolved.ok ? resolved : activeFailure;
 }
 
 async function loadOperationalProjectIdentityAuthority(

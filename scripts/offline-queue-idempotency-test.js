@@ -188,6 +188,11 @@ async function testConcurrentEnqueuePreservesBothItems() {
         })),
       };
     },
+    // A field update whose project is not active is looked up among closed
+    // projects (audit A7 M2); none are closed here.
+    async listArchivedProjects() {
+      return { ok: true, configured: true, stubbed: false, data: [] };
+    },
     async getProjectUpdateSyncMetadata() {
       supabaseCalls.metadataReads += 1;
       return { ok: true, data: remoteMetadataData };

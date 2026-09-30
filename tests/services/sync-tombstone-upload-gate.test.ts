@@ -121,6 +121,9 @@ const mockGetProjectUpdateSyncMetadata = jest.fn((id: string) =>
     } | null,
   }),
 );
+const mockListArchivedProjects = jest.fn((..._args: unknown[]): Promise<{
+  ok: boolean; configured: boolean; stubbed: boolean; data?: Array<{ id: string; name: string }>; error?: string;
+}> => Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }));
 const mockSaveProjectUpdate = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
@@ -149,6 +152,9 @@ jest.mock('../../services/SupabaseService', () => ({
     message: 'Configured.',
   }),
   listProjects: (...args: unknown[]) => mockListProjects(...args),
+  // A field update whose project is not active is looked up among closed
+  // projects (audit A7 M2); none are closed unless a test says so.
+  listArchivedProjects: (...args: unknown[]) => mockListArchivedProjects(...args),
   listDAVESyncTombstones: (...args: unknown[]) =>
     mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) =>
@@ -239,6 +245,8 @@ beforeEach(() => {
   };
   mockListDAVESyncTombstones.mockClear();
   mockListProjects.mockClear();
+  mockListArchivedProjects.mockReset();
+  mockListArchivedProjects.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: [] });
   mockUpsertDAVESyncTombstone.mockClear();
   mockListScheduleItems.mockClear();
   mockUpsertScheduleItem.mockReset();
@@ -2006,5 +2014,79 @@ describe('project and field-update queue rules from the audit', () => {
     });
     expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
     await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+});
+
+describe('work queued for a project that was then closed (audit A7 M2)', () => {
+  const deletionJournal = jest.requireMock('../../services/ProjectUpdateDeletionJournal') as {
+    hasProjectUpdateDeletionIntent: jest.Mock;
+  };
+  const CLOSED_ID = '0f3b6a51-2d9c-4c55-9b7e-51c1d0a7c2e4';
+  const closed = () => mockListArchivedProjects.mockResolvedValue({
+    ok: true, configured: true, stubbed: false,
+    data: [{ id: CLOSED_ID, name: 'Fire Pump House' }],
+  });
+  const queueUpdate = (updateId: string, projectId: string | null = null) => enqueuePendingChange({
+    id: `project-update-${updateId}`,
+    entity: 'project_update',
+    operation: 'update',
+    payload: {
+      id: updateId,
+      projectId,
+      projectName: 'Fire Pump House',
+      updateData: { id: updateId, projectName: 'Fire Pump House', notes: 'Last walk before closeout.' },
+      pendingPhotoAssetIds: [],
+    },
+    changedAt: '2026-09-30T09:00:00.000Z',
+    autoUpload: false,
+  });
+
+  beforeEach(() => {
+    mockGetProjectUpdateSyncMetadata.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: null });
+    // These updates were never deleted, so the upload reaches the save.
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(false);
+  });
+  afterAll(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(true);
+  });
+
+  it('uploads a field update saved before its project was closed, under the closed project', async () => {
+    closed();
+    await queueUpdate('closeout-update');
+    await queueUpdate('closeout-update-by-id', CLOSED_ID);
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 2, queued: 0, errors: [] });
+    expect(mockSaveProjectUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'closeout-update', projectId: CLOSED_ID, projectName: 'Fire Pump House',
+    }));
+    expect(mockSaveProjectUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'closeout-update-by-id', projectId: CLOSED_ID,
+    }));
+    expect(mockListArchivedProjects).toHaveBeenCalledTimes(1);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('keeps a task for a closed project waiting until it is reopened', async () => {
+    closed();
+    const task = scheduleQueueItem('closeout-task');
+    await enqueuePendingChange({
+      ...task,
+      payload: { ...task.payload, itemData: { ...task.payload.itemData, projectName: 'Fire Pump House' } },
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 0, queued: 1 });
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+  });
+
+  it('keeps the update, with the original reason, when closed projects cannot be read', async () => {
+    mockListArchivedProjects.mockResolvedValue({
+      ok: false, configured: true, stubbed: false, error: 'Network request failed',
+    });
+    await queueUpdate('closeout-update');
+
+    const result = await uploadPendingChanges();
+    expect(result).toMatchObject({ uploaded: 0, queued: 1 });
+    expect(result.errors.join(' ')).toContain('could not be found');
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
   });
 });

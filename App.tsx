@@ -393,6 +393,7 @@ import {
 } from './services/ProjectDocumentLifecycle';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -8780,10 +8781,12 @@ function addProject(projectName: string) {
     return added;
   }
 
-  function closeProject(projectName: string) {
+  async function closeProject(projectName: string) {
+    // Work still queued for the project is named first (audit A7 M2).
+    const queue = await getOfflineQueue().catch(() => []);
     Alert.alert(
       'Close project?',
-      `${projectName} will move to Archived Projects.`,
+      closeProjectMessage(projectName, queuedWorkForProject(queue, projectName)),
       [
         {
           text: 'Cancel',
