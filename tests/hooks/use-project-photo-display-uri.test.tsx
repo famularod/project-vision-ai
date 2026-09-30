@@ -242,3 +242,70 @@ describe('a signing that failed with no signal (A4 pass 7 L1)', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 8 F4 (30 Sep 2026): a photo the sync marked
+ * 'unavailable' (no file on the phone and none in the cloud, so nothing was
+ * uploaded) still carries a storage path worked out from its update. The
+ * image signed that path when shown and, as signing failed, again on the
+ * retry timer for as long as it stayed on screen: 16 signings an hour.
+ */
+describe("a photo marked 'unavailable' (A4 pass 8 F4)", () => {
+  const notFound = async () => ({ ok: false, stubbed: false, data: null, error: 'Object not found', status: 400 });
+  const noSignal = async () => ({ ok: false, stubbed: false, data: null, error: 'Network request failed' });
+  const unavailable = (path: string): Photo => ({ ...photo(path), cloudRecoveryStatus: 'unavailable' });
+  const appStateListeners = () => (AppState.addEventListener as jest.Mock).mock.calls
+    .filter(([type]) => type === 'change')
+    .map(([, listener]) => listener as (state: string) => void);
+  /** An hour on screen, in 5 s steps so each retry's re-render runs. */
+  const anHourOnScreen = async () => {
+    for (let elapsed = 0; elapsed < 60 * MINUTE; elapsed += 5_000) {
+      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+    }
+  };
+  afterEach(() => jest.useRealTimers());
+
+  it('is never signed: not when shown, not on the timer over an hour, not on return to the app or a sign-in refresh', async () => {
+    jest.useFakeTimers();
+    signedUrl.mockImplementation(notFound);
+    const { result, unmount } = await renderHook(() => useProjectPhotoDisplayUri(unavailable('p/f4a/a.jpg'), ''));
+    await anHourOnScreen();
+    await act(async () => {
+      appStateListeners().forEach(listener => listener('active'));
+      [...mockAuthListeners].forEach(listener => listener('TOKEN_REFRESHED'));
+    });
+    await act(async () => { result.current.onError(); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(signedUrl).not.toHaveBeenCalled();
+    expect(result.current.uri).toBe('');
+    expect(mockAuthListeners.size).toBe(0);
+    unmount();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('a photo that is merely offline keeps its retry schedule: 16 tries in the hour, as before', async () => {
+    jest.useFakeTimers();
+    signedUrl.mockImplementation(noSignal);
+    const { unmount } = await renderHook(() => useProjectPhotoDisplayUri(photo('p/f4b/a.jpg'), ''));
+    await anHourOnScreen();
+    expect(signedUrl).toHaveBeenCalledTimes(16);
+    unmount();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("shows this device's file for it, and signs once the mark is cleared (found under an older path)", async () => {
+    const { result, rerender } = await renderHook(
+      ({ current, local }: { current: Photo; local: string }) => useProjectPhotoDisplayUri(current, local),
+      { initialProps: { current: unavailable('p/f4c/a.jpg'), local: LOCAL } },
+    );
+    expect(result.current.uri).toBe(LOCAL);
+    await rerender({ current: unavailable('p/f4c/a.jpg'), local: '' });
+    await flush();
+    expect(result.current.uri).toBe('');
+    expect(signedUrl).not.toHaveBeenCalled();
+
+    await rerender({ current: { ...unavailable('p/f4c/old.jpg'), cloudRecoveryStatus: null }, local: '' });
+    await waitFor(() => expect(result.current.uri).toBe(signedFor('p/f4c/old.jpg', 1)));
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+  });
+});

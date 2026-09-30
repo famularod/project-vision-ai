@@ -4,19 +4,12 @@ import { Text, View } from 'react-native';
 import { styles } from './app-shell-theme';
 import { ProjectPhotoImage } from './ProjectPhotoImage';
 import { findDAVEExactPriorPhoto } from '../services/DAVEUpdateWorkspace';
-import { cloudPhotoPreviewIsFresh } from '../services/ProjectPhotoTransport';
+import { projectPhotoCanBeShown } from '../services/ProjectPhotoTransport';
 import type { PIEPhotoIntelligenceDisplayState } from '../services/PIEPhotoVisionMobileWorkflow';
 import type { ProjectUpdate, UpdatePhoto } from '../types';
 
 /** The saved field updates, where a photo's analysed prior photo is found. */
 export const SavedFieldUpdatesContext = createContext<readonly ProjectUpdate[]>([]);
-
-function canDisplay(photo: Partial<UpdatePhoto>, localUri: string) {
-  return Boolean(localUri || photo.cloudStoragePath?.trim() || cloudPhotoPreviewIsFresh({
-    cloudPreviewUri: photo.cloudPreviewUri,
-    cloudPreviewSignedUrlExpiresAt: photo.cloudPreviewSignedUrlExpiresAt,
-  }));
-}
 
 /**
  * A photo's Before/After row (whole-app audit A4 pass 7 M2, 30 Sep 2026). It
@@ -26,7 +19,8 @@ function canDisplay(photo: Partial<UpdatePhoto>, localUri: string) {
  * the photos themselves: the prior one found in the saved updates (the
  * stored path only when it is not there), each shown from this device's
  * file or signed from the cloud when shown. Hidden when either side has
- * nothing to show.
+ * nothing to show, which includes a photo the sync marked 'unavailable'
+ * (nothing uploaded; A4 pass 8 F4) unless this device holds its file.
  */
 export function PhotoComparisonPreviewRow({
   result,
@@ -49,7 +43,7 @@ export function PhotoComparisonPreviewRow({
   const prior: Partial<UpdatePhoto> = saved || { uri: result.priorPhotoUri || '' };
   const priorUri = localUri(prior);
   const currentUri = photo ? localUri(photo) : '';
-  if (!photo || !canDisplay(prior, priorUri) || !canDisplay(photo, currentUri)) return null;
+  if (!photo || !projectPhotoCanBeShown(prior, priorUri) || !projectPhotoCanBeShown(photo, currentUri)) return null;
   return (
     <View style={styles.photoComparisonPreviewRow} testID="photo-comparison-preview-row">
       <View style={styles.photoComparisonPreviewItem}>

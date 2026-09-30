@@ -18,6 +18,38 @@ export function cloudPhotoPreviewIsFresh(
   return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
+/**
+ * The storage path this device may sign to show a photo, or '' when there is
+ * none. A photo the sync marked 'unavailable' had no file left to upload, so
+ * nothing is in the cloud at the path worked out from its update; signing it
+ * only fails, and the image tried again about 16 times an hour while shown
+ * (whole-app audit A4 pass 8 F4, 30 Sep 2026). A photo that is merely
+ * offline is not marked and keeps its path.
+ */
+export function signableCloudPhotoPath(
+  photo: Partial<Pick<UpdatePhoto, 'cloudStoragePath' | 'cloudRecoveryStatus'>> | undefined,
+): string {
+  if (!photo || photo.cloudRecoveryStatus === 'unavailable') return '';
+  return photo.cloudStoragePath?.trim() || '';
+}
+
+/**
+ * Whether this device has something to show for a photo: its own file, a
+ * cloud copy to sign, or a preview still usable. Covers and comparisons pass
+ * over a photo with none of these.
+ */
+export function projectPhotoCanBeShown(
+  photo: Partial<Pick<UpdatePhoto,
+    'cloudStoragePath' | 'cloudRecoveryStatus' | 'cloudPreviewUri' | 'cloudPreviewSignedUrlExpiresAt'>>,
+  localUri: string,
+  now = Date.now(),
+): boolean {
+  return Boolean(localUri || signableCloudPhotoPath(photo) || cloudPhotoPreviewIsFresh({
+    cloudPreviewUri: photo.cloudPreviewUri,
+    cloudPreviewSignedUrlExpiresAt: photo.cloudPreviewSignedUrlExpiresAt,
+  }, now));
+}
+
 /** A copy this device fetched from the cloud: a cached download or a signed URL. */
 export function isCloudRecoveryCopy(
   photo: Pick<UpdatePhoto, 'cloudRecoveryStatus'>,

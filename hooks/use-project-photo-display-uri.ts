@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import { cloudPhotoPreviewIsFresh } from '../services/ProjectPhotoTransport';
+import { cloudPhotoPreviewIsFresh, signableCloudPhotoPath } from '../services/ProjectPhotoTransport';
 import { subscribeToAuthStateChange } from '../services/SupabaseService';
 import { signProjectPhotoPreview } from '../services/SyncService';
 import type { UpdatePhoto } from '../types';
@@ -44,7 +44,12 @@ function onPhotoSigningChance(listener: () => void): () => void {
 
 type DisplayPhoto = Pick<
   UpdatePhoto,
-  'cloudStoragePath' | 'cloudPreviewUri' | 'cloudPreviewSignedUrlExpiresAt' | 'mimeType' | 'fileName'
+  | 'cloudStoragePath'
+  | 'cloudRecoveryStatus'
+  | 'cloudPreviewUri'
+  | 'cloudPreviewSignedUrlExpiresAt'
+  | 'mimeType'
+  | 'fileName'
 >;
 type SignedPreview = Readonly<{ path: string; uri: string; usableUntil: number }>;
 
@@ -56,13 +61,14 @@ type SignedPreview = Readonly<{ path: string; uri: string; usableUntil: number }
  * image's own signed URL shows while usable; when neither is, one is signed
  * and the old URL stays up meanwhile. A failed load re-signs once per URL,
  * never in a loop. A result for an unmounted image or an earlier path is
- * dropped.
+ * dropped. A photo marked 'unavailable' is never signed: nothing was uploaded
+ * for it (A4 pass 8 F4).
  */
 export function useProjectPhotoDisplayUri(
   photo: Partial<DisplayPhoto> | undefined,
   localUri: string,
 ): Readonly<{ uri: string; onError: () => void }> {
-  const path = photo?.cloudStoragePath?.trim() || '';
+  const path = signableCloudPhotoPath(photo);
   const mimeType = photo?.mimeType ?? null;
   const fileName = photo?.fileName ?? null;
   const [signed, setSigned] = useState<SignedPreview | null>(null);

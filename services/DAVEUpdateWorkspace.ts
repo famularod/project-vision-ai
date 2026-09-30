@@ -24,6 +24,8 @@ export type DAVEUpdateWorkspaceRecord = {
   photos: Array<{
     id: string;
     uri: string;
+    /** 'unavailable': the sync found no file to upload, so the cloud holds none either. */
+    cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
     selectedAreaId?: string | null;
     photoIntelligence?: {
       title?: string | null;
@@ -191,6 +193,13 @@ export function findDAVEExactPriorPhoto<T extends DAVEUpdateWorkspaceRecord>(
     });
 }
 
+/**
+ * The first photo of the update with an analysed prior photo, both shown side
+ * by side. A pair where either photo is marked 'unavailable' is passed over
+ * for the next one: nothing was uploaded for that photo, so its side was a
+ * blank image, signed again and again while on screen (whole-app audit A4
+ * pass 8 F4, 30 Sep 2026).
+ */
 export function buildDAVEUpdatePhotoComparison<
   T extends DAVEUpdateWorkspaceRecord,
 >(currentUpdate: T | null, updates: T[]): DAVEUpdatePhotoComparison<T['photos'][number]> | null {
@@ -200,6 +209,7 @@ export function buildDAVEUpdatePhotoComparison<
     const intelligence = currentPhoto.photoIntelligence;
     if (!intelligence) continue;
     if (intelligence.userReview === 'incorrect' || intelligence.userReview === 'not_useful') continue;
+    if (currentPhoto.cloudRecoveryStatus === 'unavailable') continue;
 
     const exactPrior = findDAVEExactPriorPhoto(
       updates,
@@ -208,7 +218,7 @@ export function buildDAVEUpdatePhotoComparison<
       intelligence,
     );
 
-    if (!exactPrior) continue;
+    if (!exactPrior || exactPrior.photo.cloudRecoveryStatus === 'unavailable') continue;
 
     return {
       currentPhoto,

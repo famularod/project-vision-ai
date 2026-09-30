@@ -1,4 +1,4 @@
-import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
+import { projectPhotoCanBeShown } from './ProjectPhotoTransport';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import type { UpdatePhoto } from '../types';
 
@@ -14,7 +14,10 @@ export type ProjectCoverImage = Readonly<{ localUri: string; photo: Partial<Upda
  * its own file or a copy in the cloud. It used to be the newest update's
  * first photo `uri`, which is empty for a photo taken on the other device,
  * so the project showed no cover there (whole-app audit A4 pass 7 M2, 30 Sep
- * 2026). A photo with neither is passed over for the next one.
+ * 2026). A photo with neither is passed over for the next one, and so is a
+ * photo the sync marked 'unavailable' (nothing uploaded), which was taken
+ * ahead of a later photo of the same update that exists and showed as a
+ * blank cover (whole-app audit A4 pass 8 F4). Its own file still counts.
  */
 export function mostRecentProjectHeroPhoto<TUpdate extends { photos: readonly Partial<UpdatePhoto>[] }>(
   updates: readonly TUpdate[],
@@ -27,12 +30,7 @@ export function mostRecentProjectHeroPhoto<TUpdate extends { photos: readonly Pa
   for (const update of newestFirst) {
     for (const photo of update.photos) {
       const uri = localUri(photo);
-      if (uri || photo.cloudStoragePath?.trim() || cloudPhotoPreviewIsFresh({
-        cloudPreviewUri: photo.cloudPreviewUri,
-        cloudPreviewSignedUrlExpiresAt: photo.cloudPreviewSignedUrlExpiresAt,
-      })) {
-        return { localUri: uri, photo };
-      }
+      if (projectPhotoCanBeShown(photo, uri)) return { localUri: uri, photo };
     }
   }
   return null;
