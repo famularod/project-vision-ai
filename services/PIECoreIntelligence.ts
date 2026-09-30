@@ -547,6 +547,12 @@ export type PIECoreOutput = {
   decisionQualityLearning: PIELearningDecisionQuality[];
   connectedEngines: string[];
   runtime: PIERuntimeState;
+  /**
+   * The runtime without the unsaved draft (the same object as runtime when
+   * there is no draft). Project Truth, which is saved, is built from this one
+   * (audit round 2 M1d). Set by the live build only.
+   */
+  authorityRuntime?: PIERuntimeState;
   attention: PIEAttentionState;
   experience: PIEExperienceOutput;
   reportDraft: PIEReportDraft;
@@ -1407,6 +1413,7 @@ async function buildLivePIECoreIntelligenceForScope(
 
   return {
     ...core,
+    authorityRuntime,
     executiveJudgmentRecord,
     decisionSimulation,
     simulatedOptions: decisionSimulation.options,

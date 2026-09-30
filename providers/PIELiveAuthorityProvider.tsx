@@ -558,12 +558,49 @@ export function PIELiveAuthorityProvider({
     acceptedGeneration: coreGeneration,
   });
 
+  const currentCore = authorityResolution.coreIsCurrent ? core : cachedGenerationCore;
+  // Keep the last accepted Runtime for same-scope evidence refreshes. A real
+  // project/report scope change gets an immediate scoped Runtime so stale
+  // report content cannot flash while the authoritative Core is rebuilding.
+  const currentRuntime = currentCore?.runtime || immediateInputRuntime || fallbackRuntime;
+  // Project Truth (the Home brief, and the snapshot that is saved) comes from
+  // the saved evidence and the runtime WITHOUT the unsaved draft, and follows
+  // the debounced input: a draft keystroke no longer rebuilds it (20-200 ms
+  // each) or makes a new saved snapshot (audit round 2 M1d/M1e). While typing
+  // moves the raw input ahead, the last Core of the same scope still describes
+  // the saved evidence.
+  const truthInput = scopeIsCurrent ? authorityInput : input;
+  const truthCore = currentCore || (
+    core && coreGeneration?.startsWith(`${rawScopeSignature}::`) ? core : null
+  );
+  const truthRuntime = truthCore?.authorityRuntime || truthCore?.runtime || currentRuntime;
+  const truthProjectId = truthInput.projectId || safeProjectId(truthInput.projectName);
+  const projectTruth = useMemo(() => buildDAVEProjectTruth({
+    projectId: truthProjectId,
+    projectName: truthInput.projectName,
+    updates: truthInput.updates,
+    scheduleItems: truthInput.scheduleItems,
+    projectAreas: truthInput.projectAreas,
+    referenceDocuments: truthInput.referenceDocuments,
+    projectDocuments: truthInput.projectDocuments,
+    captureMemories: truthInput.captureMemories,
+    runtime: truthRuntime,
+    core: truthCore,
+    now: truthRuntime.generatedAt,
+  }), [
+    truthCore,
+    truthInput.captureMemories,
+    truthInput.projectDocuments,
+    truthInput.projectAreas,
+    truthInput.projectName,
+    truthInput.referenceDocuments,
+    truthInput.scheduleItems,
+    truthInput.updates,
+    truthProjectId,
+    truthRuntime,
+  ]);
+
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
-    const currentCore = authorityResolution.coreIsCurrent ? core : cachedGenerationCore;
-    // Keep the last accepted Runtime for same-scope evidence refreshes. A real
-    // project/report scope change gets an immediate scoped Runtime so stale
-    // report content cannot flash while the authoritative Core is rebuilding.
-    const currentRuntime = currentCore?.runtime || immediateInputRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
     const nextState = cachedGenerationCore
       ? stateFromPersistence(
@@ -586,19 +623,6 @@ export function PIELiveAuthorityProvider({
       currentCore,
       degradedLocalAcknowledged,
     );
-    const projectTruth = buildDAVEProjectTruth({
-      projectId: displayInput.projectId || safeProjectId(displayInput.projectName),
-      projectName: displayInput.projectName,
-      updates: displayInput.updates,
-      scheduleItems: displayInput.scheduleItems,
-      projectAreas: displayInput.projectAreas,
-      referenceDocuments: displayInput.referenceDocuments,
-      projectDocuments: displayInput.projectDocuments,
-      captureMemories: displayInput.captureMemories,
-      runtime: currentRuntime,
-      core: currentCore,
-      now: currentRuntime.generatedAt,
-    });
     const recommendationTrace = currentCore?.executiveJudgmentRecord
       ? buildPIERecommendationTrace({
           core: currentCore,
@@ -643,19 +667,18 @@ export function PIELiveAuthorityProvider({
       notifyProjectChanged,
     };
   }, [
-    authorityResolution.coreIsCurrent,
     authorityResolution.state,
     acknowledgeDegradedLocal,
     acknowledgedDegradedGeneration,
     degradedAcknowledgementScope,
     authorityGeneration,
     cachedGenerationCore,
-    core,
+    currentCore,
+    currentRuntime,
     displayInput,
     error,
-    fallbackRuntime,
-    immediateInputRuntime,
     invalidateEvidence,
+    projectTruth,
     lastSuccessfulRefreshAt,
     notifyEvidenceChanged,
     notifyProjectChanged,
@@ -890,13 +913,26 @@ function providerRuntimeContext(input: PIELiveAuthorityInput): PIERuntimeContext
     reportType: input.reportType,
     updates: Array.isArray(input.updates) ? input.updates : [],
     scheduleItems: Array.isArray(input.scheduleItems) ? input.scheduleItems : [],
-    currentUpdate: input.currentUpdate,
+    currentUpdate: draftWithContent(input.currentUpdate),
     projectAreas: Array.isArray(input.projectAreas) ? input.projectAreas : [],
     contacts: input.contacts,
     referenceDocuments: Array.isArray(input.referenceDocuments) ? input.referenceDocuments : [],
     syncMetadata: input.syncMetadata,
     surface: input.surface || 'home',
   };
+}
+
+/**
+ * The open draft always exists, even with nothing typed, and a draft made
+ * the Core build a second, draft-free runtime on every refresh (audit round 2
+ * R3). A draft with no note and no photo is no evidence (the project
+ * intelligence already ignores it), so it is left out and one runtime serves.
+ */
+function draftWithContent(draft: ProjectUpdate | null | undefined) {
+  if (!draft) return null;
+  const hasNote = typeof draft.notes === 'string' && draft.notes.trim().length > 0;
+  const hasPhoto = Array.isArray(draft.photos) && draft.photos.length > 0;
+  return hasNote || hasPhoto ? draft : null;
 }
 
 function safeBuildProviderRuntime(input: PIELiveAuthorityInput) {
