@@ -98,6 +98,7 @@ import {
 import { AppShellFrame } from './components/app-shell-frame';
 import { OverlayErrorBoundary } from './components/overlay-error-boundary';
 import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
+import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
 import {
@@ -4841,6 +4842,7 @@ export default function App() {
 function AppShell() {
   const workspaceOwnerId = useNativeWorkspaceOwner();
   useFieldNoteBackgroundRetry(workspaceOwnerId ?? 'local-device'); // notes saved offline reach the desktop (audit A11)
+  const hiddenSharedDocuments = useHiddenSharedDocuments(); // Delete from This Device (audit A8)
   const insets = useSafeAreaInsets();
   const { width: appShellWidth } = useWindowDimensions();
   const appShellLayout = appShellLayoutForWidth(appShellWidth);
@@ -11442,6 +11444,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             )
           : prev.filter(item => item.id !== documentId),
       );
+      if (!sensitive && sharedRecord) hiddenSharedDocuments.hide(sharedRecord.id); // no card comes back here (audit A8)
       if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
         bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
         remainingDocuments: projectDocumentsCurrentRef.current.filter(item => item.id !== documentId),
@@ -11473,6 +11476,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
     };
     const removeFromAllDevices = () => {
+      if (sharedWithAnotherDocument) {
+        Alert.alert('Shared copy kept', 'Another document on this phone uses the same shared copy, so it stays on your other devices.');
+      }
       if (!sharedRecord || sharedWithAnotherDocument) return void removeFromDevice();
       void removeReferenceDocumentEverywhere(sharedRecord.id)
         .then(removeFromDevice)
@@ -13792,7 +13798,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               documents={projectDocuments.filter(document => workspaceScopeNames(selectedWorkspaceProject)
                 .some(name => projectDocumentMatchesProject(document, name) ||
                   projectRecords.some(project => project.name === name && project.id === document.projectId)))}
-              referenceDocuments={referenceDocuments}
+              referenceDocuments={referenceDocuments.filter(document => !hiddenSharedDocuments.hidden.has(document.id))}
               projectNames={workspaceScopeNames(selectedWorkspaceProject)}
               projectIdentities={projectRecords}
               onOpenReference={openReferenceDocument}
