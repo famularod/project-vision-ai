@@ -8,7 +8,10 @@ import { projectRecordFromCloud, type ProjectRecord } from './ProjectCoverPhotoS
 import { deletedDAVERecordIds, mergeDAVESyncTombstones } from './DAVESyncTombstones';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
-import { reconcileCurrentScheduleDocuments } from './PIEScheduleReconciliation';
+import {
+  reconcileCurrentScheduleDocuments,
+  scheduleDocumentIsScheduleLike,
+} from './PIEScheduleReconciliation';
 import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision';
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
@@ -97,7 +100,7 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
     if (!rawRow) return false;
     const normalized = normalizeDAVEOperationalRealtimeRecord(entity, rawRow);
     if (!normalized) return false;
-    const state = options.snapshot();
+    let state = options.snapshot();
 
     if (entity === 'sync_tombstone') {
       const tombstone = normalized as DAVESyncTombstone;
@@ -129,6 +132,11 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         options.commitSchedule(state.scheduleItems.filter(item => item.id !== tombstone.recordId));
       } else if (tombstone.entityType === 'reference_document') {
         options.commitDocuments(state.documents.filter(document => document.id !== tombstone.recordId));
+        // Deleting the current revision can make another one current in the
+        // cloud; false re-reads the documents, or the project showed no
+        // current schedule until the next refresh (whole-app audit A5 pass 3
+        // F1, 30 Sep 2026).
+        return false;
       }
       return true;
     }
@@ -136,6 +144,13 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
     // Direct row deletion is finalized by the durable tombstone event.
     if (payload.eventType === 'DELETE') return false;
     const pendingQueue = await options.getPendingQueue();
+    // Events are applied unqueued, so another event (the other row of a Set
+    // Active, the next task of an import) or a save may have committed during
+    // the await; committing against the first read dropped it (whole-app
+    // audit A5 pass 3 F1, 30 Sep 2026). Each branch below commits before it
+    // awaits again, and the update branch re-reads after its own await.
+    if (!options.isActive()) return true;
+    state = options.snapshot();
 
     if (entity === 'project') {
       const cloudProject = normalized as CloudProject;
@@ -238,6 +253,20 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
     if (entity === 'reference_document') {
       const [cloudDocument] = options.normalizeDocuments([normalized]);
       if (!cloudDocument) return false;
+      // Set Active changes two rows in one UPDATE with one updated_at, and
+      // each arrives as its own event: applied against the other row's stale
+      // local flag, the reconcile below retired the newly current revision,
+      // so this device showed the old schedule or none until its next refresh
+      // (whole-app audit A5 pass 3 F1, 30 Sep 2026). A changed current flag on
+      // a schedule this device holds is re-read from the cloud instead: false
+      // here also means "refresh this collection".
+      const localDocument = state.documents.find(document =>
+        normalizedKey(document.id) === normalizedKey(cloudDocument.id));
+      if (
+        localDocument &&
+        Boolean(localDocument.isCurrent) !== Boolean(cloudDocument.isCurrent) &&
+        (scheduleDocumentIsScheduleLike(localDocument) || scheduleDocumentIsScheduleLike(cloudDocument))
+      ) return false;
       options.commitDocuments(reconcileCurrentScheduleDocuments(
         mergeDAVEReferenceDocumentRecoveryRecords({
           local: state.documents,
