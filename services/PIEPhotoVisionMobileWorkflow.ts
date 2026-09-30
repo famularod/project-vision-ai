@@ -22,6 +22,7 @@ import {
   type PIEPhotoFinding,
 } from './PIEPhotoFindingNormalization';
 import {
+  capPhotoComparisonConfidence,
   derivePhotoAssessmentDisposition,
   photoProjectProgressFromAuthority,
   type PhotoAssessmentDisposition,
@@ -78,7 +79,10 @@ export type PIEPhotoIntelligenceDisplayState = {
   summary: string;
   visibleChange: string | null;
   location: string | null;
+  /** Shown and scored; capped by comparability (owner answer Q9, 30 Sep 2026). */
   comparisonConfidence: string | null;
+  /** The provider's own confidence before the Q9 cap; kept, never shown or scored. */
+  providerComparisonConfidence?: string | null;
   comparability: string | null;
   captureLimitations: string[];
   projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
@@ -1737,7 +1741,8 @@ function isPhotoEvidenceVersionConflict(error: { code?: string; message?: string
     || message.includes('unique constraint');
 }
 
-function buildDisplayStateFromComparison(
+// Exported so tests exercise the real mapping point (owner answer Q9).
+export function buildDisplayStateFromComparison(
   row: Record<string, unknown>,
   diagnosticInput: Partial<PIEPhotoVisionDiagnosticInput>,
 ): PIEPhotoIntelligenceDisplayState {
@@ -1788,6 +1793,11 @@ function buildDisplayStateFromComparison(
     normalizedFindingCount: findings.length,
   });
   const provenance = visibleChange ? 'visual_only' : 'unsupported';
+  // Owner answer Q9 (30 Sep 2026): the one mapping point where the persisted
+  // provider confidence becomes the shown and scored confidence, capped by the
+  // photos' comparability. The raw value is kept alongside it.
+  const providerComparisonConfidence = String(row.confidence || 'unknown');
+  const comparability = String(row.comparability_classification || 'unknown');
   const title = observationAccepted
     ? status === 'completed_with_limitations'
       ? 'Analysis complete with limitations'
@@ -1804,8 +1814,9 @@ function buildDisplayStateFromComparison(
         : 'No supported visible change was found in this comparison.',
     visibleChange,
     location,
-    comparisonConfidence: String(row.confidence || 'unknown'),
-    comparability: String(row.comparability_classification || 'unknown'),
+    comparisonConfidence: capPhotoComparisonConfidence(providerComparisonConfidence, comparability),
+    providerComparisonConfidence,
+    comparability,
     captureLimitations: limitations,
     projectProgress: progress,
     assessmentDisposition,
