@@ -180,7 +180,9 @@ describe('importing a schedule again after deleting it', () => {
 });
 
 describe('a staged progress edit is kept until Save', () => {
-  afterEach(() => clearScheduleProgressDraftsForTests());
+  // Clearing notifies hooks still mounted: inside act, or the release gate's
+  // strict run fails on "not wrapped in act".
+  afterEach(() => act(() => clearScheduleProgressDraftsForTests()));
   const saved = { status: 'In Progress' as const, percentComplete: 40 };
 
   it('survives the row going away and coming back, per task', () => {

@@ -6,11 +6,12 @@
  */
 const mockStore = new Map<string, string>();
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(async (key: string) => mockStore.get(key) ?? null),
+  // Answers on a timer, as a real read does, so the test can load it inside act.
+  getItem: jest.fn((key: string) => new Promise(resolve => setTimeout(() => resolve(mockStore.get(key) ?? null), 0))),
   setItem: jest.fn(async (key: string, value: string) => { mockStore.set(key, value); }),
 }));
 
-import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { act, renderHook } from '@testing-library/react-native';
 import {
   HIDDEN_SHARED_DOCUMENTS_STORAGE_KEY,
   useHiddenSharedDocuments,
@@ -31,11 +32,13 @@ describe('shared documents removed from this phone stay hidden here', () => {
     expect(JSON.parse(mockStore.get(HIDDEN_SHARED_DOCUMENTS_STORAGE_KEY) || '[]')).toEqual(['doc-1']);
     await first.unmount();
     const again = await renderHook(() => useHiddenSharedDocuments());
-    await waitFor(() => expect(again.result.current.hidden.has('doc-1')).toBe(true));
+    // The stored list loads inside act (the release gate fails on "not wrapped in act").
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    expect(again.result.current.hidden.has('doc-1')).toBe(true);
     await again.unmount();
     mockStore.set(HIDDEN_SHARED_DOCUMENTS_STORAGE_KEY, '{');
     const broken = await renderHook(() => useHiddenSharedDocuments());
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
     expect(broken.result.current.hidden.size).toBe(0);
   });
 

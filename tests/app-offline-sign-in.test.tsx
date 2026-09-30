@@ -731,12 +731,14 @@ describe('field updates saved while offline, sign-in pending (A4 pass 7 M1)', ()
     const realNow = Date.now.bind(Date);
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
     try {
-      await syncQueued(update('at-refusal'));
+      // The refusal signs out and the root re-renders: inside act (the release
+      // gate's strict run fails on "not wrapped in act").
+      await rtl.act(async () => { await syncQueued(update('at-refusal')); });
       expect(copyOf(A, persisted[2])).toEqual({
         status: 'failed', category: 'auth', label: 'Sync Failed', copy: 'Session expired · Sign in again',
       });
       await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
-      await syncQueued(update('after-refusal'));
+      await rtl.act(async () => { await syncQueued(update('after-refusal')); });
       expect(copyOf(A, persisted[3])).toEqual({
         status: 'failed', category: 'signed_out', label: 'Sync Failed', copy: 'Sign in required to sync',
       });
