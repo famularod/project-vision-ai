@@ -17,6 +17,7 @@ import {
   scheduleImportReviewFields,
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
+import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
 import { colors, spacing, typography } from '../theme';
 import type { ScheduleItem } from '../types';
 import {
@@ -164,8 +165,8 @@ export function ScheduleImportFlow({
         setPendingBatch(current => current?.id === batchToReview.id ? null : current);
         setExpandedItemIds([]);
       }
-    } catch {
-      setSaveError(scheduleImportSaveErrorMessage);
+    } catch (error) {
+      setSaveError(scheduleImportSaveErrorText(error));
     } finally {
       setSaveBusy(false);
     }
@@ -185,8 +186,8 @@ export function ScheduleImportFlow({
       await onApprove(batchToSave);
       setPendingBatch(current => current?.id === batchToSave.id ? null : current);
       setExpandedItemIds([]);
-    } catch {
-      setSaveError(scheduleImportSaveErrorMessage);
+    } catch (error) {
+      setSaveError(scheduleImportSaveErrorText(error));
     } finally {
       setSaveBusy(false);
     }
@@ -517,6 +518,13 @@ function ReviewInput({
 
 const scheduleImportSaveErrorMessage =
   'Vitruvius could not finish saving this schedule. Your review is still open and unchanged. Try again.';
+
+/** A reason the manager can fix in the review is shown as is (whole-app audit A5, 30 Sep 2026). */
+function scheduleImportSaveErrorText(error: unknown) {
+  return error instanceof ScheduleImportReviewError
+    ? `${error.message} Your review is still open.`
+    : scheduleImportSaveErrorMessage;
+}
 
 function scheduleImportWarnings(batch: PIEScheduleImportBatch | null) {
   if (!batch) return [];

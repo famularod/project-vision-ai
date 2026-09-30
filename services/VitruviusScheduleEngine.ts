@@ -200,6 +200,27 @@ export function applyVitruviusSchedulePreview(
   }));
 }
 
+/**
+ * The dependency lists that change when a task is deleted: each successor
+ * drops the deleted predecessor and keeps every other entry as stored
+ * (whole-app audit A5, 30 Sep 2026). The dangling reference was flagged
+ * "Map predecessor" for good, kept the task in Attention and made the
+ * finish-to-start calculation unsafe to apply.
+ */
+export function dependencyChangesForDeletedTask(
+  items: readonly Pick<ScheduleItem, 'id' | 'dependencies'>[],
+  deletedItemId: string,
+): Array<{ id: string; dependencies: ScheduleDependency[] }> {
+  const deletedId = deletedItemId.trim();
+  if (!deletedId) return [];
+  return items.flatMap(item => {
+    if (item.id === deletedItemId || !Array.isArray(item.dependencies)) return [];
+    const kept = item.dependencies.filter(dependency =>
+      !(typeof dependency?.predecessorItemId === 'string' && dependency.predecessorItemId.trim() === deletedId));
+    return kept.length === item.dependencies.length ? [] : [{ id: item.id, dependencies: kept }];
+  });
+}
+
 export function normalizeScheduleDependencies(
   value: unknown,
 ): ScheduleDependency[] {

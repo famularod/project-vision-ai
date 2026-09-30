@@ -2136,8 +2136,8 @@ function exactScheduleImportSyncErrors(input: {
     if (outcome === 'superseded') {
       errors.push(
         input.scheduleQueueIds.has(id)
-          ? 'An imported task was removed because a protected deletion marker is newer.'
-          : 'An imported schedule document was removed because a protected deletion marker is newer.',
+          ? 'An imported task was not added: it was deleted earlier, and its protected deletion marker keeps it deleted.'
+          : 'An imported schedule document was not added: it was deleted earlier, and its protected deletion marker keeps it deleted.',
       );
     } else if (outcome === 'failed' && !input.exactRemaining.some(item => item.id === id)) {
       const scheduleItem = input.scheduleQueueIds.get(id);

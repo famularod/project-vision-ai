@@ -32,6 +32,7 @@ export type ScheduleImportScopeWarningCode =
   | 'schedule_parent_archived'
   | 'schedule_parent_deleted'
   | 'area_not_in_selected_project'
+  | 'area_unregistered'
   | 'area_ambiguous'
   | 'invalid_start_date'
   | 'invalid_finish_date'
@@ -81,6 +82,37 @@ export type ScheduleImportScopeValidation = Readonly<{
   needsProjectCount: number;
   hasWarnings: boolean;
 }>;
+
+/**
+ * A save refused for something the manager can fix in the open review; the
+ * review shows its message instead of the generic save failure.
+ */
+export class ScheduleImportReviewError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScheduleImportReviewError';
+  }
+}
+
+/**
+ * Why approval must wait, if it must (whole-app audit A5, 30 Sep 2026): a row
+ * with no active project, or an area of another selected project (or an
+ * ambiguous one) entered during review. The approval-time check used to clear
+ * such an area silently while saving.
+ */
+export function scheduleImportApprovalBlocker(
+  validation: ScheduleImportScopeValidation,
+  items: readonly Pick<ScheduleItem, 'id' | 'taskName'>[],
+): string | null {
+  if (validation.needsProjectCount > 0) {
+    return 'Choose an active project for every highlighted schedule item before saving.';
+  }
+  const areaWarning = validation.warnings.find(value =>
+    value.code === 'area_not_in_selected_project' || value.code === 'area_ambiguous');
+  if (!areaWarning) return null;
+  const taskName = items.find(item => item.id === areaWarning.itemId)?.taskName?.trim();
+  return `${taskName ? `${taskName}: ` : ''}${areaWarning.message}`;
+}
 
 type MatchResult<T> =
   | { kind: 'none' }
@@ -411,11 +443,33 @@ export function validateScheduleImportScope({
         identityKey(group.projectId) === identityKey(selectedProject?.id),
       );
       if (areaSource && projectAreaGroup) {
-        const matchingAreas = projectAreaGroup.areas.filter(area =>
-          [area.id, area.name].map(identityKey).includes(identityKey(areaSource)),
-        );
+        const areaMatches = (area: Readonly<{ id: string; name: string }>) =>
+          [area.id, area.name].map(identityKey).includes(identityKey(areaSource));
+        const matchingAreas = projectAreaGroup.areas.filter(areaMatches);
+        // An area of another selected project is the leak this guard stops.
+        // A name no selected project has (a new area, or one typed during
+        // review) is kept as typed: wiping it lost the manager's entry at
+        // approval without a word (whole-app audit A5, 30 Sep 2026).
+        const otherOwner = matchingAreas.length === 0
+          ? selectedProjects.find(project =>
+              identityKey(project.id) !== identityKey(selectedProject?.id) &&
+              selectedProjectAreas.some(group =>
+                identityKey(group.projectId) === identityKey(project.id) &&
+                group.areas.some(areaMatches),
+              ),
+            )
+          : undefined;
         if (matchingAreas.length === 1) {
           safeLocationName = matchingAreas[0].name;
+        } else if (matchingAreas.length === 0 && !otherOwner) {
+          safeLocationName = areaSource;
+          warnings.push(warning(
+            item,
+            'area_unregistered',
+            'area',
+            areaSource,
+            `Area "${areaSource}" is not one of ${selectedProject.name}'s saved areas yet. It is kept as typed.`,
+          ));
         } else {
           safeLocationName = '';
           warnings.push(warning(
@@ -426,8 +480,8 @@ export function validateScheduleImportScope({
             'area',
             areaSource,
             matchingAreas.length > 1
-              ? `Area "${areaSource}" is ambiguous for ${selectedProject.name}. Select the correct area during review.`
-              : `Area "${areaSource}" does not belong to ${selectedProject.name}. Select an area for that project during review.`,
+              ? `Area "${areaSource}" is ambiguous for ${selectedProject.name}. Enter the correct area during review.`
+              : `Area "${areaSource}" belongs to ${otherOwner?.name}, not ${selectedProject.name}. Enter an area of ${selectedProject.name} during review.`,
           ));
         }
       }

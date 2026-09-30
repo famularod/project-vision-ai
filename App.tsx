@@ -113,9 +113,11 @@ import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
 import {
   bindStableScheduleImportItemIds,
-  buildScheduleImportSourceIdentity,
+  resolveScheduleImportSourceIdentity,
 } from './services/ScheduleImportSourceIdentity';
 import {
+  ScheduleImportReviewError,
+  scheduleImportApprovalBlocker,
   validateScheduleImportScope,
 } from './services/ScheduleImportScopeGuard';
 import { buildVitruviusMyWork } from './services/VitruviusMyWork';
@@ -214,6 +216,7 @@ import {
 } from './hooks/use-startup-hydration';
 import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
 import { useCommittedText } from './hooks/use-committed-text';
+import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import type {
   ActionStatus,
@@ -330,7 +333,7 @@ import {
   isStartupStandaloneProjectDocumentRecord,
   salvageStartupContactBook,
 } from './services/StartupRecordValidation';
-import { normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
+import { dependencyChangesForDeletedTask, normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
 import { normalizeProjectControls } from './services/VitruviusProjectControls';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
@@ -12029,6 +12032,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     scheduleItem => scheduleItem.id !== itemId,
                   );
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
+                dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, itemId) // successors drop it (audit A5)
+                  .forEach(change => updateScheduleItem(change.id, { dependencies: change.dependencies }));
               })
               .catch(() => {
                 Alert.alert(
@@ -12139,9 +12144,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       uri: file.uri,
       reportedSizeBytes: file.size,
     });
-    const sourceIdentity = buildScheduleImportSourceIdentity({
+    const sourceIdentity = resolveScheduleImportSourceIdentity({ // after a delete, the next generation (audit A5)
       bytes: sourcePayload.data,
       projects: scopedProjectRecords,
+      documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
     });
     const alreadyImported = referenceDocumentsCurrentRef.current.some(document =>
       document.id === sourceIdentity.documentId ||
@@ -12537,11 +12543,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         })),
       ],
     });
-    if (scopeValidation.needsProjectCount > 0) {
-      throw new Error(
-        'Choose an active project for every highlighted schedule item before saving.',
-      );
-    }
+    const approvalBlocker = scheduleImportApprovalBlocker(scopeValidation, batch.items);
+    if (approvalBlocker) throw new ScheduleImportReviewError(approvalBlocker);
 
     const approvedBatch = bindPIEScheduleImportBatchProvenance({
       ...batch,
@@ -12690,11 +12693,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         protectedDeletionCount === 1
           ? 'Deleted schedule record stayed deleted'
           : 'Deleted schedule records stayed deleted',
-        `Vitruvius found ${protectedDeletionCount} protected deletion ${
-          protectedDeletionCount === 1 ? 'marker' : 'markers'
-        } and did not restore ${
-          protectedDeletionCount === 1 ? 'that record' : 'those records'
-        }. Any other unfinished cloud work will retry automatically.`,
+        `${protectedDeletionCount} ${
+          protectedDeletionCount === 1 ? 'record in this import was' : 'records in this import were'
+        } deleted earlier on this or another device, so ${
+          protectedDeletionCount === 1 ? 'it was' : 'they were'
+        } not added back. Add a task by hand if it is still needed. Any other unfinished cloud work will retry automatically.`,
       );
     } else if (!syncResult.fullySynced) {
       Alert.alert(
@@ -20206,13 +20209,9 @@ function ScheduleItemRow({
   const [internalExpanded, setInternalExpanded] = useState(false);
   const [areaSheetOpen, setAreaSheetOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'synced' | 'pending'>('idle');
-  const [progressDraft, setProgressDraft] = useState(() =>
-    reconcileScheduleProgress(item.status, item.percentComplete),
-  );
+  // Staged by task id until Save: it survives a task switch, a collapse or a tab switch (audit A5).
+  const [progressDraft, setProgressDraft] = useScheduleProgressDraft(item.id, reconcileScheduleProgress(item.status, item.percentComplete));
   const saveAttemptRef = useRef(0);
-  useEffect(() => {
-    setProgressDraft(reconcileScheduleProgress(item.status, item.percentComplete));
-  }, [item.id, item.status, item.percentComplete]);
   const progressDraftDirty =
     progressDraft.status !== item.status ||
     progressDraft.percentComplete !== item.percentComplete;
@@ -20372,7 +20371,7 @@ function ScheduleItemRow({
           <View style={[styles.statusPill, { backgroundColor: `${priorityColor}1A` }]}>
             <Text style={[styles.statusPillText, { color: priorityColor }]}>{item.priority}</Text>
           </View>
-          <Text style={styles.percentText}>{displayedItem.percentComplete}%</Text>
+          <Text style={styles.percentText}>{displayedItem.percentComplete}%{progressDraftDirty ? ' · Unsaved' : ''}</Text>
         </View>
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${displayedItem.percentComplete}%` }]} />

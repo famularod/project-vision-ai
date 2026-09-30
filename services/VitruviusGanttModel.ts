@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { plainDateAtInstant, projectTimeZoneOrDefault } from './ProjectDateTime';
 import { buildVitruviusScheduleHierarchy } from './VitruviusScheduleWorkspace';
 
 export type VitruviusGanttZoom = 'day' | 'week' | 'month';
@@ -44,17 +45,20 @@ export function buildVitruviusGanttModel({
   items,
   zoom,
   today = new Date(),
+  projectTimeZone,
 }: {
   items: readonly ScheduleItem[];
   zoom: VitruviusGanttZoom;
   today?: Date;
+  /** Defaults to the first task's project zone, then the app default. */
+  projectTimeZone?: string | null;
 }): VitruviusGanttModel {
   const hierarchyRows = projectScheduleRows(items);
   const datesById = derivedScheduleDates(items);
   const realDates = [...datesById.values()]
     .flatMap(range => [range.start, range.finish])
     .filter((value): value is Date => Boolean(value));
-  const todayDate = startOfUtcDay(today);
+  const todayDate = projectScheduleToday(today, scheduleTimeZone(items, projectTimeZone));
   const earliest = realDates.length > 0
     ? new Date(Math.min(...realDates.map(date => date.getTime())))
     : todayDate;
@@ -325,6 +329,26 @@ function ganttDayWidth(zoom: VitruviusGanttZoom) {
 
 function startOfUtcDay(value: Date) {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+}
+
+/**
+ * Today's project calendar date, as the UTC-midnight Date a schedule date
+ * parses to (whole-app audit A5, 30 Sep 2026). The UTC day was used before:
+ * it turns over at 5 pm in California (4 pm in winter), so from then on a
+ * task due today read Overdue in the lookahead and its export, and the Gantt
+ * marked tomorrow as today; east of UTC the mirror error held until morning.
+ */
+export function projectScheduleToday(now: Date, projectTimeZone?: string | null): Date {
+  const today = plainDateAtInstant(now, projectTimeZoneOrDefault(projectTimeZone));
+  return (today && parseVitruviusScheduleDate(today)) || startOfUtcDay(now);
+}
+
+/** The option, else the first task that names a project zone (the app default after that). */
+export function scheduleTimeZone(
+  items: readonly Pick<ScheduleItem, 'projectTimeZone'>[],
+  projectTimeZone?: string | null,
+): string | null {
+  return projectTimeZone || items.find(item => item.projectTimeZone)?.projectTimeZone || null;
 }
 
 function addUtcDays(value: Date, days: number) {

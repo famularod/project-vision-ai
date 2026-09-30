@@ -28,15 +28,18 @@ export type ScheduleImportSourceIdentity = Readonly<{
 export function buildScheduleImportSourceIdentity({
   bytes,
   projects,
+  generation = 0,
 }: Readonly<{
   bytes: ArrayBuffer | Uint8Array;
   projects: readonly ScheduleImportScopeProject[];
+  /** 0 for a first import; see resolveScheduleImportSourceIdentity. */
+  generation?: number;
 }>): ScheduleImportSourceIdentity {
   const sourceBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const contentSha256 = hex(sha256(sourceBytes));
   const scopeKey = canonicalScheduleImportScope(projects).join('|') || 'no-project-scope';
   const idempotencyKey = hex(sha256(utf8ToBytes(
-    `vitruvius-schedule-import-v1|${contentSha256}|${scopeKey}`,
+    `vitruvius-schedule-import-v1|${contentSha256}|${scopeKey}${generation > 0 ? `|reimport:${generation}` : ''}`,
   )));
 
   return Object.freeze({
@@ -46,6 +49,31 @@ export function buildScheduleImportSourceIdentity({
     batchId: `schedule-import-${idempotencyKey}`,
     documentId: `schedule-document-${idempotencyKey}`,
   });
+}
+
+/**
+ * The identity for importing these bytes into this scope now (whole-app audit
+ * A5, 30 Sep 2026). Deleting an imported schedule leaves a deletion record
+ * for its document id, and deletion records always win, so importing the same
+ * file again produced the same ids and every reviewed row was dropped at
+ * approval. Each deleted generation moves the identity to the next one; the
+ * walk depends only on the synced deletion records, so every device that has
+ * them derives the same ids and a retry stays idempotent.
+ */
+export function resolveScheduleImportSourceIdentity({
+  bytes,
+  projects,
+  documentIdIsDeleted,
+}: Readonly<{
+  bytes: ArrayBuffer | Uint8Array;
+  projects: readonly ScheduleImportScopeProject[];
+  documentIdIsDeleted: (documentId: string) => boolean;
+}>): ScheduleImportSourceIdentity {
+  let identity = buildScheduleImportSourceIdentity({ bytes, projects });
+  for (let generation = 1; generation <= 100 && documentIdIsDeleted(identity.documentId); generation += 1) {
+    identity = buildScheduleImportSourceIdentity({ bytes, projects, generation });
+  }
+  return identity;
 }
 
 export function canonicalScheduleImportScope(
