@@ -670,8 +670,10 @@ import {
 } from './services/DAVEProjectBlockerState';
 import {
   canonicalizeDAVEScheduleItems,
+  daveRegisteredIdentityNames,
   scheduleTaskGroupName,
 } from './services/DAVEIdentity';
+import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from './services/ScheduleImportMerge';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
@@ -2487,6 +2489,7 @@ function canonicalizeScheduleIdentityItems(
   items: ScheduleItem[],
   projectAreas: ProjectArea[] = [],
   corrections: readonly DAVEIdentityCorrection[] = [],
+  registeredNames: readonly string[] = [],
 ) {
   const projectNames = Array.from(new Set([
     ...DEFAULT_PROJECTS,
@@ -2499,6 +2502,7 @@ function canonicalizeScheduleIdentityItems(
       projectNames,
       projectAreas: projectAreas as unknown as import('./types').ProjectArea[],
       corrections,
+      registeredNames,
     },
   ).items as unknown as ScheduleItem[];
 }
@@ -5370,7 +5374,7 @@ useEffect(() => {
       }
 
       const migratedUpdates = savedUpdates.map(migrateLegacyProjectUpdate);
-      const migratedSchedules = scheduleItems.map(migrateLegacyScheduleItem);
+      const migratedSchedules = identityAliasCleanup.scheduleItemsForFullSync.map(migrateLegacyScheduleItem);
       const syncResult = await synchronizeLocalData({
         projects: [...DEFAULT_PROJECTS],
         savedUpdates: migratedUpdates,
@@ -5470,14 +5474,23 @@ useEffect(() => {
   };
 }, [startupHydration.retryAttempt]);
 
+const identityAliasCleanup = useIdentityAliasCleanup({
+  retryAttempt: startupHydration.retryAttempt,
+  ready: identityCorrectionsLoaded && projectsLocalLoaded && projectAreasLocalLoaded,
+  projectNames: projects, projectAreas, scheduleItems,
+  onCorrections: corrections => setIdentityCorrections([...corrections]),
+});
+
 useEffect(() => {
   if (!identityCorrectionsLoaded || !scheduleItemsLocalLoaded || !projectAreasLocalLoaded) return;
+  if (!identityAliasCleanup.done) return;
   if (identityCorrections.length > 0 && scheduleItems.length > 0) {
     setScheduleItems(previous => {
       const canonical = canonicalizeScheduleIdentityItems(
         previous,
         projectAreas,
         identityCorrections,
+        daveRegisteredIdentityNames({ projectNames: projects, projectAreas }),
       );
       return JSON.stringify(canonical) === JSON.stringify(previous)
         ? previous
@@ -5486,8 +5499,10 @@ useEffect(() => {
   }
   setScheduleIdentityReady(true);
 }, [
+  identityAliasCleanup.done,
   identityCorrections,
   identityCorrectionsLoaded,
+  projects,
   projectAreas,
   projectAreasLocalLoaded,
   scheduleItems.length,
@@ -6371,6 +6386,7 @@ useEffect(() => {
           scheduleItemsCurrentRef.current = mergedItems;
           setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
             ? currentItems : mergedItems);
+          identityAliasCleanup.markScheduleRefreshed(); // true names are back (audit A11 pass 2)
         });
       }});
 
@@ -8458,35 +8474,10 @@ useEffect(() => {
     memory: DAVEConfirmedCaptureMemory,
     walkSessionId?: string,
   ) {
+    // A corrected project or area belongs to this memory only. It was saved
+    // as a name alias that renamed every task of the real area (whole-app
+    // audit A11 pass 2, 30 Sep 2026).
     await localDAVECaptureMemoryRepository.save(memory);
-    const identityLearning = memory.corrections
-      .filter(correction =>
-        (correction.field === 'project' || correction.field === 'location') &&
-        correction.previousValue?.trim() &&
-        correction.correctedValue?.trim(),
-      )
-      .map(correction => ({
-        id: `identity:${memory.id}:${correction.field}:${correction.correctedAt}`,
-        kind: correction.field === 'project' ? 'project' as const : 'area' as const,
-        rawName: correction.previousValue || '',
-        canonicalName: correction.correctedValue || '',
-        parentProjectName: correction.field === 'location'
-          ? memory.recommendedProject.value
-          : null,
-        sourceRecordId: memory.id,
-        confirmedAt: memory.confirmedAt,
-        confirmedBy: 'Project manager',
-      }));
-    if (identityLearning.length > 0) {
-      try {
-        await Promise.all(identityLearning.map(correction =>
-          localDAVEIdentityRepository.save(correction),
-        ));
-        setIdentityCorrections([...await localDAVEIdentityRepository.list()]);
-      } catch {
-        // The confirmed capture remains saved even if optional identity learning cannot persist.
-      }
-    }
     const refreshedMemories = await localDAVECaptureMemoryRepository.list();
     setCaptureMemories([...refreshedMemories]);
     if (walkSessionId) {
@@ -12486,6 +12477,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ),
       projectAreasCurrentRef.current,
       identityCorrections,
+      daveRegisteredIdentityNames({ projectNames: projectsCurrentRef.current, projectAreas: projectAreasCurrentRef.current }),
     );
 
     let synchronizedItems = scheduleItemsCurrentRef.current;
@@ -13977,7 +13969,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               localProjects={activeProjects}
               savedUpdates={savedUpdates}
               projectAreas={projectAreas}
-              scheduleItems={scheduleItems}
+              scheduleItems={identityAliasCleanup.scheduleItemsForFullSync}
               referenceDocuments={referenceDocuments}
               syncCleanupNotice={syncCleanupNotice}
               displayName={displayName}

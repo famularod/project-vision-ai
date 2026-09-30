@@ -67,7 +67,43 @@ type BuildDAVEIdentityRegistryInput = {
   projectAreas?: readonly ProjectArea[];
   scheduleItems?: readonly ScheduleItem[];
   corrections?: readonly DAVEIdentityCorrection[];
+  /**
+   * Real names only: the project list and saved project areas, never task
+   * rows (a task row can carry the misspelling a correction exists to fix,
+   * e.g. "Pump Hse"). A saved alias never renames one of these.
+   */
+  registeredNames?: readonly string[];
 };
+
+/**
+ * Whole-app audit A11 pass 2 (30 Sep 2026): picking another area in Confirm
+ * Memory saved "Level 2 corridor -> Roof" as an alias, and every task in the
+ * real Level 2 corridor moved to Roof. An alias is for a spelling variant;
+ * one whose old name is a real project or saved area is ignored.
+ */
+export function daveIdentityAliasRenamesRegisteredName(
+  correction: Pick<DAVEIdentityCorrection, 'rawName'>,
+  registeredNames: readonly string[],
+) {
+  const rawKey = normalizeDAVEIdentityName(correction.rawName);
+  return Boolean(rawKey) &&
+    registeredNames.some(name => normalizeDAVEIdentityName(name) === rawKey);
+}
+
+/** The project list plus saved project areas (see registeredNames). */
+export function daveRegisteredIdentityNames({
+  projectNames,
+  projectAreas = [],
+}: {
+  projectNames: readonly string[];
+  projectAreas?: readonly Pick<ProjectArea, 'name'>[];
+}): string[] {
+  return Array.from(new Set(
+    [...projectNames, ...projectAreas.map(area => area.name)]
+      .map(name => (name || '').trim())
+      .filter(Boolean),
+  ));
+}
 
 export function normalizeDAVEIdentityName(value: string | null | undefined) {
   return (value || '')
@@ -103,7 +139,10 @@ export function buildDAVEIdentityRegistry(
   input: BuildDAVEIdentityRegistryInput,
 ): DAVEIdentityRegistry {
   const entities = new Map<string, DAVEIdentityEntity>();
-  const corrections = [...(input.corrections || [])];
+  const registeredNames = input.registeredNames || [];
+  const corrections = (input.corrections || []).filter(correction =>
+    !daveIdentityAliasRenamesRegisteredName(correction, registeredNames),
+  );
 
   function correctedIdentity(
     kind: DAVEEntityKind,
@@ -241,11 +280,19 @@ export function resolveDAVEIdentity({
       )
     : [];
   const unscopedMatches = kindMatches.filter(entity => !entity.parentProjectName);
-  const candidates = exactParentMatches.length > 0
+  const scopedCandidates = exactParentMatches.length > 0
     ? exactParentMatches
     : unscopedMatches.length > 0
       ? unscopedMatches
       : kindMatches;
+  // An exact name outranks another entity's alias for the same words; the
+  // clash blanked both areas to "Area Not Assigned" (audit A11 pass 2).
+  const exactCandidates = scopedCandidates.filter(entity =>
+    entity.normalizedName === normalizedName,
+  );
+  const candidates = scopedCandidates.length > 1 && exactCandidates.length === 1
+    ? exactCandidates
+    : scopedCandidates;
 
   if (candidates.length === 1) {
     return {
