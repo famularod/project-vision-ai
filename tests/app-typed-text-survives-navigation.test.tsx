@@ -230,6 +230,85 @@ describe('leaving a screen keeps the field note being written (audit A2 M3)', ()
     tree.unmount();
   });
 
+  it('iPad: an Owner or Contractor typed survives the rail project list and the view tabs (audit A2 pass 2 M2)', async () => {
+    const WIDE = { width: 1194, height: 834, scale: 2, fontScale: 1 } as const;
+    act(() => { Dimensions.set({ window: WIDE, screen: WIDE }); });
+    const KEY = 'projectPhotoUpdate.scheduleItems.v1';
+    const task = (id: string, taskName: string, projectName: string, done = false) => ({
+      id, taskName, projectName, status: done ? 'Complete' : 'In Progress', percentComplete: done ? 100 : 20,
+      priority: 'Medium', startDate: '09/28/2026', finishDate: '10/02/2026', owner: '', contractor: '',
+      locationName: '', notes: '',
+    });
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['2375 Compliance Project', 'Pier 7 Project']));
+    await AsyncStorage.setItem(KEY, JSON.stringify([
+      task('task-alpha', 'Task Alpha', '2375 Compliance Project'),
+      task('task-pier', 'Task Pier', 'Pier 7 Project'),
+      task('task-done', 'Task Done', '2375 Compliance Project', true),
+    ]));
+    const alpha = async () => (JSON.parse(await AsyncStorage.getItem(KEY) || '[]') as Array<{ id: string; owner: string; contractor: string }>)
+      .find(item => item.id === 'task-alpha');
+    const typeInAlpha = async (placeholder: string, text: string) => {
+      await act(async () => { fireEvent.press(await tree.findByLabelText('Open task Task Alpha', {}, COLD)); });
+      const field = await tree.findByPlaceholderText(placeholder, {}, COLD);
+      fireEvent(field, 'focus');
+      fireEvent.changeText(field, text);
+    };
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-rail-brand')).toBeTruthy(), COLD);
+    await act(async () => { fireEvent.press(tree.getAllByRole('tab', { name: 'Tasks' })[0]); });
+
+    // The rail's TASK PROJECT list switches the inspector to another project's task.
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Show tasks for 2375 Compliance Project', {}, COLD)); });
+    await typeInAlpha('PLZ owner / internal owner', 'ABC Electric');
+    await act(async () => { fireEvent.press(tree.getByLabelText('Show tasks for Pier 7 Project')); });
+    await waitFor(async () => expect((await alpha())?.owner).toBe('ABC Electric'), COLD);
+
+    // Timeline replaces the task list and its inspector.
+    await act(async () => { fireEvent.press(tree.getByLabelText('Show tasks for 2375 Compliance Project')); });
+    await typeInAlpha('Contractor / responsible company', 'XYZ Concrete');
+    await act(async () => { fireEvent.press(tree.getByLabelText('Timeline schedule view')); });
+    await waitFor(async () => expect((await alpha())?.contractor).toBe('XYZ Concrete'), COLD);
+
+    // Completed Tasks switches the inspector to the first completed task.
+    await act(async () => { fireEvent.press(tree.getByLabelText('Tasks schedule view')); });
+    await typeInAlpha('PLZ owner / internal owner', 'DEF Mechanical');
+    await act(async () => { fireEvent.press(tree.getByLabelText(/^Completed Tasks, /)); });
+    await waitFor(async () => expect((await alpha())?.owner).toBe('DEF Mechanical'), COLD);
+    const done = (JSON.parse(await AsyncStorage.getItem(KEY) || '[]') as Array<{ id: string; owner: string }>)
+      .find(item => item.id === 'task-done');
+    expect(done?.owner).toBe('');
+    tree.unmount();
+  });
+
+  it('iPad: an area header opens its area summary until a task is picked (audit A2 pass 2 L3)', async () => {
+    const WIDE = { width: 1194, height: 834, scale: 2, fontScale: 1 } as const;
+    act(() => { Dimensions.set({ window: WIDE, screen: WIDE }); });
+    const task = (id: string, taskName: string) => ({
+      id, taskName, projectName: '2375 Compliance Project', status: 'In Progress', percentComplete: 20,
+      priority: 'Medium', startDate: '09/28/2026', finishDate: '10/02/2026', owner: '', contractor: '',
+      locationName: '', notes: '',
+    });
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['2375 Compliance Project']));
+    await AsyncStorage.setItem('projectPhotoUpdate.scheduleItems.v1', JSON.stringify([
+      task('task-alpha', 'Task Alpha'), task('task-bravo', 'Task Bravo'),
+    ]));
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-rail-brand')).toBeTruthy(), COLD);
+    await act(async () => { fireEvent.press(tree.getAllByRole('tab', { name: 'Tasks' })[0]); });
+    const header = await tree.findByLabelText('Collapse No Area Assigned', {}, COLD);
+    expect(header.props.accessibilityHint).toBe('Also opens the No Area Assigned area summary.');
+    await act(async () => { fireEvent.press(header); });
+    expect(tree.getByTestId('schedule-area-summary')).toBeTruthy();
+    expect(tree.queryByPlaceholderText('PLZ owner / internal owner')).toBeNull();
+
+    // Picking a task replaces the summary with that task.
+    await act(async () => { fireEvent.press(tree.getByLabelText('Expand No Area Assigned')); });
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Open task Task Bravo', {}, COLD)); });
+    expect(tree.queryByTestId('schedule-area-summary')).toBeNull();
+    expect(tree.getByPlaceholderText('PLZ owner / internal owner')).toBeTruthy();
+    tree.unmount();
+  });
+
   it('forgets the note on sign-out, even when the same owner signs back in', async () => {
     act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
     const tree = render(<NativeRoot />);

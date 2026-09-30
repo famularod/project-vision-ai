@@ -164,6 +164,49 @@ describe('auth security review (30 Sep 2026)', () => {
     expect(later).not.toHaveBeenCalled();
     expect(listeners.size).toBe(0);
   });
+
+  it('a saved sign-in that cannot be read for a moment keeps the workspace open (audit A2 pass 2 L1)', async () => {
+    const { appState, emit } = fakeAppState();
+    const onExpired = jest.fn();
+    mockReadSavedSignIn.mockRejectedValue(new Error('User interaction is not allowed.'));
+    watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired, now: () => NOW, appState });
+    emit('active');
+    await jest.advanceTimersByTimeAsync(3 * OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(onExpired).not.toHaveBeenCalled();
+
+    // The Keychain answers again: the limit is decided as before.
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 3_600_000));
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it('a read error is decided from the last good read, and never outlasts 7 days from opening', async () => {
+    let now = NOW;
+    const { appState } = fakeAppState();
+    const onExpired = jest.fn();
+    // Last good read: 30 seconds short of 7 days.
+    mockReadSavedSignIn.mockResolvedValueOnce(saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS - 30_000));
+    mockReadSavedSignIn.mockRejectedValue(new Error('User interaction is not allowed.'));
+    watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired, now: () => now, appState });
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(onExpired).not.toHaveBeenCalled();
+    now += MINUTE;
+    await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+    expect(onExpired).toHaveBeenCalledTimes(1);
+
+    // Never read at all while open: closed once 7 days have passed since opening.
+    now = NOW;
+    const never = jest.fn();
+    mockReadSavedSignIn.mockReset();
+    mockReadSavedSignIn.mockRejectedValue(new Error('User interaction is not allowed.'));
+    watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired: never, now: () => now, appState, recheckMs: 24 * 60 * MINUTE });
+    now += OFFLINE_SIGN_IN_GRACE_MS - MINUTE;
+    await jest.advanceTimersByTimeAsync(24 * 60 * MINUTE);
+    expect(never).not.toHaveBeenCalled();
+    now += 2 * MINUTE;
+    await jest.advanceTimersByTimeAsync(24 * 60 * MINUTE);
+    expect(never).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {

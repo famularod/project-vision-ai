@@ -110,7 +110,9 @@ export function AppShellFrame({
                 askEcosPilotControl={askEcosPilotControl}
                 taskProjects={taskProjects}
                 selectedTaskProject={selectedTaskProject}
-                onTaskProjectChange={onTaskProjectChange}
+                onTaskProjectChange={onTaskProjectChange && (projectName =>
+                  // It switches the task inspector: an Owner being typed saves first (audit A2 pass 2 M2).
+                  afterTextInputBlur(() => onTaskProjectChange(projectName)))}
                 updateProjects={updateProjects}
                 selectedUpdateProject={selectedUpdateProject}
                 onUpdateProjectChange={onUpdateProjectChange}

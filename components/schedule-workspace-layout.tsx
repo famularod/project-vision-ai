@@ -82,7 +82,7 @@ export function ScheduleWideWorkspace({
                   else next.add(section.areaKey);
                   return next;
                 });
-                onSelectArea?.(section);
+                afterTextInputBlur(() => onSelectArea?.(section));
               }}
             />
           )}

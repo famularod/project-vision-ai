@@ -7,6 +7,8 @@ import {
   type TextStyle,
 } from 'react-native';
 
+import { cloudOwnerUnchanged, currentCloudOwner } from '../services/CloudOwnerBinding';
+
 type SharedFieldStyleProps = {
   labelStyle: StyleProp<TextStyle>;
   inputStyle: StyleProp<TextStyle>;
@@ -30,6 +32,13 @@ export function ScheduleCommittedTextField({
   const [draftValue, setDraftValue] = useState(value);
   const focusedRef = useRef(false);
   const committedValueRef = useRef(value);
+  // Whole-app audit A2 pass 2 M2: a field removed while being typed in (the
+  // iPad rail's project list, a view tab or filter switching the inspector's
+  // task) gets no blur from React Native, so the typed text was dropped. It
+  // is committed as the field goes, unless the account changed meanwhile.
+  const latestRef = useRef({ draftValue, onCommit, commitDraft });
+  const focusOwnerRef = useRef(currentCloudOwner());
+  latestRef.current = { draftValue, onCommit, commitDraft };
 
   useEffect(() => {
     if (!focusedRef.current) {
@@ -38,12 +47,18 @@ export function ScheduleCommittedTextField({
     }
   }, [value]);
 
+  useEffect(() => () => {
+    if (focusedRef.current && cloudOwnerUnchanged(focusOwnerRef.current)) {
+      latestRef.current.commitDraft();
+    }
+  }, []);
+
   function commitDraft() {
     focusedRef.current = false;
-    const committed = draftValue.trim();
+    const committed = latestRef.current.draftValue.trim();
     if (committed === committedValueRef.current) return;
     committedValueRef.current = committed;
-    onCommit(committed);
+    latestRef.current.onCommit(committed);
   }
 
   return (
@@ -55,6 +70,7 @@ export function ScheduleCommittedTextField({
         onChangeText={setDraftValue}
         onFocus={() => {
           focusedRef.current = true;
+          focusOwnerRef.current = currentCloudOwner();
         }}
         onBlur={commitDraft}
         onEndEditing={commitDraft}

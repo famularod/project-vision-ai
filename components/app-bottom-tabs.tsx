@@ -11,6 +11,9 @@ import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
+/** Above the 44-point minimum (services/NativeInteractionPolicy.ts). */
+export const TAB_TOUCH_TARGET = 48;
+
 export function AppBottomTabs({
   current,
   onChange,
@@ -117,14 +120,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    paddingTop: 8,
     paddingBottom: process.env.EXPO_OS === 'ios' ? 24 : 10,
   },
+  // Each button is a 48-point target with the bar's top padding inside it:
+  // the buttons were about 36 points tall (whole-app audit A2 pass 2 L4).
   tabButton: {
     alignItems: 'center',
     justifyContent: 'center',
     flex: 1,
     gap: 3,
+    minHeight: TAB_TOUCH_TARGET,
+    paddingTop: 6,
+    paddingBottom: 4,
   },
   tabText: {
     color: colors.mutedText,
@@ -139,6 +146,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flex: 1,
     gap: 2,
+    minHeight: TAB_TOUCH_TARGET,
+    paddingTop: 6,
+    paddingBottom: 4,
   },
   talkIcon: {
     width: 36,

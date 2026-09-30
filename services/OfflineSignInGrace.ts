@@ -174,13 +174,26 @@ async function savedSignInRefreshWithin(timeoutMs: number): Promise<SavedSignInR
   }
 }
 
-/** Whether the workspace open offline for `ownerId` is still within the 7 days. */
+/**
+ * Whether the workspace open offline for `ownerId` is still within the 7 days.
+ * A saved sign-in that cannot be read is not a sign-out (the Keychain can
+ * refuse a read for a moment, as while the phone is locked): the last good
+ * read decides, and with none the answer is unknown (null), asked again at
+ * the next check. Before, a read error closed the workspace with "Your
+ * sign-in has not refreshed for 7 days" (whole-app audit A2 pass 2 L1). The
+ * launch check stays strict: a read error there opens nothing, with Retry.
+ */
 export async function offlineSignInGraceStillAllows(
   ownerId: string,
   now: () => number = () => Date.now(),
-): Promise<boolean> {
-  const saved = await readSavedSignIn().catch(() => null);
-  return offlineSignInGraceAllows({ saved, workspaceOwnerId: ownerId, nowMs: now() });
+  lastRead: { saved?: SavedSignIn | null } = {},
+): Promise<boolean | null> {
+  try {
+    lastRead.saved = await readSavedSignIn();
+  } catch {
+    if (lastRead.saved === undefined) return null;
+  }
+  return offlineSignInGraceAllows({ saved: lastRead.saved ?? null, workspaceOwnerId: ownerId, nowMs: now() });
 }
 
 type AppStateLike = Readonly<{
@@ -211,15 +224,21 @@ export function watchOfflineSignInGrace({
   appState?: AppStateLike;
 }>): () => void {
   let watching = true;
+  const lastRead: { saved?: SavedSignIn | null } = {};
+  // Opened within the 7 days: however long reads keep failing, not beyond this.
+  const latestExpiryMs = now() + OFFLINE_SIGN_IN_GRACE_MS;
   const check = () => {
-    void offlineSignInGraceStillAllows(ownerId, now).then(async allowed => {
+    void offlineSignInGraceStillAllows(ownerId, now, lastRead).then(async allowed => {
       const nowMs = now();
-      const refused = clockSetBack(nowMs, await readLatestTimeSeen(ownerId))
+      // A clock set back behind a time already seen refuses (A1 pass 2 #5);
+      // an unreadable saved sign-in is unknown, not expired, until the 7 days
+      // from opening have passed (A2 pass 2 L1).
+      const refused: OfflineSignInRefusal | null = clockSetBack(nowMs, await readLatestTimeSeen(ownerId))
         ? 'clock'
-        : allowed ? null : 'expired';
+        : allowed === true || (allowed === null && nowMs <= latestExpiryMs) ? null : 'expired';
       if (!watching) return;
       if (!refused) {
-        await noteLatestTimeSeen(ownerId, nowMs);
+        if (allowed === true) await noteLatestTimeSeen(ownerId, nowMs);
         return;
       }
       stop();

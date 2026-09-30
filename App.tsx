@@ -19938,7 +19938,7 @@ function ScheduleScreen({
       <>
         <ScheduleWideWorkspace
           items={filteredItems}
-          selectedTaskId={selectedTask?.id || null}
+          selectedTaskId={selectedAreaSummary ? null : selectedTask?.id || null}
           selectedAreaKey={selectedAreaKey}
           onSelectTask={taskId => {
             setSelectedTaskId(taskId);
@@ -19957,9 +19957,9 @@ function ScheduleScreen({
               </Text>
             </>
           )}
-          inspector={selectedTask ? (
+          inspector={selectedTask && !selectedAreaSummary ? (
             // One row per task: a reused row carried a typed Owner onto the
-            // next task picked (audit A2 M3).
+            // next task picked (audit A2 M3). An area header shows its summary (A2 pass 2 L3).
             <ScheduleItemRow
               key={selectedTask.id}
               item={selectedTask}

@@ -75,6 +75,38 @@ describe('AppShellFrame', () => {
     }
   });
 
+  it('lets a field being typed blur and save before the rail task project changes (audit A2 pass 2 M2)', async () => {
+    setWindowDimensions({ width: 1194, height: 834, scale: 2, fontScale: 1 });
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const onTaskProjectChange = jest.fn();
+      const screen = await render(
+        <AppShellFrame
+          currentScreen="Schedule"
+          onScreenChange={jest.fn()}
+          onTalk={jest.fn()}
+          taskProjects={['Project A', 'Project B']}
+          selectedTaskProject="Project A"
+          onTaskProjectChange={onTaskProjectChange}
+        >
+          <Text>Task workspace</Text>
+        </AppShellFrame>,
+      );
+      await fireEvent.press(screen.getByRole('radio', { name: 'Show tasks for Project B' }));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(onTaskProjectChange).not.toHaveBeenCalled();
+      act(() => { jest.advanceTimersByTime(80); });
+      expect(onTaskProjectChange).toHaveBeenCalledWith('Project B');
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
+  });
+
   it('uses a compact navigation rail at medium iPad width', async () => {
     setWindowDimensions({
       width: 768,

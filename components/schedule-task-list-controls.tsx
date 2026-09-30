@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
 import { PROJECT_ITEM_TYPES, type ProjectItemType } from '../types';
+import { afterTextInputBlur } from './after-text-input-blur';
 
 export type ScheduleTaskFilter =
   | 'Attention'
@@ -15,6 +16,11 @@ export type ScheduleTaskFilter =
 export type ScheduleTaskView = 'Open Tasks' | 'Completed Tasks';
 export type ScheduleWorkspaceView = 'Tasks' | 'Timeline' | 'Lookahead';
 
+/**
+ * Every view, filter and work-type control here switches the task inspector
+ * beside the list on a wide iPad, so each lets a focused Owner or Contractor
+ * blur and save first (whole-app audit A2 pass 2 M2).
+ */
 export function ScheduleTaskListControls({
   scopeLabel,
   taskCount,
@@ -93,7 +99,7 @@ export function ScheduleTaskListControls({
               workspaceView === view && styles.workspaceTabActive,
               pressed && styles.pressed,
             ]}
-            onPress={() => onWorkspaceViewChange?.(view)}
+            onPress={() => afterTextInputBlur(() => onWorkspaceViewChange?.(view))}
             accessibilityRole="tab"
             accessibilityState={{ selected: workspaceView === view }}
             accessibilityLabel={`${view} schedule view`}
@@ -194,7 +200,7 @@ export function ScheduleTaskListControls({
                     activeView === view && styles.viewTabActive,
                     pressed && styles.pressed,
                   ]}
-                  onPress={() => onViewChange(view)}
+                  onPress={() => afterTextInputBlur(() => onViewChange(view))}
                   accessibilityRole="tab"
                   accessibilityState={{ selected: activeView === view }}
                   accessibilityLabel={`${view}, ${count} ${count === 1 ? 'task' : 'tasks'}`}
@@ -228,7 +234,7 @@ export function ScheduleTaskListControls({
                         selected && styles.itemTypeFilterChipSelected,
                         pressed && styles.pressed,
                       ]}
-                      onPress={() => onItemTypeChange(itemType)}
+                      onPress={() => afterTextInputBlur(() => onItemTypeChange(itemType))}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
                       accessibilityLabel={`Show ${itemType === 'All' ? 'all work types' : itemType}`}
@@ -287,7 +293,7 @@ function TaskMetric({
           selected && styles.metricSelected,
           pressed && styles.pressed,
         ]}
-        onPress={onPress}
+        onPress={() => afterTextInputBlur(onPress)}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         accessibilityLabel={`${label}: ${value}. ${actionLabel || `Show ${label.toLowerCase()}`}`}
