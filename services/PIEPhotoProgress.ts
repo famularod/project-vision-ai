@@ -267,6 +267,17 @@ function photoRef(candidate: PhotoCandidate): PIEPhotoProgressPhotoRef {
   };
 }
 
+/**
+ * The newest comparison still waiting for the owner's review. The review
+ * prompts name this one: photoProgressSummary is the newest comparison, which
+ * may already be confirmed while an older one waits (audit round 2 H1).
+ */
+export function photoComparisonAwaitingReview(
+  progress: Pick<PIEPhotoProgressResult, 'comparisons'> | null | undefined,
+): PIEPhotoProgressComparison | null {
+  return progress?.comparisons.find(comparison => comparison.needsReview) ?? null;
+}
+
 export function buildPhotoProgress({
   projectName,
   updates = [],

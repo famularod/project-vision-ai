@@ -13,6 +13,7 @@ import type {
   PIERealityObjectIntelligenceResult,
 } from './PIERealityModel';
 import type { PIESituationResult } from './PIESituationIntelligence';
+import { photoComparisonAwaitingReview } from './PIEPhotoProgress';
 
 export type PIEUserActionType =
   | 'Confirm'
@@ -718,7 +719,9 @@ function buildAttentionItems({
     items.push({
       id: 'attention-photo-progress',
       whatMattersNow: 'Photo progress needs verification.',
-      whyItMatters: runtime.photoProgressSummary,
+      whyItMatters:
+        photoComparisonAwaitingReview(runtime.photoProgress)?.structuredSummary.summary ||
+        runtime.photoProgressSummary,
       priority: 'medium',
       confidence: confidenceToScore(runtime.comparisonConfidence),
       reasons: [

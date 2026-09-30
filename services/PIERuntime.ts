@@ -103,6 +103,7 @@ import {
 } from './PIEScheduleIntelligence';
 import {
   buildPhotoProgress,
+  photoComparisonAwaitingReview,
   type PIEPhotoProgressComparison,
   type PIEPhotoProgressResult,
 } from './PIEPhotoProgress';
@@ -1826,7 +1827,11 @@ function buildPhotoProgressRecommendations(
   photoProgressOutputs: PIERuntimePhotoProgressOutputs,
 ): PIERecommendation[] {
   const progress = photoProgressOutputs.photoProgress;
-  const comparison = progress.lastComparison;
+  // A review prompt names the comparison that is waiting, not the newest one.
+  const awaitingReview = progress.comparisonNeedsReview
+    ? photoComparisonAwaitingReview(progress)
+    : null;
+  const comparison = awaitingReview || progress.lastComparison;
 
   if (!comparison) return [];
 
@@ -1836,11 +1841,11 @@ function buildPhotoProgressRecommendations(
     title: progress.comparisonNeedsReview
       ? 'Review photo progress comparison'
       : 'Use accepted photo progress as evidence',
-    summary: progress.photoProgressSummary,
+    summary: awaitingReview?.structuredSummary.summary || progress.photoProgressSummary,
     priority: progress.comparisonNeedsReview ? 'medium' : 'low',
     source: 'photo-progress',
     sources: ['photo-progress'],
-    confidence: progress.comparisonConfidence,
+    confidence: awaitingReview?.confidence || progress.comparisonConfidence,
     evidence: uniqueText([
       ...comparison.matchReasons,
       ...comparison.structuredSummary.evidence,
@@ -1936,19 +1941,21 @@ function buildUnknownsFromState(
     ...evidenceFusionOutputs.evidenceGaps.map(evidenceGapToUnknown),
     ...evidenceFusionOutputs.evidenceConflicts.map(evidenceConflictToUnknown),
   ];
+  const awaitingReview = photoProgressOutputs.comparisonNeedsReview
+    ? photoComparisonAwaitingReview(photoProgressOutputs.photoProgress)
+    : null;
   const photoProgressUnknowns =
-    photoProgressOutputs.comparisonNeedsReview &&
-    photoProgressOutputs.lastComparison
+    awaitingReview
       ? [{
-          id: `runtime-photo-progress-review-${runtimeSlug(photoProgressOutputs.lastComparison.id)}`,
-          projectName: photoProgressOutputs.lastComparison.project,
+          id: `runtime-photo-progress-review-${runtimeSlug(awaitingReview.id)}`,
+          projectName: awaitingReview.project,
           title: 'Photo Progress Needs Review',
-          summary: photoProgressOutputs.photoProgressSummary,
+          summary: awaitingReview.structuredSummary.summary,
           impact:
             'Photo comparison output should not be treated as project evidence until the user accepts or edits it.',
           suggestedAction: 'Confirm the visible finding, mark it incorrect, or mark it not useful.',
           source: 'photo-progress' as const,
-          confidence: photoProgressOutputs.comparisonConfidence,
+          confidence: awaitingReview.confidence,
           priority: 'medium' as const,
         }]
       : [];
