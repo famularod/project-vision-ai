@@ -8,6 +8,7 @@
  * connection returns, after startup, and on Sync Now.
  */
 
+import { cloudOwnerUnchanged, currentCloudOwner } from './CloudOwnerBinding';
 import { requireOwnedProjectDocumentAccess } from './ProjectDocumentLifecycle';
 import { classifySyncFailureText } from './SyncFailureCategory';
 
@@ -90,10 +91,25 @@ export function projectDocumentsDueForUploadRetry<T extends UploadRetryDocument>
 }
 
 /**
+ * True while the account signed in when an upload began is still the one
+ * signed in. A sign-out closes the workspace, but a document upload already
+ * running carried on: the runner kept walking the first account's list,
+ * uploaded its documents with the next account's session, shared them into
+ * that account, and saved the first account's list over the next one's
+ * documents on this phone (whole-app audit A8 pass 3 M3). Uses the same
+ * account binding as the sync queue (audit A1 M3).
+ */
+export function bindProjectDocumentUploadToAccount(): () => boolean {
+  const owner = currentCloudOwner();
+  return () => cloudOwnerUnchanged(owner);
+}
+
+/**
  * Uploads the documents that are due, one at a time. A run already in
  * flight is shared rather than started twice. The upload is called with the
  * document id only: without the document itself it shows no alert, so a
- * background attempt never interrupts the owner.
+ * background attempt never interrupts the owner. A run stops once another
+ * account signs in; that account's workspace starts its own.
  */
 export function createProjectDocumentUploadRetryRunner<T extends UploadRetryDocument>(
   getDocuments: () => readonly T[],
@@ -106,8 +122,9 @@ export function createProjectDocumentUploadRetryRunner<T extends UploadRetryDocu
     ignoreBackoff: boolean,
   ): Promise<ProjectDocumentUploadRetryResult> {
     const attempted = new Set<string>();
+    const sameAccount = bindProjectDocumentUploadToAccount();
     let uploaded = 0;
-    for (;;) {
+    while (sameAccount()) {
       const due = ignoreBackoff
         ? projectDocumentsAwaitingUpload(getDocuments())
         : projectDocumentsDueForUploadRetry(getDocuments(), now());

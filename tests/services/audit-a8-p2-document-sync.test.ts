@@ -25,6 +25,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import {
+  bindProjectDocumentUploadToAccount,
   createProjectDocumentUploadRetryRunner,
   projectDocumentsAwaitingUpload,
   projectDocumentsDueForUploadRetry,
@@ -101,9 +102,15 @@ type PhoneDocument = ReturnType<typeof phoneDocument> & { isArchived?: boolean; 
 function uploader(documents: PhoneDocument[], upload: (document: PhoneDocument) => Promise<{ ok: boolean; stubbed?: boolean; error?: string }>) {
   const projectDocumentsCurrentRef = { current: documents };
   const published: string[] = [];
+  // The list's state, set as React does and read back into the ref as a render does. Updates are
+  // functional since audit A8 pass 3 L3.
+  let state = documents;
   const deps: Record<string, unknown> = {
     projectDocumentsCurrentRef, draft: { documents: [] },
-    setProjectDocuments: (next: PhoneDocument[]) => { projectDocumentsCurrentRef.current = next; },
+    setProjectDocuments: (next: PhoneDocument[] | ((prev: PhoneDocument[]) => PhoneDocument[])) => {
+      state = typeof next === 'function' ? next(state) : next;
+      projectDocumentsCurrentRef.current = state;
+    },
     setDraft: jest.fn(), setSavedUpdates: jest.fn(),
     buildProjectDocumentStoragePath: (id: string) => `owner/${id}.pdf`,
     verifyOwnedProjectDocument: async () => undefined,
@@ -114,11 +121,14 @@ function uploader(documents: PhoneDocument[], upload: (document: PhoneDocument) 
     PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE: 'add again', reportStoragePersistenceFailure: jest.fn(),
     PROJECT_DOCUMENTS_STORAGE_KEY: 'projectDocuments', Alert: { alert: jest.fn() },
     projectDocumentUploadAttemptsAfterFailure,
+    // Audit A8 pass 3 M3 (landed after this test): the upload stops once another account signs in.
+    bindProjectDocumentUploadToAccount,
   };
   const { retryProjectDocumentUpload } = compile<{
     retryProjectDocumentUpload: (documentId: string) => Promise<boolean | undefined>;
   }>(['updateDocumentEverywhere', 'retryProjectDocumentUpload'], deps);
-  return { retryProjectDocumentUpload, projectDocumentsCurrentRef, published };
+  return { retryProjectDocumentUpload, projectDocumentsCurrentRef, published,
+    setProjectDocuments: deps.setProjectDocuments as (next: (prev: PhoneDocument[]) => PhoneDocument[]) => void };
 }
 
 describe('archived documents are not uploaded or shared (audit A8 pass 2 #4)', () => {
@@ -137,8 +147,8 @@ describe('archived documents are not uploaded or shared (audit A8 pass 2 #4)', (
 
   it('one archived while its upload was in flight is not shared; one still active is', async () => {
     const archivedMidway = uploader([phoneDocument('permit', 'failed')], async () => {
-      archivedMidway.projectDocumentsCurrentRef.current = archivedMidway.projectDocumentsCurrentRef.current
-        .map(document => ({ ...document, isArchived: true }));
+      // Archived as the app does it: a functional update of the list (audit A8 pass 3 L3).
+      archivedMidway.setProjectDocuments(prev => prev.map(document => ({ ...document, isArchived: true })));
       return { ok: true };
     });
     await expect(archivedMidway.retryProjectDocumentUpload('permit')).resolves.toBe(true);

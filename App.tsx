@@ -402,7 +402,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
-import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure } from './services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure } from './services/ProjectDocumentUploadRetry';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -6889,33 +6889,23 @@ useEffect(() => {
     setScreen('BuildUpdate');
   }
 
+  /**
+   * Changes one document wherever it is listed, and only while it is still
+   * listed. The whole list was set from a snapshot, so an upload's progress
+   * landing between a delete or archive and the next render put the
+   * document back (whole-app audit A8 pass 3 L3).
+   */
   function updateDocumentEverywhere(
     documentId: string,
     updater: (document: ProjectDocument) => ProjectDocument,
   ) {
-    const nextProjectDocuments = projectDocumentsCurrentRef.current.map(document =>
-      document.id === documentId ? updater(document) : document,
-    );
-    projectDocumentsCurrentRef.current = nextProjectDocuments;
-    setProjectDocuments(nextProjectDocuments);
-
-    setDraft(prev => ({
-      ...prev,
-      documents: (prev.documents || []).map(document =>
-        document.id === documentId ? updater(document) : document,
-      ),
-    }));
-
-    setSavedUpdates(prev =>
-      prev.map(update => ({
-        ...update,
-        documents: (update.documents || []).map(document =>
-          document.id === documentId ? updater(document) : document,
-        ),
-      })),
-    );
-
-    return nextProjectDocuments.find(document => document.id === documentId) || null;
+    const update = (documents: ProjectDocument[]) => documents.map(document =>
+      document.id === documentId ? updater(document) : document);
+    projectDocumentsCurrentRef.current = update(projectDocumentsCurrentRef.current);
+    setProjectDocuments(update);
+    setDraft(prev => ({ ...prev, documents: update(prev.documents || []) }));
+    setSavedUpdates(prev => prev.map(saved => ({ ...saved, documents: update(saved.documents || []) })));
+    return projectDocumentsCurrentRef.current.find(document => document.id === documentId) || null;
   }
 
   async function persistProjectDocumentsImmediately(
@@ -6993,10 +6983,15 @@ useEffect(() => {
     await queueReferenceDocumentRecord(sharedDocument);
   }
 
+  /** The owner's Retry: passed the document, so a failure is said (whole-app audit A8 pass 3). */
+  const retryProjectDocumentUploadAsked = (documentId: string) => void retryProjectDocumentUpload(documentId,
+    projectDocumentsCurrentRef.current.find(item => item.id === documentId) || draft.documents?.find(item => item.id === documentId));
+
   async function retryProjectDocumentUpload(
     documentId: string,
     providedDocument?: ProjectDocument,
   ) {
+    const sameAccount = bindProjectDocumentUploadToAccount(); // nothing written or shared once another account signs in (whole-app audit A8 pass 3 M3)
     const target =
       providedDocument ||
       projectDocumentsCurrentRef.current.find(
@@ -7036,6 +7031,7 @@ useEffect(() => {
 
     try {
       await verifyOwnedProjectDocument(target);
+      if (!sameAccount()) return false;
       let lastReportedPercent = -1;
       const result = await uploadPhoto({
         bucket: PROJECT_DOCUMENT_UPLOAD_FOLDER,
@@ -7055,7 +7051,7 @@ useEffect(() => {
           }));
         },
       });
-
+      if (!sameAccount()) return false;
       const completedAt = new Date().toISOString();
       const uploaded = result.ok && !result.stubbed;
       const completedDocument = updateDocumentEverywhere(documentId, document => ({
@@ -7085,7 +7081,7 @@ useEffect(() => {
         return false;
       }
 
-      if (completedDocument && !completedDocument.isArchived) { // archived while it uploaded: not shared (whole-app audit A8 pass 2 #4)
+      if (completedDocument && !completedDocument.isArchived && sameAccount()) { // archived while it uploaded: not shared (whole-app audit A8 pass 2 #4)
         try {
           await publishUploadedProjectDocument(completedDocument);
         } catch {
@@ -7099,6 +7095,7 @@ useEffect(() => {
       }
       return true;
     } catch (error) {
+      if (!sameAccount()) return false;
       if (error instanceof Error &&
           error.message === PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE) {
         Alert.alert(
@@ -11463,8 +11460,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         localFileCleanupStatus = cleanup.status;
       }
       const archivedAt = new Date().toISOString();
-
-      setProjectDocuments(prev =>
+      const removeCard = (prev: ProjectDocument[]) => (
         sensitive
           ? prev.map(item =>
               item.id === documentId
@@ -11476,8 +11472,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   }
                 : item,
             )
-          : prev.filter(item => item.id !== documentId),
-      );
+          : prev.filter(item => item.id !== documentId));
+      projectDocumentsCurrentRef.current = removeCard(projectDocumentsCurrentRef.current); // an upload finishing meanwhile saves the list without it (audit A8 pass 3 L3)
+      setProjectDocuments(removeCard);
       if (!sensitive && sharedRecord) hiddenSharedDocuments.hide(sharedRecord.id); // no card comes back here (audit A8)
       if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
         bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
@@ -13672,9 +13669,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onContacts={openContacts}
               onChangeArea={changeDraftArea}
               onAddDocument={importFieldUpdateDocument}
-              onRetryDocumentUpload={documentId => {
-                void retryProjectDocumentUpload(documentId);
-              }}
+              onRetryDocumentUpload={retryProjectDocumentUploadAsked}
               onContinueWithoutPhotos={continueWithoutPhotos}
               onRetryPhotoAnalysis={photo => {
                 void retryPhotoAnalysis(draft, photo);
@@ -13711,9 +13706,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   setScreen('AddPhotos')
                 }
                 onAddDocument={importFieldUpdateDocument}
-                onRetryDocumentUpload={documentId => {
-                  void retryProjectDocumentUpload(documentId);
-                }}
+                onRetryDocumentUpload={retryProjectDocumentUploadAsked}
                 onConfirmInterpretation={confirmPIEInterpretation}
                 onDismissInterpretation={dismissPIEInterpretation}
                 onRetryPhotoAnalysis={photo => {
@@ -13886,9 +13879,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUpdate={updateProjectDocument}
               onSetCurrentSchedule={makeProjectScheduleDocumentCurrent}
               onMakeCurrentDocument={markReferenceDocumentCurrent}
-              onRetry={documentId => {
-                void retryProjectDocumentUpload(documentId);
-              }}
+              onRetry={retryProjectDocumentUploadAsked}
               onReplaceFile={documentId => {
                 void replaceProjectDocumentFile(documentId);
               }}
