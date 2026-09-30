@@ -56,6 +56,7 @@ import {
   daveReferenceDocumentsNeedingCloudUpload,
   mergeDAVEReferenceDocumentRecoveryRecords,
   referenceDocumentEditOutlivingActivation,
+  referenceDocumentSharedDetailsFingerprint,
 } from './DAVECloudRecovery';
 import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
 import {
@@ -1728,6 +1729,13 @@ export async function queueReferenceDocumentRecord(
 }
 
 /**
+ * The shared details this phone last put in the cloud for each document, this
+ * launch: its own upload counts as seen before its echo comes back (whole-app
+ * audit A7 pass 6 L1).
+ */
+const referenceDocumentDetailsSent = new Map<string, string>();
+
+/**
  * After this phone's Make Current: each phone edit still queued that the
  * activation's stamp now outranks (text typed just before it, whose upload
  * starts after the activation call) is queued again, stamped after the
@@ -1745,7 +1753,8 @@ export async function requeueReferenceDocumentEditsOutlivingActivation(
     if (item.entity !== 'reference_document' || item.operation === 'delete' || heldForAnotherOwner(item.ownerId, owner)) return [];
     const local = (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData;
     const cloud = local ? cloudById.get(local.id) : undefined;
-    const edit = local && cloud ? referenceDocumentEditOutlivingActivation(local, cloud) : null;
+    const edit = local && cloud
+      ? referenceDocumentEditOutlivingActivation(local, cloud, Date.now(), referenceDocumentDetailsSent.get(local.id)) : null;
     return edit && cloud ? mergeDAVEReferenceDocumentRecoveryRecords({ local: [edit], cloud: [cloud] }) : [];
   });
   await Promise.all(kept.map(document => queueReferenceDocumentRecord(document)));
@@ -4440,7 +4449,8 @@ async function uploadQueueItem(
     // An edit made before the document was made current, here or on another
     // device, is not outranked by the activation's stamp (whole-app audit A8
     // pass 3 M2).
-    const local = (remote && referenceDocumentEditOutlivingActivation(payload.documentData, remote)) ||
+    const local = (remote && referenceDocumentEditOutlivingActivation(
+      payload.documentData, remote, Date.now(), referenceDocumentDetailsSent.get(payload.id))) ||
       payload.documentData;
     const merged = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
@@ -4476,6 +4486,7 @@ async function uploadQueueItem(
     const result = await upsertReferenceDocument(authoritative, { existing: Boolean(remote) });
     if (result.ok && !result.stubbed) {
       context.referenceDocumentsById.set(payload.id, authoritative);
+      referenceDocumentDetailsSent.set(payload.id, referenceDocumentSharedDetailsFingerprint(authoritative));
       return {
         outcome: 'uploaded',
         referenceDocument: authoritative,

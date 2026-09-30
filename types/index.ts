@@ -285,6 +285,8 @@ export type ReferenceDocument = {
   updatedAt?: string | null;
   /** Cloud row revision. Transport metadata only; never persisted inside document_data. */
   cloudUpdatedAt?: string | null;
+  /** This device's record of the cloud copy's shared details when it last merged it; never sent (A7 pass 6 L1). */
+  cloudDetailsSeen?: string | null;
   /** Browser upload/version metadata retained when mobile refreshes the shared record. */
   webFileFingerprint?: string | null;
   webVersionGroupId?: string | null;

@@ -104,6 +104,8 @@ const currentDrawing: ReferenceDocument = {
   importedAt: '2026-09-01T12:00:00.000Z',
   updatedAt: '2026-09-30T09:00:00.000Z',
   cloudUpdatedAt: '2026-09-01T12:00:05.000Z',
+  // This phone's last-seen record (whole-app audit A7 pass 6 L1): never sent.
+  cloudDetailsSeen: 'v1:0123456789abcdef',
   storagePath: 'owner-1/documents/drawing-a201/A-201.pdf',
   drawingNumber: 'A-201',
 };
@@ -140,6 +142,7 @@ describe('shared document writes (A8 pass 1 F3)', () => {
     expect(values).toMatchObject({ name: 'A-201', category: 'Drawing' });
     expect(values.document_data).toMatchObject({ isCurrent: true, notes: 'Field verified' });
     expect(values.document_data).not.toHaveProperty('cloudUpdatedAt');
+    expect(values.document_data).not.toHaveProperty('cloudDetailsSeen');
     expect(typeof values.updated_at).toBe('string');
     expect(mockCalls.slice(1)).toEqual([
       ['eq', 'id', 'drawing-a201'],

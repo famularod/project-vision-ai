@@ -1915,6 +1915,7 @@ function referenceDocumentRow(
     : compactECOSDocumentIndexForCloud(document);
   const {
     cloudUpdatedAt: _cloudUpdatedAt,
+    cloudDetailsSeen: _cloudDetailsSeen,
     linkedScheduleItems: _linkedScheduleItems,
     importedScheduleItemCount: _importedScheduleItemCount,
     ...documentData

@@ -137,7 +137,7 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
     const localDocument = localById.get(id);
     const cloudDocument = cloudById.get(id);
     if (!localDocument) {
-      if (cloudDocument) merged.push(cloudDocument);
+      if (cloudDocument) merged.push({ ...cloudDocument, cloudDetailsSeen: referenceDocumentSharedDetailsFingerprint(cloudDocument) });
       return;
     }
     if (!cloudDocument) {
@@ -160,6 +160,8 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
       uri: localDocument.uri || cloudDocument.uri || '',
       storagePath: winner.storagePath || other.storagePath || null,
       cloudUpdatedAt: cloudDocument.cloudUpdatedAt || localDocument.cloudUpdatedAt || null,
+      // What the cloud copy said when this device last merged it (A7 pass 6 L1).
+      cloudDetailsSeen: referenceDocumentSharedDetailsFingerprint(cloudDocument),
     };
     merged.push(mergeCloudReferenceDocumentAuthority(metadataMerged, cloudDocument));
   });
@@ -181,14 +183,20 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
  * copy was edited after the cloud copy it last saw, and it still differs
  * from the cloud's. It is returned stamped just after the cloud copy, so it
  * wins here and on the other devices; the cloud's current flags still win
- * in every merge. Null when the ordinary ranking stands. A web edit made
- * between the phone's last look and the activation cannot be told apart and
- * gives way to the phone's edit, as it would to any later edit.
+ * in every merge. Null when the ordinary ranking stands.
+ *
+ * Only while the cloud copy's shared details are still the ones the phone
+ * last saw (whole-app audit A7 pass 6 L1): a note typed on the web after the
+ * activation is newer than the phone's, and stands, as any newer edit does.
+ * `sentDetails` is what this phone itself last put in the cloud, which it
+ * may not have seen come back yet. A copy saved before this record existed
+ * keeps the earlier rule.
  */
 export function referenceDocumentEditOutlivingActivation(
   local: ReferenceDocument,
   cloud: ReferenceDocument,
   now = Date.now(),
+  sentDetails: string | null = null,
 ): ReferenceDocument | null {
   const cloudRevision = referenceDocumentRevision(cloud);
   if (referenceDocumentRevision(local) > cloudRevision) return null;
@@ -197,7 +205,51 @@ export function referenceDocumentEditOutlivingActivation(
   const edited = new Date(local.updatedAt || '').getTime();
   if (!Number.isFinite(seen) || !Number.isFinite(edited) || edited <= seen) return null;
   if (sharedMetadataWithoutRevision(local) === sharedMetadataWithoutRevision(cloud)) return null;
+  const cloudDetails = referenceDocumentSharedDetailsFingerprint(cloud);
+  if (local.cloudDetailsSeen && local.cloudDetailsSeen !== cloudDetails && sentDetails !== cloudDetails) return null;
   return { ...local, updatedAt: new Date(Math.max(now, cloudRevision + 1)).toISOString() };
+}
+
+const DRAWING_STATUSES = new Set(['Draft', 'For Review', 'For Construction', 'As-Built', 'Superseded']);
+
+/**
+ * The details every device shares and a person edits, as the phone's
+ * normalizer reads them, so the cloud row and the phone's normalized copy of
+ * it give the same answer. Current flags, the revision stamp, device paths
+ * and cloud-owned index fields are not part of it.
+ */
+export function referenceDocumentSharedDetailsFingerprint(document: ReferenceDocument): string {
+  const record = document as unknown as Record<string, unknown>;
+  const text = (key: string) => typeof record[key] === 'string' && (record[key] as string).trim() ? (record[key] as string).trim() : null;
+  const sha = (key: string) => {
+    const value = typeof record[key] === 'string' ? (record[key] as string).trim().toLowerCase() : '';
+    return /^[a-f0-9]{64}$/.test(value) ? value : null;
+  };
+  const details = {
+    name: text('name'), category: text('category'), notes: text('notes'),
+    projectId: text('projectId'), projectName: text('projectName'),
+    projectNames: Array.isArray(record.projectNames)
+      ? (record.projectNames as unknown[]).filter(name => typeof name === 'string' && name.trim()) : [],
+    importBatchId: text('importBatchId'), storagePath: text('storagePath'), mimeType: text('mimeType'),
+    sizeBytes: typeof record.sizeBytes === 'number' && Number.isFinite(record.sizeBytes) ? record.sizeBytes : null,
+    contentSha256: sha('contentSha256') || sha('webFileFingerprint'),
+    webFileFingerprint: text('webFileFingerprint'), webVersionGroupId: text('webVersionGroupId'),
+    drawingNumber: text('drawingNumber'), drawingRevision: text('drawingRevision'),
+    drawingDiscipline: text('drawingDiscipline'), drawingIssuedAt: text('drawingIssuedAt'),
+    drawingStatus: DRAWING_STATUSES.has(String(record.drawingStatus)) ? record.drawingStatus : null,
+    sourceProvider: record.sourceProvider === 'google_drive' || record.sourceProvider === 'supabase_storage' ? record.sourceProvider : null,
+  };
+  const serialized = JSON.stringify(details);
+  // FNV-1a, twice with different offsets: short, and stable across devices.
+  const hash = (offset: number) => {
+    let value = offset;
+    for (let index = 0; index < serialized.length; index += 1) {
+      value ^= serialized.charCodeAt(index);
+      value = Math.imul(value, 0x01000193) >>> 0;
+    }
+    return value.toString(16).padStart(8, '0');
+  };
+  return `v1:${hash(0x811c9dc5)}${hash(0x01000193)}`;
 }
 
 function currentFlags(document: ReferenceDocument): string {
@@ -315,6 +367,7 @@ function normalizedId(value: string) {
 const REFERENCE_DOCUMENT_DEVICE_OR_CLOUD_AUTHORITY_KEYS = new Set([
   'uri',
   'cloudUpdatedAt',
+  'cloudDetailsSeen',
   'isCurrent',
   'retiredForProjectNames',
   'webContentReview',

@@ -85,6 +85,7 @@ export function normalizeReferenceDocument(
       canonicalSha256(value.webFileFingerprint),
     updatedAt: stringOrNull(value.updatedAt) || importedAt,
     cloudUpdatedAt: stringOrNull(value.cloudUpdatedAt),
+    ...(stringOrNull(value.cloudDetailsSeen) ? { cloudDetailsSeen: stringOrNull(value.cloudDetailsSeen) } : {}),
     webFileFingerprint: stringOrNull(value.webFileFingerprint),
     webVersionGroupId: stringOrNull(value.webVersionGroupId),
     webContentReview: stringOrNull(value.webContentReview),

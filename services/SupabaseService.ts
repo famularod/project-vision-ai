@@ -2077,7 +2077,7 @@ export async function upsertReferenceDocument(
   { existing = false }: Readonly<{ existing?: boolean }> = {},
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
   const compactDocument = compactECOSDocumentIndexForCloud(document);
-  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = compactDocument;
+  const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
   const payload = {
     id: document.id,
     name: document.name,
