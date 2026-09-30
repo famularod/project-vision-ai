@@ -17212,12 +17212,21 @@ function ProjectWorkspaceScreen({
     try {
       const snapshot = await getCurrentLocationSnapshot();
       if (request !== projectWalkLocationRequest.current) return;
-      setProjectWalkContext(contextForProjectWalk(snapshot ? {
-        status: 'resolved',
-        latitude: snapshot.latitude,
-        longitude: snapshot.longitude,
-        accuracyMeters: snapshot.accuracy,
-      } : { status: 'unavailable' }));
+      // An approximate fix (Precise Location off) is used nowhere (GPS
+      // review pass 26): it must not name the walk's area or seed the
+      // capture memory.
+      setProjectWalkContext(contextForProjectWalk(
+        !snapshot
+          ? { status: 'unavailable' }
+          : snapshot.preciseLocationOff
+            ? { status: 'unavailable', reason: 'precise-location-off' }
+            : {
+                status: 'resolved',
+                latitude: snapshot.latitude,
+                longitude: snapshot.longitude,
+                accuracyMeters: snapshot.accuracy,
+              },
+      ));
     } catch {
       if (request !== projectWalkLocationRequest.current) return;
       setProjectWalkContext(contextForProjectWalk({ status: 'unavailable' }));

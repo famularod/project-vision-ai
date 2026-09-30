@@ -405,6 +405,8 @@ describe('GPS wiring in the app', () => {
     // Pass 25: an approximate fix (Precise Location off) is not written to the draft, as Save GPS refuses it.
     expect(app).toMatch(/if \(snapshot\.preciseLocationOff\) \{\n(?:\s*\/\/.*\n)*\s+setDraftAreaSuggestionEntry\(null\);\n\s+setDraftLocationNotice\(\{ draftId: target\.draftId, generation, kind: 'precise-off' \}\);\n\s+return null;\n\s+\}/);
     expect(app).toMatch(/setDraftLocationNotice\(null\);\n\n\s+handedToDraft = true;/);
+    // Pass 26: nor does the Project Walk use an approximate fix.
+    expect(app).toMatch(/snapshot\.preciseLocationOff\n\s+\? \{ status: 'unavailable', reason: 'precise-location-off' \}/);
     expect(app).toMatch(/const draftLocationNoticeView = currentDraftLocationNoticeView\(\{\n\s+notice: draftLocationNotice,\n\s+generation: draftFixTracker\.generation\(\),\n\s+draft,\n\s+areas: draftProjectAreas,\n\s+\}\);/);
     expect(app).toContain('locationNotice={draftLocationNoticeView}');
     expect(app).not.toContain('draftLocationNoticeAfterFix');

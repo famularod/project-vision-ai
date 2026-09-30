@@ -38,6 +38,7 @@ import { areaGpsSaveDecision, overviewFixMaxAgeMs } from '../../services/GpsPrec
 import { analyzeProjectLocationIntelligence } from '../../services/LocationIntelligenceService';
 import { inferViewpoint } from '../../services/PIEPhotoProgressIntelligence';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
+import { buildDAVEProjectWalkContext } from '../../services/DAVEProjectWalk';
 import type { AreaSuggestion, ProjectArea } from '../../types';
 
 const ORIGIN = { latitude: 37.0, longitude: -122.0 };
@@ -145,6 +146,18 @@ describe('what Add Photos says about the area', () => {
     expect(view.areaRowStatus).toBe('confirmed');
     expect(view.reason).toBe('GPS places you inside this saved area.');
     expect(view.confidenceScore).toBe(90);
+  });
+
+  // Pass 26: a suggestion that appears after the capture (a point saved
+  // since; the app relaunched) has not been answered, so the row names it.
+  it('names a suggestion that appeared after the capture, with the status still unknown', () => {
+    const view = draftAreaPresentation({
+      ...base, selectedArea: null, selectedAreaName: UNASSIGNED_AREA_NAME, areaStatus: 'unknown', areaSuggestion: suggestion,
+    });
+    expect(view.areaName).toBe(UNASSIGNED_AREA_NAME);
+    expect(view.areaRowName).toBe('North Lot');
+    expect(view.areaRowStatus).toBe('suggested');
+    expect(view.reason).toBe('GPS places you in North Lot. Accept it to use it for this update.');
   });
 
   // Pass 5: a rejected suggestion never reads as the current area.
@@ -1117,6 +1130,13 @@ describe('the Add Photos location notice', () => {
     const edges = draftPlacementNotice({ accuracyMeters: 5, suggestions: findProjectAreaSuggestions({ ...north(0), accuracy: 5 }, [gate, yard]) });
     expect(edges).toMatchObject({ kind: 'no-area', areaName: 'Yard' });
     expect(Math.abs((edges?.distanceOutsideFeet ?? 0) - 180)).toBeLessThan(1);
+    // Pass 26: the same for "may place you in": a 30 ft Gate House whose
+    // centre is 60 ft away (30 ft outside its edge) does not beat a 180 ft
+    // Yard whose centre is 170 ft away (10 ft inside its edge) at ±12 m.
+    const smallGate = area('gate', 60, 30, { name: 'Gate House' });
+    const bigYard = area('yard', 170, 180, { name: 'Yard' });
+    const maybe = draftPlacementNotice({ accuracyMeters: 12, suggestions: findProjectAreaSuggestions({ ...north(0), accuracy: 12 }, [smallGate, bigYard]) });
+    expect(maybe).toMatchObject({ kind: 'unconfirmed', areaName: 'Yard' });
   });
 
   it('a capture outcome belongs to its draft and its capture; a later capture supersedes it', () => {
@@ -1236,5 +1256,33 @@ describe('the conflict finds the update the GPS came from', () => {
     });
     const conflict = fused.conflicts.find(item => item.id === 'pie-evidence-conflict-gps-update-area-mismatch');
     expect(conflict?.summary).toBe('GPS suggests South Lot, but the update with that GPS references North Lot.');
+  });
+});
+
+// Review pass 26: the Project Walk uses no approximate fix either.
+describe('the Project Walk with Precise Location off', () => {
+  it('names no area, seeds nothing, and says why', () => {
+    const walk = (location: Record<string, unknown>) => buildDAVEProjectWalkContext({
+      projectName: 'Alpha',
+      projectAreas: [area('lot', 0, 175, { name: 'North Lot' })],
+      location: location as never,
+      updates: [],
+      scheduleItems: [],
+      intelligence: {
+        actionCenter: {
+          priority: 'Open project item', reason: 'An item is open.',
+          supportingEvidence: [{ sourceType: 'update', recordId: 'u1', summary: 'Open update.' }],
+          recommendedAction: 'Verify the open project item.',
+        },
+        dailyBrief: { uncertaintyItems: [] },
+        commitments: [],
+      } as never,
+    });
+    const off = walk({ status: 'unavailable', reason: 'precise-location-off' });
+    expect(off.locationStatus).toBe('unavailable');
+    expect(off.recommendedArea).toBeNull();
+    expect(off.locationMessage).toContain('Precise Location is off');
+    expect(walk({ status: 'unavailable' }).locationMessage).toBe('Location is unavailable. Choose the area during review.');
+    expect(walk({ status: 'resolved', ...north(10), accuracyMeters: 5 }).recommendedArea?.name).toBe('North Lot');
   });
 });

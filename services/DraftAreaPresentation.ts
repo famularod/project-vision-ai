@@ -101,16 +101,21 @@ export function draftPlacementNotice(input: Readonly<{
   if (input.suggestions.some(item => item.withinRadius)) return null;
   if (input.suggestions.length === 0) return { kind: 'no-mapped-areas' };
   const accuracyMeters = input.accuracyMeters ?? null;
-  const possible = input.suggestions.find(item => !isConfidentlyOutsideArea({
+  // The area whose edge is nearest, not whose centre is (passes 25-26: a
+  // small area's centre can be nearer while a large area's edge is much
+  // closer, or already behind you).
+  const gap = (item: AreaSuggestion) => item.distanceFeet - item.area.radiusFeet;
+  const nearestEdge = (items: readonly AreaSuggestion[]) =>
+    items.reduce((best, item) => (gap(item) < gap(best) ? item : best));
+  const candidates = input.suggestions.filter(item => !isConfidentlyOutsideArea({
     distanceFeet: item.distanceFeet,
     accuracyMeters,
     radiusFeet: item.area.radiusFeet,
   }));
-  if (possible) return { kind: 'unconfirmed', areaName: possible.area.name, accuracyMeters };
-  // The area whose edge is nearest, not whose centre is (pass 25: a small
-  // area's centre can be nearer while a large area's edge is much closer).
-  const gap = (item: AreaSuggestion) => item.distanceFeet - item.area.radiusFeet;
-  const nearest = input.suggestions.reduce((best, item) => (gap(item) < gap(best) ? item : best));
+  if (candidates.length > 0) {
+    return { kind: 'unconfirmed', areaName: nearestEdge(candidates).area.name, accuracyMeters };
+  }
+  const nearest = nearestEdge(input.suggestions);
   return {
     kind: 'no-area',
     areaName: nearest.area.name,
@@ -219,8 +224,14 @@ export function draftAreaPresentation(input: Readonly<{
   const locationNotice = notice && !areaSuggestion && !(PLACEMENT_NOTICES.has(notice.kind) && namedAreaOrNull(areaName))
     ? draftLocationNoticeText(notice)
     : null;
+  // A pending suggestion names the row unless the manager has answered it
+  // by choosing Unassigned (the area name becomes null; pass 5). A fresh
+  // draft still carries the placeholder name, so a suggestion that appears
+  // after the capture, with the status still 'unknown', is not read as
+  // rejected (pass 26).
+  const suggestionAnswered = input.areaStatus !== 'suggested' && input.selectedAreaName === null;
   const rowNamesSuggestion = Boolean(
-    pendingSuggestion && input.areaStatus === 'suggested' && areaName === UNASSIGNED_AREA_NAME,
+    pendingSuggestion && !suggestionAnswered && areaName === UNASSIGNED_AREA_NAME,
   );
   const locationSource: DraftAreaLocationSource = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 'exact-gps-area' : 'gps-radius'
@@ -242,7 +253,7 @@ export function draftAreaPresentation(input: Readonly<{
     areaRowName: rowNamesSuggestion && pendingSuggestion ? pendingSuggestion.area.name : areaName,
     areaRowStatus: suggestionIsShown
       ? 'confirmed'
-      : pendingSuggestion && input.areaStatus === 'suggested'
+      : rowNamesSuggestion
         ? 'suggested'
         : 'unknown',
     locationSource,
