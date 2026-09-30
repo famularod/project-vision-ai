@@ -11,6 +11,7 @@ export type FieldUpdateSyncFailureCategory =
   | 'storage_upload_failed'
   | 'database_insert_failed'
   | 'malformed_payload'
+  | 'current_drawing_protected' // a document failure only (whole-app audit A8 pass 1 F3 (30 Sep 2026))
   | 'unknown';
 export type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
 export type FieldUpdateSyncDiagnostics = {
@@ -70,6 +71,7 @@ export function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdate
     value.lastSyncFailureCategory === 'storage_upload_failed' ||
     value.lastSyncFailureCategory === 'database_insert_failed' ||
     value.lastSyncFailureCategory === 'malformed_payload' ||
+    value.lastSyncFailureCategory === 'current_drawing_protected' ||
     value.lastSyncFailureCategory === 'unknown'
       ? value.lastSyncFailureCategory
       : null;

@@ -258,6 +258,9 @@ describe('downloadCloudChanges collection failure propagation', () => {
         projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
         storagePath: 'mobile/mrv3pyi1-9o6xn6mt/shared-master-schedule.pdf',
       }),
+      // The cloud already has this record, so a full sync updates it rather
+      // than upserting (whole-app audit A8 pass 1 F3, 30 Sep 2026).
+      { existing: true },
     );
     expect(result.details.documentsUploaded).toBe(1);
     expect(result.errors).not.toEqual(expect.arrayContaining([

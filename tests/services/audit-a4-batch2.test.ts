@@ -25,10 +25,19 @@ describe('why a sync failed is read from the failure, not from a sentence writte
     expect(classifySyncFailureText([])).toBe('unknown');
     expect(isSyncFailureCategory('offline')).toBe(true);
     expect(isSyncFailureCategory('elsewhere')).toBe(false);
+    // Whole-app audit A8 pass 1 F3 (30 Sep 2026): the cloud refusing a change
+    // to a Current drawing is permanent, in raw or sanitised form.
+    expect(classifySyncFailureText(['ecos_atomic_current_activation_required'])).toBe('current_drawing_protected');
+    expect(classifySyncFailureText(['Document “A-201” could not sync. This drawing is Current for ECOS, so the cloud kept its shared record. Make another revision current first, then edit this one again.'])).toBe('current_drawing_protected');
+    expect(isSyncFailureCategory('current_drawing_protected')).toBe(true);
   });
 
   it('is recorded on the queue item from the raw failure and carried into the sync result', () => {
-    expect(sync.match(/lastFailureCategory: classifySyncFailureText\(\[(reason|prepared|resultCode)\]\),/g)?.length).toBe(3);
+    // The upload loop's own failure is classified once, into a local, since
+    // a permanent category holds the item (whole-app audit A8 pass 1 F3).
+    expect(sync.match(/lastFailureCategory: classifySyncFailureText\(\[(reason|prepared)\]\),/g)?.length).toBe(2);
+    expect(sync).toContain('const failureCategory = classifySyncFailureText([resultCode]);');
+    expect(sync).toContain('      lastFailureCategory: failureCategory,\n');
     // Batch 3: a category this build does not know reads as unknown instead of sidelining the item.
     // A4 pass 5: a conflict or item failure without a recorded category is 'unknown', never read from its sentence.
     expect(sync).toMatch(/failureCategory: isSyncFailureCategory\(remainingItem\?\.lastFailureCategory\)\n\s+\? remainingItem\.lastFailureCategory\n\s+: currentConflict \|\| itemOutcome === 'failed' \? 'unknown' : null,/);

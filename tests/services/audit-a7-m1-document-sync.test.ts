@@ -88,12 +88,13 @@ describe('phone documents keyed by project name (audit A7 M1)', () => {
       queued: 0,
       uploadedByEntity: { reference_document: 1 },
     });
+    // Not in the cloud yet, so it is inserted (whole-app audit A8 pass 1 F3).
     expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(expect.objectContaining({
       id: 'spec-1',
       projectId: CLOUD_2375,
       projectName: '2375 Compliance Project',
       projectNames: ['2375 Compliance Project'],
-    }));
+    }), { existing: false });
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 

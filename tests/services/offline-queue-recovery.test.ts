@@ -226,6 +226,8 @@ describe('offline queue corruption recovery', () => {
     });
     expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'schedule-cloud-1', isCurrent: true }),
+      // The cloud listing here does not hold it, so it is inserted (whole-app audit A8 pass 1 F3).
+      { existing: false },
     );
   });
 

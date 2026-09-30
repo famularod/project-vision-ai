@@ -1,4 +1,4 @@
-import { classifySyncFailureText, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
+import { classifySyncFailureText, CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
 import {
   archiveProjectUpdate,
   countCloudProjects,
@@ -155,6 +155,11 @@ export type SyncUploadResult = {
   errors: string[];
   /** The queue item's recorded failure category, when it is still queued after this pass (audit A4). */
   failureCategory?: SyncFailureCategory | null;
+  /**
+   * How many of `errors` belong to items held until the owner edits them
+   * again. They are shown but ask for no retry (whole-app audit A8 pass 1 F3).
+   */
+  heldErrorCount?: number;
 };
 
 export type SyncItemOutcome =
@@ -414,6 +419,12 @@ const photoPreviewSignedUrlCache = new Map<string, CachedPhotoPreviewSignedUrl>(
 
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
+
+  // A Current drawing the cloud refused to change is named in plain words,
+  // not by its raw database code (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+  if (classifySyncFailureText([message]) === 'current_drawing_protected') {
+    return CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE;
+  }
 
   // Deliberately narrow to signals that only appear in a genuine local
   // file-read failure (native path segments, the file-read API name, the
@@ -2500,6 +2511,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   const uploadContext: QueueUploadContext = {};
   let uploaded = 0;
+  let heldErrorCount = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
     project: 0,
     project_update: 0,
@@ -2571,6 +2583,16 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       // uploaded (audit A7 pass 4); see ProjectDocumentBridge.
       itemOutcomes[item.id] = 'superseded';
       resolvedIds.add(item.id);
+      continue;
+    }
+
+    if (item.lastFailureCategory === 'current_drawing_protected') {
+      // The cloud refused this revision for good. It is held, with its plain
+      // reason and no retry, until the owner edits the document again, which
+      // queues a new revision (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+      itemOutcomes[item.id] = 'blocked';
+      heldErrorCount += 1;
+      errors.push(formatQueueItemFailure(item, item.lastError || CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE));
       continue;
     }
 
@@ -2647,13 +2669,16 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     }
 
     const sanitizedResult = sanitizeUserFacingSyncMessage(resultCode);
-    itemOutcomes[item.id] = 'failed';
+    const failureCategory = classifySyncFailureText([resultCode]);
+    const heldForOwner = failureCategory === 'current_drawing_protected';
+    itemOutcomes[item.id] = heldForOwner ? 'blocked' : 'failed';
+    if (heldForOwner) heldErrorCount += 1;
 
     retriedItemsById.set(item.id, {
       ...attemptedItem,
       retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
-      lastFailureCategory: classifySyncFailureText([resultCode]),
+      lastFailureCategory: failureCategory,
     });
     errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
   }
@@ -2706,6 +2731,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     queued: remaining.length + storageCleanupRemaining,
     conflicts: (await getSyncConflicts()).length,
     errors,
+    heldErrorCount,
   };
 }
 
@@ -3329,7 +3355,9 @@ export async function synchronizeLocalData(
         continue;
       }
     }
-    const result = await upsertReferenceDocument(authoritativeDocument);
+    const result = await upsertReferenceDocument(authoritativeDocument, {
+      existing: Boolean(cloudDocumentsBeforeUpload.data?.some(cloud => cloud.id === document.id)),
+    });
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
@@ -4153,7 +4181,8 @@ async function uploadQueueItem(
         return 'The document file is still waiting for protected cloud storage.';
       }
     }
-    const result = await upsertReferenceDocument(authoritative);
+    // A record the cloud already has is updated (whole-app audit A8 pass 1 F3).
+    const result = await upsertReferenceDocument(authoritative, { existing: Boolean(remote) });
     if (result.ok && !result.stubbed) {
       context.referenceDocumentsById.set(payload.id, authoritative);
       return {

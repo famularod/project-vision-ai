@@ -55,6 +55,14 @@ describe('SyncService user-safe behavior', () => {
       .toBe('Cloud sync needs service attention. Your changes remain saved on this phone.');
   });
 
+  // Whole-app audit A8 pass 1 F3 (30 Sep 2026): the cloud's refusal to change
+  // a Current drawing was shown as its raw database code.
+  it('names a refused change to a Current drawing in plain words, and keeps them on a second pass', () => {
+    const plain = 'This drawing is Current for ECOS, so the cloud kept its shared record. Make another revision current first, then edit this one again.';
+    expect(sanitizeUserFacingSyncMessage('ecos_atomic_current_activation_required')).toBe(plain);
+    expect(sanitizeUserFacingSyncMessage(plain)).toBe(plain);
+  });
+
   it('marks only the reported missing photo unavailable', () => {
     const source = update();
     const result = markMissingPhotosUnavailable(source, [{

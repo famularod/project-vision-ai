@@ -21,7 +21,20 @@ export type SyncFailureCategory =
   | 'database_insert_failed'
   | 'storage_upload_failed'
   | 'offline'
+  | 'current_drawing_protected'
   | 'unknown';
+
+/**
+ * The cloud refuses a write that would change a Current drawing's current
+ * flag, category, drawing family or projects outside its Make Current
+ * transaction (ecos_atomic_current_activation_required). The raw code was
+ * shown, classified unknown and retried forever. It is permanent: the item
+ * is held with this sentence until the owner edits the document again
+ * (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+ */
+export const CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE =
+  'This drawing is Current for ECOS, so the cloud kept its shared record. Make another revision current first, then edit this one again.';
+const CURRENT_DRAWING_PROTECTED = /ecos_atomic_current_activation_required|this drawing is current for ecos, so the cloud kept its shared record/;
 
 /** The sentences sanitizeUserFacingSyncMessage writes, mapped back to their meaning. */
 const SANITIZED_SENTENCES: ReadonlyArray<readonly [RegExp, SyncFailureCategory]> = [
@@ -39,6 +52,7 @@ export function classifySyncFailureText(errors: readonly string[]): SyncFailureC
   const message = errors.join(' ').toLowerCase();
 
   if (!message.trim()) return 'unknown';
+  if (CURRENT_DRAWING_PROTECTED.test(message)) return 'current_drawing_protected';
   for (const [pattern, category] of SANITIZED_SENTENCES) {
     if (pattern.test(message)) return category;
   }
@@ -59,5 +73,6 @@ export function classifySyncFailureText(errors: readonly string[]): SyncFailureC
 
 export function isSyncFailureCategory(value: unknown): value is SyncFailureCategory {
   return value === 'rls_denied' || value === 'signed_out' || value === 'auth' || value === 'malformed_payload' ||
-    value === 'database_insert_failed' || value === 'storage_upload_failed' || value === 'offline' || value === 'unknown';
+    value === 'database_insert_failed' || value === 'storage_upload_failed' || value === 'offline' ||
+    value === 'current_drawing_protected' || value === 'unknown';
 }

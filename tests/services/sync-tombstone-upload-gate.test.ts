@@ -658,8 +658,11 @@ describe('offline upload deletion barriers', () => {
         'reference-document-document-waiting-behind-task': 'uploaded',
       },
     });
+    // A record the cloud does not have yet is inserted; one it has is
+    // updated (whole-app audit A8 pass 1 F3, 30 Sep 2026).
     expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
       expect.objectContaining({ id: document.id }),
+      { existing: false },
     );
     await expect(getOfflineQueue()).resolves.toEqual([
       expect.objectContaining({
@@ -738,6 +741,7 @@ describe('offline upload deletion barriers', () => {
         id: document.id,
         storagePath: document.storagePath,
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
@@ -793,6 +797,7 @@ describe('offline upload deletion barriers', () => {
         contentSha256: 'a'.repeat(64),
         sizeBytes: 1024,
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
   });
 
@@ -847,6 +852,7 @@ describe('offline upload deletion barriers', () => {
         projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
         storagePath: 'mobile/mrv3pyi1-9o6xn6mt/shared-master-schedule.pdf',
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
   });
 
@@ -877,7 +883,8 @@ describe('offline upload deletion barriers', () => {
       errors: [],
     });
     expect(mockPrepareReferenceDocumentForCloud).not.toHaveBeenCalled();
-    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(document);
+    // Not in the cloud yet: inserted (whole-app audit A8 pass 1 F3).
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(document, { existing: false });
   });
 
   it('keeps document metadata queued when protected file upload is incomplete', async () => {

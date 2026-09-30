@@ -207,6 +207,58 @@ describe('shared project-document metadata', () => {
     expect(synchronized.extractedPages).toEqual(original.extractedPages);
   });
 
+  // Whole-app audit A8 pass 1 F3 (30 Sep 2026): a Current drawing's family is
+  // its webVersionGroupId or, without one, its drawing number, and the cloud
+  // refuses to move a Current drawing out of its family outside Make Current.
+  // A number correction on the phone keeps the old family.
+  it('keeps a renumbered Current drawing in its drawing family', () => {
+    const currentDrawing = {
+      ...buildSharedReferenceDocument({
+        document: {
+          id: 'drawing-1',
+          projectId: KEY_2375,
+          name: 'site-plan.pdf',
+          category: 'Drawing' as const,
+          drawingNumber: ' C5 ',
+          importedAt: NOW,
+        },
+        projectName: '2375 Compliance Project',
+        contentSha256: 'c'.repeat(64),
+        updatedAt: NOW,
+      }),
+      isCurrent: true,
+    };
+    const renumber = (sharedDocument: typeof currentDrawing, drawingNumber: string) =>
+      synchronizeSharedReferenceDocumentMetadata({
+        sharedDocument,
+        document: {
+          id: 'drawing-1',
+          projectId: KEY_2375,
+          name: 'site-plan.pdf',
+          category: 'Drawing',
+          drawingNumber,
+          importedAt: NOW,
+        },
+        projectName: '2375 Compliance Project',
+        updatedAt: '2026-09-30T09:00:00.000Z',
+      });
+
+    const corrected = renumber(currentDrawing, 'C-501');
+    expect(corrected).toMatchObject({ drawingNumber: 'C-501', webVersionGroupId: 'c5' });
+    // Later keystrokes keep the family the first one recorded.
+    expect(renumber({ ...currentDrawing, ...corrected }, 'C-5012').webVersionGroupId).toBe('c5');
+
+    // Nothing is recorded when the family would not change, when the drawing
+    // is not Current, when it already has a family, or when it had no number.
+    expect(renumber(currentDrawing, 'c5').webVersionGroupId).toBeNull();
+    expect(renumber({ ...currentDrawing, isCurrent: false }, 'C-501').webVersionGroupId).toBeNull();
+    expect(renumber({ ...currentDrawing, webVersionGroupId: 'site-plans' }, 'C-501').webVersionGroupId)
+      .toBe('site-plans');
+    expect(renumber({ ...currentDrawing, drawingNumber: null }, 'C-501').webVersionGroupId).toBeNull();
+    expect(renumber({ ...currentDrawing, category: 'Specifications' }, 'C-501').webVersionGroupId)
+      .toBeNull();
+  });
+
   it('never shares the phone name key as a project id (audit A7 M1)', () => {
     const source = {
       id: 'spec-1',

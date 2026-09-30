@@ -20,6 +20,7 @@ import {
 } from './OwnedLocalFileRepository';
 import { MAX_PROJECT_DOCUMENT_FILE_BYTES } from './FileSizePreflight';
 import { exactProjectId, legacyProjectNameKey } from './OperationalProjectIdentity';
+import { canonicalReferenceCategory } from './AuthoritativeDocumentSystem';
 import type { ReferenceDocument } from '../types';
 import type { ProjectDocumentCategory } from './ProjectDocumentClassification';
 
@@ -275,7 +276,10 @@ export function synchronizeSharedReferenceDocumentMetadata({
     storagePath: document.storagePath || sharedDocument.storagePath || null,
     sizeBytes: document.sizeBytes || sharedDocument.sizeBytes || null,
     webVersionGroupId:
-      document.webVersionGroupId || sharedDocument.webVersionGroupId || null,
+      document.webVersionGroupId ||
+      sharedDocument.webVersionGroupId ||
+      currentDrawingFamilyBeforeRenumbering(sharedDocument, document.drawingNumber) ||
+      null,
     drawingNumber: document.drawingNumber || null,
     drawingRevision: document.drawingRevision || null,
     drawingDiscipline: document.drawingDiscipline || null,
@@ -283,6 +287,27 @@ export function synchronizeSharedReferenceDocumentMetadata({
     drawingIssuedAt: document.drawingIssuedAt || null,
     updatedAt,
   });
+}
+
+/**
+ * A Current drawing's family is its webVersionGroupId or, without one, its
+ * drawing number, and the cloud refuses to move a Current drawing out of its
+ * family outside Make Current. Correcting the number on the phone did that,
+ * so the edit was refused. The old number, lowercased as the cloud reads it,
+ * becomes the webVersionGroupId and the drawing stays in its family (whole-app
+ * audit A8 pass 1 F3 (30 Sep 2026)). Accepted caveat: an unrelated sheet later
+ * given the old number joins that family.
+ */
+function currentDrawingFamilyBeforeRenumbering(
+  sharedDocument: ReferenceDocument,
+  nextDrawingNumber: string | null | undefined,
+): string | null {
+  if (!sharedDocument.isCurrent || canonicalReferenceCategory(sharedDocument) !== 'drawing') {
+    return null;
+  }
+  const previous = (sharedDocument.drawingNumber || '').trim().toLowerCase();
+  const next = (nextDrawingNumber || '').trim().toLowerCase();
+  return previous && previous !== next ? previous : null;
 }
 
 /**

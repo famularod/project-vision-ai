@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import type { ReferenceDocument } from '../types';
+import { canonicalReferenceCategory } from '../services/AuthoritativeDocumentSystem';
 import {
   PROJECT_DOCUMENT_CATEGORIES,
   type ProjectDocumentCategory,
@@ -107,6 +108,12 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
   const updateDocument = (next: Partial<ProjectDocumentCardDocument>) => {
     onUpdate(next as Partial<TDocument>);
   };
+  // The cloud refuses to move a Current drawing out of Drawing outside Make
+  // Current (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+  const categoryLockedToDrawing = Boolean(
+    sharedReferenceDocument?.isCurrent &&
+    canonicalReferenceCategory(sharedReferenceDocument) === 'drawing',
+  );
 
   return (
     <View style={styles.photoCard}>
@@ -226,11 +233,13 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           <View style={styles.areaChipWrap}>
             {PROJECT_DOCUMENT_CATEGORIES.map(category => {
               const selected = document.category === category;
+              const locked = categoryLockedToDrawing && category !== 'Drawing';
               return (
                 <TouchableOpacity
                   key={category}
-                  style={[styles.areaChip, selected && styles.areaChipSelected]}
+                  style={[styles.areaChip, selected && styles.areaChipSelected, locked && styles.disabledButton]}
                   onPress={() => updateDocument({ category })}
+                  disabled={locked}
                 >
                   <Text style={[styles.areaChipText, selected && styles.areaChipTextSelected]}>
                     {category}
@@ -239,6 +248,11 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
               );
             })}
           </View>
+          {categoryLockedToDrawing ? (
+            <Text style={styles.locationDetailText}>
+              This drawing is Current for ECOS. Make another revision current before changing its category.
+            </Text>
+          ) : null}
 
           {document.category === 'Drawing' ? (
             <View style={styles.phase4DetailBlock}>

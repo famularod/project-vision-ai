@@ -1657,21 +1657,35 @@ export async function upsertScheduleItem(
 
 export async function upsertReferenceDocument(
   document: ReferenceDocument,
+  { existing = false }: Readonly<{ existing?: boolean }> = {},
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
   const compactDocument = compactECOSDocumentIndexForCloud(document);
   const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = compactDocument;
-  const result = await upsertJsonRecord<ReferenceDocument>({
-    table: REFERENCE_DOCUMENTS_TABLE,
-    ownerScoped: true,
-    payload: {
-      id: document.id,
-      name: document.name,
-      category: document.category,
-      document_data: toJsonValue(documentData),
-      updated_at: new Date().toISOString(),
-    },
-    data: document,
-  });
+  const payload = {
+    id: document.id,
+    name: document.name,
+    category: document.category,
+    document_data: toJsonValue(documentData),
+    updated_at: new Date().toISOString(),
+  };
+  // A record the cloud already has is updated, not upserted. Postgres runs
+  // the guard trigger's insert branch of an upsert first, and that branch
+  // refuses every Current drawing, so almost every phone edit to one was
+  // refused; the iPad and the web already update (whole-app audit A8 pass 1
+  // F3 (30 Sep 2026)). No row updated means the record was not found.
+  const result = existing
+    ? await updateOwnedJsonRecord<ReferenceDocument>({
+        table: REFERENCE_DOCUMENTS_TABLE,
+        payload,
+        data: document,
+        notFoundMessage: 'The shared document record was not found in the cloud. It will be checked again.',
+      })
+    : await upsertJsonRecord<ReferenceDocument>({
+        table: REFERENCE_DOCUMENTS_TABLE,
+        ownerScoped: true,
+        payload,
+        data: document,
+      });
   const client = getSupabaseClient();
   if (result.ok && client) {
     await replaceECOSDocumentCloudIndex({ client, document });
@@ -3105,6 +3119,40 @@ async function upsertJsonRecord<T>({
   const { error, status } = await client.from(table).upsert(writePayload);
 
   if (error) return tableAwareErrorResult<T>(error.message, status);
+
+  return okResult(data, status);
+}
+
+async function updateOwnedJsonRecord<T>({
+  table,
+  payload: { id, ...values },
+  data,
+  notFoundMessage,
+}: {
+  table: string;
+  payload: Record<string, unknown> & { id: string };
+  data: T;
+  notFoundMessage: string;
+}): Promise<SupabaseServiceResult<T>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<T>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data: rows, error, status } = await client
+    .from(table)
+    .update(values)
+    .eq('id', id)
+    .eq('owner_id', owner.data)
+    .select('id');
+
+  if (error) return tableAwareErrorResult<T>(error.message, status);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return errorResult<T>(notFoundMessage, 404, 'not_found');
+  }
 
   return okResult(data, status);
 }
