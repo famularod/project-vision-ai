@@ -207,6 +207,8 @@ describe('DAVE browser read-only repository', () => {
       projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
       cloudUpdatedAt: '2026-07-19T17:00:00.000Z',
       linkedScheduleItems: [{ id: 't1', cloudUpdatedAt: null }],
+      // Audit A5 pass 3 F5: Make Current counts every task the import contains.
+      importedScheduleItemCount: 1,
     });
     expect(Object.isFrozen(snapshot)).toBe(true);
   });

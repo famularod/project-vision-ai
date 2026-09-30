@@ -3856,6 +3856,18 @@ function DocumentManagementWorkspace({
       setReplacementId('');
       resetDrawingIntake();
     } catch (error) {
+      // A schedule import refused because a task changed on another device
+      // was rolled back and its document id retired; the next try prepares
+      // the file again, so it gets fresh ids (audit A5 pass 3 F5).
+      if (
+        preparedUpload.scheduleItems.length > 0 &&
+        error instanceof DAVEWebDocumentMutationError &&
+        error.code === 'conflict'
+      ) {
+        setPreparedUpload(null);
+        setPreparedBytes(null);
+        setPreparedFile(null);
+      }
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
     } finally {
       setUploading(false);
@@ -3867,7 +3879,10 @@ function DocumentManagementWorkspace({
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
     const readiness = buildECOSDocumentReadiness(document);
-    if (isSchedule && document.linkedScheduleItems.length === 0) {
+    // Every task the import contains counts, unchanged ones shared with the
+    // prior revision included; linkedScheduleItems is only those no other
+    // schedule has, the ones Delete takes (audit A5 pass 3 F5).
+    if (isSchedule && document.importedScheduleItemCount === 0) {
       setNotice({ tone: 'danger', text: 'Review and save the imported schedule tasks before making this schedule current.' });
       return;
     }
@@ -6551,13 +6566,13 @@ function documentStatusLabel(document: DAVEWebReferenceDocument): string {
 
 function documentCanBeMadeCurrent(document: DAVEWebReferenceDocument) {
   return scheduleDocumentIsScheduleLike(document)
-    ? document.linkedScheduleItems.length > 0
+    ? document.importedScheduleItemCount > 0
     : buildECOSDocumentReadiness(document).canMakeCurrent;
 }
 
 function documentMakeCurrentLabel(document: DAVEWebReferenceDocument) {
   if (scheduleDocumentIsScheduleLike(document)) {
-    return document.linkedScheduleItems.length > 0 ? 'Make Current Schedule' : 'Task Review Required';
+    return document.importedScheduleItemCount > 0 ? 'Make Current Schedule' : 'Task Review Required';
   }
   const readiness = buildECOSDocumentReadiness(document);
   if (readiness.status === 'needs_metadata') return 'Complete Document Details';

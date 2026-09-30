@@ -15,6 +15,7 @@ import {
   DAVE_WEB_MAX_DOCUMENT_BYTES,
   type DAVEWebDocumentExtension,
   type DAVEWebReportRecord,
+  type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
 import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
 import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
@@ -134,7 +135,10 @@ export type DAVEWebDocumentUploadInput = Readonly<{
   document: ReferenceDocument & DAVEWebDocumentExtension;
   bytes: ArrayBuffer;
   file?: Blob;
+  /** New rows this import inserts; never written over a saved task. */
   scheduleItems?: readonly ScheduleItem[];
+  /** Saved tasks this import changes (planDAVEWebScheduleImport), each only while its cloud revision matches. */
+  revisedScheduleItems?: readonly DAVEWebScheduleImportRevision[];
   onProgress?: (fraction: number) => void;
 }>;
 
@@ -701,10 +705,14 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       bytes,
       file,
       scheduleItems = [],
+      revisedScheduleItems = [],
       onProgress,
     }: DAVEWebDocumentUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
+      if (revisedScheduleItems.some(revision => !revision.cloudUpdatedAt)) {
+        throw scheduleImportConflictError();
+      }
       if (bytes.byteLength <= 0) {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
@@ -795,12 +803,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
 
-      if (scheduleItems.length > 0) {
-        const rows = scheduleItems.map(item => scheduleItemRow(item, ownerId, cloudUpdatedAt));
-        const { error: taskError } = await client
-          .from('schedule_items')
-          .upsert(rows, { onConflict: 'id' });
-        if (taskError) {
+      if (scheduleItems.length > 0 || revisedScheduleItems.length > 0) {
+        const saved = await saveScheduleImportRows({
+          client,
+          ownerId,
+          cloudUpdatedAt,
+          additions: scheduleItems,
+          revisions: revisedScheduleItems,
+        });
+        if (!saved.ok) {
           const compensation = await compensateFailedDocumentImport({
             client,
             storage,
@@ -809,7 +820,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
             cloudUpdatedAt,
             storagePath,
           });
-          if (!compensation.visibilityRecovered) {
+          if (!compensation.visibilityRecovered || !saved.revertConfirmed) {
             throw new DAVEWebDocumentMutationError(
               'write_failed',
               'The schedule tasks could not be saved, and automatic cleanup could not be confirmed. Refresh before retrying and remove the incomplete document if it appears.',
@@ -821,6 +832,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
               'The schedule tasks could not be saved. The incomplete document was blocked, but file cleanup could not be confirmed. Refresh before retrying.',
             );
           }
+          if (saved.stale) throw scheduleImportConflictError();
           throw new DAVEWebDocumentMutationError(
             'write_failed',
             'The schedule tasks could not be saved. The incomplete document import was rolled back and its file was removed.',
@@ -1484,6 +1496,80 @@ async function purgeAuthorizedDeletionAudit(
   if (error) throw new Error('Deletion receipt retention is temporarily unavailable.');
 }
 
+/**
+ * Writes a schedule import's tasks (whole-app audit A5 pass 3 F5, 30 Sep
+ * 2026). Each saved task the import changes (planDAVEWebScheduleImport) is
+ * updated only while its cloud revision is the one the web read, the guard
+ * updateAuthorizedScheduleItem uses; then the new rows are inserted, never
+ * upserted over a saved task. On any failure the saved tasks already changed
+ * are written back (again only while no one else has changed them), so the
+ * caller can roll the document back and ask for a refresh.
+ */
+async function saveScheduleImportRows({
+  client,
+  ownerId,
+  cloudUpdatedAt,
+  additions,
+  revisions,
+}: {
+  client: SupabaseClient;
+  ownerId: string;
+  cloudUpdatedAt: string;
+  additions: readonly ScheduleItem[];
+  revisions: readonly DAVEWebScheduleImportRevision[];
+}): Promise<Readonly<{ ok: true } | { ok: false; stale: boolean; revertConfirmed: boolean }>> {
+  const applied: { item: ScheduleItem; acknowledgedAt: string }[] = [];
+  let failure: 'stale' | 'write_failed' | null = null;
+  for (const revision of revisions) {
+    try {
+      const { data, error } = await client
+        .from('schedule_items')
+        .update(scheduleItemRow(revision.item, ownerId, cloudUpdatedAt))
+        .eq('owner_id', ownerId)
+        .eq('id', revision.item.id)
+        .eq('updated_at', revision.cloudUpdatedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (error) failure = 'write_failed';
+      else if (!data) failure = 'stale';
+      else applied.push({ item: revision.previous, acknowledgedAt: readCloudTimestamp(data) ?? cloudUpdatedAt });
+    } catch {
+      failure = 'write_failed';
+    }
+    if (failure) break;
+  }
+  if (!failure && additions.length > 0) {
+    try {
+      const { error } = await client
+        .from('schedule_items')
+        .insert(additions.map(item => scheduleItemRow(item, ownerId, cloudUpdatedAt)));
+      if (error) failure = 'write_failed';
+    } catch {
+      failure = 'write_failed';
+    }
+  }
+  if (!failure) return Object.freeze({ ok: true });
+
+  let revertConfirmed = true;
+  const revertedAt = new Date().toISOString();
+  for (const { item, acknowledgedAt } of applied.reverse()) {
+    try {
+      const { data, error } = await client
+        .from('schedule_items')
+        .update(scheduleItemRow(item, ownerId, revertedAt))
+        .eq('owner_id', ownerId)
+        .eq('id', item.id)
+        .eq('updated_at', acknowledgedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (error || !data) revertConfirmed = false;
+    } catch {
+      revertConfirmed = false;
+    }
+  }
+  return Object.freeze({ ok: false, stale: failure === 'stale', revertConfirmed });
+}
+
 async function compensateFailedDocumentImport({
   client,
   storage,
@@ -1674,7 +1760,12 @@ function referenceDocumentRow(
   const compactDocument = document.sourceProvider === 'google_drive'
     ? compactECOSDocumentMetadataForCloud(document)
     : compactECOSDocumentIndexForCloud(document);
-  const { cloudUpdatedAt: _cloudUpdatedAt, linkedScheduleItems: _linkedScheduleItems, ...documentData } = compactDocument as any;
+  const {
+    cloudUpdatedAt: _cloudUpdatedAt,
+    linkedScheduleItems: _linkedScheduleItems,
+    importedScheduleItemCount: _importedScheduleItemCount,
+    ...documentData
+  } = compactDocument as any;
   return {
     id: document.id,
     owner_id: ownerId,
@@ -1795,6 +1886,13 @@ function staleTaskError() {
   return new DAVEWebTaskMutationError(
     'conflict',
     'This task changed on another device. The workspace has been refreshed; review the latest values before saving again.',
+  );
+}
+
+function scheduleImportConflictError() {
+  return new DAVEWebDocumentMutationError(
+    'conflict',
+    'A task in this schedule changed on another device, so the schedule was not imported. Refresh the workspace, then choose the schedule file again.',
   );
 }
 

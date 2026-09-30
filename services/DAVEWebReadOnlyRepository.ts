@@ -12,6 +12,7 @@ import {
   reconcileDAVEScheduleRecords,
 } from './DAVEScheduleRecovery';
 import {
+  scheduleItemsForExactImportBatch,
   scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
 } from './PIEScheduleImportBatch';
@@ -47,6 +48,11 @@ export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtens
     id: string;
     cloudUpdatedAt: string | null;
   }>[];
+  /**
+   * Every task the schedule's import contains, unchanged tasks it shares
+   * with an earlier revision included; Make Current needs at least one.
+   */
+  importedScheduleItemCount: number;
 }>;
 
 export async function loadDAVEWebReadOnlySnapshot(
@@ -78,6 +84,9 @@ export async function loadDAVEWebReadOnlySnapshot(
         cloudUpdatedAt: (item as DAVEWebScheduleItem).cloudUpdatedAt,
       })),
     ),
+    // Make Current counts the tasks the import contains: a revision whose
+    // every task is unchanged has no task of its own (audit A5 pass 3 F5).
+    importedScheduleItemCount: scheduleItemsForExactImportBatch(reconciledScheduleItems, document).length,
   }));
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,
@@ -346,6 +355,7 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     webReport: normalizeWebReport(data.webReport),
     cloudUpdatedAt: readString(row.updated_at),
     linkedScheduleItems: Object.freeze([]),
+    importedScheduleItemCount: 0,
   };
 }
 

@@ -16,6 +16,7 @@ import {
 } from '../../services/DAVEWebReadOnlyRepository';
 import {
   DAVEWebAuthorizationError,
+  DAVEWebDocumentMutationError,
   daveWebSupabaseGateway,
   type DAVEWebStorageBucket,
 } from '../../services/DAVEWebSupabaseClient';
@@ -23,9 +24,10 @@ import {
   scheduleItemForCloud,
   type DAVEWebScheduleItem,
 } from '../../services/DAVEWebTaskEditing';
-import type {
-  DAVEWebPreparedUpload,
-  DAVEWebReportRecord,
+import {
+  planDAVEWebScheduleImport,
+  type DAVEWebPreparedUpload,
+  type DAVEWebReportRecord,
 } from '../../services/DAVEWebOperations';
 import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
 import type { ECOSDrawingPageAnalysisInput } from '../../services/ECOSDrawingPageAnalysis';
@@ -624,19 +626,40 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     file?: Blob,
     onProgress?: (fraction: number) => void,
   ) => {
-    await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
-      document: prepared.document,
-      bytes,
-      file,
-      scheduleItems: prepared.scheduleItems,
-      onProgress,
-    });
-    const collections: readonly DAVEOperationalCollectionName[] = prepared.scheduleItems.length > 0
+    const importsTasks = prepared.scheduleItems.length > 0;
+    if (importsTasks && !snapshot) {
+      throw new DAVEWebDocumentMutationError(
+        'conflict',
+        'The workspace is still loading its tasks. Refresh the workspace, then upload the schedule again.',
+      );
+    }
+    // Joined to the tasks the web shows now, at upload time, as the phone's
+    // approval does (audit A5 pass 3 F5): unchanged tasks keep their
+    // progress, changed tasks carry it.
+    const plan = importsTasks
+      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems })
+      : null;
+    try {
+      await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
+        document: prepared.document,
+        bytes,
+        file,
+        scheduleItems: plan?.additions ?? [],
+        revisedScheduleItems: plan?.revisions ?? [],
+        onProgress,
+      });
+    } catch (error) {
+      if (importsTasks && error instanceof DAVEWebDocumentMutationError && error.code === 'conflict') {
+        void refreshSnapshotInBackground(['reference_documents', 'schedule_items']);
+      }
+      throw error;
+    }
+    const collections: readonly DAVEOperationalCollectionName[] = importsTasks
       ? ['reference_documents', 'schedule_items']
       : ['reference_documents'];
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
-  }, [announceMutation, refreshSnapshotInBackground]);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot]);
 
   const linkDocument = useCallback(async (
     prepared: DAVEWebPreparedUpload,

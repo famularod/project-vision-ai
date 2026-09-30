@@ -26,6 +26,12 @@ import {
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
 import { currentScheduleDocumentWinners, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import {
+  findExactScheduleTaskForCompletionClaim,
+  mergeReportedCompletionClaim,
+} from './DAVECompletionVerification';
+import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
+import { scheduleItemForCloud } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
@@ -313,6 +319,71 @@ export function prepareDAVEWebLinkedDocument(
     sourceProvider: 'google_drive',
     externalSource: input.externalSource,
     maximumBytes: input.maximumBytes,
+  });
+}
+
+export type DAVEWebScheduleImportRevision = Readonly<{
+  /** The saved task as this import leaves it. */
+  item: ScheduleItem;
+  /** The saved task as the web read it; written back if the import rolls back. */
+  previous: ScheduleItem;
+  /** The cloud revision the web read; the task changes only while it still matches. */
+  cloudUpdatedAt: string | null;
+}>;
+
+export type DAVEWebScheduleImportPlan = Readonly<{
+  /** New rows: tasks new to the schedule, and changed tasks carrying the manager's progress. */
+  additions: readonly ScheduleItem[];
+  /** Saved tasks the import changes: unchanged tasks re-homed into it, merged completion claims. */
+  revisions: readonly DAVEWebScheduleImportRevision[];
+}>;
+
+/**
+ * How a schedule uploaded on the web joins the tasks the manager sees, at
+ * upload time (whole-app audit A5 pass 3 F5, 30 Sep 2026). The web saved
+ * every row of a revised file as a new task at the file's percent, so making
+ * it current hid all of the manager's progress on the web, iPhone and iPad.
+ * It now runs the phone's approval merge (ScheduleImportMerge): an unchanged
+ * task keeps its id, progress, owner and notes and also belongs to this
+ * import; a changed task takes the manager's progress; a completion claim
+ * merges into its task.
+ *
+ * Only the tasks the web shows (snapshot.scheduleItems, the current
+ * schedules) are offered: with every saved row, a task changed in two
+ * revisions running has two manager-progress copies and carries nothing.
+ */
+export function planDAVEWebScheduleImport({
+  snapshot,
+  importedScheduleItems,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
+  importedScheduleItems: readonly ScheduleItem[];
+}): DAVEWebScheduleImportPlan {
+  if (importedScheduleItems.length === 0) {
+    return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
+  }
+  const saved = snapshot.scheduleItems.map(item => ({
+    item: scheduleItemForCloud(item),
+    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
+  }));
+  const merged = mergeApprovedScheduleImportItems({
+    existing: saved.map(({ item }) => item),
+    imported: importedScheduleItems,
+    completionMatch: findExactScheduleTaskForCompletionClaim,
+    mergeCompletion: mergeReportedCompletionClaim,
+    // Every task offered is one the web shows.
+    isCurrent: () => true,
+  });
+  const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
+  const revisions = merged.next.flatMap(item => {
+    const before = savedById.get(item.id);
+    return before && before.item !== item
+      ? [Object.freeze({ item, previous: before.item, cloudUpdatedAt: before.cloudUpdatedAt })]
+      : [];
+  });
+  return Object.freeze({
+    additions: Object.freeze([...merged.additions]),
+    revisions: Object.freeze(revisions),
   });
 }
 

@@ -30,6 +30,9 @@ describe('Vitruvius web workspace design contract', () => {
     expect(documentOnboarding).toContain('Add Project Documents');
     expect(shell).toContain('onAddDocuments={() => setUploadOpen(true)}');
     expect(shell).toContain("'Make Current Schedule'");
+    // Audit A5 pass 3 F5: a schedule is ready when its import contains tasks,
+    // unchanged ones shared with the prior revision included.
+    expect(shell).toContain("document.importedScheduleItemCount > 0 ? 'Make Current Schedule' : 'Task Review Required'");
     expect(shell).toContain('>Delete</Text>');
   });
 

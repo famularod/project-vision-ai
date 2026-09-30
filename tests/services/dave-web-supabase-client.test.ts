@@ -818,12 +818,14 @@ describe('DAVE browser Supabase gateway', () => {
 
   test('rolls back the document row and protected file when linked task persistence fails', async () => {
     const documentInsert = mutationQuery({ data: null, error: null });
-    const taskUpsert = mutationQuery({ data: null, error: { message: 'fault: task upsert' } });
+    // Audit A5 pass 3 F5: an import's new rows are inserted, never upserted by
+    // id over a saved task, so this fault is now the insert's.
+    const taskInsert = mutationQuery({ data: null, error: { message: 'fault: task insert' } });
     const tombstoneWrite = mutationQuery({ data: null, error: null });
     const documentDelete = mutationQuery({ data: { id: 'document-1' }, error: null });
     const tableQueries = new Map<string, Record<string, any>[]>([
       ['reference_documents', [documentInsert, documentDelete]],
-      ['schedule_items', [taskUpsert]],
+      ['schedule_items', [taskInsert]],
       ['dave_sync_tombstones', [tombstoneWrite]],
     ]);
     const fixture = mutationClient(table => tableQueries.get(table)!.shift()!);
@@ -859,16 +861,19 @@ describe('DAVE browser Supabase gateway', () => {
     expect(storage.remove).toHaveBeenCalledWith([
       'owner-1/web/document-1/schedule.pdf',
     ]);
+    expect(taskInsert.insert).toHaveBeenCalledWith([expect.objectContaining({ id: 'task-1' })]);
+    expect(taskInsert.upsert).not.toHaveBeenCalled();
   });
 
   test('reports an unconfirmed failed-import cleanup after exercising every compensating action', async () => {
     const documentInsert = mutationQuery({ data: null, error: null });
-    const taskUpsert = mutationQuery({ data: null, error: { message: 'fault: task upsert' } });
+    // Audit A5 pass 3 F5: the import's new rows are inserted, not upserted.
+    const taskInsert = mutationQuery({ data: null, error: { message: 'fault: task insert' } });
     const tombstoneWrite = mutationQuery({ data: null, error: { message: 'fault: tombstone' } });
     const documentDelete = mutationQuery({ data: null, error: { message: 'fault: row delete' } });
     const tableQueries = new Map<string, Record<string, any>[]>([
       ['reference_documents', [documentInsert, documentDelete]],
-      ['schedule_items', [taskUpsert]],
+      ['schedule_items', [taskInsert]],
       ['dave_sync_tombstones', [tombstoneWrite]],
     ]);
     const fixture = mutationClient(table => tableQueries.get(table)!.shift()!);
@@ -893,6 +898,137 @@ describe('DAVE browser Supabase gateway', () => {
     expect(tombstoneWrite.upsert).toHaveBeenCalled();
     expect(documentDelete.delete).toHaveBeenCalled();
     expect(storage.remove).toHaveBeenCalled();
+  });
+
+  // Whole-app audit A5 pass 3 F5 (30 Sep 2026): a web schedule import changes
+  // a saved task (an unchanged task re-homed into it, a completion claim)
+  // only while its cloud revision is the one the web read, inserts its new
+  // rows, and rolls the whole import back when a task changed underneath.
+  describe('schedule import writes (audit A5 pass 3 F5)', () => {
+    // SCHEDULE_ITEM is declared below this describe, so these are built per test.
+    let REHOMED: ScheduleItem;
+    let SECOND: ScheduleItem;
+    let NEW_ROW: ScheduleItem;
+    beforeEach(() => {
+      REHOMED = { ...SCHEDULE_ITEM, alsoImportedInBatchIds: ['batch-document-1'] };
+      SECOND = { ...SCHEDULE_ITEM, id: 'task-2', taskName: 'Paint handrails' };
+      NEW_ROW = { ...SCHEDULE_ITEM, id: 'task-new', taskName: 'Seal deck', percentComplete: 0, status: 'Not Started' };
+    });
+
+    function importFixture(scheduleQueries: Record<string, any>[]) {
+      const documentInsert = mutationQuery({ data: null, error: null });
+      const tombstoneWrite = mutationQuery({ data: null, error: null });
+      const documentDelete = mutationQuery({ data: { id: 'document-1' }, error: null });
+      const tableQueries = new Map<string, Record<string, any>[]>([
+        ['reference_documents', [documentInsert, documentDelete]],
+        ['schedule_items', [...scheduleQueries]],
+        ['dave_sync_tombstones', [tombstoneWrite]],
+      ]);
+      const fixture = mutationClient(table => tableQueries.get(table)!.shift()!);
+      const storage = {
+        upload: jest.fn(async () => ({ error: null })),
+        remove: jest.fn(async () => ({ error: null })),
+      };
+      fixture.client.storage = { from: jest.fn(() => storage) };
+      const scheduleCalls = () => fixture.from.mock.calls.filter(([table]) => table === 'schedule_items').length;
+      return { fixture, storage, documentInsert, documentDelete, tombstoneWrite, scheduleCalls };
+    }
+
+    test('updates a re-homed task only while its cloud revision matches, then inserts the new rows', async () => {
+      const rehome = mutationQuery({ data: { updated_at: 'task-revision-2' }, error: null });
+      const insert = mutationQuery({ data: null, error: null });
+      const { fixture } = importFixture([rehome, insert]);
+      const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+      await gateway.uploadAuthorizedReferenceDocument({
+        document: referenceDocument('document-1', false, null),
+        bytes: new Uint8Array([1, 2, 3]).buffer,
+        scheduleItems: [NEW_ROW],
+        revisedScheduleItems: [{ item: REHOMED, previous: SCHEDULE_ITEM, cloudUpdatedAt: 'task-revision-1' }],
+      });
+
+      expect(rehome.update).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'task-1',
+        owner_id: 'owner-1',
+        item_data: REHOMED,
+      }));
+      expect(rehome.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
+      expect(rehome.eq).toHaveBeenCalledWith('id', 'task-1');
+      expect(rehome.eq).toHaveBeenCalledWith('updated_at', 'task-revision-1');
+      expect(insert.insert).toHaveBeenCalledWith([expect.objectContaining({ id: 'task-new', item_data: NEW_ROW })]);
+      expect(rehome.upsert).not.toHaveBeenCalled();
+      expect(insert.upsert).not.toHaveBeenCalled();
+    });
+
+    test('rolls the import back when a saved task changed underneath', async () => {
+      const firstRehome = mutationQuery({ data: { updated_at: 'acknowledged-1' }, error: null });
+      const staleRehome = mutationQuery({ data: null, error: null });
+      const revert = mutationQuery({ data: { updated_at: 'reverted-1' }, error: null });
+      const { fixture, storage, documentDelete, tombstoneWrite, scheduleCalls } = importFixture([
+        firstRehome,
+        staleRehome,
+        revert,
+      ]);
+      const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+      await expect(gateway.uploadAuthorizedReferenceDocument({
+        document: referenceDocument('document-1', false, null),
+        bytes: new Uint8Array([1, 2, 3]).buffer,
+        scheduleItems: [NEW_ROW],
+        revisedScheduleItems: [
+          { item: REHOMED, previous: SCHEDULE_ITEM, cloudUpdatedAt: 'task-revision-1' },
+          { item: { ...SECOND, alsoImportedInBatchIds: ['batch-document-1'] }, previous: SECOND, cloudUpdatedAt: 'read-before-a-phone-edit' },
+        ],
+      })).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({
+        code: 'conflict',
+        message: expect.stringMatching(/changed on another device.*Refresh the workspace/i),
+      });
+
+      expect(staleRehome.eq).toHaveBeenCalledWith('updated_at', 'read-before-a-phone-edit');
+      // The task already re-homed is written back, only while no one else has changed it.
+      expect(revert.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1', item_data: SCHEDULE_ITEM }));
+      expect(revert.eq).toHaveBeenCalledWith('updated_at', 'acknowledged-1');
+      // No new row was written, and the document is rolled back.
+      expect(scheduleCalls()).toBe(3);
+      expect(tombstoneWrite.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ entity_type: 'reference_document', record_id: 'document-1' }),
+        { onConflict: 'owner_id,entity_type,record_id' },
+      );
+      expect(documentDelete.delete).toHaveBeenCalled();
+      expect(storage.remove).toHaveBeenCalledWith(['owner-1/web/document-1/schedule.pdf']);
+    });
+
+    test('says cleanup is unconfirmed when a re-homed task cannot be written back', async () => {
+      const firstRehome = mutationQuery({ data: { updated_at: 'acknowledged-1' }, error: null });
+      const failedInsert = mutationQuery({ data: null, error: { message: 'fault: task insert' } });
+      const revertLost = mutationQuery({ data: null, error: null });
+      const { fixture } = importFixture([firstRehome, failedInsert, revertLost]);
+      const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+      await expect(gateway.uploadAuthorizedReferenceDocument({
+        document: referenceDocument('document-1', false, null),
+        bytes: new Uint8Array([1, 2, 3]).buffer,
+        scheduleItems: [NEW_ROW],
+        revisedScheduleItems: [{ item: REHOMED, previous: SCHEDULE_ITEM, cloudUpdatedAt: 'task-revision-1' }],
+      })).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({
+        code: 'write_failed',
+        message: expect.stringMatching(/automatic cleanup could not be confirmed/i),
+      });
+      expect(revertLost.eq).toHaveBeenCalledWith('updated_at', 'acknowledged-1');
+    });
+
+    test('refuses a saved task without a cloud revision before uploading anything', async () => {
+      const { fixture, storage, scheduleCalls } = importFixture([]);
+      const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+      await expect(gateway.uploadAuthorizedReferenceDocument({
+        document: referenceDocument('document-1', false, null),
+        bytes: new Uint8Array([1, 2, 3]).buffer,
+        revisedScheduleItems: [{ item: REHOMED, previous: SCHEDULE_ITEM, cloudUpdatedAt: null }],
+      })).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({ code: 'conflict' });
+      expect(storage.upload).not.toHaveBeenCalled();
+      expect(scheduleCalls()).toBe(0);
+    });
   });
 
   test('changes a current schedule through one atomic server activation', async () => {
