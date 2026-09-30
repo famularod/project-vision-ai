@@ -11,6 +11,7 @@ import {
 } from '../../services/DAVEWebSupabaseClient';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 // Whole-app audit A5 pass 3 F5 (30 Sep 2026): a revised schedule imported on
@@ -288,6 +289,27 @@ describe('a revised schedule imported on the web keeps the manager\'s progress (
     expect(tasks.get('Pour slab')).toMatchObject({ finishDate: '09/07/2026', percentComplete: 100, status: 'Complete' });
     // The manager's 60% is never lowered by the file's 20%.
     expect(progress(tasks.get('Hang drywall'))).toEqual([60, 'In Progress', 'project_manager']);
+  });
+
+  // Whole-app audit A5 pass 4 #3 (30 Sep 2026): progress the phone recorded
+  // between the upload and Make Current stayed on the hidden task. Make
+  // Current now carries it, as the provider does (setCurrentSchedule).
+  it('Make Current carries the progress recorded on the phone since the upload', async () => {
+    makeCurrent(await uploadRevision('r1', [row('Hang drywall', '9/8/2026', '9/12/2026')]));
+    await managerSets('Hang drywall', { percentComplete: 40, status: 'In Progress', progressConfirmedAt: '2026-09-05T12:00:00.000Z' });
+    const second = await uploadRevision('r2', [row('Hang drywall', '9/10/2026', '9/15/2026')]);
+    // Recorded on the phone after the upload, on the task still shown.
+    await managerSets('Hang drywall', { percentComplete: 80, status: 'In Progress', progressConfirmedAt: '2026-09-12T12:00:00.000Z' });
+
+    const before = (await loadDAVEWebReadOnlySnapshot()).scheduleItems;
+    makeCurrent(second);
+    const after = (await loadDAVEWebReadOnlySnapshot()).scheduleItems;
+    expect(progress(after.find(item => item.taskName === 'Hang drywall'))).toEqual([40, 'In Progress', 'project_manager']);
+    for (const item of scheduleProgressCarriedToShownTasks({ before, after }) as DAVEWebScheduleItem[]) {
+      await gateway.updateAuthorizedScheduleItem(scheduleItemForCloud(item), item.cloudUpdatedAt);
+    }
+    const { tasks } = await shown();
+    expect(tasks.get('Hang drywall')).toMatchObject({ finishDate: '09/15/2026', percentComplete: 80, progressConfirmedAt: '2026-09-12T12:00:00.000Z' });
   });
 
   it('prepares the file again after a refused import, since the rolled-back document id is retired', () => {

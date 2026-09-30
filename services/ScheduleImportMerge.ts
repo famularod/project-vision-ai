@@ -194,6 +194,89 @@ export function scheduleItemsVisibleBeforeImport(
   return item => visible.has(item.id);
 }
 
+function timeOf(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** When a task's progress was last stated: by the manager, or by the file it came from. */
+function progressStatedAt(item: ScheduleItem): number {
+  const verification = item.completionVerification;
+  return Math.max(
+    timeOf(item.progressConfirmedAt),
+    verification?.status === 'pm_verified' ? timeOf(verification.verifiedAt || verification.reportedAt) : 0,
+    scheduleProgressIsManagers(item) ? 0 : timeOf(item.importedAt || item.createdAt),
+  );
+}
+
+/**
+ * Whole-app audit A5 pass 4 #3 (30 Sep 2026): a revised schedule uploaded on
+ * the web takes the manager's progress when it is uploaded; Make Current,
+ * days later, only changes which schedule is current. Progress recorded in
+ * between (80% on the phone) stayed on the task the revision hid, and every
+ * device showed the 40% copied at upload. Set Active on the phone had the
+ * same gap for a schedule imported earlier.
+ *
+ * When a schedule is made current, each task it now shows is paired, as the
+ * import pairs (pairTaskRevisions: name, project and area), with the task it
+ * hides; when the hidden task holds the manager's progress stated after the
+ * shown copy's, the shown task takes it. A higher percent a file gave is
+ * never lowered (A5 pass 4 #1); a manager's own older value is. Returns the
+ * shown tasks to save.
+ */
+export function scheduleProgressCarriedToShownTasks({
+  before,
+  after,
+  now = new Date().toISOString(),
+}: {
+  /** The tasks shown before the schedule was made current. */
+  before: readonly ScheduleItem[];
+  /** The tasks shown after. */
+  after: readonly ScheduleItem[];
+  now?: string;
+}): ScheduleItem[] {
+  const beforeIds = new Set(before.map(item => item.id));
+  const afterIds = new Set(after.map(item => item.id));
+  const nowShown = after.filter(item => !beforeIds.has(item.id));
+  const nowHidden = before.filter(item => !afterIds.has(item.id));
+  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  const pairs = pairTaskRevisions(nowHidden, nowShown, () => true);
+  return nowShown.flatMap(shown => {
+    const hidden = pairs.get(shown);
+    if (!hidden || !scheduleProgressIsManagers(hidden)) return [];
+    if (progressStatedAt(hidden) <= progressStatedAt(shown)) return [];
+    if (!scheduleProgressIsManagers(shown) && percentOf(hidden) < percentOf(shown)) return [];
+    if (percentOf(hidden) === percentOf(shown) && hidden.status === shown.status) return [];
+    return [{
+      ...shown,
+      percentComplete: hidden.percentComplete,
+      status: hidden.status,
+      progressSource: hidden.progressSource ?? null,
+      progressConfirmedAt: hidden.progressConfirmedAt ?? null,
+      progressConfirmedBy: hidden.progressConfirmedBy ?? null,
+      completionVerification: hidden.completionVerification ?? null,
+      updatedAt: now,
+    }];
+  });
+}
+
+/** The phone's form: every saved task, and the schedules before and after Set Active. */
+export function scheduleProgressCarriedOnActivation({
+  items,
+  documentsBefore,
+  documentsAfter,
+  now,
+}: {
+  items: readonly ScheduleItem[];
+  documentsBefore: readonly ReferenceDocument[];
+  documentsAfter: readonly ReferenceDocument[];
+  now?: string;
+}): ScheduleItem[] {
+  const shownWith = (documents: readonly ReferenceDocument[]) =>
+    selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] });
+  return scheduleProgressCarriedToShownTasks({ before: shownWith(documentsBefore), after: shownWith(documentsAfter), now });
+}
+
 /** The import identity, with an empty saved area matching the imported one. */
 function sameImportIdentity(existing: ScheduleItem, imported: ScheduleItem): boolean {
   if (!sameArea(existing, imported)) return false;

@@ -329,6 +329,8 @@ describe('Set Active is offered again on a combined schedule retired for some of
         markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
         // Audit A8 pass 3 M2 (landed after this test): queued text outlives the activation; none is queued here.
         requeueReferenceDocumentEditsOutlivingActivation: async () => [],
+        // A5 pass 4 #3: progress recorded since the import follows the task now shown (none here).
+        scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: [] },
         Alert: { alert: jest.fn() },
       };
       const js = ts.transpileModule(`module.exports = ${app.slice(start, end).trim()}`, {

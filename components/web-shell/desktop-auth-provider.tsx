@@ -42,6 +42,7 @@ import type {
 } from '../../services/ECOSDocumentProofAuthority';
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
 import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
+import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
 import {
   initialDAVEWebFreshnessState,
   recordDAVEWebRefreshFailure,
@@ -753,12 +754,20 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );
+    const shownBefore = snapshotRef.current?.scheduleItems ?? [];
     const scope = await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
     const collections = ['reference_documents'] as const;
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
+    // Progress recorded after the upload, on a task this schedule's upload
+    // paired, follows the task now shown (whole-app audit A5 pass 4 #3).
+    const carried = scheduleProgressCarriedToShownTasks({
+      before: shownBefore,
+      after: snapshotRef.current?.scheduleItems ?? [],
+    }) as DAVEWebScheduleItem[];
+    if (carried.length > 0) await updateTasks(carried).catch(() => 0);
     return scope;
-  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments, updateTasks]);
 
   const setCurrentDocument = useCallback(async (document: DAVEWebReferenceDocument) => {
     const documents = snapshot?.referenceDocuments || [];

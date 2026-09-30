@@ -678,7 +678,7 @@ import {
 import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from './services/ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -11026,9 +11026,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
           deletedIds,
         }),
       );
+      const carried = new Map(scheduleProgressCarriedOnActivation({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], documentsBefore: referenceDocumentsCurrentRef.current, documentsAfter: mergedDocuments }).map(item => [item.id, item as unknown as ScheduleItem])); // progress recorded since the import follows the task now shown (A5 pass 4 #3)
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = mergedDocuments;
       setReferenceDocuments(mergedDocuments);
+      if (carried.size > 0) { markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); }); }
       return true;
     } catch {
       Alert.alert(
