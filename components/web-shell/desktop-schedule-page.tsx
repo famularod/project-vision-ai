@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useMemo, useState } from 'react';
+import { createElement, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -16,6 +16,7 @@ import {
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
+import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
@@ -90,6 +91,7 @@ export function DesktopSchedulePage({
   const [pending, setPending] = useState(false);
   const [impactPendingItemId, setImpactPendingItemId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const [reloadAfterConflictId, setReloadAfterConflictId] = useState<string | null>(null);
   const projectNames = uniqueText([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
@@ -165,34 +167,36 @@ export function DesktopSchedulePage({
   };
 
   const openEdit = (task: DAVEWebScheduleItem) => {
-    const dependencyLag = task.dependencies?.[0]?.lagDays ?? 0;
     setEditingTask(task);
-    setEditor({
-      kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
-      taskName: task.taskName,
-      projectName: task.scheduleProjectName || task.projectName,
-      locationName: task.locationName,
-      wbsCode: task.wbsCode || '',
-      parentItemId: task.parentItemId || '',
-      startDate: dateInputValue(task.startDate),
-      finishDate: dateInputValue(task.finishDate),
-      baselineStartDate: dateInputValue(task.baselineStartDate || ''),
-      baselineFinishDate: dateInputValue(task.baselineFinishDate || ''),
-      durationDays: task.durationDays === null || task.durationDays === undefined
-        ? ''
-        : String(task.durationDays),
-      predecessorItemIds: (task.dependencies || []).map(dependency =>
-        dependency.predecessorItemId,
-      ),
-      lagDays: String(dependencyLag),
-      owner: task.owner,
-      contractor: task.contractor,
-      percentComplete: String(task.percentComplete),
-      status: task.status,
-      notes: task.notes,
-    });
+    setEditor(scheduleEditorStateFor(task));
     setNotice(null);
   };
+
+  // A save refused because another device changed the item reloads the
+  // refreshed version into the editor, as the Tasks page's Load Latest
+  // Version does; the builder had kept the stale copy, so every later save
+  // was refused with the same "has been refreshed" message (whole-app audit
+  // round 2 F7, 30 Sep 2026).
+  useEffect(() => {
+    if (!reloadAfterConflictId) return;
+    setReloadAfterConflictId(null);
+    const latest = tasks.find(task => task.id === reloadAfterConflictId);
+    if (!latest) {
+      setEditor(null);
+      setEditingTask(null);
+      setNotice({
+        tone: 'danger',
+        text: 'This schedule item is no longer in the shared record.',
+      });
+      return;
+    }
+    setEditingTask(latest);
+    setEditor(scheduleEditorStateFor(latest));
+    setNotice({
+      tone: 'danger',
+      text: 'Another device changed this schedule item while you were editing. The latest version is now loaded; review it, make your change again, and save.',
+    });
+  }, [reloadAfterConflictId, tasks]);
 
   const save = async () => {
     if (!editor || pending) return;
@@ -253,13 +257,16 @@ export function DesktopSchedulePage({
         projectId: editingTask?.projectId ??
           projectTasks.find(task => Boolean(task.projectId))?.projectId ??
           null,
-        itemType: 'Task',
+        // The item's own type: the builder saved every item as a Task, so an
+        // RFI or Issue lost its type and a closed one could not be saved
+        // (whole-app audit round 2 F5, 30 Sep 2026).
+        itemType: editingTask?.itemType ?? 'Task',
         taskName: editor.taskName,
         projectName: editor.projectName,
         locationName: editor.locationName,
         startDate: editor.kind === 'phase' ? '' : startDate,
         finishDate: editor.kind === 'phase' ? '' : finishDate,
-        milestone: editor.kind === 'milestone' ? editor.taskName : '',
+        milestone: scheduleBuilderMilestoneText(editor, editingTask),
         owner: editor.owner,
         contractor: editor.contractor,
         percentComplete,
@@ -302,6 +309,22 @@ export function DesktopSchedulePage({
           : 'Schedule item created and synced.',
       });
     } catch (error) {
+      if (editingTask && error instanceof DAVEWebTaskMutationError && error.code === 'conflict') {
+        const refreshed = await auth.refreshSnapshot().catch(() => false);
+        if (refreshed) {
+          setReloadAfterConflictId(editingTask.id);
+          return;
+        }
+        setNotice({
+          tone: 'danger',
+          text: 'Another device changed this schedule item while you were editing, and the latest version could not be loaded. Refresh the workspace, then open the item again.',
+        });
+        return;
+      }
+      if (await refreshAfterRefusedWrite(error)) {
+        setEditor(null);
+        setEditingTask(null);
+      }
       setNotice({
         tone: 'danger',
         text: error instanceof Error
@@ -311,6 +334,19 @@ export function DesktopSchedulePage({
     } finally {
       setPending(false);
     }
+  };
+
+  /**
+   * The gateway's refusal messages say "The workspace has been refreshed";
+   * the builder now does refresh (audit round 2 F7). True when the item is
+   * gone (deleted on another device), so its editor can close.
+   */
+  const refreshAfterRefusedWrite = async (error: unknown): Promise<boolean> => {
+    if (!(error instanceof DAVEWebTaskMutationError) || error.code === 'write_failed') {
+      return false;
+    }
+    await auth.refreshSnapshot().catch(() => false);
+    return error.code === 'deleted' || error.code === 'not_found';
   };
 
   const applyDependencyDateChange = async (itemId: string) => {
@@ -348,6 +384,7 @@ export function DesktopSchedulePage({
         text: `${current.taskName} moved to ${shortDate(calculated.startDate)}–${shortDate(calculated.finishDate)} and synced.`,
       });
     } catch (error) {
+      await refreshAfterRefusedWrite(error);
       setNotice({
         tone: 'danger',
         text: error instanceof Error
@@ -582,7 +619,7 @@ export function DesktopSchedulePage({
                           {row.item.taskName}
                         </Text>
                         <Text style={styles.itemKind}>
-                          {row.item.isSummary ? 'Phase' : row.item.isMilestone ? 'Milestone' : 'Task'}
+                          {row.item.isSummary ? 'Phase' : row.item.isMilestone ? 'Milestone' : row.item.itemType || 'Task'}
                         </Text>
                       </View>
                     </View>
@@ -1788,6 +1825,55 @@ function ancestorIsCollapsed(
     parentId = projectTasks.find(candidate => candidate.id === parentId)?.parentItemId?.trim();
   }
   return false;
+}
+
+function scheduleEditorStateFor(task: DAVEWebScheduleItem): ScheduleEditorState {
+  const dependencyLag = task.dependencies?.[0]?.lagDays ?? 0;
+  return {
+    kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
+    taskName: task.taskName,
+    projectName: task.scheduleProjectName || task.projectName,
+    locationName: task.locationName,
+    wbsCode: task.wbsCode || '',
+    parentItemId: task.parentItemId || '',
+    startDate: dateInputValue(task.startDate),
+    finishDate: dateInputValue(task.finishDate),
+    baselineStartDate: dateInputValue(task.baselineStartDate || ''),
+    baselineFinishDate: dateInputValue(task.baselineFinishDate || ''),
+    durationDays: task.durationDays === null || task.durationDays === undefined
+      ? ''
+      : String(task.durationDays),
+    predecessorItemIds: (task.dependencies || []).map(dependency =>
+      dependency.predecessorItemId,
+    ),
+    lagDays: String(dependencyLag),
+    owner: task.owner,
+    contractor: task.contractor,
+    percentComplete: String(task.percentComplete),
+    status: task.status,
+    notes: task.notes,
+  };
+}
+
+/**
+ * The milestone text a builder save keeps (whole-app audit round 2 F5,
+ * 30 Sep 2026). A save cleared it on every item not marked as a milestone,
+ * so an imported milestone (its text set, the flag not) lost it on any edit,
+ * and a marked milestone had its text replaced by its name. It follows the
+ * name only for a new milestone, or when the owner renames a milestone whose
+ * text was its name (or empty); otherwise the existing text stays.
+ */
+function scheduleBuilderMilestoneText(
+  editor: ScheduleEditorState,
+  editingTask: DAVEWebScheduleItem | null,
+): string {
+  const existing = editingTask?.milestone ?? '';
+  if (editor.kind !== 'milestone') return existing;
+  if (!editingTask || !existing.trim()) return editor.taskName;
+  const renamed = editor.taskName.trim() !== editingTask.taskName.trim();
+  return renamed && existing.trim() === editingTask.taskName.trim()
+    ? editor.taskName
+    : existing;
 }
 
 function dateInputValue(value: string) {

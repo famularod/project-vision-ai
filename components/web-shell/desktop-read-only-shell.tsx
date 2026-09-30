@@ -37,6 +37,7 @@ import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
   DAVEWebTaskValidationError,
+  mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
@@ -925,6 +926,8 @@ type TaskWorkspaceStatusFilter = 'all' | 'overdue' | ScheduleStatus;
 type TaskConflictDraft = Readonly<{
   taskId: string;
   draft: DAVEWebTaskDraft;
+  /** The version the form was opened on: fields equal to it were left alone. */
+  base: DAVEWebScheduleItem;
 }>;
 
 function TaskEditingWorkspace({
@@ -1133,7 +1136,7 @@ function TaskEditingWorkspace({
         error instanceof DAVEWebTaskMutationError &&
         error.code === 'conflict'
       ) {
-        setConflictDraft({ taskId: editingTask.id, draft });
+        setConflictDraft({ taskId: editingTask.id, draft, base: editingTask });
         setNotice({
           tone: 'danger',
           text: 'Another device changed this task while you were editing. Choose which version to continue with.',
@@ -1184,12 +1187,22 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
+      const now = new Date().toISOString();
+      const actor = auth.userEmail || 'Project manager';
+      // Only the fields he changed go over the other device's newer version
+      // (whole-app audit round 2 F4, 30 Sep 2026).
       const item = buildDAVEWebScheduleItem({
-        draft: conflictDraft.draft,
+        draft: mergeDAVEWebConflictDraft({
+          draft: conflictDraft.draft,
+          base: conflictDraft.base,
+          latest,
+          now,
+          actor,
+        }),
         current: latest,
         id: latest.id,
-        now: new Date().toISOString(),
-        actor: auth.userEmail || 'Project manager',
+        now,
+        actor,
       });
       await auth.updateTask(item);
       setSelectedTaskId(item.id);
@@ -1198,7 +1211,7 @@ function TaskEditingWorkspace({
       setConflictDraft(null);
       setNotice({
         tone: 'good',
-        text: 'Your changes were applied to the latest shared version and synced.',
+        text: 'The fields you changed were applied to the latest shared version and synced.',
       });
     } catch (error) {
       await auth.refreshSnapshot().catch(() => undefined);
@@ -1435,7 +1448,7 @@ function TaskEditingWorkspace({
           <View style={styles.dataGrow}>
             <Text style={styles.conflictResolutionTitle}>Choose how to resolve this edit</Text>
             <Text style={styles.dataDetail}>
-              Load the latest task to review the other device’s changes, or apply your form values to that latest version.
+              Load Latest Version shows the other device’s changes so you can review them. Apply My Changes saves only the fields you changed; everything you did not change keeps the other device’s newer values.
             </Text>
           </View>
           <View style={styles.inlineButtons}>

@@ -18,7 +18,10 @@ import {
   validateProjectItemWorkflowEdit,
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
-import { normalizeProjectControls } from './VitruviusProjectControls';
+import {
+  normalizeProjectControls,
+  PROJECT_CONTROL_DATA_FIELDS,
+} from './VitruviusProjectControls';
 
 export type DAVEWebScheduleItem = ScheduleItem & Readonly<{
   /** Exact cloud row revision used for optimistic concurrency checks. */
@@ -244,6 +247,156 @@ export function buildDAVEWebScheduleItem({
   }
 
   return item;
+}
+
+/**
+ * "Apply My Changes" after a save conflict keeps what the other device saved
+ * in every field the owner left alone (whole-app audit round 2 F4, 30 Sep
+ * 2026). The whole form had been laid over the latest version, so a phone's
+ * newer 60% and note went back to the 40% and old note the web had opened.
+ * A field counts as changed when the form differs from `base`, the version
+ * the form was opened on; when both devices changed it, the owner's value
+ * wins. An unchanged progress value keeps the latest one and its
+ * confirmation time, because buildDAVEWebScheduleItem then sees no progress
+ * change. Project controls are merged field by field in the same way.
+ */
+export function mergeDAVEWebConflictDraft({
+  draft,
+  base,
+  latest,
+  now,
+  actor,
+}: {
+  draft: DAVEWebTaskDraft;
+  base: ScheduleItem;
+  latest: ScheduleItem;
+  now: string;
+  actor: string;
+}): DAVEWebTaskDraft {
+  const text = (
+    mine: string,
+    opened: string | null | undefined,
+    theirs: string | null | undefined,
+  ) => (mine.trim() === (opened ?? '').trim() ? theirs ?? '' : mine);
+  const minePercent = boundedPercent(draft.percentComplete);
+  const openedProject = base.scheduleProjectName || base.projectName;
+  const latestProject = latest.scheduleProjectName || latest.projectName;
+  const planningText = (
+    mine: string | undefined,
+    opened: string | null | undefined,
+  ) => (mine === undefined || mine.trim() === (opened ?? '').trim() ? undefined : mine);
+  const planningNumber = (
+    mine: number | string | null | undefined,
+    opened: number | null | undefined,
+  ) => (
+    mine === undefined ||
+    optionalPlanningNumber(mine, null) === optionalPlanningNumber(opened ?? null, null)
+      ? undefined
+      : mine
+  );
+  const planningFlag = (mine: boolean | undefined, opened: boolean | undefined) => (
+    mine === undefined || (mine === true) === (opened === true) ? undefined : mine
+  );
+  const dependenciesChanged = draft.dependencies !== undefined &&
+    JSON.stringify(normalizeScheduleDependencies(draft.dependencies)) !==
+      JSON.stringify(normalizeScheduleDependencies(base.dependencies));
+
+  return {
+    ...draft,
+    itemType: draft.itemType === (base.itemType || 'Task')
+      ? latest.itemType || 'Task'
+      : draft.itemType,
+    taskName: text(draft.taskName, base.taskName, latest.taskName),
+    projectName: normalized(draft.projectName) === normalized(openedProject)
+      ? latestProject
+      : draft.projectName,
+    locationName: text(draft.locationName, base.locationName, latest.locationName),
+    startDate: text(draft.startDate, base.startDate, latest.startDate),
+    finishDate: text(draft.finishDate, base.finishDate, latest.finishDate),
+    milestone: text(draft.milestone, base.milestone, latest.milestone),
+    owner: text(draft.owner, base.owner, latest.owner),
+    contractor: text(draft.contractor, base.contractor, latest.contractor),
+    percentComplete: minePercent === null || minePercent === base.percentComplete
+      ? latest.percentComplete
+      : draft.percentComplete,
+    priority: draft.priority === (base.priority ?? 'Medium')
+      ? latest.priority ?? 'Medium'
+      : draft.priority,
+    status: draft.status === base.status ? latest.status : draft.status,
+    notes: text(draft.notes, base.notes, latest.notes),
+    nextAction: text(draft.nextAction, base.nextAction, latest.nextAction),
+    wbsCode: planningText(draft.wbsCode, base.wbsCode),
+    parentItemId: planningText(draft.parentItemId, base.parentItemId),
+    sortOrder: planningNumber(draft.sortOrder, base.sortOrder),
+    durationDays: planningNumber(draft.durationDays, base.durationDays),
+    dependencies: dependenciesChanged ? draft.dependencies : undefined,
+    isSummary: planningFlag(draft.isSummary, base.isSummary),
+    isMilestone: planningFlag(draft.isMilestone, base.isMilestone),
+    baselineStartDate: planningText(draft.baselineStartDate, base.baselineStartDate),
+    baselineFinishDate: planningText(draft.baselineFinishDate, base.baselineFinishDate),
+    projectControls: draft.projectControls === undefined
+      ? undefined
+      : mergeConflictProjectControls({
+          mine: draft.projectControls,
+          opened: base.projectControls,
+          theirs: latest.projectControls,
+          now,
+          actor,
+        }),
+  };
+}
+
+function mergeConflictProjectControls({
+  mine,
+  opened,
+  theirs,
+  now,
+  actor,
+}: {
+  mine: ProjectControls | null;
+  opened: ProjectControls | null | undefined;
+  theirs: ProjectControls | null | undefined;
+  now: string;
+  actor: string;
+}): ProjectControls | null {
+  const minePC = normalizeProjectControls(mine);
+  const openedPC = normalizeProjectControls(opened);
+  const changed = PROJECT_CONTROL_DATA_FIELDS.filter(field =>
+    JSON.stringify(minePC[field]) !== JSON.stringify(openedPC[field]));
+  if (changed.length === 0) return theirs ?? null;
+  const theirsPC = normalizeProjectControls(theirs);
+  const updatedBy = actor.trim() || 'Project manager';
+  const fieldRevisions = { ...(theirsPC.fieldRevisions || {}) };
+  const values: Partial<ProjectControls> = {};
+  changed.forEach(field => {
+    (values as Record<string, unknown>)[field] = JSON.parse(JSON.stringify(minePC[field]));
+    // Stamped now: the owner chose to write his value over the other device's.
+    fieldRevisions[field] = {
+      revision: Math.max(
+        minePC.fieldRevisions?.[field]?.revision || 0,
+        theirsPC.fieldRevisions?.[field]?.revision || 0,
+      ) + 1,
+      updatedAt: now,
+      updatedBy,
+    };
+  });
+  return normalizeProjectControls({
+    ...theirsPC,
+    ...values,
+    revision: Math.max(minePC.revision, theirsPC.revision) + 1,
+    updatedAt: now,
+    updatedBy,
+    fieldRevisions,
+  });
+}
+
+function boundedPercent(value: number | string): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : value.trim()
+      ? Number(value.replace('%', '').trim())
+      : Number.NaN;
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : null;
 }
 
 export function scheduleItemForCloud(

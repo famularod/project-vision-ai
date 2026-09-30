@@ -562,6 +562,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const updateTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     let updated = 0;
+    let failed = false;
     try {
       for (const item of items) {
         await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
@@ -570,12 +571,16 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         );
         updated += 1;
       }
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      if (updated > 0) {
-        const collections = ['schedule_items'] as const;
-        announceMutation(collections);
-        await refreshSnapshotInBackground(collections);
-      }
+      const collections = ['schedule_items'] as const;
+      if (updated > 0) announceMutation(collections);
+      // A refusal on the first item refreshes too: "Apply all date changes"
+      // says the schedule was refreshed, and the next try needs the latest
+      // revisions (whole-app audit round 2 F7, 30 Sep 2026).
+      if (updated > 0 || failed) await refreshSnapshotInBackground(collections);
     }
     return updated;
   }, [announceMutation, refreshSnapshotInBackground]);
