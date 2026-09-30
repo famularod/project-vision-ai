@@ -1652,6 +1652,87 @@ describe('offline upload deletion barriers', () => {
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
+  // Whole-app audit A5 pass 3 F6 (30 Sep 2026): Keep Phone uploaded the phone's
+  // copy verbatim, so a revision another device had re-homed the task into lost
+  // it, and the task disappeared everywhere while that revision was current.
+  describe('Keep Phone keeps the revisions another device re-homed the task into', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-phone-rehomed',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'PLACE ASPHALT AT EMPLOYEE PARKING AREA',
+      startDate: '',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Keep this phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'schedule.pdf',
+      importBatchId: 'batch-rev-1',
+      createdAt: '2026-07-21T22:31:36.387Z',
+      updatedAt: '2026-07-26T22:47:59.197Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+
+    async function conflictWithRehomedCloudCopy() {
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...phoneTask,
+        percentComplete: 100,
+        status: 'Complete',
+        notes: '',
+        alsoImportedInBatchIds: ['batch-rev-2'],
+        updatedAt: '2026-07-26T22:48:30.000Z',
+      }]));
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      return conflict;
+    }
+
+    it('uploads the phone copy with every revision either copy names, and keeps it on the phone', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      // Meanwhile a third revision also took the task in.
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+      }]));
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+        status: phoneTask.status,
+        alsoImportedInBatchIds: ['batch-rev-2'],
+      });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({
+        notes: phoneTask.notes,
+        status: phoneTask.status,
+        importBatchId: 'batch-rev-1',
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+      }));
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    it('settles without a new conflict when the cloud differs only by a newer revision', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([
+        { ...phoneCopy, alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'] },
+      ]));
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+      });
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+  });
+
   it('removes newer queued phone edits when the project manager keeps the cloud task copy', async () => {
     const localTask: ScheduleItem = {
       id: 'task-resolve-cloud',

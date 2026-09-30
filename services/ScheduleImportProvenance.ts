@@ -48,6 +48,25 @@ export function scheduleItemsForExactImportBatch(
 }
 
 /**
+ * The task with every later import either copy says it belongs to, the union
+ * the merge of two copies keeps. "Keep Phone" on a task conflict uploaded the
+ * phone's copy verbatim, dropping a revision another device had re-homed the
+ * task into, so the task disappeared everywhere while that revision was
+ * current (whole-app audit A5 pass 3 F6 (30 Sep 2026)). The same object when
+ * the other copy adds nothing.
+ */
+export function withScheduleImportMembershipOf(
+  item: ScheduleItem,
+  other: Pick<ScheduleItem, 'alsoImportedInBatchIds'> | null | undefined,
+): ScheduleItem {
+  const own = item.alsoImportedInBatchIds || [];
+  const added = (other?.alsoImportedInBatchIds || []).filter(batchId => !own.includes(batchId));
+  return added.length > 0
+    ? { ...item, alsoImportedInBatchIds: [...new Set([...own, ...added])] }
+    : item;
+}
+
+/**
  * The batches an imported task belongs to: its own import, then any later
  * import it was found unchanged in.
  */
