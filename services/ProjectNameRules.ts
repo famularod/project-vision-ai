@@ -62,7 +62,12 @@ export function projectNameAvailability({
   const documentKey = legacyProjectNameKey(projectName);
   const lookAlike = (names: readonly string[]) =>
     names.filter(name => name.trim() && legacyProjectNameKey(name) === documentKey).map(name => name.trim());
-  const active = lookAlike(projects)[0];
+  // A closed project stays on the project list as well as the archived list
+  // (the refresh keeps its record, and closing only adds it to the archived
+  // list), so it is left out here and answered as archived, with Reopen
+  // (audit A3 pass 5).
+  const archivedKeys = new Set(archivedProjects.map(nameKey));
+  const active = lookAlike(projects.filter(name => !archivedKeys.has(nameKey(name))))[0];
   if (active) return { kind: 'similar', projectName: active, source: 'active' };
   const archivedLookAlike = lookAlike(archivedProjects)[0];
   if (archivedLookAlike) return { kind: 'similar', projectName: archivedLookAlike, source: 'archived' };

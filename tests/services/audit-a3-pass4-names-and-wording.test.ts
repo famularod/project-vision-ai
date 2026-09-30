@@ -66,9 +66,12 @@ describe('wording says what the app does (audit A3 pass 4, 3)', () => {
     expect(app).not.toContain("'Close project?'");
   });
 
-  it('marks a contact\'s email and phone as optional: the app never sends to contacts (owner answer Q18)', () => {
-    expect(app).toContain('<Text style={styles.label}>Email (optional)</Text>');
-    expect(app).toContain('<Text style={styles.label}>Phone (optional)</Text>');
+  // Pin updated in audit A3 pass 5 (L3): the picker always has one address
+  // selected and has no "none" choice, so "(optional)" became "kept with the
+  // update" (owner answer Q18: the app never sends to contacts).
+  it('labels a contact\'s email and phone as kept with the update: the app never sends to contacts (owner answer Q18)', () => {
+    expect(app).toContain('<Text style={styles.label}>Email kept with the update</Text>');
+    expect(app).toContain('<Text style={styles.label}>Phone kept with the update</Text>');
     expect(app).not.toContain('Email to use');
     expect(app).not.toContain('Phone to use for text');
   });
