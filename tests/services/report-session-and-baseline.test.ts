@@ -72,9 +72,12 @@ describe('the reporting period runs from the report the owner has', () => {
   it('is what the screen uses: the briefing, the approval save, and the delivered mark on a completed send', () => {
     expect(screen).toContain('? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)');
     expect(screen).toContain('const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);');
-    expect(screen).toContain('if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {');
-    // Pass 3: the mark no longer waits on what the screen shows now; the started report's own fingerprint scopes it.
-    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint);");
+    // Owner answer Q17 (30 Sep 2026): a save lands only on the period it was made for, which is now the
+    // projects and the report format (was the projects' scope key alone).
+    expect(screen).toContain('if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(snapshotToSave)) {');
+    // Pass 3: the mark no longer waits on what the screen shows now; the started report's own fingerprint scopes it,
+    // and (Q17) its own format's period, since both formats of the same projects share a fingerprint.
+    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod);");
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     expect(screen).toContain('const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;');

@@ -59,7 +59,8 @@ describe('approval, review items and delivery on the Reports screen', () => {
   });
 
   it('marks the started report delivered on every completed send, whatever the screen shows by then', () => {
-    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint\);\n\s+if \(\n\s+mountedRef\.current &&/);
+    // Owner answer Q17 (30 Sep 2026): the mark also carries the started report's format period (was the fingerprint alone).
+    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint, startedPeriod\);\n\s+if \(\n\s+mountedRef\.current &&/);
     expect(screen).toMatch(/\) \{\n\s+setCommunicationError\(''\);\n\s+\}\n\s+\} catch \{/);
   });
 });

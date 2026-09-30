@@ -68,7 +68,12 @@ import {
   loadDAVEReportSnapshot,
   saveDAVEReportSnapshot,
 } from '../services/DAVEReportSnapshotRepository';
-import { markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave } from '../services/DAVEReportSnapshot';
+import {
+  markReportSnapshotDelivered,
+  reportBaselineSnapshot,
+  reportPeriodKey,
+  reportSnapshotToSave,
+} from '../services/DAVEReportSnapshot';
 import {
   approvedReportFingerprint,
   recallReportSessionState,
@@ -314,6 +319,10 @@ export function ReportsScreen({
     () => daveReportSnapshotScopeKey(selectedProjectNames),
     [selectedProjectNames],
   );
+  // Owner answer Q17 (30 Sep 2026): each report format keeps its own period,
+  // for these projects whether the report is single or combined, so each
+  // audience's report runs from the last report of that format it was sent.
+  const currentReportPeriodKey = reportPeriodKey({ scopeKey: reportSnapshotScopeKey, reportFormat });
   const drawingReferences = useMemo(() => buildAutomaticReportDrawingReferences({
     documents: referenceDocuments || [],
     scheduleItems,
@@ -333,8 +342,10 @@ export function ReportsScreen({
       projectName: reference.projectName,
       areaName: reference.areaName,
     })),
+    reportFormat,
   }), [
     drawingReferences,
+    reportFormat,
     reportSnapshotScopeKey,
     reportSourceFingerprint,
     reportTruths,
@@ -380,10 +391,13 @@ export function ReportsScreen({
   );
   // The scope the owner is looking at. Not pieReportDraft.id: that is a build
   // timestamp, and every background rebuild used to wipe edits and approval.
+  // Sorted (whole-app audit A6 pass 6 #6): toggling a project off and on
+  // moves it to the end of the selection, and the combined report's edits,
+  // review marks and approval were lost.
   const reportStateIdentityKey = [
     reportType,
     reportFormat,
-    ...selectedProjectNames.map(name => reportProjectKey(name)),
+    ...selectedProjectNames.map(name => reportProjectKey(name)).sort(),
   ].join('|');
   const reportCommunicationIdentityKey = [
     reportStateIdentityKey,
@@ -439,8 +453,8 @@ export function ReportsScreen({
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
   const pendingReportSnapshotSaveRef = useRef<{ snapshot: DAVEReportSnapshot; save: Promise<unknown> } | null>(null);
-  const reportSnapshotScopeKeyRef = useRef(reportSnapshotScopeKey);
-  reportSnapshotScopeKeyRef.current = reportSnapshotScopeKey;
+  const reportPeriodKeyRef = useRef(currentReportPeriodKey);
+  reportPeriodKeyRef.current = currentReportPeriodKey;
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
@@ -470,7 +484,7 @@ export function ReportsScreen({
     setPreviousReportSnapshot(null);
     setSnapshotScopeLoaded(false);
     setSnapshotLoadFailed(false);
-    void loadDAVEReportSnapshot(reportSnapshotScopeKey)
+    void loadDAVEReportSnapshot(reportSnapshotScopeKey, reportFormat)
       .then(snapshot => {
         if (cancelled) return;
         setPreviousReportSnapshot(snapshot);
@@ -486,7 +500,7 @@ export function ReportsScreen({
     return () => {
       cancelled = true;
     };
-  }, [reportSnapshotScopeKey]);
+  }, [reportFormat, reportSnapshotScopeKey]);
 
   // Approval covers the exact text and cited photos; a rebuild that leaves
   // them unchanged keeps it, and the owner's edits are kept either way.
@@ -564,6 +578,8 @@ export function ReportsScreen({
     const startedFingerprint = (requireApproval
       ? approvedReportFingerprint(recallReportSessionState(reportStateIdentityKey), approvalTextKey)
       : null) ?? reportSourceFingerprint;
+    // Only this format's period is marked (owner answer Q17).
+    const startedPeriod = { scopeKey: reportSnapshotScopeKey, reportFormat };
     const communicationToken = Symbol(startedReportIdentity);
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
@@ -574,8 +590,9 @@ export function ReportsScreen({
         const outcome = await communicate(startedReport);
         // The report that went out is the one that started, whatever the
         // screen shows by now (a sync can land while the composer is open);
-        // its own fingerprint scopes the mark (audit A6 pass 3).
-        if (outcome === 'completed') markReportDelivered(startedFingerprint);
+        // its own fingerprint and format's period scope the mark (audit A6
+        // pass 3; owner answer Q17).
+        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -636,7 +653,7 @@ export function ReportsScreen({
     pendingReportSnapshotSaveRef.current = { snapshot: snapshotToSave, save };
     void save
       .then(() => {
-        if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {
+        if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(snapshotToSave)) {
           // The ref at once: a send landing before the next render marks this one (audit A6 pass 5).
           previousReportSnapshotRef.current = snapshotToSave;
           setPreviousReportSnapshot(snapshotToSave);
@@ -654,20 +671,30 @@ export function ReportsScreen({
   };
 
   /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
-  const markReportDelivered = (sentFingerprint: string) => {
+  const markReportDelivered = (sentFingerprint: string, sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>) => {
+    const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
-    if (pending && pending.snapshot.sourceFingerprint === sentFingerprint) {
+    if (pending && pending.snapshot.sourceFingerprint === sentFingerprint && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
       void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint), () => undefined);
       return;
     }
-    markSavedReportDelivered(previousReportSnapshotRef.current, sentFingerprint);
+    const shown = previousReportSnapshotRef.current;
+    if (shown && reportPeriodKey(shown) === sentPeriodKey) {
+      markSavedReportDelivered(shown, sentFingerprint);
+      return;
+    }
+    // The screen moved to the other format (or other projects) while the send
+    // was open. Both formats of the same projects share a fingerprint, so the
+    // shown snapshot is never marked for it; the sent period's own is (Q17).
+    void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
+      .then(saved => markSavedReportDelivered(saved, sentFingerprint), () => undefined);
   };
   const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string) => {
     if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
     const delivered = markReportSnapshotDelivered(saved, new Date().toISOString());
     void saveDAVEReportSnapshot(delivered)
       .then(() => {
-        if (mountedRef.current && reportSnapshotScopeKeyRef.current === delivered.scopeKey) {
+        if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
           previousReportSnapshotRef.current = delivered;
           setPreviousReportSnapshot(delivered);
         }

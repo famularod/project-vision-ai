@@ -34,7 +34,10 @@ describe('A6 pass 4 lows', () => {
     expect(screen).toContain('const pendingReportSnapshotSaveRef = useRef<{ snapshot: DAVEReportSnapshot; save: Promise<unknown> } | null>(null);');
     expect(screen).toMatch(/const save = saveDAVEReportSnapshot\(snapshotToSave\);\n\s+pendingReportSnapshotSaveRef\.current = \{ snapshot: snapshotToSave, save \};/);
     expect(screen).toMatch(/\.finally\(\(\) => \{\n\s+if \(pendingReportSnapshotSaveRef\.current\?\.save === save\) pendingReportSnapshotSaveRef\.current = null;\n\s+\}\);/);
-    expect(screen).toMatch(/const markReportDelivered = \(sentFingerprint: string\) => \{\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && pending\.snapshot\.sourceFingerprint === sentFingerprint\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint\), \(\) => undefined\);\n\s+return;\n\s+\}\n\s+markSavedReportDelivered\(previousReportSnapshotRef\.current, sentFingerprint\);\n\s+\};/);
+    // Owner answer Q17 (30 Sep 2026): the pending save and the shown snapshot are matched on the sent format's
+    // period as well as the fingerprint (both formats of the same projects share a fingerprint); was the
+    // fingerprint alone. Behaviour in owner-q17-report-period-per-format.
+    expect(screen).toMatch(/const markReportDelivered = \(sentFingerprint: string, sentPeriod: [^)]*\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && pending\.snapshot\.sourceFingerprint === sentFingerprint && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint\), \(\) => undefined\);\n\s+return;\n\s+\}/);
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
   });
 });

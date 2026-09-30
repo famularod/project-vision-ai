@@ -7,6 +7,14 @@ import {
 
 export const DAVE_REPORT_SNAPSHOT_VERSION = 'dave-report-snapshot/1.0' as const;
 
+/**
+ * The report format a reporting period belongs to. Owner answer Q17 (30 Sep
+ * 2026): each format keeps its own "since the last report" period, so an
+ * Executive Summary sent to leadership no longer starts the next period of
+ * the team's Project Manager report, and the reverse.
+ */
+export type DAVEReportFormat = 'project_manager' | 'executive';
+
 export type DAVEReportSnapshotTask = Readonly<{
   taskId: string;
   projectName: string;
@@ -48,7 +56,24 @@ export type DAVEReportSnapshot = Readonly<{
    * never sent (whole-app audit A6, pass 2).
    */
   deliveredAt?: string | null;
+  /**
+   * The format whose period this is (owner answer Q17, 30 Sep 2026). Absent
+   * on snapshots saved before then, when every format shared one period:
+   * such a snapshot is each format's starting baseline until that format's
+   * first report is sent.
+   */
+  reportFormat?: DAVEReportFormat;
 }>;
+
+/**
+ * Which reporting period a snapshot is: its projects and, since owner answer
+ * Q17, its report format. A Project Manager report and an Executive Summary
+ * of the same projects share their facts and fingerprint, so the fingerprint
+ * alone does not tell their periods apart.
+ */
+export function reportPeriodKey(snapshot: Pick<DAVEReportSnapshot, 'scopeKey' | 'reportFormat'>): string {
+  return JSON.stringify([snapshot.scopeKey, snapshot.reportFormat ?? null]);
+}
 
 function wasDelivered(snapshot: DAVEReportSnapshot): boolean {
   return snapshot.deliveredAt !== null;
@@ -93,11 +118,13 @@ export function reportSnapshotToSave(
   current: DAVEReportSnapshot,
   previous: DAVEReportSnapshot | null | undefined,
 ): DAVEReportSnapshot | null {
-  if (previous && previous.scopeKey === current.scopeKey && previous.sourceFingerprint === current.sourceFingerprint) {
+  // The same projects and, since owner answer Q17, the same report format.
+  const samePeriod = previous ? reportPeriodKey(previous) === reportPeriodKey(current) : false;
+  if (previous && samePeriod && previous.sourceFingerprint === current.sourceFingerprint) {
     return null;
   }
   const pending = { ...current, deliveredAt: null };
-  if (!previous || previous.scopeKey !== current.scopeKey) return Object.freeze(pending);
+  if (!previous || !samePeriod) return Object.freeze(pending);
   if (!wasDelivered(previous)) {
     return Object.freeze({ ...pending, supersedes: previous.supersedes ?? null });
   }
@@ -160,12 +187,15 @@ export function buildDAVEReportSnapshot({
   sourceFingerprint,
   capturedAt,
   sourceReferences,
+  reportFormat,
 }: {
   truths: readonly DAVEProjectTruth[];
   scopeKey: string;
   sourceFingerprint: string;
   capturedAt?: string;
   sourceReferences?: readonly DAVEReportSnapshotSourceReference[];
+  /** The format whose period this snapshot is (owner answer Q17). */
+  reportFormat?: DAVEReportFormat;
 }): DAVEReportSnapshot {
   const tasks = truths.flatMap(truth => truth.schedule.map(task => Object.freeze({
     taskId: task.taskId,
@@ -204,6 +234,7 @@ export function buildDAVEReportSnapshot({
           ),
         }
       : {}),
+    ...(reportFormat ? { reportFormat } : {}),
   };
   return Object.freeze(snapshot);
 }
