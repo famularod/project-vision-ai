@@ -2,6 +2,11 @@ import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import {
+  scheduleRowRepeatsMasterBeforeLookahead,
+  scheduleTaskMasterRestated,
+  scheduleTaskRestatedByLookahead,
+} from './ScheduleLookahead';
 
 /**
  * How an approved schedule import joins the tasks already saved.
@@ -42,6 +47,15 @@ import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
  * manager's, only a higher percent, never lower. A task on the same dates is
  * updated in place (its id, owner, notes and history kept); approving a file
  * a task already belongs to again changes nothing.
+ *
+ * Owner answer Q22 (30 Sep 2026): a lookahead (overlay) adds to the master.
+ * A row that pairs with a task the manager sees restates that task in place,
+ * on the row's dates and with the file's progress by the rule above, and
+ * the task notes what it said before (ScheduleLookahead); a row that pairs
+ * with none is added. A later full schedule whose row repeats what the
+ * master said before the lookahead leaves the lookahead's dates, and a
+ * repeated percent leaves the lookahead's progress; one that changed the
+ * task is the newer file, as before.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -52,6 +66,8 @@ export type ScheduleImportMergeResult = Readonly<{
   carriedProgressIds: readonly string[];
   /** Saved tasks updated to the file's progress, and added rows whose file progress beat the manager's. */
   fileProgressIds: readonly string[];
+  /** Saved tasks a lookahead restated in place (owner answer Q22). */
+  overlaidIds: readonly string[];
 }>;
 
 /**
@@ -291,6 +307,7 @@ export function mergeApprovedScheduleImportItems({
   mergeCompletion,
   isCurrent = () => true,
   approvedAt = new Date().toISOString(),
+  overlay = false,
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
@@ -301,12 +318,15 @@ export function mergeApprovedScheduleImportItems({
   isCurrent?: (item: ScheduleItem) => boolean;
   /** When the owner approved the import: when a task's file progress is confirmed. */
   approvedAt?: string;
+  /** A lookahead: it adds to the master and restates the master's tasks in place (owner answer Q22). */
+  overlay?: boolean;
 }): ScheduleImportMergeResult {
   let next = [...existing];
   const additions: ScheduleItem[] = [];
   const rehomedIds: string[] = [];
   const carriedProgressIds: string[] = [];
   const fileProgressIds: string[] = [];
+  const overlaidIds: string[] = [];
   const pairs = pairTaskRevisions(existing, imported, isCurrent);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
@@ -323,8 +343,27 @@ export function mergeApprovedScheduleImportItems({
     seen.add(identity);
     const pairedId = pairs.get(importedItem)?.id;
     const paired = pairedId ? next.find(item => item.id === pairedId) : undefined;
+    if (overlay) {
+      const target = paired || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      if (!target) {
+        additions.push(importedItem);
+        return;
+      }
+      claimed.add(target.id);
+      const batchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
+      if (batchId && scheduleItemImportBatchIds(target).map(key).includes(key(batchId))) return;
+      const fileProgress = fileProgressFor(target, importedItem, approvedAt);
+      next = next.map(item => item.id === target.id
+        ? { ...scheduleTaskRestatedByLookahead(item, importedItem, approvedAt), ...(fileProgress || {}) }
+        : item);
+      overlaidIds.push(target.id);
+      if (fileProgress) fileProgressIds.push(target.id);
+      return;
+    }
+    // A new master repeating what it said before a lookahead restated the task (Q22).
+    const repeated = paired ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem) : { dates: false, percent: false };
     const duplicate = paired
-      ? (unchangedTask(paired, importedItem) ? paired : undefined)
+      ? (unchangedTask(paired, importedItem) || repeated.dates ? paired : undefined)
       : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
     if (duplicate) {
       claimed.add(duplicate.id);
@@ -336,15 +375,16 @@ export function mergeApprovedScheduleImportItems({
       // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
       if (newBatchId && batches.includes(key(newBatchId))) return;
       const rehome = owned && Boolean(newBatchId);
-      const fileProgress = fileProgressFor(duplicate, importedItem, approvedAt);
-      if (rehome || fileProgress) {
+      const fileProgress = repeated.percent ? null : fileProgressFor(duplicate, importedItem, approvedAt);
+      const restated = scheduleTaskMasterRestated(duplicate, importedItem);
+      if (rehome || fileProgress || restated !== duplicate) {
         next = next.map(item => item.id === duplicate.id
           ? {
-              ...item,
+              ...restated,
               ...(fileProgress || {}),
               ...(rehome ? {
-                locationName: key(item.locationName) ? item.locationName : importedItem.locationName,
-                alsoImportedInBatchIds: [...(item.alsoImportedInBatchIds || []), newBatchId],
+                locationName: key(restated.locationName) ? restated.locationName : importedItem.locationName,
+                alsoImportedInBatchIds: [...(restated.alsoImportedInBatchIds || []), newBatchId],
               } : {}),
             }
           : item);
@@ -387,5 +427,5 @@ export function mergeApprovedScheduleImportItems({
     additions.push(importedItem);
   });
 
-  return { next, additions, rehomedIds, carriedProgressIds, fileProgressIds };
+  return { next, additions, rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };
 }

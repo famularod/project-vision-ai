@@ -252,6 +252,13 @@ export type ReferenceDocument = {
    * list itself is never trimmed.
    */
   retiredForProjectNames?: string[];
+  /**
+   * How a schedule is used, chosen at import review (owner answer Q22, 30 Sep
+   * 2026): 'lookahead' adds to the master schedule of its projects and is in
+   * effect for as long as it is kept; 'master' (or none, every schedule
+   * imported before) is a full schedule that replaces the one before it.
+   */
+  scheduleRole?: 'master' | 'lookahead' | null;
   /** Immutable identity of the import review that created this document. */
   importBatchId?: string | null;
   /** Protected cloud object path. Cloud-only documents may not have a local uri. */
@@ -713,6 +720,15 @@ export type DAVECompletionVerification = {
   evidence: DAVECompletionEvidence[];
 };
 
+export type ScheduleLookaheadOverlay = {
+  /** The task's dates and percent before the first lookahead changed it. */
+  masterStartDate: string;
+  masterFinishDate: string;
+  masterPercentComplete: number;
+  /** Each lookahead import that restated the task, oldest first, with the dates it gave. */
+  lookaheads: { batchId: string; startDate: string; finishDate: string }[];
+};
+
 export type ScheduleItem = {
   id: string;
   /** Immutable cloud project identity. Display names are never write authority. */
@@ -762,6 +778,12 @@ export type ScheduleItem = {
    * without taking it over (whole-app audit A5 pass 2).
    */
   alsoImportedInBatchIds?: string[] | null;
+  /**
+   * The lookaheads that restated this task in place (owner answer Q22), and
+   * what it said before the first of them, so deleting a lookahead gives the
+   * task back its master schedule dates.
+   */
+  lookaheadOverlay?: ScheduleLookaheadOverlay | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
   /** Immutable activity identifier captured from the source schedule row. */

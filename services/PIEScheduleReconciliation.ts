@@ -155,7 +155,9 @@ export function selectAuthoritativeScheduleItems({
 }) {
   const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
   const currentByProject = currentScheduleDocumentsByProject(scheduleSources);
-  const activeSchedules = currentScheduleDocumentWinners(scheduleSources);
+  // Owner answer Q22 (30 Sep 2026): each lookahead adds to its projects' master.
+  const lookaheads = scheduleSources.filter(scheduleDocumentAddsToMaster);
+  const activeSchedules = [...currentScheduleDocumentWinners(scheduleSources), ...lookaheads];
   const activeScheduleSources = new Set(
     activeSchedules
       .flatMap(document => [document.name, document.originalFileName])
@@ -181,8 +183,10 @@ export function selectAuthoritativeScheduleItems({
       (Boolean(normalize(document.importBatchId || '')) && batchIds.includes(normalize(document.importBatchId || ''))));
   };
   // Shown when the current schedule for the task's own project contains it;
-  // with none current for that project, when any current schedule does.
+  // with none current for that project, when any current schedule does. A
+  // lookahead's tasks always show: it adds to the master (Q22).
   const containedByCurrentSchedule = (item: ScheduleItem, containing: readonly ReferenceDocument[]) => {
+    if (containing.some(scheduleDocumentAddsToMaster)) return true;
     const current = currentByProject.get(normalize(item.scheduleProjectName || item.projectName || ''));
     if (current) return containing.includes(current);
     return containing.some(document => activeDocumentIds.has(normalize(document.id)));
@@ -235,7 +239,47 @@ export function selectAuthoritativeScheduleItems({
       activeScheduleSources.has(importedFrom);
   });
 
-  return dedupeScheduleItems(selectedItems);
+  return dedupeScheduleItems(lookaheads.length > 0
+    ? withoutLookaheadDuplicates(selectedItems, currentByProject, containingDocuments)
+    : selectedItems);
+}
+
+/**
+ * One task where the master and a lookahead each hold a copy (owner answer
+ * Q22). A lookahead import restates the master's task in place, so this is
+ * only the copy a later import left behind: a new master that changed the
+ * task's dates, or an older master made current again. The copy from the
+ * newest file shows. Nothing is folded when a file lists the same task name
+ * twice in the same area: those may be two tasks.
+ */
+function withoutLookaheadDuplicates(
+  items: readonly ScheduleItem[],
+  currentByProject: ReadonlyMap<string, ReferenceDocument>,
+  containingDocuments: (item: ScheduleItem) => ReferenceDocument[],
+): ScheduleItem[] {
+  const groups = new Map<string, ScheduleItem[]>();
+  items.forEach(item => {
+    const project = normalize(item.scheduleProjectName || item.projectName || '');
+    const key = [project, normalize(item.locationName || ''), normalize(item.taskName || '')].join('|');
+    groups.set(key, [...(groups.get(key) || []), item]);
+  });
+  const hidden = new Set<ScheduleItem>();
+  groups.forEach(group => {
+    if (group.length < 2) return;
+    const master = currentByProject.get(normalize(group[0].scheduleProjectName || group[0].projectName || ''));
+    const sources = new Map(group.map(item => [item, containingDocuments(item)
+      .filter(document => document === master || scheduleDocumentAddsToMaster(document))] as const));
+    if ([...sources.values()].some(documents => documents.length === 0)) return;
+    const perFile = new Map<string, number>();
+    sources.forEach(documents => documents.forEach(document => perFile.set(document.id, (perFile.get(document.id) || 0) + 1)));
+    if ([...perFile.values()].some(count => count > 1)) return;
+    const statedAt = (item: ScheduleItem) => Math.max(...(sources.get(item) || []).map(document => timestamp(document.importedAt)));
+    const inMaster = (item: ScheduleItem) => Boolean(master && sources.get(item)?.includes(master));
+    const shown = [...group].sort((left, right) =>
+      (statedAt(right) - statedAt(left)) || (Number(inMaster(right)) - Number(inMaster(left))))[0];
+    group.forEach(item => { if (item !== shown) hidden.add(item); });
+  });
+  return items.filter(item => !hidden.has(item));
 }
 
 function scheduleOccurrenceKey(item: ScheduleItem) {
@@ -297,7 +341,8 @@ export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
 ): Map<string, T> {
   const current = new Map<string, T>();
   documents
-    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
+    // A lookahead adds to the master and never replaces it (owner answer Q22).
+    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent && !scheduleDocumentAddsToMaster(document))
     .sort(compareScheduleDocumentAuthority)
     .forEach(document => {
       const scope = scheduleDocumentScope(document);
@@ -316,6 +361,8 @@ export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
  * schedule's projects on it. Only names in its own project list count.
  */
 export function scheduleDocumentRetiredProjectNames(document: ReferenceDocument): string[] {
+  // A lookahead is in effect for all its projects, whatever the cloud recorded (owner answer Q22).
+  if (scheduleDocumentAddsToMaster(document)) return [];
   const listed: unknown[] = Array.isArray(document.retiredForProjectNames) ? document.retiredForProjectNames : [];
   const retired = new Set(listed
     .filter((name): name is string => typeof name === 'string')
@@ -341,6 +388,8 @@ export function scheduleDocumentIsCurrentEverywhere(
   document: ReferenceDocument,
   documents?: readonly ReferenceDocument[],
 ): boolean {
+  // A lookahead is in effect by its role: there is nothing to make current (Q22).
+  if (scheduleDocumentAddsToMaster(document)) return true;
   if (!document.isCurrent || scheduleDocumentRetiredProjectNames(document).length > 0) return false;
   return !documents || scheduleDocumentProjectsShownElsewhere(document, documents).length === 0;
 }
@@ -382,6 +431,10 @@ export function scheduleDocumentCurrentLabel(
   label: string,
   documents?: readonly ReferenceDocument[],
 ): string {
+  if (scheduleDocumentAddsToMaster(document)) {
+    const projects = scheduleDocumentScopeNames(document);
+    return `Lookahead: adds to the master schedule${projects.length > 0 ? ` for ${projects.join(', ')}` : ''}`;
+  }
   const retired = new Set([
     ...scheduleDocumentRetiredProjectNames(document),
     ...(documents ? scheduleDocumentProjectsShownElsewhere(document, documents) : []),
@@ -425,9 +478,22 @@ export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
 ): T[] {
   const winners = new Set(currentScheduleDocumentWinners(documents).map(document => document.id));
   if (winners.size === 0) return [...documents];
-  return documents.map(document => scheduleDocumentIsScheduleLike(document)
+  // A lookahead keeps the flag the cloud gave it (owner answer Q22).
+  return documents.map(document => scheduleDocumentIsScheduleLike(document) && !scheduleDocumentAddsToMaster(document)
     ? { ...document, isCurrent: winners.has(document.id) }
     : document);
+}
+
+/**
+ * A schedule David marked "Lookahead / partial (adds to the master)" at
+ * import review (owner answer Q22, 30 Sep 2026). It is in effect for its
+ * projects for as long as it is kept, whatever its current flag (the cloud's
+ * activation of a master can clear that flag): it never replaces the master,
+ * a new master does not retire it, and it is never sent to the cloud's
+ * activation. Every schedule imported before has no role: a full schedule.
+ */
+export function scheduleDocumentAddsToMaster(document: ReferenceDocument): boolean {
+  return document.scheduleRole === 'lookahead' && scheduleDocumentIsScheduleLike(document);
 }
 
 export function scheduleDocumentIsScheduleLike(document: ReferenceDocument): boolean {

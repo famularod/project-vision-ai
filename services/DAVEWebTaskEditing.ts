@@ -192,6 +192,8 @@ export function buildDAVEWebScheduleItem({
     importBatchId: current?.importBatchId ?? null,
     // Kept on a web edit, as the phone keeps it (whole-app audit A5 pass 2).
     ...(current?.alsoImportedInBatchIds?.length ? { alsoImportedInBatchIds: current.alsoImportedInBatchIds } : {}),
+    // What the task said before a lookahead restated it (owner answer Q22).
+    ...(current?.lookaheadOverlay ? { lookaheadOverlay: current.lookaheadOverlay } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,

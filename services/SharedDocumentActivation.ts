@@ -9,6 +9,7 @@ import {
 import {
   currentScheduleDocumentsByProject,
   currentScheduleDocumentWinners,
+  scheduleDocumentAddsToMaster,
   scheduleDocumentRetiredProjectNames,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
@@ -322,6 +323,7 @@ export function phoneScheduleCardIsCurrent(
     importedScheduleOfPhoneSchedule(card, projectName, documents),
   ].filter((document): document is ReferenceDocument => Boolean(document));
   if (own.length === 0 || !projectName?.trim()) return Boolean(card.isCurrent);
+  if (own.some(scheduleDocumentAddsToMaster)) return true; // a lookahead is in effect by its role (owner answer Q22)
   const shown = currentScheduleDocumentsByProject(documents);
   const current = [shown.get(scheduleProjectScopeKey(projectName)), shown.get('')];
   return own.some(document => current.some(candidate => candidate?.id === document.id));

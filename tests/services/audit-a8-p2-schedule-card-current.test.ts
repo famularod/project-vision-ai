@@ -25,6 +25,7 @@ import {
 } from '../../services/SharedDocumentActivation';
 import { markCurrentProjectScheduleDocument } from '../../services/DAVEDocumentWorkspace';
 import { bindPIEScheduleImportBatchProvenance } from '../../services/PIEScheduleImportBatch';
+import { scheduleImportAddsToMaster } from '../../services/ScheduleLookahead';
 import {
   createOwnedLocalFileManifest,
   createOwnedLocalFileManifestRecord,
@@ -143,6 +144,8 @@ function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: 
     daveRegisteredIdentityNames: () => [],
     mergeApprovedScheduleImportItems: ({ existing, imported }: { existing: unknown[]; imported: unknown[] }) => ({ next: existing, additions: imported }),
     findExactScheduleTaskForCompletionClaim: () => null, scheduleItemsVisibleBeforeImport: () => () => true,
+    // Owner answer Q22 (landed after this test): whether the import is a lookahead that adds to the master.
+    scheduleImportAddsToMaster,
     mergeReportedCompletionClaim: (item: unknown) => item, reconcileDAVEScheduleRecords: (items: unknown[]) => items,
     scheduleDocumentsAfterApproval: ({ documents, approvedDocuments }: { documents: ReferenceDocument[]; approvedDocuments: ReferenceDocument[] }) =>
       [...approvedDocuments, ...documents],

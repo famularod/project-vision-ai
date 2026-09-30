@@ -52,6 +52,7 @@ import {
 import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import {
+  scheduleDocumentAddsToMaster,
   scheduleDocumentCurrentLabel,
   scheduleDocumentIsCurrentEverywhere,
   scheduleDocumentIsScheduleLike,
@@ -6746,7 +6747,7 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
 }
 
 function documentStatusKind(document: DAVEWebReferenceDocument): Exclude<DocumentStatusFilter, 'all'> {
-  if (document.isCurrent) return 'current';
+  if (document.isCurrent || scheduleDocumentAddsToMaster(document)) return 'current'; // a lookahead is in effect by its role (owner answer Q22)
   return scheduleDocumentIsScheduleLike(document) ? 'prior' : 'other';
 }
 

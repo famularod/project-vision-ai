@@ -609,7 +609,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
-  scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
+  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -682,6 +682,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
+import { scheduleImportAddsToMaster, scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -11611,7 +11612,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}`,
+      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document)}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -11650,12 +11651,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
+                const restored = new Map(scheduleItemsAfterLookaheadDeleted(scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], document).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22)
                 const nextScheduleItems = scheduleItemsCurrentRef.current
-                  .filter(item => !deletedItemIds.has(item.id));
+                  .filter(item => !deletedItemIds.has(item.id)).map(item => restored.get(item.id) || item);
                 referenceDocumentsCurrentRef.current = updated;
                 scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
+                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); });
                 dropDeletedPredecessors([...deletedItemIds]); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026))
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
@@ -12492,6 +12495,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         imported: approvedItems as unknown as import('./types').ScheduleItem[],
         completionMatch: findExactScheduleTaskForCompletionClaim,
         isCurrent: scheduleItemsVisibleBeforeImport(scheduleItemsCurrentRef.current, referenceDocumentsCurrentRef.current, approvedBatch.id),
+        overlay: scheduleImportAddsToMaster(approvedBatch, referenceDocumentsCurrentRef.current), // a lookahead restates the master's tasks in place (owner answer Q22)
         mergeCompletion: (item, importedItem) => normalizeScheduleItem(
           mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
         ) as unknown as import('./types').ScheduleItem,
@@ -19763,7 +19767,7 @@ function ScheduleScreen({
                     <Text style={styles.rowSub}>
                       Imported {formatSavedTime(document.importedAt)} • {isScreenshot
                         ? 'Supporting message screenshot'
-                        : document.isCurrent ? scheduleDocumentCurrentLabel(document, 'Active schedule', scheduleDocuments) : 'Inactive'}
+                        : document.isCurrent || scheduleDocumentAddsToMaster(document) ? scheduleDocumentCurrentLabel(document, 'Active schedule', scheduleDocuments) : 'Inactive'}
                     </Text>
                   </View>
 

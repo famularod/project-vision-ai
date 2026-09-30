@@ -25,7 +25,7 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { currentScheduleDocumentWinners, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
 import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
@@ -660,8 +660,9 @@ export function buildDAVEWebTruthDiagnostics(
   const duplicateTaskGroups = [...groups.entries()]
     .filter(([, ids]) => ids.length > 1)
     .map(([key, taskIds]) => Object.freeze({ key, taskIds: Object.freeze(taskIds) }));
+  // A lookahead adds to the master: not a second current schedule (owner answer Q22).
   const currentSchedules = snapshot.referenceDocuments.filter(document =>
-    scheduleDocumentIsScheduleLike(document) && document.isCurrent,
+    scheduleDocumentIsScheduleLike(document) && document.isCurrent && !scheduleDocumentAddsToMaster(document),
   );
   const completedTaskCount = snapshot.scheduleItems.filter(item =>
     scheduleTaskIsComplete(item),

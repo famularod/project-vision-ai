@@ -65,6 +65,8 @@ export function normalizeReferenceDocument(
       : [],
     // Owner answer Q15: kept, or every refresh would drop the cloud's per-project retirement.
     ...retiredForProjectNames(value.retiredForProjectNames),
+    // Owner answer Q22: a lookahead adds to the master; kept, or a refresh would make it a full schedule.
+    ...(value.scheduleRole === 'lookahead' || value.scheduleRole === 'master' ? { scheduleRole: value.scheduleRole } : {}),
     importBatchId: stringOrNull(value.importBatchId),
     storagePath: stringOrNull(value.storagePath),
     sourceProvider:

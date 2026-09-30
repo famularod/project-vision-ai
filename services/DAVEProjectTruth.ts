@@ -6,7 +6,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import { scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import { scheduleDocumentAddsToMaster, scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
@@ -236,7 +236,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     // Report artifacts are derived outputs. They must not participate in the
     // current-truth fingerprint that governs their own freshness.
     if (normalizedKey(document.category) === 'report') return false;
-    if (!document.isCurrent) return false;
+    if (!document.isCurrent && !scheduleDocumentAddsToMaster(document)) return false; // a lookahead is in effect by its role (Q22)
     // A combined schedule retired for this project is current only for its others (owner answer Q15).
     if (scheduleDocumentRetiredForProject(document, input.projectName)) return false;
     const explicitProjectId = clean(document.projectId);
@@ -266,7 +266,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
         status: 'reference',
         createdAt: document.importedAt,
         importedAt: document.importedAt,
-        isArchived: !document.isCurrent,
+        isArchived: !document.isCurrent && !scheduleDocumentAddsToMaster(document),
       })),
     ],
     scheduleItems,

@@ -10,6 +10,7 @@
 import { dependencyChangesForDeletedTask } from '../../services/VitruviusScheduleEngine';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
+import { scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -55,6 +56,8 @@ function harness(items: ScheduleItem[], documents: ReferenceDocument[]) {
     // A document with no batch takes tasks through this rule since audit A8 pass 2 #1.
     scheduleItemsOfUnbatchedDocument,
     dependencyChangesForDeletedTask,
+    // Owner answer Q22 (landed after this test): a deleted lookahead's master tasks go back to their dates.
+    scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote, syncScheduleItemRevision: noop,
     Alert: { alert: (_title: string, _message: string, options: typeof buttons) => { buttons = options; } },
     recordDAVESyncTombstones: async (list: unknown[]) => list,
     advanceScheduleItemSyncGeneration: noop, cancelScheduleItemTextSync: noop, rememberOperationalTombstones: noop,
