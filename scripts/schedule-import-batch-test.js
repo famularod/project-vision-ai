@@ -316,7 +316,9 @@ assert(
     appSource.includes('prepareScheduleImportFromAsset(asset, selectedProjectNames)') &&
     appSource.includes('setIncomingScheduleImportBatch(batch)') &&
     flowSource.includes('incomingBatch?: PIEScheduleImportBatch | null') &&
-    flowSource.includes('setPendingBatch(incomingBatch)'),
+    // Owner answer Q22 (30 Sep 2026): the review opens through openReview, which also suggests the schedule's role.
+    flowSource.includes('openReview(incomingBatch)') &&
+    flowSource.includes('setPendingBatch(batch)'),
   'A document classified as Schedule must run extraction once and open the existing PM review gate.',
 );
 assert(

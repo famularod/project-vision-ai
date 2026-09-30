@@ -19714,6 +19714,7 @@ function ScheduleScreen({
               onCancel={onCancelImport}
               incomingBatch={incomingImportBatch}
               onIncomingBatchConsumed={onIncomingImportConsumed}
+              roleContext={{ documents: scheduleDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
             />
           ) : null}
 
