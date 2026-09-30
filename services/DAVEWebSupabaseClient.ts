@@ -614,6 +614,54 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return acknowledgedAt;
     },
 
+    /**
+     * The ids among `ids` that Restore Missing Tasks must leave alone: a task
+     * row that still exists (a task of a schedule that is not current is in
+     * the cloud but not on screen) or a deletion record. Restore had treated
+     * every task the workspace does not show as missing: a deleted task came
+     * back hidden behind its deletion record, and a hidden task's insert
+     * failed and stopped the restore part-way (whole-app audit round 2 F8).
+     */
+    async listAuthorizedUnrestorableScheduleItemIds(
+      ids: readonly string[],
+    ): Promise<ReadonlySet<string>> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      const requested = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
+      const unrestorable = new Set<string>();
+      for (let start = 0; start < requested.length; start += 200) {
+        const chunk = requested.slice(start, start + 200);
+        const [existing, deleted] = await Promise.all([
+          client
+            .from('schedule_items')
+            .select('id')
+            .eq('owner_id', ownerId)
+            .in('id', chunk),
+          client
+            .from('dave_sync_tombstones')
+            .select('record_id')
+            .eq('owner_id', ownerId)
+            .eq('entity_type', 'schedule_item')
+            .in('record_id', chunk),
+        ]);
+        if (existing.error || deleted.error) {
+          throw new DAVEWebTaskMutationError(
+            'write_failed',
+            'The shared record could not be checked, so nothing was restored. Refresh the workspace and try again.',
+          );
+        }
+        (existing.data ?? []).forEach(row => {
+          const id = readRawString(row, 'id');
+          if (id) unrestorable.add(id);
+        });
+        (deleted.data ?? []).forEach(row => {
+          const id = readRawString(row, 'record_id');
+          if (id) unrestorable.add(id);
+        });
+      }
+      return unrestorable;
+    },
+
     async updateAuthorizedScheduleItem(
       item: ScheduleItem,
       expectedCloudUpdatedAt: string | null,

@@ -96,7 +96,7 @@ async function renderReady(run: (auth: ReturnType<typeof useDesktopAuth>) => Pro
   return screen;
 }
 
-describe('web provider refresh after refused task writes (audit round 2 F7)', () => {
+describe('web provider refresh after refused task writes (audit round 2 F7, F8)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedGateway.getSessionStatus.mockResolvedValue({
@@ -121,6 +121,48 @@ describe('web provider refresh after refused task writes (audit round 2 F7)', ()
     await waitFor(() => expect(screen.getByTestId('outcome').props.children)
       .toBe('error:changed on another device'));
     expect(mockedGateway.updateAuthorizedScheduleItem).toHaveBeenCalledTimes(1);
+    expect(mockedLoadSnapshot).toHaveBeenCalledWith(['schedule_items']);
+  });
+
+  test('Restore Missing Tasks leaves deleted and hidden tasks alone and restores only what is gone', async () => {
+    mockedGateway.listAuthorizedUnrestorableScheduleItemIds.mockResolvedValue(
+      new Set(['deleted-task', 'hidden-task']),
+    );
+    mockedGateway.createAuthorizedScheduleItem.mockResolvedValue('2026-09-30T13:00:00.000Z');
+    const screen = await renderReady(auth => auth.restoreMissingTasks([
+      visible,
+      task('deleted-task'),
+      task('hidden-task'),
+      task('gone-task'),
+    ]));
+
+    fireEvent.press(screen.getByTestId('run'));
+
+    await waitFor(() => expect(screen.getByTestId('outcome').props.children).toBe('ok:1'));
+    expect(mockedGateway.listAuthorizedUnrestorableScheduleItemIds)
+      .toHaveBeenCalledWith(['deleted-task', 'hidden-task', 'gone-task']);
+    expect(mockedGateway.createAuthorizedScheduleItem).toHaveBeenCalledTimes(1);
+    expect(mockedGateway.createAuthorizedScheduleItem)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: 'gone-task' }));
+  });
+
+  test('a restore that stops part-way refreshes and says how many were restored', async () => {
+    mockedGateway.listAuthorizedUnrestorableScheduleItemIds.mockResolvedValue(new Set());
+    mockedGateway.createAuthorizedScheduleItem
+      .mockResolvedValueOnce('2026-09-30T13:00:00.000Z')
+      .mockRejectedValueOnce(new Error('The task could not be created.'));
+    const screen = await renderReady(auth => auth.restoreMissingTasks([
+      task('gone-1'),
+      task('gone-2'),
+      task('gone-3'),
+    ]));
+
+    fireEvent.press(screen.getByTestId('run'));
+
+    await waitFor(() => expect(screen.getByTestId('outcome').props.children).toBe(
+      'error:1 missing task was restored before one could not be saved. The workspace has been refreshed; validate the export again to restore the rest.',
+    ));
+    expect(mockedGateway.createAuthorizedScheduleItem).toHaveBeenCalledTimes(2);
     expect(mockedLoadSnapshot).toHaveBeenCalledWith(['schedule_items']);
   });
 });

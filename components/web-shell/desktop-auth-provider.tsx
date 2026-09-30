@@ -17,6 +17,7 @@ import {
 import {
   DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
+  DAVEWebTaskMutationError,
   daveWebSupabaseGateway,
   type DAVEWebStorageBucket,
 } from '../../services/DAVEWebSupabaseClient';
@@ -737,17 +738,38 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
+    const candidates = items.filter(item => !currentIds.has(item.id));
+    // Missing means gone from the cloud: not hidden (a schedule that is not
+    // current) and not deleted on purpose (whole-app audit round 2 F8).
+    const unrestorable = candidates.length > 0
+      ? await daveWebSupabaseGateway.listAuthorizedUnrestorableScheduleItemIds(
+          candidates.map(item => item.id),
+        )
+      : new Set<string>();
     let restored = 0;
-    for (const item of items) {
-      if (currentIds.has(item.id)) continue;
-      await daveWebSupabaseGateway.createAuthorizedScheduleItem(scheduleItemForCloud(item));
-      currentIds.add(item.id);
-      restored += 1;
-    }
-    if (restored > 0) {
+    let failed = false;
+    try {
+      for (const item of candidates) {
+        if (currentIds.has(item.id) || unrestorable.has(item.id)) continue;
+        await daveWebSupabaseGateway.createAuthorizedScheduleItem(scheduleItemForCloud(item));
+        currentIds.add(item.id);
+        restored += 1;
+      }
+    } catch (error) {
+      failed = true;
+      if (restored > 0) {
+        throw new DAVEWebTaskMutationError(
+          'write_failed',
+          `${restored} missing task${restored === 1 ? ' was' : 's were'} restored before one could not be saved. The workspace has been refreshed; validate the export again to restore the rest.`,
+        );
+      }
+      throw error;
+    } finally {
       const collections = ['schedule_items'] as const;
-      announceMutation(collections);
-      await refreshSnapshotInBackground(collections);
+      if (restored > 0) announceMutation(collections);
+      // Refreshed after a part-way failure too, so the workspace shows what
+      // was restored.
+      if (restored > 0 || failed) await refreshSnapshotInBackground(collections);
     }
     return restored;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);

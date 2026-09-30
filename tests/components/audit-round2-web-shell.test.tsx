@@ -167,3 +167,50 @@ describe('Apply My Changes on the Tasks page (audit round 2 F4)', () => {
     });
   });
 });
+
+describe('Data export and recovery on the web (audit round 2 F6, F8)', () => {
+  const backup = JSON.stringify({
+    schemaVersion: 'vitruvius-web-backup/1.0',
+    exportedAt: '2026-09-30T12:00:00.000Z',
+    sourceRefreshedAt: '2026-09-30T12:00:00.000Z',
+    projects: [],
+    scheduleItems: [{ id: 'gone-task', taskName: 'Gone task' }],
+    projectUpdates: [],
+    referenceDocuments: [],
+  });
+
+  function chooseFile(screen: ReturnType<typeof render>, label: string) {
+    const input = screen.UNSAFE_getAllByType('input' as never)
+      .find(candidate => candidate.props['aria-label'] === label);
+    if (!input) throw new Error(`No file input labelled ${label}`);
+    const target = {
+      files: [{ name: 'export.json', text: async () => backup }],
+      value: 'C:\\fakepath\\export.json',
+    };
+    fireEvent(input, 'change', { target });
+    return target;
+  }
+
+  test('the picker is emptied once read, so the same file can be chosen again', async () => {
+    const screen = render(<DesktopReadOnlyShell page="settings" />);
+
+    const target = chooseFile(screen, 'Choose Vitruvius data export');
+
+    expect(target.value).toBe('');
+    await waitFor(() => expect(screen.getByText('Validated recovery preview')).toBeTruthy());
+  });
+
+  test('the export and recovery text says what is and is not included', async () => {
+    const screen = render(<DesktopReadOnlyShell page="settings" />);
+
+    expect(screen.getByText(
+      /neither are deleted tasks or the tasks of schedules that are not current/,
+    )).toBeTruthy();
+    chooseFile(screen, 'Choose Vitruvius data export');
+    await waitFor(() => expect(screen.getByText(
+      /adds back only tasks that are no longer in the shared record/,
+    )).toBeTruthy());
+    expect(screen.getByText(/tasks deleted on purpose stay deleted/)).toBeTruthy();
+    expect(screen.queryByText(/restore deleted IDs/)).toBeNull();
+  });
+});

@@ -6269,7 +6269,7 @@ function OperationsWorkspace({
         ) : null}
       </Section>
 
-      <Section title="Data export and recovery" detail="Download an unencrypted JSON export of project records and media metadata, or validate a previous export before restoring missing tasks. Photo and document files are not included.">
+      <Section title="Data export and recovery" detail="Download an unencrypted JSON export of project records and media metadata as this workspace shows them, or validate a previous export before restoring missing tasks. Photo and document files are not included, and neither are deleted tasks or the tasks of schedules that are not current.">
         <View style={styles.inlineButtonsLeft}>
           <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => {
             const created = createDAVEWebBackup(snapshot);
@@ -6286,7 +6286,7 @@ function OperationsWorkspace({
           <View style={styles.editorCard}>
             <Text style={styles.cardTitle}>Validated recovery preview</Text>
             <Text style={styles.dataDetail}>{backup.projects.length} projects · {backup.scheduleItems.length} tasks · {backup.projectUpdates.length} field updates · {backup.referenceDocuments.length} documents</Text>
-            <Text style={styles.dataMeta}>For safety, this recovery restores missing task IDs only. It does not overwrite newer tasks, restore deleted IDs, or replace documents.</Text>
+            <Text style={styles.dataMeta}>For safety, this recovery adds back only tasks that are no longer in the shared record. Tasks that still exist, including those of schedules that are not current, are left unchanged; tasks deleted on purpose stay deleted; documents are not replaced.</Text>
             <LabeledTextField label="Type RESTORE MISSING TASKS to continue" value={restorePhrase} onChangeText={setRestorePhrase} />
             <View style={styles.inlineButtons}>
               <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => setBackup(null)} disabled={pending}>
@@ -6347,7 +6347,14 @@ function WebFilePicker({
         type: 'file',
         accept,
         'aria-label': label,
-        onChange: (event: any) => onFile(event.target.files?.[0] || null),
+        onChange: (event: any) => {
+          const file = event.target?.files?.[0] || null;
+          // Emptied once read, so choosing the same file again (after a
+          // refused schedule import, say) still arrives; the browser sends no
+          // change for an unchanged value (whole-app audit round 2 F6).
+          if (event.target) event.target.value = '';
+          onFile(file);
+        },
         style: {
           minHeight: 52,
           border: `1px solid ${desktopSurfaces.border}`,
