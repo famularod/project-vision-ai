@@ -75,6 +75,18 @@ import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import {
+  applyFieldUpdateDocumentPatches,
+  fieldUpdateDocumentPatchFor,
+  mergeFieldUpdateDocumentPatches,
+  queuedFieldUpdateDocumentPatches,
+  removedFieldUpdateDocumentKey,
+  type FieldUpdateDocumentPatch,
+  type RemovedFieldUpdateDocuments,
+} from './FieldUpdateDocumentPatch';
+import { recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
+
+export { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
+import {
   daveProjectUpdateMatchesCloudReceipt,
   daveProjectUpdatesNeedingCloudUpload,
   daveProjectUpdatesSemanticallyMatch,
@@ -572,6 +584,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   pendingPhotoAssetIds?: string[];
   archiveOnly?: boolean;
   archivedAt?: string;
+  /**
+   * Only document changes wait: they go onto the cloud's copy, and
+   * updateData (this device's copy) goes up only when the cloud has none
+   * (whole-app audit A7 pass 6 M1).
+   */
+  documentPatches?: FieldUpdateDocumentPatch[];
 };
 
 type ProjectUpdateDeletePayload = {
@@ -1376,6 +1394,8 @@ export async function enqueuePendingChange<TPayload>(
     createdAt?: string;
     retryCount?: number;
     autoUpload?: boolean;
+    /** An item already queued under this id that stays, as returned; null to replace it. */
+    keepExisting?: (existing: SyncQueueItem) => SyncQueueItem | null;
   },
 ): Promise<SyncQueueItem<TPayload>> {
   const createdAt = item.createdAt ?? new Date().toISOString();
@@ -1400,6 +1420,14 @@ export async function enqueuePendingChange<TPayload>(
       return { nextQueue: queue, result: undefined, persist: false };
     }
     const existingItem = queue.find(existing => existing.id === queueItem.id);
+    const kept = existingItem && item.keepExisting?.(existingItem);
+    if (kept) {
+      return {
+        nextQueue: queue.map(existing => existing === existingItem ? kept : existing),
+        result: undefined,
+        persist: kept !== existingItem,
+      };
+    }
     const mergedQueueItem = mergeScheduleItemQueueChangeScope(
       existingItem,
       queueItem as unknown as SyncQueueItem,
@@ -2255,6 +2283,79 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   );
 }
 
+/**
+ * A change to one document of a sent field update, queued as a patch on the
+ * cloud's copy (whole-app audit A7 pass 6 M1): `update` is this device's copy
+ * with the change made, sent whole only when the cloud has no copy. Added to
+ * this device's own edit when one is waiting. A document taken off is kept in
+ * this device's journal: an older copy sent later by the iPad does not put it
+ * back.
+ */
+export async function queueProjectUpdateDocumentChange<TUpdate extends {
+  id: string;
+  projectId?: string | null;
+  projectName?: string;
+  selectedAreaName?: string | null;
+  documents?: ReadonlyArray<{ id: string }> | null;
+}>(update: TUpdate, documentId: string): Promise<void> {
+  if (await hasProjectUpdateDeletionIntent(update.id)) return;
+  const patch = fieldUpdateDocumentPatchFor(update, documentId);
+  if (patch.remove) await recordRemovedFieldUpdateDocument(update.id, documentId).catch(() => undefined);
+  const queueId = projectUpdateQueueItemId(update.id);
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueId);
+    const existingPayload = existing?.payload as ProjectUpdateRecordPayload | undefined;
+    if (existing && (existing.operation === 'delete' || existingPayload?.archiveOnly)) {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+    const waitingPatches = queuedFieldUpdateDocumentPatches(existing);
+    const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData
+      ? { ...existing, payload: { ...existingPayload, updateData: applyFieldUpdateDocumentPatches(existingPayload.updateData as object, [patch]) } }
+      : {
+          id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          payload: {
+            id: update.id, projectId: update.projectId, projectName: update.projectName, selectedAreaName: update.selectedAreaName,
+            updateData: update, pendingPhotoAssetIds: [], documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
+          },
+          ...(ownerId ? { ownerId } : {}),
+        };
+    return { nextQueue: [...queue.filter(item => item.id !== queueId), next], result: undefined };
+  });
+}
+
+const removedDocumentsRequeuedThisLaunch = new Set<string>();
+
+/**
+ * Takes off the cloud copy, again, a document this device took off an
+ * update, when a cloud copy lists it once more: the iPad sent its own older
+ * copy (whole-app audit A7 pass 6 M1). Once per document per launch. The
+ * number queued.
+ */
+export async function requeueRemovedFieldUpdateDocuments(
+  cloudUpdates: readonly object[],
+  localUpdates: readonly object[],
+  removed: RemovedFieldUpdateDocuments,
+): Promise<number> {
+  if (removed.size === 0) return 0;
+  const localById = new Map(localUpdates.map(update => [(update as { id: string }).id, update]));
+  const due = cloudUpdates.flatMap(cloudUpdate => {
+    const { id, isArchived, documents } = cloudUpdate as { id: string; isArchived?: boolean; documents?: Array<{ id: string }> };
+    const local = localById.get(id);
+    if (!local || isArchived || !Array.isArray(documents)) return [];
+    return documents
+      .map(document => removedFieldUpdateDocumentKey(id, document.id))
+      .filter(key => removed.has(key) && !removedDocumentsRequeuedThisLaunch.has(key))
+      .map(key => ({ key, local, documentId: key.slice(id.length + 1) }));
+  });
+  for (const { key, local, documentId } of due) {
+    removedDocumentsRequeuedThisLaunch.add(key);
+    await queueProjectUpdateDocumentChange(local as { id: string }, documentId);
+  }
+  return due.length;
+}
+
 export async function queueProjectUpdateDelete(update: {
   id: string;
   projectName?: string;
@@ -2299,10 +2400,18 @@ async function persistProjectUpdateRecord<TUpdate extends {
   update: TUpdate,
   autoUpload: boolean,
   pendingPhotoAssetIds: readonly string[],
+  keepDocumentPatch = false,
 ) {
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+    // A waiting document patch stays one; its photos are this attempt's, for
+    // the whole-copy fallback (whole-app audit A7 pass 6 M1).
+    keepExisting: keepDocumentPatch
+      ? existing => queuedFieldUpdateDocumentPatches(existing)
+        ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pendingPhotos } }
+        : null
+      : undefined,
     id: projectUpdateQueueItemId(update.id),
     entity: 'project_update',
     operation: 'update',
@@ -2414,7 +2523,9 @@ export async function stageProjectUpdateForSync(
 ): Promise<StagedProjectUpdateSync> {
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
   const owner = currentCloudOwner();
-  await queueProjectUpdateRecord(cloudRecoverableUpdate, false);
+  // A sync attempt is not an edit: waiting document changes stay a patch on
+  // the cloud's copy, not this copy stamped anew (whole-app audit A7 pass 6 M1).
+  await persistProjectUpdateRecord(cloudRecoverableUpdate, false, cloudRecoverableUpdate.photos.map(photo => photo.id), true);
   const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate, owner);
   // A photo found under a legacy project path keeps that path, so the cloud
   // record (and the desktop) point at the file that exists.
@@ -2432,6 +2543,7 @@ export async function stageProjectUpdateForSync(
       recordToPersist,
       false,
       photoAttempt.failedPhotoIds,
+      true,
     );
   }
 
@@ -4597,7 +4709,8 @@ async function uploadProjectUpdateQueueItem(
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);
-  if (uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
+  const documentPatches = queuedFieldUpdateDocumentPatches(item);
+  if (!documentPatches && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
     return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
   }
   const remoteMetadata = await loadProjectUpdateSyncMetadata(payload.id, context);
@@ -4605,8 +4718,25 @@ async function uploadProjectUpdateQueueItem(
   if (!remoteMetadata.ok && remoteMetadata.error) {
     return `Project update database select failed: ${remoteMetadata.error}`;
   }
+  // Document changes go onto the cloud's current copy, whoever edited it last
+  // and whatever it says now (an archive on the iPad stays): this device's
+  // copy goes up whole only when the cloud has none (whole-app audit A7 pass
+  // 6 M1, A4 pass 8 F3).
+  const cloudCopy = documentPatches && remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data : null;
+  const patchedCloudCopy = cloudCopy?.updateData
+    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, documentPatches || [])
+    : null;
+  if (cloudCopy && patchedCloudCopy === cloudCopy.updateData) {
+    await clearConflictsForLocalRecord('project_update', payload.id);
+    recordProjectUpdateUpload(payload.id);
+    return 'uploaded';
+  }
+  if (!patchedCloudCopy && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
+    return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
+  }
 
   if (
+    !patchedCloudCopy &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
@@ -4632,15 +4762,22 @@ async function uploadProjectUpdateQueueItem(
     return 'conflict';
   }
 
-  const result = await saveProjectUpdate({
-    id: payload.id,
+  const record = cloudCopy && patchedCloudCopy ? {
+    projectId: cloudCopy.projectId || payload.projectId || '',
+    projectName: cloudCopy.projectName || payload.projectName || 'Unassigned Project',
+    areaName: cloudCopy.areaName ?? payload.selectedAreaName ?? '',
+    idempotencyKey: projectUpdateIdempotencyKey(cloudCopy.updateData, payload.id),
+    updateData: patchedCloudCopy as unknown,
+    updatedAt: new Date().toISOString(),
+  } : {
     projectId: payload.projectId || '',
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
     updateData: payload.updateData,
     updatedAt: item.changedAt,
-  });
+  };
+  const result = await saveProjectUpdate({ id: payload.id, ...record });
 
   if (result.ok && !result.stubbed) {
     // A retry after a conflict put the phone's copy in the cloud: that

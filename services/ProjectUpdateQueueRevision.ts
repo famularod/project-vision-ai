@@ -1,3 +1,4 @@
+import { queuedFieldUpdateDocumentPatches, withoutDocumentUploadState } from './FieldUpdateDocumentPatch';
 import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
 import type { SyncQueueItem } from './SyncService';
 import type { ProjectUpdate } from '../types';
@@ -13,6 +14,12 @@ type ProjectUpdateQueuePayload = {
  * user-authored generation as the visible local update. A generic retryable
  * lifecycle is not enough: that can leave an old device copy in front of a
  * newer cloud record after the original queue entry has already cleared.
+ *
+ * A queued document change alone does not hold the local copy: it goes up
+ * as a patch on the cloud's copy, which a refresh takes with the patch
+ * applied (whole-app audit A7 pass 6 M1). Nor does a document's upload
+ * state, which a progress step rewrites on this device only: a refresh in
+ * an upload let the cloud's older copy replace a queued edit (A4 pass 8 F1).
  */
 export function hasMatchingQueuedProjectUpdateRevision(
   update: ProjectUpdate,
@@ -26,11 +33,15 @@ export function hasMatchingQueuedProjectUpdateRevision(
     if (
       payload.id !== update.id ||
       payload.archiveOnly === true ||
+      queuedFieldUpdateDocumentPatches(item) ||
       !isProjectUpdateRecord(payload.updateData)
     ) {
       return false;
     }
-    return sameFieldUpdateSyncGeneration(payload.updateData, update);
+    return sameFieldUpdateSyncGeneration(
+      withoutDocumentUploadState(payload.updateData),
+      withoutDocumentUploadState(update),
+    );
   });
 }
 

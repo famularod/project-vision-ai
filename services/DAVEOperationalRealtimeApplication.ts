@@ -18,6 +18,8 @@ import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevi
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
 import { withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
+import { queuedDocumentPatchesForUpdate } from './FieldUpdateDocumentPatch';
+import { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
 import type { DeletedUpdateTombstone } from './updateService';
 import type { SyncQueueItem } from './SyncService';
 import type {
@@ -189,18 +191,26 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       }
       const photos = cloudUpdate.photos.map(cloudPhoto =>
         preserveLocalPhotoTransport(cloudPhoto, localUpdate, options.localPhotoUri));
-      const previewReady = await hydrateProjectUpdatePhotoPreviews({ ...cloudUpdate, photos });
+      const [previewReady, removedDocuments] = await Promise.all([
+        hydrateProjectUpdatePhotoPreviews({ ...cloudUpdate, photos }),
+        loadRemovedFieldUpdateDocuments(),
+      ]);
       if (!options.isActive()) return true;
       // Re-read after the awaits: a save or another event may have landed.
       // The photo paths come from that read too, or a restore committed
       // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
-      const cloudCopy = withDeviceDocumentUploadState(withLatestLocalPhotoTransport(
+      const deviceCopy = withLatestLocalPhotoTransport(
         previewReady,
         localUpdate,
         fresh.updates.find(update => update.id === previewReady.id),
         options.localPhotoUri,
-      ), options.deviceDocuments?.());
+      );
+      // The row as a receipt; as the copy shown, with the document changes
+      // still waiting to go up (whole-app audit A7 pass 6 M1).
+      const receipt = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.());
+      const cloudCopy = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.(), pendingQueue, removedDocuments);
+      const onlyDocumentChangesWait = Boolean(queuedDocumentPatchesForUpdate(pendingQueue, previewReady.id));
       let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {
         deletedUpdates = options.upsertDeletedUpdate(
@@ -224,10 +234,12 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // nothing for (another device's edit) replaces it, as the refresh
       // does (audit A4 pass 3); one still owed its own sync keeps its own
       // content and takes the row only as a receipt.
+      // A document change waiting alone goes onto the cloud's copy, so this
+      // device's copy, which may be older, is not kept for it (A7 pass 6 M1).
       options.commitUpdates(options.mergeUpdates({
         localUpdates: fresh.updates.map(update =>
-          update.id === previewReady.id && !options.updateHasPendingLocalWork(update) ? cloudCopy : update),
-        cloudUpdates: [cloudCopy],
+          update.id === previewReady.id && (onlyDocumentChangesWait || !options.updateHasPendingLocalWork(update)) ? cloudCopy : update),
+        cloudUpdates: [receipt],
         tombstones: deletedUpdates,
       }));
       return true;

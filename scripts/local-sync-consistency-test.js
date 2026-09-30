@@ -239,10 +239,14 @@ includes(sync, 'export async function runFieldUpdateCloudSync', 'shared sync ser
 // branch taken while the account is unchanged.
 includes(sync, '? uploadLocalPhotoWithDiagnostics(update, photo)', 'shared sync must await photo upload work with diagnostics');
 includes(sync, 'mapWithBoundedConcurrency(', 'shared sync must bound concurrent photo upload work');
-includes(sync, 'await queueProjectUpdateRecord(cloudRecoverableUpdate, false)', 'shared sync must stage cloud-recoverable update metadata in the durable queue');
+// Whole-app audit A7 pass 6 M1 (30 Sep 2026): staging writes the record
+// through persistProjectUpdateRecord so a queued document patch is kept (a
+// sync attempt is not an edit); the record is still queued before photo work.
+const stagedRecordWrite = 'await persistProjectUpdateRecord(cloudRecoverableUpdate, false, cloudRecoverableUpdate.photos.map(photo => photo.id), true)';
+includes(sync, stagedRecordWrite, 'shared sync must stage cloud-recoverable update metadata in the durable queue');
 // The photo work now carries the account the staging began under (audit A1 M3).
 assert(
-  sync.indexOf('await queueProjectUpdateRecord(cloudRecoverableUpdate, false)') <
+  sync.indexOf(stagedRecordWrite) <
     sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate, owner)'),
   'shared sync must persist update metadata before potentially slow photo work',
 );

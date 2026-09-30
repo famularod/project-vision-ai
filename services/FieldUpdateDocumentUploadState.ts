@@ -1,7 +1,16 @@
 import type { PersistedFieldUpdateStatus } from './FieldUpdateLifecycle';
+import {
+  applyFieldUpdateDocumentPatches,
+  FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS,
+  queuedDocumentPatchesForUpdate,
+  withoutRemovedFieldUpdateDocuments,
+  type RemovedFieldUpdateDocuments,
+} from './FieldUpdateDocumentPatch';
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import type { SyncQueueItem } from './SyncService';
 import type { ProjectUpdate } from '../types';
+
+export { FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS } from './FieldUpdateDocumentPatch';
 
 /**
  * Documents attached to a field update (whole-app audit A7 pass 5 M1, 30 Sep
@@ -23,30 +32,26 @@ import type { ProjectUpdate } from '../types';
 type UpdateDocument = Readonly<{ id: string }>;
 type UpdateWithDocuments = Readonly<{ documents?: readonly UpdateDocument[] | null }>;
 
-/** A document's upload state, which only the device holding the file knows. */
-export const FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS = [
-  'status',
-  'uploadProgress',
-  'uploadAttemptCount',
-  'lastUploadAttemptAt',
-  'uploadedAt',
-  'storagePath',
-  'referenceDocumentId',
-  'localUri',
-  'ownedFileId',
-  'ownedFileManifest',
-] as const;
-
 /**
  * The update with this device's own upload state for each attached document
  * this device holds (its own document list has it). A document this device
  * does not hold keeps the state in the update: that is the other device's
  * last report. The same object comes back when nothing differs.
+ *
+ * Given the queue, a cloud copy also takes the document changes still
+ * waiting to go up for it, and loses the documents this device took off it
+ * (whole-app audit A7 pass 6 M1): a waiting change no longer keeps this
+ * device's whole, possibly older, copy in place of the cloud's.
  */
 export function withDeviceDocumentUploadState<TUpdate extends object>(
-  update: TUpdate,
+  cloudCopy: TUpdate,
   deviceDocuments: readonly UpdateDocument[] | null | undefined,
+  queue?: readonly SyncQueueItem[],
+  removed?: RemovedFieldUpdateDocuments,
 ): TUpdate {
+  const updateId = (cloudCopy as { id?: unknown }).id;
+  const patches = queue && typeof updateId === 'string' ? queuedDocumentPatchesForUpdate(queue, updateId) : null;
+  const update = applyFieldUpdateDocumentPatches(withoutRemovedFieldUpdateDocuments(cloudCopy, removed), patches || []);
   const documents = (update as UpdateWithDocuments).documents;
   if (!Array.isArray(documents) || documents.length === 0 || !deviceDocuments?.length) {
     return update;
@@ -130,7 +135,8 @@ export function documentsUploadedAfterCloudCopy(
   cloudUpdates.forEach(cloudUpdate => {
     const local = localById.get((cloudUpdate as { id: string }).id);
     if (!local || (cloudUpdate as { isArchived?: boolean }).isArchived) return;
-    if (hasMatchingQueuedProjectUpdateRevision(local as ProjectUpdate, queue)) return;
+    if (hasMatchingQueuedProjectUpdateRevision(local as ProjectUpdate, queue) ||
+      queuedDocumentPatchesForUpdate(queue, (local as { id: string }).id)) return;
     ((cloudUpdate as UpdateWithDocuments).documents || []).forEach(document => {
       if (uploaded.has(document.id) && (document as { status?: unknown }).status !== 'uploaded') owed.add(document.id);
     });

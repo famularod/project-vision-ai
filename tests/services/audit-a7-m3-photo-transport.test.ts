@@ -220,6 +220,9 @@ function refreshDeps(
       // A7 pass 5 M1: attached documents' upload state is this device's own; no documents here.
       withDeviceDocumentUploadState, documentsUploadedAfterCloudCopy, projectDocumentsCurrentRef: { current: [] },
       resendUpdatesListingDocument: jest.fn(),
+      // A7 pass 6 M1: no document was taken off an update here.
+      loadRemovedFieldUpdateDocuments: async () => new Set<string>(), requeueRemovedFieldUpdateDocuments: async () => 0,
+      requestPendingChangesUpload: jest.fn(),
       ...overrides,
     }),
   };

@@ -31,7 +31,7 @@ import {
   runScheduleItemCloudSync,
   queueProjectAreaRecord,
   queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
-  queueProjectUpdateRecord,
+  queueProjectUpdateRecord, queueProjectUpdateDocumentChange, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
@@ -6294,9 +6294,9 @@ useEffect(() => {
         );
         if (!active || !refreshCommit.isCurrent()) return;
 
-        const [currentUpdates, pendingQueue] = await Promise.all([
+        const [currentUpdates, pendingQueue, removedDocuments] = await Promise.all([
           Promise.resolve(savedUpdatesRef.current),
-          getOfflineQueue(),
+          getOfflineQueue(), loadRemovedFieldUpdateDocuments(), // documents taken off here stay off (A7 pass 6 M1)
         ]);
         const currentUpdateTombstones = deletedUpdateTombstonesRef.current;
         const refreshedUpdateTombstones = hydratedCloudUpdates
@@ -6322,12 +6322,12 @@ useEffect(() => {
           return cloudUpdate &&
             !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
             !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
-            ? withDeviceDocumentUploadState(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current) // a document's upload state is this device's own (A7 pass 5 M1)
+            ? withDeviceDocumentUploadState(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current, pendingQueue, removedDocuments) // this device's upload state and waiting document changes (A7 pass 5 M1, pass 6 M1)
             : localUpdate;
         });
         const mergedUpdates = mergeSavedUpdatesWithTombstones({
           localUpdates: localUpdatesForMerge,
-          cloudUpdates: hydratedCloudUpdates,
+          cloudUpdates: hydratedCloudUpdates.map(update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)), // a receipt whatever this device's upload attempts (A4 pass 8 F2)
           tombstones: effectiveTombstones,
         });
         refreshCommit.commit(() => {
@@ -6343,6 +6343,7 @@ useEffect(() => {
           );
           documentsUploadedAfterCloudCopy(hydratedCloudUpdates, currentUpdates, pendingQueue, projectDocumentsCurrentRef.current) // the iPad's copy says so too (A7 pass 5 M1)
             .forEach(documentId => resendUpdatesListingDocument(documentId, update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)));
+          void requeueRemovedFieldUpdateDocuments(hydratedCloudUpdates, mergedUpdates, removedDocuments).then(queued => queued > 0 && requestPendingChangesUpload('removed_document_back_in_cloud')).catch(() => undefined); // the iPad's older copy (A7 pass 6 M1)
         });
       }});
 
@@ -6918,7 +6919,7 @@ useEffect(() => {
     const resent = new Map(fieldUpdatesToResendForDocument(savedUpdatesRef.current, documentId, change).map(update => [update.id, update]));
     savedUpdatesRef.current = savedUpdatesRef.current.map(update => resent.get(update.id) || change(update));
     setSavedUpdates(prev => prev.map(update => resent.get(update.id) || change(update)));
-    resent.forEach(update => void queueProjectUpdateRecord(update, false).catch(() => undefined).finally(requestQueuedUpdateSync));
+    resent.forEach(update => void queueProjectUpdateDocumentChange(update, documentId).catch(() => undefined).finally(requestQueuedUpdateSync)); // a patch on the cloud's copy, not this older copy (A7 pass 6 M1)
   }
 
   async function persistProjectDocumentsImmediately(

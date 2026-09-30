@@ -59,7 +59,10 @@ import {
   getOfflineQueue,
   hydrateProjectUpdatePhotoPreviews,
   projectUpdateUploadedSince,
+  loadRemovedFieldUpdateDocuments,
+  queueProjectUpdateDocumentChange,
   queueProjectUpdateRecord,
+  requeueRemovedFieldUpdateDocuments,
 } from '../../services/SyncService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
 import {
@@ -231,12 +234,15 @@ function refresh(device: Device, rows: Array<ReturnType<typeof row>>) {
       normalizeStartupArray, normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord,
       savedUpdatesRef: device.savedUpdatesRef, projectDocumentsCurrentRef: device.projectDocumentsCurrentRef,
       resolveProjectPhotoUri: A.resolveProjectPhotoUri, preserveLocalPhotoTransport, withLatestLocalPhotoTransport,
-      withDeviceDocumentUploadState, hydrateProjectUpdatePhotoPreviews, getOfflineQueue,
+      withDeviceDocumentUploadState, hydrateProjectUpdatePhotoPreviews, getOfflineQueue: device.isPhone ? getOfflineQueue : async () => [],
       documentsUploadedAfterCloudCopy, resendUpdatesListingDocument: device.resendUpdatesListingDocument,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
       projectUpdateUploadedSince, mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: device.setSavedUpdates,
+      // A7 pass 6 M1: a document taken off stays off; the iPad has taken none off itself.
+      loadRemovedFieldUpdateDocuments: device.isPhone ? loadRemovedFieldUpdateDocuments : async () => new Set<string>(),
+      requeueRemovedFieldUpdateDocuments, requestPendingChangesUpload: jest.fn(),
     },
   );
   return run().then(() => device.render());
@@ -252,6 +258,10 @@ function device(documents: Doc[], saved: Update[], options: {
   sharedRecord?: Record<string, unknown> | null;
   sensitive?: boolean;
 } = {}) {
+  // In this one process the queue and the journal of documents taken off
+  // updates are the phone's; an iPad (made with no documents) reads its own,
+  // which are empty (A7 pass 6 M1: a refresh applies the waiting patches).
+  const isPhone = documents.length > 0;
   let documentsState = documents;
   let savedState = saved;
   const projectDocumentsCurrentRef = { current: documentsState };
@@ -289,8 +299,8 @@ function device(documents: Doc[], saved: Update[], options: {
     withdrawUnsentProjectDocumentBridge: async () => null, getOfflineQueue,
     removeOperationalRecordFromSyncQueue: async () => undefined, setReferenceDocuments: jest.fn(),
     removeReferenceDocumentEverywhere: async () => undefined,
-    // A change the other devices must see goes up with its update (A7 pass 5 M1).
-    queueProjectUpdateRecord, requestQueuedUpdateSync, fieldUpdatesToResendForDocument,
+    // A change the other devices must see goes up with its update (A7 pass 5 M1), as a patch (pass 6 M1).
+    queueProjectUpdateRecord, queueProjectUpdateDocumentChange, requestQueuedUpdateSync, fieldUpdatesToResendForDocument,
     withoutFieldUpdateDocument, withDeviceDocumentUploadState,
   };
   const names = ['updateDocumentEverywhere', 'retryProjectDocumentUpload', 'deleteProjectDocument', 'resendUpdatesListingDocument'];
@@ -313,7 +323,7 @@ function device(documents: Doc[], saved: Update[], options: {
   };
   return {
     ...fns, render, settle, press, alerts, requestQueuedUpdateSync, setSavedUpdates,
-    projectDocumentsCurrentRef, savedUpdatesRef,
+    projectDocumentsCurrentRef, savedUpdatesRef, isPhone,
     saved: (id = 'u1') => savedState.find(update => update.id === id),
   };
 }
