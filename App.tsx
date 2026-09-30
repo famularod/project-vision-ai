@@ -273,6 +273,7 @@ import { forgetAllReportSessionState } from './services/ReportSessionState';
 import {
   archiveDraftEnvelopeForValidation,
   archiveUpdateForValidation,
+  archiveUpdatePhotosAreLocated,
   markPhotoUnavailableInBackup,
 } from './services/BackupArchivePhotos';
 import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
@@ -2706,12 +2707,21 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
 function normalizeBackupData(value: unknown, options: Readonly<{ archive?: boolean }> = {}) {
   // An archive locates carried photos by asset id and may declare photos
   // unavailable; judged as such, or the whole backup was refused (whole-app
-  // audit A7, 30 Sep 2026). The device rules themselves are unchanged.
+  // audit A7, 30 Sep 2026). The device rules themselves are unchanged, and
+  // the device's uri resolver is asked only about a real uri: a placeholder
+  // is never a file on this phone (audit A7 pass 2: the wrapper refused
+  // every carried photo, and the export then refused to write the backup).
+  const deviceResolves = (photo: unknown) =>
+    Boolean(resolveProjectPhotoDisplayUri(photo as Partial<UpdatePhoto>));
   const savedUpdate = options.archive
-    ? (item: unknown) => isStartupDeviceSavedUpdateRecord(archiveUpdateForValidation(item))
+    ? (item: unknown) =>
+        isStartupSavedUpdateRecord(archiveUpdateForValidation(item)) &&
+        archiveUpdatePhotosAreLocated(item, deviceResolves)
     : isStartupDeviceSavedUpdateRecord;
   const draftEnvelope = options.archive
-    ? (item: unknown) => isStartupDeviceDraftEnvelope(archiveDraftEnvelopeForValidation(item))
+    ? (item: unknown) =>
+        isStartupDraftEnvelope(archiveDraftEnvelopeForValidation(item)) &&
+        (!isRecord(item) || !('draft' in item) || archiveUpdatePhotosAreLocated(item.draft, deviceResolves))
     : isStartupDeviceDraftEnvelope;
   const preflight = preflightAppBackup(value, {
     savedUpdate, projectName: isStartupProjectName,
@@ -10514,10 +10524,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         // restore accepts the archive and drops that photo, instead of
         // refusing the whole backup (whole-app audit A7, 30 Sep 2026).
         if (photo.cloudStoragePath?.trim()) {
+          // The lookup above stamps a derived path even when it finds
+          // nothing (offline, or the object is gone): the record keeps the
+          // path so a later restore can look again, and the owner is told
+          // now (audit A7 pass 2: these were counted as cloud copies).
+          if (photo.cloudRecoveryStatus === 'unavailable') {
+            unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date, reason: 'cloud_unconfirmed' });
+          }
           photos.push({ ...photo, uri: '' });
           continue;
         }
-        unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date });
+        unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date, reason: 'only_on_this_phone' });
         photos.push(markPhotoUnavailableInBackup(photo));
         continue;
       }
@@ -10688,8 +10705,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         // Records-only carries no files: photos not yet in the cloud will
         // not be in this backup, and the owner decides with that known.
         const proceed = await askToContinue(
-          'Some photos are only on this phone',
-          `${unavailablePhotosNotice(unavailablePhotos)} A records-only backup cannot carry them; a full backup can.`,
+          'Some photos are not in this backup',
+          unavailablePhotosNotice(unavailablePhotos, { recordsOnly: true }),
           'Back up without them',
         );
         if (!proceed) {

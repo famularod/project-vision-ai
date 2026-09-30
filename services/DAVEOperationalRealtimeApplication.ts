@@ -5,7 +5,7 @@ import type {
   DAVEOperationalRealtimePayload,
 } from './DAVEOperationalRefresh';
 import { projectRecordFromCloud, type ProjectRecord } from './ProjectCoverPhotoService';
-import { mergeDAVESyncTombstones } from './DAVESyncTombstones';
+import { deletedDAVERecordIds, mergeDAVESyncTombstones } from './DAVESyncTombstones';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
 import { reconcileCurrentScheduleDocuments } from './PIEScheduleReconciliation';
@@ -193,13 +193,18 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       return true;
     }
 
+    // A row for a record this device deleted (its tombstone may still be on
+    // its way up) does not bring the record back: the refresh applies the
+    // same tombstones (whole-app audit A3/A5/A7, 30 Sep 2026: a teammate's
+    // late edit echo re-added a deleted area, task or document until the
+    // next refresh, and an edit made in that window uploaded it again).
     if (entity === 'project_area') {
       const [cloudArea] = options.normalizeAreas([normalized]);
       if (!cloudArea) return false;
       options.commitAreas(mergeDAVEProjectAreaRecoveryRecords({
         local: state.areas,
         cloud: [cloudArea],
-        deletedIds: [],
+        deletedIds: deletedDAVERecordIds(state.tombstones, 'project_area'),
       }));
       return true;
     }
@@ -207,6 +212,7 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
     if (entity === 'schedule_item') {
       const [cloudItem] = options.normalizeSchedule([normalized]).map(options.migrateSchedule);
       if (!cloudItem) return false;
+      if (deletedDAVERecordIds(state.tombstones, 'schedule_item').includes(cloudItem.id)) return true;
       const localItem = state.scheduleItems.find(item => item.id === cloudItem.id);
       const authoritative = localItem
         ? scheduleItemRevisionForCloudRefresh(localItem, cloudItem, pendingQueue)
@@ -226,7 +232,7 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         mergeDAVEReferenceDocumentRecoveryRecords({
           local: state.documents,
           cloud: [cloudDocument],
-          deletedIds: [],
+          deletedIds: deletedDAVERecordIds(state.tombstones, 'reference_document'),
         }),
       ));
       return true;

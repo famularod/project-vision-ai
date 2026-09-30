@@ -86,7 +86,18 @@ export async function describeBackupAssetSource(
  * cloud. The backup keeps its field update and leaves the photo out, with the
  * owner's agreement, instead of refusing to back up anything at all.
  */
-export type UnavailableBackupPhoto = Readonly<{ projectName: string; updateDate: string }>;
+export type UnavailableBackupPhoto = Readonly<{
+  projectName: string;
+  updateDate: string;
+  /**
+   * only_on_this_phone: no file this export can carry and no cloud copy.
+   * cloud_unconfirmed: a cloud location is recorded but this export could
+   * not confirm it (offline, or the object is gone); the record keeps the
+   * location so a restore can look again. Absent on older callers: treated
+   * as only_on_this_phone.
+   */
+  reason?: 'only_on_this_phone' | 'cloud_unconfirmed';
+}>;
 
 /** A document whose file could not be read or downloaded now, and why. */
 export type UnavailableBackupDocument = Readonly<{ name: string; reason: string }>;
@@ -103,7 +114,10 @@ function shortReason(reason: string): string {
     : firstLine;
 }
 
-export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto[]): string {
+export function unavailablePhotosNotice(
+  missing: readonly UnavailableBackupPhoto[],
+  options: Readonly<{ recordsOnly?: boolean }> = {},
+): string {
   const byProject = new Map<string, Map<string, number>>();
   for (const photo of missing) {
     const project = photo.projectName.trim() || 'No project';
@@ -122,11 +136,27 @@ export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto
     return `${project}: ${count} ${count === 1 ? 'photo' : 'photos'}, from updates dated ${shown}${more}`;
   });
   const n = missing.length;
-  return (
-    `${n} ${n === 1 ? 'photo is' : 'photos are'} not on this device and could not be downloaded ` +
-    `from the cloud, so this backup will leave ${n === 1 ? 'it' : 'them'} out. ` +
-    `The field updates themselves are kept.\n\n${lines.join('\n')}`
-  );
+  const unconfirmed = missing.filter(photo => photo.reason === 'cloud_unconfirmed').length;
+  const onlyHere = n - unconfirmed;
+  const plural = (count: number) => (count === 1 ? 'photo' : 'photos');
+  // Two kinds, said apart (audit A7 pass 2): a photo only on this phone is
+  // lost to a backup that cannot carry it; one whose cloud location could
+  // not be confirmed now keeps that location and can still be fetched later.
+  const kinds: string[] = [];
+  if (onlyHere > 0) {
+    kinds.push(
+      options.recordsOnly
+        ? `${onlyHere} ${plural(onlyHere)} ${onlyHere === 1 ? 'is' : 'are'} only on this phone, and a records-only backup cannot carry ${onlyHere === 1 ? 'it' : 'them'}; a full backup can.`
+        : `${onlyHere} ${plural(onlyHere)} ${onlyHere === 1 ? 'is' : 'are'} not on this device and could not be downloaded from the cloud, so this backup will leave ${onlyHere === 1 ? 'it' : 'them'} out.`,
+    );
+  }
+  if (unconfirmed > 0) {
+    kinds.push(
+      `${unconfirmed} ${plural(unconfirmed)} could not be confirmed in the cloud right now (offline, or the copy is gone); ` +
+      `the backup keeps ${unconfirmed === 1 ? 'its' : 'their'} cloud location so a restore can look again, but carries no file.`,
+    );
+  }
+  return `${kinds.join(' ')} The field updates themselves are kept.\n\n${lines.join('\n')}`;
 }
 
 export function unavailableFilesNotice(

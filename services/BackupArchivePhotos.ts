@@ -8,9 +8,14 @@
  * holding a draft photo or an update not yet merged back from the cloud
  * was refused whole ("The active draft is malformed"). The device rules
  * stay as they are: for an archive, a carried photo is judged with a
- * placeholder uri for its asset, and a photo the export declared
- * unavailable (no file in the archive, no cloud copy; the owner was told)
+ * placeholder uri for its asset, and a photo nothing locates (declared
+ * unavailable by the export, or written by an older export as { uri: '' })
  * is accepted and dropped on restore by normalizeUpdate.
+ *
+ * Pass 2 of the same audit: the device wrapper resolves a uri to a file on
+ * this phone, which a placeholder never is, so the archive rule must not
+ * hand a placeholder to it; archivePhotoIsLocated is that rule, and the
+ * device resolver is asked only about a real uri.
  */
 export const BACKUP_ASSET_PLACEHOLDER_URI = 'vitruvius-backup-asset:';
 export const BACKUP_UNAVAILABLE_PLACEHOLDER_URI = 'vitruvius-backup-unavailable:';
@@ -30,8 +35,36 @@ function nonEmpty(value: unknown): value is string {
 export function archivePhotoForValidation<TPhoto extends ArchivePhoto>(photo: TPhoto): TPhoto {
   if (nonEmpty(photo.uri) || nonEmpty(photo.cloudStoragePath)) return photo;
   if (nonEmpty(photo._backupAssetId)) return { ...photo, uri: `${BACKUP_ASSET_PLACEHOLDER_URI}${photo._backupAssetId}` };
-  if (photo._backupUnavailable === true) return { ...photo, uri: `${BACKUP_UNAVAILABLE_PLACEHOLDER_URI}${String(photo._backupAssetId ?? '')}` };
-  return photo;
+  // Declared unavailable, or nothing locates it (an older export): no
+  // restore could find this photo either way, so it is accepted and dropped.
+  return { ...photo, uri: `${BACKUP_UNAVAILABLE_PLACEHOLDER_URI}${String(photo._backupAssetId ?? '')}` };
+}
+
+/**
+ * Whether an archive can locate this photo: a cloud copy, a carried asset,
+ * a declared or older-style unavailable photo, or a real uri this device
+ * resolves (a materialized file, or a signed URL).
+ */
+export function archivePhotoIsLocated(
+  photo: ArchivePhoto,
+  deviceResolves: (photo: ArchivePhoto) => boolean,
+): boolean {
+  if (nonEmpty(photo.cloudStoragePath) || nonEmpty(photo._backupAssetId) || photo._backupUnavailable === true) return true;
+  if (!nonEmpty(photo.uri)) return true;
+  return deviceResolves(photo);
+}
+
+/** Every photo of a saved update or draft record in an archive is located (a record without a photo list passes). */
+export function archiveUpdatePhotosAreLocated(
+  value: unknown,
+  deviceResolves: (photo: ArchivePhoto) => boolean,
+): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as { photos?: unknown };
+  if (!Array.isArray(record.photos)) return true;
+  return record.photos.every(photo =>
+    photo && typeof photo === 'object' && archivePhotoIsLocated(photo as ArchivePhoto, deviceResolves),
+  );
 }
 
 /** A saved update or draft record from an archive, with its photos made judgeable. */

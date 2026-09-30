@@ -20,7 +20,7 @@ const photo = (extra: Record<string, unknown>): Record<string, unknown> => ({
 const update = (photos: unknown[]) => ({
   id: 'u1', projectName: 'P', date: '2026-09-30', notes: 'n', recipients: { contactIds: [] }, photos, status: 'queued',
 });
-/** The App wrappers: the device rules, given the archive record as they can judge it. */
+/** Shape-only stand-ins (pass 2: the App's real wrapper is compiled and run in audit-a7-batch2.test.ts). */
 const validators = {
   savedUpdate: (value: unknown) => {
     const judged = archiveUpdateForValidation(value) as { photos?: Array<{ uri?: unknown; cloudStoragePath?: unknown }> };
@@ -49,11 +49,10 @@ describe('a backup archive restores whatever the export could carry', () => {
     const unavailable = markPhotoUnavailableInBackup(photo({ uri: 'file:///photos/p1.jpg' }));
     expect(unavailable).toMatchObject({ uri: '', _backupUnavailable: true });
     expect(preflightAppBackup(archive([update([unavailable])]), validators as never).ok).toBe(true);
-    // Nothing locates this photo and nothing declared it: refused, as before.
+    // Nothing locates this photo (an older export wrote it as { uri: '' }): accepted and dropped on restore (pass 2).
     const unlocated = photo({ uri: '' });
-    const refused = preflightAppBackup(archive([update([unlocated])]), validators as never);
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.field).toBe('savedUpdates[0]');
+    expect(archivePhotoForValidation(unlocated).uri).toBe('vitruvius-backup-unavailable:');
+    expect(preflightAppBackup(archive([update([unlocated])]), validators as never).ok).toBe(true);
   });
 
   it('never changes a photo that already has a locator, and only for validation', () => {
@@ -67,8 +66,9 @@ describe('a backup archive restores whatever the export could carry', () => {
   it('is what the export marks and both restore passes check', () => {
     expect(app).toContain("const preflight = normalizeBackupData(opened.state, { archive: true });");
     expect(app).toContain("const normalized = normalizeBackupData(materialized.state, { archive: true });");
-    expect(app).toMatch(/const savedUpdate = options\.archive\n\s+\? \(item: unknown\) => isStartupDeviceSavedUpdateRecord\(archiveUpdateForValidation\(item\)\)/);
-    expect(app).toMatch(/if \(photo\.cloudStoragePath\?\.trim\(\)\) \{\n\s+photos\.push\(\{ \.\.\.photo, uri: '' \}\);\n\s+continue;\n\s+\}\n\s+unavailablePhotos\.push\(\{ projectName: update\.projectName, updateDate: update\.date \}\);\n\s+photos\.push\(markPhotoUnavailableInBackup\(photo\)\);/);
+    expect(app).toMatch(/const savedUpdate = options\.archive\n\s+\? \(item: unknown\) =>\n\s+isStartupSavedUpdateRecord\(archiveUpdateForValidation\(item\)\) &&\n\s+archiveUpdatePhotosAreLocated\(item, deviceResolves\)/);
+    // Pass 2: the export decision is pinned in audit-a7-batch2.test.ts (it now counts unconfirmed cloud copies too).
+    expect(app).toContain("photos.push(markPhotoUnavailableInBackup(photo));");
     // The export refuses to write an archive that would not restore, and a records-only export says which photos it leaves out.
     expect(app).toContain("const restorable = normalizeBackupData(backup, { archive: true });");
     expect(app).toContain("Alert.alert('Backup not written', `This backup would not restore: ${restorable.message}`);");
