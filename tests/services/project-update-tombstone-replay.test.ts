@@ -130,3 +130,52 @@ describe('deletion-journal replay (audit A2 pass 2 M1)', () => {
     expect(byId.get('project-update-lost-delete')?.operation).toBe('delete');
   });
 });
+
+// Whole-app audit A2 pass 3 L2 (30 Sep 2026): each launch re-recorded every
+// "Delete Update" ever made in the deletion journal (a verified rewrite
+// each) before checking that the cloud had confirmed it.
+describe('deletion-journal replay of old deletes (audit A2 pass 3 L2)', () => {
+  const JOURNAL = 'projectPhotoUpdate.deletionJournal.v1';
+  const journalWrites = () => mockWrites.filter(write => write.key === JOURNAL);
+  const deleted = (updateId: string): Tombstone => ({
+    updateId, action: 'delete_update_everywhere', deletedAt: '2026-09-04T12:00:00.000Z', cloudIdPresent: true,
+  });
+  const intent = (updateId: string, confirmed: boolean) => ({
+    updateId, projectName: 'Tower A', requestedAt: '2026-09-04T12:00:00.000Z',
+    cloudDeleteConfirmedAt: confirmed ? '2026-09-04T12:01:00.000Z' : null,
+  });
+
+  it('skips 300 confirmed deletes without a write, and still re-queues the ones the cloud has not confirmed', async () => {
+    const confirmed = Array.from({ length: 300 }, (_, index) => `confirmed-${index}`);
+    const journal = [
+      ...confirmed.map(id => intent(id, true)),
+      intent('unconfirmed-lost', false),
+      intent('unconfirmed-queued', false),
+    ];
+    mockStorage.set(JOURNAL, JSON.stringify(journal));
+    mockStorage.set(QUEUE, JSON.stringify([
+      queueItem('project-update-unconfirmed-queued', { id: 'unconfirmed-queued' }, 'delete'),
+    ]));
+    const tombstones = [...confirmed, 'unconfirmed-lost', 'unconfirmed-queued', 'never-journaled'].map(deleted);
+
+    await reconcileProjectUpdateDeletionJournal(tombstones);
+
+    const queue = await getOfflineQueue();
+    expect(queue.map(item => [item.id, item.operation]).sort()).toEqual([
+      ['project-update-never-journaled', 'delete'],
+      ['project-update-unconfirmed-lost', 'delete'],
+      ['project-update-unconfirmed-queued', 'delete'],
+    ]);
+    // Only the delete that was never in the journal is recorded (one write);
+    // the 300 confirmed and the unconfirmed ones already there are unchanged.
+    expect(journalWrites()).toHaveLength(1);
+    const stored = JSON.parse(mockStorage.get(JOURNAL) || '[]') as Array<{ updateId: string }>;
+    expect(stored).toHaveLength(journal.length + 1);
+    expect(stored.slice(1)).toEqual(journal);
+
+    mockWrites.length = 0;
+    await reconcileProjectUpdateDeletionJournal(tombstones);
+    expect(journalWrites()).toHaveLength(0);
+    expect(queueWrites()).toHaveLength(0);
+  });
+});

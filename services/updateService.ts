@@ -147,7 +147,9 @@ export async function reconcileProjectUpdateDeletionJournal(
   // delete or archive is added. It was about five queue rewrites per old
   // archive on every launch. An archive the cloud has confirmed is already a
   // 'hide_cloud_update' tombstone (the startup cloud merge), so it is not sent again.
-  const { queuedDeleteIds } = await replayProjectUpdateTombstonesInQueue(tombstones.map(tombstone => ({
+  // A delete the cloud confirmed is skipped too (audit A2 pass 3 L2): it was
+  // re-recorded in the deletion journal, one rewrite each, on every launch.
+  const { queuedDeleteIds, confirmedDeleteIds } = await replayProjectUpdateTombstonesInQueue(tombstones.map(tombstone => ({
     updateId: tombstone.updateId,
     archive: tombstone.action === 'archive_sent_update' ||
       (tombstone.action === 'remove_from_device' && tombstone.cloudIdPresent)
@@ -155,7 +157,8 @@ export async function reconcileProjectUpdateDeletionJournal(
       : false,
   })));
   await Promise.allSettled(tombstones
-    .filter(tombstone => tombstone.action === 'delete_update_everywhere' && !queuedDeleteIds.has(tombstone.updateId))
+    .filter(tombstone => tombstone.action === 'delete_update_everywhere' &&
+      !queuedDeleteIds.has(tombstone.updateId) && !confirmedDeleteIds.has(tombstone.updateId))
     .map(tombstone => queueProjectUpdateDelete({ id: tombstone.updateId })));
 }
 

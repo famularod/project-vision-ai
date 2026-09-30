@@ -26,7 +26,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 jest.mock('../../services/SyncService', () => ({
   queueProjectUpdateDelete: jest.fn(),
-  replayProjectUpdateTombstonesInQueue: jest.fn(async () => ({ queuedDeleteIds: new Set<string>() })),
+  // Audit A2 pass 3 L2: the replay also returns the deletes the cloud confirmed.
+  replayProjectUpdateTombstonesInQueue: jest.fn(async () => ({
+    queuedDeleteIds: new Set<string>(),
+    confirmedDeleteIds: new Set<string>(),
+  })),
 }));
 
 function update(id: string, notes: string): ProjectUpdate {
@@ -107,11 +111,25 @@ describe('project update deletion persistence', () => {
   it('does not queue a permanent delete twice', async () => {
     jest.mocked(replayProjectUpdateTombstonesInQueue).mockResolvedValueOnce({
       queuedDeleteIds: new Set(['permanent']),
+      confirmedDeleteIds: new Set<string>(),
     });
     await reconcileProjectUpdateDeletionJournal([
       { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
     ]);
     expect(queueProjectUpdateDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not record again a delete the cloud confirmed (audit A2 pass 3 L2)', async () => {
+    jest.mocked(replayProjectUpdateTombstonesInQueue).mockResolvedValueOnce({
+      queuedDeleteIds: new Set<string>(),
+      confirmedDeleteIds: new Set(['confirmed']),
+    });
+    await reconcileProjectUpdateDeletionJournal([
+      { updateId: 'confirmed', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
+      { updateId: 'unconfirmed', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:01:00.000Z', cloudIdPresent: true },
+    ]);
+    expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
+    expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'unconfirmed' });
   });
 
   it('keeps deletion intent when the cloud queue write is interrupted', async () => {

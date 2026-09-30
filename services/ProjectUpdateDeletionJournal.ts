@@ -29,6 +29,11 @@ export async function recordProjectUpdateDeletionIntent(update: {
   return serializeDeletionJournalMutation(async () => {
     const current = await readDeletionJournal();
     const existing = current.find(intent => intent.updateId === updateId);
+    // Already recorded as is: nothing to write (whole-app audit A2 pass 3
+    // L2). Each launch's replay rewrote the journal once per old delete.
+    if (existing && (!update.projectName || update.projectName === existing.projectName)) {
+      return existing;
+    }
     const intent: ProjectUpdateDeletionIntent = existing
       ? {
           ...existing,
@@ -59,6 +64,21 @@ export async function hasProjectUpdateDeletionIntent(
     async () => (await readDeletionJournal()).some(
       intent => intent.updateId === normalizedId,
     ),
+  );
+}
+
+/**
+ * The deletes the cloud has confirmed, from one journal read (whole-app
+ * audit A2 pass 3 L2): the startup replay skips them instead of recording
+ * each one again.
+ */
+export async function confirmedProjectUpdateDeletionIds(): Promise<ReadonlySet<string>> {
+  await deletionJournalMutationTail;
+  return runExclusiveLocalStorageMutation(
+    [PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY],
+    async () => new Set((await readDeletionJournal())
+      .filter(intent => intent.cloudDeleteConfirmedAt)
+      .map(intent => intent.updateId)),
   );
 }
 

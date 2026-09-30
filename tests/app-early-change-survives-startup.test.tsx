@@ -277,3 +277,48 @@ describe('a change made just after the workspace opens is kept (audit A2 pass 2 
     tree.unmount();
   });
 });
+
+// Whole-app audit A2 pass 3 L2 (30 Sep 2026): before the workspace opened,
+// the replay re-recorded every "Delete Update" ever made in the deletion
+// journal, one verified journal rewrite each, even when the cloud had long
+// confirmed it (reviewer: 300 confirmed deletes, 4.35 s to open, 300 journal
+// writes, 12.9 MB). A confirmed delete is now skipped from one journal read.
+describe('old confirmed deletes do not slow the workspace opening (audit A2 pass 3 L2)', () => {
+  const JOURNAL = 'projectPhotoUpdate.deletionJournal.v1';
+  beforeEach(() => {
+    jest.mocked(getCurrentSessionUser).mockResolvedValue({ ok: true, data: { id: OWNER } } as never);
+    jest.mocked(listProjectUpdates).mockImplementation(async () => [] as never);
+    act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
+  });
+  afterEach(() => { mockStorage.delayMs = 0; });
+
+  it.each([0, 100, 300])('with %i confirmed deletes, opening rewrites neither the journal nor the queue', async deletedCount => {
+    seedPhone(0);
+    const at = (index: number) => `2026-09-${String(1 + (index % 20)).padStart(2, '0')}T12:00:00.000Z`;
+    const deleted = Array.from({ length: deletedCount }, (_, index) => `deleted-${index}`);
+    mockStorage.values.set(DELETED_UPDATES, JSON.stringify(deleted.map((updateId, index) => ({
+      updateId, localId: updateId, cloudIdPresent: true, lifecycleStatus: 'sent', pendingSync: false,
+      tombstoned: true, deletedAt: at(index), sourceAfterReload: 'local', mergeDecision: 'tombstoned',
+      orphanedPhotoCountIgnored: 0, action: 'delete_update_everywhere',
+    }))));
+    mockStorage.values.set(JOURNAL, JSON.stringify(deleted.map((updateId, index) => ({
+      updateId, projectName: 'Tower A', requestedAt: at(index), cloudDeleteConfirmedAt: at(index),
+    }))));
+    mockStorage.delayMs = 3;
+    const started = Date.now();
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByText('View all activity')).toBeTruthy(), COLD);
+    const opened = Date.now();
+    const journalWrites = mockStorage.writes.filter(write => write.key === JOURNAL && write.at < opened);
+    process.stdout.write(`L2 ${JSON.stringify({
+      confirmedDeletes: deletedCount,
+      openedMs: opened - started,
+      journalWritesBeforeOpen: journalWrites.length,
+      journalMBBeforeOpen: +(journalWrites.reduce((sum, write) => sum + write.bytes, 0) / 1e6).toFixed(2),
+      queueWritesBeforeOpen: queueWrites(0, opened).length,
+    })}\n`);
+    expect(journalWrites).toHaveLength(0);
+    expect(queueWrites(0, opened)).toHaveLength(0);
+    tree.unmount();
+  });
+});

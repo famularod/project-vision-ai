@@ -60,6 +60,7 @@ import {
 import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
 import {
   confirmProjectUpdateCloudDeletion,
+  confirmedProjectUpdateDeletionIds,
   hasProjectUpdateDeletionIntent,
   recordProjectUpdateDeletionIntent,
 } from './ProjectUpdateDeletionJournal';
@@ -2355,12 +2356,17 @@ export type ProjectUpdateTombstoneReplay = {
  * on every launch. Now record work for a tombstoned update is dropped, an
  * archive already queued is kept as it is (with its retry state), a missing
  * archive is added, and the queue is written once, only when something
- * changed. Queued deletes are never touched; their ids are returned.
+ * changed. Queued deletes are never touched; their ids are returned, with
+ * the deletes the cloud confirmed, from one journal read (audit A2 pass 3
+ * L2; an unreadable journal confirms none, so every unqueued delete is
+ * re-queued as before).
  */
 export async function replayProjectUpdateTombstonesInQueue(
   replays: readonly ProjectUpdateTombstoneReplay[],
-): Promise<{ queuedDeleteIds: ReadonlySet<string> }> {
+): Promise<{ queuedDeleteIds: ReadonlySet<string>; confirmedDeleteIds: ReadonlySet<string> }> {
   const byId = new Map(replays.filter(replay => replay.updateId.trim()).map(replay => [replay.updateId, replay]));
+  const confirmedDeleteIds = byId.size === 0 ? new Set<string>()
+    : await confirmedProjectUpdateDeletionIds().catch(() => new Set<string>());
   const ownerId = currentCloudOwner().ownerId;
   const queuedAt = new Date().toISOString();
   const outcome = await mutateOfflineQueue(queue => {
@@ -2400,7 +2406,7 @@ export async function replayProjectUpdateTombstonesInQueue(
     };
   });
   if (outcome.added > 0) requestPendingChangesUpload('queue_item_enqueued');
-  return { queuedDeleteIds: outcome.queuedDeleteIds };
+  return { queuedDeleteIds: outcome.queuedDeleteIds, confirmedDeleteIds };
 }
 
 export async function stageProjectUpdateForSync(
