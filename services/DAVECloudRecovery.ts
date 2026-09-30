@@ -75,6 +75,22 @@ export function mergeDAVECloudRecoveredProjectUpdate<T extends ProjectUpdate>(
     : recovered;
 }
 
+/**
+ * A local update against the cloud copy of the same id, if there is one.
+ * With no cloud copy the update stands as it is: merging it with itself made
+ * it its own "receipt" and stamped every locally saved update 'sent' before
+ * any upload, so the list read "Cloud Synced" for an update that had never
+ * left the phone and the app's own retry loop ignored it (whole-app audit
+ * A4, 29 Sep 2026).
+ */
+export function mergeLocalUpdateWithCloudCopy<T extends ProjectUpdate>(
+  local: T,
+  cloud: T | undefined,
+  now = Date.now(),
+): T {
+  return cloud ? mergeDAVECloudRecoveredProjectUpdate(local, cloud, now) : local;
+}
+
 export function countDAVECloudRecoveredRecords<T extends DAVECloudRecoveryRecord>(
   local: readonly T[],
   merged: readonly T[],

@@ -449,7 +449,7 @@ includes(sync, "cloudRecoveryStatus: 'unavailable' as const", 'unrecoverable fil
 includes(sync, "photo.cloudRecoveryStatus === 'unavailable'", 'confirmed unavailable files must not be queued forever');
 includes(app, 'label="Delete Saved Update"', 'resumed saved updates must expose an in-flow delete action');
 includes(app, 'onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}', 'delete action must only appear while editing an existing saved update');
-includes(app, "...(draft.id === updateId ? [] : [draft])", 'deleting a resumed update must not keep its photos alive through the active draft reference');
+includes(app, "...(openDraftDeleted ? [] : [draftRef.current])", 'deleting a resumed update must not keep its photos alive through the active draft reference (read from the ref; audit A4 also clears the draft)');
 includes(sync, 'export async function removeMissingPhotosFromSyncQueue', 'queue-only missing photo cleanup must remain available');
 includes(app, 'orphanedPhotoCountIgnored: update.photos.length', 'failed update tombstones must record ignored orphaned photo metadata');
 includes(app, 'projectRollupKey(update.projectName)', 'project rollups must normalize saved update project names');

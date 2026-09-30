@@ -267,6 +267,7 @@ import {
 } from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
+import { reissueDraftAsNewUpdate } from './services/DraftReissue';
 import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
@@ -445,7 +446,7 @@ import { talkContextProjectForScreen } from './services/ECOSTalkProjectContext';
 import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
 import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
-  mergeDAVECloudRecoveredProjectUpdate,
+  mergeLocalUpdateWithCloudCopy,
   mergeDAVECloudRecoveryRecords,
   mergeDAVEReferenceDocumentRecoveryRecords,
 } from './services/DAVECloudRecovery';
@@ -3733,11 +3734,11 @@ function mergeSavedUpdatesWithTombstones({
     update: ProjectUpdate,
     sourceAfterReload: FieldUpdateDeleteDiagnostics['sourceAfterReload'],
   ) => {
+    // A local update takes a cloud copy's receipt only when there is one:
+    // merged with itself it read "Cloud Synced" before any upload (whole-app
+    // audit A4, 29 Sep 2026).
     const effectiveUpdate = sourceAfterReload === 'local'
-      ? mergeDAVECloudRecoveredProjectUpdate(
-          update,
-          cloudUpdateById.get(update.id) || update,
-        )
+      ? mergeLocalUpdateWithCloudCopy(update, cloudUpdateById.get(update.id))
       : update;
     const tombstone = tombstoneById.get(update.id);
     const localArchiveCanStayHidden =
@@ -7836,6 +7837,17 @@ useEffect(() => {
           currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
           keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones }),
       );
+      if (!persisted.applied) {
+        // A deletion barrier for this id dropped the save: the update was
+        // deleted while it was open as the draft, on this phone or another
+        // device. Nothing was written; the draft is kept and can be saved as
+        // a new update (whole-app audit A4, 29 Sep 2026).
+        fieldUpdateSaveInFlightRef.current = false;
+        setFieldUpdateSaving(false);
+        recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
+        offerToSaveDeletedDraftAsNewUpdate(draftSnapshot.projectName);
+        return;
+      }
       savedUpdatesRef.current = persisted.nextUpdates;
       deletedUpdateTombstonesRef.current = persisted.nextTombstones;
       setSavedUpdates(persisted.nextUpdates);
@@ -7877,6 +7889,36 @@ useEffect(() => {
         : 'The saved version is safe, and your newer draft changes were kept.',
     );
     void syncQueuedFieldUpdateInBackground(queuedUpdate);
+  }
+
+  /** The open draft is replaced by a blank one for the project, on screen and on disk. */
+  function clearOpenDraft(projectName: string) {
+    const blank = createDraft(projectName);
+    draftRef.current = blank;
+    setDraft(blank);
+    setDraftSavedAt(null);
+    removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+    );
+  }
+
+  function offerToSaveDeletedDraftAsNewUpdate(projectName: string) {
+    Alert.alert(
+      'Update was deleted',
+      'This update was deleted while it was open, on this phone or another device, so it cannot be saved under its old record. Save it as a new update?',
+      [
+        { text: 'Discard draft', style: 'destructive', onPress: () => clearOpenDraft(projectName) },
+        {
+          text: 'Save as new update',
+          onPress: () => {
+            const reissued = reissueDraftAsNewUpdate(draftRef.current, uid());
+            draftRef.current = reissued;
+            setDraft(reissued);
+            void saveFieldUpdateFromReview();
+          },
+        },
+      ],
+    );
   }
 
   async function syncQueuedFieldUpdateInBackground(queuedUpdate: ProjectUpdate) {
@@ -12629,10 +12671,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
               setDeletedUpdateTombstones(nextTombstones);
               setSavedUpdates(remainingUpdates);
 
+              // The deleted update was open as the draft: the draft goes
+              // too, or its next save would be dropped by the barrier behind
+              // "Field update saved" (whole-app audit A4, 29 Sep 2026).
+              const openDraftDeleted = draftRef.current.id === updateId;
+              if (openDraftDeleted) clearOpenDraft(deletedUpdate.projectName);
+
               void deleteUnreferencedPhotosFromUpdate(
                 deletedUpdate,
                 [
-                  ...(draft.id === updateId ? [] : [draft]),
+                  ...(openDraftDeleted ? [] : [draftRef.current]),
                   ...remainingUpdates,
                 ],
               );
@@ -12721,12 +12769,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
   function deleteResumedSavedDraft() {
     const projectName = draft.projectName;
 
+    // deleteSavedUpdate clears the open draft itself when it is the deleted update.
     deleteSavedUpdate(draft.id, () => {
-      setDraft(createDraft(projectName));
-      setDraftSavedAt(null);
-      removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-      );
       setSelectedWorkspaceProject(projectName);
       setScreen(updateDetailReturnScreenRef.current);
     });

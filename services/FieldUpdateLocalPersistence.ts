@@ -83,11 +83,17 @@ export function prepareQueuedFieldUpdateSave<
     cloudUpdates: [],
     tombstones: nextTombstones,
   });
-  return { operations: [
+  // A deletion barrier for this id (the update was deleted while it was open
+  // as the draft, on this device or another) drops the queued update from
+  // the visible list. Nothing is written then: the draft stays persisted and
+  // the caller keeps it instead of reporting a save (whole-app audit A4,
+  // 29 Sep 2026; mirrors prepareFieldUpdateStatusSave).
+  const applied = nextUpdates.some(item => item.id === queuedUpdate.id);
+  return { operations: applied ? [
     { kind: 'set' as const, key: keys.updates, value: JSON.stringify(nextUpdates) },
     { kind: 'set' as const, key: keys.tombstones, value: JSON.stringify(nextTombstones) },
     { kind: 'remove_if_unchanged' as const, key: keys.draft, expectedValue: snapshot.persistedDraft },
-  ], result: { nextUpdates, nextTombstones } };
+  ] : [], result: { applied, nextUpdates, nextTombstones } };
 }
 
 export function prepareFieldUpdateStatusSave<
