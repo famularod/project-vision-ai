@@ -260,6 +260,36 @@ describe('a revised schedule imported on the web keeps the manager\'s progress (
     expect(provider).not.toContain('scheduleItems: prepared.scheduleItems,');
   });
 
+  // Whole-app audit A5 pass 4 #1 (30 Sep 2026): the web runs the same merge,
+  // so the scheduler's % Complete in an update reaches the web too.
+  it('takes the scheduler\'s % Complete: in place on the same dates, over the manager\'s only when higher', async () => {
+    const progressRow = (task: string, start: string, finish: string, status: string, percent: number) =>
+      `${task},Alpha Tower,Level 1,${start},${finish},,${status},${percent}`;
+    makeCurrent(await uploadRevision('r1', [
+      row('Excavate', '9/1/2026', '9/5/2026'),
+      row('Pour slab', '9/2/2026', '9/9/2026'),
+      row('Hang drywall', '9/8/2026', '9/12/2026'),
+    ]));
+    await managerSets('Pour slab', { percentComplete: 40, status: 'In Progress', progressConfirmedAt: '2026-09-05T12:00:00.000Z' });
+    await managerSets('Hang drywall', { percentComplete: 60, status: 'In Progress', progressConfirmedAt: '2026-09-05T12:00:00.000Z' });
+    const excavateId = (await shown()).tasks.get('Excavate')!.id;
+
+    const second = await uploadRevision('r2', [
+      progressRow('Excavate', '9/1/2026', '9/5/2026', 'Complete', 100),
+      // Finished early: an earlier actual finish, and done.
+      progressRow('Pour slab', '9/2/2026', '9/7/2026', 'Complete', 100),
+      progressRow('Hang drywall', '9/8/2026', '9/12/2026', 'In Progress', 20),
+    ]);
+    // The same task on the same dates is updated in place at upload.
+    expect(progress((await shown()).tasks.get('Excavate'))).toEqual([100, 'Complete', null]);
+    makeCurrent(second);
+    const { tasks } = await shown();
+    expect(tasks.get('Excavate')).toMatchObject({ id: excavateId, percentComplete: 100, status: 'Complete' });
+    expect(tasks.get('Pour slab')).toMatchObject({ finishDate: '09/07/2026', percentComplete: 100, status: 'Complete' });
+    // The manager's 60% is never lowered by the file's 20%.
+    expect(progress(tasks.get('Hang drywall'))).toEqual([60, 'In Progress', 'project_manager']);
+  });
+
   it('prepares the file again after a refused import, since the rolled-back document id is retired', () => {
     const shell = readFileSync(resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
     const refused = shell.slice(shell.indexOf('async function uploadPreparedDocument'), shell.indexOf('async function makeCurrent'));

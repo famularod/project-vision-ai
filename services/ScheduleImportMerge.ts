@@ -32,6 +32,16 @@ import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
  * dates it takes the manager's progress and fills its blank owner,
  * contractor and notes. The strict import identity de-duplicates one file
  * and still matches a row left unpaired.
+ *
+ * Whole-app audit A5 pass 4 #1 (30 Sep 2026): the scheduler's % Complete in
+ * a weekly update was thrown away. A task on the same dates was re-homed at
+ * its old 0% and read Overdue; a task the manager had at 40% that the update
+ * said was 100% done (on an earlier actual finish) stayed 40%. The file's
+ * progress now counts (fileProgressFor): over progress an earlier file gave,
+ * the newer file's, higher or lower (a scheduler's correction); over the
+ * manager's, only a higher percent, never lower. A task on the same dates is
+ * updated in place (its id, owner, notes and history kept); approving a file
+ * a task already belongs to again changes nothing.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -40,7 +50,57 @@ export type ScheduleImportMergeResult = Readonly<{
   additions: ScheduleItem[];
   rehomedIds: readonly string[];
   carriedProgressIds: readonly string[];
+  /** Saved tasks updated to the file's progress, and added rows whose file progress beat the manager's. */
+  fileProgressIds: readonly string[];
 }>;
+
+/**
+ * Who confirmed progress taken from an approved schedule file over the
+ * manager's (A5 pass 4 #1). Such a task keeps the manager's rank, so a device
+ * still holding the older manager value cannot win it back in a merge
+ * (DAVEScheduleRecovery), but its progress is the file's: the next file may
+ * correct it either way.
+ */
+export const SCHEDULE_UPDATE_PROGRESS_CONFIRMER = 'Schedule update';
+
+/** Progress the project manager recorded or verified, not taken from a schedule file. */
+export function scheduleProgressIsManagers(item: ScheduleItem): boolean {
+  if (item.completionVerification?.status === 'pm_verified') return true;
+  return item.progressSource === 'project_manager' &&
+    item.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
+}
+
+function percentOf(item: ScheduleItem): number {
+  const value = Number(item.percentComplete);
+  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+}
+
+/**
+ * The file's progress over the saved task's, or null to keep the saved
+ * task's (A5 pass 4 #1). A task entered by hand counts as the manager's.
+ */
+function fileProgressFor(
+  saved: ScheduleItem,
+  file: ScheduleItem,
+  approvedAt: string,
+): Partial<ScheduleItem> | null {
+  const owned = Boolean(key(saved.importBatchId) || key(saved.sourceDocumentId));
+  const managers = scheduleProgressIsManagers(saved) || !owned;
+  const change = percentOf(file) - percentOf(saved);
+  if (managers ? change <= 0 : change === 0) return null;
+  // Taken at approval: a manager-ranked task stays manager-ranked, confirmed
+  // by the approval, so every device's merge keeps the file's value.
+  return saved.progressSource === 'project_manager'
+    ? {
+        percentComplete: file.percentComplete,
+        status: file.status,
+        progressSource: 'project_manager',
+        progressConfirmedAt: approvedAt,
+        progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+        updatedAt: approvedAt,
+      }
+    : { percentComplete: file.percentComplete, status: file.status, updatedAt: approvedAt };
+}
 
 function key(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
@@ -147,6 +207,7 @@ export function mergeApprovedScheduleImportItems({
   completionMatch,
   mergeCompletion,
   isCurrent = () => true,
+  approvedAt = new Date().toISOString(),
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
@@ -155,11 +216,14 @@ export function mergeApprovedScheduleImportItems({
   mergeCompletion: (item: ScheduleItem, importedItem: ScheduleItem) => ScheduleItem;
   /** A saved task the manager sees; only these and this import's own pair with a revised row. */
   isCurrent?: (item: ScheduleItem) => boolean;
+  /** When the owner approved the import: when a task's file progress is confirmed. */
+  approvedAt?: string;
 }): ScheduleImportMergeResult {
   let next = [...existing];
   const additions: ScheduleItem[] = [];
   const rehomedIds: string[] = [];
   const carriedProgressIds: string[] = [];
+  const fileProgressIds: string[] = [];
   const pairs = pairTaskRevisions(existing, imported, isCurrent);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
@@ -186,16 +250,24 @@ export function mergeApprovedScheduleImportItems({
       const owned = Boolean(key(duplicate.importBatchId) || key(duplicate.sourceDocumentId));
       const newBatchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
       const batches = scheduleItemImportBatchIds(duplicate).map(key);
-      if (owned && newBatchId && !batches.includes(key(newBatchId))) {
+      // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
+      if (newBatchId && batches.includes(key(newBatchId))) return;
+      const rehome = owned && Boolean(newBatchId);
+      const fileProgress = fileProgressFor(duplicate, importedItem, approvedAt);
+      if (rehome || fileProgress) {
         next = next.map(item => item.id === duplicate.id
           ? {
               ...item,
-              locationName: key(item.locationName) ? item.locationName : importedItem.locationName,
-              alsoImportedInBatchIds: [...(item.alsoImportedInBatchIds || []), newBatchId],
+              ...(fileProgress || {}),
+              ...(rehome ? {
+                locationName: key(item.locationName) ? item.locationName : importedItem.locationName,
+                alsoImportedInBatchIds: [...(item.alsoImportedInBatchIds || []), newBatchId],
+              } : {}),
             }
           : item);
-        rehomedIds.push(duplicate.id);
       }
+      if (rehome) rehomedIds.push(duplicate.id);
+      if (fileProgress) fileProgressIds.push(duplicate.id);
       return;
     }
     if (
@@ -205,11 +277,20 @@ export function mergeApprovedScheduleImportItems({
     ) {
       // The file's owner, contractor and notes win; the manager's fill a blank.
       const kept = (value: string, saved: string) => key(value) || !key(saved) ? value : saved;
-      additions.push({
+      const filled = {
         ...importedItem,
         owner: kept(importedItem.owner, paired.owner),
         contractor: kept(importedItem.contractor, paired.contractor),
         notes: kept(importedItem.notes, paired.notes),
+      };
+      // The manager's progress, unless the file's is higher or the saved progress was a file's (A5 pass 4 #1).
+      if (fileProgressFor(paired, importedItem, approvedAt)) {
+        additions.push(filled);
+        fileProgressIds.push(importedItem.id);
+        return;
+      }
+      additions.push({
+        ...filled,
         percentComplete: paired.percentComplete,
         status: paired.status,
         progressSource: paired.progressSource,
@@ -223,5 +304,5 @@ export function mergeApprovedScheduleImportItems({
     additions.push(importedItem);
   });
 
-  return { next, additions, rehomedIds, carriedProgressIds };
+  return { next, additions, rehomedIds, carriedProgressIds, fileProgressIds };
 }
