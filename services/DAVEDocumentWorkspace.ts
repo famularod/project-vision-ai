@@ -46,12 +46,18 @@ export function markCurrentProjectScheduleDocument<
   referenceDocumentId?: string | null;
   updatedAt: string;
 }) {
+  const becomesCurrent = (document: T) => document.id === documentId || Boolean(
+    referenceDocumentId && document.referenceDocumentId === referenceDocumentId,
+  );
+  // Only the projects that gain a current schedule card lose their old one:
+  // every other project's card was un-marked too (whole-app audit A8 pass 2 #3).
+  const projectIds = new Set(documents
+    .filter(document => document.category === 'Schedule' && becomesCurrent(document))
+    .map(document => document.projectId));
   return documents.map(document => {
-    if (document.category !== 'Schedule') return document;
+    if (document.category !== 'Schedule' || !projectIds.has(document.projectId)) return document;
 
-    const isCurrent = document.id === documentId || Boolean(
-      referenceDocumentId && document.referenceDocumentId === referenceDocumentId,
-    );
+    const isCurrent = becomesCurrent(document);
     if (Boolean(document.isCurrent) === isCurrent) return document;
 
     return {

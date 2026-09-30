@@ -312,7 +312,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, scheduleDocumentsAfterActivation, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, scheduleDocumentsAfterActivation, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -633,7 +633,7 @@ import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
-  scheduleItemsForExactImportBatch,
+  scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument,
   scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
   resolveScheduleParentActions,
@@ -4975,6 +4975,7 @@ function AppShell() {
   }));
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const currentReferenceActivationIdsRef = useRef(new Set<string>());
+  const projectScheduleImportCardRef = useRef<{ batchId: string; documentId: string } | null>(null);
   const projectDocumentsCurrentRef = useRef(projectDocuments);
   const scheduleItemsCurrentRef = useRef(scheduleItems);
   const projectsCurrentRef = useRef(projects);
@@ -11282,7 +11283,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // Asked before either path: a schedule with no imported tasks hides the project's on every device (whole-app audit A8 pass 1 F6, 30 Sep 2026).
     const projectName = projects.find(name => authorityProjectId(name) === document.projectId) || null;
     const retirement = (await loadECOSScheduleRetirementScope(getSupabaseClient())) ?? 'schedule'; // as the cloud retires (owner answer Q15); unknown offline: whole schedules, as before it
-    const warning = hidingTasksConfirmed ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
+    // The same file already imported for the project is made current, unasked, not its task-less copy (whole-app audit A8 pass 2 #2).
+    const importedCopy = importedScheduleOfPhoneSchedule(document, projectName, referenceDocuments);
+    const warning = hidingTasksConfirmed || importedCopy ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
       phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems, retirement));
     if (warning) return Alert.alert(warning.title, warning.message, [
       { text: 'Cancel', style: 'cancel' },
@@ -11291,9 +11294,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ]);
     const referenceUpdatedAt = new Date().toISOString();
 
-    let referenceDocument = document.referenceDocumentId
+    let referenceDocument = importedCopy || (document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
-      : null;
+      : null);
     const alreadyShared = Boolean(referenceDocument);
 
     try {
@@ -11417,10 +11420,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const { localUri } = await ensureVerifiedProjectDocumentBytes(document);
       if (!localUri) throw new Error('Verified schedule path is missing.');
       const batch = await prepareScheduleImportFromAsset({ uri: localUri, name: document.name, mimeType: document.mimeType, size: document.sizeBytes }, projectName ? [projectName] : undefined);
-      if (batch) { setIncomingScheduleImportBatch(batch); setScheduleProjectFilter(null); setScreen('Schedule'); }
+      if (!batch) return;
+      projectScheduleImportCardRef.current = { batchId: batch.id, documentId: document.id }; // made current once approved (whole-app audit A8 pass 2 #2)
+      setIncomingScheduleImportBatch(batch); setScheduleProjectFilter(null); setScreen('Schedule');
     } catch (error) {
       Alert.alert('Schedule review unavailable', error instanceof Error ? error.message : 'The schedule file could not be read on this phone.');
     }
+  }
+
+  /** A phone schedule card marked current on this phone, and saved; its shared copy is left as it is. */
+  function markProjectScheduleCardCurrent(documentId: string) {
+    const updatedAt = new Date().toISOString();
+    const markCurrent = (documents: ProjectDocument[]) => markCurrentProjectScheduleDocument({ documents, documentId, updatedAt });
+    const next = markCurrent(projectDocumentsCurrentRef.current);
+    projectDocumentsCurrentRef.current = next;
+    setProjectDocuments(next);
+    setDraft(prev => ({ ...prev, documents: markCurrent(prev.documents || []) }));
+    setSavedUpdates(prev => prev.map(update => ({ ...update, documents: markCurrent(update.documents || []) })));
+    void persistProjectDocumentsImmediately(next).catch(error => reportStoragePersistenceFailure({
+      storageKey: PROJECT_DOCUMENTS_STORAGE_KEY, label: 'project document metadata', error }));
   }
 
   function deleteProjectDocument(documentId: string) {
@@ -11563,9 +11581,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   // The cloud makes the choice; a flag flipped on the phone was undone by the
-  // next refresh and never reached the other device (audit A5 F4).
-  function setActiveScheduleDocument(documentId: string) {
-    markReferenceDocumentCurrent(documentId);
+  // next refresh and never reached the other device (audit A5 F4). A schedule with no
+  // imported tasks asks first, as on the phone card (whole-app audit A8 pass 2 #8).
+  async function setActiveScheduleDocument(documentId: string) {
+    const target = referenceDocumentsCurrentRef.current.find(item => item.id === documentId);
+    const retirement = (await loadECOSScheduleRetirementScope(getSupabaseClient())) ?? 'schedule';
+    const warning = target && scheduleTasksHiddenWarning(target.name, scheduleTasksHiddenByActivation(
+      target, referenceDocumentsCurrentRef.current, scheduleItemsCurrentRef.current, retirement));
+    if (!warning) return markReferenceDocumentCurrent(documentId);
+    Alert.alert(warning.title, warning.message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Set Active', onPress: () => markReferenceDocumentCurrent(documentId) },
+    ]);
   }
 
   function deleteScheduleDocument(documentId: string) {
@@ -11575,8 +11602,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // Only the tasks no other schedule contains: one unchanged across revisions stays (audit A5 pass 2).
     const relatedScheduleItems = document.importBatchId
       ? scheduleItemsOnlyInImportBatch(scheduleItems, document, referenceDocuments.filter(scheduleDocumentIsScheduleLike))
-      : scheduleItems.filter(item =>
-          item.importedFrom === document.originalFileName || item.importedFrom === document.name);
+      : scheduleItemsOfUnbatchedDocument(scheduleItems, document); // never another schedule's batch by file name (whole-app audit A8 pass 2 #1)
     const sharedCount = document.importBatchId
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
@@ -12550,6 +12576,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
       referenceDocumentsCurrentRef.current = appliedSynchronizedDocuments;
       setReferenceDocuments(appliedSynchronizedDocuments);
     }
+    // "Import This Schedule" from a phone card: the card is current, as its import is; it stayed
+    // "Make Current Schedule", which then hid the imported tasks (whole-app audit A8 pass 2 #2).
+    const importedCard = projectScheduleImportCardRef.current;
+    if (importedCard?.batchId === batch.id) {
+      projectScheduleImportCardRef.current = null;
+      if (!approvedBatch.documents.some(document => supersededReferenceDocumentIds.has(document.id))) markProjectScheduleCardCurrent(importedCard.documentId);
+    }
 
     if (protectedDeletionCount > 0) {
       Alert.alert(
@@ -12627,6 +12660,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function cancelScheduleImport(batch: PIEScheduleImportBatch) {
+    if (projectScheduleImportCardRef.current?.batchId === batch.id) projectScheduleImportCardRef.current = null;
     batch.documents.forEach(document => {
       deleteStoredReferenceDocument(document.uri).catch(() => undefined);
     });

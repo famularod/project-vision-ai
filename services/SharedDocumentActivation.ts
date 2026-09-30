@@ -13,6 +13,7 @@ import {
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { parseOwnedLocalFileManifest } from './OwnedLocalFileRepository';
 
 export { loadECOSScheduleRetirementScope, type ScheduleRetirementScope };
 
@@ -247,6 +248,37 @@ export function phoneScheduleActivationTarget(
     importedAt: document.importedAt,
     projectName,
   };
+}
+
+/**
+ * The imported schedule a phone schedule PDF already is: the same file (the
+ * lowercase SHA-256 of its bytes, kept by the phone's file record, its shared
+ * copy and the import alike) imported for the card's project. Make Current
+ * on the card made the task-less upload copy current instead and hid that
+ * import's tasks on every device (whole-app audit A8 pass 2 #2). The one
+ * already current first, then the newest; null when the file was never
+ * imported for that project.
+ */
+export function importedScheduleOfPhoneSchedule(
+  document: Readonly<{ ownedFileId?: string | null; ownedFileManifest?: unknown; referenceDocumentId?: string | null }>,
+  projectName: string | null,
+  documents: readonly ReferenceDocument[],
+): ReferenceDocument | null {
+  let sha256 = '';
+  try {
+    sha256 = cloudKey(document.ownedFileId
+      ? parseOwnedLocalFileManifest(document.ownedFileManifest).files[document.ownedFileId]?.sha256 : '');
+  } catch {
+    sha256 = '';
+  }
+  if (!sha256) sha256 = cloudKey(documents.find(item => item.id === document.referenceDocumentId)?.contentSha256);
+  const project = cloudKey(projectName);
+  if (!sha256 || !project) return null;
+  return documents
+    .filter(item => isScheduleDocument(item) && cloudKey(item.importBatchId) && cloudKey(item.contentSha256) === sha256 &&
+      projectNamesOf(item).some(name => cloudKey(name) === project))
+    .sort((left, right) => Number(Boolean(right.isCurrent)) - Number(Boolean(left.isCurrent)) ||
+      String(right.importedAt || '').localeCompare(String(left.importedAt || '')))[0] || null;
 }
 
 /**

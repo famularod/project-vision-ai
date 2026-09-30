@@ -9,7 +9,7 @@
  */
 import { dependencyChangesForDeletedTask } from '../../services/VitruviusScheduleEngine';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
-import { scheduleItemsForExactImportBatch, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
+import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -52,6 +52,8 @@ function harness(items: ScheduleItem[], documents: ReferenceDocument[]) {
   const deps: Record<string, unknown> = {
     referenceDocuments: documents, scheduleItems: items,
     scheduleItemsOnlyInImportBatch, scheduleItemsForExactImportBatch, scheduleDocumentIsScheduleLike,
+    // A document with no batch takes tasks through this rule since audit A8 pass 2 #1.
+    scheduleItemsOfUnbatchedDocument,
     dependencyChangesForDeletedTask,
     Alert: { alert: (_title: string, _message: string, options: typeof buttons) => { buttons = options; } },
     recordDAVESyncTombstones: async (list: unknown[]) => list,

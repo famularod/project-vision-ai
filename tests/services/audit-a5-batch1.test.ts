@@ -93,7 +93,10 @@ describe('one current schedule per project', () => {
     // Set Active no longer flips flags on the phone: the cloud's activation
     // call chooses (audit A5 F4), and the refreshed list is reconciled per
     // project. The phone's own competing rule was removed with the flip.
-    expect(app).toContain('function setActiveScheduleDocument(documentId: string) {\n    markReferenceDocumentCurrent(documentId);');
+    // Since audit A8 pass 2 #8 it asks first when the schedule has no imported
+    // tasks; either way the cloud's activation, not a flag flip, decides.
+    expect(app).toContain('async function setActiveScheduleDocument(documentId: string) {');
+    expect(app).toContain('if (!warning) return markReferenceDocumentCurrent(documentId);');
     expect(app).toContain('const mergedDocuments = reconcileCurrentScheduleDocuments(');
     expect(read('services/DAVEWebOperations.ts')).toContain('currentSchedules.length > currentScheduleDocumentWinners(currentSchedules).length');
     expect(read('scripts/schedule-import-batch-test.js')).toContain("scheduleScreenSource.includes('sections={mobileTaskSections}')");

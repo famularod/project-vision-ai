@@ -256,6 +256,8 @@ describe('a schedule made current on the phone before it is shared follows the s
         projectDocuments: [phoneDocument], projects: ['Alpha'], authorityProjectId: () => 'alpha-key',
         referenceDocuments: [master, alphaOld, gamma], scheduleItems: [task('r-x', 'Alpha', pdf)],
         scheduleTasksHiddenWarning, scheduleTasksHiddenByActivation, phoneScheduleActivationTarget, scheduleDocumentsAfterActivation,
+        // Audit A8 pass 2 #2: a PDF already imported is made current instead; this one never was.
+        importedScheduleOfPhoneSchedule: () => null,
         loadECOSScheduleRetirementScope: jest.fn(async () => scope), getSupabaseClient: () => null,
         activateReferenceDocument: jest.fn(async () => true),
         ensureVerifiedProjectDocumentBytes: jest.fn(async (verified: object) => ({ ...verified, localUri: 'file:///verified.pdf' })),

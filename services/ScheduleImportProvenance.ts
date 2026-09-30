@@ -100,6 +100,28 @@ export function scheduleItemsOnlyInImportBatch(
   });
 }
 
+/**
+ * The tasks deleting a schedule document with no import batch takes: those
+ * naming it as their source and, by file name, only tasks with no import
+ * batch or source of their own. The phone's upload of a schedule PDF is such
+ * a document, and "Import This Schedule" records the same file name on every
+ * imported task, so "Delete PDF + Items" on the upload copy deleted the
+ * imported schedule's tasks on every device (whole-app audit A8 pass 2 #1
+ * (30 Sep 2026)).
+ */
+export function scheduleItemsOfUnbatchedDocument(
+  items: readonly ScheduleItem[],
+  document: ReferenceDocument,
+): ScheduleItem[] {
+  return items.filter(item => {
+    const sourceDocumentId = item.sourceDocumentId?.trim();
+    if (sourceDocumentId) return sourceDocumentId === document.id;
+    if (scheduleItemImportBatchIds(item).length > 0) return false;
+    return Boolean(item.importedFrom) &&
+      (item.importedFrom === document.originalFileName || item.importedFrom === document.name);
+  });
+}
+
 export function scheduleImportDocumentOwnsItem(
   document: ReferenceDocument,
   item: ScheduleItem,
