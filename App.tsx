@@ -198,7 +198,8 @@ import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
 import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
-import { useNativeWorkspaceOwner } from './components/native-workspace-owner';
+import { useNativeWorkspaceOwner, useNativeWorkspaceSignInPendingRef } from './components/native-workspace-owner';
+import { fieldUpdateSyncCategoryWithoutSession } from './services/FieldUpdateSessionWait';
 import { ProjectPhotoImage } from './components/ProjectPhotoImage';
 import {
   DailyBriefSection,
@@ -4849,6 +4850,7 @@ export default function App() {
 
 function AppShell() {
   const workspaceOwnerId = useNativeWorkspaceOwner();
+  const signInPendingRef = useNativeWorkspaceSignInPendingRef(); // updates wait, not fail, offline (A4 pass 7 M1)
   useFieldNoteBackgroundRetry(workspaceOwnerId ?? 'local-device'); // notes saved offline reach the desktop (audit A11)
   const hiddenSharedDocuments = useHiddenSharedDocuments(); // Delete from This Device (audit A8)
   const insets = useSafeAreaInsets();
@@ -7879,14 +7881,14 @@ useEffect(() => {
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth',
+          await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current),
           attemptedAt,
           1,
           false,
         );
         finalUpdate = {
           ...queuedUpdate,
-          status: 'failed',
+          status: statusForSyncDiagnostics(syncDiagnostics),
           syncDiagnostics,
           workflowTimestamps: {
             ...(queuedUpdate.workflowTimestamps || {}),
@@ -8008,16 +8010,14 @@ useEffect(() => {
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+          await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current),
           now,
           1,
           false,
         );
         const finalUpdate: ProjectUpdate = {
           ...retryUpdate,
-          status: 'failed',
+          status: statusForSyncDiagnostics(syncDiagnostics),
           syncDiagnostics,
           workflowTimestamps: {
             ...(retryUpdate.workflowTimestamps || {}),
@@ -8136,16 +8136,17 @@ useEffect(() => {
     const resolvedAt = new Date().toISOString();
 
     if (!sessionTokenPresent) {
-      const failureCategory =
-        tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+      const failureCategory = await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current);
+      const stampedStatus = persistedStatusForSyncResult({ result: 'skipped', failureCategory });
       // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
       // stamping is idempotent. Updates already marked failed for this
       // same auth condition are NOT re-stamped — re-stamping every 30s
       // rewrote the full saved-updates store to disk and changed the
       // authority input each pass, driving a continuous core recompute
       // until iOS terminated the app for CPU/disk-write exhaustion.
+      // Nor is one already waiting offline (A4 pass 7 M1).
       const needsStamp = queuedUpdates.filter(update =>
-        lifecycleStatusForUpdate(update) !== 'failed' ||
+        lifecycleStatusForUpdate(update) !== stampedStatus ||
         update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
       );
       if (needsStamp.length === 0) return;
@@ -8159,7 +8160,7 @@ useEffect(() => {
       needsStamp.forEach(update => {
         applyFieldUpdateSyncResultIfCurrent(update, {
           ...update,
-          status: 'failed',
+          status: stampedStatus,
           syncDiagnostics,
           workflowTimestamps: {
             ...(update.workflowTimestamps || {}),

@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useRef } from 'react';
 
 /**
  * Selects local storage only, after NativeRoot has activated the owner sandbox.
@@ -23,4 +23,16 @@ export const NativeWorkspaceSignInPendingContext = createContext(false);
 
 export function useNativeWorkspaceSignInPending(): boolean {
   return useContext(NativeWorkspaceSignInPendingContext);
+}
+
+/**
+ * The same, read when an upload is tried rather than when the screen drew:
+ * a field update that cannot upload meanwhile waits to sync instead of
+ * failing with "Session expired" (whole-app audit A4 pass 7 M1).
+ */
+export function useNativeWorkspaceSignInPendingRef(): { readonly current: boolean } {
+  const pending = useNativeWorkspaceSignInPending();
+  const ref = useRef(pending);
+  ref.current = pending;
+  return ref;
 }

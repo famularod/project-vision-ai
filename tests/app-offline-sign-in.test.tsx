@@ -17,6 +17,8 @@ const mockWorkspaceMounts: string[] = [];
 const mockFailingSecureDeletes = new Set<string>();
 /** Runs inside a phone-storage read, after its value was read. */
 let mockDuringAsyncRead: ((key: string) => Promise<void>) | null = null;
+/** The open workspace's "sign-in pending" as the App's uploads read it (A4 pass 7 M1). */
+let mockSignInPendingRef: { readonly current: boolean } | null = null;
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
@@ -86,10 +88,11 @@ function wakeSleepingRetries() {
 jest.mock('../App', () => {
   const React = require('react');
   const { Text, View } = require('react-native');
-  const { useNativeWorkspaceOwner } = require('../components/native-workspace-owner');
+  const { useNativeWorkspaceOwner, useNativeWorkspaceSignInPendingRef } = require('../components/native-workspace-owner');
   const { OfflineSignInPendingBanner } = require('../components/offline-sign-in-pending-banner');
   function WorkspaceMarker() {
     const owner = useNativeWorkspaceOwner();
+    mockSignInPendingRef = useNativeWorkspaceSignInPendingRef();
     React.useEffect(() => { mockWorkspaceMounts.push(owner); }, [owner]);
     return React.createElement(
       View,
@@ -560,5 +563,189 @@ describe('auth security review', () => {
     expect(Date.now() - started).toBeLessThan(13_000);
     expect(network.hung.length).toBeGreaterThan(0);
     screen.unmount();
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 7 M1 (30 Sep 2026): with the workspace open
+ * "offline, sign-in pending", every field update saved was stamped "Sync
+ * Failed · Session expired · Sign in again". Runs the App's own save-time
+ * sync and queued-update pass, compiled from App.tsx, against the real
+ * session lookup of this launch; only the upload itself and the saved-updates
+ * store are stand-ins, and no upload may start.
+ */
+describe('field updates saved while offline, sign-in pending (A4 pass 7 M1)', () => {
+  const fs = jest.requireActual('fs') as typeof import('fs');
+  const path = jest.requireActual('path') as typeof import('path');
+  const ts = jest.requireActual('typescript') as typeof import('typescript');
+  const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
+  const transpile = (source: string) => ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  /** A top-level function of App.tsx, up to the next top-level declaration. */
+  function appFunction(name: string): string {
+    const match = new RegExp(`\\n(?:async )?function ${name}\\(`).exec(app);
+    if (!match) throw new Error(`App.tsx has no function ${name}`);
+    const rest = app.slice(match.index + 1);
+    const end = rest.slice(1).search(/\n(?:export )?(?:async )?function |\n(?:export )?const |\n(?:export )?type |\ninterface |\n\/\*\*/);
+    return rest.slice(0, end < 0 ? undefined : end + 1);
+  }
+  /** A function of the App component (two-space indent), brace-matched. */
+  function componentFunction(name: string): string {
+    const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(app);
+    if (!match) throw new Error(`App.tsx has no component function ${name}`);
+    const open = app.indexOf(' {\n', match.index) + 1;
+    let depth = 0;
+    for (let index = open; index < app.length; index += 1) {
+      if (app[index] === '{') depth += 1;
+      if (app[index] === '}' && (depth -= 1) === 0) return app.slice(match.index + 3, index + 1);
+    }
+    throw new Error('unbalanced function');
+  }
+  function compile<T>(source: string, deps: Record<string, unknown>): T {
+    const mod = { exports: {} as unknown };
+    new Function('module', 'exports', ...Object.keys(deps), transpile(source))(mod, mod.exports, ...Object.values(deps));
+    return mod.exports as T;
+  }
+  const helperNames = [
+    'lifecycleStatusForUpdate', 'updateNeedsAutomaticSyncRetry', 'syncCategoryIsRlsOrAuth',
+    'emptyPermissionAttempt', 'buildSkippedSyncDiagnostics', 'statusForSyncDiagnostics',
+    'queuedStatusCopyForUpdate',
+  ];
+  type Update = { id: string; status: string; photos: unknown[]; syncDiagnostics?: Record<string, unknown> | null; [key: string]: unknown };
+  const lifecycle = () => require('../services/FieldUpdateLifecycle');
+  type AppHelper = (...args: any[]) => any;
+  const helpers = () => compile<Record<string, AppHelper>>(
+    [...helperNames.map(appFunction), `module.exports = { ${helperNames.join(', ')} };`].join('\n'),
+    { persistedStatusForSyncResult: lifecycle().persistedStatusForSyncResult },
+  );
+  const copyOf = (A: Record<string, AppHelper>, update: Update) => ({
+    status: update.status,
+    category: update.syncDiagnostics?.lastSyncFailureCategory,
+    label: lifecycle().fieldUpdateLifecycleLabel(update.status),
+    copy: (A.queuedStatusCopyForUpdate as (u: Update) => string)(update),
+  });
+  const WAITING = {
+    status: 'queued', category: 'offline', label: 'Waiting to Sync',
+    copy: "Queued — will sync when you're back online",
+  };
+  /** Runs `work` while auth-js's refresh retries are woken at once (no ~25 s waits). */
+  async function withRetriesWoken<T>(work: Promise<T>): Promise<T> {
+    let done = false;
+    const settled = work.finally(() => { done = true; });
+    while (!done) {
+      wakeSleepingRetries();
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    return settled;
+  }
+  const update = (id: string, extra: Partial<Update> = {}): Update => ({
+    id, projectName: 'Canopy B', date: '2026-09-30', notes: 'Rebar placed', recipients: { contactIds: [] },
+    photos: [], status: 'queued', ...extra,
+  });
+
+  test('an update saved now waits to sync, worded as offline; older "Session expired" stamps are lifted once, then left alone', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    expect(mockSignInPendingRef?.current).toBe(true);
+    const A = helpers();
+    const { fieldUpdateSyncCategoryWithoutSession } = require('../services/FieldUpdateSessionWait');
+    const runFieldUpdateCloudSync = jest.fn();
+    const shared = {
+      getCurrentSessionAccessToken: service.getCurrentSessionAccessToken,
+      fieldUpdateSyncCategoryWithoutSession, signInPendingRef: mockSignInPendingRef,
+      buildSkippedSyncDiagnostics: A.buildSkippedSyncDiagnostics, statusForSyncDiagnostics: A.statusForSyncDiagnostics,
+      runFieldUpdateCloudSync, syncFieldUpdateWithMissingPhotoRepair: runFieldUpdateCloudSync,
+    };
+
+    // Saved from Review: the save's own background sync, as App.tsx runs it.
+    const persisted: Update[] = [];
+    const syncQueued = compile<(u: Update) => Promise<void>>(
+      `module.exports = ${componentFunction('syncQueuedFieldUpdateInBackground')}`,
+      { ...shared, buildSyncDiagnosticsFromUpload: jest.fn(), classifySyncFailureCategory: () => 'unknown',
+        persistSavedUpdateImmediately: jest.fn(async (next: Update) => { persisted.push(next); return true; }) },
+    );
+    // The session is still loading (auth-js is retrying the refresh with no signal).
+    const loading = await service.getCurrentSessionAccessToken();
+    expect(loading.data?.missingReason).toBe('auth_loading');
+    await syncQueued(update('saved-now'));
+    expect(copyOf(A, persisted[0])).toEqual(WAITING);
+
+    // Once auth-js has given up on this refresh the lookup reads "unknown".
+    const settled: { data?: { missingReason?: string } } = await withRetriesWoken(service.getCurrentSessionAccessToken());
+    expect(settled.data?.missingReason).toBe('unknown');
+    await withRetriesWoken(syncQueued(update('saved-later')));
+    expect(copyOf(A, persisted[1])).toEqual(WAITING);
+
+    // The queued-update pass: an update stamped before this fix is lifted to
+    // waiting once; one already waiting is not written again, pass after pass
+    // (the 18 Jul 2026 idempotency fix still holds).
+    const stale = update('stamped-before', {
+      status: 'failed',
+      syncDiagnostics: A.buildSkippedSyncDiagnostics('auth', '2026-09-30T08:00:00.000Z', 1, false),
+    });
+    const savedUpdatesRef = { current: [stale, persisted[0]] };
+    const stamped: string[] = [];
+    const hydratePass = compile<() => Promise<void>>(
+      `module.exports = ${componentFunction('hydrateQueuedUpdatesPass')}`,
+      { ...shared, savedUpdatesRef, updateNeedsAutomaticSyncRetry: A.updateNeedsAutomaticSyncRetry,
+        directSyncIsRecent: () => false, queuedHydrationDeferredRerun: { current: null },
+        persistedStatusForSyncResult: lifecycle().persistedStatusForSyncResult,
+        lifecycleStatusForUpdate: A.lifecycleStatusForUpdate,
+        applyFieldUpdateSyncResultIfCurrent: (attempted: Update, next: Update) => {
+          stamped.push(next.id);
+          savedUpdatesRef.current = savedUpdatesRef.current.map(item => item.id === attempted.id ? next : item);
+        },
+        runAutomaticSyncQueue: runFieldUpdateCloudSync },
+    );
+    await withRetriesWoken(hydratePass());
+    expect(stamped).toEqual(['stamped-before']);
+    expect(savedUpdatesRef.current.map(item => copyOf(A, item))).toEqual([WAITING, WAITING]);
+    await withRetriesWoken(hydratePass());
+    expect(stamped).toEqual(['stamped-before']);
+    expect(runFieldUpdateCloudSync).not.toHaveBeenCalled();
+
+    // Signal returns and the server refuses the sign-in: only that reads
+    // "Session expired", and the workspace closes to the sign-in screen as
+    // before; after it, "Sign in required".
+    network.mode = 'reject';
+    // auth-js answers from its last failure for a minute before trying again.
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+    try {
+      await syncQueued(update('at-refusal'));
+      expect(copyOf(A, persisted[2])).toEqual({
+        status: 'failed', category: 'auth', label: 'Sync Failed', copy: 'Session expired · Sign in again',
+      });
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      await syncQueued(update('after-refusal'));
+      expect(copyOf(A, persisted[3])).toEqual({
+        status: 'failed', category: 'signed_out', label: 'Sync Failed', copy: 'Sign in required to sync',
+      });
+      expect(runFieldUpdateCloudSync).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+    screen.unmount();
+  });
+
+  test('the category itself: a sign-in saved on this phone and not yet refreshed waits; only its absence asks to sign in', async () => {
+    const { fieldUpdateSyncCategoryWithoutSession: category } = require('../services/FieldUpdateSessionWait');
+    const saved = async () => ({ ownerId: 'owner-a', lastRefreshedAtMs: 0, expiresAtMs: 0 });
+    const none = async () => null;
+    const broken = async () => { throw new Error('Keychain unavailable'); };
+    await expect(category({ missingReason: 'signed_out' }, true, saved)).resolves.toBe('signed_out');
+    await expect(category({ missingReason: 'expired_session' }, true, saved)).resolves.toBe('offline');
+    // A refused refresh removed the saved sign-in, pending or not.
+    await expect(category({ missingReason: 'unknown' }, true, none)).resolves.toBe('auth');
+    await expect(category({ missingReason: 'auth_loading' }, false, saved)).resolves.toBe('offline');
+    await expect(category({ missingReason: 'unknown' }, false, saved)).resolves.toBe('offline');
+    await expect(category(null, false, saved)).resolves.toBe('offline');
+    await expect(category({ missingReason: 'unknown' }, false, none)).resolves.toBe('auth');
+    await expect(category({ missingReason: 'unknown' }, false, broken)).resolves.toBe('auth');
+    await expect(category({ missingReason: 'expired_session' }, false, saved)).resolves.toBe('auth');
+    await expect(category({ missingReason: 'storage_unavailable' }, false, saved)).resolves.toBe('auth');
   });
 });
