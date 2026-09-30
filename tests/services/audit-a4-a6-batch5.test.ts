@@ -8,7 +8,8 @@ const screen = read('screens/ReportsScreen.tsx');
 describe('A4 pass 4 lows', () => {
   it('the generation guard ignores photo storage paths and the receipt aligns them (behaviour in audit-a4-batch4)', () => {
     const generation = read('services/FieldUpdateSyncGeneration.ts');
-    expect(generation).toMatch(/return fieldUpdateSyncGeneration\(withoutPhotoStoragePaths\(left\)\) ===\n\s+fieldUpdateSyncGeneration\(withoutPhotoStoragePaths\(right\)\);/);
+    // Batch 6 (A4 pass 5) widened it to every cloud photo field, null read as missing.
+    expect(generation).toMatch(/return generationSignature\(withoutPhotoCloudFields\(left\), true\) ===\n\s+generationSignature\(withoutPhotoCloudFields\(right\), true\);/);
     expect(generation).not.toContain('alignPhotoStoragePaths');
     expect(read('services/PhotoStoragePathAlignment.ts')).toContain("Boolean(other) && (pathOf(photo) === '' || pathOf(other as PhotoLike) === '');");
   });
@@ -16,14 +17,14 @@ describe('A4 pass 4 lows', () => {
   it('a store the save declared unreadable is not re-written outside the journal; Keep cloud replaces the local failed copy', () => {
     expect(app).toMatch(/if \(error instanceof FieldUpdatePersistenceBlockedError\) startupHydration\.fail\(UPDATES_STORAGE_KEY, 'field update save recovery', error\);/);
     expect(app).toMatch(/if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(persistError =>/);
-    expect(app).toMatch(/onApplyCloudConflictUpdate=\{update => \{\n\s+const cloudUpdate = update as unknown as ProjectUpdate;\n(?:\s*\/\/.*\n)*\s+setSavedUpdates\(previous => mergeSavedUpdatesWithTombstones\(\{\n\s+localUpdates: previous\.filter\(item => item\.id !== cloudUpdate\.id\),/);
+    expect(app).toMatch(/onApplyCloudConflictUpdate=\{update => \{\n\s+const cloudUpdate = normalizeStoredUpdateRecord\(update\);\n(?:\s*\/\/.*\n)*\s+setSavedUpdates\(previous => mergeSavedUpdatesWithTombstones\(\{\n\s+localUpdates: previous\.filter\(item => item\.id !== cloudUpdate\.id\),/);
   });
 });
 
 describe('A6 pass 4 lows', () => {
   it('the Word "prepared" notice is read before the Outlook question; the citation check ignores case', () => {
     expect(app).toMatch(/await new Promise<void>\(resolve => Alert\.alert\(\n\s+'Word report prepared',[\s\S]*?\[\{ text: 'OK', onPress: \(\) => resolve\(\) \}\],\n\s+\{ cancelable: true, onDismiss: \(\) => resolve\(\) \},\n\s+\)\);\n\s+\}\n\s+return true;/);
-    expect(app).toContain('return /\\bSee Images?\\s+\\d/i.test(report.body);');
+    expect(app).toContain("return reportFormat !== 'executive' && /\\bSee Images?\\s+\\d/i.test(report.body);");
   });
 
   it('a send that completes before the approval save lands still marks the report delivered', () => {

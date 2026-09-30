@@ -244,6 +244,9 @@ export function ReportsScreen({
   } | null>(null);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
+  // Its own line: a send clears the communication message, and this one must
+  // stay until the next approval (whole-app audit A6 pass 5).
+  const [snapshotSaveError, setSnapshotSaveError] = useState('');
   const [autoDecisionKey, setAutoDecisionKey] = useState('');
   const [previousReportSnapshot, setPreviousReportSnapshot] =
     useState<DAVEReportSnapshot | null>(null);
@@ -532,6 +535,7 @@ export function ReportsScreen({
     setReviewAcknowledgement(remembered?.acknowledgement ?? { fingerprint: '', ids: [] });
     setCommunicationPending(false);
     setCommunicationError('');
+    setSnapshotSaveError('');
     pendingCommunicationTokenRef.current = null;
   }, [reportStateIdentityKey]);
 
@@ -603,10 +607,11 @@ export function ReportsScreen({
     setReportEditing(false);
     setReportApproved(true);
     setCommunicationError('');
+    setSnapshotSaveError('');
     rememberReportApproval(reportStateIdentityKey, approvalTextKey);
     if (snapshotLoadFailed) {
       // The owner's baseline could not be read; approving must not replace it blind.
-      setCommunicationError(
+      setSnapshotSaveError(
         'The previous reporting-period snapshot could not be read on this device, so this approval did not replace it.',
       );
       return;
@@ -625,12 +630,14 @@ export function ReportsScreen({
     void save
       .then(() => {
         if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {
+          // The ref at once: a send landing before the next render marks this one (audit A6 pass 5).
+          previousReportSnapshotRef.current = snapshotToSave;
           setPreviousReportSnapshot(snapshotToSave);
         }
       })
       .catch(() => {
         if (!mountedRef.current) return;
-        setCommunicationError(
+        setSnapshotSaveError(
           'The report is approved, but its reporting-period snapshot could not be saved on this device.',
         );
       })
@@ -654,6 +661,7 @@ export function ReportsScreen({
     void saveDAVEReportSnapshot(delivered)
       .then(() => {
         if (mountedRef.current && reportSnapshotScopeKeyRef.current === delivered.scopeKey) {
+          previousReportSnapshotRef.current = delivered;
           setPreviousReportSnapshot(delivered);
         }
       })
@@ -711,7 +719,7 @@ export function ReportsScreen({
             reportApprovalAllowed={reportApprovalAllowed}
             approvalMessage={reportApprovalMessage}
             communicationPending={communicationPending}
-            communicationError={communicationError}
+            communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
             updates={updates}

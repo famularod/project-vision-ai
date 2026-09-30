@@ -1,4 +1,5 @@
 import type { DAVEProjectTruth } from './DAVEProjectTruth';
+import { parsePlainDate } from './ProjectDateTime';
 import {
   normalizeScheduleStatus,
   scheduleProgressIsComplete,
@@ -253,7 +254,7 @@ export function compareDAVEReportSnapshots({
     if (normalized(prior.status) !== normalized(task.status)) {
       changes.push(changeFor(task, 'status', `${task.taskName} changed from ${prior.status} to ${task.status}.`));
     }
-    if (prior.finishDate !== task.finishDate) {
+    if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
       changes.push(changeFor(
         task,
         'finish_date',
@@ -391,6 +392,18 @@ function validDate(value: unknown) {
 
 function clean(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * The same calendar day in either stored form (whole-app audit A6 pass 5):
+ * imported dates moved from "Jul 24, 2026" to "07/24/2026", and comparing the
+ * text listed every imported task of the next report as a finish change.
+ */
+function sameCalendarDate(left: string | null | undefined, right: string | null | undefined) {
+  if (left === right) return true;
+  const leftDate = parsePlainDate(left);
+  const rightDate = parsePlainDate(right);
+  return Boolean(leftDate && rightDate && leftDate === rightDate);
 }
 
 function normalized(value: unknown) {

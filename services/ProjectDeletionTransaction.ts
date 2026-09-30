@@ -134,6 +134,33 @@ export function createProjectDeletionTransactionRepository({
 }
 
 /**
+ * Whether deleting this project takes the update: the shared scope rule, or
+ * an update kept as historical evidence for a task deleted earlier. That
+ * update belongs to no project by the scope rule (it fails closed on a
+ * missing task), so a project deletion left it behind, still listed under
+ * the deleted project's name (whole-app audit A3, 30 Sep 2026). For the
+ * deletion only, it goes with the project it names, the explicit parent
+ * first, as the scope rule reads it. The cascade, the App's file cleanup
+ * list and its open-draft check all use this one rule (audit A4 pass 5).
+ */
+export function projectDeletionTakesUpdate({
+  update,
+  projectName,
+  scheduleItems,
+}: Readonly<{
+  update: Pick<ProjectUpdateLike, 'projectName' | 'scheduleItemId' | 'scheduleProjectName'>;
+  projectName: string;
+  scheduleItems: readonly ScheduleItemLike[];
+}>): boolean {
+  if (projectUpdateBelongsToParentProject({ update, projectName, scheduleItems })) return true;
+  const target = normalizedScope(projectName);
+  const scheduleItemId = normalizedScope(update.scheduleItemId);
+  if (!target || !scheduleItemId) return false;
+  if (scheduleItems.some(item => normalizedScope(item.id) === scheduleItemId)) return false;
+  return normalizedScope(normalizedScope(update.scheduleProjectName) || update.projectName) === target;
+}
+
+/**
  * Computes the complete local cascade before any bytes are changed. Only
  * records with explicit project ownership are removed; ambiguous reference
  * documents remain available instead of being guessed from display text.
@@ -214,24 +241,8 @@ export function buildProjectDeletionCascade<
 
   const projectMatches = (value: string | null | undefined) =>
     normalizedScope(value) === normalizedProjectName;
-  const scheduleItemIds = new Set(scheduleItems.map(item => normalizedScope(item.id)).filter(Boolean));
-  // An update kept as historical evidence for a task deleted earlier
-  // belongs to no project by the shared scope rule (it fails closed on a
-  // missing task), so a project deletion left it behind, still listed under
-  // the deleted project's name (whole-app audit A3, 30 Sep 2026). For the
-  // cascade only: such an update goes with the project it names, the
-  // explicit parent first, as the scope rule reads it.
-  const historicalEvidenceOfProject = (update: TUpdate) => {
-    const scheduleItemId = normalizedScope(update.scheduleItemId);
-    if (!scheduleItemId || scheduleItemIds.has(scheduleItemId)) return false;
-    return projectMatches(normalizedScope(update.scheduleProjectName) || update.projectName);
-  };
   const updateMatchesProject = (update: TUpdate) =>
-    projectUpdateBelongsToParentProject({
-      update,
-      projectName,
-      scheduleItems,
-    }) || historicalEvidenceOfProject(update);
+    projectDeletionTakesUpdate({ update, projectName, scheduleItems });
   const remainingUpdates = updates.filter(update => !updateMatchesProject(update));
   const removedUpdates = updates.filter(update => updateMatchesProject(update));
   const remainingProjectDocuments = projectDocuments.filter(document =>

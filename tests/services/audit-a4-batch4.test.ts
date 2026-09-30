@@ -47,7 +47,7 @@ describe('a photo’s storage path is compared when both copies carry one', () =
     expect(alignPhotoStoragePaths(plain, plain)).toEqual([plain, plain]);
   });
 
-  it('a relocated path is not the old row’s receipt, and stays a new generation', () => {
+  it('a relocated path is not the old row’s receipt, and is not a new generation of the queued copy', () => {
     const local = { ...base, status: 'queued', photos: [photo('P/u1/p1-relocated.jpg')] };
     const oldRow = { ...base, status: 'queued', photos: [photo('P/legacy/p1.jpg', '')] };
     const sameRow = { ...base, status: 'queued', photos: [photo('P/u1/p1-relocated.jpg', '')] };

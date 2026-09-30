@@ -2382,7 +2382,12 @@ export async function runFieldUpdateCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
-    failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory) ? remainingItem.lastFailureCategory : null,
+    // A conflict or an item failure is never read from its sentence: that
+    // sentence carries the project name, so "Fiber Network" read as offline
+    // and was re-sent over the other device's row (whole-app audit A4 pass 5).
+    failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory)
+      ? remainingItem.lastFailureCategory
+      : currentConflict || itemOutcome === 'failed' ? 'unknown' : null,
   };
   const metadataBlocked = staged.pendingPhotoAssetIds.length > 0;
 
@@ -2757,9 +2762,14 @@ function queueItemMatchesDAVESyncTombstone(
 ): boolean {
   if (!queueEntityUsesDAVESyncTombstones(item.entity)) return false;
   if (item.operation === 'delete') return false;
-  const payload = item.payload as { id?: unknown; name?: unknown };
+  const payload = item.payload as { id?: unknown; name?: unknown; previousName?: unknown };
+  // A project's cover, archive and reopen items carry only previousName, so a
+  // deleted project's were never retired and retried for good (whole-app
+  // audit A3 pass 2, 30 Sep 2026).
+  const projectName = [payload.name, payload.previousName]
+    .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
   const recordId = String(
-    item.entity === 'project' ? payload.name : payload.id,
+    item.entity === 'project' ? projectName : payload.id,
   )
     .trim()
     .toLowerCase();
@@ -3549,12 +3559,56 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   const localPayload = conflict.localPayload as ProjectUpdateRecordPayload<TUpdate>;
 
   if (resolution === 'keep_cloud') {
-    if (!isRecord(conflict.remotePayload)) {
+    const cloudUpdate = conflict.remotePayload;
+    if (!isRecord(cloudUpdate)) {
       throw new Error('sync_conflict_cloud_copy_missing');
     }
-
+    // As for tasks (whole-app audit A4 pass 5): a deleted update is not
+    // written back; otherwise the phone's queued revisions (the conflict-era
+    // edit and any newer one) are withdrawn around any upload in flight, and
+    // the chosen copy goes back through the queue (the one write path, as
+    // Keep Phone does), so neither a later upload nor a retry that already
+    // reached the cloud undoes the choice.
+    const tombstoneSync = await synchronizeDAVESyncTombstones();
+    if (!tombstoneSync.cloudAuthoritative) {
+      throw new Error('sync_conflict_deletion_history_unavailable');
+    }
+    const normalizedUpdateId = conflict.localId.trim().toLowerCase();
+    const updateWasDeleted =
+      (await hasProjectUpdateDeletionIntent(conflict.localId)) ||
+      deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
+        .some(recordId => recordId.trim().toLowerCase() === normalizedUpdateId);
+    if (updateWasDeleted) {
+      await clearConflictsForLocalRecord('project_update', conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
+    }
+    await removeProjectUpdateFromSyncQueue(conflict.localId);
+    await uploadPendingChanges();
+    await removeProjectUpdateFromSyncQueue(conflict.localId);
+    await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+      id: projectUpdateQueueItemId(conflict.localId),
+      entity: 'project_update',
+      operation: 'update',
+      payload: {
+        id: conflict.localId,
+        projectId: typeof cloudUpdate.projectId === 'string' ? cloudUpdate.projectId : localPayload.projectId,
+        projectName: typeof cloudUpdate.projectName === 'string' ? cloudUpdate.projectName : localPayload.projectName,
+        selectedAreaName: typeof cloudUpdate.selectedAreaName === 'string'
+          ? cloudUpdate.selectedAreaName
+          : localPayload.selectedAreaName,
+        updateData: cloudUpdate as TUpdate,
+        // The cloud copy's photos are already in cloud storage.
+        pendingPhotoAssetIds: [],
+      },
+      changedAt: new Date().toISOString(),
+      autoUpload: false,
+    });
+    const result = await uploadPendingChanges();
+    if (result.queued > 0 || result.errors.length > 0) {
+      throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+    }
     await clearResolvedConflict(conflict.id);
-    return conflict.remotePayload as TUpdate;
+    return cloudUpdate as TUpdate;
   }
 
   const localUpdateData = localPayload.updateData;
@@ -4162,7 +4216,12 @@ async function uploadProjectUpdateQueueItem(
     updatedAt: item.changedAt,
   });
 
-  if (result.ok && !result.stubbed) return 'uploaded';
+  if (result.ok && !result.stubbed) {
+    // A retry after a conflict put the phone's copy in the cloud: that
+    // conflict is settled, as when the cloud already matched (audit A4 pass 5).
+    await clearConflictsForLocalRecord('project_update', payload.id);
+    return 'uploaded';
+  }
 
   return result.error
     ? `Project update database upsert failed: ${result.error}`

@@ -105,7 +105,9 @@ includes(app, "'rls_denied'", 'sync diagnostics must include rls_denied category
 includes(app, "'storage_upload_failed'", 'sync diagnostics must include storage_upload_failed category');
 includes(app, "'database_insert_failed'", 'sync diagnostics must include database_insert_failed category');
 includes(app, "'malformed_payload'", 'sync diagnostics must include malformed_payload category');
-includes(app, "connectionType: 'wifi' | 'cellular' | 'none' | 'unknown'", 'diagnostics must model connection type safely');
+// The stored diagnostics type moved out of App.tsx unchanged (30 Sep 2026, line budget).
+const syncDiagnosticsRecord = fs.readFileSync(path.join(root, 'services/FieldUpdateSyncDiagnosticsRecord.ts'), 'utf8');
+includes(syncDiagnosticsRecord, "connectionType: 'wifi' | 'cellular' | 'none' | 'unknown'", 'diagnostics must model connection type safely');
 includes(app, 'therefore never blocked client-side', 'cellular must not be treated as offline');
 assert(!app.includes('NetInfo'), 'app must not pretend to use NetInfo without the dependency');
 

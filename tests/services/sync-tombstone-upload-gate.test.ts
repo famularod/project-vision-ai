@@ -196,6 +196,7 @@ import {
   getOfflineQueue,
   getSyncConflicts,
   queueScheduleItemRecord,
+  resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   runScheduleImportCloudSync,
   runScheduleItemCloudSync,
@@ -1881,5 +1882,113 @@ describe('offline upload deletion barriers', () => {
     expect(mockDeleteProjectUpdate).toHaveBeenCalledTimes(1);
     expect(mockConfirmProjectUpdateCloudDeletion).toHaveBeenCalledTimes(2);
     expect(mockStorage.get(QUEUE_KEY)).toBe('[]');
+  });
+});
+
+// Whole-app audit, A3 pass 2 and A4 pass 5 (30 Sep 2026).
+describe('project and field-update queue rules from the audit', () => {
+  const CONFLICTS_KEY = 'projectVisionAI.syncConflicts.v1';
+  const deletionJournal = jest.requireMock('../../services/ProjectUpdateDeletionJournal') as {
+    hasProjectUpdateDeletionIntent: jest.Mock;
+  };
+  const updateItem = (id: string, note: string, changedAt: string) => ({
+    id: `project-update-${id}`,
+    entity: 'project_update' as const,
+    operation: 'update' as const,
+    payload: {
+      id,
+      projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+      projectName: '2375 Compliance Project',
+      selectedAreaName: 'Canopy A',
+      updateData: { id, note },
+      pendingPhotoAssetIds: [],
+    },
+    changedAt,
+    autoUpload: false,
+  });
+  const cloudCopy = (id: string) => ({
+    id,
+    projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+    projectName: '2375 Compliance Project',
+    selectedAreaName: 'Canopy A',
+    note: 'The copy the owner chose',
+  });
+  const storeConflict = (id: string) => mockStorage.set(CONFLICTS_KEY, JSON.stringify([{
+    id: `project_update_conflict-${id}`,
+    entity: 'project_update',
+    localId: id,
+    localChangedAt: '2026-08-14T08:00:00.000Z',
+    remoteChangedAt: '2026-08-15T08:00:00.000Z',
+    reason: 'Remote update changed after the local pending change.',
+    detectedAt: '2026-08-15T09:00:00.000Z',
+    localPayload: updateItem(id, 'Phone copy', '2026-08-14T08:00:00.000Z').payload,
+    remotePayload: cloudCopy(id),
+  }]));
+
+  beforeEach(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(false);
+  });
+  afterAll(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(true);
+  });
+
+  it('retires a deleted project’s cover, archive and reopen items that carry only its previous name', async () => {
+    mockCloudTombstonesResult = {
+      ok: true, configured: true, stubbed: false,
+      data: [{ entityType: 'project' as never, recordId: 'roof 2400', deletedAt: '2026-09-30T12:00:00.000Z' }],
+    };
+    await enqueuePendingChange({
+      id: 'project-cover-roof',
+      entity: 'project',
+      operation: 'update',
+      payload: { previousName: 'Roof 2400', data: { coverPhotoMode: 'manual' } },
+      changedAt: '2026-09-30T11:00:00.000Z',
+      autoUpload: false,
+    });
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      queued: 0,
+      itemOutcomes: { 'project-cover-roof': 'superseded' },
+    });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Keep Cloud withdraws the phone’s queued copies and writes the chosen copy back', async () => {
+    storeConflict('u-keep-cloud');
+    await enqueuePendingChange(updateItem('u-keep-cloud', 'A newer phone edit', '2026-08-16T08:00:00.000Z'));
+    const [conflict] = await getSyncConflicts();
+
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(cloudCopy('u-keep-cloud'));
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
+    expect(mockSaveProjectUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      id: 'u-keep-cloud',
+      projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+      projectName: '2375 Compliance Project',
+      areaName: 'Canopy A',
+      updateData: cloudCopy('u-keep-cloud'),
+    }));
+  });
+
+  it('Keep Cloud never writes back an update deleted on any device', async () => {
+    storeConflict('u-deleted');
+    mockCloudTombstonesResult = {
+      ok: true, configured: true, stubbed: false,
+      data: [{ entityType: 'project_update' as never, recordId: 'u-deleted', deletedAt: '2026-08-16T08:00:00.000Z' }],
+    };
+    const [conflict] = await getSyncConflicts();
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).rejects.toThrow('sync_conflict_record_deleted');
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('an upload of the phone’s copy after a conflict settles that conflict', async () => {
+    storeConflict('u-retried');
+    await enqueuePendingChange(updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z'));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      itemOutcomes: { 'project-update-u-retried': 'uploaded' },
+    });
+    expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 });

@@ -64,7 +64,7 @@ describe('what a report is built from and sends (audit A6)', () => {
 
   it('attaches images to email and text only when the body cites them', () => {
     // Audit A6 pass 4: the check ignores case.
-    expect(app).toContain("return /\\bSee Images?\\s+\\d/i.test(report.body);");
+    expect(app).toContain("return reportFormat !== 'executive' && /\\bSee Images?\\s+\\d/i.test(report.body);");
     expect(app).toContain('const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_EMAIL_IMAGE_LIMIT);');
     expect(app).toContain('const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);');
   });

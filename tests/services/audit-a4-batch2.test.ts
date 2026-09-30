@@ -30,7 +30,8 @@ describe('why a sync failed is read from the failure, not from a sentence writte
   it('is recorded on the queue item from the raw failure and carried into the sync result', () => {
     expect(sync.match(/lastFailureCategory: classifySyncFailureText\(\[(reason|prepared|resultCode)\]\),/g)?.length).toBe(3);
     // Batch 3: a category this build does not know reads as unknown instead of sidelining the item.
-    expect(sync).toContain('failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory) ? remainingItem.lastFailureCategory : null,');
+    // A4 pass 5: a conflict or item failure without a recorded category is 'unknown', never read from its sentence.
+    expect(sync).toMatch(/failureCategory: isSyncFailureCategory\(remainingItem\?\.lastFailureCategory\)\n\s+\? remainingItem\.lastFailureCategory\n\s+: currentConflict \|\| itemOutcome === 'failed' \? 'unknown' : null,/);
     expect(sync).toContain("typeof value.lastFailureCategory !== 'string'");
     expect(sync).toContain('lastFailureCategory?: SyncFailureCategory | null;');
     expect(app).toContain(': syncResult.failureCategory ?? classifySyncFailureCategory(');

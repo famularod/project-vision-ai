@@ -271,6 +271,7 @@ import {
 } from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
+import { normalizeFieldUpdateSyncDiagnostics, type FieldUpdateSyncDiagnostics, type FieldUpdateSyncFailureCategory, type FieldUpdateSyncStepResult } from './services/FieldUpdateSyncDiagnosticsRecord';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
 import { classifySyncFailureText } from './services/SyncFailureCategory';
 import { forgetAllReportSessionState } from './services/ReportSessionState';
@@ -346,7 +347,7 @@ import {
   startAutomaticSyncBackgroundTask,
 } from './services/AutomaticSyncState';
 import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
-import { buildProjectDeletionCascade, buildProjectDeletionOperations,
+import { buildProjectDeletionCascade, buildProjectDeletionOperations, projectDeletionTakesUpdate,
   referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject,
   scheduleItemMatchesProject as scheduleItemMatchesDeletedProject, selectProjectDeletionFallback,
   PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
@@ -760,58 +761,6 @@ type QuickContext =
   | 'Inspection'
   | 'Other';
 type FieldUpdateStatus = PersistedFieldUpdateStatus;
-type FieldUpdateSyncFailureCategory =
-  | 'offline'
-  | 'signed_out'
-  | 'auth'
-  | 'rls_denied'
-  | 'storage_upload_failed'
-  | 'database_insert_failed'
-  | 'malformed_payload'
-  | 'unknown';
-type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
-type FieldUpdateSyncDiagnostics = {
-  networkState: 'online' | 'offline' | 'unknown';
-  connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
-  sessionTokenPresent: boolean | null;
-  lastSyncAttemptAt: string | null;
-  lastSyncResult: 'success' | 'failed' | 'skipped' | null;
-  lastSyncFailureCategory: FieldUpdateSyncFailureCategory | null;
-  cloudUpdateInsertAttempted: boolean;
-  photoStorageUploadAttempted: boolean;
-  storageUploadResult: FieldUpdateSyncStepResult;
-  databaseUpsertResult: FieldUpdateSyncStepResult;
-  rlsOrAuthFailureDetected: boolean;
-  retryAvailable: boolean;
-  storageBucketName: string | null;
-  storageBucketExists: 'yes' | 'no' | 'unknown';
-  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
-  storageHttpStatus: number | null;
-  storageErrorCode: string | null;
-  retryAttemptNumber: number | null;
-  localFileExists: boolean | null;
-  localFileReadable: boolean | null;
-  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
-  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
-  storageContentType: string | null;
-  objectPathCategory: string | null;
-  databaseSyncRanAfterUpload: boolean | null;
-  failedOperationName: string | null;
-  failedLogicalTarget: string | null;
-  rlsDenied: boolean;
-  authenticatedUserIdPresent: boolean | null;
-  projectIdPresent: boolean | null;
-  organizationIdPresent: boolean | null;
-  membershipCheckResult:
-    | 'present'
-    | 'missing_or_denied'
-    | 'not_checked'
-    | 'unavailable'
-    | null;
-  queuedUpdateCount: number;
-  projectRollupsIncludeQueuedUpdates: boolean;
-  projectCardWorkspaceSameSource: boolean;
-};
 type FieldUpdatePIEStatus =
   | 'not_started'
   | 'analyzing'
@@ -1739,152 +1688,6 @@ function normalizeInterpretationDecisionLog(
       };
     })
     .filter(Boolean) as PIEInterpretationDecisionLogEntry[];
-}
-
-function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDiagnostics | null {
-  if (!isRecord(value)) return null;
-  const failureCategory =
-    value.lastSyncFailureCategory === 'offline' ||
-    value.lastSyncFailureCategory === 'signed_out' ||
-    value.lastSyncFailureCategory === 'auth' ||
-    value.lastSyncFailureCategory === 'rls_denied' ||
-    value.lastSyncFailureCategory === 'storage_upload_failed' ||
-    value.lastSyncFailureCategory === 'database_insert_failed' ||
-    value.lastSyncFailureCategory === 'malformed_payload' ||
-    value.lastSyncFailureCategory === 'unknown'
-      ? value.lastSyncFailureCategory
-      : null;
-
-  return {
-    networkState:
-      value.networkState === 'online' ||
-      value.networkState === 'offline' ||
-      value.networkState === 'unknown'
-        ? value.networkState
-        : 'unknown',
-    connectionType:
-      value.connectionType === 'wifi' ||
-      value.connectionType === 'cellular' ||
-      value.connectionType === 'none' ||
-      value.connectionType === 'unknown'
-        ? value.connectionType
-        : 'unknown',
-    sessionTokenPresent:
-      typeof value.sessionTokenPresent === 'boolean'
-        ? value.sessionTokenPresent
-        : null,
-    lastSyncAttemptAt: optionalString(value.lastSyncAttemptAt),
-    lastSyncResult:
-      value.lastSyncResult === 'success' ||
-      value.lastSyncResult === 'failed' ||
-      value.lastSyncResult === 'skipped'
-        ? value.lastSyncResult
-        : null,
-    lastSyncFailureCategory: failureCategory,
-    cloudUpdateInsertAttempted: value.cloudUpdateInsertAttempted === true,
-    photoStorageUploadAttempted: value.photoStorageUploadAttempted === true,
-    storageUploadResult:
-      value.storageUploadResult === 'success' ||
-      value.storageUploadResult === 'failed' ||
-      value.storageUploadResult === 'skipped'
-        ? value.storageUploadResult
-        : 'skipped',
-    databaseUpsertResult:
-      value.databaseUpsertResult === 'success' ||
-      value.databaseUpsertResult === 'failed' ||
-      value.databaseUpsertResult === 'skipped'
-        ? value.databaseUpsertResult
-        : 'skipped',
-    rlsOrAuthFailureDetected: value.rlsOrAuthFailureDetected === true,
-    retryAvailable: value.retryAvailable !== false,
-    storageBucketName: optionalString(value.storageBucketName),
-    storageBucketExists:
-      value.storageBucketExists === 'yes' ||
-      value.storageBucketExists === 'no' ||
-      value.storageBucketExists === 'unknown'
-        ? value.storageBucketExists
-        : 'unknown',
-    storageFailureCategory:
-      value.storageFailureCategory === 'bucket_missing' ||
-      value.storageFailureCategory === 'rls_denied' ||
-      value.storageFailureCategory === 'auth_missing' ||
-      value.storageFailureCategory === 'invalid_path' ||
-      value.storageFailureCategory === 'invalid_payload' ||
-      value.storageFailureCategory === 'unsupported_content_type' ||
-      value.storageFailureCategory === 'file_unreadable' ||
-      value.storageFailureCategory === 'stale_local_uri' ||
-      value.storageFailureCategory === 'network' ||
-      value.storageFailureCategory === 'unknown_storage_error'
-        ? value.storageFailureCategory
-        : null,
-    storageHttpStatus:
-      typeof value.storageHttpStatus === 'number' &&
-      Number.isFinite(value.storageHttpStatus)
-        ? value.storageHttpStatus
-        : null,
-    storageErrorCode: optionalString(value.storageErrorCode),
-    retryAttemptNumber:
-      typeof value.retryAttemptNumber === 'number' &&
-      Number.isFinite(value.retryAttemptNumber)
-        ? value.retryAttemptNumber
-        : null,
-    localFileExists:
-      typeof value.localFileExists === 'boolean'
-        ? value.localFileExists
-        : null,
-    localFileReadable:
-      typeof value.localFileReadable === 'boolean'
-        ? value.localFileReadable
-        : null,
-    fileByteSizeCategory:
-      value.fileByteSizeCategory === 'zero' ||
-      value.fileByteSizeCategory === 'nonzero' ||
-      value.fileByteSizeCategory === 'unknown'
-        ? value.fileByteSizeCategory
-        : 'unknown',
-    uploadPayloadType:
-      value.uploadPayloadType === 'ArrayBuffer' ||
-      value.uploadPayloadType === 'Blob' ||
-      value.uploadPayloadType === 'base64' ||
-      value.uploadPayloadType === 'unknown'
-        ? value.uploadPayloadType
-        : 'unknown',
-    storageContentType: optionalString(value.storageContentType),
-    objectPathCategory: optionalString(value.objectPathCategory),
-    databaseSyncRanAfterUpload:
-      typeof value.databaseSyncRanAfterUpload === 'boolean'
-        ? value.databaseSyncRanAfterUpload
-        : null,
-    failedOperationName: optionalString(value.failedOperationName),
-    failedLogicalTarget: optionalString(value.failedLogicalTarget),
-    rlsDenied: value.rlsDenied === true,
-    authenticatedUserIdPresent:
-      typeof value.authenticatedUserIdPresent === 'boolean'
-        ? value.authenticatedUserIdPresent
-        : null,
-    projectIdPresent:
-      typeof value.projectIdPresent === 'boolean'
-        ? value.projectIdPresent
-        : null,
-    organizationIdPresent:
-      typeof value.organizationIdPresent === 'boolean'
-        ? value.organizationIdPresent
-        : null,
-    membershipCheckResult:
-      value.membershipCheckResult === 'present' ||
-      value.membershipCheckResult === 'missing_or_denied' ||
-      value.membershipCheckResult === 'not_checked' ||
-      value.membershipCheckResult === 'unavailable'
-        ? value.membershipCheckResult
-        : null,
-    queuedUpdateCount:
-      typeof value.queuedUpdateCount === 'number' &&
-      Number.isFinite(value.queuedUpdateCount)
-        ? value.queuedUpdateCount
-        : 0,
-    projectRollupsIncludeQueuedUpdates: value.projectRollupsIncludeQueuedUpdates !== false,
-    projectCardWorkspaceSameSource: value.projectCardWorkspaceSameSource !== false,
-  };
 }
 
 function normalizeFieldUpdateDeleteDiagnostics(value: unknown): FieldUpdateDeleteDiagnostics | null {
@@ -5710,7 +5513,9 @@ useEffect(() => {
           'deleted project records',
           isStartupProjectName,
         ),
-        getOfflineQueue(),
+        // Read only for queued reopens and deletions: a queue that cannot be
+        // recovered is a sync matter, not a startup failure (audit A7 pass 3).
+        getOfflineQueue().catch(() => []),
       ]);
       if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
       const localProjects = normalizeProjectRecords(localResult.value);
@@ -9038,8 +8843,9 @@ function addProject(projectName: string) {
               authorityProjectId(projectName),
             ),
           );
+          // One rule with the cascade, historical evidence included (audit A4 pass 5).
           const removedUpdates = savedUpdatesRef.current.filter(update =>
-            projectUpdateBelongsToParentProject({
+            projectDeletionTakesUpdate({
               update,
               projectName,
               scheduleItems,
@@ -9050,7 +8856,7 @@ function addProject(projectName: string) {
               projectDocumentMatchesProject(document, projectName),
             ),
             ...removedUpdates.flatMap(update => update.documents || []),
-            ...(projectUpdateBelongsToParentProject({
+            ...(projectDeletionTakesUpdate({
               update: draftRef.current,
               projectName,
               scheduleItems,
@@ -9080,7 +8886,7 @@ function addProject(projectName: string) {
             scheduleItems,
             daveSyncTombstones: support.daveSyncTombstones,
             draft: currentDraftEnvelope,
-            draftBelongsToProject: projectUpdateBelongsToParentProject({
+            draftBelongsToProject: projectDeletionTakesUpdate({
               update: draftRef.current,
               projectName,
               scheduleItems,
@@ -10242,9 +10048,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     return mailComposerOutcome(result.status);
   }
 
-  /** Whether the body as it will be sent still cites "See Image N" (the executive body never does; an edited body may not). */
+  /** Whether the body as it will be sent still cites "See Image N" (an edited body may not). The executive body numbers no images, so "see image 4" there is the owner's own note (audit A6 pass 5). */
   function reportBodyCitesImages(report: PIEReportDraft): boolean {
-    return /\bSee Images?\s+\d/i.test(report.body);
+    return reportFormat !== 'executive' && /\bSee Images?\s+\d/i.test(report.body);
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
@@ -14088,9 +13894,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRemoveMissingPhotos={removeMissingSyncPhotos}
               onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
               onApplyCloudConflictUpdate={update => {
-                const cloudUpdate = update as unknown as ProjectUpdate;
+                const cloudUpdate = normalizeStoredUpdateRecord(update);
                 // The owner chose the cloud copy: it replaces the local
-                // failed one rather than lending it a receipt (audit A4 pass 4).
+                // failed one rather than lending it a receipt (audit A4 pass 4);
+                // the resolver withdrew the phone's queued copies and wrote it back (pass 5).
                 setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
                   localUpdates: previous.filter(item => item.id !== cloudUpdate.id),
                   cloudUpdates: [cloudUpdate],
@@ -18438,7 +18245,10 @@ function AreaDetailModal({
             <SecondaryButton
               label="Delete"
               icon="trash-outline"
-              onPress={onDelete}
+              onPress={() => {
+                areaName.commit(); // kept if the delete is cancelled (audit A3 pass 2)
+                onDelete();
+              }}
               compact
             />
           </View>

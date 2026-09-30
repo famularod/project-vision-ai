@@ -5,29 +5,32 @@ import { useEffect, useState } from 'react';
  * closes (whole-app audit A3, 30 Sep 2026). Committing per keystroke trimmed
  * the text and echoed it back, so a space could not be typed ("Pad East"),
  * and an emptied field became a default name. An emptied field keeps the
- * saved value. The text resyncs only when `resetKey` changes (a different
- * record), not on each echo of the saved value.
+ * saved value. Until the user types, the field shows the saved value as it
+ * changes and a commit writes nothing, so closing the sheet cannot write
+ * back a name another device has since changed (audit A3 pass 2). Typing
+ * starts over when `resetKey` changes (a different record).
  */
 export function useCommittedText(
   savedValue: string | undefined,
   resetKey: string | undefined,
   onCommit: (value: string) => void,
 ) {
-  const [text, setText] = useState(savedValue ?? '');
+  const [typed, setTyped] = useState<string | null>(null);
 
   useEffect(() => {
-    setText(savedValue ?? '');
+    setTyped(null);
   }, [resetKey]);
 
-  function commit() {
-    if (savedValue === undefined) return;
-    const trimmed = text.trim();
-    if (!trimmed) {
-      setText(savedValue);
-      return;
-    }
-    if (trimmed !== savedValue) onCommit(trimmed);
+  function setText(value: string) {
+    setTyped(value);
   }
 
-  return { text, setText, commit };
+  function commit() {
+    if (savedValue === undefined || typed === null) return;
+    const trimmed = typed.trim();
+    setTyped(null);
+    if (trimmed && trimmed !== savedValue) onCommit(trimmed);
+  }
+
+  return { text: typed ?? savedValue ?? '', setText, commit };
 }

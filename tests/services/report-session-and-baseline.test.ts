@@ -78,7 +78,8 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     expect(screen).toContain('const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;');
-    expect(screen).toMatch(/if \(snapshotLoadFailed\) \{\n(?:\s*\/\/.*\n)*\s+setCommunicationError\(/);
+    // A6 pass 5: its own line, which a send does not clear.
+    expect(screen).toMatch(/if \(snapshotLoadFailed\) \{\n(?:\s*\/\/.*\n)*\s+setSnapshotSaveError\(/);
   });
 });
 
