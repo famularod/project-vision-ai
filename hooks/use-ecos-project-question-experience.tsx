@@ -56,6 +56,12 @@ export function useECOSProjectQuestionExperience({
   }, []);
   useEffect(() => () => { requestGeneration.current += 1; }, []);
   const projectId = useMemo(() => projectIdFor(projectRecords, projectName), [projectName, projectRecords]);
+  // The unarchived projects the user can pick, so Ask ECOS refuses a number only
+  // when it names one of them (owner answer Q20; audit A9 pass 1 #2).
+  const knownProjectNames = useMemo(
+    () => [...new Set(candidateProjects.map(name => name.trim()).filter(Boolean))],
+    [candidateProjects],
+  );
   const ownerKey = useNativeWorkspaceOwner();
   const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
   useEffect(() => { dismissResult(); }, [conversation, dismissResult]);
@@ -85,6 +91,7 @@ export function useECOSProjectQuestionExperience({
         projectId,
         projectName: selectedProjectName,
         question: cleanQuestion,
+        knownProjectNames,
         ...turn.request,
       });
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
@@ -99,7 +106,7 @@ export function useECOSProjectQuestionExperience({
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
         : current);
     }
-  }, [projectId, projectName, conversation]);
+  }, [projectId, projectName, conversation, knownProjectNames]);
 
   // Runs after the reset effect above, once the named project's conversation exists.
   useEffect(() => {

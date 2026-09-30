@@ -10,8 +10,15 @@ import {
   parseECOSQuestionDiagnostics,
   type ECOSQuestionDiagnostics,
 } from './ECOSQuestionProtocol';
+import { findECOSProjectReferenceMismatch } from '../supabase/functions/_shared/ecos-project-reference';
 
 export { ECOS_PROJECT_QUESTION_SCHEMA_VERSION } from './ECOSQuestionProtocol';
+// One wrong-project rule for the app and the ecos-ask-project edge function
+// (owner answer Q20, 30 Sep 2026; audit A9 pass 1 #2).
+export {
+  findECOSProjectReferenceMismatch,
+  type ECOSProjectReferenceMismatch,
+} from '../supabase/functions/_shared/ecos-project-reference';
 
 export type ECOSProjectQuestionConfidence = 'high' | 'medium' | 'low';
 export type ECOSProjectQuestionStatus =
@@ -66,37 +73,25 @@ export class ECOSProjectQuestionError extends Error {
   }
 }
 
-export type ECOSProjectReferenceMismatch = Readonly<{
-  selectedProjectIdentifier: string;
-  referencedProjectIdentifier: string;
-}>;
-
-export function findECOSProjectReferenceMismatch(
-  projectName: string,
-  question: string,
-): ECOSProjectReferenceMismatch | null {
-  const selectedIdentifiers = projectIdentifiers(projectName);
-  if (selectedIdentifiers.length === 0) return null;
-  const selected = new Set(selectedIdentifiers);
-  const referencedProjectIdentifier = projectIdentifiers(question).find(identifier => {
-    if (selected.has(identifier)) return false;
-    const numericIdentifier = Number(identifier);
-    return numericIdentifier < 1900 || numericIdentifier > 2099;
-  });
-  return referencedProjectIdentifier ? Object.freeze({
-    selectedProjectIdentifier: selectedIdentifiers[0],
-    referencedProjectIdentifier,
-  }) : null;
-}
-
+/**
+ * knownProjectNames: the names of the signed-in user's unarchived projects. With
+ * them, a number is refused only when it is another project's number (and not a
+ * measurement or drawing reference). Without them the stricter pre-Q20 check
+ * applies unchanged.
+ */
 export function ecosProjectReferenceMismatchMessage(
   projectName: string,
   question: string,
+  knownProjectNames?: readonly string[] | null,
 ): string | null {
-  const mismatch = findECOSProjectReferenceMismatch(projectName, question);
+  const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames);
   return mismatch
-    ? `Project ${mismatch.selectedProjectIdentifier} is selected, but this question names ${mismatch.referencedProjectIdentifier}. Select project ${mismatch.referencedProjectIdentifier} above, then ask again.`
+    ? projectReferenceMismatchText(mismatch.selectedProjectIdentifier, mismatch.referencedProjectIdentifier)
     : null;
+}
+
+function projectReferenceMismatchText(selectedProjectIdentifier: string, referencedProjectIdentifier: string) {
+  return `Project ${selectedProjectIdentifier} is selected, but this question names ${referencedProjectIdentifier}. Select project ${referencedProjectIdentifier} above, then ask again.`;
 }
 
 export async function askECOSProjectQuestion({
@@ -106,11 +101,14 @@ export async function askECOSProjectQuestion({
   question,
   conversationId,
   priorTurnId,
+  knownProjectNames,
 }: ECOSConversationRequest & {
   client: SupabaseClient | null;
   projectId: string | null;
   projectName: string;
   question: string;
+  /** Checked here only; the server reads its own project list and never receives this. */
+  knownProjectNames?: readonly string[] | null;
 }): Promise<ECOSProjectQuestionAnswer> {
   const cleanQuestion = question.replace(/\s+/g, ' ').trim();
   const cleanProjectName = projectName.trim();
@@ -142,7 +140,7 @@ export async function askECOSProjectQuestion({
       'Shorten the question to 1,000 characters or fewer.',
     );
   }
-  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion);
+  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion, knownProjectNames);
   if (projectMismatchMessage) {
     throw new ECOSProjectQuestionError('project_reference_mismatch', projectMismatchMessage);
   }
@@ -176,7 +174,7 @@ export async function askECOSProjectQuestion({
     const diagnostics = parseECOSQuestionDiagnostics(body?.diagnostics);
     throw new ECOSProjectQuestionError(
       code,
-      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion),
+      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, knownProjectNames, body),
       diagnostics?.traceId || null,
     );
   }
@@ -354,6 +352,8 @@ function projectQuestionErrorMessage(
   code: string,
   projectName: string,
   question: string,
+  knownProjectNames: readonly string[] | null | undefined,
+  body: Record<string, unknown> | null,
 ) {
   if (code.startsWith('conversation_') || code === 'prior_turn_id_invalid') {
     return 'ECOS could not recover the prior question for this project. Please ask again using the full question.';
@@ -381,7 +381,13 @@ function projectQuestionErrorMessage(
   }
   if (status === 409 || code === 'question_in_progress') {
     if (code === 'project_reference_mismatch') {
-      return ecosProjectReferenceMismatchMessage(projectName, question) ||
+      // The server names the numbers it matched against its own project list.
+      const selectedIdentifier = requiredText(body?.selectedProjectIdentifier);
+      const referencedIdentifier = requiredText(body?.referencedProjectIdentifier);
+      if (/^\d{3,6}$/.test(selectedIdentifier) && /^\d{3,6}$/.test(referencedIdentifier)) {
+        return projectReferenceMismatchText(selectedIdentifier, referencedIdentifier);
+      }
+      return ecosProjectReferenceMismatchMessage(projectName, question, knownProjectNames) ||
         'This question names a different project. Select the correct project above, then ask again.';
     }
     return 'ECOS is already reviewing that question. Wait a moment, then retry.';
@@ -408,10 +414,6 @@ function projectQuestionErrorMessage(
     return 'Could not reach Ask ECOS. Check the connection and try again.';
   }
   return 'Ask ECOS could not complete the question. Try again shortly.';
-}
-
-function projectIdentifiers(value: string): string[] {
-  return [...new Set(value.match(/\b\d{4,6}\b/g) || [])];
 }
 
 function invalidResponse() {

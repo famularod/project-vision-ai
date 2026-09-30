@@ -596,7 +596,12 @@ function DesktopPageData({
         ownerKey={auth.userEmail || ''}
         projectId={selectedProjectRecord?.id || null}
         projectName={selectedProjectRecord?.name || selectedProject}
-        onAsk={auth.askProjectQuestion}
+        // Unarchived projects, so Ask ECOS refuses a number only when it names
+        // one of them (owner answer Q20; audit A9 pass 1 #2).
+        onAsk={input => auth.askProjectQuestion({
+          ...input,
+          knownProjectNames: snapshot.projects.map(project => project.name),
+        })}
       />
     );
   }

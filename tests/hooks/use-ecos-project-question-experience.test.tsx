@@ -180,3 +180,20 @@ describe('askFor (a Talk document match asked again in Ask ECOS, audit A9 pass 1
     alert.mockRestore();
   });
 });
+
+it('checks each question against the projects the user can pick (owner answer Q20, audit A9 pass 1 #2)', async () => {
+  askMock.mockResolvedValue({ answer: 'The footings use 4000 psi concrete.' } as never);
+  const { result } = renderHook(() => useECOSProjectQuestionExperience({
+    contextualProjectName: '2321 Compliance Project',
+    projectRecords: [
+      { id: 'p2321', name: '2321 Compliance Project' },
+      { id: 'p2375', name: '2375 Compliance Project' },
+    ] as never,
+    candidateProjects: [' 2321 Compliance Project ', '2375 Compliance Project', '2375 Compliance Project', ''],
+    onOpenEvidence: jest.fn(),
+  }));
+  await start(result);
+  expect(askMock).toHaveBeenCalledTimes(1);
+  expect(askMock.mock.calls[0][0]).toMatchObject({ projectId: 'p2321', question });
+  expect(askMock.mock.calls[0][0].knownProjectNames).toEqual(['2321 Compliance Project', '2375 Compliance Project']);
+});

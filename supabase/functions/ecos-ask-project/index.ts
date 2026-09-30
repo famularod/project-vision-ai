@@ -30,6 +30,11 @@ import { buildECOSDrawingEvidencePassages } from "../_shared/ecos-drawing-eviden
 import { ecosHasDecisiveShadowPageEvidence } from "../_shared/ecos-shadow-page-selection.ts";
 import { isECOSDrawingCategory } from "../_shared/ecos-document-category.ts";
 import {
+  ecosQuestionMayNameAProject,
+  findECOSProjectReferenceMismatch,
+  loadECOSKnownProjectNames,
+} from "../_shared/ecos-project-reference.ts";
+import {
   eligibleECOSLegacyPageDocumentIds,
   filterECOSLegacyPageContextRows,
   loadECOSCurrentHostedPageContext,
@@ -407,9 +412,33 @@ Deno.serve(async (request) => {
     ) {
       return json({ error: "shadow_validation_forbidden" }, 403, corsHeaders);
     }
-    const projectReferenceMismatch = findProjectReferenceMismatch(
+    // Owner answer Q20 (30 Sep 2026; audit A9 pass 1 #2): a number is refused
+    // only when it is another unarchived project's number. The list comes from
+    // the database through the same signed-in client and scope that authorized
+    // the selected project, never from the request; if it cannot be read in
+    // full, the stricter pre-Q20 check applies.
+    const questionMayNameAProject = ecosQuestionMayNameAProject(question);
+    const knownProjectNames = questionMayNameAProject
+      ? await loadECOSKnownProjectNames({
+        projectId,
+        readUnarchivedProjects: (limit) =>
+          supabase
+            .from("projects")
+            .select("id,name", { count: "exact" })
+            .eq("archived", false)
+            .limit(limit),
+      })
+      : null;
+    if (questionMayNameAProject && !knownProjectNames) {
+      console.warn(JSON.stringify({
+        event: "ecos_project_reference_list_unavailable",
+        traceId: traceClock.traceId,
+      }));
+    }
+    const projectReferenceMismatch = findECOSProjectReferenceMismatch(
       projectName,
       question,
+      knownProjectNames,
     );
     if (projectReferenceMismatch) {
       return await tracedResponse({
@@ -3845,24 +3874,6 @@ function boundedSheetAssurance(
 
 function boundedNormalizedBounds(value: unknown) {
   return strictNormalizedBounds(value);
-}
-
-function findProjectReferenceMismatch(projectName: string, question: string) {
-  const selectedIdentifiers = projectName.match(/\b\d{4,6}\b/g) || [];
-  if (selectedIdentifiers.length === 0) return null;
-  const selected = new Set(selectedIdentifiers);
-  const referencedProjectIdentifier = (question.match(/\b\d{4,6}\b/g) || [])
-    .find((identifier) => {
-      if (selected.has(identifier)) return false;
-      const numericIdentifier = Number(identifier);
-      return numericIdentifier < 1900 || numericIdentifier > 2099;
-    });
-  return referencedProjectIdentifier
-    ? {
-      selectedProjectIdentifier: selectedIdentifiers[0],
-      referencedProjectIdentifier,
-    }
-    : null;
 }
 
 async function sha256Hex(value: Uint8Array) {

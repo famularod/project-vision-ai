@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   askECOSProjectQuestion,
   ECOS_PROJECT_QUESTION_SCHEMA_VERSION,
@@ -5,6 +7,7 @@ import {
   findECOSProjectReferenceMismatch,
   parseECOSProjectQuestionAnswer,
 } from '../../services/ECOSProjectQuestion';
+import { ECOS_PROJECT_REFERENCE_VECTORS } from '../../supabase/functions/_shared/ecos-project-reference-test-vectors';
 
 jest.mock('expo-crypto', () => ({
   randomUUID: jest.fn(() => '55555555-5555-4555-8555-555555555555'),
@@ -197,6 +200,7 @@ describe('ECOS project question contract', () => {
       projectId: 'project-2321',
       projectName: '2321 Compliance Project',
       question: 'How thick is the new concrete on the north side of 2375?',
+      knownProjectNames: OWNER_PROJECTS,
     })).rejects.toMatchObject({
       code: 'project_reference_mismatch',
       message: 'Project 2321 is selected, but this question names 2375. Select project 2375 above, then ask again.',
@@ -209,6 +213,7 @@ describe('ECOS project question contract', () => {
     expect(findECOSProjectReferenceMismatch(
       '2321 Compliance Project',
       'What work is scheduled at 2321 in 2026?',
+      OWNER_PROJECTS,
     )).toBeNull();
   });
 
@@ -276,6 +281,137 @@ describe('ECOS project question contract', () => {
       projectName: '2375 Compliance Project',
       question: 'How many square feet is Canopy A?',
     })).rejects.toMatchObject({ code, message });
+  });
+});
+
+// Owner answer Q20 (30 Sep 2026; audit A9 pass 1 #2): Ask ECOS refused ordinary
+// questions ("4000 psi", "room 1105") when the selected project's name had a
+// number. A number is now refused only when it is another known project's number.
+const OWNER_PROJECTS = ['2321 Compliance Project', '2375 Compliance Project'];
+
+describe('Ask ECOS wrong-project guard (owner answer Q20)', () => {
+  const signedInClient = (invoke: jest.Mock) => ({
+    auth: { getSession: jest.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) },
+    functions: { invoke },
+  }) as never;
+  const answeringInvoke = () => jest.fn().mockImplementation(async (_name, { body }) => ({
+    data: {
+      ...answerPayload(),
+      projectId: body.projectId,
+      projectName: body.projectName,
+      question: body.question,
+      diagnostics: { ...diagnostics(), clientRequestId: body.clientRequestId, clientSurface: body.clientSurface },
+    },
+    error: null,
+    response: null,
+  }));
+
+  it.each(ECOS_PROJECT_REFERENCE_VECTORS.map(vector => [vector.name, vector] as const))('%s', (_name, vector) => {
+    expect(findECOSProjectReferenceMismatch(
+      vector.projectName,
+      vector.question,
+      vector.knownProjectNames,
+    )?.referencedProjectIdentifier ?? null).toBe(vector.refused);
+  });
+
+  it.each([
+    'What strength is the 4000 psi concrete at the footings?',
+    'What finish is scheduled for room 1105?',
+    'Which sealant does section 079200 require?',
+    'Where is the 12000 BTU split unit mounted?',
+    'What is at elevation 1250 on the east wall?',
+  ])('asks "%s" with 2321 selected instead of refusing it', async question => {
+    const invoke = answeringInvoke();
+    const answer = await askECOSProjectQuestion({
+      client: signedInClient(invoke),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question,
+      knownProjectNames: OWNER_PROJECTS,
+    });
+    expect(answer.question).toBe(question);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    // The server reads its own project list; the app never sends one.
+    expect(invoke.mock.calls[0][1].body).not.toHaveProperty('knownProjectNames');
+  });
+
+  it('refuses the known project named without a unit before any request', async () => {
+    const invoke = jest.fn();
+    await expect(askECOSProjectQuestion({
+      client: signedInClient(invoke),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question: 'Is the slab at 2375 ready for inspection?',
+      knownProjectNames: OWNER_PROJECTS,
+    })).rejects.toMatchObject({
+      code: 'project_reference_mismatch',
+      message: 'Project 2321 is selected, but this question names 2375. Select project 2375 above, then ask again.',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stricter check for a caller without a project list', async () => {
+    const invoke = jest.fn();
+    await expect(askECOSProjectQuestion({
+      client: signedInClient(invoke),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question: 'What strength is the 4000 psi concrete at the footings?',
+    })).rejects.toMatchObject({
+      code: 'project_reference_mismatch',
+      message: 'Project 2321 is selected, but this question names 4000. Select project 4000 above, then ask again.',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('explains a server 409 with the project numbers the server matched', async () => {
+    const response = new Response(JSON.stringify({
+      error: 'project_reference_mismatch',
+      selectedProjectIdentifier: '2321',
+      referencedProjectIdentifier: '2450',
+    }), { status: 409, headers: { 'content-type': 'application/json' } });
+    await expect(askECOSProjectQuestion({
+      client: signedInClient(jest.fn().mockResolvedValue({ data: null, error: new Error('request failed'), response })),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      // 2450 is a project the app had not loaded yet; the server knew it.
+      question: 'What is left at 2450?',
+      knownProjectNames: OWNER_PROJECTS,
+    })).rejects.toMatchObject({
+      code: 'project_reference_mismatch',
+      message: 'Project 2321 is selected, but this question names 2450. Select project 2450 above, then ask again.',
+    });
+  });
+
+  it('explains a server 409 without project numbers in general terms', async () => {
+    const response = new Response(JSON.stringify({ error: 'project_reference_mismatch' }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    });
+    await expect(askECOSProjectQuestion({
+      client: signedInClient(jest.fn().mockResolvedValue({ data: null, error: new Error('request failed'), response })),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question: 'What is left at 2450?',
+      knownProjectNames: OWNER_PROJECTS,
+    })).rejects.toMatchObject({
+      code: 'project_reference_mismatch',
+      message: 'This question names a different project. Select the correct project above, then ask again.',
+    });
+  });
+
+  it('the edge function applies the same shared rule to its own unarchived project list', () => {
+    const edge = readFileSync(join(__dirname, '../../supabase/functions/ecos-ask-project/index.ts'), 'utf8');
+    expect(edge).toMatch(/from "\.\.\/_shared\/ecos-project-reference\.ts"/);
+    expect(edge).not.toMatch(/function findProjectReferenceMismatch/);
+    expect(edge).not.toMatch(/\\d\{4,6\}/);
+    const wiring = edge.slice(edge.indexOf('const questionMayNameAProject'), edge.indexOf('if (projectReferenceMismatch)'));
+    // Same signed-in client that authorized the selected project; never the request.
+    expect(wiring).toMatch(/loadECOSKnownProjectNames\(\{\s*projectId,\s*readUnarchivedProjects: \(limit\) =>\s*supabase\s*\.from\("projects"\)/);
+    expect(wiring).toContain('.eq("archived", false)');
+    expect(wiring).toMatch(/findECOSProjectReferenceMismatch\(\s*projectName,\s*question,\s*knownProjectNames,\s*\)/);
+    expect(wiring).not.toMatch(/body\./);
+    expect(edge.indexOf('loadAuthorizedProject(supabase, projectId)')).toBeLessThan(edge.indexOf('const questionMayNameAProject'));
   });
 });
 

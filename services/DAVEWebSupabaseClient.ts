@@ -291,6 +291,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       question: string;
       conversationId?: string;
       priorTurnId?: string;
+      knownProjectNames?: readonly string[];
     }) {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       await requireAuthorizedOwnerCached();
