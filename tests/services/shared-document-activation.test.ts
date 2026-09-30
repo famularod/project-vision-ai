@@ -6,6 +6,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { scheduleDocumentIsCurrentEverywhere } from '../../services/PIEScheduleReconciliation';
 import {
   activateSharedReferenceDocument,
   phoneScheduleActivationTarget,
@@ -15,7 +16,13 @@ import {
   scheduleTasksHiddenWarning,
 } from '../../services/SharedDocumentActivation';
 
-const client = {} as SupabaseClient;
+// Owner answer Q15 (30 Sep 2026): the phone asks the cloud how it retires
+// schedules before it asks the owner. The cases in this file were written for
+// the database before that migration, which has no such call: this client
+// answers as that database does (PGRST202), so they keep their meaning.
+const client = {
+  rpc: jest.fn(async () => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function' } })),
+} as unknown as SupabaseClient;
 const schedule = (id: string, projectNames: string[], extra: Partial<ReferenceDocument> = {}) => ({
   id,
   name: id,
@@ -180,6 +187,8 @@ describe('the Set Active confirmation says what each other project shows next (a
       referenceDocumentsCurrentRef: { current: phone }, currentReferenceActivationIdsRef: { current: new Set<string>() },
       buildECOSDocumentReadiness: () => ({ canMakeCurrent: true, detail: '' }), canonicalReferenceCategory: () => 'schedule',
       activateSharedReferenceDocument, scheduleRetirementMessage, getSupabaseClient: () => client,
+      // Q15: Set Active is offered again on a combined schedule retired for some of its projects.
+      scheduleDocumentIsCurrentEverywhere,
       listReferenceDocuments: async () => ({ ok: true, stubbed: false, data: cloud }), normalizeReferenceDocuments: (rows: unknown) => rows,
       Alert: { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => {
         alerts.push({ title, message });

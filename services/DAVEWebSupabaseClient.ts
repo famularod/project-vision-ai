@@ -49,6 +49,7 @@ import {
   activateECOSCurrentReferenceDocument,
   enqueueECOSHostedIndex,
   loadECOSHostedIndexStatuses,
+  type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
 import { askECOSProjectQuestion } from './ECOSProjectQuestion';
 import {
@@ -1088,10 +1089,11 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async setAuthorizedCurrentSchedule(
       selected: ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null },
       scheduleDocuments: readonly (ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null })[],
-    ): Promise<void> {
+    ): Promise<ScheduleRetirementScope> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
-      await setAuthorizedCurrentReferenceDocument({
+      // The activation's response says how the cloud retired other schedules (owner answer Q15).
+      return setAuthorizedCurrentReferenceDocument({
         client,
         ownerId,
         selected,
@@ -1697,7 +1699,7 @@ async function setAuthorizedCurrentReferenceDocument({
   selected: DAVEWebRevisionedReferenceDocument;
   documents: readonly DAVEWebRevisionedReferenceDocument[];
   subject: 'schedule' | 'document';
-}): Promise<void> {
+}): Promise<ScheduleRetirementScope> {
   if (
     !selected.cloudUpdatedAt ||
     !documents.some(document => document.id === selected.id && document.cloudUpdatedAt === selected.cloudUpdatedAt)
@@ -1713,7 +1715,7 @@ async function setAuthorizedCurrentReferenceDocument({
     documentId: selected.id,
     expectedUpdatedAt: selected.cloudUpdatedAt,
   });
-  if (result.status === 'activated') return;
+  if (result.status === 'activated') return result.scheduleRetirementScope ?? 'schedule';
   if (result.status === 'not_prepared') {
     throw new DAVEWebDocumentMutationError(
       'write_failed',

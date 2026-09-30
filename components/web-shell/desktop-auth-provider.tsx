@@ -39,6 +39,7 @@ import type {
   ECOSDocumentProofClaim,
 } from '../../services/ECOSDocumentProofAuthority';
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
+import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
 import {
   initialDAVEWebFreshnessState,
   recordDAVEWebRefreshFailure,
@@ -106,7 +107,8 @@ type DesktopAuthContextValue = Readonly<{
     file?: Blob,
     onProgress?: (fraction: number) => void,
   ) => Promise<void>;
-  setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<void>;
+  /** Resolves with how the cloud retired other schedules (owner answer Q15). */
+  setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<ScheduleRetirementScope>;
   setCurrentDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   updateDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   enqueueDocumentPreparation: (documentId: string) => Promise<void>;
@@ -686,10 +688,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );
-    await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
+    const scope = await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
     const collections = ['reference_documents'] as const;
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
+    return scope;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
 
   const setCurrentDocument = useCallback(async (document: DAVEWebReferenceDocument) => {

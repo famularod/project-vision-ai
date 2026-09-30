@@ -1081,16 +1081,40 @@ describe('DAVE browser Supabase gateway', () => {
       });
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
+    // Owner answer Q15: resolves with how the cloud retired other schedules;
+    // this response has no scope, as before that migration.
     await expect(gateway.setAuthorizedCurrentSchedule(
       selected,
       [previousA, previousB, selected],
-    )).resolves.toBeUndefined();
+    )).resolves.toBe('schedule');
 
     expect(fixture.rpc).toHaveBeenCalledWith('ecos_activate_current_reference_document', {
       p_document_id: selected.id,
       p_expected_updated_at: 'revision-c',
     });
     expect(fixture.from).not.toHaveBeenCalledWith('reference_documents');
+  });
+
+  // Owner answer Q15 (30 Sep 2026): after the migration the response says a
+  // combined schedule stayed current for its other projects.
+  test('passes the cloud\'s per-project schedule retirement to the web', async () => {
+    const selected = referenceDocument('schedule-c', false, 'revision-c');
+    const fixture = mutationClient(() => mutationQuery({ data: null, error: null }));
+    fixture.rpc
+      .mockResolvedValueOnce({ data: true, error: null, status: 200 })
+      .mockResolvedValueOnce({
+        data: {
+          document_id: selected.id,
+          updated_at: '2026-09-30T12:00:00.000Z',
+          changed_count: 2,
+          schedule_retirement_scope: 'project',
+        },
+        error: null,
+        status: 200,
+      });
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await expect(gateway.setAuthorizedCurrentSchedule(selected, [selected])).resolves.toBe('project');
   });
 
   test('fails closed when ECOS has not prepared the drawing revision', async () => {

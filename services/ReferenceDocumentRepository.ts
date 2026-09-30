@@ -63,6 +63,8 @@ export function normalizeReferenceDocument(
     projectNames: Array.isArray(value.projectNames)
       ? value.projectNames.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
       : [],
+    // Owner answer Q15: kept, or every refresh would drop the cloud's per-project retirement.
+    ...retiredForProjectNames(value.retiredForProjectNames),
     importBatchId: stringOrNull(value.importBatchId),
     storagePath: stringOrNull(value.storagePath),
     sourceProvider:
@@ -235,6 +237,14 @@ export async function prepareReferenceDocumentForCloud(
 
 function stringOrNull(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** Present only when non-empty, so documents without it normalize exactly as before. */
+function retiredForProjectNames(value: unknown): { retiredForProjectNames?: string[] } {
+  const names = Array.isArray(value)
+    ? value.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+    : [];
+  return names.length > 0 ? { retiredForProjectNames: names } : {};
 }
 
 function finiteNumberOrNull(value: unknown) {

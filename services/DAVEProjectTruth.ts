@@ -6,7 +6,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import { scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
@@ -237,6 +237,8 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     // current-truth fingerprint that governs their own freshness.
     if (normalizedKey(document.category) === 'report') return false;
     if (!document.isCurrent) return false;
+    // A combined schedule retired for this project is current only for its others (owner answer Q15).
+    if (scheduleDocumentRetiredForProject(document, input.projectName)) return false;
     const explicitProjectId = clean(document.projectId);
     const explicitProjectName = clean(document.projectName);
     const explicitProjectNames = (document.projectNames ?? []).map(clean).filter(Boolean);

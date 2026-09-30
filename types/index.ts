@@ -245,6 +245,13 @@ export type ReferenceDocument = {
   projectName?: string | null;
   /** Projects explicitly covered when one shared document applies to more than one project. */
   projectNames?: string[];
+  /**
+   * Projects a current combined schedule no longer speaks for, because a
+   * schedule for them was made current (owner answer Q15, 30 Sep 2026).
+   * Written and cleared only by the cloud's activation call; the project
+   * list itself is never trimmed.
+   */
+  retiredForProjectNames?: string[];
   /** Immutable identity of the import review that created this document. */
   importBatchId?: string | null;
   /** Protected cloud object path. Cloud-only documents may not have a local uri. */

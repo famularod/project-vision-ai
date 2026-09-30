@@ -218,8 +218,12 @@ function mergeCloudReferenceDocumentAuthority(
   metadataMerged: ReferenceDocument,
   cloud: ReferenceDocument,
 ): ReferenceDocument {
+  // Part of "which schedule is current", written and cleared only by the
+  // activation call (owner answer Q15): the cloud's list, or none.
+  const { retiredForProjectNames: _deviceRetirement, ...merged } = metadataMerged;
   return {
-    ...metadataMerged,
+    ...merged,
+    ...(cloud.retiredForProjectNames?.length ? { retiredForProjectNames: cloud.retiredForProjectNames } : {}),
     isCurrent: cloud.isCurrent,
     webContentReview: cloud.webContentReview,
     webReport: cloud.webReport,
@@ -266,6 +270,7 @@ const REFERENCE_DOCUMENT_DEVICE_OR_CLOUD_AUTHORITY_KEYS = new Set([
   'uri',
   'cloudUpdatedAt',
   'isCurrent',
+  'retiredForProjectNames',
   'webContentReview',
   'webReport',
   'extractedText',

@@ -267,12 +267,15 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // so this device showed the old schedule or none until its next refresh
       // (whole-app audit A5 pass 3 F1, 30 Sep 2026). A changed current flag on
       // a schedule this device holds is re-read from the cloud instead: false
-      // here also means "refresh this collection".
+      // here also means "refresh this collection". So does a change to the
+      // projects a combined schedule is retired for, which leaves its flag
+      // as it was (owner answer Q15, 30 Sep 2026).
       const localDocument = state.documents.find(document =>
         normalizedKey(document.id) === normalizedKey(cloudDocument.id));
       if (
         localDocument &&
-        Boolean(localDocument.isCurrent) !== Boolean(cloudDocument.isCurrent) &&
+        (Boolean(localDocument.isCurrent) !== Boolean(cloudDocument.isCurrent) ||
+          retirementKey(localDocument) !== retirementKey(cloudDocument)) &&
         (scheduleDocumentIsScheduleLike(localDocument) || scheduleDocumentIsScheduleLike(cloudDocument))
       ) return false;
       options.commitDocuments(reconcileCurrentScheduleDocuments(
@@ -346,6 +349,11 @@ function queuedProjectTouches(item: SyncQueueItem, keys: Set<string>): boolean {
 
 function normalizedKey(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function retirementKey(document: { retiredForProjectNames?: readonly string[] }): string {
+  const names: unknown[] = Array.isArray(document.retiredForProjectNames) ? [...document.retiredForProjectNames] : [];
+  return names.map(normalizedKey).filter(Boolean).sort().join('|');
 }
 
 function toRecord(value: unknown): Record<string, unknown> {

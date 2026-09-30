@@ -322,9 +322,13 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
   const id = readString(data.id) ?? readString(row.id);
   const name = readString(data.name) ?? readString(row.name);
   if (!id || !name) return null;
+  const { retiredForProjectNames: _retired, ...shared } = data as Partial<ReferenceDocument>;
+  const retiredForProjectNames = readStringArray(data.retiredForProjectNames);
 
   return {
-    ...(data as Partial<ReferenceDocument>),
+    ...shared,
+    // A combined schedule retired for some of its projects (owner answer Q15, 30 Sep 2026).
+    ...(retiredForProjectNames.length ? { retiredForProjectNames } : {}),
     id,
     name,
     originalFileName: readString(data.originalFileName) ?? name,

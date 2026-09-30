@@ -104,6 +104,8 @@ describe('mobile project-document continuity contract', () => {
         scheduleTasksHiddenWarning: activation.scheduleTasksHiddenWarning,
         scheduleTasksHiddenByActivation: activation.scheduleTasksHiddenByActivation,
         phoneScheduleActivationTarget: activation.phoneScheduleActivationTarget,
+        // Owner answer Q15: the phone asks how the cloud retires schedules first; this is the database before that migration.
+        loadECOSScheduleRetirementScope: jest.fn(async () => 'schedule'), getSupabaseClient: () => null,
         activateReferenceDocument: jest.fn(async () => false),
         ensureVerifiedProjectDocumentBytes: jest.fn(async (verified: object) => ({ ...verified, localUri: 'file:///verified/alpha-rev-5.pdf' })),
         prepareScheduleImportFromAsset: jest.fn(async () => ({ id: 'batch' })),

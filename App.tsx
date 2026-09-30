@@ -310,7 +310,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, phoneScheduleActivationTarget, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, scheduleDocumentsAfterActivation, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -601,7 +601,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
-  scheduleDocumentIsScheduleLike,
+  scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -10960,8 +10960,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   async function activateReferenceDocument(documentId: string): Promise<boolean> {
     const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-    if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
-      return Boolean(target?.isCurrent);
+    if (!target || scheduleDocumentIsCurrentEverywhere(target) || currentReferenceActivationIdsRef.current.has(documentId)) {
+      return Boolean(target && scheduleDocumentIsCurrentEverywhere(target)); // a combined schedule retired for some projects can be made current again (Q15)
     }
     // A schedule has no ECOS preparation to wait for (audit A5 F4).
     const readiness = buildECOSDocumentReadiness(target);
@@ -11275,8 +11275,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (!document || document.category !== 'Schedule') return;
     // Asked before either path: a schedule with no imported tasks hides the project's on every device (whole-app audit A8 pass 1 F6, 30 Sep 2026).
     const projectName = projects.find(name => authorityProjectId(name) === document.projectId) || null;
+    const retirement = (await loadECOSScheduleRetirementScope(getSupabaseClient())) ?? 'schedule'; // as the cloud retires (owner answer Q15); unknown offline: whole schedules, as before it
     const warning = hidingTasksConfirmed ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
-      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems));
+      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems, retirement));
     if (warning) return Alert.alert(warning.title, warning.message, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
@@ -11360,20 +11361,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // A schedule already shared is made current by the cloud; a flag flipped
     // here never reached it (audit A5 F4).
     if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;
-    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current : [
-      ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
-        ? []
-        : [selectedReferenceDocument]),
-      ...referenceDocuments,
-    ].map(item => ({
-      ...item,
-      isCurrent: item.category === 'Schedules'
-        ? item.id === selectedReferenceDocument.id
-        : item.isCurrent,
-      updatedAt: item.category === 'Schedules'
-        ? referenceUpdatedAt
-        : item.updatedAt,
-    }));
+    // By the cloud's rule, not every schedule of every project retired (owner answer Q15).
+    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current
+      : scheduleDocumentsAfterActivation(selectedReferenceDocument, referenceDocuments, retirement, referenceUpdatedAt);
 
     if (!alreadyShared) {
       markReferenceDocumentsAuthorityReady(true);
@@ -11405,7 +11395,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     referenceDocumentsCurrentRef.current = nextReferenceDocuments;
     const queueResults = await Promise.allSettled(
       nextReferenceDocuments
-        .filter(item => item.category === 'Schedules')
+        .filter(item => !referenceDocuments.includes(item))
         .map(document => queueReferenceDocumentRecord(document)),
     );
     if (queueResults.some(result => result.status === 'rejected')) {
@@ -19749,7 +19739,7 @@ function ScheduleScreen({
                     <Text style={styles.rowSub}>
                       Imported {formatSavedTime(document.importedAt)} • {isScreenshot
                         ? 'Supporting message screenshot'
-                        : document.isCurrent ? 'Active schedule' : 'Inactive'}
+                        : document.isCurrent ? scheduleDocumentCurrentLabel(document, 'Active schedule') : 'Inactive'}
                     </Text>
                   </View>
 
@@ -19762,7 +19752,7 @@ function ScheduleScreen({
                     >
                       <Text style={styles.compactInlineActionText}>Open</Text>
                     </TouchableOpacity>
-                    {!isScreenshot && !document.isCurrent ? (
+                    {!isScreenshot && !scheduleDocumentIsCurrentEverywhere(document) ? (
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}

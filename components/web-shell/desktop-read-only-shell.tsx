@@ -47,7 +47,12 @@ import {
 } from '../../services/dave-project-schedule-rollup';
 import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
-import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
+import {
+  scheduleDocumentCurrentLabel,
+  scheduleDocumentIsCurrentEverywhere,
+  scheduleDocumentIsScheduleLike,
+} from '../../services/PIEScheduleReconciliation';
+import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -3898,12 +3903,16 @@ function DocumentManagementWorkspace({
     setUploading(true);
     setNotice(null);
     try {
-      if (isSchedule) await auth.setCurrentSchedule(document);
-      else await auth.setCurrentDocument(document);
+      // Before the Q15 migration the cloud retires a combined schedule for
+      // every project; after it the schedule stays current for its others,
+      // which the activation's response says and the notice names.
+      const documentsBefore = auth.snapshot?.referenceDocuments ?? [];
+      const scope = isSchedule ? await auth.setCurrentSchedule(document) : null;
+      if (!isSchedule) await auth.setCurrentDocument(document);
       setNotice({
         tone: 'good',
         text: isSchedule
-          ? `“${document.name}” is now the current schedule. The prior schedule remains available as history.`
+          ? scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')
           : `“${document.name}” is now current. Vitruvius will use it only after the hosted index confirms this exact source, project, and revision. Prior revisions remain available as history.`,
       });
     } catch (error) {
@@ -4583,7 +4592,8 @@ function DocumentManagementWorkspace({
                   : openDeleteCandidate
               }
               onMakeCurrent={
-                !selectedDocument.isCurrent
+                // A combined schedule retired for some of its projects can be made current again (owner answer Q15).
+                !scheduleDocumentIsCurrentEverywhere(selectedDocument)
                   ? document => { void makeCurrent(document); }
                   : undefined
               }
@@ -6564,7 +6574,7 @@ function documentStatusLabel(document: DAVEWebReferenceDocument): string {
     return buildECOSDocumentReadiness(document).label;
   }
   const kind = documentStatusKind(document);
-  if (kind === 'current') return 'Current';
+  if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current');
   if (kind === 'prior') return 'Prior version';
   return buildECOSDocumentReadiness(document).label;
 }

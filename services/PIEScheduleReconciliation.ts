@@ -287,7 +287,10 @@ function selectLatestImportedScheduleBatches(
  * schedule hid the first project's whole schedule (whole-app audit A5); then
  * a schedule that shared any project with a newer one lost every project, so
  * a newer single-project schedule retired a combined master for the other
- * project too (A5 pass 2). Now each project picks its own.
+ * project too (A5 pass 2). Now each project picks its own. A project a
+ * schedule is retired for (retiredForProjectNames, owner answer Q15) is not
+ * one it competes for, so a rollback to an older single-project schedule wins
+ * there while the combined schedule stays current for its other projects.
  */
 export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
   documents: readonly T[],
@@ -298,11 +301,51 @@ export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
     .sort(compareScheduleDocumentAuthority)
     .forEach(document => {
       const scope = scheduleDocumentScope(document);
-      (scope.length > 0 ? scope : ['']).forEach(project => {
+      const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+      (scope.length > 0 ? scope.filter(project => !retired.has(project)) : ['']).forEach(project => {
         if (!current.has(project)) current.set(project, document);
       });
     });
   return current;
+}
+
+/**
+ * The projects a schedule no longer speaks for (owner answer Q15, 30 Sep
+ * 2026): making one project's schedule current leaves a combined schedule
+ * current for its other projects, and the cloud records the chosen
+ * schedule's projects on it. Only names in its own project list count.
+ */
+export function scheduleDocumentRetiredProjectNames(document: ReferenceDocument): string[] {
+  const listed: unknown[] = Array.isArray(document.retiredForProjectNames) ? document.retiredForProjectNames : [];
+  const retired = new Set(listed
+    .filter((name): name is string => typeof name === 'string')
+    .map(normalize)
+    .filter(Boolean));
+  if (retired.size === 0) return [];
+  return scheduleDocumentScopeNames(document).filter(name => retired.has(normalize(name)));
+}
+
+/** Current, and not retired for any of its projects: Make Current has nothing left to do. */
+export function scheduleDocumentIsCurrentEverywhere(document: ReferenceDocument): boolean {
+  return Boolean(document.isCurrent) && scheduleDocumentRetiredProjectNames(document).length === 0;
+}
+
+/** Whether the schedule was retired for this project (Q15). */
+export function scheduleDocumentRetiredForProject(
+  document: ReferenceDocument,
+  projectName: string,
+): boolean {
+  const key = normalize(projectName || '');
+  return Boolean(key) && scheduleDocumentIsScheduleLike(document) &&
+    scheduleDocumentRetiredProjectNames(document).some(name => normalize(name) === key);
+}
+
+/** "Current", or "Current for Beta" for a combined schedule retired for some of its projects. */
+export function scheduleDocumentCurrentLabel(document: ReferenceDocument, label: string): string {
+  const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+  if (retired.size === 0) return label;
+  const remaining = scheduleDocumentScopeNames(document).filter(name => !retired.has(normalize(name)));
+  return remaining.length > 0 ? `${label} for ${remaining.join(', ')}` : label;
 }
 
 /** The current schedule documents that drive intelligence: each is current for at least one project. */
@@ -323,6 +366,15 @@ function scheduleDocumentScope(document: ReferenceDocument): string[] {
   if (names.length > 0) return [...new Set(names)];
   const single = normalize(document.projectName || '');
   return single ? [single] : [];
+}
+
+/** scheduleDocumentScope with each project as the document spells it. */
+function scheduleDocumentScopeNames(document: ReferenceDocument): string[] {
+  const listed = (document.projectNames || []).filter(name => typeof name === 'string' && normalize(name));
+  const names = listed.length > 0 ? listed : [document.projectName || ''].filter(name => normalize(name));
+  return names
+    .map(name => name.trim())
+    .filter((name, index, all) => all.findIndex(other => normalize(other) === normalize(name)) === index);
 }
 
 export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
