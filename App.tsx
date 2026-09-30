@@ -13130,9 +13130,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
     projectName: string,
     citation: DAVEAskEvidence,
   ) {
+    // Proof is a child view: the Talk answer stays and returns when it closes.
     if (citation.sourceType === 'document' && citation.documentCitation) {
-      setTalkAnswer(null);
-      void ecosDocumentEvidence.openEvidence(citation);
+      if (ecosDocumentProofClaimFromEvidence(citation)) {
+        void ecosDocumentEvidence.openEvidence(citation);
+        return;
+      }
+      // Talk answers are local; their document matches carry no proof claim (audit A9 pass 1 #3).
+      const question = talkAnswer?.question || '';
+      Alert.alert('Not checked by Ask ECOS', 'Talk found this in a project document, but Ask ECOS has not checked it, so its page cannot open here. Ask the same question in Ask ECOS for checked proof.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Ask in Ask ECOS', onPress: () => { setTalkAnswer(null); ecosProjectQuestion.askFor(projectName, question); } },
+      ]);
       return;
     }
     const intelligence = projectIntelligenceForTalk(projectName);
@@ -14292,7 +14301,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             ) : null}
 
             <DAVEConversationAnswerSheet
-              visible={Boolean(talkAnswer)}
+              visible={Boolean(talkAnswer) && !ecosDocumentEvidence.state}
               projectName={talkAnswer?.projectName || talkProjectName}
               question={talkAnswer?.question || ''}
               answer={talkAnswer?.answer || null}

@@ -1,8 +1,21 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { DAVEAskAnswer, DAVEAskEvidence } from '../services/DAVEAsk';
+import { ecosDocumentProofClaimFromEvidence } from '../services/ECOSDocumentProofAuthority';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+
+export const UNCHECKED_DOCUMENT_SOURCE_LABEL = 'Document match – not checked by Ask ECOS';
+
+/**
+ * Talk answers are local: their document matches carry no project, source hash
+ * or evidence version, so no Ask ECOS proof claim can open them. Only a source
+ * with a full claim is called verified (audit A9 pass 1 #3).
+ */
+export function talkEvidenceTypeLabel(citation: DAVEAskEvidence): string {
+  if (!citation.documentCitation) return citation.sourceType;
+  return ecosDocumentProofClaimFromEvidence(citation) ? 'Verified document source' : UNCHECKED_DOCUMENT_SOURCE_LABEL;
+}
 
 export function DAVEConversationAnswerSheet({
   visible,
@@ -71,9 +84,7 @@ export function DAVEConversationAnswerSheet({
                     {citation.documentCitation && citation.excerpt ? (
                       <Text style={styles.evidenceExcerpt} numberOfLines={3}>{citation.excerpt}</Text>
                     ) : null}
-                    <Text style={styles.evidenceType}>
-                      {citation.documentCitation ? 'Verified document source' : citation.sourceType}
-                    </Text>
+                    <Text style={styles.evidenceType}>{talkEvidenceTypeLabel(citation)}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
                 </TouchableOpacity>

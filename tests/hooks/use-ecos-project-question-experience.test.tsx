@@ -1,4 +1,5 @@
 import { act, renderHook } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { useECOSProjectQuestionExperience } from '../../hooks/use-ecos-project-question-experience';
 import { askECOSProjectQuestion } from '../../services/ECOSProjectQuestion';
 jest.mock('expo-crypto', () => ({ randomUUID: () => '55555555-5555-4555-8555-555555555555' }));
@@ -130,4 +131,52 @@ it('does not reopen a dismissed answer when its request finishes', async () => {
   await act(async () => { sheet(result, 2).onClose(); });
   await act(async () => { pending.resolve({ answer: 'Late answer' } as never); });
   expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });
+});
+
+describe('askFor (a Talk document match asked again in Ask ECOS, audit A9 pass 1 #3)', () => {
+  const records = [{ id: 'one', name: 'Project One' }, { id: 'two', name: 'Project Two' }] as never;
+
+  it('asks the same question for the named project, not the contextual one, and opens the answer', async () => {
+    askMock.mockResolvedValue({ answer: 'Guardrails at every open parking edge' } as never);
+    const { result } = renderHook(() => useECOSProjectQuestionExperience({
+      contextualProjectName: 'Project One', projectRecords: records,
+      candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(),
+    }));
+    await act(async () => { result.current.askFor(' project two ', 'Where are the  guardrails?'); });
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(askMock.mock.calls[0][0]).toMatchObject({
+      projectId: 'two', projectName: 'project two', question: 'Where are the guardrails?',
+    });
+    expect(sheet(result, 2)).toMatchObject({
+      visible: true, projectName: 'project two', question: 'Where are the guardrails?',
+      loading: false, answer: { answer: 'Guardrails at every open parking edge' },
+    });
+  });
+
+  it('asks in the current project when it is already selected', async () => {
+    askMock.mockResolvedValue({ answer: 'Same project' } as never);
+    const { result } = renderHook(() => useECOSProjectQuestionExperience({
+      contextualProjectName: 'Project One', projectRecords: records,
+      candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(),
+    }));
+    await start(result);
+    await act(async () => { result.current.askFor('Project One', 'And the ramp?'); });
+    expect(askMock).toHaveBeenCalledTimes(2);
+    expect(askMock.mock.calls[1][0]).toMatchObject({ projectId: 'one', question: 'And the ramp?' });
+    expect(sheet(result, 2)).toMatchObject({ visible: true, question: 'And the ramp?', answer: { answer: 'Same project' } });
+  });
+
+  it('an unknown project gives the Choose a project message and asks nothing, not even in the selected project', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const { result } = renderHook(() => useECOSProjectQuestionExperience({
+      contextualProjectName: 'Project One', projectRecords: records,
+      candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(),
+    }));
+    await act(async () => { result.current.open(); });
+    await act(async () => { result.current.askFor('Project Nine', 'Where are the guardrails?'); });
+    expect(alert).toHaveBeenCalledWith('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
+    expect(askMock).not.toHaveBeenCalled();
+    expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });
+    alert.mockRestore();
+  });
 });

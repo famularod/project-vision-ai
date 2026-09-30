@@ -22,6 +22,15 @@ type QuestionState = Readonly<{
   error: string | null;
 }>;
 
+function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): string | null {
+  return projectRecords.find(project =>
+    project.name.trim().toLowerCase() === name.trim().toLowerCase(),
+  )?.id?.trim() || null;
+}
+
+const alertChooseProject = () =>
+  Alert.alert('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
+
 export function useECOSProjectQuestionExperience({
   contextualProjectName,
   projectRecords,
@@ -39,15 +48,14 @@ export function useECOSProjectQuestionExperience({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [typedOpen, setTypedOpen] = useState(false);
   const [result, setResult] = useState<QuestionState | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<Readonly<{ projectName: string; question: string }> | null>(null);
   const requestGeneration = useRef(0);
   const dismissResult = useCallback(() => {
     requestGeneration.current += 1;
     setResult(null);
   }, []);
   useEffect(() => () => { requestGeneration.current += 1; }, []);
-  const projectId = useMemo(() => projectRecords.find(project =>
-    project.name.trim().toLowerCase() === projectName.trim().toLowerCase(),
-  )?.id?.trim() || null, [projectName, projectRecords]);
+  const projectId = useMemo(() => projectIdFor(projectRecords, projectName), [projectName, projectRecords]);
   const ownerKey = useNativeWorkspaceOwner();
   const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
   useEffect(() => { dismissResult(); }, [conversation, dismissResult]);
@@ -63,7 +71,7 @@ export function useECOSProjectQuestionExperience({
     const selectedProjectName = projectName.trim();
     const cleanQuestion = question.replace(/\s+/g, ' ').trim();
     if (!selectedProjectName || !projectId) {
-      Alert.alert('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
+      alertChooseProject();
       return;
     }
     setVoiceOpen(false);
@@ -92,6 +100,24 @@ export function useECOSProjectQuestionExperience({
         : current);
     }
   }, [projectId, projectName, conversation]);
+
+  // Runs after the reset effect above, once the named project's conversation exists.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    setPendingQuestion(null);
+    if (pendingQuestion.projectName === projectName) void ask(pendingQuestion.question);
+  }, [ask, pendingQuestion, projectName]);
+
+  /** Asks one question for a named project, e.g. from a Talk document match (audit A9 pass 1 #3). */
+  const askFor = useCallback((name: string, question: string) => {
+    const selectedProjectName = name.trim();
+    if (!selectedProjectName || !projectIdFor(projectRecords, selectedProjectName)) {
+      alertChooseProject();
+      return;
+    }
+    setProjectName(selectedProjectName);
+    setPendingQuestion({ projectName: selectedProjectName, question });
+  }, [projectRecords]);
 
   const sheets = <>
     <DAVEVoiceCaptureSheet
@@ -163,5 +189,5 @@ export function useECOSProjectQuestionExperience({
     dismissResult();
   }, [dismissResult]);
 
-  return { open, close, sheets };
+  return { open, close, askFor, sheets };
 }
