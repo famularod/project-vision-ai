@@ -66,6 +66,7 @@ import {
 } from '../services/SyncService';
 import {
   projectDocumentsStillUploadingNotice,
+  startProjectDocumentUploadRun,
   type ProjectDocumentUploadRetryResult,
 } from '../services/ProjectDocumentUploadRetry';
 import type {
@@ -197,6 +198,9 @@ export function AdminScreen({
   const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [lastFullSyncIssueCount, setLastFullSyncIssueCount] = useState(0);
+  // Read when a sync ends, while the document uploads it started may still run.
+  const failedDocumentCountRef = useRef(failedDocumentCount);
+  failedDocumentCountRef.current = failedDocumentCount;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [conflictReviewVisible, setConflictReviewVisible] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
@@ -650,9 +654,9 @@ export function AdminScreen({
     setAdminActionSummary('Cloud sync tools are available.');
 
     try {
-      // A document's shared record is queued once its file uploads, so the
-      // documents go first (whole-app audit A8 pass 1 F5, 30 Sep 2026).
-      const documentRetry = await withSyncTimeout(onRetryDocumentUploads());
+      // Started first (whole-app audit A8 pass 1 F5), not waited for: a slow
+      // upload kept the field updates from being retried (A8 pass 2 #6).
+      const documentRun = startProjectDocumentUploadRun(onRetryDocumentUploads);
       const updatesToRetry = savedUpdates.filter(
         update => update.status === 'queued' || update.status === 'failed',
       );
@@ -675,7 +679,7 @@ export function AdminScreen({
       const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
       const remainingConflicts = nextSyncStatus.conflicts;
       const recoveryAvailable = nextSyncStatus.recoveryAvailable;
-      const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRetry.remaining;
+      const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRun.remaining(failedDocumentCountRef.current);
       const syncSucceeded =
         unsyncedCount === 0 &&
         remainingConflicts === 0 &&
@@ -714,8 +718,8 @@ export function AdminScreen({
     setAdminActionSummary('Preparing project data…');
 
     try {
-      // Uploaded first, so the shared records the uploads queue go in this sync (whole-app audit A8 pass 1 F5).
-      const documentRetry = await onRetryDocumentUploads();
+      // Started first (whole-app audit A8 pass 1 F5), not waited for: the data sync waited for every upload (A8 pass 2 #6).
+      const documentRun = startProjectDocumentUploadRun(onRetryDocumentUploads);
       const result = await synchronizeLocalData(
         {
           projects: localProjects,
@@ -740,10 +744,11 @@ export function AdminScreen({
       setSyncStatus(nextStatus);
       onApplyCloudRecovery(result.recovered);
       setSyncConflicts(nextConflicts);
+      const documentsRemaining = documentRun.remaining(failedDocumentCountRef.current);
       setLastFullSyncIssueCount(Math.max(
         result.errors.length,
         nextStatus.recoveryAvailable ? 1 : 0,
-      ) + documentRetry.remaining);
+      ) + documentsRemaining);
       const syncMessage = nextStatus.recoveryAvailable
         ? `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
         : nextConflicts.length > 0
@@ -757,7 +762,7 @@ export function AdminScreen({
               ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
               : []),
           ].join('\n');
-      const message = [syncMessage, projectDocumentsStillUploadingNotice(documentRetry.remaining)].filter(Boolean).join('\n');
+      const message = [syncMessage, projectDocumentsStillUploadingNotice(documentsRemaining)].filter(Boolean).join('\n');
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
       if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);

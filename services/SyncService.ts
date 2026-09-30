@@ -302,6 +302,8 @@ export function cloudWriteFailureReason(result: {
   stubbed?: boolean;
 }): string {
   const reason = (result.error || result.message || '').trim();
+  // Sync Now named the raw database code; the queue already said it in words (whole-app audit A8 pass 2 #9).
+  if (reason && classifySyncFailureText([reason]) === 'current_drawing_protected') return ` ${CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE}`;
   if (reason) return ` ${reason}`;
   return result.stubbed ? ' The cloud table is not available yet.' : '';
 }

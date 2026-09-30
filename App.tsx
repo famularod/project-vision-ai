@@ -401,7 +401,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
-import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from './services/ProjectDocumentUploadRetry';
+import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure } from './services/ProjectDocumentUploadRetry';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -7050,6 +7050,8 @@ useEffect(() => {
         uploadedAt: uploaded ? completedAt : document.uploadedAt,
         updatedAt: completedAt,
         uploadProgress: uploaded ? 1 : document.uploadProgress,
+        // A failure for want of signal is not counted toward the backoff (whole-app audit A8 pass 2 #5).
+        uploadAttemptCount: uploaded ? document.uploadAttemptCount : projectDocumentUploadAttemptsAfterFailure(document.uploadAttemptCount, result.error),
       }));
       await persistProjectDocumentsImmediately(
         projectDocumentsCurrentRef.current,
@@ -7068,7 +7070,7 @@ useEffect(() => {
         return false;
       }
 
-      if (completedDocument) {
+      if (completedDocument && !completedDocument.isArchived) { // archived while it uploaded: not shared (whole-app audit A8 pass 2 #4)
         try {
           await publishUploadedProjectDocument(completedDocument);
         } catch {
@@ -7103,6 +7105,7 @@ useEffect(() => {
         status: 'failed',
         updatedAt: new Date().toISOString(),
         uploadProgress: null,
+        uploadAttemptCount: projectDocumentUploadAttemptsAfterFailure(document.uploadAttemptCount, error),
       }));
       await persistProjectDocumentsImmediately(
         projectDocumentsCurrentRef.current,
@@ -10977,6 +10980,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return false;
     }
     currentReferenceActivationIdsRef.current.add(documentId);
+    projectDocumentSharedRecordSync.flush(documentId); // text typed just before goes first (whole-app audit A8 pass 2 #7)
     try {
       const outcome = await activateSharedReferenceDocument({
         documentId,

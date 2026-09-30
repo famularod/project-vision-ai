@@ -189,6 +189,8 @@ describe('the Set Active confirmation says what each other project shows next (a
       activateSharedReferenceDocument, scheduleRetirementMessage, getSupabaseClient: () => client,
       // Q15: Set Active is offered again on a combined schedule retired for some of its projects.
       scheduleDocumentIsCurrentEverywhere,
+      // Audit A8 pass 2 #7: text still waiting for the document is queued first.
+      projectDocumentSharedRecordSync: { flush: () => false },
       listReferenceDocuments: async () => ({ ok: true, stubbed: false, data: cloud }), normalizeReferenceDocuments: (rows: unknown) => rows,
       Alert: { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => {
         alerts.push({ title, message });

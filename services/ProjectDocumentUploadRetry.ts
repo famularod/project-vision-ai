@@ -9,6 +9,7 @@
  */
 
 import { requireOwnedProjectDocumentAccess } from './ProjectDocumentLifecycle';
+import { classifySyncFailureText } from './SyncFailureCategory';
 
 type UploadRetryDocument = Readonly<{
   id: string;
@@ -18,6 +19,7 @@ type UploadRetryDocument = Readonly<{
   ownedFileManifest?: unknown;
   uploadAttemptCount?: number;
   lastUploadAttemptAt?: string | null;
+  isArchived?: boolean | null;
 }>;
 
 /** Wait after the 1st, 2nd, 3rd and every later attempt. */
@@ -45,14 +47,34 @@ export function projectDocumentUploadRetryDelayMs(attemptCount: number | null | 
 /**
  * Failed or never-sent documents whose file is still in verified app
  * storage. One that must be added again is left for the owner: retrying it
- * cannot succeed, and the upload asks for the file again with an alert.
+ * cannot succeed, and the upload asks for the file again with an alert. An
+ * archived document is not uploaded: it was counted as pending and shared
+ * with the other devices after the owner archived it (whole-app audit A8
+ * pass 2 #4).
  */
 export function projectDocumentsAwaitingUpload<T extends UploadRetryDocument>(
   documents: readonly T[],
 ): T[] {
   return documents.filter(document =>
     (document.status === 'failed' || document.status === 'local') &&
+    !document.isArchived &&
     hasVerifiedLocalFile(document));
+}
+
+/**
+ * The attempt count after a failed upload, from the count recorded when it
+ * began. An attempt that failed for want of signal is taken back: each
+ * automatic attempt during a long spell offline raised it, so once the
+ * signal returned the document waited up to 30 minutes for its next try
+ * (whole-app audit A8 pass 2 #5).
+ */
+export function projectDocumentUploadAttemptsAfterFailure(
+  recordedAttempts: number | null | undefined,
+  failure: unknown,
+): number {
+  const recorded = Math.max(0, Math.floor(Number(recordedAttempts) || 0));
+  const message = failure instanceof Error ? failure.message : typeof failure === 'string' ? failure : '';
+  return classifySyncFailureText([message]) === 'offline' ? Math.max(0, recorded - 1) : recorded;
 }
 
 /** The documents awaiting upload whose backoff since the last attempt has passed. */
@@ -115,6 +137,34 @@ export function createProjectDocumentUploadRetryRunner<T extends UploadRetryDocu
         inFlight = null;
       });
       return inFlight;
+    },
+  };
+}
+
+/**
+ * Retry Sync and Sync Now start the document uploads without waiting for
+ * them: a slow upload held back the field updates and the data sync, and
+ * Retry Sync gave up after 30 seconds without retrying the updates at all
+ * (whole-app audit A8 pass 2 #6). At the end a finished run gives its own
+ * count; a run still going counts the documents waiting now and the one it
+ * is uploading.
+ */
+export function startProjectDocumentUploadRun(
+  run: () => Promise<ProjectDocumentUploadRetryResult>,
+): Readonly<{ remaining: (waitingNow: number) => number }> {
+  let finished: ProjectDocumentUploadRetryResult | null = null;
+  let failed = false;
+  let started: Promise<ProjectDocumentUploadRetryResult>;
+  try {
+    started = run();
+  } catch (error) {
+    started = Promise.reject(error);
+  }
+  started.then(result => { finished = result; }, () => { failed = true; });
+  return {
+    remaining(waitingNow: number) {
+      if (finished) return finished.remaining;
+      return failed ? waitingNow : waitingNow + 1;
     },
   };
 }

@@ -92,6 +92,26 @@ export function queueProjectDocumentSharedRecordNow({
   if (!flushed.includes(documentId)) onReady(documentId);
 }
 
+/**
+ * Text still waiting for this document is queued now, before Make Current:
+ * typed less than the pause before it, it was left out of the shared copy
+ * (whole-app audit A8 pass 2 #7). Nothing is queued when nothing waits.
+ */
+export function flushProjectDocumentSharedRecordSync({
+  lifecycle,
+  documentId,
+  onReady,
+}: {
+  lifecycle: ProjectDocumentSharedRecordSyncLifecycle;
+  documentId: string;
+  onReady: (documentId: string) => void;
+}): boolean {
+  if (!lifecycle.pendingIds.has(documentId)) return false;
+  settleProjectDocumentSharedRecordSync(lifecycle, documentId);
+  onReady(documentId);
+  return true;
+}
+
 export function settleProjectDocumentSharedRecordSync(
   lifecycle: ProjectDocumentSharedRecordSyncLifecycle,
   documentId: string,

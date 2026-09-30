@@ -6,6 +6,7 @@ import {
   createProjectDocumentSharedRecordSyncLifecycle,
   disposeProjectDocumentSharedRecordSyncLifecycle,
   flushPendingProjectDocumentSharedRecordSync,
+  flushProjectDocumentSharedRecordSync,
   projectDocumentChangeUsesDebouncedSync,
   queueProjectDocumentSharedRecordNow,
   scheduleProjectDocumentSharedRecordSync,
@@ -47,6 +48,10 @@ export function useProjectDocumentSharedRecordSync(
         } else {
           queueProjectDocumentSharedRecordNow({ lifecycle, documentId, onReady });
         }
+      },
+      /** Queues this document's waiting text now, as Make Current begins. */
+      flush(documentId: string) {
+        return flushProjectDocumentSharedRecordSync({ lifecycle, documentId, onReady });
       },
       cancel(documentId: string) {
         cancelProjectDocumentSharedRecordSync(lifecycle, documentId);

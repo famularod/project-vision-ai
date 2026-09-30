@@ -257,6 +257,13 @@ export function synchronizeSharedReferenceDocumentMetadata({
   projectName: string | null;
   updatedAt?: string;
 }>): ReferenceDocument {
+  // A copy shared with several projects, this one among them, keeps them. It
+  // was narrowed to this project, which the cloud refuses for a Current
+  // document, and the edit was held with the wrong advice (whole-app audit A8
+  // pass 2 #9).
+  const sharedProjects = sharedDocument.projectNames || [];
+  const keepsProjects = Boolean(projectName?.trim()) && sharedProjects.length > 1 && sharedProjects.some(name =>
+    typeof name === 'string' && name.trim().toLowerCase() === projectName?.trim().toLowerCase());
   return Object.freeze({
     ...sharedDocument,
     name: document.name.replace(/\.[^/.]+$/, '') || document.name,
@@ -264,13 +271,15 @@ export function synchronizeSharedReferenceDocumentMetadata({
     mimeType: document.mimeType || null,
     category: referenceCategoryForProjectDocument(document.category),
     notes: document.note || '',
-    projectId: sharedReferenceProjectId(
+    projectId: keepsProjects ? sharedDocument.projectId ?? null : sharedReferenceProjectId(
       document.projectId,
       projectName || sharedDocument.projectName || null,
       sharedDocument,
     ),
-    projectName: projectName || sharedDocument.projectName || null,
-    projectNames: projectName
+    projectName: keepsProjects ? sharedDocument.projectName ?? null : projectName || sharedDocument.projectName || null,
+    projectNames: keepsProjects
+      ? sharedProjects
+      : projectName
       ? [projectName]
       : sharedDocument.projectNames || [],
     storagePath: document.storagePath || sharedDocument.storagePath || null,

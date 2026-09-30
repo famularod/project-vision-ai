@@ -320,6 +320,8 @@ describe('Set Active is offered again on a combined schedule retired for some of
         activateSharedReferenceDocument: (input: Parameters<typeof activateSharedReferenceDocument>[0]) =>
           activateSharedReferenceDocument({ ...input, activate }),
         scheduleRetirementMessage, scheduleDocumentIsCurrentEverywhere, getSupabaseClient: newDatabase,
+        // Audit A8 pass 2 #7: text still waiting for the document is queued first.
+        projectDocumentSharedRecordSync: { flush: () => false },
         listReferenceDocuments: async () => ({ ok: true, stubbed: false, data: phone }), normalizeReferenceDocuments: (rows: unknown) => rows,
         deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
         mergeDAVEReferenceDocumentRecoveryRecords: ({ cloud }: { cloud: ReferenceDocument[] }) => cloud,
