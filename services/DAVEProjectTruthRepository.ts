@@ -25,6 +25,22 @@ let projectTruthSaveTail: Promise<void> = Promise.resolve();
 // is always sent again, which is how an offline save reaches the cloud.
 const cloudConfirmedSnapshots = new Set<string>();
 const MAX_CLOUD_CONFIRMED_SNAPSHOTS = 200;
+// Each project's newest stored snapshot this app session, per storage, by
+// owner and project, without its truth (A10 pass 2 F2). A save whose Project
+// Truth has the same fingerprint returns before reading the storage key,
+// which holds every project's snapshots and was re-read and re-checked in
+// full on every save (after each typing pause, sync and project switch).
+type StoredHead = Readonly<{
+  fingerprint: string;
+  snapshot: Omit<DAVEProjectTruthSnapshot, 'truth'>;
+}>;
+const storedHeads = new WeakMap<object, Map<string, StoredHead>>();
+// A built Project Truth is frozen, so its fingerprint never changes: the
+// provider saves the same truth again whenever the Core refreshes.
+const frozenTruthFingerprints = new WeakMap<object, string>();
+// Snapshots read whose stored fingerprint is the current format: comparing
+// with it needs no second walk of the truth.
+const currentFormatSnapshots = new WeakSet<object>();
 
 export type DAVEProjectTruthSnapshot = Readonly<{
   repositoryVersion: typeof DAVE_PROJECT_TRUTH_REPOSITORY_VERSION;
@@ -89,10 +105,24 @@ export function createDAVEProjectTruthRepository({
     );
   }
 
+  function heads() {
+    let map = storedHeads.get(storage);
+    if (!map) {
+      map = new Map();
+      storedHeads.set(storage, map);
+    }
+    return map;
+  }
+
+  function rememberStoredHead(head: DAVEProjectTruthSnapshot, fingerprint = head.sourceFingerprint) {
+    const { truth: _truth, ...snapshot } = head;
+    heads().set(headKey(head.organizationId, head.projectId), { fingerprint, snapshot });
+  }
+
   async function list(organizationId: string, projectId?: string) {
     const owner = required(organizationId, 'Organization ID');
     const project = optional(projectId);
-    const snapshots = await hydrate(storage);
+    const snapshots = await hydrate(storage, project ? { owner, projectId: project } : null);
     return Object.freeze(snapshots
       .filter(snapshot =>
         snapshot.organizationId === owner &&
@@ -107,7 +137,10 @@ export function createDAVEProjectTruthRepository({
     // parse and validate the whole key twice.
     alreadyRead?: readonly DAVEProjectTruthSnapshot[],
   ) {
-    const all = alreadyRead || await hydrate(storage);
+    const all = alreadyRead || await hydrate(storage, {
+      owner: snapshot.organizationId,
+      projectId: snapshot.projectId,
+    });
     const withoutSameId = all.filter(item => item.id !== snapshot.id);
     const sameProject = [snapshot, ...withoutSameId.filter(item =>
       item.organizationId === snapshot.organizationId &&
@@ -120,6 +153,7 @@ export function createDAVEProjectTruthRepository({
       item.projectId !== snapshot.projectId,
     );
     await write([...sameProject, ...otherProjects].sort(compareSnapshots));
+    rememberStoredHead(sameProject[0]);
   }
 
   async function persistSnapshotCloud(
@@ -194,7 +228,27 @@ export function createDAVEProjectTruthRepository({
       const owner = required(organizationId, 'Organization ID');
       validateTruthBoundary(truth);
       return serializeProjectTruthSave(owner, truth.projectId, async () => {
-        const stored = await hydrate(storage);
+        const sourceFingerprint = fingerprintOf(truth);
+        // Unchanged since this session last stored it (A10 pass 2 F2): no
+        // storage read. The snapshot keeps the stored revision's identity and
+        // carries the truth just built, which differs from the stored one
+        // only in generation times (the fingerprint leaves those out). One
+        // the cloud has not confirmed takes the full path, which sends the
+        // stored snapshot again.
+        const head = heads().get(headKey(owner, truth.projectId));
+        if (head && head.fingerprint === sourceFingerprint) {
+          const confirmed = cloudConfirmedSnapshots.has(cloudConfirmationKey(head.snapshot));
+          if (!useCloud || confirmed) {
+            return {
+              snapshot: deepFreeze({ ...head.snapshot, truth }),
+              created: false,
+              cloudStatus: useCloud ? 'saved' : 'local_only',
+            };
+          }
+        }
+        // Only this project's stored snapshots are re-checked in full; the
+        // others are only rewritten (A10 pass 2 F2).
+        const stored = await hydrate(storage, { owner, projectId: truth.projectId });
         let current = stored
           .filter(item => item.organizationId === owner && item.projectId === truth.projectId)
           .sort(compareSnapshots)[0] || null;
@@ -210,17 +264,17 @@ export function createDAVEProjectTruthRepository({
             current = recovered;
           }
         }
-        const sourceFingerprint = fingerprintDAVEProjectTruth(truth);
         let snapshot = current;
         let created = false;
 
         if (
           !current ||
           // The stored fingerprint first: recomputing it walks the whole
-          // multi-MB truth, and it is the answer whenever it matches.
+          // multi-MB truth, and it is the answer whenever it matches, or
+          // when the read found it in the current format.
           (
             current.sourceFingerprint !== sourceFingerprint &&
-            fingerprintDAVEProjectTruth(current.truth) !== sourceFingerprint
+            (currentFormatSnapshots.has(current) || fingerprintDAVEProjectTruth(current.truth) !== sourceFingerprint)
           )
         ) {
           const revision = (current?.revision || 0) + 1;
@@ -240,6 +294,8 @@ export function createDAVEProjectTruthRepository({
           });
           await storeSnapshot(snapshot, storedIsCurrent ? stored : undefined);
           created = true;
+        } else {
+          rememberStoredHead(current, sourceFingerprint);
         }
 
         if (!snapshot) throw new Error('Project Truth snapshot could not be created.');
@@ -281,7 +337,20 @@ export function createDAVEProjectTruthRepository({
   });
 }
 
-function cloudConfirmationKey(snapshot: DAVEProjectTruthSnapshot) {
+function headKey(organizationId: string, projectId: string) {
+  return `${organizationId}|${projectId}`;
+}
+
+function fingerprintOf(truth: DAVEProjectTruth) {
+  if (!Object.isFrozen(truth)) return fingerprintDAVEProjectTruth(truth);
+  const known = frozenTruthFingerprints.get(truth);
+  if (known) return known;
+  const fingerprint = fingerprintDAVEProjectTruth(truth);
+  frozenTruthFingerprints.set(truth, fingerprint);
+  return fingerprint;
+}
+
+function cloudConfirmationKey(snapshot: Pick<DAVEProjectTruthSnapshot, 'organizationId' | 'projectId' | 'id'>) {
   return [snapshot.organizationId, snapshot.projectId, snapshot.id].join('|');
 }
 
@@ -379,8 +448,16 @@ function legacyFingerprintDAVEProjectTruth(truth: DAVEProjectTruth): string {
   return stableHash(stableStringify(authoritativeContent));
 }
 
+/**
+ * Reads every stored snapshot. With a focus, only that owner's project is
+ * re-checked in full (fingerprint, deep freeze); the other projects' are
+ * checked for shape and trusted until their own project is read (A10 pass 2
+ * F2): re-fingerprinting every project's multi-MB snapshots made each save
+ * take ~0.2-1.5 s on the phone.
+ */
 async function hydrate(
   storage: DAVEProjectTruthStorage,
+  focus: Readonly<{ owner: string; projectId: string }> | null = null,
 ): Promise<DAVEProjectTruthSnapshot[]> {
   const raw = await storage.getItem(DAVE_PROJECT_TRUTH_STORAGE_KEY);
   if (raw === null) return [];
@@ -412,7 +489,10 @@ async function hydrate(
   let recovered = false;
   for (const value of parsed.snapshots) {
     try {
-      const snapshot = normalizeSnapshot(value);
+      const inFocus = !focus || (
+        isRecord(value) && value.organizationId === focus.owner && value.projectId === focus.projectId
+      );
+      const snapshot = normalizeSnapshot(value, inFocus);
       if (snapshots.some(item => item.id === snapshot.id)) {
         recovered = true;
         continue;
@@ -462,7 +542,7 @@ function quarantineProjectTruthValue(
   });
 }
 
-function normalizeSnapshot(value: unknown): DAVEProjectTruthSnapshot {
+function normalizeSnapshot(value: unknown, verifyContent = true): DAVEProjectTruthSnapshot {
   if (!isRecord(value) || !isRecord(value.truth)) {
     throw new Error('Project Truth snapshot is invalid.');
   }
@@ -485,12 +565,17 @@ function normalizeSnapshot(value: unknown): DAVEProjectTruthSnapshot {
     snapshot.repositoryVersion !== DAVE_PROJECT_TRUTH_REPOSITORY_VERSION ||
     snapshot.truthSchemaVersion !== truth.schemaVersion ||
     snapshot.projectId !== truth.projectId ||
-    snapshot.projectName !== truth.projectName ||
-    !snapshotFingerprintMatches(truth, snapshot.sourceFingerprint)
+    snapshot.projectName !== truth.projectName
   ) {
     throw new Error('Project Truth snapshot boundary is invalid.');
   }
-  return deepFreeze(snapshot);
+  // Another project's snapshot is only rewritten, never handed out.
+  if (!verifyContent) return Object.freeze(snapshot);
+  const format = snapshotFingerprintFormat(truth, snapshot.sourceFingerprint);
+  if (!format) throw new Error('Project Truth snapshot boundary is invalid.');
+  const frozen = deepFreeze(snapshot);
+  if (format === 'current') currentFormatSnapshots.add(frozen);
+  return frozen;
 }
 
 /**
@@ -498,10 +583,12 @@ function normalizeSnapshot(value: unknown): DAVEProjectTruthSnapshot {
  * match. Each one walks the whole truth, and computing all three for every
  * stored snapshot on every read was most of the cost of a read.
  */
-function snapshotFingerprintMatches(truth: DAVEProjectTruth, sourceFingerprint: string) {
-  return fingerprintDAVEProjectTruth(truth) === sourceFingerprint ||
-    priorSemanticFingerprintDAVEProjectTruth(truth) === sourceFingerprint ||
-    legacyFingerprintDAVEProjectTruth(truth) === sourceFingerprint;
+function snapshotFingerprintFormat(truth: DAVEProjectTruth, sourceFingerprint: string) {
+  if (fingerprintDAVEProjectTruth(truth) === sourceFingerprint) return 'current';
+  return priorSemanticFingerprintDAVEProjectTruth(truth) === sourceFingerprint ||
+    legacyFingerprintDAVEProjectTruth(truth) === sourceFingerprint
+    ? 'older'
+    : null;
 }
 
 function validateTruthBoundary(truth: DAVEProjectTruth) {

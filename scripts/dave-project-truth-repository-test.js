@@ -25,6 +25,13 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
     'function legacyFingerprintDAVEProjectTruth(truth) { globalThis.__olderFingerprintCalls = (globalThis.__olderFingerprintCalls || 0) + 1;',
   );
 assert.strictEqual(compiled.split('__olderFingerprintCalls = (globalThis.__olderFingerprintCalls || 0) + 1;').length, 3);
+// A10 pass 2 F2: count current-format fingerprints too (the incoming truth
+// and each stored snapshot re-checked).
+const countedCompiled = compiled.replace(
+  'function fingerprintDAVEProjectTruth(truth) {',
+  'function fingerprintDAVEProjectTruth(truth) { globalThis.__fingerprintCalls = (globalThis.__fingerprintCalls || 0) + 1;',
+);
+assert.notStrictEqual(countedCompiled, compiled);
 const quarantineModule = { exports: {} };
 const quarantineCompiled = ts.transpileModule(
   fs.readFileSync(path.join(root, 'services/LocalStorageCorruptionQuarantine.ts'), 'utf8'),
@@ -55,8 +62,10 @@ function memoryStorage() {
 const defaultStorage = memoryStorage();
 let loadCloudSnapshot = async () => ({ ok: true, configured: true, data: null });
 let saveCloudSnapshot = async snapshot => ({ ok: true, configured: true, data: snapshot });
+// Each instance is an app start: nothing remembered from an earlier session.
+function startApp() {
 const moduleUnderTest = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(
+new Function('require', 'module', 'exports', countedCompiled)(
   specifier => {
     if (specifier === '@react-native-async-storage/async-storage') {
       return { __esModule: true, default: defaultStorage };
@@ -79,6 +88,9 @@ new Function('require', 'module', 'exports', compiled)(
   moduleUnderTest,
   moduleUnderTest.exports,
 );
+return moduleUnderTest.exports;
+}
+const moduleUnderTest = { exports: startApp() };
 
 const {
   DAVE_PROJECT_TRUTH_REPOSITORY_VERSION,
@@ -618,6 +630,93 @@ function projectTruth(projectId, projectName, headline) {
   assert.strictEqual(changedTruth.snapshot.revision, 2);
   assert.strictEqual(uploads, 4, 'a changed snapshot is uploaded');
   assert.strictEqual(confirmWrites, 1, 'a new snapshot is written to the device once, not again after the cloud accepts it');
+
+  // A10 pass 2 F2 (30 Sep 2026): every save, even an unchanged one, read the
+  // whole key and re-fingerprinted every project's stored snapshots.
+  const deepFreeze = value => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      Object.values(value).forEach(deepFreeze);
+    }
+    return value;
+  };
+  const sessionStorage = memoryStorage();
+  let sessionReads = 0;
+  const sessionGetItem = sessionStorage.getItem.bind(sessionStorage);
+  sessionStorage.getItem = async key => { sessionReads += 1; return sessionGetItem(key); };
+  const session = createDAVEProjectTruthRepository({ storage: sessionStorage });
+  for (let project = 0; project < 4; project += 1) {
+    for (const headline of ['first', 'second']) {
+      await session.save('owner-a', projectTruth(`project-session-${project}`, `Session ${project}`, headline));
+    }
+  }
+  sessionReads = 0;
+  globalThis.__fingerprintCalls = 0;
+  const unchangedSession = await createDAVEProjectTruthRepository({ storage: sessionStorage })
+    .save('owner-a', projectTruth('project-session-0', 'Session 0', 'second'));
+  assert.strictEqual(unchangedSession.created, false);
+  assert.strictEqual(unchangedSession.snapshot.revision, 2, 'the unchanged save returns the stored revision');
+  assert.strictEqual(sessionReads, 0, 'an unchanged save this session does not read the storage key');
+  assert.strictEqual(globalThis.__fingerprintCalls, 1, 'only the new truth is fingerprinted');
+  assert.strictEqual(unchangedSession.snapshot.id, (await session.list('owner-a', 'project-session-0'))[0].id);
+  const frozenTruth = deepFreeze(projectTruth('project-session-0', 'Session 0', 'second'));
+  await session.save('owner-a', frozenTruth);
+  globalThis.__fingerprintCalls = 0;
+  await session.save('owner-a', frozenTruth);
+  assert.strictEqual(globalThis.__fingerprintCalls, 0, 'the same built (frozen) truth is not fingerprinted again');
+
+  sessionReads = 0;
+  globalThis.__fingerprintCalls = 0;
+  const changedSession = await session.save('owner-a', projectTruth('project-session-0', 'Session 0', 'third'));
+  assert.strictEqual(changedSession.created, true);
+  assert.strictEqual(changedSession.snapshot.revision, 3);
+  assert.strictEqual(sessionReads, 1, 'a changed save reads the key once');
+  assert.strictEqual(
+    globalThis.__fingerprintCalls,
+    3,
+    'a changed save fingerprints the new truth and its own project\'s 2 stored snapshots (not the other 3 projects\' 6, nor the head a second time)',
+  );
+  for (let project = 1; project < 4; project += 1) {
+    assert.deepStrictEqual(
+      (await session.list('owner-a', `project-session-${project}`)).map(snapshot => snapshot.revision),
+      [2, 1],
+      'the other projects\' snapshots are rewritten unchanged',
+    );
+  }
+
+  // After an app start nothing is remembered: the first save reads the key.
+  const restarted = startApp().createDAVEProjectTruthRepository({ storage: sessionStorage });
+  sessionReads = 0;
+  const firstAfterStart = await restarted.save('owner-a', projectTruth('project-session-0', 'Session 0', 'third'));
+  assert.strictEqual(firstAfterStart.created, false);
+  assert.strictEqual(sessionReads, 1, 'the first save after an app start reads the key');
+  sessionReads = 0;
+  await restarted.save('owner-a', projectTruth('project-session-0', 'Session 0', 'third'));
+  assert.strictEqual(sessionReads, 0);
+  // Another phone storage (another owner sandbox, a test) is its own record.
+  const otherStorage = createDAVEProjectTruthRepository({ storage: memoryStorage() });
+  assert.strictEqual(
+    (await otherStorage.save('owner-a', projectTruth('project-session-0', 'Session 0', 'third'))).created,
+    true,
+    'what one storage holds says nothing about another',
+  );
+
+  // Another project's snapshot is trusted on this project's save and fully
+  // re-checked when its own project is read.
+  const tampered = JSON.parse(await sessionGetItem(DAVE_PROJECT_TRUTH_STORAGE_KEY));
+  const tamperedHead = tampered.snapshots.find(snapshot => snapshot.projectId === 'project-session-1' && snapshot.revision === 2);
+  tamperedHead.truth.briefing.headline = 'Edited on disk';
+  await sessionStorage.setItem(DAVE_PROJECT_TRUTH_STORAGE_KEY, JSON.stringify(tampered));
+  assert.strictEqual(
+    (await session.save('owner-a', projectTruth('project-session-0', 'Session 0', 'fourth'))).created,
+    true,
+    'a save of project 0 does not re-check project 1',
+  );
+  await assert.rejects(
+    session.list('owner-a', 'project-session-1'),
+    /quarantined|preserved/i,
+    'project 1\'s edited snapshot is caught when project 1 is read',
+  );
 
   const migration = fs.readFileSync(
     path.join(root, 'supabase/migrations/20260716010000_dave_project_truth_snapshots.sql'),

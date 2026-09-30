@@ -270,6 +270,12 @@ export type PIECoreInput = {
     PIEMemoryRecallInput,
     'projectName' | 'areaName' | 'pastRecommendations' | 'pastLessons' | 'pastBeliefs' | 'pastOpinions' | 'coreIntelligence'
   >;
+  /**
+   * A Core already built from the same inputs without the draft (the
+   * provider keeps it while only the draft changes). The live build returns
+   * it as authorityCore instead of building it again.
+   */
+  authorityCore?: PIECoreOutput | null;
 };
 
 export type PIEEvidenceReview = {
@@ -553,6 +559,13 @@ export type PIECoreOutput = {
    * (audit round 2 M1d). Set by the live build only.
    */
   authorityRuntime?: PIERuntimeState;
+  /**
+   * The Core without the unsaved draft (A10 pass 2 F3), set by the live build
+   * only when there is a draft. Project Truth reads its confidence, next step,
+   * risks and summary from this one: from the draft-aware Core, a draft with
+   * a Safety Concern photo changed the saved truth and Home's top action.
+   */
+  authorityCore?: PIECoreOutput;
   attention: PIEAttentionState;
   experience: PIEExperienceOutput;
   reportDraft: PIEReportDraft;
@@ -1346,7 +1359,7 @@ async function buildLivePIECoreIntelligenceForScope(
     cloudAvailable: input.cloudAvailable,
     expectedMinimumModelVersion: input.expectedMinimumRealityModelVersion,
   });
-  const core = buildPIECoreIntelligence({
+  const liveCoreInput = {
     ...input,
     runtime,
     enforceLiveReality: true,
@@ -1354,7 +1367,19 @@ async function buildLivePIECoreIntelligenceForScope(
     projectId: liveRealityAuthority.projectId,
     authoritativeRealityModel: liveRealityAuthority.model,
     liveRealityAuthority,
-  });
+  };
+  const core = buildPIECoreIntelligence(liveCoreInput);
+  // With a draft, the Core without it too (A10 pass 2 F3): the saved Project
+  // Truth takes its next step, risks and confidence from this one. The same
+  // inputs as a build with no draft, so both give the same saved truth.
+  const authorityCore = authorityRuntime === runtime
+    ? undefined
+    : input.authorityCore || buildPIECoreIntelligence({
+        ...liveCoreInput,
+        runtime: authorityRuntime,
+        runtimeContext: input.runtimeContext && { ...input.runtimeContext, currentUpdate: null },
+        authorityCore: null,
+      });
   const executiveJudgmentRecord = await persistStructuredExecutiveJudgment({
     result: core.executiveJudgmentResult,
     realityModel: core.realityModel,
@@ -1414,6 +1439,7 @@ async function buildLivePIECoreIntelligenceForScope(
   return {
     ...core,
     authorityRuntime,
+    authorityCore,
     executiveJudgmentRecord,
     decisionSimulation,
     simulatedOptions: decisionSimulation.options,

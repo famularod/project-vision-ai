@@ -202,6 +202,10 @@ export function PIELiveAuthorityProvider({
     useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const coreCacheRef = useRef(new Map<string, PIECoreOutput>());
+  // The Core without the draft, by the signature of the input without it
+  // (A10 pass 2 F3): typing into a draft does not change it, so it is built
+  // once, not on every refresh.
+  const authorityCoreCacheRef = useRef(new Map<string, PIECoreOutput>());
   const runtimeCacheRef = useRef(new Map<string, PIERuntimeState>());
   const sequenceRef = useRef(0);
   const mountedRef = useRef(true);
@@ -357,9 +361,12 @@ export function PIELiveAuthorityProvider({
           safeBuildProviderRuntime(refreshInput);
         rememberPIERuntime(runtimeCacheRef.current, refreshSignature, runtime);
         if (mountedRef.current) setFallbackRuntime(runtime);
+        const runtimeContext = providerRuntimeContext(refreshInput);
+        const draftFreeSignature = authorityInputSignature({ ...refreshInput, currentUpdate: null });
         const coreInput = {
           runtime,
-          runtimeContext: providerRuntimeContext(refreshInput),
+          runtimeContext,
+          authorityCore: authorityCoreCacheRef.current.get(draftFreeSignature) || null,
           reportType: refreshInput.reportType,
           reportProjectNames: refreshInput.projectNames,
           organizationId: refreshInput.organizationId || 'local-unverified-anonymous',
@@ -384,6 +391,8 @@ export function PIELiveAuthorityProvider({
         ) {
           throw new Error('Live authority returned a Core result for a different scope.');
         }
+        const draftFreeCore = runtimeContext.currentUpdate ? result.authorityCore : result;
+        if (draftFreeCore) rememberLiveAuthorityCore(authorityCoreCacheRef.current, draftFreeSignature, draftFreeCore);
 
         // Longitudinal photo reasoning is durable only after the exact scoped
         // Core generation has passed the provider's stale-result checks. A
@@ -582,11 +591,16 @@ export function PIELiveAuthorityProvider({
   // the debounced input: a draft keystroke no longer rebuilds it (20-200 ms
   // each) or makes a new saved snapshot (audit round 2 M1d/M1e). While typing
   // moves the raw input ahead, the last Core of the same scope still describes
-  // the saved evidence.
+  // the saved evidence. Its confidence, next step, risks and summary come from
+  // the Core WITHOUT the draft too (A10 pass 2 F3): from the draft-aware Core,
+  // a draft with a Safety Concern photo made Home's top action "Add a safety
+  // observation..." and saved and uploaded a new snapshot, and another when
+  // the draft was cleared. The draft-aware Core still drives capture.
   const truthInput = scopeIsCurrent ? authorityInput : input;
-  const truthCore = currentCore || (
+  const latestScopeCore = currentCore || (
     core && coreGeneration?.startsWith(`${rawScopeSignature}::`) ? core : null
   );
+  const truthCore = latestScopeCore?.authorityCore || latestScopeCore;
   const truthRuntime = truthCore?.authorityRuntime || truthCore?.runtime || currentRuntime;
   const truthProjectId = truthInput.projectId || safeProjectId(truthInput.projectName);
   const projectTruth = useMemo(() => buildDAVEProjectTruth({
