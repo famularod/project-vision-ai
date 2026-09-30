@@ -10,6 +10,7 @@ import {
   getSupabaseConfigurationStatus,
   listProjectUpdates,
   listProjectAreas,
+  listArchivedProjects,
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
@@ -4100,6 +4101,11 @@ async function uploadProjectQueueItem(
       return upload.error || upload.message || 'Project cover upload is waiting for cloud sync.';
     }
   }
+  if (item.operation === 'create') {
+    const existing = await cloudProjectNameExists(payload.name || '');
+    if (typeof existing === 'string') return existing;
+    if (existing) return 'uploaded';
+  }
   const result =
     item.operation === 'create'
       ? await createProject({ name: payload.name || 'Untitled Project' })
@@ -4110,6 +4116,21 @@ async function uploadProjectQueueItem(
   if (result.ok && !result.stubbed) return 'uploaded';
 
   return result.error || result.message || 'Project sync is waiting for Supabase.';
+}
+
+/**
+ * Whether the cloud already has a project by this name, active or archived
+ * (a string when the lists could not be read, to retry later). A phone that
+ * had not yet heard of an archived project queued its create for a schedule
+ * that named it, which made an active copy of it (whole-app audit A3 pass 2).
+ */
+async function cloudProjectNameExists(name: string): Promise<boolean | string> {
+  const key = name.trim().toLowerCase();
+  if (!key) return false;
+  const lists = await Promise.all([listProjects(), listArchivedProjects()]);
+  const unreadable = lists.find(result => !result.ok || result.stubbed);
+  if (unreadable) return unreadable.error || unreadable.message || 'Project list is waiting for cloud sync.';
+  return lists.some(result => (result.data || []).some(project => project.name.trim().toLowerCase() === key));
 }
 
 async function uploadProjectUpdateQueueItem(

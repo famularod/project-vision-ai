@@ -6,13 +6,21 @@ import type { CanonicalScheduleProgress } from '../services/ScheduleProgressInva
  * (whole-app audit A5, 30 Sep 2026). The draft lived in the task row, so
  * picking another task, collapsing a section, closing the task sheet or
  * switching tabs unmounted the row and dropped a value the manager had set
- * but not saved, with nothing on screen saying so. A staged value is dropped
- * only when it matches the saved one (after Save, or a teammate's identical
- * change); a different saved value arriving underneath does not overwrite
- * what was staged, and the row says "Unsaved" until Save or a reset by hand.
- * Memory only: staged values are not persisted across a relaunch.
+ * but not saved, with nothing on screen saying so; the row now says
+ * "Unsaved" while one is staged.
+ *
+ * Each draft remembers the saved value it was staged on. When the saved
+ * value moves underneath (this device's Confirm Completed, Close or Reopen,
+ * or a teammate's change), the saved value wins and the draft is dropped, as
+ * before: keeping it let Save undo a completion just confirmed (audit A5
+ * pass 2). Memory only: staged values are not persisted across a relaunch.
  */
-const drafts = new Map<string, CanonicalScheduleProgress>();
+type StagedProgress = Readonly<{
+  base: CanonicalScheduleProgress;
+  value: CanonicalScheduleProgress;
+}>;
+
+const drafts = new Map<string, StagedProgress>();
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void) {
@@ -37,22 +45,26 @@ export function useScheduleProgressDraft(
   CanonicalScheduleProgress,
   (update: (current: CanonicalScheduleProgress) => CanonicalScheduleProgress) => void,
 ] {
-  const staged = useSyncExternalStore(subscribe, () => drafts.get(itemId));
+  const entry = useSyncExternalStore(subscribe, () => drafts.get(itemId));
   const committedRef = useRef(committed);
   committedRef.current = committed;
+  const staged = entry && sameProgress(entry.base, committed) ? entry.value : undefined;
 
   useEffect(() => {
-    const entry = drafts.get(itemId);
-    if (entry && sameProgress(entry, committed)) {
+    const current = drafts.get(itemId);
+    if (!current) return;
+    if (!sameProgress(current.base, committed) || sameProgress(current.value, committed)) {
       drafts.delete(itemId);
       notify();
     }
   }, [itemId, committed.status, committed.percentComplete]);
 
   const stage = useCallback((update: (current: CanonicalScheduleProgress) => CanonicalScheduleProgress) => {
-    const next = update(drafts.get(itemId) ?? committedRef.current);
-    if (sameProgress(next, committedRef.current)) drafts.delete(itemId);
-    else drafts.set(itemId, next);
+    const saved = committedRef.current;
+    const current = drafts.get(itemId);
+    const next = update(current && sameProgress(current.base, saved) ? current.value : saved);
+    if (sameProgress(next, saved)) drafts.delete(itemId);
+    else drafts.set(itemId, { base: saved, value: next });
     notify();
   }, [itemId]);
 

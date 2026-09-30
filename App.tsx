@@ -13362,13 +13362,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ? draft.projectName
         : primaryProjectName) ||
       primaryProjectName;
+    const reportHasProjects = selectedReportProjectNames.length > 0; // none left: no report (audit A6 pass 5)
     const authorityReportType: PIEReportType | undefined =
-      authorityMode !== 'reports'
+      authorityMode !== 'reports' || !reportHasProjects
         ? undefined
         : reportFormat === 'executive'
           ? 'executive_summary'
           : reportType;
-    const combinedReportScope = authorityMode === 'reports' && reportType === 'combined_project_update'
+    const combinedReportScope = authorityMode === 'reports' && reportHasProjects && reportType === 'combined_project_update'
       ? buildCombinedReportAuthorityScope({
           selectedProjectNames: selectedReportProjectNames,
           projectRecords,
@@ -13386,7 +13387,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           contacts: contactBook,
         })
       : null;
-    const dailyReportScope = authorityMode === 'reports' && reportType === 'daily_project_update'
+    const dailyReportScope = authorityMode === 'reports' && reportHasProjects && reportType === 'daily_project_update'
       ? buildDailyReportAuthorityScope({
           selectedProjectName: projectName,
           selectedProjectNames: [projectName],
@@ -13726,7 +13727,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'Reports' && projectStatusReady && (
+          {screen === 'Reports' && projectStatusReady && selectedReportProjectNames.length === 0 && (
+            <View style={contentStyle}>
+              <EmptyState title="No active project to report on." text="Reopen an archived project or add a project, then come back to Reports." />
+            </View>
+          )}
+          {screen === 'Reports' && projectStatusReady && selectedReportProjectNames.length > 0 && (
             <ReportsScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}

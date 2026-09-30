@@ -230,9 +230,12 @@ export function resolveScheduleParentActions({
   );
 
   return {
-    missingNames: parentNames.filter(
-      name => !existingKeys.has(name.trim().toLowerCase()),
-    ),
+    // An archived parent is known, not missing: creating it made an active
+    // copy of an archived project (whole-app audit A3 pass 2).
+    missingNames: parentNames.filter(name => {
+      const key = name.trim().toLowerCase();
+      return !existingKeys.has(key) && !archivedKeys.has(key);
+    }),
     reopeningNames: reopenArchivedParents
       ? parentNames.filter(name => archivedKeys.has(name.trim().toLowerCase()))
       : [],

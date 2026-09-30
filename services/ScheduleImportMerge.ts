@@ -30,13 +30,31 @@ function key(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
 }
 
+/**
+ * An area saved empty matches the imported one (whole-app audit A5 pass 2):
+ * rows imported before 30 Sep had an area the file named but the project
+ * did not know cleared, and the revised file now keeps it, so no row moved
+ * and no progress carried.
+ */
+function sameArea(existing: ScheduleItem, imported: ScheduleItem): boolean {
+  const existingArea = key(existing.locationName);
+  return !existingArea || existingArea === key(imported.locationName);
+}
+
 function sameTask(left: ScheduleItem, right: ScheduleItem): boolean {
   if (key(left.taskName) !== key(right.taskName)) return false;
   if (key(left.scheduleProjectName || left.projectName) !== key(right.scheduleProjectName || right.projectName)) return false;
-  if (key(left.locationName) !== key(right.locationName)) return false;
+  if (!sameArea(left, right)) return false;
   const leftActivity = key(left.sourceActivityId);
   const rightActivity = key(right.sourceActivityId);
   return !leftActivity || !rightActivity || leftActivity === rightActivity;
+}
+
+/** The import identity, with an empty saved area matching the imported one. */
+function sameImportIdentity(existing: ScheduleItem, imported: ScheduleItem): boolean {
+  if (!sameArea(existing, imported)) return false;
+  return scheduleImportItemIdentity({ ...existing, locationName: imported.locationName }) ===
+    scheduleImportItemIdentity(imported);
 }
 
 export function mergeApprovedScheduleImportItems({
@@ -64,7 +82,7 @@ export function mergeApprovedScheduleImportItems({
     }
     const identity = scheduleImportItemIdentity(importedItem);
     if (additions.some(item => scheduleImportItemIdentity(item) === identity)) return;
-    const duplicate = next.find(item => scheduleImportItemIdentity(item) === identity);
+    const duplicate = next.find(item => sameImportIdentity(item, importedItem));
     if (duplicate) {
       // An unchanged task an earlier import owns now belongs to this import;
       // a task entered by hand keeps its own provenance and stays visible.
@@ -73,6 +91,7 @@ export function mergeApprovedScheduleImportItems({
         next = next.map(item => item.id === duplicate.id
           ? {
               ...item,
+              locationName: key(item.locationName) ? item.locationName : importedItem.locationName,
               importBatchId: importedItem.importBatchId ?? item.importBatchId,
               sourceDocumentId: importedItem.sourceDocumentId ?? item.sourceDocumentId,
               importedFrom: importedItem.importedFrom ?? item.importedFrom,

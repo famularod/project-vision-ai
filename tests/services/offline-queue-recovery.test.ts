@@ -23,6 +23,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   getAllKeys: jest.fn(() => Promise.resolve([...mockStorageValues.keys()])),
 }));
 
+const mockListArchivedProjects = jest.fn((): Promise<{ ok: boolean; configured: boolean; stubbed: boolean; data: Array<{ id: string; name: string }>; error?: string }> =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }));
 const mockCreateProject = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
@@ -68,6 +70,9 @@ const mockRecordDAVEStorageCleanupAttempt = jest.fn((..._args: unknown[]) =>
 
 jest.mock('../../services/SupabaseService', () => ({
   createProject: (...args: unknown[]) => mockCreateProject(...args),
+  // A queued create first checks the cloud for the name (audit A3 pass 2): none unless a test says so.
+  listProjects: () => Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }),
+  listArchivedProjects: () => mockListArchivedProjects(),
   archiveProjectUpdate: (...args: unknown[]) => mockArchiveProjectUpdate(...args),
   listReferenceDocuments: (...args: unknown[]) => mockListReferenceDocuments(...args),
   upsertReferenceDocument: (...args: unknown[]) => mockUpsertReferenceDocument(...args),
@@ -235,6 +240,23 @@ describe('offline queue corruption recovery', () => {
       archivedAt: '2026-07-18T12:10:00.000Z',
     });
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('does not create a project the cloud already has, archived included; retries when the list cannot be read (audit A3 pass 2)', async () => {
+    mockListArchivedProjects.mockResolvedValueOnce({
+      ok: true, configured: true, stubbed: false, data: [{ id: 'p-archived', name: 'Recovered tower-b' }],
+    });
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([queueItem('Tower-B')]));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 0, errors: [] });
+    expect(mockCreateProject).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+
+    mockListArchivedProjects.mockResolvedValueOnce({
+      ok: false, configured: true, stubbed: false, data: [], error: 'Network request failed',
+    });
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([queueItem('unread-list')]));
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ queued: 1 });
+    expect(mockCreateProject).not.toHaveBeenCalled();
   });
 
   it('drains active work before scanning unrelated legacy quarantines', async () => {

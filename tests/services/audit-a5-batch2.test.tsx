@@ -199,24 +199,45 @@ describe('a staged progress edit is kept until Save', () => {
     expect(again.result.current[0]).toEqual({ status: 'In Progress', percentComplete: 60 });
   });
 
-  it('clears once saved, or when set back to the saved value; a different saved value underneath does not overwrite it', () => {
+  it('clears once saved, or when set back to the saved value; a saved value that moves underneath wins (A5 pass 2)', () => {
     const row = renderHook(
       (props: { committed: CanonicalScheduleProgress }) => useScheduleProgressDraft('task-1', props.committed),
       { initialProps: { committed: saved } },
     );
+    // Save commits the staged value: the draft is gone.
     act(() => row.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
-    row.rerender({ committed: { status: 'In Progress', percentComplete: 50 } });
-    expect(row.result.current[0]).toEqual({ status: 'In Progress', percentComplete: 60 });
     row.rerender({ committed: { status: 'In Progress', percentComplete: 60 } });
     expect(row.result.current[0]).toEqual({ status: 'In Progress', percentComplete: 60 });
-    row.rerender({ committed: { status: 'In Progress', percentComplete: 70 } });
-    expect(row.result.current[0]).toEqual({ status: 'In Progress', percentComplete: 70 });
-
+    // This device's Confirm Completed (or a teammate) moves the saved value: it wins over the staged 80%.
     act(() => row.result.current[1](() => ({ status: 'In Progress', percentComplete: 80 })));
-    act(() => row.result.current[1](() => ({ status: 'In Progress', percentComplete: 70 })));
+    expect(row.result.current[0]).toEqual({ status: 'In Progress', percentComplete: 80 });
+    row.rerender({ committed: { status: 'Complete', percentComplete: 100 } });
+    expect(row.result.current[0]).toEqual({ status: 'Complete', percentComplete: 100 });
+    row.rerender({ committed: { status: 'Complete', percentComplete: 100 } });
+    expect(row.result.current[0]).toEqual({ status: 'Complete', percentComplete: 100 });
+    // Set back to the saved value by hand: nothing staged.
+    act(() => row.result.current[1](() => ({ status: 'In Progress', percentComplete: 90 })));
+    act(() => row.result.current[1](() => ({ status: 'Complete', percentComplete: 100 })));
     row.unmount();
-    expect(renderHook(() => useScheduleProgressDraft('task-1', { status: 'In Progress', percentComplete: 70 })).result.current[0])
-      .toEqual({ status: 'In Progress', percentComplete: 70 });
+    expect(renderHook(() => useScheduleProgressDraft('task-1', { status: 'Complete', percentComplete: 100 })).result.current[0])
+      .toEqual({ status: 'Complete', percentComplete: 100 });
+  });
+
+  it('no frame shows a staged value over a saved value that moved underneath (A5 pass 2)', () => {
+    const shown: number[] = [];
+    const row = renderHook(
+      (props: { committed: CanonicalScheduleProgress }) => {
+        const result = useScheduleProgressDraft('task-frames', props.committed);
+        shown.push(result[0].percentComplete);
+        return result;
+      },
+      { initialProps: { committed: saved } },
+    );
+    act(() => row.result.current[1](() => ({ status: 'In Progress', percentComplete: 80 })));
+    shown.length = 0;
+    row.rerender({ committed: { status: 'Complete', percentComplete: 100 } });
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.every(percent => percent === 100)).toBe(true);
   });
 
   it('the task row uses it and says Unsaved while a value is staged', () => {

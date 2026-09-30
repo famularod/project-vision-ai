@@ -637,10 +637,16 @@ function cell(
   headers: string[],
   names: string[],
   fallbackIndex: number,
+  positionalWithHeader = false,
 ) {
   const headerIndex = headers.findIndex(header => names.includes(header));
 
   if (headerIndex >= 0) return cells[headerIndex] || '';
+  // A file with a header row names its columns, so a missing one is empty:
+  // its usual position holds another column (whole-app audit A5 pass 2: with
+  // no Area column the Start date became every task's area). Only the task
+  // name and finish date, which a row needs, still try their position.
+  if (headers.length > 0 && !positionalWithHeader) return '';
 
   return cells[fallbackIndex] || '';
 }
@@ -1369,9 +1375,9 @@ export function normalizeScheduleImport({
     .map(record => {
       const { cells } = record;
       const rowText = cells.join(' ');
-      const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0);
+      const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0, true);
       const finish = normalizeDate(
-        cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4),
+        cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4, true),
       );
       const start = normalizeDate(
         cell(cells, headers, ['start', 'start date'], 3),
