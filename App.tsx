@@ -299,6 +299,7 @@ import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReference
 import { openGoogleDriveReferenceDocument } from './services/ReferenceDocumentBrowser';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
+import { startNewUpdate } from './services/StartNewUpdate';
 import { cleanupProjectPhotoDirectory } from './services/PhotoDirectoryCleanupPolicy';
 import {
   normalizeStartupArray,
@@ -8234,13 +8235,16 @@ useEffect(() => {
       (activeProjects.length === 1 ? activeProjects[0] : null) ||
       (projectDetectionStatus === 'detected' ? detectedProjectName : null);
 
-    function proceed() {
-      if (confidentTarget) {
-        beginDraftForProject(confidentTarget);
-      } else {
-        setScreen('SelectProject');
-      }
-    }
+    const proceed = (discardedDraft: ProjectUpdate | null) =>
+      startNewUpdate({
+        target: confidentTarget,
+        discardedDraft,
+        beginDraftForProject,
+        replaceDraftWithBlank: () => setDraft(createDraft(activeProjects[0] || '')),
+        openProjectPicker: () => setScreen('SelectProject'),
+        deleteDiscardedPhotos: discarded =>
+          deleteUnreferencedPhotosFromUpdate(discarded, savedUpdates),
+      });
 
     if (hasDraftContent(draft)) {
       Alert.alert(
@@ -8254,16 +8258,7 @@ useEffect(() => {
           {
             text: 'Start New',
             style: 'destructive',
-            onPress: () => {
-              const discardedDraft = draft;
-
-              proceed();
-
-              void deleteUnreferencedPhotosFromUpdate(
-                discardedDraft,
-                savedUpdates,
-              );
-            },
+            onPress: () => proceed(draft),
           },
         ],
       );
@@ -8271,7 +8266,7 @@ useEffect(() => {
       return;
     }
 
-    proceed();
+    proceed(null);
   }
 
   function createNewUpdateForScheduleTask(
