@@ -4,6 +4,7 @@
  */
 import { act, renderHook } from '@testing-library/react-native';
 import {
+  clearFieldNoteDraftIfUnchanged,
   forgetFieldNoteDraft,
   useFieldNoteDraft,
   type FieldNoteDraft,
@@ -64,6 +65,34 @@ describe('field note draft (audit A2 M3)', () => {
     const next = await renderHook(() => useFieldNoteDraft('mobile_capture:owner-a', empty()));
     expect(next.result.current[0]).toEqual(empty());
     await next.unmount();
+  });
+
+  // Audit A11 pass 1 F7: a save that finished after the owner left kept the
+  // saved text in the box, and a second Save filed it twice.
+  it('a save finishing after leave clears an unchanged draft, and keeps one edited since', async () => {
+    const key = 'mobile_capture:owner-f7';
+    const first = await renderHook(() => useFieldNoteDraft(key, empty()));
+    await act(async () => { first.result.current[1]('text', 'Pour at 7'); });
+    await first.unmount();
+    await act(async () => {
+      clearFieldNoteDraftIfUnchanged(key, { text: 'Pour at 7', locationName: '', actionKind: 'none', actionText: '' });
+    });
+    const back = await renderHook(() => useFieldNoteDraft(key, empty()));
+    expect(back.result.current[0].text).toBe('');
+    await act(async () => { back.result.current[1]('text', 'A new note'); });
+    await act(async () => {
+      clearFieldNoteDraftIfUnchanged(key, { text: 'Pour at 7', locationName: '', actionKind: 'none', actionText: '' });
+      clearFieldNoteDraftIfUnchanged('mobile_capture:someone-else', { text: 'A new note', locationName: '', actionKind: 'none', actionText: '' });
+    });
+    expect(back.result.current[0].text).toBe('A new note');
+    await back.unmount();
+  });
+
+  it('F7 is wired where a save finishes after the screen was left', () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const path = jest.requireActual('path') as typeof import('path');
+    const workspace = fs.readFileSync(path.resolve(__dirname, '../../components/field-notes-workspace.tsx'), 'utf8');
+    expect(workspace).toMatch(/if \(operation !== noteOperationRef\.current\) \{\n\s+clearFieldNoteDraftIfUnchanged\(draftKey, \{ text, locationName, actionKind, actionText \}\);\n\s+return;/);
   });
 });
 

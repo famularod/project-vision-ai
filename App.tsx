@@ -97,6 +97,7 @@ import {
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
 import { OverlayErrorBoundary } from './components/overlay-error-boundary';
+import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
 import {
@@ -4838,6 +4839,7 @@ export default function App() {
 
 function AppShell() {
   const workspaceOwnerId = useNativeWorkspaceOwner();
+  useFieldNoteBackgroundRetry(workspaceOwnerId ?? 'local-device'); // notes saved offline reach the desktop (audit A11)
   const insets = useSafeAreaInsets();
   const { width: appShellWidth } = useWindowDimensions();
   const appShellLayout = appShellLayoutForWidth(appShellWidth);

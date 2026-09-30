@@ -75,6 +75,26 @@ function hasWrittenContent(draft: FieldNoteDraft): boolean {
   return Boolean(draft.text.trim() || draft.actionText.trim() || draft.locationName.trim());
 }
 
+/**
+ * A save that finishes after the owner left the screen: the saved note must
+ * not stay in the box, where a second Save filed it twice (audit A11 pass 1
+ * F7). Cleared only if the draft still holds what was saved, so a note typed
+ * after returning is kept.
+ */
+export function clearFieldNoteDraftIfUnchanged(
+  key: string,
+  saved: Pick<FieldNoteDraft, 'text' | 'locationName' | 'actionKind' | 'actionText'>,
+) {
+  if (!slot || slot.key !== key) return;
+  const draft = slot.draft;
+  if (
+    draft.text !== saved.text || draft.locationName !== saved.locationName ||
+    draft.actionKind !== saved.actionKind || draft.actionText !== saved.actionText
+  ) return;
+  slot = null;
+  notify();
+}
+
 /** Account change or sign-out: nobody's unsaved note carries over. */
 export function forgetFieldNoteDraft() {
   if (!slot) return;

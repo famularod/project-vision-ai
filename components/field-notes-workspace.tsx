@@ -23,7 +23,7 @@ import {
   type FieldNoteStatus,
 } from '../services/FieldNoteRepository';
 import type { FieldNoteWorkspaceDataSource } from '../services/FieldNoteMobileSync';
-import { useFieldNoteDraft } from '../hooks/use-field-note-draft';
+import { clearFieldNoteDraftIfUnchanged, useFieldNoteDraft } from '../hooks/use-field-note-draft';
 import { colors, radius, spacing } from '../theme';
 
 const ACTION_OPTIONS: ReadonlyArray<Readonly<{
@@ -95,7 +95,8 @@ function FieldNotesWorkspaceContent({
   const [filter, setFilter] = useState<FieldNoteStatus>('open');
   // Kept outside the screen until Save, so leaving it keeps the note
   // (whole-app audit A2 M3).
-  const [draft, updateDraft] = useFieldNoteDraft(`${presentation}:${ownerKey}`, {
+  const draftKey = `${presentation}:${ownerKey}`;
+  const [draft, updateDraft] = useFieldNoteDraft(draftKey, {
     text: '',
     source: 'typed',
     projectName: initialProjectName?.trim() || '',
@@ -135,6 +136,20 @@ function FieldNotesWorkspaceContent({
     });
     return Array.from(byName.values());
   }, [projectRecords, projects]);
+
+  // The note being edited keeps its own project even when it is closed and so
+  // missing from the chips; saving a text edit cleared it and synced the
+  // change (whole-app audit A11 pass 1 F5, 30 Sep 2026).
+  const editProjectOptions = useMemo(() => {
+    const own = editingNote?.projectName?.trim()
+      ? { id: editingNote.projectId?.trim() || null, name: editingNote.projectName.trim() }
+      : null;
+    if (!own || projectOptions.some(option =>
+      (own.id && option.id === own.id) || normalized(option.name) === normalized(own.name))) {
+      return projectOptions.map(option => ({ ...option, closed: false }));
+    }
+    return [...projectOptions.map(option => ({ ...option, closed: false })), { ...own, closed: true }];
+  }, [editingNote, projectOptions]);
 
   async function loadNotes() {
     const operation = ++noteOperationRef.current;
@@ -225,11 +240,14 @@ function FieldNotesWorkspaceContent({
   useEffect(() => {
     if (!voiceDraft || consumedVoiceDraftRef.current === voiceDraft.id) return;
     consumedVoiceDraftRef.current = voiceDraft.id;
-    setText(voiceDraft.text.trim());
-    setSource('voice');
+    // A note finished by voice keeps what was typed, and a typed location
+    // wins; the dictation replaced both (audit A11 pass 1 F4).
+    const spoken = voiceDraft.text.trim();
+    setText(text.trim() ? `${text.trimEnd()} ${spoken}` : spoken);
+    if (!text.trim()) setSource('voice');
     setCaptureOpen(true);
     if (voiceDraft.projectName?.trim()) setProjectName(voiceDraft.projectName.trim());
-    if (voiceDraft.locationName?.trim()) setLocationName(voiceDraft.locationName.trim());
+    if (voiceDraft.locationName?.trim() && !locationName.trim()) setLocationName(voiceDraft.locationName.trim());
     setNotice({ tone: 'info', text: 'Voice note is ready. Review it, then save.' });
     onVoiceDraftConsumed?.(voiceDraft.id);
   }, [onVoiceDraftConsumed, voiceDraft]);
@@ -259,7 +277,10 @@ function FieldNotesWorkspaceContent({
       const saved = dataSource.saveLocal
         ? await dataSource.saveLocal(ownerKey, note)
         : await dataSource.save(ownerKey, note);
-      if (operation !== noteOperationRef.current) return;
+      if (operation !== noteOperationRef.current) {
+        clearFieldNoteDraftIfUnchanged(draftKey, { text, locationName, actionKind, actionText });
+        return;
+      }
       setLoading(false);
       setNotes(current => [saved, ...current.filter(item => item.id !== saved.id)]);
       setText('');
@@ -353,7 +374,11 @@ function FieldNotesWorkspaceContent({
   function beginEdit(note: FieldNote) {
     setEditingNote(note);
     setEditText(note.originalText);
-    setEditProjectName(note.projectName || '');
+    // A renamed project is matched by id and shown under its current name.
+    setEditProjectName(
+      projectOptions.find(option => note.projectId && option.id === note.projectId)?.name ||
+      note.projectName || '',
+    );
     setEditLocationName(note.locationName || '');
     setEditActionKind(note.actionKind);
     setEditActionText(note.actionText || '');
@@ -366,12 +391,15 @@ function FieldNotesWorkspaceContent({
     setSaving(true);
     setNotice(null);
     try {
-      const selectedProject = projectOptions.find(
+      const selectedProject = editProjectOptions.find(
         option => normalized(option.name) === normalized(editProjectName),
       );
+      const keepsOwnProject = Boolean(selectedProject) && (
+        (Boolean(editingNote.projectId) && selectedProject?.id === editingNote.projectId) ||
+        normalized(selectedProject?.name) === normalized(editingNote.projectName));
       const changed = updateFieldNoteDetails(editingNote, {
         text: editText,
-        projectId: selectedProject?.id || null,
+        projectId: selectedProject?.id || (keepsOwnProject ? editingNote.projectId : null) || null,
         projectName: selectedProject?.name || null,
         locationName: editLocationName,
         actionKind: editActionKind,
@@ -679,10 +707,10 @@ function FieldNotesWorkspaceContent({
                   selected={!editProjectName}
                   onPress={() => setEditProjectName('')}
                 />
-                {projectOptions.map(project => (
+                {editProjectOptions.map(project => (
                   <ChoiceChip
                     key={`edit-${project.id || project.name}`}
-                    label={project.name}
+                    label={project.closed ? `${project.name} (closed)` : project.name}
                     selected={normalized(editProjectName) === normalized(project.name)}
                     onPress={() => setEditProjectName(project.name)}
                   />
