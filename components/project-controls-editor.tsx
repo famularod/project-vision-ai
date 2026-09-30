@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState } from 'react';
+import { createElement, useMemo, useState } from 'react';
 import {
   Platform,
   Pressable,
@@ -35,6 +35,8 @@ import type {
   ProjectControlWorkflowStage,
   ScheduleItem,
 } from '../types';
+import { useTextDraftSavedOnLeave } from '../hooks/use-text-draft-saved-on-leave';
+import { afterTextInputBlur } from './after-text-input-blur';
 import { NativeDateField } from './native-date-field';
 
 export function ProjectControlsSummary({ item }: { item: ScheduleItem }) {
@@ -88,31 +90,6 @@ export function ProjectControlsEditor({
   const [resourceName, setResourceName] = useState('');
   const [resourceKind, setResourceKind] =
     useState<ProjectControlResourceKind>('Crew');
-  const [watchersText, setWatchersText] = useState(controls.watchers.join(', '));
-  const [approversText, setApproversText] = useState(controls.approvers.join(', '));
-  const [assigneeText, setAssigneeText] = useState(controls.assignee);
-  const [tradeText, setTradeText] = useState(controls.trade);
-  const [referenceNumberText, setReferenceNumberText] =
-    useState(controls.referenceNumber);
-  const [impactNotesText, setImpactNotesText] = useState(controls.impactNotes);
-  const [scheduleImpactText, setScheduleImpactText] = useState(
-    numberText(controls.estimatedScheduleImpactDays),
-  );
-  const watcherValue = controls.watchers.join(', ');
-  const approverValue = controls.approvers.join(', ');
-  useEffect(() => setWatchersText(watcherValue), [watcherValue]);
-  useEffect(() => setApproversText(approverValue), [approverValue]);
-  useEffect(() => setAssigneeText(controls.assignee), [controls.assignee]);
-  useEffect(() => setTradeText(controls.trade), [controls.trade]);
-  useEffect(
-    () => setReferenceNumberText(controls.referenceNumber),
-    [controls.referenceNumber],
-  );
-  useEffect(() => setImpactNotesText(controls.impactNotes), [controls.impactNotes]);
-  useEffect(
-    () => setScheduleImpactText(numberText(controls.estimatedScheduleImpactDays)),
-    [controls.estimatedScheduleImpactDays],
-  );
   const update = (patch: Partial<ProjectControls>) => onUpdate(reviseProjectControls({
     current: controls,
     patch,
@@ -126,7 +103,7 @@ export function ProjectControlsEditor({
     <View style={styles.container}>
       <Pressable
         style={({ pressed }) => [styles.headingButton, pressed && styles.pressed]}
-        onPress={() => setOpen(value => !value)}
+        onPress={() => afterTextInputBlur(() => setOpen(value => !value))}
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
       >
@@ -180,30 +157,26 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Assigned to"
-            value={assigneeText}
-            onChangeText={setAssigneeText}
-            onBlur={() => update({ assignee: assigneeText.trim() })}
+            value={controls.assignee}
+            onCommit={assignee => update({ assignee })}
             placeholder="Person responsible"
           />
           <Field
             label="Trade / company"
-            value={tradeText}
-            onChangeText={setTradeText}
-            onBlur={() => update({ trade: tradeText.trim() })}
+            value={controls.trade}
+            onCommit={trade => update({ trade })}
             placeholder="Trade or responsible company"
           />
           <Field
             label="Watchers"
-            value={watchersText}
-            onChangeText={setWatchersText}
-            onBlur={() => update({ watchers: splitList(watchersText) })}
+            value={controls.watchers.join(', ')}
+            onCommit={watchers => update({ watchers: splitList(watchers) })}
             placeholder="Names or emails, separated by commas"
           />
           <Field
             label="Approvers"
-            value={approversText}
-            onChangeText={setApproversText}
-            onBlur={() => update({ approvers: splitList(approversText) })}
+            value={controls.approvers.join(', ')}
+            onCommit={approvers => update({ approvers: splitList(approvers) })}
             placeholder="Required reviewers, separated by commas"
           />
           <ChoiceRow<ProjectControlApprovalStatus>
@@ -225,9 +198,8 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Reference number"
-            value={referenceNumberText}
-            onChangeText={setReferenceNumberText}
-            onBlur={() => update({ referenceNumber: referenceNumberText.trim() })}
+            value={controls.referenceNumber}
+            onCommit={referenceNumber => update({ referenceNumber })}
             placeholder="RFI, submittal, inspection, or decision number"
           />
           <CrossPlatformDateField
@@ -377,10 +349,9 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Schedule impact (days)"
-            value={scheduleImpactText}
-            onChangeText={setScheduleImpactText}
-            onBlur={() => update({
-              estimatedScheduleImpactDays: optionalNumber(scheduleImpactText),
+            value={numberText(controls.estimatedScheduleImpactDays)}
+            onCommit={days => update({
+              estimatedScheduleImpactDays: optionalNumber(days),
             })}
             placeholder="0"
             keyboardType="decimal-pad"
@@ -393,9 +364,8 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Impact notes"
-            value={impactNotesText}
-            onChangeText={setImpactNotesText}
-            onBlur={() => update({ impactNotes: impactNotesText.trim() })}
+            value={controls.impactNotes}
+            onCommit={impactNotes => update({ impactNotes })}
             placeholder="Assumptions, exposure, or mitigation"
             multiline
           />
@@ -420,35 +390,40 @@ function SectionTitle({ title, detail }: { title: string; detail: string }) {
   );
 }
 
+// Saved when left, and when removed while being typed in: a header tap
+// closing the task row, this section's Hide, the Timeline sheet's X, an iPad
+// rotation or a live update deselecting the task give no blur (whole-app
+// audit A2 pass 3 M1). Same rules as a task's Owner and Contractor.
 function Field({
   label,
   value,
-  onChangeText,
+  onCommit,
   placeholder,
   multiline = false,
   keyboardType,
-  onBlur,
 }: {
   label: string;
   value: string;
-  onChangeText: (value: string) => void;
+  onCommit: (value: string) => void;
   placeholder: string;
   multiline?: boolean;
   keyboardType?: 'default' | 'decimal-pad';
-  onBlur?: () => void;
 }) {
+  const { draftValue, setDraftValue, onFocus, commitDraft } =
+    useTextDraftSavedOnLeave(value, onCommit);
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
         style={[styles.input, multiline && styles.multilineInput]}
-        value={value}
-        onChangeText={onChangeText}
+        value={draftValue}
+        onChangeText={setDraftValue}
         placeholder={placeholder}
         placeholderTextColor={colors.mutedText}
         multiline={multiline}
         keyboardType={keyboardType}
-        onBlur={onBlur}
+        onFocus={onFocus}
+        onBlur={commitDraft}
       />
     </View>
   );

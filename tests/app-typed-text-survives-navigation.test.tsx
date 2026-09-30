@@ -326,3 +326,78 @@ describe('leaving a screen keeps the field note being written (audit A2 M3)', ()
     tree.unmount();
   });
 });
+
+// Whole-app audit A2 pass 3 M1 (30 Sep 2026): the Project controls fields
+// saved only on blur, and a header tap (keyboardShouldPersistTaps="handled"),
+// the section's Hide or the Timeline sheet's X removed them with no blur, so
+// the typed text was lost. (Adapted from the reviewer's proof, which asserted
+// the loss for "Assigned to" while the Owner field survived the same tap.)
+describe('closing a task keeps the Project controls text being typed (audit A2 pass 3 M1)', () => {
+  const KEY = 'projectPhotoUpdate.scheduleItems.v1';
+  type Stored = { id: string; owner: string; projectControls?: Record<string, unknown> };
+  const stored = async () => (JSON.parse(await AsyncStorage.getItem(KEY) || '[]') as Stored[])
+    .find(item => item.id === 'task-alpha');
+  const seed = async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['2375 Compliance Project']));
+    await AsyncStorage.setItem(KEY, JSON.stringify([{
+      id: 'task-alpha', taskName: 'Task Alpha', projectName: '2375 Compliance Project', status: 'In Progress',
+      percentComplete: 20, priority: 'Medium', startDate: '09/28/2026', finishDate: '10/02/2026', owner: '',
+      contractor: '', locationName: '', notes: '',
+    }]));
+  };
+  const bootPhoneTasks = async () => {
+    act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
+    await seed();
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+    await act(async () => { fireEvent.press(within(tree.getByTestId('app-bottom-tabs')).getByLabelText('Tasks')); });
+    return tree;
+  };
+  const type = (tree: ReturnType<typeof render>, placeholder: string, text: string) => {
+    const field = tree.getByPlaceholderText(placeholder);
+    fireEvent(field, 'focus');
+    fireEvent.changeText(field, text);
+  };
+
+  it('phone: a header tap that closes the task saves Owner and "Assigned to" alike', async () => {
+    const tree = await bootPhoneTasks();
+    const header = async () => tree.findByLabelText('Open Task Alpha', {}, COLD);
+    await act(async () => { fireEvent.press(await header()); });
+    type(tree, 'PLZ owner / internal owner', 'ABC Electric');
+    await act(async () => { fireEvent.press(await header()); });
+    await waitFor(async () => expect((await stored())?.owner).toBe('ABC Electric'), COLD);
+
+    await act(async () => { fireEvent.press(await header()); });
+    await act(async () => { fireEvent.press(tree.getByRole('button', { name: /Project controls/ })); });
+    type(tree, 'Person responsible', '  Maria Lopez ');
+    await act(async () => { fireEvent.press(await header()); });
+    await waitFor(async () => expect((await stored())?.projectControls?.assignee).toBe('Maria Lopez'), COLD);
+    tree.unmount();
+  });
+
+  it('phone: the section\'s Hide saves Trade and Watchers typed', async () => {
+    const tree = await bootPhoneTasks();
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Open Task Alpha', {}, COLD)); });
+    const section = () => tree.getByRole('button', { name: /Project controls/ });
+    await act(async () => { fireEvent.press(section()); });
+    type(tree, 'Trade or responsible company', 'XYZ Concrete');
+    await act(async () => { fireEvent.press(section()); });
+    await waitFor(async () => expect((await stored())?.projectControls?.trade).toBe('XYZ Concrete'), COLD);
+    await act(async () => { fireEvent.press(section()); });
+    type(tree, 'Names or emails, separated by commas', 'Ann, Bob');
+    await act(async () => { fireEvent.press(section()); });
+    await waitFor(async () => expect((await stored())?.projectControls?.watchers).toEqual(['Ann', 'Bob']), COLD);
+    tree.unmount();
+  });
+
+  it('phone: the Timeline task sheet\'s close X saves the Reference number typed', async () => {
+    const tree = await bootPhoneTasks();
+    await act(async () => { fireEvent.press(tree.getByLabelText('Timeline schedule view')); });
+    await act(async () => { fireEvent.press(await tree.findByLabelText(/^Open timeline task Task Alpha/, {}, COLD)); });
+    await act(async () => { fireEvent.press(await tree.findByRole('button', { name: /Project controls/ }, COLD)); });
+    type(tree, 'RFI, submittal, inspection, or decision number', 'RFI-042');
+    await act(async () => { fireEvent.press(tree.getByLabelText('Close schedule task')); });
+    await waitFor(async () => expect((await stored())?.projectControls?.referenceNumber).toBe('RFI-042'), COLD);
+    tree.unmount();
+  });
+});

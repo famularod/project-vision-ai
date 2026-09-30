@@ -7,7 +7,7 @@ import {
   type TextStyle,
 } from 'react-native';
 
-import { cloudOwnerUnchanged, currentCloudOwner } from '../services/CloudOwnerBinding';
+import { useTextDraftSavedOnLeave } from '../hooks/use-text-draft-saved-on-leave';
 
 type SharedFieldStyleProps = {
   labelStyle: StyleProp<TextStyle>;
@@ -29,37 +29,12 @@ export function ScheduleCommittedTextField({
   placeholder: string;
   onCommit: (value: string) => void;
 } & SharedFieldStyleProps) {
-  const [draftValue, setDraftValue] = useState(value);
-  const focusedRef = useRef(false);
-  const committedValueRef = useRef(value);
   // Whole-app audit A2 pass 2 M2: a field removed while being typed in (the
   // iPad rail's project list, a view tab or filter switching the inspector's
-  // task) gets no blur from React Native, so the typed text was dropped. It
-  // is committed as the field goes, unless the account changed meanwhile.
-  const latestRef = useRef({ draftValue, onCommit, commitDraft });
-  const focusOwnerRef = useRef(currentCloudOwner());
-  latestRef.current = { draftValue, onCommit, commitDraft };
-
-  useEffect(() => {
-    if (!focusedRef.current) {
-      committedValueRef.current = value;
-      setDraftValue(value);
-    }
-  }, [value]);
-
-  useEffect(() => () => {
-    if (focusedRef.current && cloudOwnerUnchanged(focusOwnerRef.current)) {
-      latestRef.current.commitDraft();
-    }
-  }, []);
-
-  function commitDraft() {
-    focusedRef.current = false;
-    const committed = latestRef.current.draftValue.trim();
-    if (committed === committedValueRef.current) return;
-    committedValueRef.current = committed;
-    latestRef.current.onCommit(committed);
-  }
+  // task) gets no blur from React Native; the shared draft saves it as the
+  // field goes, unless the account changed meanwhile.
+  const { draftValue, setDraftValue, onFocus, commitDraft } =
+    useTextDraftSavedOnLeave(value, onCommit);
 
   return (
     <>
@@ -68,10 +43,7 @@ export function ScheduleCommittedTextField({
         style={inputStyle}
         value={draftValue}
         onChangeText={setDraftValue}
-        onFocus={() => {
-          focusedRef.current = true;
-          focusOwnerRef.current = currentCloudOwner();
-        }}
+        onFocus={onFocus}
         onBlur={commitDraft}
         onEndEditing={commitDraft}
         onSubmitEditing={() => {

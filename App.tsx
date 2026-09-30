@@ -90,6 +90,7 @@ import {
   ScheduleCommittedPercentField,
   ScheduleCommittedTextField,
 } from './components/ScheduleCommittedFields';
+import { afterTextInputBlur } from './components/after-text-input-blur';
 import {
   mailComposerOutcome,
   smsComposerOutcome,
@@ -19882,7 +19883,7 @@ function ScheduleScreen({
             </View>
             <TouchableOpacity
               style={styles.sheetModalCloseButton}
-              onPress={() => setPlanningTaskId(null)}
+              onPress={() => afterTextInputBlur(() => setPlanningTaskId(null))}
               accessibilityRole="button"
               accessibilityLabel="Close schedule task"
             >
@@ -20110,8 +20111,8 @@ function ScheduleItemRow({
     : item;
   const expanded = expandedOverride ?? internalExpanded;
   const toggleExpanded = () => {
-    if (expandedOverride === undefined) {
-      setInternalExpanded(current => !current);
+    if (expandedOverride === undefined) { // Lets a focused field save first (audit A2 pass 3 M1).
+      afterTextInputBlur(() => setInternalExpanded(current => !current));
     }
   };
   const [verificationNote, setVerificationNote] = useState('');
