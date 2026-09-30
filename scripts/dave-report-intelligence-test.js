@@ -120,8 +120,6 @@ const baseDraft = {
     id: 'area', title: 'Pump House', projectName: '2321 Compliance Project',
     bullets: [
       { text: 'Equipment was visibly installed.', kind: 'progress' },
-      // Engine review text goes through the report-language filter; the manager's own words do not (audit A6, 29 Sep 2026).
-      { text: 'Current condition is unknown and needs verification.', kind: 'needs_review' },
       { text: 'Guardrail missing at stair 2 landing.', kind: 'safety' },
     ],
   }] }],

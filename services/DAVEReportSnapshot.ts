@@ -39,25 +39,42 @@ export type DAVEReportSnapshot = Readonly<{
    * against itself (whole-app audit A6, 29 Sep 2026).
    */
   supersedes?: DAVEReportSnapshot | null;
+  /**
+   * When this approved report was sent (email, text, copy or Outlook
+   * completed); null while approved but not yet sent. Absent on snapshots
+   * from before 30 Sep 2026, which count as sent. The reporting period runs
+   * from the last report the owner received, not from an approval that was
+   * never sent (whole-app audit A6, pass 2).
+   */
+  deliveredAt?: string | null;
 }>;
+
+function wasDelivered(snapshot: DAVEReportSnapshot): boolean {
+  return snapshot.deliveredAt !== null;
+}
 
 /**
  * The baseline a report with `currentFingerprint` is compared against: the
- * previous approved snapshot, unless that snapshot is this same content, in
- * which case the one it superseded.
+ * previous approved snapshot, unless that snapshot is this same content
+ * (then the one it superseded, or itself when it has no history: zero
+ * change since the owner's report, not "establishes the baseline"), or an
+ * approval that was never sent (then the one it superseded).
  */
 export function reportBaselineSnapshot(
   previous: DAVEReportSnapshot | null | undefined,
   currentFingerprint: string,
 ): DAVEReportSnapshot | null {
   if (!previous) return null;
-  return previous.sourceFingerprint === currentFingerprint ? previous.supersedes ?? null : previous;
+  if (previous.sourceFingerprint === currentFingerprint) return previous.supersedes ?? previous;
+  if (!wasDelivered(previous)) return previous.supersedes ?? null;
+  return previous;
 }
 
 /**
  * What approving `current` saves: nothing when the same content is already
- * the saved baseline; otherwise `current`, remembering the previous snapshot
- * (without its own history) as the one it supersedes.
+ * the saved snapshot; otherwise `current`, not yet sent, remembering the
+ * report the owner has (the previous snapshot without its own history, or,
+ * when that approval was never sent, the one it superseded).
  */
 export function reportSnapshotToSave(
   current: DAVEReportSnapshot,
@@ -66,9 +83,18 @@ export function reportSnapshotToSave(
   if (previous && previous.scopeKey === current.scopeKey && previous.sourceFingerprint === current.sourceFingerprint) {
     return null;
   }
-  if (!previous || previous.scopeKey !== current.scopeKey) return current;
+  const pending = { ...current, deliveredAt: null };
+  if (!previous || previous.scopeKey !== current.scopeKey) return Object.freeze(pending);
+  if (!wasDelivered(previous)) {
+    return Object.freeze({ ...pending, supersedes: previous.supersedes ?? null });
+  }
   const { supersedes: _older, ...superseded } = previous;
-  return Object.freeze({ ...current, supersedes: Object.freeze(superseded) });
+  return Object.freeze({ ...pending, supersedes: Object.freeze(superseded) });
+}
+
+/** The approved report went out. */
+export function markReportSnapshotDelivered(snapshot: DAVEReportSnapshot, deliveredAt: string): DAVEReportSnapshot {
+  return Object.freeze({ ...snapshot, deliveredAt });
 }
 
 export type DAVEReportSnapshotSourceReference = Readonly<{

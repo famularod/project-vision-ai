@@ -68,10 +68,12 @@ import {
   loadDAVEReportSnapshot,
   saveDAVEReportSnapshot,
 } from '../services/DAVEReportSnapshotRepository';
-import { reportBaselineSnapshot, reportSnapshotToSave } from '../services/DAVEReportSnapshot';
+import { markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave } from '../services/DAVEReportSnapshot';
 import {
   recallReportSessionState,
-  rememberReportSessionState,
+  rememberReportAcknowledgement,
+  rememberReportApproval,
+  rememberReportEdits,
   restoredReportApproval,
 } from '../services/ReportSessionState';
 import {
@@ -246,6 +248,7 @@ export function ReportsScreen({
   const [previousReportSnapshot, setPreviousReportSnapshot] =
     useState<DAVEReportSnapshot | null>(null);
   const [snapshotScopeLoaded, setSnapshotScopeLoaded] = useState(false);
+  const [snapshotLoadFailed, setSnapshotLoadFailed] = useState(false);
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -393,14 +396,17 @@ export function ReportsScreen({
     ? reviewAcknowledgement.ids
     : EMPTY_REVIEW_IDS;
   const acknowledgeReviewItems = useCallback((ids: readonly string[]) => {
-    setReviewAcknowledgement(current => ({
+    const next = {
       fingerprint: reportSourceFingerprint,
       ids: Array.from(new Set([
-        ...(current.fingerprint === reportSourceFingerprint ? current.ids : []),
+        ...(reviewAcknowledgement.fingerprint === reportSourceFingerprint ? reviewAcknowledgement.ids : []),
         ...ids,
       ])),
-    }));
-  }, [reportSourceFingerprint]);
+    };
+    setReviewAcknowledgement(next);
+    // Kept for the session, so leaving the tab does not demand a second look (audit A6, pass 2).
+    rememberReportAcknowledgement(reportStateIdentityKey, next);
+  }, [reportSourceFingerprint, reportStateIdentityKey, reviewAcknowledgement]);
   const reportApprovalPolicy = useMemo(
     () => evaluateReportApprovalPolicy({
       report: effectiveReportDraft,
@@ -412,11 +418,20 @@ export function ReportsScreen({
   );
   const reportFactsAreCurrent = !reportEdits ||
     reportEdits.sourceFingerprint === reportSourceFingerprint;
-  const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent;
+  // Approval waits for the owner's baseline to load (audit A6, pass 2: a tap
+  // right after a project toggle approved a report built without its
+  // period and replaced the stored snapshot).
+  const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;
   const reportApprovalMessage = !reportFactsAreCurrent
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
-      : reportApprovalPolicy.message;
+      : !snapshotScopeLoaded
+        ? 'The reporting period is still loading.'
+        : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
+  const previousReportSnapshotRef = useRef(previousReportSnapshot);
+  previousReportSnapshotRef.current = previousReportSnapshot;
+  const reportSnapshotScopeKeyRef = useRef(reportSnapshotScopeKey);
+  reportSnapshotScopeKeyRef.current = reportSnapshotScopeKey;
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
@@ -445,6 +460,7 @@ export function ReportsScreen({
     let cancelled = false;
     setPreviousReportSnapshot(null);
     setSnapshotScopeLoaded(false);
+    setSnapshotLoadFailed(false);
     void loadDAVEReportSnapshot(reportSnapshotScopeKey)
       .then(snapshot => {
         if (cancelled) return;
@@ -453,7 +469,9 @@ export function ReportsScreen({
       })
       .catch(() => {
         if (cancelled) return;
+        // Unknown baseline: the report can be read, not approved over it.
         setPreviousReportSnapshot(null);
+        setSnapshotLoadFailed(true);
         setSnapshotScopeLoaded(true);
       });
     return () => {
@@ -500,20 +518,19 @@ export function ReportsScreen({
     onCreateDecisionSnapshot,
   ]);
   useEffect(() => {
-    // Edits typed for this scope earlier in the session come back (audit
-    // A6); the approval is decided by the approval-text effect above.
+    // Edits and acknowledgements made for this scope earlier in the
+    // session come back (audit A6); the approval is decided by the
+    // approval-text effect above. The store is written only when the
+    // manager acts, never from an effect (pass 2: a write-through effect
+    // wiped it on remount before the restore settled).
+    const remembered = recallReportSessionState(reportStateIdentityKey);
     setReportEditing(false);
-    setReportEdits(recallReportSessionState(reportStateIdentityKey)?.edits ?? null);
+    setReportEdits(remembered?.edits ?? null);
+    setReviewAcknowledgement(remembered?.acknowledgement ?? { fingerprint: '', ids: [] });
     setCommunicationPending(false);
     setCommunicationError('');
     pendingCommunicationTokenRef.current = null;
   }, [reportStateIdentityKey]);
-  useEffect(() => {
-    rememberReportSessionState(reportStateIdentityKey, {
-      edits: reportEdits,
-      approvedTextKey: reportApproved ? approvalTextKey : null,
-    });
-  }, [approvalTextKey, reportApproved, reportEdits, reportStateIdentityKey]);
 
   const completeCommunication = (
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
@@ -532,6 +549,7 @@ export function ReportsScreen({
 
     const startedReportIdentity = reportCommunicationIdentityKey;
     const startedReport = effectiveReportDraft;
+    const startedFingerprint = reportSourceFingerprint;
     const communicationToken = Symbol(startedReportIdentity);
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
@@ -550,7 +568,10 @@ export function ReportsScreen({
             approvalAllowed: reportApprovalAllowedRef.current,
             reportApproved: reportApprovedRef.current,
           })
-        ) setCommunicationError('');
+        ) {
+          setCommunicationError('');
+          markReportDelivered(startedFingerprint);
+        }
       } catch {
         if (
           mountedRef.current &&
@@ -576,14 +597,25 @@ export function ReportsScreen({
     setReportEditing(false);
     setReportApproved(true);
     setCommunicationError('');
+    rememberReportApproval(reportStateIdentityKey, approvalTextKey);
+    if (snapshotLoadFailed) {
+      // The owner's baseline could not be read; approving must not replace it blind.
+      setCommunicationError(
+        'The previous reporting-period snapshot could not be read on this device, so this approval did not replace it.',
+      );
+      return;
+    }
     // Approving the same content again saves nothing; otherwise the saved
-    // snapshot remembers the one it supersedes, so this report is never
-    // compared against itself (audit A6).
+    // snapshot, not yet sent, remembers the report the owner has, so this
+    // report is never compared against itself or against an approval that
+    // never went out (audit A6).
     const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
     if (!snapshotToSave) return;
     void saveDAVEReportSnapshot(snapshotToSave)
       .then(() => {
-        if (mountedRef.current) setPreviousReportSnapshot(snapshotToSave);
+        if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {
+          setPreviousReportSnapshot(snapshotToSave);
+        }
       })
       .catch(() => {
         if (!mountedRef.current) return;
@@ -591,6 +623,20 @@ export function ReportsScreen({
           'The report is approved, but its reporting-period snapshot could not be saved on this device.',
         );
       });
+  };
+
+  /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
+  const markReportDelivered = (sentFingerprint: string) => {
+    const saved = previousReportSnapshotRef.current;
+    if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
+    const delivered = markReportSnapshotDelivered(saved, new Date().toISOString());
+    void saveDAVEReportSnapshot(delivered)
+      .then(() => {
+        if (mountedRef.current && reportSnapshotScopeKeyRef.current === delivered.scopeKey) {
+          setPreviousReportSnapshot(delivered);
+        }
+      })
+      .catch(() => undefined);
   };
   const reportHeader = (
     <ScreenHeader
@@ -655,27 +701,34 @@ export function ReportsScreen({
               setReportEdits(null);
               setReportEditing(false);
               setReportApproved(false);
+              rememberReportEdits(reportStateIdentityKey, null);
+              rememberReportApproval(reportStateIdentityKey, null);
             }}
             onEditReport={() => {
               setReportEditing(true);
               setReportApproved(false);
+              rememberReportApproval(reportStateIdentityKey, null);
               setCommunicationPending(false);
               setCommunicationError('');
               pendingCommunicationTokenRef.current = null;
             }}
             onTitleChange={title => {
-              setReportEdits(current => ({
+              const next = {
                 title,
-                body: current?.body ?? pieReportDraft.body,
-                sourceFingerprint: current?.sourceFingerprint ?? reportSourceFingerprint,
-              }));
+                body: reportEdits?.body ?? pieReportDraft.body,
+                sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
+              };
+              setReportEdits(next);
+              rememberReportEdits(reportStateIdentityKey, next);
             }}
             onBodyChange={body => {
-              setReportEdits(current => ({
-                title: current?.title ?? pieReportDraft.title,
+              const next = {
+                title: reportEdits?.title ?? pieReportDraft.title,
                 body,
-                sourceFingerprint: current?.sourceFingerprint ?? reportSourceFingerprint,
-              }));
+                sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
+              };
+              setReportEdits(next);
+              rememberReportEdits(reportStateIdentityKey, next);
             }}
             onCopyReport={() => {
               completeCommunication(onCopyReport);
@@ -1266,7 +1319,7 @@ function ReportDocumentPreview({
         <View style={styles.reportEditNotice}>
           <Ionicons name="create-outline" size={16} color={colors.primary} />
           <Text style={styles.reportEditNoticeText}>
-            Narrative edits are saved below. Current project facts remain visible in this report.
+            Narrative edits are kept until you leave the app. Current project facts remain visible in this report.
           </Text>
         </View>
       ) : null}

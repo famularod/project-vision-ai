@@ -269,6 +269,7 @@ import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixT
 import { optionalString, uid } from './services/RecordValues';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
 import { classifySyncFailureText } from './services/SyncFailureCategory';
+import { forgetAllReportSessionState } from './services/ReportSessionState';
 import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
 import {
   normalizeProjectItemActivity,
@@ -10263,13 +10264,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return 'unknown';
     }
 
+    // No photo appendix for a body that cites no image (the executive
+    // format, or an edited body): as email and text (audit A6, pass 2).
     const reportPhotoNumbers = new Map(
-      report.locationGroups.flatMap(group =>
-        group.workAreas.flatMap(area =>
-          area.imageReferences.map(reference => [
-            reference.photoId,
-            reference.imageNumber,
-          ] as const))),
+      reportBodyCitesImages(report)
+        ? report.locationGroups.flatMap(group =>
+            group.workAreas.flatMap(area =>
+              area.imageReferences.map(reference => [
+                reference.photoId,
+                reference.imageNumber,
+              ] as const)))
+        : [],
     );
     // In the order the report text numbers them, so the Word file's "Photo
     // 3" is the body's "Image 3" whether or not its file is present
@@ -12979,6 +12984,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         setTimeout(() => startAutomaticSyncBackgroundTask('signed_in', hydrateQueuedUpdates), 0);
       }
+      // Another account must not inherit this one's report narrative or
+      // approval (audit A6, pass 2).
+      if (event === 'SIGNED_OUT') forgetAllReportSessionState();
     });
 
     return () => {

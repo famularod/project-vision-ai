@@ -931,16 +931,16 @@ function isReportableCurrentState(value: string) {
 }
 
 /**
- * A work-area bullet as the report prints it. Bullets carry the manager's
- * own captions and notes, so they are printed as written; only a
- * needs-review bullet is engine text and goes through the report-language
- * filter. Whole-app audit A6 (29 Sep 2026): the filter had deleted the
- * manager's sentences containing "missing", "cannot", "could not",
- * "unknown", "unresolved" or "insufficient" ("Guardrail missing at stair 2
- * landing." left nothing) and rewrote their words.
+ * A work-area bullet as the report prints it: as written, minus Project
+ * Walk drafting headers. Bullets carry the manager's own captions and
+ * notes and short engine lines that never need the report-language filter
+ * (whole-app audit A6, 29-30 Sep 2026: the filter had deleted the manager's
+ * sentences containing "missing", "cannot", "could not", "unknown",
+ * "unresolved" or "insufficient", "Guardrail missing at stair 2 landing."
+ * left nothing, and rewrote their words; no bullet kind is engine review
+ * text).
  */
 export function reportBulletText(bullet: Readonly<{ text: string; kind?: string }>): string {
-  if (bullet.kind === 'needs_review') return toPMReportLanguage(bullet.text);
   return stripProjectWalkBoilerplate(bullet.text).replace(/\s{2,}/g, ' ').trim();
 }
 

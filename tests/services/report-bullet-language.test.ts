@@ -28,8 +28,11 @@ describe('the manager’s own words reach the owner report as written', () => {
     }
   });
 
-  it('still filters engine review text, and strips Project Walk drafting headers from notes', () => {
-    expect(reportBulletText({ text: 'Current condition is unknown and needs verification.', kind: 'needs_review' })).toBe('');
+  it('treats every bullet kind alike (none is engine review text; pass 2), and strips Project Walk drafting headers from notes', () => {
+    for (const kind of ['progress', 'schedule', 'issue', 'safety', 'next_step', 'image_reference', 'needs_review']) {
+      expect(reportBulletText({ text: 'Current condition is unknown and needs verification.', kind }))
+        .toBe('Current condition is unknown and needs verification.');
+    }
     const walkNote = 'Project Walk draft — review before sending Field note: Guardrail missing at stair 2 landing.';
     expect(reportBulletText({ text: walkNote, kind: 'progress' })).toBe('Guardrail missing at stair 2 landing.');
     expect(stripProjectWalkBoilerplate(walkNote)).toContain('Guardrail missing');
