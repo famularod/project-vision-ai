@@ -39,6 +39,8 @@ export type UpdatePhoto = {
   cloudPreviewUri?: string | null;
   cloudPreviewSignedUrlExpiresAt?: string | null;
   continuityAnchor?: PhotoContinuityAnchor | null;
+  /** Chosen from the photo library: taken at an unknown place, so it never takes the draft's GPS fix. */
+  pickedFromLibrary?: boolean;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;
@@ -197,6 +199,10 @@ export type ProjectArea = {
   longitude: number;
   radiusFeet: number;
   locationCapturedAt?: string | null;
+  /** Accuracy of the saved point in meters, as the phone reported it. Older points have none. */
+  locationAccuracyMeters?: number | null;
+  /** locationCapturedAt of the point that accuracy belongs to; any other point has no known precision. */
+  locationAccuracyCapturedAt?: string | null;
   /** Last user-authored change to area metadata or GPS. */
   updatedAt?: string | null;
 };

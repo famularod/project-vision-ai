@@ -18,7 +18,8 @@ const METERS_TO_FEET = 3.28084;
 
 export type DAVEProjectWalkLocationInput =
   | Readonly<{ status: 'checking' }>
-  | Readonly<{ status: 'unavailable' }>
+  /** No fix, or only an approximate one (Precise Location off), which is used nowhere (GPS review pass 26). */
+  | Readonly<{ status: 'unavailable'; reason?: 'precise-location-off' }>
   | Readonly<{
       status: 'resolved';
       latitude: number;
@@ -115,7 +116,13 @@ function resolveLocation(
     return locationResult('checking', 'Checking which mapped area is nearby…', null);
   }
   if (location.status === 'unavailable') {
-    return locationResult('unavailable', 'Location is unavailable. Choose the area during review.', null);
+    return locationResult(
+      'unavailable',
+      location.reason === 'precise-location-off'
+        ? 'Precise Location is off for Vitruvius, so GPS cannot place you in an area. Choose the area during review.'
+        : 'Location is unavailable. Choose the area during review.',
+      null,
+    );
   }
 
   const matches = mappedAreas

@@ -1,8 +1,12 @@
+import { distanceBetweenCoordinatesFeet, findClosestProjectArea, hasSavedAreaLocation } from './AreaSuggestion';
+import { projectAreasForProject } from './DAVEProjectAreaScope';
+import { formatGpsAccuracy, gpsAccuracyFeet } from './GpsPrecision';
+import { namedAreaOrNull } from './DraftAreaPresentation';
+import { fixIsCurrent } from './DraftPhotoGps';
 import type {
   ProjectArea,
   ProjectUpdate,
   ScheduleItem,
-  UpdatePhoto,
 } from '../types';
 
 export type ProjectLocationConfidence = 'low' | 'medium' | 'high';
@@ -47,15 +51,29 @@ export type DetectLikelyActiveProjectParams = Omit<
   projectNames: string[];
 };
 
+type LocationFixEvidence = {
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  capturedAt: string;
+};
+
+/**
+ * One update as location evidence (GPS review pass 15 reworked this; the
+ * summary was written when fixes never landed):
+ * - its area is the update's named area (placeholders name none), else the
+ *   saved area its current fix is confidently inside;
+ * - its fix counts only while current: taken at most 30 minutes before now;
+ * - it is as recent as its latest activity (its fix and its photos, when
+ *   they were added), which orders updates; library photos count here, as
+ *   work on the update, but never as GPS;
+ * - an update with neither an area nor a current fix is not evidence.
+ */
 type LocationCandidate = {
   areaId: string | null;
   areaName: string | null;
-  gpsLatitude: number | null;
-  gpsLongitude: number | null;
-  gpsAccuracy: number | null;
-  distanceFromSelectedAreaFeet: number | null;
-  locationCapturedAt: string | null;
-  occurredAt: string | null;
+  fix: LocationFixEvidence | null;
+  activityAt: string | null;
   source: ProjectLocationSource;
 };
 
@@ -75,25 +93,36 @@ export function analyzeProjectLocationIntelligence({
     currentUpdate,
   });
   const projectScheduleItems = relatedScheduleItems(projectName, scheduleItems);
-  const candidates = locationCandidates(projectUpdates);
+  // This project's areas only (GPS review pass 16: another project's area on
+  // a shared site became the current area).
+  const scopedAreas = projectAreasForProject({
+    projectAreas,
+    projectName,
+    // Every project's tasks and updates, as the draft passes: ownership of a
+    // legacy area is inferred from who uses it.
+    scheduleItems,
+    updates: currentUpdate ? [currentUpdate, ...updates] : updates,
+  });
+  const candidates = locationCandidates({
+    updates: projectUpdates,
+    currentUpdate: currentUpdate ?? null,
+    projectAreas: scopedAreas,
+    now,
+  });
   const latestCandidate = candidates[0] ?? null;
   const scheduleArea = firstScheduleArea(projectScheduleItems);
-  const currentArea =
-    latestCandidate?.areaName ||
-    scheduleArea ||
-    null;
+  // The schedule only stands in when no update is evidence at all (pass 15:
+  // it named the current area for a placeholder draft at up to 100%).
+  const currentArea = latestCandidate
+    ? latestCandidate.areaName
+    : scheduleArea;
   const matchedArea = findMatchedArea({
-    projectAreas,
+    projectAreas: scopedAreas,
     areaId: latestCandidate?.areaId ?? null,
     areaName: currentArea,
   });
   const buildingName = matchedArea?.building?.trim() || null;
-  const gpsCaptured = Boolean(
-    latestCandidate?.gpsLatitude !== null &&
-      latestCandidate?.gpsLatitude !== undefined &&
-      latestCandidate?.gpsLongitude !== null &&
-      latestCandidate?.gpsLongitude !== undefined,
-  );
+  const gpsCaptured = Boolean(latestCandidate?.fix);
   const areaHasGps = Boolean(matchedArea?.locationCapturedAt);
   const lastKnownLocation = locationLabel({
     buildingName,
@@ -101,15 +130,18 @@ export function analyzeProjectLocationIntelligence({
     gpsCaptured,
   });
   const presenceStatus = projectPresenceStatus({
-    candidate: latestCandidate,
+    fix: latestCandidate?.fix ?? null,
     matchedArea,
   });
+  // A fix adds confidence only when it supports the current area (pass 16:
+  // a fix far from the named area still scored +22).
+  const gpsSupportsArea = presenceStatus === 'on-site';
   const confidenceScore = locationConfidenceScore({
     projectName,
     currentArea,
     scheduleArea,
     buildingName,
-    gpsCaptured,
+    gpsCaptured: gpsSupportsArea,
     areaHasGps,
     latestCandidate,
     now,
@@ -128,8 +160,11 @@ export function analyzeProjectLocationIntelligence({
     presenceStatus,
     confidenceScore,
   });
-  const needsConfirmation =
-    confidence !== 'high' && lastKnownLocation !== UNKNOWN_LOCATION;
+  // Only a named area can be confirmed (pass 15: "I believe you're at GPS
+  // captured").
+  // An off-site fix contradicts the named area, however high the rest
+  // scores (pass 17).
+  const needsConfirmation = Boolean(currentArea) && (confidence !== 'high' || presenceStatus === 'off-site');
 
   return {
     projectName,
@@ -138,7 +173,7 @@ export function analyzeProjectLocationIntelligence({
     gpsStatus: gpsStatus({
       gpsCaptured,
       areaHasGps,
-      accuracy: latestCandidate?.gpsAccuracy ?? null,
+      accuracy: latestCandidate?.fix?.accuracy ?? null,
       currentArea,
     }),
     lastKnownLocation,
@@ -194,7 +229,9 @@ function relatedProjectUpdates({
   currentUpdate?: ProjectUpdate | null;
 }) {
   const related = updates.filter(update =>
-    projectNameMatches(update.projectName, projectName),
+    projectNameMatches(update.projectName, projectName) &&
+    // The open draft stands for its saved copy (pass 15).
+    update.id !== currentUpdate?.id,
   );
 
   if (
@@ -217,71 +254,93 @@ function relatedScheduleItems(projectName: string, scheduleItems: ScheduleItem[]
   );
 }
 
-function locationCandidates(updates: ProjectUpdate[]): LocationCandidate[] {
+function locationCandidates({
+  updates,
+  currentUpdate,
+  projectAreas,
+  now,
+}: {
+  updates: ProjectUpdate[];
+  currentUpdate: ProjectUpdate | null;
+  projectAreas: ProjectArea[];
+  now: Date;
+}): LocationCandidate[] {
   return updates
-    .flatMap(update => [
-      updateLocationCandidate(update),
-      ...update.photos.map(photo => photoLocationCandidate(photo, update)),
-    ])
+    .map(update => updateLocationCandidate(update, update === currentUpdate, projectAreas, now))
     .filter((candidate): candidate is LocationCandidate => Boolean(candidate))
-    .sort(
-      (left, right) =>
-        dateTimeValue(right.locationCapturedAt || right.occurredAt) -
-        dateTimeValue(left.locationCapturedAt || left.occurredAt),
-    );
+    .sort((left, right) => dateTimeValue(right.activityAt) - dateTimeValue(left.activityAt));
 }
 
-function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | null {
-  const hasArea = Boolean(update.selectedAreaId || update.selectedAreaName?.trim());
-  const hasGps = hasGpsCoordinates(update);
-
-  if (!hasArea && !hasGps) return null;
-
-  return {
-    areaId: update.selectedAreaId ?? null,
-    areaName: update.selectedAreaName?.trim() || null,
-    gpsLatitude: update.gpsLatitude ?? null,
-    gpsLongitude: update.gpsLongitude ?? null,
-    gpsAccuracy: update.gpsAccuracy ?? null,
-    distanceFromSelectedAreaFeet: update.distanceFromSelectedAreaFeet ?? null,
-    locationCapturedAt: update.locationCapturedAt ?? null,
-    occurredAt: update.date,
-    source: update.id.startsWith('draft-') ? 'current-draft' : 'typed-update',
-  };
-}
-
-function photoLocationCandidate(
-  photo: UpdatePhoto,
+function updateLocationCandidate(
   update: ProjectUpdate,
+  isOpenDraft: boolean,
+  projectAreas: ProjectArea[],
+  now: Date,
 ): LocationCandidate | null {
-  const hasArea = Boolean(
-    photo.selectedAreaId ||
-      photo.selectedAreaName?.trim() ||
-      update.selectedAreaId ||
-      update.selectedAreaName?.trim(),
-  );
-  const hasGps = hasGpsCoordinates(photo);
+  const fix = currentFix(update, now);
+  const updateArea = namedAreaOrNull(update.selectedAreaName);
+  const photoWithArea = updateArea
+    ? null
+    : update.photos.find(photo => namedAreaOrNull(photo.selectedAreaName)) ?? null;
+  const namedArea = updateArea || namedAreaOrNull(photoWithArea?.selectedAreaName) || null;
+  const fixArea = !namedArea && fix ? areaContainingFix(fix, projectAreas) : null;
+  const areaName = namedArea || fixArea?.name || null;
 
-  if (!hasArea && !hasGps) return null;
+  if (!areaName && !fix) return null;
 
   return {
-    areaId: photo.selectedAreaId ?? update.selectedAreaId ?? null,
-    areaName:
-      photo.selectedAreaName?.trim() ||
-      update.selectedAreaName?.trim() ||
-      null,
-    gpsLatitude: photo.gpsLatitude ?? update.gpsLatitude ?? null,
-    gpsLongitude: photo.gpsLongitude ?? update.gpsLongitude ?? null,
-    gpsAccuracy: photo.gpsAccuracy ?? update.gpsAccuracy ?? null,
-    distanceFromSelectedAreaFeet:
-      photo.distanceFromSelectedAreaFeet ??
-      update.distanceFromSelectedAreaFeet ??
-      null,
-    locationCapturedAt:
-      photo.locationCapturedAt ?? update.locationCapturedAt ?? null,
-    occurredAt: update.date,
-    source: 'photo',
+    areaId: updateArea
+      ? update.selectedAreaId ?? null
+      : photoWithArea
+        ? photoWithArea.selectedAreaId ?? null
+        : fixArea?.id ?? null,
+    areaName,
+    fix,
+    activityAt:
+      latestTime([update.locationCapturedAt, ...update.photos.map(photo => photo.locationCapturedAt)]) ??
+      update.date,
+    source: isOpenDraft ? 'current-draft' : 'typed-update',
   };
+}
+
+/**
+ * The update's fix (or, with none, its latest camera photo's own GPS) if it
+ * was taken at most 30 minutes before now: a fix says where you are only
+ * while it is recent (passes 13 and 15: an old fix read as current GPS and
+ * "On Site"). Library photos never give GPS.
+ */
+function currentFix(update: ProjectUpdate, now: Date): LocationFixEvidence | null {
+  const photoFix = update.photos
+    .filter(photo => !photo.pickedFromLibrary && hasGpsCoordinates(photo))
+    .sort((left, right) => dateTimeValue(right.locationCapturedAt) - dateTimeValue(left.locationCapturedAt))[0];
+  const source = hasGpsCoordinates(update)
+    ? { lat: update.gpsLatitude, lng: update.gpsLongitude, acc: update.gpsAccuracy, at: update.locationCapturedAt }
+    : photoFix
+      ? { lat: photoFix.gpsLatitude, lng: photoFix.gpsLongitude, acc: photoFix.gpsAccuracy, at: photoFix.locationCapturedAt }
+      : null;
+  if (!source || typeof source.lat !== 'number' || typeof source.lng !== 'number') return null;
+  if (!fixIsCurrent(source.at, now.getTime())) return null;
+  return {
+    latitude: source.lat,
+    longitude: source.lng,
+    accuracy: typeof source.acc === 'number' ? source.acc : null,
+    capturedAt: source.at as string,
+  };
+}
+
+/** The project's saved area a fix is confidently inside (the draft's and fusion's rule; pass 16). */
+function areaContainingFix(fix: LocationFixEvidence, projectAreas: ProjectArea[]): ProjectArea | null {
+  const containing = findClosestProjectArea(fix, projectAreas, { diagnose: false });
+  return containing?.withinRadius ? containing.area : null;
+}
+
+function latestTime(values: Array<string | null | undefined>): string | null {
+  return values
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .reduce<string | null>(
+      (latest, value) => (latest === null || Date.parse(value) > Date.parse(latest) ? value : latest),
+      null,
+    );
 }
 
 function firstScheduleArea(scheduleItems: ScheduleItem[]) {
@@ -314,25 +373,24 @@ function findMatchedArea({
   );
 }
 
+/**
+ * On or off site only from a current fix, and only when its error margin
+ * does not straddle the area's edge (pass 15: a stale fix read "On Site";
+ * a 1-3 km fix with Precise Location off read "Off Site").
+ */
 function projectPresenceStatus({
-  candidate,
+  fix,
   matchedArea,
 }: {
-  candidate: LocationCandidate | null;
+  fix: LocationFixEvidence | null;
   matchedArea: ProjectArea | null | undefined;
 }): ProjectPresenceStatus {
-  if (
-    !candidate ||
-    !matchedArea ||
-    typeof candidate.distanceFromSelectedAreaFeet !== 'number' ||
-    !Number.isFinite(candidate.distanceFromSelectedAreaFeet)
-  ) {
-    return 'unknown';
-  }
-
-  return candidate.distanceFromSelectedAreaFeet <= matchedArea.radiusFeet
-    ? 'on-site'
-    : 'off-site';
+  if (!fix || !matchedArea || !hasSavedAreaLocation(matchedArea)) return 'unknown';
+  const distance = distanceBetweenCoordinatesFeet(fix, matchedArea);
+  const margin = gpsAccuracyFeet(fix.accuracy) ?? 0;
+  if (distance + margin <= matchedArea.radiusFeet) return 'on-site';
+  if (distance - margin > matchedArea.radiusFeet) return 'off-site';
+  return 'unknown';
 }
 
 function locationConfidenceScore({
@@ -356,13 +414,13 @@ function locationConfidenceScore({
 }) {
   let score = projectName.trim() ? 20 : 0;
 
-  if (currentArea && latestCandidate) score += 28;
+  if (currentArea && latestCandidate?.areaName) score += 28;
   if (gpsCaptured) score += 22;
   if (areaHasGps) score += 15;
   if (buildingName) score += 10;
   if (scheduleArea) score += 10;
 
-  const latestAgeDays = daysSince(latestCandidate?.locationCapturedAt || latestCandidate?.occurredAt, now);
+  const latestAgeDays = daysSince(latestCandidate?.activityAt, now);
 
   if (latestAgeDays !== null && latestAgeDays <= 14) score += 5;
 
@@ -388,9 +446,9 @@ function gpsStatus({
   currentArea: string | null;
 }) {
   if (gpsCaptured) {
-    return accuracy
-      ? `Captured, accuracy ${Math.round(accuracy).toLocaleString('en-US')} ft`
-      : 'Captured';
+    // accuracy is the fix's, in meters (GPS review, 29 Sep 2026).
+    const precision = formatGpsAccuracy(accuracy);
+    return precision ? `Captured, accuracy ${precision}` : 'Captured';
   }
 
   if (areaHasGps) return 'Area GPS saved';

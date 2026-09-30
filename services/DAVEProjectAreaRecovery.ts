@@ -1,4 +1,5 @@
 import type { ProjectArea } from '../types';
+import { areaPointPrecisionFields } from './GpsPrecision';
 
 /**
  * Combines area records without allowing a default/placeholder coordinate to
@@ -16,8 +17,17 @@ export function mergeDAVEProjectAreaRecord(
     ? candidate
     : current;
 
+  // The point's precision travels with the point, not with the metadata
+  // (GPS review, 29 Sep 2026).
+  const {
+    locationAccuracyMeters: _metadataAccuracy,
+    locationAccuracyCapturedAt: _metadataAccuracyCapturedAt,
+    ...metadata
+  } = metadataWinner;
+  const locationCapturedAt = gpsWinner.locationCapturedAt || null;
+
   return {
-    ...metadataWinner,
+    ...metadata,
     id: current.id,
     projectName:
       normalizeOptionalName(metadataWinner.projectName) ||
@@ -26,7 +36,8 @@ export function mergeDAVEProjectAreaRecord(
       null,
     latitude: gpsWinner.latitude,
     longitude: gpsWinner.longitude,
-    locationCapturedAt: gpsWinner.locationCapturedAt || null,
+    locationCapturedAt,
+    ...pointPrecision(gpsWinner, gpsWinner === candidate ? current : candidate, locationCapturedAt),
     updatedAt: latestTimestamp(current.updatedAt, candidate.updatedAt),
   };
 }
@@ -86,10 +97,44 @@ export function daveProjectAreasNeedingCloudUpload({
     const remote = cloudById.get(id);
     if (!remote) return [record];
     const authoritative = mergeDAVEProjectAreaRecord(remote, record);
-    return stableMeaning(authoritative) === stableMeaning(remote)
+    // A cloud copy carrying another point's precision (written by an older
+    // build) is compared as the merge would keep it, or builds that disagree
+    // about those keys upload it back and forth (review pass 2).
+    const comparableRemote = withOwnPointPrecision(remote);
+    if (stableMeaning(authoritative) === stableMeaning(comparableRemote)) return [];
+    // Restoring precision alone is not uploaded: a build that does not manage
+    // it drops it again on its next merge, and the two would alternate
+    // forever (review pass 3). The next saved point carries it.
+    return comparableRemote.locationAccuracyMeters === undefined &&
+      stableMeaning(withoutPointPrecision(authoritative)) === stableMeaning(comparableRemote)
       ? []
       : [authoritative];
   });
+}
+
+/**
+ * The winning point's precision; if that copy lost it (an older build's
+ * merge drops what it does not manage), the other copy's precision for the
+ * same capture.
+ */
+function pointPrecision(
+  gpsWinner: ProjectArea,
+  other: ProjectArea,
+  locationCapturedAt: string | null,
+) {
+  const own = areaPointPrecisionFields({ ...gpsWinner, locationCapturedAt });
+  return own.locationAccuracyMeters !== undefined
+    ? own
+    : areaPointPrecisionFields({ ...other, locationCapturedAt });
+}
+
+function withoutPointPrecision(area: ProjectArea): ProjectArea {
+  const { locationAccuracyMeters: _meters, locationAccuracyCapturedAt: _capturedAt, ...rest } = area;
+  return rest;
+}
+
+function withOwnPointPrecision(area: ProjectArea): ProjectArea {
+  return { ...withoutPointPrecision(area), ...areaPointPrecisionFields(area) };
 }
 
 function compareGpsAuthority(left: ProjectArea, right: ProjectArea) {

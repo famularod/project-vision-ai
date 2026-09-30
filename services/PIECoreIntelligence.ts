@@ -1585,7 +1585,8 @@ export function buildRuntimeEvidenceQualityInputs(
       projectName,
       areaName,
       capturedAt: photoCapturedAt,
-      gpsConfirmed: fused.gpsEvidence.gpsAvailable,
+      // Confirmed only when GPS confirms the area (GPS review pass 19).
+      gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.gpsConfirmsRecommendedArea !== false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
       // Provider/JARVIS review state is not a human confirmation event.
@@ -1817,7 +1818,8 @@ function buildRuntimeEvidenceTimelineEvents(
     confidence: photo.confidence,
   }));
 
-  const gpsEvents = fused.gpsEvidence.gpsAvailable
+  // A "GPS confirmed" event only when GPS confirmed the area (GPS review pass 18).
+  const gpsEvents = fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.gpsConfirmsRecommendedArea !== false
     ? [{
         id: 'timeline-gps-confirmed',
         type: 'GPS_confirmed' as const,

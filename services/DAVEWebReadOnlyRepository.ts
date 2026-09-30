@@ -291,6 +291,9 @@ export function normalizeWebPhoto(value: unknown): UpdatePhoto | null {
     fileName: readString(photo.fileName),
     mimeType: readString(photo.mimeType),
     cloudStoragePath: readString(photo.cloudStoragePath),
+    // GPS review pass 11: without it the desktop placed library photos at
+    // the update's GPS, unlike the phone.
+    ...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),
     selectedAreaId: readString(photo.selectedAreaId),
     selectedAreaName: readString(photo.selectedAreaName),
     gpsLatitude: readFiniteNumber(photo.gpsLatitude),

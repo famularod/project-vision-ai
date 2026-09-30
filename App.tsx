@@ -235,6 +235,37 @@ import {
   DEFAULT_PROJECT_AREAS,
   normalizeProjectArea,
 } from './services/ProjectAreaRecord';
+import {
+  areaPointAccuracyMeters,
+  areaPointFromFix,
+  areaPointImpreciseMessage,
+  areaPointPrecisionLabel,
+  areaGpsSaveDecision,
+  areaPointSavedMessage,
+  clearWinnerMarginFeet,
+  formatGpsAccuracy,
+  isConfidentlyInsideArea,
+  overviewFixMaxAgeMs,
+  PRECISE_LOCATION_OFF_MESSAGE,
+  PRECISE_LOCATION_OFF_TITLE,
+} from './services/GpsPrecision';
+import { createRecentLocationFix } from './services/RecentLocationFix';
+import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { applyFixToDraft, areaChangeLocationFields } from './services/DraftFix';
+import {
+  currentDraftAreaSuggestion,
+  distanceBetweenCoordinatesFeet,
+  findProjectAreaSuggestions,
+  hasSavedAreaLocation,
+  homeDetectionDecision,
+} from './services/AreaSuggestion';
+import {
+  currentDraftLocationNoticeView,
+  draftAreaPresentation,
+  type DraftLocationNotice,
+  type DraftLocationNoticeDetail,
+} from './services/DraftAreaPresentation';
+import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
 import {
   normalizeProjectItemActivity,
@@ -832,6 +863,8 @@ type LocationSnapshot = {
   longitude: number;
   accuracy: number | null;
   capturedAt: string;
+  /** iOS Precise Location is off for the app: fixes are only good to 1-3 km. */
+  preciseLocationOff?: boolean;
 };
 type OverviewDetectionStatus =
   | 'checking'
@@ -1501,6 +1534,7 @@ function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
       photo.cloudPreviewSignedUrlExpiresAt,
     ),
     continuityAnchor: photo.continuityAnchor || null,
+    ...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),
     selectedAreaId: optionalString(photo.selectedAreaId),
     selectedAreaName: optionalString(photo.selectedAreaName),
     gpsLatitude: optionalNumber(photo.gpsLatitude),
@@ -2269,10 +2303,6 @@ function normalizeStringList(value: unknown) {
 }
 
 
-function hasSavedAreaLocation(area: ProjectArea) {
-  return Boolean(area.locationCapturedAt);
-}
-
 function projectAreaSetupStats(projectAreas: ProjectArea[]) {
   const total = projectAreas.length;
   const saved = projectAreas.filter(hasSavedAreaLocation).length;
@@ -2313,74 +2343,6 @@ function filenameFromDocumentAsset(asset: DocumentPicker.DocumentPickerAsset) {
   return asset.name?.trim() || `reference-document.${fallbackExtension}`;
 }
 
-function distanceBetweenCoordinatesFeet(
-  from: Pick<LocationSnapshot, 'latitude' | 'longitude'>,
-  to: Pick<ProjectArea, 'latitude' | 'longitude'>,
-) {
-  const earthRadiusFeet = 20902231;
-  const toRadians = (value: number) => (value * Math.PI) / 180;
-  const latitudeDelta = toRadians(to.latitude - from.latitude);
-  const longitudeDelta = toRadians(to.longitude - from.longitude);
-  const fromLatitude = toRadians(from.latitude);
-  const toLatitude = toRadians(to.latitude);
-
-  const haversine =
-    Math.sin(latitudeDelta / 2) ** 2 +
-    Math.cos(fromLatitude) *
-      Math.cos(toLatitude) *
-      Math.sin(longitudeDelta / 2) ** 2;
-
-  return (
-    earthRadiusFeet *
-    2 *
-    Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
-  );
-}
-
-function findClosestProjectArea(
-  currentLocation: LocationSnapshot | null,
-  projectAreas: ProjectArea[],
-): AreaSuggestion | null {
-  return findProjectAreaSuggestions(currentLocation, projectAreas)[0] || null;
-}
-
-function findProjectAreaSuggestions(
-  currentLocation: LocationSnapshot | null,
-  projectAreas: ProjectArea[],
-): AreaSuggestion[] {
-  const savedLocationAreas = projectAreas.filter(hasSavedAreaLocation);
-
-  if (!currentLocation || savedLocationAreas.length === 0) {
-    if (__DEV__ && currentLocation && projectAreas.length > 0) {
-      console.warn(
-        'PIE_GPS_MATCH_DIAGNOSTIC no_saved_project_area_coordinates',
-        {
-          totalProjectAreas: projectAreas.length,
-          missingSavedCoordinates: projectAreas.filter(area => !hasSavedAreaLocation(area)).length,
-        },
-      );
-    }
-
-    return [];
-  }
-
-  return savedLocationAreas
-    .map(area => {
-      const distanceFeet = distanceBetweenCoordinatesFeet(
-        currentLocation,
-        area,
-      );
-
-      return {
-        area,
-        distanceFeet,
-        withinRadius:
-          distanceFeet + Math.max(currentLocation.accuracy || 0, 0) <= area.radiusFeet,
-      };
-    })
-    .sort((a, b) => a.distanceFeet - b.distanceFeet);
-}
-
 function likelyProjectCandidatesFromGps(
   currentLocation: LocationSnapshot | null,
   projectAreas: ProjectArea[],
@@ -2416,9 +2378,9 @@ function likelyProjectCandidatesFromGps(
   const hasClearWinner =
     Boolean(first) &&
     (!second ||
-      second.distanceFeet - first.distanceFeet >= Math.max(
+      second.distanceFeet - first.distanceFeet >= clearWinnerMarginFeet(
         GPS_CLEAR_WINNER_DISTANCE_FEET,
-        (currentLocation?.accuracy || 0) * 2,
+        currentLocation?.accuracy,
       ));
 
   return {
@@ -2436,41 +2398,24 @@ function formatFeet(value: number | null | undefined) {
   return `${Math.round(value).toLocaleString('en-US')} ft`;
 }
 
-function locationFieldsFromSnapshot(
-  snapshot: LocationSnapshot,
-  selectedArea?: ProjectArea | null,
-) {
-  const distance =
-    selectedArea && hasSavedAreaLocation(selectedArea)
-      ? distanceBetweenCoordinatesFeet(snapshot, selectedArea)
-      : null;
-
-  return {
-    selectedAreaId: selectedArea?.id || null,
-    selectedAreaName: selectedArea?.name || null,
-    gpsLatitude: snapshot.latitude,
-    gpsLongitude: snapshot.longitude,
-    gpsAccuracy: snapshot.accuracy,
-    distanceFromSelectedAreaFeet: distance,
-    locationCapturedAt: snapshot.capturedAt,
-  };
-}
-
-async function getCurrentLocationSnapshot(): Promise<LocationSnapshot | null> {
+// High (iOS nearest ten meters), not Balanced (hundred meters): areas are
+// 100-250 ft circles (GPS review, 29 Sep 2026). Saving an area point uses Highest.
+async function getCurrentLocationSnapshot(
+  accuracy: Location.Accuracy = Location.Accuracy.High,
+): Promise<LocationSnapshot | null> {
   const permission =
     await Location.requestForegroundPermissionsAsync();
 
   if (!permission.granted) return null;
 
-  const location = await Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
+  const location = await Location.getCurrentPositionAsync({ accuracy });
 
   return {
     latitude: location.coords.latitude,
     longitude: location.coords.longitude,
     accuracy: location.coords.accuracy,
     capturedAt: new Date().toISOString(),
+    preciseLocationOff: permission.ios?.accuracy === 'reduced',
   };
 }
 
@@ -5159,6 +5104,12 @@ function AppShell() {
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
   const projectAreasCurrentRef = useRef(projectAreas);
+  const [areaGpsSaveInFlight] = useState(createKeyedInFlight);
+  // One fix serves home-screen detection for a minute, so data changes do
+  // not restart a multi-second fix (review, 29 Sep 2026).
+  const overviewLocationFixRef = useRef(createRecentLocationFix(() => getCurrentLocationSnapshot(), 60_000, {
+    maxAgeFor: fix => overviewFixMaxAgeMs(fix.accuracy),
+  }));
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const currentReferenceActivationIdsRef = useRef(new Set<string>());
   const projectDocumentsCurrentRef = useRef(projectDocuments);
@@ -5283,11 +5234,15 @@ function AppShell() {
     startupHydration.failures,
   );
 
-  const [draftAreaSuggestion, setDraftAreaSuggestion] =
-    useState<AreaSuggestion | null>(null);
+  // A suggestion belongs to the draft whose fix produced it (review pass 3).
+  const [draftAreaSuggestionEntry, setDraftAreaSuggestionEntry] =
+    useState<{ draftId: string; suggestion: AreaSuggestion } | null>(null);
 
-  const [locationStatus, setLocationStatus] =
-    useState<string | null>(null);
+
+  // Why the draft has no GPS suggestion, shown on Add Photos (GPS review
+  // pass 22: this was a text status nothing rendered).
+  const [draftLocationNotice, setDraftLocationNotice] =
+    useState<DraftLocationNotice | null>(null);
 
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -5356,7 +5311,7 @@ function AppShell() {
   savedUpdatesRef.current = savedUpdates;
   const draftRef = useRef(draft);
   draftRef.current = draft;
-  const draftLocationCaptureGenerationRef = useRef(0);
+  const [draftFixTracker] = useState(createDraftFixTracker);
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -6655,11 +6610,14 @@ useEffect(() => {
         return;
       }
 
-      setProjectDetectionStatus('checking');
+      const recentFix = overviewLocationFixRef.current.fresh();
+      if (!recentFix) setProjectDetectionStatus('checking');
 
       try {
-        const snapshot = await getCurrentLocationSnapshot();
-        const suggestion = findClosestProjectArea(snapshot, projectAreas);
+        const snapshot = recentFix ? recentFix.fix : await overviewLocationFixRef.current.get();
+        // Every area by nearest centre, across every project: a nearer area
+        // of another project keeps this uncertain (review passes 4, 20, 21).
+        const suggestions = findProjectAreaSuggestions(snapshot, projectAreas);
 
         if (!mounted) return;
 
@@ -6677,21 +6635,15 @@ useEffect(() => {
           scheduleItems,
         );
 
-        if (!suggestion?.withinRadius || gpsCandidates.topCandidates.length === 0) {
-          setDetectedProjectName(null);
-          setProjectDetectionStatus('unmatched');
-          return;
-        }
-
-        if (gpsCandidates.ambiguous) {
-          setDetectedProjectName(null);
-          setProjectDetectionStatus('multiple');
-          return;
-        }
-
-        const projectName = gpsCandidates.clearProjectName;
-        setDetectedProjectName(projectName);
-        setProjectDetectionStatus(projectName ? 'detected' : 'unmatched');
+        const decision = homeDetectionDecision({
+          suggestions,
+          clearProjectName: gpsCandidates.clearProjectName,
+          ambiguous: gpsCandidates.ambiguous,
+          hasCandidates: gpsCandidates.topCandidates.length > 0,
+          projectForArea: area => resolveProjectForDetectedArea(area, savedUpdates, activeProjects, scheduleItems),
+        });
+        setDetectedProjectName(decision.projectName);
+        setProjectDetectionStatus(decision.status);
       } catch {
         if (!mounted) return;
 
@@ -6734,6 +6686,19 @@ useEffect(() => {
     }),
     [activeSavedUpdates, draft.projectName, projectAreas, scheduleItems],
   );
+  // Only this draft's suggestion, with the area as it is now; an area deleted
+  // since the fix is not offered (review pass 4).
+  const draftAreaSuggestion = currentDraftAreaSuggestion({
+    entry: draftAreaSuggestionEntry,
+    draft,
+    areas: draftProjectAreas,
+  });
+  const draftLocationNoticeView = currentDraftLocationNoticeView({
+    notice: draftLocationNotice,
+    generation: draftFixTracker.generation(),
+    draft,
+    areas: draftProjectAreas,
+  });
 
   const selectedWorkspaceProjectAreas = useMemo(
     () => projectAreasForProject({
@@ -6787,41 +6752,13 @@ useEffect(() => {
     let nextDraftAfterAreaChange: ProjectUpdate | null = null;
 
     setDraft(prev => {
-      const baseSnapshot =
-        snapshot ||
-        (prev.gpsLatitude !== null &&
-        prev.gpsLatitude !== undefined &&
-        prev.gpsLongitude !== null &&
-        prev.gpsLongitude !== undefined
-          ? {
-              latitude: prev.gpsLatitude,
-              longitude: prev.gpsLongitude,
-              accuracy: prev.gpsAccuracy ?? null,
-              capturedAt:
-                prev.locationCapturedAt || new Date().toISOString(),
-            }
-          : null);
-
-      const locationFields = baseSnapshot
-        ? locationFieldsFromSnapshot(baseSnapshot, area)
-        : {
-            selectedAreaId: area?.id || null,
-            selectedAreaName: area?.name || null,
-            gpsLatitude: prev.gpsLatitude ?? null,
-            gpsLongitude: prev.gpsLongitude ?? null,
-            gpsAccuracy: prev.gpsAccuracy ?? null,
-            distanceFromSelectedAreaFeet: null,
-            locationCapturedAt: prev.locationCapturedAt ?? null,
-          };
+      const locationFields = areaChangeLocationFields(prev, area, snapshot);
 
       const next = {
         ...prev,
         ...locationFields,
         areaStatus: area ? 'confirmed' as const : 'unknown' as const,
-        photos: prev.photos.map(photo => ({
-          ...photo,
-          ...locationFields,
-        })),
+        photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),
       };
 
       nextDraftAfterAreaChange = next;
@@ -6846,96 +6783,79 @@ useEffect(() => {
     }
   }
 
-  async function refreshDraftLocation() {
-    if (!GPS_CAPTURE_ENABLED) {
-      Alert.alert(
-        'GPS rebuild needed',
-        'GPS is temporarily disabled so the app will not crash. I added the missing native permissions; rebuild the iPhone app with npx expo run:ios, then GPS can be re-enabled.',
-      );
-
-      return;
-    }
-
-    Alert.alert(
-      'Use GPS location?',
-      'If this installed app was not rebuilt after adding Location, iOS may close it. Rebuild once with npx expo run:ios before using GPS.',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Use GPS',
-          onPress: () => {
-            draftLocationCaptureRef.current = captureDraftLocation();
-          },
-        },
-      ],
-    );
-  }
-
-  async function captureDraftLocation() {
-    const generation = draftLocationCaptureGenerationRef.current + 1;
-    draftLocationCaptureGenerationRef.current = generation;
-    const target = createDraftLocationCaptureTarget(draftRef.current, generation);
+  // Review pass 2, 29 Sep 2026: callers start a draft and capture in one
+  // handler, before draftRef renders, so the target was the previous draft
+  // and every fix was discarded. They now pass the draft they started.
+  async function captureDraftLocation(targetDraft: ProjectUpdate = draftRef.current) {
+    const generation = draftFixTracker.start(targetDraft.id);
+    const target = createDraftLocationCaptureTarget(targetDraft, generation);
+    // Pending until the fix is written into the draft, which React does at
+    // its next render, not when the fix arrives (review pass 6).
+    let handedToDraft = false;
+    const settle = () => draftFixTracker.settle(generation);
+    const targetAreas = projectAreasForProject({
+      projectAreas,
+      projectName: targetDraft.projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
     const targetIsCurrent = () => isDraftLocationCaptureTargetCurrent(
       target,
       draftRef.current,
-      draftLocationCaptureGenerationRef.current,
+      draftFixTracker.generation(),
     );
-    setLocationStatus('Capturing GPS...');
+    setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'capturing' });
 
     try {
       const snapshot = await getCurrentLocationSnapshot();
       if (!targetIsCurrent()) return null;
 
       if (!snapshot) {
-        setDraftAreaSuggestion(null);
-        setLocationStatus(
-          'Location permission denied. Choose Project Area manually.',
-        );
+        setDraftAreaSuggestionEntry(null);
+        setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'denied' });
         return null;
       }
 
-      const suggestion = findClosestProjectArea(
-        snapshot,
-        draftProjectAreas,
-      );
+      if (snapshot.preciseLocationOff) {
+        // An approximate fix (Precise Location off, ±1-3 km) is written
+        // nowhere: not to an area point (Save GPS) and not to the draft or
+        // its photos (review pass 25). The notice says why.
+        setDraftAreaSuggestionEntry(null);
+        setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'precise-off' });
+        return null;
+      }
+
+      // Every area with a saved point, nearest centre first: the suggestion
+      // is the nearest one the fix is confidently inside, else the nearest;
+      // the notice says what GPS can say about the rest (review pass 23).
+      const candidates = findProjectAreaSuggestions(snapshot, targetAreas);
+      const suggestion = candidates.find(item => item.withinRadius) ?? candidates[0] ?? null;
 
       const reliableSuggestion = suggestion?.withinRadius ? suggestion : null;
-      setDraftAreaSuggestion(reliableSuggestion);
-      setLocationStatus(
-        reliableSuggestion
-          ? `Suggested area: ${reliableSuggestion.area.name}`
-          : 'GPS saved. Choose an area to confirm the work location.',
+      setDraftAreaSuggestionEntry(
+        reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
       );
+      // Where the fix places you is derived at render from the draft's own
+      // fix (review pass 24).
+      setDraftLocationNotice(null);
 
+      handedToDraft = true;
       setDraft(prev => {
+        settle();
         if (!isDraftLocationCaptureTargetCurrent(
           target,
           prev,
-          draftLocationCaptureGenerationRef.current,
+          draftFixTracker.generation(),
         )) {
           return prev;
         }
-        const selectedArea =
-          draftProjectAreas.find(area => area.id === prev.selectedAreaId) ||
-          null;
-        const locationFields = locationFieldsFromSnapshot(
-          snapshot,
-          selectedArea,
-        );
-
-        return {
-          ...prev,
-          ...locationFields,
-          areaStatus:
-            selectedArea
-              ? 'confirmed'
-              : reliableSuggestion
-                ? 'suggested'
-                : prev.areaStatus,
-        };
+        return applyFixToDraft({
+          draft: prev,
+          fix: snapshot,
+          areas: targetAreas,
+          reliableSuggestion,
+          now: Date.now(),
+        });
       });
 
       return {
@@ -6944,12 +6864,21 @@ useEffect(() => {
       };
     } catch {
       if (!targetIsCurrent()) return null;
-      setDraftAreaSuggestion(null);
-      setLocationStatus(
-        'GPS could not be captured. Choose Project Area manually.',
-      );
+      setDraftAreaSuggestionEntry(null);
+      setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'failed' });
       return null;
+    } finally {
+      if (!handedToDraft) settle();
     }
+  }
+
+  // A save drops the draft's pending fix. Only that draft, still open and
+  // still without GPS, takes a new one: re-fixing any GPS-less draft would
+  // stamp today's location on an older update's photos (review pass 5).
+  function recaptureDroppedDraftLocation(savedDraftId: string, droppedPendingFix: boolean) {
+    const openDraft = draftRef.current;
+    if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;
+    draftLocationCaptureRef.current = captureDraftLocation(openDraft);
   }
 
   async function waitForDraftLocationCapture() {
@@ -6962,44 +6891,14 @@ useEffect(() => {
     ]);
   }
 
-  function confirmSuggestedArea() {
-    if (!draftAreaSuggestion) {
-      Alert.alert(
-        'No suggestion yet',
-        'Refresh GPS Location first, then confirm the suggested area.',
-      );
-
-      return;
-    }
-
-    const snapshot =
-      draft.gpsLatitude !== null &&
-      draft.gpsLatitude !== undefined &&
-      draft.gpsLongitude !== null &&
-      draft.gpsLongitude !== undefined
-        ? {
-            latitude: draft.gpsLatitude,
-            longitude: draft.gpsLongitude,
-            accuracy: draft.gpsAccuracy ?? null,
-            capturedAt:
-              draft.locationCapturedAt || new Date().toISOString(),
-          }
-        : null;
-
-    applyAreaAndLocationToDraft(draftAreaSuggestion.area, snapshot);
-    setLocationStatus('Project Area confirmed');
-  }
 
   function changeDraftArea(areaId: string) {
     const area =
       draftProjectAreas.find(item => item.id === areaId) || null;
+    // An area removed since it was offered must not clear the draft's area.
+    if (areaId && !area) return;
 
     applyAreaAndLocationToDraft(area);
-    setLocationStatus(
-      area
-        ? `Project Area set to ${area.name}`
-        : 'Project Area cleared',
-    );
   }
 
   function selectQuickContext(context: QuickContext) {
@@ -7893,6 +7792,9 @@ useEffect(() => {
 
     fieldUpdateSaveInFlightRef.current = true;
     setFieldUpdateSaving(true);
+    // A fix landing during the write would make the saved draft look edited
+    // and keep it open (review pass 3); this draft's pending fix is dropped.
+    const droppedPendingFix = draftFixTracker.beginSave(draftSnapshot.id);
     const now = new Date().toISOString();
     const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
     const idempotencyKey = draftSnapshot.idempotencyKey ||
@@ -7946,6 +7848,7 @@ useEffect(() => {
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
+      recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
 
@@ -7954,6 +7857,8 @@ useEffect(() => {
       setDraft(createDraft(queuedUpdate.projectName));
       setDraftSavedAt(null);
       setScreen('ProjectWorkspace');
+    } else {
+      recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
     }
 
     try {
@@ -8304,10 +8209,12 @@ useEffect(() => {
   }
 
   function beginDraftForProject(projectName: string) {
-    setDraft(createDraft(projectName));
+    const nextDraft = createDraft(projectName);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
     setSelectedWorkspaceProject(projectName);
     setScreen('AddPhotos');
-    draftLocationCaptureRef.current = captureDraftLocation();
+    draftLocationCaptureRef.current = captureDraftLocation(nextDraft);
   }
 
   function createNewUpdate(projectName?: string) {
@@ -8383,7 +8290,7 @@ useEffect(() => {
     ) || null;
 
     function proceed() {
-      setDraft({
+      const nextDraft: ProjectUpdate = {
         ...createDraft(taskProjectName),
         scheduleItemId: scheduleItem.id,
         scheduleTaskName: scheduleItem.taskName,
@@ -8391,10 +8298,12 @@ useEffect(() => {
         selectedAreaId: area?.id || null,
         selectedAreaName: area?.name || scheduleItem.locationName || 'Unassigned / Unknown Area',
         areaStatus: area || scheduleItem.locationName ? 'confirmed' : 'unknown',
-      });
+      };
+      draftRef.current = nextDraft;
+      setDraft(nextDraft);
       setSelectedWorkspaceProject(parentProjectName);
       setScreen('AddPhotos');
-      draftLocationCaptureRef.current = captureDraftLocation();
+      draftLocationCaptureRef.current = captureDraftLocation(nextDraft);
     }
 
     if (!hasDraftContent(draft)) {
@@ -9144,9 +9053,11 @@ function addProject(projectName: string) {
   function updateProjectArea(
     areaId: string,
     next: Partial<ProjectArea>,
-  ) {
-    const current = projectAreas.find(area => area.id === areaId);
-    if (!current) return;
+  ): boolean {
+    // The latest copy: Save GPS calls this after a fix that takes seconds
+    // (review, 29 Sep 2026).
+    const current = projectAreasCurrentRef.current.find(area => area.id === areaId);
+    if (!current) return false;
     const updated = normalizeProjectArea({
       ...current,
       ...next,
@@ -9157,6 +9068,7 @@ function addProject(projectName: string) {
     void queueProjectAreaRecord(updated).catch(() => {
       Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
     });
+    return true;
   }
 
   function deleteProjectArea(areaId: string) {
@@ -9198,39 +9110,30 @@ function addProject(projectName: string) {
     );
   }
 
-  async function useCurrentLocationForArea(areaId: string) {
-    if (!GPS_CAPTURE_ENABLED) {
-      Alert.alert(
-        'GPS rebuild needed',
-        'GPS is temporarily disabled so the app will not crash. I added the missing native permissions; rebuild the iPhone app with npx expo run:ios, then GPS can be re-enabled.',
-      );
-
+  function useCurrentLocationForArea(areaId: string) {
+    const area = projectAreas.find(item => item.id === areaId);
+    if (!area || !hasSavedAreaLocation(area)) {
+      void saveCurrentLocationForArea(areaId);
       return;
     }
 
     Alert.alert(
-      'Use current GPS?',
-      'If this installed app was not rebuilt after adding Location, iOS may close it. Rebuild once with npx expo run:ios before using GPS.',
+      'Replace saved GPS?',
+      `Stand in ${area.name}. Your current location replaces its saved GPS point.`,
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Use GPS',
-          onPress: () => {
-            void saveCurrentLocationForArea(areaId);
-          },
-        },
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Replace GPS', onPress: () => void saveCurrentLocationForArea(areaId) },
       ],
     );
   }
 
   async function saveCurrentLocationForArea(areaId: string) {
+    if (!areaGpsSaveInFlight.tryStart(areaId)) return;
     try {
-      const snapshot = await getCurrentLocationSnapshot();
+      const snapshot = await getCurrentLocationSnapshot(Location.Accuracy.Highest);
 
-      if (!snapshot) {
+      const decision = areaGpsSaveDecision(snapshot);
+      if (!snapshot || decision === 'location-denied') {
         Alert.alert(
           'Location access needed',
           'Allow location access, or enter/update this area manually later.',
@@ -9238,22 +9141,34 @@ function addProject(projectName: string) {
 
         return;
       }
+      if (decision === 'precise-off') {
+        Alert.alert(PRECISE_LOCATION_OFF_TITLE, PRECISE_LOCATION_OFF_MESSAGE, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => void Linking.openSettings() },
+        ]);
+        return;
+      }
 
-      updateProjectArea(areaId, {
-        latitude: snapshot.latitude,
-        longitude: snapshot.longitude,
-        locationCapturedAt: snapshot.capturedAt,
-      });
-
-      Alert.alert(
-        'Area location saved',
-        'This project area now uses your current GPS location.',
-      );
+      const save = () => {
+        if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;
+        Alert.alert('Area location saved', areaPointSavedMessage(snapshot.accuracy));
+      };
+      if (decision === 'save') {
+        save();
+        return;
+      }
+      Alert.alert('GPS is not precise here', areaPointImpreciseMessage(snapshot.accuracy), [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save Anyway', onPress: save },
+        { text: 'Try Again', onPress: () => void saveCurrentLocationForArea(areaId) },
+      ]);
     } catch {
       Alert.alert(
         'GPS unavailable',
         'Current location could not be captured right now.',
       );
+    } finally {
+      areaGpsSaveInFlight.finish(areaId);
     }
   }
 
@@ -9442,25 +9357,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       try {
         for (const asset of result.assets) {
-          photos.push(withDraftPhotoContext(await photoFromAsset(asset), draft));
+          photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));
         }
 
+        // The draft as it is now, not when the button was tapped: a GPS fix
+        // may have landed while the camera or picker was open (review pass 2).
+        const baseDraft = draftRef.current;
         const nextDraft = {
-          ...draft,
-          photos: [...draft.photos, ...photos],
+          ...baseDraft,
+          photos: [...baseDraft.photos, ...photos],
           workflowTimestamps: {
-            ...(draft.workflowTimestamps || {}),
+            ...(baseDraft.workflowTimestamps || {}),
             cameraActionStartedAt:
-              draft.workflowTimestamps?.cameraActionStartedAt ||
+              baseDraft.workflowTimestamps?.cameraActionStartedAt ||
               cameraActionStartedAt,
             firstPhotoAddedAt:
-              draft.workflowTimestamps?.firstPhotoAddedAt ||
+              baseDraft.workflowTimestamps?.firstPhotoAddedAt ||
               new Date().toISOString(),
           },
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9523,27 +9441,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
       try {
         for (const asset of result.assets) {
           photos.push({
-            ...withDraftPhotoContext(await photoFromAsset(asset), draft),
+            ...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),
             continuityAnchor: continuityAnchor || null,
           });
         }
 
+        // The draft as it is now, not when the button was tapped: a GPS fix
+        // may have landed while the camera or picker was open (review pass 2).
+        const baseDraft = draftRef.current;
         const nextDraft = {
-          ...draft,
-          photos: [...draft.photos, ...photos],
+          ...baseDraft,
+          photos: [...baseDraft.photos, ...photos],
           workflowTimestamps: {
-            ...(draft.workflowTimestamps || {}),
+            ...(baseDraft.workflowTimestamps || {}),
             cameraActionStartedAt:
-              draft.workflowTimestamps?.cameraActionStartedAt ||
+              baseDraft.workflowTimestamps?.cameraActionStartedAt ||
               cameraActionStartedAt,
             firstPhotoAddedAt:
-              draft.workflowTimestamps?.firstPhotoAddedAt ||
+              baseDraft.workflowTimestamps?.firstPhotoAddedAt ||
               new Date().toISOString(),
           },
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9587,15 +9508,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
     photo: UpdatePhoto,
     sourceDraft: ProjectUpdate,
   ): UpdatePhoto {
+    // The draft's fix only if recent; the photo's own time, not the fix's
+    // (GPS review pass 8: prior-photo ordering reads it).
     return {
       ...photo,
       selectedAreaId: sourceDraft.selectedAreaId ?? null,
       selectedAreaName: sourceDraft.selectedAreaName ?? null,
-      gpsLatitude: sourceDraft.gpsLatitude ?? null,
-      gpsLongitude: sourceDraft.gpsLongitude ?? null,
-      gpsAccuracy: sourceDraft.gpsAccuracy ?? null,
-      distanceFromSelectedAreaFeet: sourceDraft.distanceFromSelectedAreaFeet ?? null,
-      locationCapturedAt: sourceDraft.locationCapturedAt || new Date().toISOString(),
+      ...newPhotoGps(sourceDraft, Date.now()),
+      locationCapturedAt: new Date().toISOString(),
       photoIntelligence: buildAnalyzingPhotoIntelligenceState(),
     };
   }
@@ -13579,6 +13499,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
+              locationNotice={draftLocationNoticeView}
               recipientCount={
                 currentContacts.length
               }
@@ -15143,6 +15064,7 @@ function AddPhotosScreen({
   projectAreas,
   selectedArea,
   areaSuggestion,
+  locationNotice,
   recipientCount,
   contacts,
   draftSavedAt,
@@ -15167,6 +15089,7 @@ function AddPhotosScreen({
   projectAreas: ProjectArea[];
   selectedArea: ProjectArea | null;
   areaSuggestion: AreaSuggestion | null;
+  locationNotice: DraftLocationNoticeDetail | null;
   recipientCount: number;
   contacts: ProjectContact[];
   draftSavedAt: string | null;
@@ -15194,25 +15117,16 @@ function AddPhotosScreen({
     correctionPenalty: number;
   } | null>(null);
   const documents = update.documents || [];
-  const areaName =
-    selectedArea?.name ||
-    update.selectedAreaName ||
-    areaSuggestion?.area.name ||
-    'Unassigned / Unknown Area';
-  const locationSource = areaSuggestion?.withinRadius
-    ? 'exact-gps-area'
-    : areaSuggestion
-      ? 'gps-radius'
-      : selectedArea
-        ? 'user-selection'
-        : scheduleRecommendation
-          ? 'schedule'
-          : 'last-active-area';
-  const confidenceScore = Math.max(
-    0,
-    (areaSuggestion?.withinRadius ? 90 : areaSuggestion ? 70 : selectedArea ? 80 : 45) -
-      (walkCorrectionMemory?.correctionPenalty || 0),
-  );
+  const areaView = draftAreaPresentation({
+    selectedArea,
+    selectedAreaName: update.selectedAreaName,
+    areaStatus: update.areaStatus,
+    areaSuggestion,
+    hasScheduleRecommendation: Boolean(scheduleRecommendation),
+    correctionPenalty: walkCorrectionMemory?.correctionPenalty,
+    locationNotice,
+  });
+  const { areaName, offeredSuggestion } = areaView;
   const repeatPhotoGuidance =
     liveAuthority.core?.photoRepeatGuidance.find(item =>
       item.needed &&
@@ -15262,22 +15176,19 @@ function AddPhotosScreen({
         <Text style={styles.panelTitle}>Current Area</Text>
         <Text style={styles.bodyText}>{areaName}</Text>
         <Text style={styles.locationDetailText}>
-          Why: {locationSource === 'exact-gps-area'
-            ? 'GPS places you inside this saved area.'
-            : locationSource === 'gps-radius'
-              ? 'This is the nearest saved area within the GPS recommendation range.'
-              : locationSource === 'schedule'
-                ? 'The imported schedule identifies this as the most urgent area.'
-                : 'This is your current confirmed selection.'}
+          Why: {areaView.reason}
         </Text>
-        {confidenceScore < 60 ? (
+        {areaView.locationNotice ? (
+          <Text style={styles.locationDetailText}>{areaView.locationNotice}</Text>
+        ) : null}
+        {!areaView.locationNotice && areaView.confidenceScore < 60 ? (
           <Text style={styles.locationDetailText}>Location is uncertain. Choose the project area before relying on this recommendation.</Text>
         ) : null}
-        {areaSuggestion && areaSuggestion.area.id !== selectedArea?.id ? (
+        {offeredSuggestion ? (
           <SecondaryButton
-            label="Accept Suggested Area"
+            label={`Accept Suggested Area: ${offeredSuggestion.area.name}`}
             icon="location-outline"
-            onPress={() => onChangeArea(areaSuggestion.area.id)}
+            onPress={() => onChangeArea(offeredSuggestion.area.id)}
           />
         ) : null}
         {scheduleRecommendation ? (
@@ -15327,8 +15238,8 @@ function AddPhotosScreen({
 
       <View style={styles.phase3AutoCard}>
         <AreaRow
-          areaName={areaName}
-          status={update.areaStatus || (areaSuggestion ? 'suggested' : 'unknown')}
+          areaName={areaView.areaRowName}
+          status={areaView.areaRowStatus}
           onChange={() => setAreaSheetOpen(true)}
         />
         <RecipientSummaryRow
@@ -17301,12 +17212,21 @@ function ProjectWorkspaceScreen({
     try {
       const snapshot = await getCurrentLocationSnapshot();
       if (request !== projectWalkLocationRequest.current) return;
-      setProjectWalkContext(contextForProjectWalk(snapshot ? {
-        status: 'resolved',
-        latitude: snapshot.latitude,
-        longitude: snapshot.longitude,
-        accuracyMeters: snapshot.accuracy,
-      } : { status: 'unavailable' }));
+      // An approximate fix (Precise Location off) is used nowhere (GPS
+      // review pass 26): it must not name the walk's area or seed the
+      // capture memory.
+      setProjectWalkContext(contextForProjectWalk(
+        !snapshot
+          ? { status: 'unavailable' }
+          : snapshot.preciseLocationOff
+            ? { status: 'unavailable', reason: 'precise-location-off' }
+            : {
+                status: 'resolved',
+                latitude: snapshot.latitude,
+                longitude: snapshot.longitude,
+                accuracyMeters: snapshot.accuracy,
+              },
+      ));
     } catch {
       if (request !== projectWalkLocationRequest.current) return;
       setProjectWalkContext(contextForProjectWalk({ status: 'unavailable' }));
@@ -17934,9 +17854,7 @@ function DiagnosticsScreen({
               <View style={styles.rowMain}>
                 <Text style={styles.projectName}>{area.name}</Text>
                 <Text style={styles.rowSub}>
-                  {hasSavedAreaLocation(area)
-                    ? `GPS saved | Radius ${formatFeet(area.radiusFeet)}`
-                    : `GPS missing | Radius ${formatFeet(area.radiusFeet)}`}
+                  {`${areaPointPrecisionLabel(area)} | Radius ${formatFeet(area.radiusFeet)}`}
                 </Text>
               </View>
             </View>
@@ -18080,7 +17998,7 @@ function ManageAreasPanel({
                     ]}
                   />
                   <Text style={styles.rowSub}>
-                    {gpsSaved ? 'GPS saved' : 'GPS missing'}
+                    {areaPointPrecisionLabel(area)}
                   </Text>
                 </View>
               </View>
@@ -18225,6 +18143,7 @@ function AreaDetailModal({
                 </Text>
                 <Text style={styles.rowSub}>
                   Saved {formatSavedTime(area.locationCapturedAt || null)}
+                  {` · ${formatGpsAccuracy(areaPointAccuracyMeters(area)) ?? 'precision not recorded'}`}
                 </Text>
               </>
             ) : (

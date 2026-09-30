@@ -28,6 +28,16 @@ import {
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import {
+  distanceBetweenCoordinatesFeet,
+  findClosestProjectArea,
+  findProjectAreaSuggestions,
+  hasSavedAreaLocation,
+} from './AreaSuggestion';
+import { gpsAccuracyFeet, isConfidentlyInsideArea } from './GpsPrecision';
+import { projectAreasForProject } from './DAVEProjectAreaScope';
+import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
+import { fixIsCurrent } from './DraftPhotoGps';
+import {
   classifyDAVEBlocker,
   classifyDAVEIssue,
   classifyDAVESafety,
@@ -135,6 +145,8 @@ export type PIEPhotoEvidence = {
   id: string;
   updateId: string;
   projectName: string;
+  /** The saved area the name refers to, when known (GPS review pass 18). */
+  areaId?: string | null;
   areaName: string | null;
   caption: string | null;
   category: UpdatePhoto['category'];
@@ -146,6 +158,8 @@ export type PIEPhotoEvidence = {
   gpsLatitude: number | null;
   gpsLongitude: number | null;
   gpsAccuracy: number | null;
+  /** When the photo's GPS was taken: the update's fix time when the photo took that fix (GPS review pass 22). */
+  gpsCapturedAt?: string | null;
   hasGps: boolean;
   isIssue: boolean;
   isSafety: boolean;
@@ -166,6 +180,15 @@ export type PIEGPSEvidence = {
   nearestMappedArea: string | null;
   distanceFromNearestAreaFeet: number | null;
   withinMappedArea: boolean | null;
+  /** The fix is confidently inside the recommended area (GPS review pass 17). */
+  gpsConfirmsRecommendedArea?: boolean;
+  /** The update the latest GPS reading belongs to (GPS review pass 19). */
+  sourceUpdateId?: string | null;
+  /**
+   * When the latest GPS reading was taken: the fix's own time, not the time
+   * of the photo that carries it (GPS review passes 21-22).
+   */
+  capturedAt?: string | null;
   correctionStatus: 'accepted' | 'corrected' | 'needs-verification' | 'not-available';
   supportsProjectWalk: boolean;
   confidenceScore: number;
@@ -397,7 +420,11 @@ export function buildFusedEvidence({
     updates: projectUpdates,
     photoEvidence,
     scheduleEvidence,
-    projectAreas,
+    // This project's areas only: another project's area on a shared site
+    // became "GPS supports" here (GPS review pass 16).
+    projectAreas: resolvedProjectName
+      ? projectAreasForProject({ projectAreas, projectName: resolvedProjectName, scheduleItems, updates })
+      : projectAreas,
   });
   const userUpdateEvidence = extractUserUpdateEvidence({
     projectName: resolvedProjectName,
@@ -569,8 +596,11 @@ export function extractPhotoEvidence({
       update.photos.map(photo => {
         const caption = trimOrNull(photo.caption);
         const actionRequired = trimOrNull(photo.actionRequired);
-        const areaName = trimOrNull(photo.selectedAreaName ?? '') ||
+        const photoAreaName = trimOrNull(photo.selectedAreaName ?? '');
+        const areaName = photoAreaName ||
           trimOrNull(update.selectedAreaName ?? '');
+        // The id of the area the name came from (GPS review pass 18).
+        const areaId = (photoAreaName ? photo.selectedAreaId : update.selectedAreaId) ?? null;
         const photoAssertionText = `${caption || ''} ${actionRequired || ''}`;
         const hasGps =
           typeof photo.gpsLatitude === 'number' &&
@@ -597,6 +627,7 @@ export function extractPhotoEvidence({
         return {
           id: photo.id,
           updateId: update.id,
+          areaId,
           projectName: update.projectName,
           areaName,
           caption,
@@ -609,6 +640,7 @@ export function extractPhotoEvidence({
           gpsLatitude: photo.gpsLatitude ?? null,
           gpsLongitude: photo.gpsLongitude ?? null,
           gpsAccuracy: photo.gpsAccuracy ?? null,
+          gpsCapturedAt: photoGpsCapturedAt(photo, update),
           hasGps,
           isIssue,
           isSafety,
@@ -633,6 +665,27 @@ export function extractPhotoEvidence({
     );
 }
 
+/**
+ * When a photo's GPS was taken: a camera photo takes the draft's fix (the
+ * same coordinates) and keeps its own, later capture time, so the fix's time
+ * is the update's; a photo with GPS of its own was located when it was taken
+ * (GPS review pass 22: the conflict's 30-minute clock ran from the photo).
+ */
+function photoGpsCapturedAt(photo: UpdatePhoto, update: ProjectUpdate): string | null {
+  if (typeof photo.gpsLatitude !== 'number' || typeof photo.gpsLongitude !== 'number') return null;
+  const tookUpdateFix =
+    sameCoordinate(photo.gpsLatitude, update.gpsLatitude) &&
+    sameCoordinate(photo.gpsLongitude, update.gpsLongitude);
+  return (tookUpdateFix ? update.locationCapturedAt : null) || photo.locationCapturedAt || null;
+}
+
+/** About 10 cm: a copied coordinate survives rounding to six decimals (pass 23). */
+const COORDINATE_MATCH_TOLERANCE_DEGREES = 1e-6;
+
+function sameCoordinate(left: number, right: number | null | undefined): boolean {
+  return typeof right === 'number' && Math.abs(left - right) <= COORDINATE_MATCH_TOLERANCE_DEGREES;
+}
+
 export function extractGPSEvidence({
   projectName,
   updates = [],
@@ -650,22 +703,30 @@ export function extractGPSEvidence({
     .filter(update => matchesProject(projectName, update.projectName))
     .map(update => ({
       projectName: update.projectName,
-      areaName: trimOrNull(update.selectedAreaName ?? ''),
+      areaId: update.selectedAreaId ?? null,
+      areaName: namedArea(update.selectedAreaName),
       latitude: update.gpsLatitude ?? null,
       longitude: update.gpsLongitude ?? null,
       accuracy: update.gpsAccuracy ?? null,
       capturedAt: update.locationCapturedAt || update.date || null,
+      fixCapturedAt: update.locationCapturedAt || null,
       sourceId: update.id,
+      updateId: update.id,
       sourceType: 'typed-update' as const,
     }));
+  // Ordered by the activity's time (a late photo orders its update, pass
+  // 12); the reading's currency runs from the fix's time (pass 22).
   const photoGps = photoEvidence.map(photo => ({
     projectName: photo.projectName,
-    areaName: photo.areaName,
+    areaId: photo.areaId ?? null,
+    areaName: namedArea(photo.areaName),
     latitude: photo.gpsLatitude,
     longitude: photo.gpsLongitude,
     accuracy: photo.gpsAccuracy,
     capturedAt: photo.timestamp,
+    fixCapturedAt: photo.gpsCapturedAt ?? photo.timestamp,
     sourceId: photo.id,
+    updateId: photo.updateId,
     sourceType: 'photo' as const,
   }));
   const candidates = [...photoGps, ...updateGps]
@@ -678,32 +739,75 @@ export function extractGPSEvidence({
   const latest = candidates[0] ?? null;
   const areaCandidate =
     latest?.areaName ||
-    mostCommon(photoEvidence.map(photo => photo.areaName)) ||
-    mostCommon(scheduleEvidence.map(item => item.areaName)) ||
+    mostCommon(photoEvidence.map(photo => namedArea(photo.areaName) ?? '')) ||
+    mostCommon(scheduleEvidence.map(item => namedArea(item.areaName) ?? '')) ||
     null;
-  const nearest = latest &&
+  const latestFix = latest &&
     typeof latest.latitude === 'number' &&
     typeof latest.longitude === 'number'
-    ? nearestArea(
-        latest.latitude,
-        latest.longitude,
-        projectAreas,
-      )
+    ? { latitude: latest.latitude, longitude: latest.longitude, accuracy: latest.accuracy ?? null }
     : null;
-  const recommendedArea = nearest?.withinRadius
-    ? nearest.area.name
-    : areaCandidate || nearest?.area.name || null;
+  // Among areas with a saved point: the nearest centre (reported), and the
+  // area the fix is confidently inside, the same rule as the draft's own
+  // suggestion (GPS review passes 11-16).
+  const nearest = latestFix
+    ? findProjectAreaSuggestions(latestFix, projectAreas, { diagnose: false })[0] ?? null
+    : null;
+  const containing = latestFix
+    ? findClosestProjectArea(latestFix, projectAreas, { diagnose: false })
+    : null;
+  // The fix's own named area, while the fix is not confidently outside it (a
+  // room inside a building, a fix near the edge); else the area the fix is
+  // confidently inside; else none. Not the named area far away, not photo or
+  // schedule history (passes 14-16). Without a fix, the history fallback stays.
+  const latestName = namedArea(latest?.areaName);
+  const namedFixArea = latestFix && latestName
+    ? (latest?.areaId ? projectAreas.find(area => area.id === latest.areaId) : undefined) ??
+      projectAreas.find(area => sameArea(area.name, latestName))
+    : undefined;
+  // A named area without a saved point cannot be judged by GPS: it stands
+  // as named and is never "contradicted" (GPS review pass 17).
+  const namedAreaUnmapped = Boolean(latestFix && latestName && !(namedFixArea && hasSavedAreaLocation(namedFixArea)));
+  const supportingArea = namedAreaUnmapped
+    ? null
+    : namedFixArea && latestFix && !isConfidentlyOutsideArea(latestFix, namedFixArea)
+      ? namedFixArea
+      : containing?.withinRadius ? containing.area : null;
+  // When GPS supports the update's own area, it keeps the update's name for
+  // it: an area renamed since is still the same area (pass 18).
+  const supportsNamedArea = Boolean(supportingArea && namedFixArea && supportingArea.id === namedFixArea.id);
+  const recommendedArea = latest
+    ? namedAreaUnmapped || supportsNamedArea ? latestName : supportingArea?.name ?? null
+    : areaCandidate;
+  // GPS confirms an area only when the fix is confidently inside it; "not
+  // ruled out" names the area without claiming GPS support (pass 17: a
+  // ±1,500 m fix read "GPS supports North Lot with 100%").
+  const gpsConfirmsArea = Boolean(
+    latestFix && supportingArea &&
+    isConfidentlyInsideArea({
+      distanceFeet: distanceBetweenCoordinatesFeet(latestFix, supportingArea),
+      accuracyMeters: latestFix.accuracy,
+      radiusFeet: supportingArea.radiusFeet,
+    }),
+  );
   const recommendedProject =
     projectName ||
     latest?.projectName ||
     mostCommon(scheduleEvidence.map(item => item.projectName)) ||
     null;
   const gpsAvailable = Boolean(latest);
+  // With a fix, only the area GPS supports counts toward confidence, as for
+  // the recommendation (GPS review pass 15).
+  // Inside some saved area of this project, confidently: a fact about the
+  // fix, whatever the update named (pass 11).
+  const insideMappedArea = Boolean(containing?.withinRadius);
+  // With a fix, confidence counts only GPS confirming the recommended area
+  // (pass 18: inside some other area still scored "high").
   const confidenceScore = gpsConfidenceScore({
     gpsAvailable,
-    hasSelectedArea: Boolean(areaCandidate),
-    hasNearestArea: Boolean(nearest),
-    withinMappedArea: nearest?.withinRadius ?? false,
+    hasSelectedArea: latest ? gpsConfirmsArea : Boolean(areaCandidate),
+    hasNearestArea: gpsConfirmsArea,
+    withinMappedArea: gpsConfirmsArea,
     hasScheduleArea: scheduleEvidence.some(item => item.areaName !== 'Unassigned area'),
   });
   const confidence = confidenceFromScore(confidenceScore);
@@ -712,7 +816,7 @@ export function extractGPSEvidence({
       ? 'not-available'
       : confidenceScore < 70
         ? 'needs-verification'
-        : areaCandidate && nearest && nearest.area.name !== areaCandidate
+        : gpsConfirmsArea && supportingArea && namedFixArea && supportingArea.id !== namedFixArea.id
           ? 'corrected'
           : 'accepted';
 
@@ -729,7 +833,10 @@ export function extractGPSEvidence({
     accuracy: latest?.accuracy ?? null,
     nearestMappedArea: nearest?.area.name ?? null,
     distanceFromNearestAreaFeet: nearest?.distanceFeet ?? null,
-    withinMappedArea: nearest ? nearest.withinRadius : null,
+    withinMappedArea: latestFix ? insideMappedArea : null,
+    gpsConfirmsRecommendedArea: gpsConfirmsArea,
+    sourceUpdateId: latest?.updateId ?? null,
+    capturedAt: latest?.fixCapturedAt ?? null,
     correctionStatus,
     supportsProjectWalk: Boolean(recommendedProject || recommendedArea),
     confidenceScore,
@@ -1078,14 +1185,29 @@ export function findEvidenceConflicts(
     }));
   }
 
-  const gpsArea = evidence.gpsEvidence.recommendedArea;
-  const recentUpdateArea = evidence.userUpdateEvidence[0]?.areaName;
-  if (gpsArea && recentUpdateArea && !sameArea(gpsArea, recentUpdateArea)) {
+  // A placeholder names no area on either side (GPS review passes 12-14),
+  // and GPS contradicts an update only with an area it confirms (pass 18).
+  const gpsArea = evidence.gpsEvidence.gpsConfirmsRecommendedArea === false
+    ? null
+    : namedArea(evidence.gpsEvidence.recommendedArea);
+  // Only an update's own GPS can contradict its area: the GPS reading is
+  // compared with the update it came from, found by id (passes 19-20: the
+  // newest update is often the open, empty draft), else the newest update.
+  const sourceUpdate = evidence.gpsEvidence.sourceUpdateId === undefined
+    ? evidence.userUpdateEvidence[0]
+    : evidence.userUpdateEvidence.find(update => update.id === evidence.gpsEvidence.sourceUpdateId);
+  const sourceUpdateArea = namedArea(sourceUpdate?.areaName);
+  // The conflict is about the area you are in now, so it is raised only
+  // while the reading is current (pass 21: an update saved two days ago
+  // asked you to "confirm the current project area", and nothing short of
+  // editing that update could clear it).
+  const readingIsCurrent = fixIsCurrent(evidence.gpsEvidence.capturedAt, Date.parse(evidence.generatedAt));
+  if (readingIsCurrent && gpsArea && sourceUpdateArea && !sameArea(gpsArea, sourceUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',
       title: 'GPS area differs from update area',
-      summary: `GPS suggests ${gpsArea}, but the latest update references ${recentUpdateArea}.`,
+      summary: `GPS suggests ${gpsArea}, but the update with that GPS references ${sourceUpdateArea}.`,
       sources: ['gps', 'typed-update', 'project-area'],
       severity: 'medium',
       suggestedAction: 'Confirm the current project area before saving the next update.',
@@ -1148,7 +1270,11 @@ export function buildIntelligentSummary(
         ? 'No photo evidence is available.'
         : `${summary.photoCount} photo${summary.photoCount === 1 ? '' : 's'} available; ${summary.captionedPhotoCount} captioned and ${summary.photoActionCount} action-linked.`,
     gpsLocationConfidence: fusedEvidence.gpsEvidence.gpsAvailable
-      ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea || 'the current area'} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
+      ? fusedEvidence.gpsEvidence.gpsConfirmsRecommendedArea && fusedEvidence.gpsEvidence.recommendedArea
+        ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
+        : fusedEvidence.gpsEvidence.recommendedArea
+          ? `GPS does not confirm ${fusedEvidence.gpsEvidence.recommendedArea}.`
+          : 'The latest GPS fix is not inside a saved area.'
       : 'GPS is unavailable; project, area, schedule, or last activity context is being used.',
     userUpdateSummary:
       summary.userUpdateCount === 0
@@ -1621,52 +1747,6 @@ function emptyIntelligentSummary(
   };
 }
 
-function nearestArea(
-  latitude: number,
-  longitude: number,
-  areas: ProjectArea[],
-) {
-  const candidates = areas
-    .map(area => {
-      const distanceFeet = distanceInFeet(
-        latitude,
-        longitude,
-        area.latitude,
-        area.longitude,
-      );
-
-      return {
-        area,
-        distanceFeet,
-        withinRadius: distanceFeet <= area.radiusFeet,
-      };
-    })
-    .sort((left, right) => left.distanceFeet - right.distanceFeet);
-
-  return candidates[0] ?? null;
-}
-
-function distanceInFeet(
-  startLatitude: number,
-  startLongitude: number,
-  endLatitude: number,
-  endLongitude: number,
-) {
-  const earthRadiusFeet = 20925524.9;
-  const deltaLatitude = toRadians(endLatitude - startLatitude);
-  const deltaLongitude = toRadians(endLongitude - startLongitude);
-  const startRadians = toRadians(startLatitude);
-  const endRadians = toRadians(endLatitude);
-  const a =
-    Math.sin(deltaLatitude / 2) ** 2 +
-    Math.cos(startRadians) *
-      Math.cos(endRadians) *
-      Math.sin(deltaLongitude / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return earthRadiusFeet * c;
-}
-
 function matchesDocumentProject(
   projectName: string,
   document: ReferenceDocument,
@@ -1682,6 +1762,15 @@ function matchesProject(projectName: string | null | undefined, value: string | 
   if (!projectName || projectName === 'Unassigned Project') return true;
 
   return normalizedKey(projectName) === normalizedKey(value || '');
+}
+
+/** The fix's whole error margin lies outside the area's circle. */
+function isConfidentlyOutsideArea(
+  fix: Readonly<{ latitude: number; longitude: number; accuracy: number | null }>,
+  area: ProjectArea,
+) {
+  const distance = distanceBetweenCoordinatesFeet(fix, area);
+  return distance - (gpsAccuracyFeet(fix.accuracy) ?? 0) > area.radiusFeet;
 }
 
 function sameArea(left: string | null | undefined, right: string | null | undefined) {

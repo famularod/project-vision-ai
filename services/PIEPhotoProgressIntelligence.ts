@@ -14,6 +14,7 @@ import type {
 } from './PIERealityModel';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { photoGpsOrUpdate } from './DraftPhotoGps';
 
 export type PIEPhotoComparability =
   | 'strong_match'
@@ -402,21 +403,21 @@ function duplicateKey(photo: UpdatePhoto, update: ProjectUpdate) {
   ].filter(Boolean).join('|');
 }
 
-function inferViewpoint(photo: UpdatePhoto, update: ProjectUpdate, subject: string, areaName: string | null) {
-  const gps =
-    typeof photo.gpsLatitude === 'number' && typeof photo.gpsLongitude === 'number'
-      ? `${photo.gpsLatitude.toFixed(4)},${photo.gpsLongitude.toFixed(4)}`
-      : typeof update.gpsLatitude === 'number' && typeof update.gpsLongitude === 'number'
-        ? `${update.gpsLatitude.toFixed(4)},${update.gpsLongitude.toFixed(4)}`
-        : 'no-gps';
-  return `${slug(update.projectName)}:${slug(areaName)}:${slug(subject)}:${gps}`;
+/**
+ * GPS review pass 9: GPS is not part of the viewpoint. Rounded to about
+ * 10 m, a fix's own error split one spot into several sequences once fixes
+ * landed (before, every photo lacked GPS). Area and subject scope the
+ * viewpoint; the old "no-gps" suffix keeps existing sequence ids.
+ */
+export function inferViewpoint(update: Pick<ProjectUpdate, 'projectName'>, subject: string, areaName: string | null) {
+  return `${slug(update.projectName)}:${slug(areaName)}:${slug(subject)}:no-gps`;
 }
 
 function metadataReliability(photo: UpdatePhoto, update: ProjectUpdate): ProjectConfidenceLevel {
   let score = 0;
   if (photoCapturedAt(update, photo)) score += 25;
   if (photo.selectedAreaName || update.selectedAreaName) score += 25;
-  if (typeof photo.gpsLatitude === 'number' || typeof update.gpsLatitude === 'number') score += 20;
+  if (photoGpsOrUpdate(photo, update).gpsLatitude !== null) score += 20;
   if (photo.caption?.trim()) score += 20;
   if (photo.fileName || photo.mimeType) score += 10;
   return confidenceFromScore(score);
@@ -478,26 +479,11 @@ function flattenPhotos(input: PIEPhotoProgressIntelligenceInput): PIEPhotoIntell
           actionStatus: photo.actionStatus,
           actionOwner: trimOrNull(photo.actionOwner),
           actionRequired: trimOrNull(photo.actionRequired),
-          gpsLatitude:
-            typeof photo.gpsLatitude === 'number'
-              ? photo.gpsLatitude
-              : typeof update.gpsLatitude === 'number'
-                ? update.gpsLatitude
-                : null,
-          gpsLongitude:
-            typeof photo.gpsLongitude === 'number'
-              ? photo.gpsLongitude
-              : typeof update.gpsLongitude === 'number'
-                ? update.gpsLongitude
-                : null,
-          gpsAccuracy:
-            typeof photo.gpsAccuracy === 'number'
-              ? photo.gpsAccuracy
-              : typeof update.gpsAccuracy === 'number'
-                ? update.gpsAccuracy
-                : null,
+          gpsLatitude: photoGpsOrUpdate(photo, update).gpsLatitude,
+          gpsLongitude: photoGpsOrUpdate(photo, update).gpsLongitude,
+          gpsAccuracy: photoGpsOrUpdate(photo, update).gpsAccuracy,
           cameraDirection: inferCameraDirection(text),
-          viewpointKey: inferViewpoint(photo, update, subject, areaName),
+          viewpointKey: inferViewpoint(update, subject, areaName),
           metadataReliability: metadataReliability(photo, update),
           imageQuality: imageQualityFromText(text),
           sourceSignature: stableHash(photoSignature(photo, update)),
