@@ -107,11 +107,14 @@ export function draftPlacementNotice(input: Readonly<{
     radiusFeet: item.area.radiusFeet,
   }));
   if (possible) return { kind: 'unconfirmed', areaName: possible.area.name, accuracyMeters };
-  const nearest = input.suggestions[0];
+  // The area whose edge is nearest, not whose centre is (pass 25: a small
+  // area's centre can be nearer while a large area's edge is much closer).
+  const gap = (item: AreaSuggestion) => item.distanceFeet - item.area.radiusFeet;
+  const nearest = input.suggestions.reduce((best, item) => (gap(item) < gap(best) ? item : best));
   return {
     kind: 'no-area',
     areaName: nearest.area.name,
-    distanceOutsideFeet: Math.max(0, nearest.distanceFeet - nearest.area.radiusFeet),
+    distanceOutsideFeet: Math.max(0, gap(nearest)),
     accuracyMeters,
   };
 }
@@ -145,9 +148,9 @@ export function currentDraftLocationNoticeView(input: Readonly<{
   });
 }
 
-/** Add Photos has no re-fix, so this does not say "try again" (pass 23). */
+/** Add Photos has no re-fix, so this does not say "try again" (pass 23); the approximate fix is not written to the update (pass 25). */
 export const PRECISE_LOCATION_OFF_DRAFT_MESSAGE =
-  `${PRECISE_LOCATION_OFF_TITLE}. Vitruvius only gets an approximate location, which cannot place you in a work area. Turn on Precise Location for Vitruvius in Settings; your next update will use it.`;
+  `${PRECISE_LOCATION_OFF_TITLE}. Vitruvius only gets an approximate location, which cannot place you in a work area, so this update has no GPS. Turn on Precise Location for Vitruvius in Settings; your next update will use it.`;
 
 export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): string {
   const accuracy = formatGpsAccuracy(notice.accuracyMeters);

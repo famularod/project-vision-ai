@@ -135,9 +135,11 @@ export type DraftAreaSuggestionEntry = Readonly<{ draftId: string; suggestion: A
  * The draft's suggestion as it stands now: only for the draft that produced
  * it, only while the area still exists with a saved point (review pass 4),
  * and only while the draft's fix is still confidently inside the area's
- * current point and radius (review pass 5). With no entry for the draft
- * (the app was relaunched and the draft resumed), the draft's own fix
- * stands in: the nearest area it is confidently inside (pass 23).
+ * current point and radius (review pass 5). When there is no entry for the
+ * draft (the app was relaunched and the draft resumed; pass 23), or the
+ * entry's area no longer qualifies (pass 25: it shrank while another area
+ * still contained the fix), the draft's own fix stands in: the nearest area
+ * it is confidently inside.
  */
 export function currentDraftAreaSuggestion(input: Readonly<{
   entry: DraftAreaSuggestionEntry | null;
@@ -151,24 +153,19 @@ export function currentDraftAreaSuggestion(input: Readonly<{
 }>): AreaSuggestion | null {
   const { entry, draft } = input;
   if (typeof draft.gpsLatitude !== 'number' || typeof draft.gpsLongitude !== 'number') return null;
-  if (!entry || entry.draftId !== draft.id) {
-    const derived = findClosestProjectArea(
-      { latitude: draft.gpsLatitude, longitude: draft.gpsLongitude, accuracy: draft.gpsAccuracy ?? null },
-      input.areas,
-      { diagnose: false },
-    );
-    return derived?.withinRadius ? derived : null;
+  const fix = { latitude: draft.gpsLatitude, longitude: draft.gpsLongitude, accuracy: draft.gpsAccuracy ?? null };
+  const area = entry && entry.draftId === draft.id
+    ? input.areas.find(item => item.id === entry.suggestion.area.id)
+    : undefined;
+  if (area && hasSavedAreaLocation(area)) {
+    const distanceFeet = distanceBetweenCoordinatesFeet(fix, area);
+    const withinRadius = isConfidentlyInsideArea({
+      distanceFeet,
+      accuracyMeters: fix.accuracy,
+      radiusFeet: area.radiusFeet,
+    });
+    if (withinRadius) return { area, distanceFeet, withinRadius };
   }
-  const area = input.areas.find(item => item.id === entry.suggestion.area.id);
-  if (!area || !hasSavedAreaLocation(area)) return null;
-  const distanceFeet = distanceBetweenCoordinatesFeet(
-    { latitude: draft.gpsLatitude, longitude: draft.gpsLongitude },
-    area,
-  );
-  const withinRadius = isConfidentlyInsideArea({
-    distanceFeet,
-    accuracyMeters: draft.gpsAccuracy,
-    radiusFeet: area.radiusFeet,
-  });
-  return withinRadius ? { area, distanceFeet, withinRadius } : null;
+  const derived = findClosestProjectArea(fix, input.areas, { diagnose: false });
+  return derived?.withinRadius ? derived : null;
 }

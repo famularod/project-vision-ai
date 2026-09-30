@@ -6816,6 +6816,15 @@ useEffect(() => {
         return null;
       }
 
+      if (snapshot.preciseLocationOff) {
+        // An approximate fix (Precise Location off, ±1-3 km) is written
+        // nowhere: not to an area point (Save GPS) and not to the draft or
+        // its photos (review pass 25). The notice says why.
+        setDraftAreaSuggestionEntry(null);
+        setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'precise-off' });
+        return null;
+      }
+
       // Every area with a saved point, nearest centre first: the suggestion
       // is the nearest one the fix is confidently inside, else the nearest;
       // the notice says what GPS can say about the rest (review pass 23).
@@ -6827,10 +6836,8 @@ useEffect(() => {
         reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
       );
       // Where the fix places you is derived at render from the draft's own
-      // fix (review pass 24); only Precise Location off is kept here.
-      setDraftLocationNotice(
-        snapshot.preciseLocationOff ? { draftId: target.draftId, generation, kind: 'precise-off' } : null,
-      );
+      // fix (review pass 24).
+      setDraftLocationNotice(null);
 
       handedToDraft = true;
       setDraft(prev => {

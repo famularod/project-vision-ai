@@ -108,6 +108,13 @@ describe('the draft’s suggestion as it stands now', () => {
     expect(currentDraftAreaSuggestion({ entry, draft, areas: [area('lot', 400, 175)] })).toBeNull();
     expect(currentDraftAreaSuggestion({ entry, draft, areas: [{ ...lot, radiusFeet: 40 }] })).toBeNull();
     expect(currentDraftAreaSuggestion({ entry, draft: { ...draft, gpsLatitude: null }, areas: [lot] })).toBeNull();
+    // Pass 25: when the entry's area no longer holds, an area that still
+    // contains the fix is offered instead of nothing.
+    const yard = area('yard', 30, 250, { name: 'Yard' });
+    expect(currentDraftAreaSuggestion({ entry, draft, areas: [{ ...lot, radiusFeet: 40 }, yard] })?.area.id).toBe('yard');
+    // While it holds, the entry's area is preferred over a nearer, larger one around it.
+    expect(currentDraftAreaSuggestion({ entry, draft, areas: [yard, lot] })?.area.id).toBe('lot');
+    expect(currentDraftAreaSuggestion({ entry: null, draft, areas: [yard, lot] })?.area.id).toBe('yard');
   });
 });
 
@@ -1102,6 +1109,14 @@ describe('the Add Photos location notice', () => {
     const outside = draftPlacementNotice({ accuracyMeters: 5, suggestions: fix(-350, 5) });
     expect(outside).toMatchObject({ kind: 'no-area', areaName: 'North Lot' });
     expect(Math.abs((outside?.distanceOutsideFeet ?? 0) - 225)).toBeLessThan(1);
+    // Pass 25: the area whose edge is nearest, not whose centre is. Gate
+    // House's centre is 400 ft away (radius 100); the Yard's is 430 ft away
+    // (radius 250), so its edge is 180 ft away.
+    const gate = area('gate', 400, 100, { name: 'Gate House' });
+    const yard = area('yard', 430, 250, { name: 'Yard' });
+    const edges = draftPlacementNotice({ accuracyMeters: 5, suggestions: findProjectAreaSuggestions({ ...north(0), accuracy: 5 }, [gate, yard]) });
+    expect(edges).toMatchObject({ kind: 'no-area', areaName: 'Yard' });
+    expect(Math.abs((edges?.distanceOutsideFeet ?? 0) - 180)).toBeLessThan(1);
   });
 
   it('a capture outcome belongs to its draft and its capture; a later capture supersedes it', () => {

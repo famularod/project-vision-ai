@@ -402,7 +402,9 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('const candidates = findProjectAreaSuggestions(snapshot, targetAreas);');
     expect(app).toContain('const suggestion = candidates.find(item => item.withinRadius) ?? candidates[0] ?? null;');
     // Pass 24: only the capture's own outcome is kept; where the fix places you is derived at render.
-    expect(app).toMatch(/setDraftLocationNotice\(\n\s+snapshot\.preciseLocationOff \? \{ draftId: target\.draftId, generation, kind: 'precise-off' \} : null,\n\s+\);/);
+    // Pass 25: an approximate fix (Precise Location off) is not written to the draft, as Save GPS refuses it.
+    expect(app).toMatch(/if \(snapshot\.preciseLocationOff\) \{\n(?:\s*\/\/.*\n)*\s+setDraftAreaSuggestionEntry\(null\);\n\s+setDraftLocationNotice\(\{ draftId: target\.draftId, generation, kind: 'precise-off' \}\);\n\s+return null;\n\s+\}/);
+    expect(app).toMatch(/setDraftLocationNotice\(null\);\n\n\s+handedToDraft = true;/);
     expect(app).toMatch(/const draftLocationNoticeView = currentDraftLocationNoticeView\(\{\n\s+notice: draftLocationNotice,\n\s+generation: draftFixTracker\.generation\(\),\n\s+draft,\n\s+areas: draftProjectAreas,\n\s+\}\);/);
     expect(app).toContain('locationNotice={draftLocationNoticeView}');
     expect(app).not.toContain('draftLocationNoticeAfterFix');
