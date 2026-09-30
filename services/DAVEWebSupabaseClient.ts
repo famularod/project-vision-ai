@@ -1121,9 +1121,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!document.cloudUpdatedAt) throw staleDocumentError();
       const ownerId = await requireAuthorizedOwnerCached();
       const updatedAt = new Date().toISOString();
+      // document_data.updatedAt moves with updated_at: the phone ranks the
+      // cloud copy by it, so an older offline phone edit cannot overwrite
+      // this one (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
       const { data, error } = await client
         .from('reference_documents')
-        .update(referenceDocumentRow(document, ownerId, updatedAt))
+        .update(referenceDocumentRow({ ...document, updatedAt }, ownerId, updatedAt))
         .eq('owner_id', ownerId)
         .eq('id', document.id)
         .eq('updated_at', document.cloudUpdatedAt)

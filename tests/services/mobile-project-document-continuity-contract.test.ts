@@ -14,9 +14,14 @@ describe('mobile project-document continuity contract', () => {
     expect(source).toContain("...(context?.category === 'Drawing' ? context.drawingMetadata : null)");
   });
 
+  // The shared record is queued through the debounced lifecycle, not at every
+  // keystroke (whole-app audit A8 pass 1 F1, 30 Sep 2026): typed text once
+  // typing pauses, a chip tap at once, the latest record when it fires.
   it('mirrors later metadata edits into the queued shared ECOS record', () => {
     expect(source).toContain('synchronizeSharedReferenceDocumentMetadata({');
-    expect(source).toContain('void queueReferenceDocumentRecord(synchronizedDocument)');
+    expect(source).toContain('projectDocumentSharedRecordSync.queueAfterChange(synchronizedDocument.id, next);');
+    expect(source).not.toContain('void queueReferenceDocumentRecord(synchronizedDocument)');
+    expect(source).toContain('const latest = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);\n    if (latest) void queueReferenceDocumentRecord(latest);');
   });
 
   // The transaction moved into services/SharedDocumentActivation.ts and now

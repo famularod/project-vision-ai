@@ -145,8 +145,13 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
       return;
     }
 
-    const cloudWins = referenceDocumentRevision(cloudDocument, 'cloud') >
-      referenceDocumentRevision(localDocument, 'local');
+    // Both copies are ranked by their edit time, and a tie goes to the cloud.
+    // The row's updated_at is the upload time: "1", uploaded after "12" was
+    // typed, outranked "12" and the last keystroke never reached the cloud
+    // (whole-app audit A8 pass 1 F1 (30 Sep 2026)). Web edits now write
+    // document_data.updatedAt with updated_at, so a newer web edit still wins.
+    const cloudWins = referenceDocumentRevision(cloudDocument) >=
+      referenceDocumentRevision(localDocument);
     const winner = cloudWins ? cloudDocument : localDocument;
     const other = cloudWins ? localDocument : cloudDocument;
     const metadataMerged = {
@@ -245,14 +250,8 @@ function mergeCloudReferenceDocumentAuthority(
   };
 }
 
-function referenceDocumentRevision(
-  document: ReferenceDocument,
-  source: 'local' | 'cloud',
-) {
-  const values = source === 'cloud'
-    ? [document.cloudUpdatedAt, document.updatedAt, document.importedAt]
-    : [document.updatedAt, document.cloudUpdatedAt, document.importedAt];
-  for (const value of values) {
+function referenceDocumentRevision(document: ReferenceDocument) {
+  for (const value of [document.updatedAt, document.cloudUpdatedAt, document.importedAt]) {
     const parsed = new Date(value || '').getTime();
     if (Number.isFinite(parsed)) return parsed;
   }

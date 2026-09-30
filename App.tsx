@@ -99,6 +99,7 @@ import { AppShellFrame } from './components/app-shell-frame';
 import { OverlayErrorBoundary } from './components/overlay-error-boundary';
 import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
 import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
+import { useProjectDocumentSharedRecordSync } from './hooks/use-project-document-shared-record-sync';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
 import {
@@ -4985,6 +4986,11 @@ function AppShell() {
   archivedProjectsCurrentRef.current = archivedProjects;
   operationalSyncTombstonesRef.current = operationalSyncTombstones;
   const [projectDocumentUploadRetry] = useState(() => createProjectDocumentUploadRetryRunner(() => projectDocumentsCurrentRef.current)); // documents added without signal upload by themselves (whole-app audit A8 pass 1 F5, 30 Sep 2026)
+  // A card's typed text is queued once typing pauses (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
+  const projectDocumentSharedRecordSync = useProjectDocumentSharedRecordSync(documentId => {
+    const latest = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    if (latest) void queueReferenceDocumentRecord(latest);
+  });
 
   const [displayName, setDisplayName] =
     useState('');
@@ -11269,7 +11275,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = updatedReferences;
     setReferenceDocuments(updatedReferences);
-    void queueReferenceDocumentRecord(synchronizedDocument);
+    projectDocumentSharedRecordSync.queueAfterChange(synchronizedDocument.id, next);
   }
 
   async function makeProjectScheduleDocumentCurrent(documentId: string, hidingTasksConfirmed = false) {
@@ -11447,6 +11453,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       item.id !== documentId && (item.referenceDocumentId === sharedRecord?.id || item.id === sharedRecord?.id));
 
     const removeFromDevice = async () => {
+      if (sharedRecord) projectDocumentSharedRecordSync.cancel(sharedRecord.id);
       let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
         'not_recorded';
       if (!sensitive) {
