@@ -52,7 +52,6 @@ import {
 } from './services/ScheduleItemTextSyncLifecycle';
 import {
   accountDisplayNameForUser,
-  getCurrentUser,
   getCurrentSessionAccessToken,
   getSupabaseClient,
   listArchivedProjects,
@@ -65,7 +64,6 @@ import {
   signUp,
   subscribeToAuthStateChange,
   subscribeToDAVEOperationalChanges,
-  updateCurrentUserDisplayName,
   uploadPhoto,
 } from './services/SupabaseService';
 import {
@@ -210,6 +208,7 @@ import {
   useJsonStoragePersistence,
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
+import { useAccountDisplayName } from './hooks/use-account-display-name';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -5762,18 +5761,16 @@ useEffect(() => {
     onCloudDeferred: () => setSyncCleanupNotice('Cloud schedule recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
   });
 
-  useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY),
-      getCurrentUser(),
-    ])
-      .then(([value, userResult]) => {
-        setDisplayName(accountDisplayNameForUser(userResult.data) || value || '');
-        startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
-        setDisplayNameLoaded(true);
-      })
-      .catch(error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error));
-  }, [startupHydration.retryAttempt]);
+  // Opens on the saved name; the account lookup follows (audit A2 M2).
+  const typeDisplayName = useAccountDisplayName({
+    storageKey: DISPLAY_NAME_STORAGE_KEY, retryAttempt: startupHydration.retryAttempt, workspaceOwnerId,
+    saveReady: startupHydrationReady && displayNameLoaded, displayName, setDisplayName,
+    onLoaded: () => {
+      startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
+      setDisplayNameLoaded(true);
+    },
+    onFailed: error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error),
+  });
 
   useEffect(() => {
     backupRestoreRuntime.recoverBeforeStartupReads()
@@ -5983,13 +5980,6 @@ useEffect(() => {
     value: displayName,
     label: 'profile setting',
   });
-  useEffect(() => {
-    if (!startupHydrationReady || !displayNameLoaded || !displayName.trim()) return;
-    const timer = setTimeout(() => {
-      void updateCurrentUserDisplayName(displayName).catch(() => undefined);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [displayName, displayNameLoaded, startupHydrationReady]);
   useJsonStoragePersistence({
     enabled: startupHydrationReady && contactsLoaded,
     storageKey: CONTACTS_STORAGE_KEY,
@@ -13894,7 +13884,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               referenceDocuments={referenceDocuments}
               syncCleanupNotice={syncCleanupNotice}
               displayName={displayName}
-              onDisplayNameChange={setDisplayName}
+              onDisplayNameChange={typeDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
               onBackup={(passphrase, includeFiles = true, onProgress) => {
