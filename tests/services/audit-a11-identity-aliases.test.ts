@@ -78,6 +78,21 @@ function confirmMemoryAlias(
   };
 }
 
+// A11 pass 3: Confirm Memory rules are all ignored and removed now, so a
+// spelling rule in these tests is one Confirm Memory did not save.
+function spellingAlias(rawName: string, canonicalName: string, confirmedAt: string): DAVEIdentityCorrection {
+  return {
+    id: `spelling:${rawName}`,
+    kind: 'area',
+    rawName,
+    canonicalName,
+    parentProjectName: P2321,
+    sourceRecordId: 'owner-spelling-fix',
+    confirmedAt,
+    confirmedBy: 'Project manager',
+  };
+}
+
 const tasks = [task('t1', 'Level 2 corridor'), task('t2', 'Level 2 corridor'), task('t3', 'Roof')];
 const areaNames = (items: readonly ScheduleItem[]) => items.map(item => item.locationName);
 
@@ -129,7 +144,7 @@ describe('audit A11 pass 2: a Confirm Memory correction renames no real place', 
     const result = canonicalizeDAVEScheduleItems([task('t1', 'Pump Hse')], {
       projectNames: [P2321],
       projectAreas: areas,
-      corrections: [confirmMemoryAlias('Pump Hse', 'Pump House', '2026-09-30T12:00:00.000Z')],
+      corrections: [spellingAlias('Pump Hse', 'Pump House', '2026-09-30T12:00:00.000Z')],
       registeredNames,
     });
     expect(result.items[0].locationName).toBe('Pump House');
@@ -167,7 +182,7 @@ describe('audit A11 pass 2: one-time cleanup of saved aliases', () => {
     const storage = memoryStorage();
     const repository = createDAVEIdentityRepository(storage);
     await repository.save(confirmMemoryAlias('Level 2 corridor', 'Roof', '2026-09-30T12:00:00.000Z'));
-    await repository.save(confirmMemoryAlias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
+    await repository.save(spellingAlias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
     await repository.save(confirmMemoryAlias(P2321, P2375, '2026-09-30T12:02:00.000Z', 'project'));
     return { storage, repository };
   }
@@ -206,7 +221,7 @@ describe('audit A11 pass 2: one-time cleanup of saved aliases', () => {
   it('an owner with no bad aliases changes nothing and needs no refresh', async () => {
     const storage = memoryStorage();
     const repository = createDAVEIdentityRepository(storage);
-    await repository.save(confirmMemoryAlias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
+    await repository.save(spellingAlias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
     const result = await runDAVEIdentityAliasCleanup({ registeredNames, repository, storage });
     expect(result.removed).toEqual([]);
     expect(result.awaitingScheduleRefresh).toEqual([]);
@@ -220,5 +235,68 @@ describe('audit A11 pass 2: one-time cleanup of saved aliases', () => {
     const scheduleRefresh = app.slice(app.indexOf("shouldRefresh('schedule_items')"));
     expect(scheduleRefresh.slice(0, 2200)).toContain('identityAliasCleanup.markScheduleRefreshed()');
     expect(app).toContain('daveRegisteredIdentityNames({ projectNames: projectsCurrentRef.current');
+  });
+});
+
+// Whole-app audit A11 pass 3 (30 Sep 2026): the cleanup above removed a rule
+// only while its old name was still a saved area. After David renamed
+// "Level 2 corridor" to "L2 corridor" (or deleted it), "Level 2 corridor ->
+// Roof" survived and still moved every task whose area read "Level 2
+// corridor" to Roof at each launch and on schedule import approval.
+describe('audit A11 pass 3: a Confirm Memory rule for a renamed or deleted area', () => {
+  const renamedAreas = [
+    { id: 'area-l2', name: 'L2 corridor', projectName: P2321 },
+    { id: 'area-roof', name: 'Roof', projectName: P2321 },
+  ] as unknown as ProjectArea[];
+  const namesAfterRename = daveRegisteredIdentityNames({ projectNames: [P2321, P2375], projectAreas: renamedAreas });
+  const staleRule = confirmMemoryAlias('Level 2 corridor', 'Roof', '2026-09-30T12:00:00.000Z');
+
+  it('moves no task, even while the rule is still saved', () => {
+    const result = canonicalizeDAVEScheduleItems(tasks, {
+      projectNames: [P2321], projectAreas: renamedAreas, corrections: [staleRule], registeredNames: namesAfterRename,
+    });
+    expect(areaNames(result.items)).toEqual(['Level 2 corridor', 'Level 2 corridor', 'Roof']);
+  });
+
+  it('is removed, a spelling rule is kept, and its project waits for the cloud refresh', async () => {
+    const storage = memoryStorage();
+    const repository = createDAVEIdentityRepository(storage);
+    await repository.save(staleRule);
+    await repository.save(spellingAlias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
+    const result = await runDAVEIdentityAliasCleanup({ registeredNames: namesAfterRename, repository, storage });
+    expect(result.removed.map(item => item.rawName)).toEqual(['Level 2 corridor']);
+    expect((await repository.list()).map(item => item.rawName)).toEqual(['Pump Hse']);
+    expect(result.awaitingScheduleRefresh).toEqual([
+      { kind: 'area', rawName: 'Level 2 corridor', canonicalName: 'Roof', parentProjectName: P2321 },
+    ]);
+    const phone = [task('t1', 'Roof'), task('t9', 'North Lot', 'Other Project')];
+    expect(scheduleItemsSafeForFullSync(phone, result.awaitingScheduleRefresh).map(item => item.id)).toEqual(['t9']);
+  });
+
+  it('runs once more on a phone that already ran the first cleanup, keeping its pending refresh', async () => {
+    const earlier = { kind: 'project', rawName: P2321, canonicalName: P2375, parentProjectName: null };
+    const storage = memoryStorage({
+      [DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY]: JSON.stringify({
+        version: 1, completedAt: '2026-09-30T13:00:00.000Z', removedCount: 1, awaitingScheduleRefresh: [earlier],
+      }),
+    });
+    const repository = createDAVEIdentityRepository(storage);
+    await repository.save(staleRule);
+    const rerun = await runDAVEIdentityAliasCleanup({ registeredNames: namesAfterRename, repository, storage });
+    expect(rerun.alreadyDone).toBe(false);
+    expect(rerun.removed.map(item => item.rawName)).toEqual(['Level 2 corridor']);
+    expect(await repository.list()).toEqual([]);
+    expect(rerun.awaitingScheduleRefresh.map(item => item.rawName)).toEqual([P2321, 'Level 2 corridor']);
+    const marker = JSON.parse(storage.values.get(DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY)!);
+    expect(marker).toMatchObject({ version: 2, removedCount: 2 });
+
+    // Once per version: a later run changes nothing.
+    await repository.save(staleRule);
+    const again = await runDAVEIdentityAliasCleanup({ registeredNames: namesAfterRename, repository, storage });
+    expect(again.alreadyDone).toBe(true);
+    expect(again.awaitingScheduleRefresh).toHaveLength(2);
+    await markDAVEIdentityAliasCleanupScheduleRefreshed(storage);
+    expect(JSON.parse(storage.values.get(DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY)!))
+      .toMatchObject({ version: 2, awaitingScheduleRefresh: [] });
   });
 });

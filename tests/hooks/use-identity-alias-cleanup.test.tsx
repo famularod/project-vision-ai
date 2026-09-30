@@ -44,7 +44,12 @@ function alias(rawName: string, canonicalName: string, confirmedAt: string) {
 beforeEach(async () => {
   await (AsyncStorage as unknown as { clear: () => Promise<void> }).clear();
   await localDAVEIdentityRepository.save(alias('Level 2 corridor', 'Roof', '2026-09-30T12:00:00.000Z'));
-  await localDAVEIdentityRepository.save(alias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'));
+  // A11 pass 3: every Confirm Memory rule is removed now, so the kept
+  // spelling rule is one Confirm Memory did not save.
+  await localDAVEIdentityRepository.save({
+    ...alias('Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'),
+    id: 'spelling:pump-hse', sourceRecordId: 'owner-spelling-fix',
+  });
 });
 
 test('cleans once when ready, gates Sync Now until the schedule refresh lands', async () => {

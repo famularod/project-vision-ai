@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   daveIdentityAliasRenamesRegisteredName,
+  daveIdentityCorrectionFromConfirmMemory,
   normalizeDAVEIdentityName,
   type DAVEIdentityCorrection,
 } from './DAVEIdentity';
@@ -16,9 +17,16 @@ import {
  * real area on this phone ("Level 2 corridor" became "Roof"). The aliases are
  * removed once per owner; `@dave/` keys live in the owner storage sandbox, so
  * this marker is per owner too.
+ *
+ * Pass 3: version 1 removed a rule only while its old name was still a saved
+ * area or project, so a rule survived a renamed or deleted area. Version 2
+ * removes every rule Confirm Memory saved (see
+ * daveIdentityCorrectionFromConfirmMemory) and runs once more on a phone that
+ * already ran version 1, keeping that run's pending schedule refresh.
  */
 export const DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY =
   '@dave/identity-corrections/registered-name-cleanup/v1';
+const CLEANUP_VERSION = 2;
 
 export type DAVERemovedIdentityAlias = Readonly<Pick<
   DAVEIdentityCorrection,
@@ -26,7 +34,7 @@ export type DAVERemovedIdentityAlias = Readonly<Pick<
 >>;
 
 type CleanupMarker = {
-  version: 1;
+  version: 1 | typeof CLEANUP_VERSION;
   completedAt: string;
   removedCount: number;
   /** Removed aliases whose tasks still wait for a cloud schedule refresh. */
@@ -43,9 +51,10 @@ export type DAVEIdentityAliasCleanupResult = Readonly<{
 type CleanupStorage = Pick<DAVEIdentityStorage, 'getItem' | 'setItem'>;
 
 /**
- * Removes saved aliases whose old name is a real project or saved area and
- * keeps spelling-variant aliases. Runs once per owner; an interrupted run
- * simply runs again (deleting is idempotent and the marker is written last).
+ * Removes every alias Confirm Memory saved and any alias whose old name is a
+ * real project or saved area; keeps other spelling-variant aliases. Runs once
+ * per owner and version; an interrupted run simply runs again (deleting is
+ * idempotent and the marker is written last).
  */
 export async function runDAVEIdentityAliasCleanup({
   registeredNames,
@@ -59,7 +68,7 @@ export async function runDAVEIdentityAliasCleanup({
   now?: () => string;
 }): Promise<DAVEIdentityAliasCleanupResult> {
   const marker = parseMarker(await storage.getItem(DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY));
-  if (marker) {
+  if (marker?.version === CLEANUP_VERSION) {
     return Object.freeze({
       alreadyDone: true,
       corrections: await repository.list(),
@@ -70,19 +79,24 @@ export async function runDAVEIdentityAliasCleanup({
 
   const saved = await repository.list();
   const removed = saved.filter(correction =>
+    daveIdentityCorrectionFromConfirmMemory(correction) ||
     daveIdentityAliasRenamesRegisteredName(correction, registeredNames),
   );
   for (const correction of removed) await repository.delete(correction.id);
-  const awaitingScheduleRefresh = removed.map(correction => Object.freeze({
-    kind: correction.kind,
-    rawName: correction.rawName,
-    canonicalName: correction.canonicalName,
-    parentProjectName: correction.parentProjectName ?? null,
-  }));
+  // A version 1 run's tasks may still be waiting for their refresh.
+  const awaitingScheduleRefresh = [
+    ...(marker?.awaitingScheduleRefresh ?? []),
+    ...removed.map(correction => Object.freeze({
+      kind: correction.kind,
+      rawName: correction.rawName,
+      canonicalName: correction.canonicalName,
+      parentProjectName: correction.parentProjectName ?? null,
+    })),
+  ];
   const nextMarker: CleanupMarker = {
-    version: 1,
+    version: CLEANUP_VERSION,
     completedAt: now(),
-    removedCount: removed.length,
+    removedCount: (marker?.removedCount ?? 0) + removed.length,
     awaitingScheduleRefresh,
   };
   await storage.setItem(DAVE_IDENTITY_ALIAS_CLEANUP_STORAGE_KEY, JSON.stringify(nextMarker));
@@ -146,12 +160,13 @@ function parseMarker(raw: string | null): CleanupMarker | null {
   if (!raw) return null;
   try {
     const value = JSON.parse(raw) as Partial<CleanupMarker>;
-    if (value?.version !== 1 || typeof value.completedAt !== 'string') return null;
+    if ((value?.version !== 1 && value?.version !== CLEANUP_VERSION) ||
+      typeof value.completedAt !== 'string') return null;
     const awaiting = Array.isArray(value.awaitingScheduleRefresh)
       ? value.awaitingScheduleRefresh.filter(isRemovedAlias)
       : [];
     return {
-      version: 1,
+      version: value.version,
       completedAt: value.completedAt,
       removedCount: typeof value.removedCount === 'number' ? value.removedCount : awaiting.length,
       awaitingScheduleRefresh: awaiting,

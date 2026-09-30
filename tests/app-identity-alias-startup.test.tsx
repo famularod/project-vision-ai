@@ -181,12 +181,15 @@ test('a saved Confirm Memory alias no longer moves a real area at launch', async
     { id: 'area-roof', name: 'Roof', projectName: PROJECT, latitude: 1, longitude: 1 },
   ]));
   await AsyncStorage.setItem(SCHEDULE_KEY, JSON.stringify([
-    task('t1', 'Level 2 corridor'), task('t2', 'Level 2 corridor'), task('t3', 'Roof'),
+    task('t1', 'Level 2 corridor'), task('t2', 'Level 2 corridor'), task('t3', 'Roof'), task('t4', 'Level 3 stair'),
   ]));
   await AsyncStorage.setItem(DAVE_IDENTITY_STORAGE_KEY, JSON.stringify({
     schemaVersion: 'dave-identity-repository/1.0',
     records: [
       alias('identity:memory-1:location:a', 'Level 2 corridor', 'Roof', '2026-09-30T12:00:00.000Z'),
+      // A11 pass 3: a rule for an area David has since renamed or deleted.
+      alias('identity:memory-1:location:c', 'Level 3 stair', 'Roof', '2026-09-30T12:02:00.000Z'),
+      // Not saved by Confirm Memory (its id does not carry memory-1), so kept.
       alias('identity:memory-2:location:b', 'Pump Hse', 'Pump House', '2026-09-30T12:01:00.000Z'),
     ],
   }));
@@ -203,7 +206,7 @@ test('a saved Confirm Memory alias no longer moves a real area at launch', async
   }, COLD);
   const items = JSON.parse(await AsyncStorage.getItem(SCHEDULE_KEY) || '[]') as { id: string; locationName: string }[];
   expect(Object.fromEntries(items.map(item => [item.id, item.locationName]))).toEqual({
-    t1: 'Level 2 corridor', t2: 'Level 2 corridor', t3: 'Roof',
+    t1: 'Level 2 corridor', t2: 'Level 2 corridor', t3: 'Roof', t4: 'Level 3 stair',
   });
   const saved = JSON.parse(await AsyncStorage.getItem(DAVE_IDENTITY_STORAGE_KEY) || '{}');
   expect(saved.records.map((record: { rawName: string }) => record.rawName)).toEqual(['Pump Hse']);

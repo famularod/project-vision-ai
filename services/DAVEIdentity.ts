@@ -90,6 +90,19 @@ export function daveIdentityAliasRenamesRegisteredName(
     registeredNames.some(name => normalizeDAVEIdentityName(name) === rawKey);
 }
 
+/**
+ * Whole-app audit A11 pass 3 (30 Sep 2026): a rule Confirm Memory saved
+ * (id `identity:<memory id>:<field>:<time>`, the only code that ever saved
+ * one) renamed tasks even after its old area was renamed or deleted, when the
+ * saved-name check above no longer sees it. Every such rule is ignored.
+ */
+export function daveIdentityCorrectionFromConfirmMemory(
+  correction: Pick<DAVEIdentityCorrection, 'id' | 'sourceRecordId'>,
+) {
+  const memoryId = (correction.sourceRecordId || '').trim();
+  return Boolean(memoryId) && (correction.id || '').startsWith(`identity:${memoryId}:`);
+}
+
 /** The project list plus saved project areas (see registeredNames). */
 export function daveRegisteredIdentityNames({
   projectNames,
@@ -141,7 +154,8 @@ export function buildDAVEIdentityRegistry(
   const entities = new Map<string, DAVEIdentityEntity>();
   const registeredNames = input.registeredNames || [];
   const corrections = (input.corrections || []).filter(correction =>
-    !daveIdentityAliasRenamesRegisteredName(correction, registeredNames),
+    !daveIdentityAliasRenamesRegisteredName(correction, registeredNames) &&
+    !daveIdentityCorrectionFromConfirmMemory(correction),
   );
 
   function correctedIdentity(
