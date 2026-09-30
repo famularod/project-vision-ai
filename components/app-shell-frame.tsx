@@ -18,6 +18,7 @@ import {
   appShellLayoutForWidth,
   AppShellLayoutProvider,
 } from './app-shell-layout';
+import { ScreenErrorBoundary } from './screen-error-boundary';
 import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
 import type {
   VitruviusAskEcosPilotControl,
@@ -121,7 +122,9 @@ export function AppShellFrame({
             ) : null}
 
             <View key="app-content" style={styles.contentFrame}>
-              {children}
+              <ScreenErrorBoundary screen={currentScreen} onNavigate={onScreenChange}>
+                {children}
+              </ScreenErrorBoundary>
             </View>
 
             {layout.navigationPlacement === 'bottom' ? (
