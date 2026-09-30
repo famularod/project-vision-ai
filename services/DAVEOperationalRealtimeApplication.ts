@@ -15,7 +15,7 @@ import {
 import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision';
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
-import { preserveLocalPhotoTransport } from './ProjectPhotoTransport';
+import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
 import type { DeletedUpdateTombstone } from './updateService';
 import type { SyncQueueItem } from './SyncService';
 import type {
@@ -185,7 +185,15 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       const previewReady = await hydrateProjectUpdatePhotoPreviews({ ...cloudUpdate, photos });
       if (!options.isActive()) return true;
       // Re-read after the awaits: a save or another event may have landed.
+      // The photo paths come from that read too, or a restore committed
+      // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
+      const cloudCopy = withLatestLocalPhotoTransport(
+        previewReady,
+        localUpdate,
+        fresh.updates.find(update => update.id === previewReady.id),
+        options.localPhotoUri,
+      );
       let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {
         deletedUpdates = options.upsertDeletedUpdate(
@@ -211,8 +219,8 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // content and takes the row only as a receipt.
       options.commitUpdates(options.mergeUpdates({
         localUpdates: fresh.updates.map(update =>
-          update.id === previewReady.id && !options.updateHasPendingLocalWork(update) ? previewReady : update),
-        cloudUpdates: [previewReady],
+          update.id === previewReady.id && !options.updateHasPendingLocalWork(update) ? cloudCopy : update),
+        cloudUpdates: [cloudCopy],
         tombstones: deletedUpdates,
       }));
       return true;

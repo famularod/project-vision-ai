@@ -117,7 +117,8 @@ describe('a realtime row is a cloud copy, not a replacement', () => {
   it('is wired that way, and a cloud-sourced row is synced in the app’s merge', () => {
     const applier = read('services/DAVEOperationalRealtimeApplication.ts');
     // Batch 4: a local record with no pending work takes the newer row; one still owed its sync keeps its content.
-    expect(applier).toMatch(/options\.commitUpdates\(options\.mergeUpdates\(\{\n\s+localUpdates: fresh\.updates\.map\(update =>\n\s+update\.id === previewReady\.id && !options\.updateHasPendingLocalWork\(update\) \? previewReady : update\),\n\s+cloudUpdates: \[previewReady\],\n\s+tombstones: deletedUpdates,\n\s+\}\)\);/);
+    // Round 2 (A4 pass 6 F3): the row is cloudCopy, previewReady with photo paths from the fresh read.
+    expect(applier).toMatch(/options\.commitUpdates\(options\.mergeUpdates\(\{\n\s+localUpdates: fresh\.updates\.map\(update =>\n\s+update\.id === previewReady\.id && !options\.updateHasPendingLocalWork\(update\) \? cloudCopy : update\),\n\s+cloudUpdates: \[cloudCopy\],\n\s+tombstones: deletedUpdates,\n\s+\}\)\);/);
     expect(app).toContain('updateHasPendingLocalWork: updateNeedsAutomaticSyncRetry,');
     expect(applier).toContain('const fresh = options.snapshot();');
     expect(app).toContain(": { ...update, status: 'sent' as const };");

@@ -398,7 +398,7 @@ import {
 } from './services/ProjectDocumentLifecycle';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
-import { preserveLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
   fieldUpdateLifecycleLabel,
@@ -5147,6 +5147,7 @@ function AppShell() {
   const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
   const backupRestoreInFlightRef = useRef(false);
+  const [operationalRefreshCommitGuard] = useState(createDAVEOperationalRefreshCommitGuard); // a restore stops a refresh (A4 pass 6 F3)
   const photoAnalysisCoordinator = useRef(createPhotoAnalysisCoordinator()).current;
   const talkHistoryPersistence = useRef(createDAVEAskHistoryPersistence({
     readItem: storageKey => AsyncStorage.getItem(storageKey),
@@ -6078,8 +6079,6 @@ useEffect(() => {
       referenceDocumentsLoaded || scheduleItemsLoaded;
     if (!startupHydrationReady || !operationalDataLoaded) return;
     let active = true;
-    const operationalRefreshCommitGuard =
-      createDAVEOperationalRefreshCommitGuard();
 
     const applyRealtimeOperationalPayload = createDAVEOperationalRealtimeApplier({
       isActive: () => active,
@@ -6287,7 +6286,7 @@ useEffect(() => {
           return cloudUpdate &&
             !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
             !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
-            ? cloudUpdate
+            ? withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri)
             : localUpdate;
         });
         const mergedUpdates = mergeSavedUpdatesWithTombstones({
@@ -10697,6 +10696,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return { values: result.values, result };
       });
 
+      operationalRefreshCommitGuard.invalidate(); // a refresh read before it commits nothing (whole-app audit A4 pass 6 F3 (30 Sep 2026))
       savedUpdatesRef.current = restored.savedUpdates; draftRef.current = restored.draft;
       setSavedUpdates(restored.savedUpdates); setProjectRecords(restored.projectRecords);
       setProjects(restored.projects); setArchivedProjects(restored.archivedProjects);

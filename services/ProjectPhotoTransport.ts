@@ -68,3 +68,26 @@ export function preserveLocalPhotoTransport<TPhoto extends UpdatePhoto>(
       }
     : withPreview;
 }
+
+/**
+ * A cloud copy whose photos were judged against one local copy, taking this
+ * device's photo transport again from the local copy read after that await
+ * when it changed meanwhile. A restore that committed during a refresh got
+ * the pre-restore paths, its restored files were left unreferenced, and the
+ * 14-day photo cleanup deleted them (whole-app audit A4 pass 6 F3 (30 Sep
+ * 2026)). An unchanged copy keeps the judgement: a path found missing stays
+ * cleared.
+ */
+export function withLatestLocalPhotoTransport<TUpdate extends { photos: UpdatePhoto[] }>(
+  judgedCloudUpdate: TUpdate,
+  judgedLocalUpdate: Readonly<{ photos: readonly UpdatePhoto[] }> | undefined,
+  latestLocalUpdate: Readonly<{ photos: readonly UpdatePhoto[] }> | undefined,
+  localPhotoUri: (photo: Partial<UpdatePhoto>) => string,
+): TUpdate {
+  if (!latestLocalUpdate || latestLocalUpdate === judgedLocalUpdate) return judgedCloudUpdate;
+  return {
+    ...judgedCloudUpdate,
+    photos: judgedCloudUpdate.photos.map(photo =>
+      preserveLocalPhotoTransport(photo, latestLocalUpdate, localPhotoUri)),
+  };
+}

@@ -21,11 +21,14 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 const mockExisting = new Set<string>();
 const mockUnreadable = new Set<string>();
+/** Run once at the next file check: what lands while photos are judged (A4 pass 6 F3). */
+const mockDuringFileCheck: Array<() => void | Promise<void>> = [];
 jest.mock('expo-file-system/legacy', () => ({
   EncodingType: { Base64: 'base64' },
   documentDirectory: 'file:///var/mobile/Containers/Data/Application/NEW/Documents/',
   cacheDirectory: 'file:///var/mobile/Containers/Data/Application/NEW/Library/Caches/',
   getInfoAsync: jest.fn(async (uri: string) => {
+    for (const hook of mockDuringFileCheck.splice(0)) await hook();
     if (mockUnreadable.has(uri)) throw new Error('file system busy');
     return mockExisting.has(uri)
     ? { exists: true, isDirectory: false, size: 1234, modificationTime: 1 }
@@ -59,10 +62,11 @@ import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRe
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
 import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
-import { preserveLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
+import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
 import {
   DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS,
+  createDAVEOperationalRefreshCommitGuard,
   runDAVEOperationalCollectionRefreshes,
 } from '../../services/DAVEOperationalRefresh';
 import { optionalString, uid } from '../../services/RecordValues';
@@ -102,6 +106,22 @@ function refreshRunBody(): string {
     }
   }
   throw new Error('unbalanced closure');
+}
+
+/** A function of the App component (two-space indent), brace-matched. */
+function componentFunction(name: string): string {
+  const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(app);
+  if (!match) throw new Error(`App.tsx has no component function ${name}`);
+  const open = app.indexOf(' {\n', match.index) + 1;
+  let depth = 0;
+  for (let index = open; index < app.length; index += 1) {
+    if (app[index] === '{') depth += 1;
+    if (app[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return app.slice(match.index + 3, index + 1);
+    }
+  }
+  throw new Error('unbalanced function');
 }
 
 const DOCUMENTS = 'file:///var/mobile/Containers/Data/Application/NEW/Documents/';
@@ -175,6 +195,7 @@ function refreshDeps(
   onList?: () => void,
   rows = [cloudRow()],
   uploadedSince: (id: string, since: number) => boolean = projectUpdateUploadedSince,
+  overrides: Record<string, unknown> = {},
 ) {
   const savedUpdatesRef = { current: state.saved };
   listUpdates.mockImplementation(async () => { onList?.(); return { ok: true, stubbed: false, data: rows }; });
@@ -185,12 +206,15 @@ function refreshDeps(
       refreshCommit: { isCurrent: () => true, commit: (effect: () => void) => { effect(); return true; } },
       normalizeStartupArray, normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord, savedUpdatesRef,
       resolveProjectPhotoUri: A.resolveProjectPhotoUri, preserveLocalPhotoTransport,
+      // Paths from the copy read after the photo check (A4 pass 6 F3).
+      withLatestLocalPhotoTransport,
       hydrateProjectUpdatePhotoPreviews, getOfflineQueue: async () => state.queue,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
       projectUpdateUploadedSince: uploadedSince,
       mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: () => undefined,
+      ...overrides,
     }),
   };
 }
@@ -198,6 +222,7 @@ function refreshDeps(
 beforeEach(() => {
   mockExisting.clear();
   mockUnreadable.clear();
+  mockDuringFileCheck.length = 0;
   signed.mockReset().mockImplementation(async (storagePath: string) => ({
     ok: true, stubbed: false, data: `https://signed.example/${storagePath}?preview`,
   }));
@@ -416,6 +441,89 @@ describe('a refresh racing this device\'s own upload (audit A7 M5)', () => {
     );
     await run();
     expect(notes(savedUpdatesRef)).toBe('iPad edit');
+  });
+});
+
+describe('a restore that commits while photos are judged (whole-app audit A4 pass 6 F3)', () => {
+  const before = `${PHOTO_STORAGE_DIR}aaa-IMG_p1.jpg`;
+  const restoredFile = `${PHOTO_STORAGE_DIR}newid-IMG_p1.jpg`;
+  const saved = (uri: string) =>
+    A.normalizeStoredUpdateRecord({ ...cloudRow().updateData, status: 'sent', photos: [photo('p1', uri)] });
+  const rows = () => [cloudRow('Rebar placed', [photo('p1', `${OLD}aaa-IMG_p1.jpg`)])];
+  const uriOf = (updates: unknown[]) => (updates as Array<Record<string, any>>)[0].photos[0].uri;
+  beforeEach(() => {
+    mockExisting.add(before);
+    mockExisting.add(restoredFile);
+  });
+
+  /** App.tsx's applyRestoredData, compiled, committing `restoredUpdates`. */
+  function restoreFrom(restoredUpdates: unknown[], deps: Record<string, unknown>) {
+    const js = ts.transpileModule(`module.exports = ${componentFunction('applyRestoredData')}`, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    }).outputText;
+    const noop = () => undefined;
+    const all: Record<string, unknown> = {
+      backupRestoreInFlightRef: { current: false }, savedUpdatesSaveTimer: { current: null }, draftSaveTimer: { current: null },
+      backupRestoreRuntime: { commit: async () => ({
+        savedUpdates: restoredUpdates, draft: {}, projectRecords: [], projects: [], archivedProjects: [], contactBook: {},
+        projectAreas: [], referenceDocuments: [], projectDocuments: [], scheduleItems: [], captureMemories: [],
+        storedDraft: null, activeProject: null,
+      }) },
+      draftRef: { current: null }, setSavedUpdates: noop, setProjectRecords: noop, setProjects: noop,
+      setArchivedProjects: noop, setContactBook: noop, setProjectAreas: noop, setReferenceDocuments: noop,
+      setProjectDocuments: noop, setScheduleItems: noop, setCaptureMemories: noop, setDraft: noop,
+      markProjectAreasAuthorityReady: noop, markReferenceDocumentsAuthorityReady: noop, markScheduleItemsAuthorityReady: noop,
+      setDraftSavedAt: noop, setSelectedWorkspaceProject: noop, Alert: { alert: noop }, DEVICE_BACKUP_RESTORE_NOTICE: '',
+      BackupRestoreRecoveryRequiredError: class extends Error {}, startupHydration: { fail: noop }, PROJECTS_STORAGE_KEY: 'k',
+      ...deps,
+    };
+    const mod = { exports: {} as unknown as (data: unknown) => Promise<boolean> };
+    new Function('module', 'exports', ...Object.keys(all), js)(mod, mod.exports, ...Object.values(all));
+    return mod.exports as unknown as (data: unknown) => Promise<boolean>;
+  }
+
+  it('the refresh takes photo paths from the copy read after the photo check', async () => {
+    const restored = [saved(restoredFile)];
+    const { run, savedUpdatesRef } = refreshDeps({ saved: [saved(before)], queue: [] }, undefined, rows());
+    mockDuringFileCheck.push(() => { savedUpdatesRef.current = restored; });
+    await run();
+    expect(uriOf(savedUpdatesRef.current)).toBe(restoredFile);
+  });
+
+  it('a restore stops a refresh already under way', async () => {
+    const guard = createDAVEOperationalRefreshCommitGuard();
+    const setSavedUpdates = jest.fn();
+    const restored = [saved(restoredFile)];
+    const { run, savedUpdatesRef } = refreshDeps(
+      { saved: [saved(before)], queue: [] }, undefined, rows(), undefined,
+      { refreshCommit: guard.begin(), setSavedUpdates },
+    );
+    const applyRestoredData = restoreFrom(restored, { operationalRefreshCommitGuard: guard, savedUpdatesRef });
+    let restoredOk: boolean | null = null;
+    mockDuringFileCheck.push(async () => { restoredOk = await applyRestoredData({}); });
+    await run();
+    expect(restoredOk).toBe(true);
+    expect(savedUpdatesRef.current).toBe(restored);
+    expect(setSavedUpdates).not.toHaveBeenCalled();
+  });
+
+  it('a realtime row applied across a restore keeps the restored paths', async () => {
+    const commitUpdates = jest.fn();
+    const state = { projects: [], projectRecords: [], archivedProjects: [], deletedProjectNames: [], updates: [saved(before)] as unknown[],
+      deletedUpdates: [], tombstones: [], areas: [], scheduleItems: [], documents: [] };
+    const apply = createDAVEOperationalRealtimeApplier({
+      isActive: () => true, snapshot: () => state as never, getPendingQueue: async () => [],
+      normalizeUpdate: A.normalizeStoredUpdateRecord as never, normalizeAreas: () => [], normalizeSchedule: () => [],
+      normalizeDocuments: () => [], migrateSchedule: item => item, localPhotoUri: A.resolveProjectPhotoUri,
+      mergeProjectNames: (names: string[]) => names, updateHasPendingLocalWork: () => false,
+      mergeUpdates: A.mergeSavedUpdatesWithTombstones as never, buildUpdateTombstone: A.buildUpdateTombstone as never,
+      buildCloudDeletionBarrier: A.buildCloudUpdateDeletionBarrier as never, upsertDeletedUpdate: A.upsertDeletedUpdateTombstone as never,
+      commitProjects: jest.fn(), commitDeletedProjects: jest.fn(), commitUpdates, commitDeletedUpdates: jest.fn(),
+      commitTombstones: jest.fn(), commitAreas: jest.fn(), commitSchedule: jest.fn(), commitDocuments: jest.fn(),
+    });
+    mockDuringFileCheck.push(() => { state.updates = [saved(restoredFile)]; });
+    await apply('project_update', { eventType: 'UPDATE', newRow: { id: 'u1', update_data: rows()[0].updateData }, oldRow: null, raw: null });
+    expect(uriOf(commitUpdates.mock.calls[0][0])).toBe(restoredFile);
   });
 });
 
