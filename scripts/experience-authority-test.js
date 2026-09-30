@@ -24,10 +24,13 @@ assert(
     !reports.includes('Current project data is still loading. Refresh before approving.'),
   'Reports must derive the approval reason from the real authority state, and must not claim data is loading when it is not.',
 );
+// Whole-app audit A6 pass 7 (30 Sep 2026): Approve is also disabled while the
+// other device's last report is read just before approving (was
+// 'disabled={!reportApprovalAllowed}').
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&
     reports.includes('reportGenerationAllowed,') &&
-    reports.includes('disabled={!reportApprovalAllowed}'),
+    reports.includes('disabled={!reportApprovalAllowed || approvalChecking}'),
   'Report approval must be disabled while authority or report policy blocks generation.',
 );
 

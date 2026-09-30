@@ -173,6 +173,41 @@ export function laterReportPeriod(
   return shared && reportPeriodIsLater(shared, local) ? shared : local;
 }
 
+/**
+ * `candidate` when its period runs from a report sent after the one `shown`
+ * runs from, else null (whole-app audit A6 pass 7: the phone, left on the
+ * Reports screen since morning, kept counting from its own morning send after
+ * the iPad sent at midday, and its later send replaced the iPad's period with
+ * its own older one). A period with no send (a first approval never sent) is
+ * never later, and neither is one of `ownSends`: this device's own sends,
+ * read back before the screen shows them. The other device can send the very
+ * snapshot this one approved (it read the approval as its period), so only
+ * the send time tells them apart.
+ */
+export function laterSentReportPeriod(
+  candidate: DAVEReportSnapshot | null | undefined,
+  shown: DAVEReportSnapshot | null | undefined,
+  ownSends: ReadonlySet<string> = new Set(),
+): DAVEReportSnapshot | null {
+  const sentAt = reportPeriodSentAt(candidate);
+  if (!candidate || sentAt === null || ownSends.has(sentAt)) return null;
+  return reportPeriodIsLater(candidate, shown) ? candidate : null;
+}
+
+/** "at 12:05 PM" today; "on Sep 29 at 12:05 PM" another day (with the year when it is not this year). */
+export function describeReportSendTime(value: string, now: Date = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'earlier';
+  const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+  if (date.toDateString() === now.toDateString()) return `at ${time}`;
+  const day = new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' as const }),
+  }).format(date);
+  return `on ${day} at ${time}`;
+}
+
 export type DAVEReportSnapshotSourceReference = Readonly<{
   documentId: string;
   documentName: string;

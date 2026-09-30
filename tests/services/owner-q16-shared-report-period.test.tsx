@@ -209,7 +209,8 @@ describe('the shared period: the later sent report wins (repository)', () => {
     await expect(saveDAVEReportSnapshot(next, device, failing)).resolves.toBeUndefined();
     expect(JSON.parse(device.values.get(keyFor('project_manager')) as string)).toEqual(next);
 
-    // Unavailable (signed out, not configured, table missing): own period, and nothing is uploaded.
+    // Unavailable (not configured, or table missing): own period, and nothing is uploaded. Since whole-app
+    // audit A6 pass 7 a signed-out read throws instead (not checked, and the owner is told); the period is the same.
     const unavailable = { read: jest.fn(async () => null), write: jest.fn(async () => undefined) };
     await expect(loadDAVEReportSnapshot('tower', 'project_manager', device, unavailable)).resolves.toEqual(next);
     expect(unavailable.write).not.toHaveBeenCalled();

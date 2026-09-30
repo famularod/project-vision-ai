@@ -353,6 +353,9 @@ describe('each report format keeps its own period on the Reports screen (owner a
       mockStorage.set(key, value);
     });
     fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
+    // Whole-app audit A6 pass 7: Approve first reads the other device's last report, so the save
+    // starts a moment after the press; the send completes once it is under way, as intended here.
+    await waitFor(() => expect(AsyncStorage.setItem).toHaveBeenCalledWith(keyFor('executive'), expect.any(String)), SLOW);
     await act(async () => {
       finishCopy('completed');
     });

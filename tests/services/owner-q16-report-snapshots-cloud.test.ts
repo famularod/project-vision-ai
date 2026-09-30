@@ -206,6 +206,28 @@ describe('the report_snapshots cloud row (owner answer Q16)', () => {
     expect(mockSupabaseClient.from).not.toHaveBeenCalled();
   });
 
+  // Whole-app audit A6 pass 7 (30 Sep 2026): the screen tells the owner when the other device's last
+  // report could not be checked, and stays quiet before the SQL is applied, when there is nothing to check.
+  it('says whether the shared period was checked: quiet for the missing table, not checked for the rest', async () => {
+    const own = sentSnapshot('f1', '2026-09-29T10:00:00.000Z');
+    mockSelectResponse = { data: null, error: null, status: 200 };
+    await expect(repository.loadDAVEReportPeriod('tower', 'project_manager', deviceWith(own)))
+      .resolves.toEqual({ snapshot: own, shared: 'checked' });
+    mockSelectResponse = { data: null, error: { message: MISSING_TABLE }, status: 404 };
+    await expect(repository.loadDAVEReportPeriod('tower', 'project_manager', deviceWith(own)))
+      .resolves.toEqual({ snapshot: own, shared: 'unavailable' });
+    mockSelectResponse = { data: null, error: { message: 'column report_snapshots.format does not exist' }, status: 400 };
+    await expect(repository.loadDAVEReportPeriod('tower', 'project_manager', deviceWith(own)))
+      .resolves.toEqual({ snapshot: own, shared: 'unchecked' });
+    mockSelectResponse = { data: null, error: null, status: 200 };
+    mockSession = { ...mockSession, expires_at: Math.floor(Date.now() / 1000) - 60 };
+    await expect(repository.loadDAVEReportPeriod('tower', 'project_manager', deviceWith(own)))
+      .resolves.toEqual({ snapshot: own, shared: 'unchecked' });
+    mockSession = null;
+    await expect(repository.loadDAVEReportPeriod('tower', 'project_manager', deviceWith(own)))
+      .resolves.toEqual({ snapshot: own, shared: 'unchecked' });
+  });
+
   it('a carry-over read for one account is never written under another', async () => {
     await expect(service.saveReportSnapshotCloud({
       scopeKey: 'tower', format: 'project_manager', snapshot: {}, approvedAt: '2026-09-29T09:00:00.000Z', deliveredAt: null, expectedOwnerId: 'owner-2',

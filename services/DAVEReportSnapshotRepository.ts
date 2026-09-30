@@ -20,9 +20,10 @@ type SnapshotStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem'>;
 
 /**
  * The owner's copy of each period shared by the phone and the iPad (owner
- * answer Q16, 30 Sep 2026). `read` is null when it cannot be used (signed
- * out, offline, not configured, or the table not created yet); `snapshot` is
- * null when the owner has none for this period yet.
+ * answer Q16, 30 Sep 2026). `read` is null when there is none to read (cloud
+ * not configured, or the table not created yet) and throws when it could not
+ * be read (offline, signed out or sign-in expired, or a server error);
+ * `snapshot` is null when the owner has none for this period yet.
  */
 export type DAVEReportSnapshotCloud = Readonly<{
   read: (
@@ -36,7 +37,10 @@ const supabaseReportSnapshotCloud: DAVEReportSnapshotCloud = {
   async read(scopeKey, reportFormat) {
     const result = await loadReportSnapshotCloud(scopeKey, reportFormat);
     // A missing table comes back as a quiet stub: this device's own period, as before the migration.
-    return result.ok && !result.stubbed && result.data ? result.data : null;
+    if (!result.configured || result.stubbed) return null;
+    // Anything else that failed was not checked, and the owner is told so (whole-app audit A6 pass 7).
+    if (!result.ok || !result.data) throw new Error(result.error || 'The shared report period could not be read.');
+    return result.data;
   },
   write: (snapshot, expectedOwnerId) => saveReportSnapshotCloud({
     scopeKey: snapshot.scopeKey,
@@ -68,12 +72,37 @@ export async function loadDAVEReportSnapshot(
   storage: SnapshotStorage = AsyncStorage,
   cloud: DAVEReportSnapshotCloud = supabaseReportSnapshotCloud,
 ): Promise<DAVEReportSnapshot | null> {
+  return (await loadDAVEReportPeriod(scopeKey, reportFormat, storage, cloud)).snapshot;
+}
+
+/**
+ * Whether the owner's shared copy was read for a period (whole-app audit A6
+ * pass 7): 'checked'; 'unavailable' when there is none to read (cloud not
+ * configured, or the table not created yet: the quiet state before the SQL
+ * is applied); 'unchecked' when it could not be read (offline, signed out or
+ * sign-in expired, a server error, or no answer within four seconds), so the
+ * other device may have sent a later report this one does not know about.
+ */
+export type DAVEReportSharedCheck = 'checked' | 'unavailable' | 'unchecked';
+
+export type DAVEReportPeriodLoad = Readonly<{
+  snapshot: DAVEReportSnapshot | null;
+  shared: DAVEReportSharedCheck;
+}>;
+
+/** `loadDAVEReportSnapshot`, with whether the other device's copy was checked. */
+export async function loadDAVEReportPeriod(
+  scopeKey: string,
+  reportFormat: DAVEReportFormat,
+  storage: SnapshotStorage = AsyncStorage,
+  cloud: DAVEReportSnapshotCloud = supabaseReportSnapshotCloud,
+): Promise<DAVEReportPeriodLoad> {
   const local = await loadLocalDAVEReportSnapshot(scopeKey, reportFormat, storage);
   const read = await readShared(cloud, scopeKey, reportFormat);
-  if (!read) return local;
-  const shared = validSnapshot(read.snapshot, scopeKey, reportFormat);
-  if (local && reportPeriodIsLater(local, shared)) void writeShared(cloud, local, read.ownerId);
-  return laterReportPeriod(local, shared);
+  if (read.status !== 'checked') return Object.freeze({ snapshot: local, shared: read.status });
+  const shared = validSnapshot(read.value.snapshot, scopeKey, reportFormat);
+  if (local && reportPeriodIsLater(local, shared)) void writeShared(cloud, local, read.value.ownerId);
+  return Object.freeze({ snapshot: laterReportPeriod(local, shared), shared: 'checked' });
 }
 
 /**
@@ -105,17 +134,27 @@ async function loadLocalDAVEReportSnapshot(
   return shared ? Object.freeze({ ...shared, reportFormat }) : null;
 }
 
-async function readShared(cloud: DAVEReportSnapshotCloud, scopeKey: string, reportFormat: DAVEReportFormat) {
+type SharedRead =
+  | Readonly<{ status: 'checked'; value: Readonly<{ ownerId: string; snapshot: unknown }> }>
+  | Readonly<{ status: 'unavailable' | 'unchecked' }>;
+
+async function readShared(
+  cloud: DAVEReportSnapshotCloud,
+  scopeKey: string,
+  reportFormat: DAVEReportFormat,
+): Promise<SharedRead> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const value = await Promise.race([
       cloud.read(scopeKey, reportFormat),
-      new Promise<null>(resolve => {
-        timer = setTimeout(() => resolve(null), CLOUD_READ_TIMEOUT_MS);
+      new Promise<'timed_out'>(resolve => {
+        timer = setTimeout(() => resolve('timed_out'), CLOUD_READ_TIMEOUT_MS);
       }),
     ]);
+    if (value === 'timed_out') return { status: 'unchecked' };
+    return value ? { status: 'checked', value } : { status: 'unavailable' };
   } catch {
-    return null;
+    return { status: 'unchecked' };
   } finally {
     if (timer) clearTimeout(timer);
   }
