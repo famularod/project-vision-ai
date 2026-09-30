@@ -8,6 +8,7 @@ import type {
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import type { DAVEDailyBriefDocument } from './DAVEDailyBrief';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
+import { projectAreasForProject } from './DAVEProjectAreaScope';
 
 export const COMBINED_REPORT_PROJECT_TRUTH_POLICY = 'ephemeral_portfolio' as const;
 
@@ -101,8 +102,92 @@ export function buildDailyReportAuthorityScope(
   return {
     projectName,
     projectNames: [projectName],
-    ...evidenceScope,
+    updates: evidenceScope.updates,
+    scheduleItems: evidenceScope.scheduleItems,
+    currentUpdate: evidenceScope.currentUpdate,
     ...supportingScope,
+  };
+}
+
+type ProjectIntelligenceScopeCache = {
+  key: readonly unknown[];
+  scope: DailyReportAuthorityScope;
+  belongsToScope: (update: ProjectUpdate) => boolean;
+};
+let lastProjectIntelligenceScope: ProjectIntelligenceScopeCache | null = null;
+
+type ProjectIntelligenceScopeInput =
+  Omit<CombinedReportAuthorityScopeInput, 'selectedProjectNames'> & { selectedProjectName: string };
+
+/**
+ * Home, workspace and capture intelligence for ONE project (audit round 2
+ * L2). They were given every project's updates, tasks and areas, so project
+ * A's brief carried project B's overdue task, area and safety concern, and A's
+ * saved Project Truth stored B's items. This is the daily report's evidence
+ * scope, plus: the open draft when it belongs to the project, the areas the
+ * project owns even before anything references them (capture needs them), and
+ * the whole contact book (contacts belong to no project).
+ *
+ * The scope is kept while the saved collections are the same objects, so a
+ * draft keystroke only re-checks the draft: new arrays on every keystroke
+ * would defeat the authority signature's per-collection cache.
+ */
+export function buildProjectIntelligenceAuthorityScope(
+  input: ProjectIntelligenceScopeInput,
+): DailyReportAuthorityScope {
+  const key = [
+    normalizeKey(input.selectedProjectName),
+    input.projectRecords,
+    input.updates,
+    input.scheduleItems,
+    input.projectAreas,
+    input.referenceDocuments,
+    input.projectDocuments,
+    input.captureMemories,
+    input.contacts,
+  ];
+  const cached = lastProjectIntelligenceScope;
+  const base = cached && cached.key.length === key.length && cached.key.every((value, index) => value === key[index])
+    ? cached
+    : buildProjectIntelligenceScopeBase(input, key);
+  lastProjectIntelligenceScope = base;
+  const currentUpdate = input.currentUpdate && base.belongsToScope(input.currentUpdate)
+    ? input.currentUpdate
+    : null;
+  return currentUpdate === base.scope.currentUpdate ? base.scope : { ...base.scope, currentUpdate };
+}
+
+function buildProjectIntelligenceScopeBase(
+  input: ProjectIntelligenceScopeInput,
+  key: readonly unknown[],
+): ProjectIntelligenceScopeCache {
+  const projectName = cleanText(input.selectedProjectName);
+  if (!projectName) throw new Error('Project intelligence requires one selected project.');
+  const withoutDraft = { ...input, selectedProjectNames: [projectName], currentUpdate: null };
+  const evidence = buildEvidenceScope(withoutDraft, [projectName], true);
+  const supporting = buildSupportingEvidenceScope(withoutDraft, [projectName], evidence);
+  const referencedAreas = new Set(supporting.projectAreas);
+  const ownedAreas = new Set(projectAreasForProject({
+    projectAreas: input.projectAreas || [],
+    projectName,
+    scheduleItems: evidence.scheduleItems,
+    updates: evidence.updates,
+  }));
+  return {
+    key,
+    belongsToScope: evidence.belongsToScope,
+    scope: {
+      projectName,
+      projectNames: [projectName],
+      updates: evidence.updates,
+      scheduleItems: evidence.scheduleItems,
+      currentUpdate: null,
+      projectAreas: (input.projectAreas || []).filter(area => referencedAreas.has(area) || ownedAreas.has(area)),
+      referenceDocuments: supporting.referenceDocuments,
+      projectDocuments: supporting.projectDocuments,
+      captureMemories: supporting.captureMemories,
+      contacts: input.contacts || { contacts: [] },
+    },
   };
 }
 
@@ -141,6 +226,8 @@ function buildEvidenceScope(
   });
 
   const updateBelongsToScope = (update: ProjectUpdate) => {
+    // An archived update is out of every report at once (audit round 2 L4).
+    if ((update as ProjectUpdate & { isArchived?: boolean }).isArchived === true) return false;
     const scheduleItemId = cleanText(update.scheduleItemId);
     if (scheduleItemId) {
       const matches = scheduleById.get(scheduleItemId) || [];
@@ -165,6 +252,7 @@ function buildEvidenceScope(
     currentUpdate: input.currentUpdate && updateBelongsToScope(input.currentUpdate)
       ? input.currentUpdate
       : null,
+    belongsToScope: updateBelongsToScope,
   };
 }
 

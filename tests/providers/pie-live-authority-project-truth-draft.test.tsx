@@ -187,3 +187,58 @@ describe('Project Truth follows the saved evidence, not the unsaved draft', () =
     expect(authority?.projectTruth).toMatchObject({ builtFrom: 'runtime-without-draft' });
   });
 });
+
+describe('L3: the authority rolls over at project-local midnight with no data change', () => {
+  let authority: PIELiveAuthorityContextValue | null = null;
+
+  function Probe() {
+    authority = usePIELiveAuthority();
+    return <Text>probe</Text>;
+  }
+
+  beforeEach(() => {
+    // 23:59:30 in the default project time zone (Los Angeles, PDT).
+    jest.useFakeTimers({ now: Date.parse('2026-10-01T06:59:30.000Z') });
+    jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(callback => {
+      if (typeof callback === 'function') callback();
+      return { cancel: jest.fn() } as never;
+    });
+    authority = null;
+    buildCoreMock.mockReset();
+    buildCoreMock.mockImplementation(async coreInput => coreFor(coreInput?.runtime, false));
+    createRepositoryMock.mockReset();
+    createRepositoryMock.mockReturnValue({
+      save: jest.fn(async () => ({ snapshot: { revision: 1 }, created: false, cloudStatus: 'local_only' })),
+    } as unknown as ReturnType<typeof createDAVEProjectTruthRepository>);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it('a new day rebuilds the authority; the same day does not', async () => {
+    const steady = input('');
+    render(<PIELiveAuthorityProvider input={steady}><Probe /></PIELiveAuthorityProvider>);
+    await flush();
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+    expect(authority?.core).not.toBeNull();
+
+    await act(async () => {
+      jest.advanceTimersByTime(20_000); // still 23:59:50
+    });
+    await flush();
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000); // 00:00:50, the next day
+    });
+    await flush();
+    await act(async () => {
+      jest.advanceTimersByTime(500); // the input debounce
+    });
+    await flush();
+    expect(buildCoreMock).toHaveBeenCalledTimes(2);
+  });
+});

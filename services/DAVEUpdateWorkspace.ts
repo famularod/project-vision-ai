@@ -1,3 +1,5 @@
+import { storedPhotoComparisonConfidence } from './PhotoAssessment';
+
 export type DAVEUpdateWorkspaceTab =
   | 'Needs Action'
   | 'Drafts'
@@ -194,7 +196,7 @@ export function buildDAVEUpdatePhotoComparison<
         intelligence.currentObservation,
         intelligence.summary,
       ),
-      comparisonConfidence: firstText(intelligence.comparisonConfidence),
+      comparisonConfidence: firstText(storedPhotoComparisonConfidence(intelligence)),
       comparability: firstText(intelligence.comparability),
     };
   }

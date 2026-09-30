@@ -1,6 +1,7 @@
 import type { PIELiveAuthorityInput } from '../providers/PIELiveAuthorityProvider';
 
-export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.4';
+// 2.5: the project-local as-of day is part of the evidence signature (audit round 2 L3).
+export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.5';
 
 /**
  * Large evidence collections are immutable React state values. Cache their
@@ -34,6 +35,8 @@ export function authorityInputSignature(input: PIELiveAuthorityInput) {
     captureMemories: cachedStableStringify(input.captureMemories || []),
     verifiedLearningEvents: cachedStableStringify(input.verifiedLearningEvents || []),
     syncMetadata: input.syncMetadata || null,
+    // Overdue and due-today change at midnight with no data change.
+    asOfDay: input.asOfDay || null,
   });
 }
 

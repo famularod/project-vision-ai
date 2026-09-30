@@ -64,6 +64,7 @@ import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUp
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
+import { withStoredPhotoComparisonCap } from '../../services/PhotoAssessment';
 import {
   DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS,
   createDAVEOperationalRefreshCommitGuard,
@@ -145,6 +146,7 @@ const injected: Record<string, unknown> = {
   FileSystem: { cacheDirectory: 'file:///var/mobile/Containers/Data/Application/NEW/Library/Caches/' },
   resolveLegacyOwnedLocalFilePath, cloudPhotoPreviewIsFresh, optionalString, uid,
   mergeLocalUpdateWithCloudCopy,
+  withStoredPhotoComparisonCap, // normalizePhoto caps a stored comparison (audit round 2 L1)
   CATEGORIES: ['Open Issue', 'Safety Concern', 'Update'],
   ACTION_STATUSES: ['Open', 'In Progress', 'Waiting', 'Closed'],
   QUICK_CONTEXTS: [], DEFAULT_PROJECTS: ['P'], isoToday: () => '2026-09-30',

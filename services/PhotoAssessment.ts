@@ -174,6 +174,36 @@ export function capPhotoComparisonConfidence(
   return confidence;
 }
 
+type StoredComparisonConfidence = {
+  comparisonConfidence?: string | null;
+  comparability?: string | null;
+};
+
+/**
+ * The confidence to read or show for a stored comparison (audit round 2 L1).
+ * A result analysed before the Q9 build (it has no provider value kept beside
+ * it) was saved uncapped and could still say "High confidence" next to
+ * "Comparability: probable/weak" and score 90, so the cap is applied when it
+ * is read. A result analysed since Q9 was capped when saved, and capping it
+ * again changes nothing, so this never reads the raw provider value.
+ */
+export function storedPhotoComparisonConfidence(
+  result: StoredComparisonConfidence | null | undefined,
+): string | null {
+  const confidence = result?.comparisonConfidence ?? null;
+  if (!result) return confidence;
+  return capPhotoComparisonConfidence(confidence, result.comparability);
+}
+
+/** The same stored result with its confidence capped; the same object when nothing changes. */
+export function withStoredPhotoComparisonCap<T extends StoredComparisonConfidence>(
+  result: T | null | undefined,
+): T | null {
+  if (!result) return null;
+  const confidence = storedPhotoComparisonConfidence(result);
+  return confidence === (result.comparisonConfidence ?? null) ? result : { ...result, comparisonConfidence: confidence };
+}
+
 export function photoDisplayResultHasExplicitFinding(
   result: PhotoAssessmentDisplayResult | null | undefined,
 ) {

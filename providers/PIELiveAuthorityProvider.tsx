@@ -52,6 +52,7 @@ import {
   type PIELiveAuthorityStateName,
 } from '../services/PIELiveAuthorityStateMachine';
 import { useDebouncedSnapshot } from '../hooks/use-debounced-snapshot';
+import { useProjectLocalDay } from '../hooks/use-project-local-day';
 import {
   buildPIERecommendationTrace,
   type PIERecommendationTrace,
@@ -110,6 +111,11 @@ export type PIELiveAuthorityInput = {
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   verifiedLearningEvents?: readonly PIEVerifiedLearningEvent[];
   syncMetadata?: ProjectSyncFreshnessMetadata | null;
+  /**
+   * Today's date in the project's time zone. The provider fills it in, so a
+   * new day rebuilds the authority even when no data changed (audit round 2 L3).
+   */
+  asOfDay?: string | null;
   surface?: PIERuntimeContext['surface'];
   identityTrusted?: boolean;
   cloudAvailable?: boolean;
@@ -169,12 +175,20 @@ const DEFAULT_POLICY: PIELiveAuthorityPolicy = {
 const PIELiveAuthorityContext = createContext<PIELiveAuthorityContextValue | null>(null);
 
 export function PIELiveAuthorityProvider({
-  input,
+  input: suppliedInput,
   children,
 }: {
   input: PIELiveAuthorityInput;
   children: ReactNode;
 }) {
+  const asOfDay = useProjectLocalDay(
+    (Array.isArray(suppliedInput.scheduleItems) ? suppliedInput.scheduleItems : [])
+      .find(item => item.projectTimeZone)?.projectTimeZone,
+  );
+  const input = useMemo(
+    () => suppliedInput.asOfDay ? suppliedInput : { ...suppliedInput, asOfDay },
+    [asOfDay, suppliedInput],
+  );
   const [core, setCore] = useState<PIECoreOutput | null>(null);
   const [fallbackRuntime, setFallbackRuntime] =
     useState<PIERuntimeState>(() => safeBuildProviderRuntime(input));

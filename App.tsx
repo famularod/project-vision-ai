@@ -382,6 +382,7 @@ import {
 import {
   buildCombinedReportAuthorityScope,
   buildDailyReportAuthorityScope,
+  buildProjectIntelligenceAuthorityScope,
 } from './services/ReportAuthorityScope';
 import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
@@ -466,6 +467,7 @@ import {
   photoAssessmentReviewCopy,
   photoDisplayResultCanInformProject,
   photoDisplayResultIsReviewCandidate,
+  withStoredPhotoComparisonCap,
 } from './services/PhotoAssessment';
 import {
   attentionCategoryForPhotoCategory,
@@ -1536,7 +1538,7 @@ function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
       photo.distanceFromSelectedAreaFeet,
     ),
     locationCapturedAt: optionalString(photo.locationCapturedAt),
-    photoIntelligence: photo.photoIntelligence || null,
+    photoIntelligence: withStoredPhotoComparisonCap(photo.photoIntelligence), // pre-Q9 results capped when read (audit round 2 L1)
   };
 }
 
@@ -6515,7 +6517,7 @@ useEffect(() => {
     ),
     [operationalSyncTombstones, savedUpdates],
   );
-  const activeSavedUpdates = savedUpdateTaskEvidence.active;
+  const activeSavedUpdates = useMemo(() => savedUpdateTaskEvidence.active.filter(update => !update.isArchived), [savedUpdateTaskEvidence.active]); // an archived update stops counting at once, not when the cloud copy returns (audit round 2 L4)
   const deletedTaskEvidenceIds = useMemo(
     () => new Set(savedUpdateTaskEvidence.historical.map(update => update.id)),
     [savedUpdateTaskEvidence.historical],
@@ -13500,7 +13502,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           contacts: contactBook,
         })
       : null;
-    const reportEvidenceScope = combinedReportScope || dailyReportScope;
+    // Home, workspace and capture: this project's evidence only, as a daily report scopes it (audit round 2 L2).
+    const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName, projectRecords, updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[], scheduleItems: authoritativeScheduleItems, currentUpdate: draft, projectAreas, referenceDocuments, projectDocuments, captureMemories, contacts: contactBook });
     const scopedProjectId =
       combinedReportScope?.projectId || authorityProjectId(projectName);
     const verifiedLearningEvents =

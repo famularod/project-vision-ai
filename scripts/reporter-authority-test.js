@@ -88,6 +88,13 @@ assert(
     reportScope.includes('if (!allowUniquelyOwnedLegacyAreas) return false;'),
   'Daily and combined reports must use exact parent/task authority and fail closed for ambiguous area-only evidence.',
 );
+// Audit round 2 L2 (30 Sep 2026): Home, workspace and capture get this
+// project's evidence only, scoped as a daily report scopes it.
+assert(
+  app.includes('const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName,') &&
+    reportScope.includes('export function buildProjectIntelligenceAuthorityScope('),
+  'Non-report live authority must be scoped to the one project it describes.',
+);
 assert(
   app.includes('reportEvidenceScope ? reportEvidenceScope.projectAreas : projectAreas') &&
     app.includes('reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments') &&

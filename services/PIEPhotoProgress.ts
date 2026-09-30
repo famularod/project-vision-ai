@@ -6,6 +6,7 @@ import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import {
   photoDisplayResultCanBeReviewed,
+  storedPhotoComparisonConfidence,
 } from './PhotoAssessment';
 
 export type PIEPhotoChangeLabel =
@@ -300,7 +301,9 @@ export function buildPhotoProgress({
     );
     if (!previous || !result) return [];
 
-    const confidence = confidenceFromResult(result.comparisonConfidence);
+    // Capped by comparability for results stored before the Q9 build too (audit round 2 L1).
+    const storedConfidence = storedPhotoComparisonConfidence(result);
+    const confidence = confidenceFromResult(storedConfidence);
     const labels = changeLabels(current);
     const estimate = visualEstimate(labels);
     const status = verificationStatus(result.userReview);
@@ -309,7 +312,7 @@ export function buildPhotoProgress({
     const matchReasons = [
       'Provider-selected prior photo',
       `Comparability: ${result.comparability}`,
-      `Visual confidence: ${result.comparisonConfidence}`,
+      `Visual confidence: ${storedConfidence}`,
     ];
 
     return [{

@@ -22,7 +22,10 @@ const {
   authorityInputSignature,
 } = moduleUnderTest.exports;
 
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.4');
+// 2.4 -> 2.5 (audit round 2 L3, 30 Sep 2026): the project-local as-of day
+// joined the evidence signature so the Home schedule line rolls over at
+// midnight; it is not part of the scope signature.
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.5');
 
 function input() {
   return {
@@ -313,6 +316,21 @@ assert(
     realityCacheRecovery.includes("'projectVisionAI.pieRealityModel.snapshots.v1.'") &&
     !realityCacheRecovery.includes("'projectPhotoUpdates.v2'"),
   'Startup must remove only legacy derived Reality Model cache keys before v2 authority starts.',
+);
+
+// Audit round 2 L3: a new project-local day rebuilds authority (overdue and
+// due-today change at midnight) without looking like a scope change.
+const today = { ...input(), asOfDay: '2026-09-30' };
+const tomorrow = { ...input(), asOfDay: '2026-10-01' };
+assert.notStrictEqual(
+  authorityInputSignature(tomorrow),
+  authorityInputSignature(today),
+  'a new project-local day must produce a new evidence signature',
+);
+assert.strictEqual(
+  authorityInputScopeSignature(tomorrow),
+  authorityInputScopeSignature(today),
+  'a new day is not a project or report scope change',
 );
 
 console.log('DAVE live-authority semantic signature tests passed.');
