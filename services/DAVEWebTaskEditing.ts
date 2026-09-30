@@ -250,6 +250,15 @@ export function buildDAVEWebScheduleItem({
 }
 
 /**
+ * What the save-conflict card says on the Tasks page and in the Schedule
+ * Builder. Both choices are spelled out: Load Latest Version throws away what
+ * he typed, and Apply My Changes uses the form as it is when he presses it
+ * (audit round 2 follow-up, 30 Sep 2026).
+ */
+export const DAVE_WEB_CONFLICT_CHOICE_TEXT =
+  'Load Latest Version shows the other device’s changes so you can review them. Your unsaved edits will be discarded. Apply My Changes saves only the fields you changed; everything you did not change keeps the other device’s newer values.';
+
+/**
  * "Apply My Changes" after a save conflict keeps what the other device saved
  * in every field the owner left alone (whole-app audit round 2 F4, 30 Sep
  * 2026). The whole form had been laid over the latest version, so a phone's

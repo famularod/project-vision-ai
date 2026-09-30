@@ -151,7 +151,12 @@ describe('Schedule Builder conflict messages are true (audit round 2 F7)', () =>
     jest.clearAllMocks();
   });
 
-  test('a refused save refreshes and loads the latest version, so the next save goes through', async () => {
+  // Changed 30 Sep 2026 (audit round 2 follow-up): a refused save no longer
+  // loads the latest version over what he typed. It offers the Tasks page's
+  // two choices; this test now takes Load Latest Version, which says it
+  // discards his edits. The F7 guarantee is unchanged: after it, the next
+  // save goes through.
+  test('a refused save refreshes; Load Latest Version loads the phone’s version, so the next save goes through', async () => {
     const opened = scheduleItem('task-1', { taskName: 'Place asphalt' });
     const phoneVersion: DAVEWebScheduleItem = {
       ...opened,
@@ -171,9 +176,13 @@ describe('Schedule Builder conflict messages are true (audit round 2 F7)', () =>
     fireEvent(screen.getByLabelText('Area'), 'change', { target: { value: 'South Yard' } });
     fireEvent.press(screen.getByText('Save Changes'));
 
-    await waitFor(() => expect(screen.getByText(/The latest version is now loaded/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Choose how to resolve this edit')).toBeTruthy());
     expect(mockRefreshSnapshot).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Your unsaved edits will be discarded\./)).toBeTruthy();
+    fireEvent.press(screen.getByText('Load Latest Version'));
+
     // The editor now holds the phone's version, not the stale form.
+    expect(screen.getByText('The latest shared version is loaded. Review it before saving.')).toBeTruthy();
     expect(screen.getByDisplayValue('60')).toBeTruthy();
     expect(screen.getByLabelText('Area').props.value).toBe('North Lot');
 
@@ -211,6 +220,85 @@ describe('Schedule Builder conflict messages are true (audit round 2 F7)', () =>
 
     await waitFor(() => expect(mockRefreshSnapshot).toHaveBeenCalledTimes(1));
     expect(screen.getByText(/The workspace has been refreshed/)).toBeTruthy();
+  });
+});
+
+describe('A refused Schedule Builder save keeps what he typed (audit round 2 follow-up)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const opened = scheduleItem('task-1', { taskName: 'Place asphalt' });
+  const phoneVersion: DAVEWebScheduleItem = {
+    ...opened,
+    percentComplete: 60,
+    status: 'In Progress',
+    notes: 'Phone note',
+    cloudUpdatedAt: '2026-09-30T14:05:01.000Z',
+  };
+
+  async function refusedEdit() {
+    mockUpdateTask.mockRejectedValueOnce(conflict()).mockResolvedValue(undefined);
+    mockRefreshSnapshot.mockImplementation(async () => {
+      showTasks([phoneVersion]);
+      return true;
+    });
+    const screen = render(<Workspace initial={[opened]} />);
+    fireEvent.press(screen.getByLabelText('Edit Place asphalt'));
+    fireEvent(screen.getByLabelText('Area'), 'change', { target: { value: 'South Yard' } });
+    fireEvent.press(screen.getByText('Save Changes'));
+    await waitFor(() => expect(screen.getByText('Choose how to resolve this edit')).toBeTruthy());
+    return screen;
+  }
+
+  test('the refusal leaves his edits in the form and offers the Tasks page’s two choices', async () => {
+    const screen = await refusedEdit();
+
+    expect(screen.getByLabelText('Area').props.value).toBe('South Yard');
+    expect(screen.getByText(
+      'Another device changed this schedule item while you were editing. Choose which version to continue with.',
+    )).toBeTruthy();
+    expect(screen.getByText(/Apply My Changes saves only the fields you changed/)).toBeTruthy();
+    expect(screen.getByText('Load Latest Version')).toBeTruthy();
+    // Save would send the version he opened and be refused again (F7).
+    fireEvent.press(screen.getByText('Choose a Version Above'));
+    expect(mockUpdateTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('Apply My Changes saves his fields, including edits made after the choice appeared, over the phone’s version', async () => {
+    const screen = await refusedEdit();
+
+    fireEvent.changeText(screen.getByDisplayValue('Project manager'), 'Dana Ruiz');
+    fireEvent.press(screen.getByText('Apply My Changes'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalledTimes(2));
+    expect(mockUpdateTask.mock.calls[1][0]).toMatchObject({
+      id: 'task-1',
+      locationName: 'South Yard',
+      owner: 'Dana Ruiz',
+      percentComplete: 60,
+      status: 'In Progress',
+      notes: 'Phone note',
+      cloudUpdatedAt: '2026-09-30T14:05:01.000Z',
+    });
+    await waitFor(() => expect(screen.getByText(
+      'The fields you changed were applied to the latest shared version and synced.',
+    )).toBeTruthy());
+    expect(screen.queryByText('Choose how to resolve this edit')).toBeNull();
+  });
+
+  test('Apply My Changes refused again keeps his edits and the choice', async () => {
+    const screen = await refusedEdit();
+    mockUpdateTask.mockReset();
+    mockUpdateTask.mockRejectedValueOnce(conflict());
+
+    fireEvent.press(screen.getByText('Apply My Changes'));
+
+    await waitFor(() => expect(screen.getByText(
+      'The schedule item changed again. Review the refreshed version before trying once more.',
+    )).toBeTruthy());
+    expect(screen.getByLabelText('Area').props.value).toBe('South Yard');
+    expect(screen.getByText('Choose how to resolve this edit')).toBeTruthy();
   });
 });
 

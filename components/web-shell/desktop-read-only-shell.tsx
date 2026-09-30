@@ -1,6 +1,6 @@
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -38,6 +38,7 @@ import {
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
+  DAVE_WEB_CONFLICT_CHOICE_TEXT,
   DAVEWebTaskValidationError,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -994,6 +995,11 @@ function TaskEditingWorkspace({
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   const [conflictDraft, setConflictDraft] = useState<TaskConflictDraft | null>(null);
   const [editorRevision, setEditorRevision] = useState(0);
+  /** The open editor's form as it is now; Apply My Changes reads it. */
+  const liveEditorFormRef = useRef<TaskFormState | null>(null);
+  const rememberEditorForm = useCallback((form: TaskFormState | null) => {
+    liveEditorFormRef.current = form;
+  }, []);
   const projectOptions = uniqueOptions([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
@@ -1221,6 +1227,18 @@ function TaskEditingWorkspace({
       });
       return;
     }
+    // The form as it is now: the editor stays open under the card, and what
+    // he typed after it appeared had been dropped because the draft of the
+    // refused save was used (audit round 2 follow-up, 30 Sep 2026). `base`
+    // stays the version he opened.
+    const liveForm = liveEditorFormRef.current;
+    const prepared = liveForm
+      ? taskEditorDraftForSave(liveForm, conflictDraft.base, conflictDraft.draft.workflowAction)
+      : { ok: true as const, draft: conflictDraft.draft };
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
+      return;
+    }
     setPending(true);
     setNotice(null);
     try {
@@ -1230,7 +1248,7 @@ function TaskEditingWorkspace({
       // (whole-app audit round 2 F4, 30 Sep 2026).
       const item = buildDAVEWebScheduleItem({
         draft: mergeDAVEWebConflictDraft({
-          draft: conflictDraft.draft,
+          draft: prepared.draft,
           base: conflictDraft.base,
           latest,
           now,
@@ -1484,9 +1502,7 @@ function TaskEditingWorkspace({
         <View style={styles.conflictResolutionCard} accessibilityRole="alert">
           <View style={styles.dataGrow}>
             <Text style={styles.conflictResolutionTitle}>Choose how to resolve this edit</Text>
-            <Text style={styles.dataDetail}>
-              Load Latest Version shows the other device’s changes so you can review them. Apply My Changes saves only the fields you changed; everything you did not change keeps the other device’s newer values.
-            </Text>
+            <Text style={styles.dataDetail}>{DAVE_WEB_CONFLICT_CHOICE_TEXT}</Text>
           </View>
           <View style={styles.inlineButtons}>
             <Pressable
@@ -1596,6 +1612,7 @@ function TaskEditingWorkspace({
                   setConflictDraft(null);
                 }}
                 onSave={saveTask}
+                onFormChange={rememberEditorForm}
               />
             ) : selectedTask ? (
               <TaskDetailsPanel
@@ -1999,6 +2016,48 @@ function toggleSetValue(current: Set<string>, value: string): Set<string> {
   return next;
 }
 
+/**
+ * The task editor's form as the draft a save sends, or why it cannot be
+ * saved. Save Task Changes, Close/Reopen, and Apply My Changes after a
+ * conflict all use it, so a later Apply sends exactly what Save would.
+ */
+function taskEditorDraftForSave(
+  form: TaskFormState,
+  task: DAVEWebScheduleItem | null,
+  workflowAction?: 'close' | 'reopen',
+): Readonly<{ ok: true; draft: DAVEWebTaskDraft }> | Readonly<{ ok: false; message: string }> {
+  if (workflowAction) {
+    return {
+      ok: true,
+      draft: { ...form, percentComplete: Number(form.percentComplete), workflowAction },
+    };
+  }
+  const structuredWorkflow = form.itemType !== 'Task';
+  const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
+  const percentComplete = Number(form.percentComplete);
+  if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
+    return { ok: false, message: 'Percent complete must be a number from 0 to 100.' };
+  }
+  if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
+    return {
+      ok: false,
+      message: `Use "Close ${form.itemType}" after the required information is complete.`,
+    };
+  }
+  return {
+    ok: true,
+    draft: {
+      ...form,
+      percentComplete,
+      status: structuredWorkflow
+        ? form.status
+        : form.status === 'Waiting' && percentComplete < 100
+          ? 'Waiting'
+          : automaticTaskStatus(percentComplete),
+    },
+  };
+}
+
 function automaticTaskStatus(percentComplete: number): ScheduleStatus {
   if (percentComplete >= 100) return 'Complete';
   if (percentComplete > 0) return 'In Progress';
@@ -2017,6 +2076,7 @@ function TaskEditor({
   onAddPhoto,
   onCancel,
   onSave,
+  onFormChange,
 }: {
   task: DAVEWebScheduleItem | null;
   defaultProject: string;
@@ -2029,9 +2089,15 @@ function TaskEditor({
   onAddPhoto?: (file: File | null) => void;
   onCancel: () => void;
   onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
+  /** Told the form on every change, and null when the editor closes. */
+  onFormChange?: (form: TaskFormState | null) => void;
 }) {
   const [draft, setDraft] = useState<TaskFormState>(() => taskFormState(task, defaultProject));
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  useEffect(() => {
+    onFormChange?.(draft);
+  }, [draft, onFormChange]);
+  useEffect(() => () => onFormChange?.(null), [onFormChange]);
   const workflowCandidate = taskEditorWorkflowCandidate(task, draft);
   const structuredWorkflow = draft.itemType !== 'Task';
   const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
@@ -2076,27 +2142,13 @@ function TaskEditor({
 
   const submit = async () => {
     setValidationMessage(null);
-    const percentComplete = Number(draft.percentComplete);
-    if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-      setValidationMessage('Percent complete must be a number from 0 to 100.');
-      return;
-    }
-    if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
-      setValidationMessage(
-        `Use "Close ${draft.itemType}" after the required information is complete.`,
-      );
+    const prepared = taskEditorDraftForSave(draft, task);
+    if (!prepared.ok) {
+      setValidationMessage(prepared.message);
       return;
     }
     try {
-      await onSave({
-        ...draft,
-        percentComplete,
-        status: structuredWorkflow
-          ? draft.status
-          : draft.status === 'Waiting' && percentComplete < 100
-            ? 'Waiting'
-            : automaticTaskStatus(percentComplete),
-      });
+      await onSave(prepared.draft);
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }
@@ -2108,12 +2160,13 @@ function TaskEditor({
       setValidationMessage(workflowReadiness.message);
       return;
     }
+    const prepared = taskEditorDraftForSave(draft, task, workflowClosed ? 'reopen' : 'close');
+    if (!prepared.ok) {
+      setValidationMessage(prepared.message);
+      return;
+    }
     try {
-      await onSave({
-        ...draft,
-        percentComplete: Number(draft.percentComplete),
-        workflowAction: workflowClosed ? 'reopen' : 'close',
-      });
+      await onSave(prepared.draft);
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }

@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useEffect, useMemo, useState } from 'react';
+import { createElement, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -13,6 +13,8 @@ import {
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
+  DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
@@ -49,6 +51,11 @@ import { useDesktopAuth } from './desktop-auth-provider';
 import { desktopSurfaces } from './desktop-surface-palette';
 
 type ScheduleEditorKind = 'task' | 'phase' | 'milestone';
+type ScheduleBuilderConflict = Readonly<{
+  taskId: string;
+  /** The version the editor was opened on: fields equal to it were left alone. */
+  base: DAVEWebScheduleItem;
+}>;
 type ScheduleWorkspaceView = 'builder' | 'gantt' | 'lookahead';
 
 type ScheduleEditorState = Readonly<{
@@ -91,7 +98,7 @@ export function DesktopSchedulePage({
   const [pending, setPending] = useState(false);
   const [impactPendingItemId, setImpactPendingItemId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
-  const [reloadAfterConflictId, setReloadAfterConflictId] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<ScheduleBuilderConflict | null>(null);
   const projectNames = uniqueText([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
@@ -143,6 +150,7 @@ export function DesktopSchedulePage({
       normalize(task.scheduleProjectName || task.projectName) === normalize(defaultProject),
     );
     setEditingTask(null);
+    setConflict(null);
     setEditor({
       kind,
       taskName: '',
@@ -169,130 +177,124 @@ export function DesktopSchedulePage({
   const openEdit = (task: DAVEWebScheduleItem) => {
     setEditingTask(task);
     setEditor(scheduleEditorStateFor(task));
+    setConflict(null);
     setNotice(null);
   };
 
-  // A save refused because another device changed the item reloads the
-  // refreshed version into the editor, as the Tasks page's Load Latest
-  // Version does; the builder had kept the stale copy, so every later save
-  // was refused with the same "has been refreshed" message (whole-app audit
-  // round 2 F7, 30 Sep 2026).
-  useEffect(() => {
-    if (!reloadAfterConflictId) return;
-    setReloadAfterConflictId(null);
-    const latest = tasks.find(task => task.id === reloadAfterConflictId);
-    if (!latest) {
-      setEditor(null);
-      setEditingTask(null);
-      setNotice({
-        tone: 'danger',
-        text: 'This schedule item is no longer in the shared record.',
-      });
-      return;
-    }
-    setEditingTask(latest);
-    setEditor(scheduleEditorStateFor(latest));
-    setNotice({
-      tone: 'danger',
-      text: 'Another device changed this schedule item while you were editing. The latest version is now loaded; review it, make your change again, and save.',
-    });
-  }, [reloadAfterConflictId, tasks]);
-
-  const save = async () => {
-    if (!editor || pending) return;
-    if (!editor.taskName.trim() || !editor.projectName.trim()) {
-      setNotice({ tone: 'danger', text: 'Task name and project are required.' });
-      return;
+  /**
+   * The form checked and turned into a task draft. `opened` is the version
+   * the editor was opened on (null for a new item).
+   */
+  const prepareDraft = (
+    form: ScheduleEditorState,
+    opened: DAVEWebScheduleItem | null,
+  ): Readonly<{ ok: true; draft: DAVEWebTaskDraft }> | Readonly<{ ok: false; message: string }> => {
+    if (!form.taskName.trim() || !form.projectName.trim()) {
+      return { ok: false, message: 'Task name and project are required.' };
     }
     if (
-      editingTask &&
-      normalize(editor.projectName) !==
-        normalize(editingTask.scheduleProjectName || editingTask.projectName)
+      opened &&
+      normalize(form.projectName) !==
+        normalize(opened.scheduleProjectName || opened.projectName)
     ) {
-      setNotice({
-        tone: 'danger',
-        text: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
-      });
-      return;
+      return {
+        ok: false,
+        message: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
+      };
     }
-    const percentComplete = Number(editor.percentComplete);
+    const percentComplete = Number(form.percentComplete);
     if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-      setNotice({ tone: 'danger', text: 'Percent complete must be from 0 to 100.' });
-      return;
+      return { ok: false, message: 'Percent complete must be from 0 to 100.' };
     }
-    const startDate = editor.startDate.trim();
-    const finishDate = editor.kind === 'milestone'
+    const startDate = form.startDate.trim();
+    const finishDate = form.kind === 'milestone'
       ? startDate
-      : editor.finishDate.trim();
+      : form.finishDate.trim();
     const parsedStart = parseVitruviusScheduleDate(startDate);
     const parsedFinish = parseVitruviusScheduleDate(finishDate);
-    if (editor.kind === 'milestone' && !parsedStart) {
-      setNotice({ tone: 'danger', text: 'A milestone date is required.' });
-      return;
+    if (form.kind === 'milestone' && !parsedStart) {
+      return { ok: false, message: 'A milestone date is required.' };
     }
     if (startDate && !parsedStart) {
-      setNotice({ tone: 'danger', text: 'Start date is not valid.' });
-      return;
+      return { ok: false, message: 'Start date is not valid.' };
     }
     if (finishDate && !parsedFinish) {
-      setNotice({ tone: 'danger', text: 'Finish date is not valid.' });
-      return;
+      return { ok: false, message: 'Finish date is not valid.' };
     }
     if (
       parsedStart &&
       parsedFinish &&
       parsedFinish.getTime() < parsedStart.getTime()
     ) {
-      setNotice({ tone: 'danger', text: 'Finish date cannot be before the start date.' });
-      return;
+      return { ok: false, message: 'Finish date cannot be before the start date.' };
     }
-    setPending(true);
-    setNotice(null);
-    try {
-      const projectTasks = tasks.filter(task =>
-        normalize(task.scheduleProjectName || task.projectName) === normalize(editor.projectName),
-      );
-      const now = new Date().toISOString();
-      const draft: DAVEWebTaskDraft = {
-        projectId: editingTask?.projectId ??
+    const projectTasks = tasks.filter(task =>
+      normalize(task.scheduleProjectName || task.projectName) === normalize(form.projectName),
+    );
+    return {
+      ok: true,
+      draft: {
+        projectId: opened?.projectId ??
           projectTasks.find(task => Boolean(task.projectId))?.projectId ??
           null,
         // The item's own type: the builder saved every item as a Task, so an
         // RFI or Issue lost its type and a closed one could not be saved
         // (whole-app audit round 2 F5, 30 Sep 2026).
-        itemType: editingTask?.itemType ?? 'Task',
-        taskName: editor.taskName,
-        projectName: editor.projectName,
-        locationName: editor.locationName,
-        startDate: editor.kind === 'phase' ? '' : startDate,
-        finishDate: editor.kind === 'phase' ? '' : finishDate,
-        milestone: scheduleBuilderMilestoneText(editor, editingTask),
-        owner: editor.owner,
-        contractor: editor.contractor,
+        itemType: opened?.itemType ?? 'Task',
+        taskName: form.taskName,
+        projectName: form.projectName,
+        locationName: form.locationName,
+        startDate: form.kind === 'phase' ? '' : startDate,
+        finishDate: form.kind === 'phase' ? '' : finishDate,
+        milestone: scheduleBuilderMilestoneText(form, opened),
+        owner: form.owner,
+        contractor: form.contractor,
         percentComplete,
-        priority: editingTask?.priority || 'Medium',
-        status: editor.status,
-        notes: editor.notes,
-        nextAction: editingTask?.nextAction || '',
+        priority: opened?.priority || 'Medium',
+        status: form.status,
+        notes: form.notes,
+        nextAction: opened?.nextAction || '',
         activityMessage: '',
-        wbsCode: editor.wbsCode,
-        parentItemId: editor.parentItemId,
-        sortOrder: editingTask?.sortOrder ??
-          nextScheduleSortOrder(editor.parentItemId || null, projectTasks),
-        durationDays: editor.kind === 'milestone' ? 0 : editor.durationDays,
-        dependencies: editor.kind === 'phase'
+        wbsCode: form.wbsCode,
+        parentItemId: form.parentItemId,
+        sortOrder: opened?.sortOrder ??
+          nextScheduleSortOrder(form.parentItemId || null, projectTasks),
+        durationDays: form.kind === 'milestone' ? 0 : form.durationDays,
+        dependencies: form.kind === 'phase'
           ? []
-          : planningDependenciesFromIds(editor.predecessorItemIds, editor.lagDays),
-        isSummary: editor.kind === 'phase',
-        isMilestone: editor.kind === 'milestone',
-        baselineStartDate: editor.baselineStartDate,
-        baselineFinishDate: editor.kind === 'milestone'
-          ? editor.baselineStartDate
-          : editor.baselineFinishDate,
-        projectControls: editingTask?.projectControls ?? null,
-      };
+          : planningDependenciesFromIds(form.predecessorItemIds, form.lagDays),
+        isSummary: form.kind === 'phase',
+        isMilestone: form.kind === 'milestone',
+        baselineStartDate: form.baselineStartDate,
+        baselineFinishDate: form.kind === 'milestone'
+          ? form.baselineStartDate
+          : form.baselineFinishDate,
+        projectControls: opened?.projectControls ?? null,
+      },
+    };
+  };
+
+  const closeEditor = () => {
+    setEditor(null);
+    setEditingTask(null);
+    setConflict(null);
+  };
+
+  const save = async () => {
+    // While another device's newer version is waiting for his choice, Save
+    // would send the version he opened and be refused again (audit round 2 F7).
+    if (!editor || pending || conflict) return;
+    const prepared = prepareDraft(editor, editingTask);
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
+      return;
+    }
+    setPending(true);
+    setNotice(null);
+    try {
+      const now = new Date().toISOString();
       const item = buildDAVEWebScheduleItem({
-        draft,
+        draft: prepared.draft,
         current: editingTask,
         id: editingTask?.id || createDAVEWebTaskId(),
         now,
@@ -300,8 +302,7 @@ export function DesktopSchedulePage({
       });
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
-      setEditor(null);
-      setEditingTask(null);
+      closeEditor();
       setNotice({
         tone: 'good',
         text: editingTask
@@ -309,10 +310,19 @@ export function DesktopSchedulePage({
           : 'Schedule item created and synced.',
       });
     } catch (error) {
+      // A save refused because another device changed the item keeps what
+      // he typed and offers the Tasks page's two choices. Loading the latest
+      // version over his edits threw them away (audit round 2 follow-up,
+      // 30 Sep 2026); before that the builder kept the stale copy and every
+      // later save was refused (audit round 2 F7).
       if (editingTask && error instanceof DAVEWebTaskMutationError && error.code === 'conflict') {
         const refreshed = await auth.refreshSnapshot().catch(() => false);
         if (refreshed) {
-          setReloadAfterConflictId(editingTask.id);
+          setConflict({ taskId: editingTask.id, base: editingTask });
+          setNotice({
+            tone: 'danger',
+            text: 'Another device changed this schedule item while you were editing. Choose which version to continue with.',
+          });
           return;
         }
         setNotice({
@@ -321,15 +331,91 @@ export function DesktopSchedulePage({
         });
         return;
       }
-      if (await refreshAfterRefusedWrite(error)) {
-        setEditor(null);
-        setEditingTask(null);
-      }
+      if (await refreshAfterRefusedWrite(error)) closeEditor();
       setNotice({
         tone: 'danger',
         text: error instanceof Error
           ? error.message
           : 'The schedule item could not be saved.',
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const loadLatestAfterConflict = () => {
+    if (!conflict || pending) return;
+    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    if (!latest) {
+      closeEditor();
+      setNotice({
+        tone: 'danger',
+        text: 'This schedule item is no longer in the shared record.',
+      });
+      return;
+    }
+    setEditingTask(latest);
+    setEditor(scheduleEditorStateFor(latest));
+    setConflict(null);
+    setNotice({
+      tone: 'good',
+      text: 'The latest shared version is loaded. Review it before saving.',
+    });
+  };
+
+  const applyMyChangesAfterConflict = async () => {
+    if (!conflict || !editor || pending) return;
+    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    if (!latest) {
+      closeEditor();
+      setNotice({
+        tone: 'danger',
+        text: 'This schedule item is no longer in the shared record.',
+      });
+      return;
+    }
+    // The form as it is now, edits made after the choice appeared included,
+    // compared with the version he opened.
+    const prepared = prepareDraft(editor, conflict.base);
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
+      return;
+    }
+    setPending(true);
+    setNotice(null);
+    try {
+      const now = new Date().toISOString();
+      const actor = auth.userEmail || 'Project manager';
+      // Only the fields he changed go over the other device's newer version,
+      // as on the Tasks page (whole-app audit round 2 F4).
+      const item = buildDAVEWebScheduleItem({
+        draft: mergeDAVEWebConflictDraft({
+          draft: prepared.draft,
+          base: conflict.base,
+          latest,
+          now,
+          actor,
+        }),
+        current: latest,
+        id: latest.id,
+        now,
+        actor,
+      });
+      await auth.updateTask(item);
+      closeEditor();
+      setNotice({
+        tone: 'good',
+        text: 'The fields you changed were applied to the latest shared version and synced.',
+      });
+    } catch (error) {
+      await auth.refreshSnapshot().catch(() => false);
+      setNotice({
+        tone: 'danger',
+        text: error instanceof DAVEWebTaskMutationError && error.code === 'conflict'
+          ? 'The schedule item changed again. Review the refreshed version before trying once more.'
+          : error instanceof Error
+            ? error.message
+            : 'The schedule item could not be saved.',
       });
     } finally {
       setPending(false);
@@ -523,6 +609,35 @@ export function DesktopSchedulePage({
         </View>
       ) : null}
 
+      {editor && conflict ? (
+        <View style={styles.conflictCard} accessibilityRole="alert">
+          <View style={styles.conflictCopy}>
+            <Text style={styles.conflictTitle}>Choose how to resolve this edit</Text>
+            <Text style={styles.conflictText}>{DAVE_WEB_CONFLICT_CHOICE_TEXT}</Text>
+          </View>
+          <View style={styles.conflictActions}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={loadLatestAfterConflict}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryButtonText}>Load Latest Version</Text>
+            </Pressable>
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => { void applyMyChangesAfterConflict(); }}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              {pending ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : (
+                <Text style={styles.primaryButtonText}>Apply My Changes</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
       {editor ? (
         <ScheduleEditor
           state={editor}
@@ -531,11 +646,9 @@ export function DesktopSchedulePage({
           projectTasks={editorProjectTasks}
           scenario={editorScenario}
           pending={pending}
+          awaitingConflictChoice={Boolean(conflict)}
           onChange={setEditor}
-          onCancel={() => {
-            setEditor(null);
-            setEditingTask(null);
-          }}
+          onCancel={closeEditor}
           onSave={() => { void save(); }}
         />
       ) : null}
@@ -1325,6 +1438,7 @@ function ScheduleEditor({
   projectTasks,
   scenario,
   pending,
+  awaitingConflictChoice = false,
   onChange,
   onCancel,
   onSave,
@@ -1335,6 +1449,8 @@ function ScheduleEditor({
   projectTasks: readonly DAVEWebScheduleItem[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
+  /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
+  awaitingConflictChoice?: boolean;
   onChange: (value: ScheduleEditorState) => void;
   onCancel: () => void;
   onSave: () => void;
@@ -1346,11 +1462,12 @@ function ScheduleEditor({
     state.startDate.trim() &&
     (state.kind === 'milestone' || state.finishDate.trim()),
   );
-  const saveBlocked = pending || Boolean(
+  const scheduleIssues = Boolean(
     editingTask &&
     scenario &&
     !scenario.safety.safeToApply,
   );
+  const saveBlocked = pending || awaitingConflictChoice || scheduleIssues;
   const update = <K extends keyof ScheduleEditorState>(
     key: K,
     value: ScheduleEditorState[K],
@@ -1569,11 +1686,13 @@ function ScheduleEditor({
         >
           {pending ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : (
             <Text style={styles.primaryButtonText}>
-              {saveBlocked && editingTask
-                ? 'Correct Schedule Issues'
-                : editingTask
-                  ? 'Save Changes'
-                  : `Create ${capitalize(state.kind)}`}
+              {awaitingConflictChoice
+                ? 'Choose a Version Above'
+                : scheduleIssues
+                  ? 'Correct Schedule Issues'
+                  : editingTask
+                    ? 'Save Changes'
+                    : `Create ${capitalize(state.kind)}`}
             </Text>
           )}
         </Pressable>
@@ -1961,6 +2080,12 @@ const styles = StyleSheet.create({
   noticeDanger: { borderColor: '#E5A4A4', backgroundColor: '#FFF1F1' },
   noticeText: { color: '#195B35', fontSize: 14, lineHeight: 20, fontWeight: '700' },
   noticeTextDanger: { color: '#922323' },
+  // The Tasks page's conflict card (conflictResolutionCard), so both read alike.
+  conflictCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
+  conflictCopy: { flexGrow: 1, flexShrink: 1, flexBasis: 320, gap: spacing.xs },
+  conflictTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  conflictText: { color: desktopSurfaces.text, fontSize: 14, lineHeight: 20 },
+  conflictActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
   editor: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   editorHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   editorEyebrow: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.2 },

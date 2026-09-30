@@ -168,6 +168,71 @@ describe('Apply My Changes on the Tasks page (audit round 2 F4)', () => {
   });
 });
 
+// Audit round 2 follow-up (30 Sep 2026): the form stays open under the
+// conflict card, and its text says the fields "you changed" are saved, but
+// Apply My Changes sent the form as it was at the refused save; anything
+// typed after the card appeared was dropped without a word.
+describe('the Tasks page conflict card uses the form as it is now (audit round 2 follow-up)', () => {
+  async function refusedEdit() {
+    mockAuth.updateTask
+      .mockRejectedValueOnce(new DAVEWebTaskMutationError(
+        'conflict',
+        'This task changed on another device. The workspace has been refreshed; review the latest values before saving again.',
+      ))
+      .mockResolvedValueOnce(undefined);
+    const screen = render(<DesktopReadOnlyShell page="tasks" />);
+    fireEvent.press(screen.getByLabelText('Expand North Lot'));
+    fireEvent.press(screen.getAllByLabelText('View details for Place asphalt')[0]);
+    fireEvent.press(screen.getByText('Edit Task'));
+    fireEvent.changeText(screen.getByLabelText('Owner, custom value'), 'Dana Ruiz');
+    fireEvent.press(screen.getByText('Save Task Changes'));
+    await waitFor(() => expect(screen.getByText('Choose how to resolve this edit')).toBeTruthy());
+    mockAuth.snapshot = snapshotWith(phoneVersion);
+    screen.rerender(<DesktopReadOnlyShell page="tasks" />);
+    return screen;
+  }
+
+  test('an edit typed after the card appeared is saved by Apply My Changes', async () => {
+    const screen = await refusedEdit();
+
+    fireEvent.changeText(screen.getByLabelText('Contractor, custom value'), 'Asphalt Pros');
+    fireEvent.press(screen.getByText('Apply My Changes'));
+
+    await waitFor(() => expect(mockAuth.updateTask).toHaveBeenCalledTimes(2));
+    expect(mockAuth.updateTask.mock.calls[1][0]).toMatchObject({
+      id: 'task-1',
+      owner: 'Dana Ruiz',
+      contractor: 'Asphalt Pros',
+      percentComplete: 60,
+      notes: 'Phone note: north half paved',
+      cloudUpdatedAt: '2026-09-30T14:05:01.000Z',
+    });
+  });
+
+  test('an edit undone after the card appeared keeps the phone’s value', async () => {
+    const screen = await refusedEdit();
+
+    // He puts the owner back as it was when he opened the task.
+    fireEvent.changeText(screen.getByLabelText('Owner, custom value'), 'Project manager');
+    fireEvent.press(screen.getByText('Apply My Changes'));
+
+    await waitFor(() => expect(mockAuth.updateTask).toHaveBeenCalledTimes(2));
+    expect(mockAuth.updateTask.mock.calls[1][0]).toMatchObject({
+      owner: 'Project manager',
+      percentComplete: 60,
+      cloudUpdatedAt: '2026-09-30T14:05:01.000Z',
+    });
+  });
+
+  test('the card says Load Latest Version discards his unsaved edits', async () => {
+    const screen = await refusedEdit();
+
+    expect(screen.getByText(
+      /Load Latest Version shows the other device’s changes so you can review them\. Your unsaved edits will be discarded\./,
+    )).toBeTruthy();
+  });
+});
+
 describe('Data export and recovery on the web (audit round 2 F6, F8)', () => {
   const backup = JSON.stringify({
     schemaVersion: 'vitruvius-web-backup/1.0',
