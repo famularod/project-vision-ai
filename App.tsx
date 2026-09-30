@@ -308,7 +308,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, scheduleRetirementMessage } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -10983,9 +10983,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
             ? normalizeReferenceDocuments(result.data)
             : null;
         },
-        confirmRetiringProjects: projects => new Promise(resolve => Alert.alert(
+        confirmRetiringProjects: effects => new Promise(resolve => Alert.alert(
           'Change the current schedule?',
-          `The schedule now current for ${projects.join(', ')} will be retired too. Until you set a new one there, ${projects.length === 1 ? 'that project shows' : 'those projects show'} no schedule tasks.`,
+          scheduleRetirementMessage(effects), // from the cloud's current flags (whole-app audit A5 pass 3 F2)
           [
             { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
             { text: 'Set Active', onPress: () => resolve(true) },

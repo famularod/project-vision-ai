@@ -313,6 +313,11 @@ export function currentScheduleDocumentWinners<T extends ReferenceDocument>(
     .sort(compareScheduleDocumentAuthority);
 }
 
+/** The key currentScheduleDocumentsByProject files a project name under. */
+export function scheduleProjectScopeKey(projectName: string): string {
+  return normalize(projectName);
+}
+
 function scheduleDocumentScope(document: ReferenceDocument): string[] {
   const names = (document.projectNames || []).map(normalize).filter(Boolean);
   if (names.length > 0) return [...new Set(names)];

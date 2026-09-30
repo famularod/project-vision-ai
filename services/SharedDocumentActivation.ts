@@ -4,6 +4,7 @@ import {
   activateECOSCurrentReferenceDocument,
   type ECOSCurrentReferenceActivationResult,
 } from './ECOSHostedIndexer';
+import { currentScheduleDocumentsByProject, scheduleProjectScopeKey } from './PIEScheduleReconciliation';
 
 /**
  * Making a shared document current goes through the cloud's activation call
@@ -20,6 +21,13 @@ export type SharedDocumentActivationOutcome =
   | Readonly<{ status: 'cancelled' }>
   | Readonly<{ status: 'not_prepared' | 'failed'; message: string }>;
 
+/** What making a schedule current does to another project's schedule. */
+export type ScheduleRetirementEffect = Readonly<{
+  projectName: string;
+  /** The older schedule the cloud still marks current there, shown next; null when none is left. */
+  fallbackSchedule: Readonly<{ id: string; name: string }> | null;
+}>;
+
 export async function activateSharedReferenceDocument({
   documentId,
   documents,
@@ -34,7 +42,7 @@ export async function activateSharedReferenceDocument({
   /** The cloud's documents, normalized, or null when they could not be read. */
   listDocuments: () => Promise<readonly ReferenceDocument[] | null>;
   /** Asked before a schedule replaces the current schedule of other projects. */
-  confirmRetiringProjects: (projectNames: readonly string[]) => Promise<boolean>;
+  confirmRetiringProjects: (effects: readonly ScheduleRetirementEffect[]) => Promise<boolean>;
   activate?: (input: {
     client: SupabaseClient;
     documentId: string;
@@ -44,7 +52,21 @@ export async function activateSharedReferenceDocument({
   const target = documents.find(document => document.id === documentId);
   if (!client || !target?.cloudUpdatedAt) return { status: 'refresh_required' };
 
-  const retiring = projectsLeftWithoutCurrentSchedule(target, documents);
+  // What the owner is told comes from the cloud's own current flags. The
+  // phone shows one current schedule per project, so an older schedule the
+  // cloud still marked current looked retired, and the dialog said a project
+  // would show no schedule tasks when it went back to that schedule
+  // (whole-app audit A5 pass 3 F2 (30 Sep 2026)).
+  let retiring: ScheduleRetirementEffect[] = [];
+  if (isScheduleDocument(target)) {
+    const cloud = await listDocuments();
+    if (!cloud) {
+      return { status: 'failed', message: 'The shared schedules could not be read. Try again shortly.' };
+    }
+    const cloudTarget = cloud.find(document => document.id === documentId);
+    if (!cloudTarget) return { status: 'refresh_required' };
+    retiring = scheduleActivationEffects(cloudTarget, cloud);
+  }
   if (retiring.length > 0 && !(await confirmRetiringProjects(retiring))) {
     return { status: 'cancelled' };
   }
@@ -56,14 +78,14 @@ export async function activateSharedReferenceDocument({
   });
   if (activation.status === 'conflict') {
     // The record changed first (often this phone's own queued upload). Try
-    // once more against the cloud's copy, unless that copy would now retire
-    // a project the owner was not asked about.
+    // once more against the cloud's copy, unless that copy would now change
+    // another project's schedule other than as the owner was told.
     const fresh = await listDocuments();
     const freshTarget = fresh?.find(document => document.id === documentId);
     if (
       fresh &&
       freshTarget?.cloudUpdatedAt &&
-      sameNames(projectsLeftWithoutCurrentSchedule(freshTarget, fresh), retiring)
+      sameEffects(scheduleActivationEffects(freshTarget, fresh), retiring)
     ) {
       activation = await activate({
         client,
@@ -82,36 +104,52 @@ export async function activateSharedReferenceDocument({
 }
 
 /**
- * The projects that would be left with no current schedule. The cloud retires
- * every current schedule sharing a project with the chosen one, so choosing a
- * schedule for one project retires a combined schedule that also covers
- * another project.
+ * The other projects whose schedule changes, read from the cloud's list. The
+ * cloud retires every current schedule sharing a project with the chosen one,
+ * so choosing a schedule for one project retires a combined schedule that
+ * also covers another project. Each project shows its newest schedule marked
+ * current, so a project the retired schedule was showing goes back to an
+ * older one still marked current, or is left with none.
  */
-export function projectsLeftWithoutCurrentSchedule(
+export function scheduleActivationEffects(
   target: ReferenceDocument,
   documents: readonly ReferenceDocument[],
-): string[] {
+): ScheduleRetirementEffect[] {
   if (!isScheduleDocument(target)) return [];
   const targetKeys = projectKeys(target);
-  const current = documents.filter(document =>
-    document.id !== target.id && document.isCurrent && isScheduleDocument(document));
-  const retired = current.filter(document =>
+  const retired = documents.filter(document =>
+    document.id !== target.id && document.isCurrent && isScheduleDocument(document) &&
     [...projectKeys(document)].some(key => targetKeys.has(key)));
-  const remaining = current.filter(document => !retired.includes(document));
-  const covered = new Set([
-    ...targetKeys,
-    ...remaining.flatMap(document => [...projectKeys(document)]),
-  ]);
-  const left: string[] = [];
+  const after = documents.map(document => document.id === target.id
+    ? { ...document, isCurrent: true }
+    : retired.includes(document) ? { ...document, isCurrent: false } : document);
+  const showingBefore = currentScheduleDocumentsByProject(documents);
+  const showingAfter = currentScheduleDocumentsByProject(after);
+  const effects: ScheduleRetirementEffect[] = [];
   for (const document of retired) {
     for (const name of projectNamesOf(document)) {
       const key = name.trim().toLowerCase();
-      if (!covered.has(key) && !left.some(existing => existing.trim().toLowerCase() === key)) {
-        left.push(name.trim());
-      }
+      if (targetKeys.has(key) || effects.some(effect => effect.projectName.toLowerCase() === key)) continue;
+      if (showingBefore.get(scheduleProjectScopeKey(name))?.id !== document.id) continue;
+      const fallback = showingAfter.get(scheduleProjectScopeKey(name));
+      if (fallback?.id === target.id) continue;
+      effects.push({
+        projectName: name.trim(),
+        fallbackSchedule: fallback ? { id: fallback.id, name: fallback.name } : null,
+      });
     }
   }
-  return left;
+  return effects;
+}
+
+/** The Set Active confirmation: what each other project shows next. */
+export function scheduleRetirementMessage(effects: readonly ScheduleRetirementEffect[]): string {
+  return [
+    `The schedule now current for ${effects.map(effect => effect.projectName).join(', ')} will be retired too.`,
+    ...effects.map(effect => effect.fallbackSchedule
+      ? `${effect.projectName} goes back to ${effect.fallbackSchedule.name}, an older schedule still marked current there.`
+      : `${effect.projectName} is left with no current schedule and shows no schedule tasks until you set one.`),
+  ].join(' ');
 }
 
 function isScheduleDocument(document: ReferenceDocument): boolean {
@@ -133,8 +171,13 @@ function projectNamesOf(document: ReferenceDocument): string[] {
     .filter((name): name is string => typeof name === 'string' && Boolean(name.trim()));
 }
 
-function sameNames(left: readonly string[], right: readonly string[]): boolean {
-  const key = (names: readonly string[]) =>
-    names.map(name => name.trim().toLowerCase()).sort().join('|');
+function sameEffects(
+  left: readonly ScheduleRetirementEffect[],
+  right: readonly ScheduleRetirementEffect[],
+): boolean {
+  const key = (effects: readonly ScheduleRetirementEffect[]) => effects
+    .map(effect => `${effect.projectName.trim().toLowerCase()}>${effect.fallbackSchedule?.id ?? ''}`)
+    .sort()
+    .join('|');
   return key(left) === key(right);
 }
