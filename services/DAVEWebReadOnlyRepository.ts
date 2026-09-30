@@ -59,8 +59,16 @@ export async function loadDAVEWebReadOnlySnapshot(
   collections?: readonly DAVEOperationalCollectionName[],
 ): Promise<DAVEWebReadOnlySnapshot> {
   const rows = await daveWebSupabaseGateway.loadAuthorizedRows(collections);
-  const rawProjects = rows.projects.map(normalizeProject).filter(isPresent);
   const tombstones = rows.syncTombstones.map(normalizeTombstone).filter(isPresent);
+  // A deleted project's row can come back (a create queued offline landed
+  // after its delete); the phone hides it by its deletion record, and so does
+  // the desktop now (whole-app audit A3 pass 4). The record is keyed by name.
+  const rawProjects = removeTombstonedRecords(
+    rows.projects.map(normalizeProject).filter(isPresent),
+    tombstones,
+    'project',
+    project => project.name,
+  );
   const reconciledDocuments = reconcileCurrentScheduleDocuments(
     removeTombstonedRecords(
       rows.referenceDocuments.map(normalizeDocument).filter(isPresent),
@@ -92,7 +100,7 @@ export async function loadDAVEWebReadOnlySnapshot(
     scheduleItems: reconciledScheduleItems,
     scheduleDocuments: referenceDocuments,
   }) as DAVEWebScheduleItem[];
-  const projects = portfolioProjects(rawProjects, scheduleItems);
+  const projects = portfolioProjects(rawProjects, scheduleItems, tombstones);
   const projectUpdates = partitionProjectUpdatesByDeletedTask(
     rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
     tombstones,
@@ -111,6 +119,7 @@ export async function loadDAVEWebReadOnlySnapshot(
 function portfolioProjects(
   allProjects: readonly CloudProject[],
   scheduleItems: readonly ScheduleItem[],
+  tombstones: readonly DAVESyncTombstone[],
 ): CloudProject[] {
   // Archived projects are read only so their names stay out: a task that
   // still names an archived parent must not bring it back (native parity,
@@ -122,7 +131,10 @@ function portfolioProjects(
   return scheduleOverviewProjectNames(
     projects.map(project => project.name),
     [...scheduleItems],
-    allProjects.filter(project => project.archived).map(project => project.name),
+    [
+      ...allProjects.filter(project => project.archived).map(project => project.name),
+      ...tombstones.filter(tombstone => tombstone.entityType === 'project').map(tombstone => tombstone.recordId),
+    ],
   ).map(name => projectByName.get(normalized(name)) ?? {
     id: null,
     name,
@@ -217,22 +229,24 @@ function normalizeTombstone(value: unknown): DAVESyncTombstone | null {
   if (
     !recordId ||
     !deletedAt ||
-    (entityType !== 'project_area' && entityType !== 'schedule_item' && entityType !== 'reference_document')
+    (entityType !== 'project' && entityType !== 'project_area' &&
+      entityType !== 'schedule_item' && entityType !== 'reference_document')
   ) return null;
   return { entityType, recordId, deletedAt };
 }
 
-function removeTombstonedRecords<T extends { id: string }>(
+function removeTombstonedRecords<T>(
   records: readonly T[],
   tombstones: readonly DAVESyncTombstone[],
   entityType: DAVESyncTombstone['entityType'],
+  recordIdOf: (record: T) => string = record => (record as { id: string }).id,
 ): T[] {
   const deletedIds = new Set(
     tombstones
       .filter(tombstone => tombstone.entityType === entityType)
       .map(tombstone => normalized(tombstone.recordId)),
   );
-  return records.filter(record => !deletedIds.has(normalized(record.id)));
+  return records.filter(record => !deletedIds.has(normalized(recordIdOf(record))));
 }
 
 function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdate> | null {

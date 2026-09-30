@@ -135,6 +135,26 @@ export function resolveOperationalReferenceDocumentScope(
   input: OperationalReferenceDocumentScopeInput,
   authority: OperationalProjectIdentityAuthority,
 ): OperationalReferenceDocumentScopeResult {
+  const result = resolveReferenceDocumentScope(input, authority);
+  if (result.ok || result.code !== 'project_identity_invalid') return result;
+  // A shared document whose project was deleted keeps that project's cloud
+  // id: the cloud's delete moves its project name to the next project on its
+  // list but leaves the id, so every later upload was refused for good
+  // (whole-app audit A3 pass 4). An id that matches no active project is set
+  // aside only when the document's own names all resolve to active projects;
+  // the names then decide, and every other refusal stands.
+  const projectId = exactProjectId(input.projectId);
+  const hasNames = Array.isArray(input.projectNames) &&
+    input.projectNames.some(name => typeof name === 'string' && name.trim());
+  if (!projectId || authority.byId.has(projectId) || !hasNames) return result;
+  const byNames = resolveReferenceDocumentScope({ ...input, projectId: null }, authority);
+  return byNames.ok ? byNames : result;
+}
+
+function resolveReferenceDocumentScope(
+  input: OperationalReferenceDocumentScopeInput,
+  authority: OperationalProjectIdentityAuthority,
+): OperationalReferenceDocumentScopeResult {
   const record = withoutOwnLegacyProjectNameKey(input);
   const hasSingleIdentity = Boolean(
     record.projectId !== undefined && record.projectId !== null ||

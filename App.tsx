@@ -33,7 +33,7 @@ import {
   queueReferenceDocumentRecord,
   queueProjectUpdateRecord,
   queueScheduleItemRecord,
-  removeOperationalRecordFromSyncQueue,
+  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
   uploadPendingChanges,
   type FieldUpdateSyncWorkAttempt,
@@ -8998,6 +8998,7 @@ function addProject(projectName: string) {
         ...cascade.removedReferenceDocuments.map(document =>
           removeOperationalRecordFromSyncQueue('reference_document', document.id),
         ),
+        withdrawQueuedChangesOfDeletedProject(projectName, projectRecords), // cover, reopen, shared copies (audit A3 pass 4)
       ]);
       void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
       void synchronizeDAVESyncTombstones().catch(() => undefined);

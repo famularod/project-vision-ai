@@ -63,6 +63,7 @@ import {
   recordProjectUpdateDeletionIntent,
 } from './ProjectUpdateDeletionJournal';
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
+import { withoutDeletedSharedProject } from './ProjectDeletionTransaction';
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import { runDAVECloudMaintenanceIfDue } from './DAVECloudMaintenanceBudget';
@@ -2531,7 +2532,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
-  const uploadContext: QueueUploadContext = {};
+  const uploadContext: QueueUploadContext = { settledQueueItemIds: resolvedIds };
   let uploaded = 0;
   let heldErrorCount = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
@@ -2604,6 +2605,12 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     if (item.entity === 'reference_document' && await queuedBridgeDocumentWasDeleted(item)) {
       // The phone document behind this shared record was deleted before it
       // uploaded (audit A7 pass 4); see ProjectDocumentBridge.
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
+    if (await queuedProjectChangeWasDeleted(item, uploadContext)) {
       itemOutcomes[item.id] = 'superseded';
       resolvedIds.add(item.id);
       continue;
@@ -3900,6 +3907,8 @@ type QueueUploadContext = {
     ReturnType<typeof getProjectUpdateSyncMetadata>
   >;
   legacyDeletedProjectNamesPromise?: Promise<ReadonlySet<string>>;
+  /** Items this pass already uploaded or retired (still in the stored queue until it ends). */
+  settledQueueItemIds?: ReadonlySet<string>;
 };
 
 const PROJECT_UPDATE_RECEIPT_PREFETCH_CONCURRENCY = 8;
@@ -4102,7 +4111,7 @@ async function uploadQueueItem(
   context: QueueUploadContext,
 ): Promise<string | ReferenceDocumentUploadSuccess> {
   if (item.entity === 'project') {
-    return uploadProjectQueueItem(item);
+    return uploadProjectQueueItem(item, context);
   }
 
   if (item.entity === 'project_update') {
@@ -4270,10 +4279,20 @@ async function uploadQueueItem(
 
 async function uploadProjectQueueItem(
   item: SyncQueueItem,
+  context: QueueUploadContext,
 ): Promise<'uploaded' | string> {
   const payload = item.payload as ProjectCreatePayload &
     ProjectUpdatePayload &
     ProjectDeletePayload;
+  // A delete sent while the project's own create is still queued found no
+  // cloud row, and the create then made the deleted project active on the
+  // next pass (whole-app audit A3 pass 4). It waits, as a close does.
+  if (
+    item.operation === 'delete' &&
+    await projectCreateStillQueued(payload.name || payload.previousName || '', context)
+  ) {
+    return 'Project delete is waiting for the project to reach the cloud.';
+  }
   if (item.operation === 'update' && payload.coverPhotoUpload) {
     const upload = await uploadPhoto({
       path: payload.coverPhotoUpload.remotePath,
@@ -4305,7 +4324,7 @@ async function uploadProjectQueueItem(
     // active on the next pass (whole-app audit A3 pass 3); it waits instead.
     if (
       item.operation === 'update' && payload.archived === true && !result.data &&
-      await projectCreateStillQueued(payload.previousName || payload.name || '')
+      await projectCreateStillQueued(payload.previousName || payload.name || '', context)
     ) {
       return 'Project close is waiting for the project to reach the cloud.';
     }
@@ -4315,14 +4334,78 @@ async function uploadProjectQueueItem(
   return result.error || result.message || 'Project sync is waiting for Supabase.';
 }
 
-async function projectCreateStillQueued(name: string): Promise<boolean> {
+async function projectCreateStillQueued(
+  name: string,
+  context: QueueUploadContext,
+): Promise<boolean> {
   const key = name.trim().toLowerCase();
   if (!key) return false;
   const queue = await getOfflineQueue().catch(() => null);
   if (!queue) return true;
   return queue.some(candidate =>
     candidate.entity === 'project' && candidate.operation === 'create' &&
+    !context.settledQueueItemIds?.has(candidate.id) &&
     String((candidate.payload as Partial<ProjectCreatePayload>)?.name || '').trim().toLowerCase() === key);
+}
+
+/**
+ * A queued create, cover photo or reopen for a project on this phone's
+ * deleted-project list. The deletion record already retires them when it is
+ * on this phone; a project deleted before deletion records existed has only
+ * the list, and its create made the deleted project active again while its
+ * cover and reopen retried for good (whole-app audit A3 pass 4). A close is
+ * still sent: the cloud reads a missing project as already closed, and the
+ * startup migration closes the retired shell projects, which are on the list.
+ */
+async function queuedProjectChangeWasDeleted(
+  item: SyncQueueItem,
+  context: QueueUploadContext,
+): Promise<boolean> {
+  if (item.entity !== 'project' || item.operation === 'delete') return false;
+  const payload = (item.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+  if (item.operation === 'update' && payload.archived === true) return false;
+  const key = normalizedProjectArchiveName(
+    item.operation === 'create' ? payload.name : payload.previousName || payload.name,
+  );
+  if (!key) return false;
+  context.legacyDeletedProjectNamesPromise ??= loadLegacyDeletedProjectNames();
+  return (await context.legacyDeletedProjectNamesPromise).has(key);
+}
+
+/**
+ * Called by the project delete cascade (whole-app audit A3 pass 4). The
+ * project's queued cover photo and reopen are withdrawn: each pass
+ * re-uploaded the cover and then failed "Project could not be found." A
+ * document shared with other projects has its queued copy rewritten as the
+ * saved one was, so it no longer names the deleted project or carries its id.
+ */
+export async function withdrawQueuedChangesOfDeletedProject(
+  projectName: string,
+  projectRecords: readonly Readonly<{ name: string; id?: string | null }>[] = [],
+): Promise<number> {
+  const key = normalizedProjectArchiveName(projectName);
+  if (!key) return 0;
+  return mutateOfflineQueue(queue => {
+    let changed = 0;
+    const nextQueue = queue.flatMap(item => {
+      if (item.entity === 'project' && item.operation === 'update') {
+        const payload = (item.payload || {}) as Partial<ProjectUpdatePayload>;
+        if (payload.archived !== true &&
+          normalizedProjectArchiveName(payload.previousName || payload.name) === key) {
+          changed += 1;
+          return [];
+        }
+      }
+      const document = item.entity === 'reference_document' && item.operation !== 'delete'
+        ? (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData
+        : null;
+      const shared = document ? withoutDeletedSharedProject(document, projectName, projectRecords) : null;
+      if (!shared) return [item];
+      changed += 1;
+      return [{ ...item, payload: { ...(item.payload as ReferenceDocumentRecordPayload), documentData: shared } }];
+    });
+    return { nextQueue, result: changed, persist: changed > 0 };
+  });
 }
 
 /**
