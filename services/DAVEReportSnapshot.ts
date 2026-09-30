@@ -53,19 +53,31 @@ function wasDelivered(snapshot: DAVEReportSnapshot): boolean {
   return snapshot.deliveredAt !== null;
 }
 
+/** Saved before approvals kept their history: whether it went out is unknown, and it counts as sent. */
+function isLegacySnapshot(snapshot: DAVEReportSnapshot): boolean {
+  return snapshot.deliveredAt === undefined;
+}
+
 /**
  * The baseline a report with `currentFingerprint` is compared against: the
- * previous approved snapshot, unless that snapshot is this same content
- * (then the one it superseded, or itself when it has no history: zero
- * change since the owner's report, not "establishes the baseline"), or an
- * approval that was never sent (then the one it superseded).
+ * previous approved snapshot, unless that snapshot is this same content or
+ * an approval that was never sent (then the one it superseded).
+ *
+ * The same content reads as it did when it was approved, before and after
+ * it is sent: against the report it superseded, or, for a first report,
+ * as the baseline it establishes (audit A6 pass 3: comparing a first
+ * approval against itself changed the text under the approval and cleared
+ * it). A legacy snapshot has no history and compares against itself with
+ * zero change, as it always did.
  */
 export function reportBaselineSnapshot(
   previous: DAVEReportSnapshot | null | undefined,
   currentFingerprint: string,
 ): DAVEReportSnapshot | null {
   if (!previous) return null;
-  if (previous.sourceFingerprint === currentFingerprint) return previous.supersedes ?? previous;
+  if (previous.sourceFingerprint === currentFingerprint) {
+    return previous.supersedes ?? (isLegacySnapshot(previous) ? previous : null);
+  }
   if (!wasDelivered(previous)) return previous.supersedes ?? null;
   return previous;
 }

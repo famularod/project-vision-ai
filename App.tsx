@@ -10179,7 +10179,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Email unavailable',
         'The report was copied instead. Open your email app and paste it into a new message.',
       );
-      return 'unknown';
+      // The report is on the clipboard to be pasted and sent, as Copy Report leaves it (audit A6 pass 3).
+      return 'completed';
     }
 
     // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
@@ -10235,7 +10236,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Text unavailable',
         'The report was copied instead. Open Messages and paste it into a new text.',
       );
-      return 'unknown';
+      return 'completed';
     }
 
     const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);
@@ -10266,21 +10267,42 @@ Note: This update was opened through Outlook because PLZ email security may reje
       'Continue',
     );
     if (!proceed) return 'canceled';
-    return downloadWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');
+    const shared = await shareWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');
+    if (!shared) return 'unknown';
+    // The share sheet closes the same way whether the mail was sent, the
+    // file was saved or the sheet was dismissed: only the owner knows
+    // (audit A6 pass 3: a dismissed sheet started the next reporting period).
+    const sent = await askToContinue(
+      'Was the report sent?',
+      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded and you can send it later.',
+      'Yes, it was sent',
+      'Not yet',
+    );
+    return sent ? 'completed' : 'unknown';
   }
 
+  /** Saving or opening the Word file is not a delivery (audit A6 pass 3). */
   async function downloadWordReport(
     report: PIEReportDraft,
     drawingReferences: readonly ReportDrawingReference[],
-    shareTitle = 'Open or save the Word report',
   ): Promise<ReportCommunicationOutcome> {
+    await shareWordReport(report, drawingReferences, 'Open or save the Word report');
+    return 'unknown';
+  }
+
+  /** Builds the Word report and offers it through the share sheet; true when the sheet was shown. */
+  async function shareWordReport(
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+    shareTitle: string,
+  ): Promise<boolean> {
     const sharingAvailable = await Sharing.isAvailableAsync();
     if (!sharingAvailable) {
       Alert.alert(
         'Word report unavailable',
         'The iOS Share Sheet is not available on this device.',
       );
-      return 'unknown';
+      return false;
     }
 
     const directory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
@@ -10289,7 +10311,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Word report unavailable',
         'A temporary folder could not be found on this device.',
       );
-      return 'unknown';
+      return false;
     }
 
     // No photo appendix for a body that cites no image (the executive
@@ -10386,7 +10408,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             `${unavailableDetail}\n\nEach unavailable source image is listed in Media Requiring Review.`,
         );
       }
-      return 'completed';
+      return true;
     } catch (error) {
       Alert.alert(
         'Word report unavailable',
@@ -10394,7 +10416,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? error.message.trim()
           : 'The Word report could not be prepared from the current project files.',
       );
-      return 'unknown';
+      return false;
     } finally {
       await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
     }
@@ -10512,9 +10534,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     } as ProjectUpdate;
   }
 
-  const askToContinue = (title: string, message: string, continueLabel: string) => new Promise<boolean>(resolve => Alert.alert(
+  const askToContinue = (title: string, message: string, continueLabel: string, cancelLabel = 'Cancel') => new Promise<boolean>(resolve => Alert.alert(
     title, message,
-    [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) }, { text: continueLabel, onPress: () => resolve(true) }],
+    [{ text: cancelLabel, style: 'cancel', onPress: () => resolve(false) }, { text: continueLabel, onPress: () => resolve(true) }],
     { cancelable: true, onDismiss: () => resolve(false) },
   ));
 

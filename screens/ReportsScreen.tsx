@@ -406,6 +406,10 @@ export function ReportsScreen({
     setReviewAcknowledgement(next);
     // Kept for the session, so leaving the tab does not demand a second look (audit A6, pass 2).
     rememberReportAcknowledgement(reportStateIdentityKey, next);
+    // A review item that arrived after an approval revoked it; marking the
+    // item reviewed asks for a fresh approval, in this visit and the next
+    // (audit A6 pass 3: the old approval came back on return).
+    rememberReportApproval(reportStateIdentityKey, null);
   }, [reportSourceFingerprint, reportStateIdentityKey, reviewAcknowledgement]);
   const reportApprovalPolicy = useMemo(
     () => evaluateReportApprovalPolicy({
@@ -488,17 +492,15 @@ export function ReportsScreen({
   useEffect(() => {
     // The approval belongs to one exact report text: a change clears it,
     // unless this session already approved exactly this text (audit A6:
-    // leaving the tab unmounted the screen and lost the approval).
-    setReportApproved(restoredReportApproval(
+    // leaving the tab unmounted the screen and lost the approval). It is
+    // decided in one place with the policy, so a remembered approval is
+    // never restored while approval is not allowed (audit A6 pass 3: the
+    // review list was hidden with "Mark it reviewed to approve").
+    setReportApproved(reportApprovalAllowed && restoredReportApproval(
       recallReportSessionState(reportStateIdentityKey),
       approvalTextKey,
     ));
-  }, [approvalTextKey, reportStateIdentityKey]);
-
-  useEffect(() => {
-    if (reportApprovalAllowed) return;
-    setReportApproved(false);
-  }, [reportApprovalAllowed]);
+  }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed]);
 
   useEffect(() => {
     if (
@@ -558,6 +560,10 @@ export function ReportsScreen({
     void (async () => {
       try {
         const outcome = await communicate(startedReport);
+        // The report that went out is the one that started, whatever the
+        // screen shows by now (a sync can land while the composer is open);
+        // its own fingerprint scopes the mark (audit A6 pass 3).
+        if (outcome === 'completed') markReportDelivered(startedFingerprint);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -570,7 +576,6 @@ export function ReportsScreen({
           })
         ) {
           setCommunicationError('');
-          markReportDelivered(startedFingerprint);
         }
       } catch {
         if (
@@ -861,7 +866,7 @@ export function BeforeYouSharePanel({
         </View>
       ) : null}
 
-      {!reportApproved && advisoryItems.length > 0 ? (
+      {!(reportApproved && reportApprovalAllowed) && advisoryItems.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
             Review before approval

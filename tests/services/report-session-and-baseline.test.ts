@@ -73,7 +73,8 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain('? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)');
     expect(screen).toContain('const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);');
     expect(screen).toContain('if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {');
-    expect(screen).toMatch(/\) \{\n\s+setCommunicationError\(''\);\n\s+markReportDelivered\(startedFingerprint\);\n\s+\}/);
+    // Pass 3: the mark no longer waits on what the screen shows now; the started report's own fingerprint scopes it.
+    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint);");
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     expect(screen).toContain('const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent && snapshotScopeLoaded;');
@@ -110,10 +111,13 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
 
   it('is written only when the manager acts, and read on mount (pass 2: an effect had wiped it on remount)', () => {
     expect(screen).not.toContain('rememberReportSessionState(');
-    expect(screen).toMatch(/setReportApproved\(restoredReportApproval\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\)\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey\]\);/);
+    // Pass 3: approval is decided in one place with the policy, so it is never restored while not allowed.
+    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && restoredReportApproval\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\)\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed\]\);/);
+    expect(screen).not.toMatch(/if \(reportApprovalAllowed\) return;\n\s+setReportApproved\(false\);/);
     expect(screen).toMatch(/const remembered = recallReportSessionState\(reportStateIdentityKey\);\n\s+setReportEditing\(false\);\n\s+setReportEdits\(remembered\?\.edits \?\? null\);\n\s+setReviewAcknowledgement\(remembered\?\.acknowledgement \?\? \{ fingerprint: '', ids: \[\] \}\);/);
     expect(screen).toContain('rememberReportApproval(reportStateIdentityKey, approvalTextKey);');
-    expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(2);
+    // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
+    expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
     expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);
     expect(screen).toContain('rememberReportEdits(reportStateIdentityKey, null);');
     expect(screen).toContain('rememberReportAcknowledgement(reportStateIdentityKey, next);');
