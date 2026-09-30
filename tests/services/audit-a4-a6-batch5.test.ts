@@ -15,8 +15,10 @@ describe('A4 pass 4 lows', () => {
   });
 
   it('a store the save declared unreadable is not re-written outside the journal; Keep cloud replaces the local failed copy', () => {
-    expect(app).toMatch(/if \(error instanceof FieldUpdatePersistenceBlockedError\) startupHydration\.fail\(UPDATES_STORAGE_KEY, 'field update save recovery', error\);/);
-    expect(app).toMatch(/if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(persistError =>/);
+    // Batch 9 moved the blocked handling into blockFieldUpdateStores (it also drops the stores' pending writes).
+    expect(app).toMatch(/if \(error instanceof FieldUpdatePersistenceBlockedError\) blockFieldUpdateStores\(error\);/);
+    expect(app).toMatch(/function blockFieldUpdateStores\(error: FieldUpdatePersistenceBlockedError\) \{\n\s+startupHydration\.fail\(UPDATES_STORAGE_KEY, 'field update save recovery', error\);/);
+    expect(app).toMatch(/if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(persistError =>/);
     expect(app).toMatch(/onApplyCloudConflictUpdate=\{update => \{\n\s+const cloudUpdate = normalizeStoredUpdateRecord\(update\);\n(?:\s*\/\/.*\n)*\s+setSavedUpdates\(previous => mergeSavedUpdatesWithTombstones\(\{\n\s+localUpdates: previous\.filter\(item => item\.id !== cloudUpdate\.id\),/);
   });
 });

@@ -41,6 +41,18 @@ export function removePersistedStorageItem(storageKey: string): Promise<void> {
   ));
 }
 
+/**
+ * Drops a store's pending write. Used when a save found that store blocked:
+ * a write still pending then landed over the store recovery was guarding
+ * (whole-app audit A4 pass 5). Other stores keep theirs.
+ */
+export function cancelPendingStoragePersistence(storageKey: string) {
+  const pending = pendingPersistenceByKey.get(storageKey);
+  if (!pending) return;
+  if (pending.timer) clearTimeout(pending.timer);
+  pendingPersistenceByKey.delete(storageKey);
+}
+
 export function useJsonStoragePersistence<T>({
   enabled,
   storageKey,

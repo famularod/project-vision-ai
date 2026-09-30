@@ -204,7 +204,7 @@ import {
 import { StartupErrorBoundary } from './components/StartupErrorBoundary';
 import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
 import {
-  flushPendingStoragePersistence, persistStorageItem,
+  cancelPendingStoragePersistence, flushPendingStoragePersistence, persistStorageItem,
   removePersistedStorageItem,
   reportStoragePersistenceFailure,
   useJsonStoragePersistence,
@@ -5883,6 +5883,9 @@ useEffect(() => {
     return () => {
       if (savedUpdatesSaveTimer.current) {
         clearTimeout(savedUpdatesSaveTimer.current);
+        // Cleared too, or the background handler wrote the list after a
+        // blocked read took readiness away (whole-app audit A4 pass 5).
+        savedUpdatesSaveTimer.current = null;
       }
     };
   }, [savedUpdates, startupHydrationReady, updatesLoaded]);
@@ -7738,17 +7741,19 @@ useEffect(() => {
       setDeletedUpdateTombstones(persisted.nextTombstones);
       setSelectedWorkspaceProject(queuedUpdate.projectName);
     } catch (error) {
-      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      if (error instanceof FieldUpdatePersistenceBlockedError) blockFieldUpdateStores(error);
       Alert.alert(
         'Update not saved',
         'The device could not verify the saved update. Your draft is still here; try again.',
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
-      void persistDraftNow(draftRef.current);
       // A store the save found unreadable stays as it is for recovery; only
-      // a plain commit failure re-arms the cancelled write (audit A4 pass 4).
+      // a plain commit failure re-arms the cancelled write (audit A4 pass 4)
+      // and rewrites the draft: after a blocked save its rewrite broke the
+      // recovery's check for good (A7 pass 3).
       if (!(error instanceof FieldUpdatePersistenceBlockedError)) {
+        void persistDraftNow(draftRef.current);
         persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(persistError =>
           reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error: persistError }),
         );
@@ -7911,9 +7916,15 @@ useEffect(() => {
       setDeletedUpdateTombstones(persisted.nextTombstones);
       return persisted.applied;
     } catch (error) {
-      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      if (error instanceof FieldUpdatePersistenceBlockedError) blockFieldUpdateStores(error);
       throw error;
     }
+  }
+
+  /** A save found the field-update stores blocked: recovery owns them, so no pending write may land (audit A4 pass 5). */
+  function blockFieldUpdateStores(error: FieldUpdatePersistenceBlockedError) {
+    startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+    cancelPendingStoragePersistence(DELETED_UPDATES_STORAGE_KEY);
   }
 
   async function syncFieldUpdateWithMissingPhotoRepair(

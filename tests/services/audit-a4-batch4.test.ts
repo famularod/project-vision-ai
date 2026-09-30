@@ -148,7 +148,8 @@ describe('the three small fixes from pass 3', () => {
     expect(app).toMatch(/if \(queuedHydrationInFlight\.current\) queuedHydrationRerunRequested\.current = true;\n\s+else startAutomaticSyncBackgroundTask\('after_direct_sync', hydrateQueuedUpdates\);/);
     // The refused branch re-persists at once; the failed branch only when the store was not declared unreadable (pass 4).
     const rePersisted = app.match(/void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(/g) ?? [];
-    expect(rePersisted).toHaveLength(1);
-    expect(app).toMatch(/void persistDraftNow\(draftRef\.current\);\n(?:\s*\/\/.*\n)*\s+if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(/);
+    // A7 pass 3: the failed branch rewrites the draft only inside that condition too.
+    expect(rePersisted).toHaveLength(2);
+    expect(app).toMatch(/if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(/);
   });
 });
