@@ -674,6 +674,7 @@ import {
   scheduleTaskGroupName,
 } from './services/DAVEIdentity';
 import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
+import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from './services/ScheduleImportMerge';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
@@ -4911,6 +4912,8 @@ function AppShell() {
   const [talkVoiceOpen, setTalkVoiceOpen] = useState(false);
   const [talkTypedOpen, setTalkTypedOpen] = useState(false);
   const [talkCaptureDraft, setTalkCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const keptTalkCapture = useKeptTalkCapture(talkCaptureDraft); // a failing panel keeps the memory (A11 F8)
+  const talkCaptureSheetDraft = keptTalkCapture.sheetDraft;
   const [talkAnswer, setTalkAnswer] = useState<{
     projectName: string;
     question: string;
@@ -5210,7 +5213,7 @@ function AppShell() {
         documentUploadRequest ||
         talkVoiceOpen ||
         talkTypedOpen ||
-        talkCaptureDraft ||
+        talkCaptureSheetDraft ||
         talkAnswer ||
         talkTaskAction,
       ),
@@ -9683,7 +9686,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function dismissAllOverlays() { // a sheet that failed to render closes (audit A2 pass 2)
     closePhotoIntelligenceSignIn(); setPreviewPhoto(null); cancelDocumentProjectSelection(); ecosProjectQuestion.close();
-    setTalkVoiceOpen(false); setTalkTypedOpen(false); setTalkCaptureDraft(null); setTalkAnswer(null); setTalkTaskAction(null);
+    setTalkVoiceOpen(false); setTalkTypedOpen(false); keptTalkCapture.keep(); setTalkAnswer(null); setTalkTaskAction(null);
     ecosDocumentEvidence.close();
   }
 
@@ -13136,6 +13139,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function openTalk() {
+    if (keptTalkCapture.reopen()) return; // a kept unconfirmed memory comes back first
     const contextualProject = talkContextProjectForScreen(
       screen,
       selectedWorkspaceProject,
@@ -14343,14 +14347,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onCancel={() => setTalkTypedOpen(false)}
             />
 
-            {talkCaptureDraft ? (
+            {talkCaptureSheetDraft ? (
               <DAVECaptureConfirmationSheet
                 visible
-                transcript={talkCaptureDraft.transcript}
-                draft={talkCaptureDraft}
+                transcript={talkCaptureSheetDraft.transcript}
+                draft={talkCaptureSheetDraft}
                 projects={reportAvailableProjectNames}
-                locations={talkProjectAreas.map(area => area.name)}
-                sourceLabel={talkCaptureDraft.evidence.some(
+                locationsForProject={chosen => projectAreasForProject({
+                  projectAreas, projectName: chosen, scheduleItems, updates: activeSavedUpdates,
+                }).map(area => area.name)}
+                sourceLabel={talkCaptureSheetDraft.evidence.some(
                   evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
                 ) ? 'Source transcript' : 'Source note'}
                 onSave={async memory => {

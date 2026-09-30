@@ -46,7 +46,8 @@ export function DAVECaptureConfirmationSheet({
   transcript,
   draft,
   projects,
-  locations,
+  locations = [],
+  locationsForProject,
   sourceLabel = 'Source transcript',
   onSave,
   onCancel,
@@ -55,7 +56,9 @@ export function DAVECaptureConfirmationSheet({
   transcript: string;
   draft: DAVECaptureMemory;
   projects: readonly string[];
-  locations: readonly string[];
+  locations?: readonly string[];
+  /** The chosen project's areas; the list followed Talk's project (audit A9 F5). */
+  locationsForProject?: (projectName: string | null) => readonly string[];
   sourceLabel?: string;
   onSave: (memory: DAVEConfirmedCaptureMemory) => void | Promise<void>;
   onCancel: () => void;
@@ -85,7 +88,15 @@ export function DAVECaptureConfirmationSheet({
   }
 
   function chooseProject(project: string) {
-    setWorking(current => correctCaptureMemory(current, 'project', project, new Date().toISOString()));
+    setWorking(current => {
+      const correctedAt = new Date().toISOString();
+      const moved = correctCaptureMemory(current, 'project', project, correctedAt);
+      const location = moved.recommendedLocation.value;
+      // A location the chosen project does not have is not saved with it.
+      return location && locationsForProject && !locationsForProject(project).includes(location)
+        ? correctCaptureMemory(moved, 'location', null, correctedAt)
+        : moved;
+    });
     setSaveError(null);
   }
 
@@ -141,6 +152,9 @@ export function DAVECaptureConfirmationSheet({
   }
 
   const limitations = memoryLimitations(working);
+  const locationOptions = locationsForProject
+    ? locationsForProject(working.recommendedProject.value)
+    : locations;
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={cancel}>
       <View style={styles.backdrop}>
@@ -178,7 +192,7 @@ export function DAVECaptureConfirmationSheet({
                 value={working.recommendedLocation.value}
                 confidence={working.recommendedLocation.confidence}
                 confirmed={working.recommendedLocation.confirmed}
-                options={locations}
+                options={locationOptions}
                 onConfirm={confirmRecommendedLocation}
                 onChoose={chooseLocation}
                 onChooseNone={() => chooseLocation(null)}

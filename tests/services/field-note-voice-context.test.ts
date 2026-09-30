@@ -9,10 +9,13 @@ describe('Field Note voice context', () => {
     { id: PROJECT_B_ID, name: '2375 Compliance Project' },
   ];
 
-  it('authorizes general transcription without assigning the note to a project', () => {
+  // Whole-app audit A11 pass 1 F10 (30 Sep 2026): a General note was described
+  // to the voice service as the first project's note. The id stays only as the
+  // access check the deployed service requires; the note is sent as general.
+  it('authorizes general transcription without assigning or describing the note as a project', () => {
     expect(resolveFieldNoteVoiceContext(null, projects)).toEqual({
       projectId: PROJECT_A_ID,
-      transcriptionProjectName: '2321 Compliance Project',
+      transcriptionProjectName: 'General field note',
       noteProjectName: null,
     });
   });

@@ -75,6 +75,7 @@ function FieldNotesWorkspaceContent({
   voiceDraft = null,
   onVoiceDraftConsumed,
   onRecordVoice,
+  typeNoteRequest = 0,
   dataSource = LOCAL_FIELD_NOTE_DATA_SOURCE,
   presentation = 'mobile_capture',
 }: {
@@ -86,6 +87,8 @@ function FieldNotesWorkspaceContent({
   voiceDraft?: FieldNoteVoiceDraft | null;
   onVoiceDraftConsumed?: (id: string) => void;
   onRecordVoice?: (projectName: string | null) => void;
+  /** Raised by "Type Instead" in the voice sheet: opens the typed editor. */
+  typeNoteRequest?: number;
   dataSource?: FieldNoteWorkspaceDataSource;
   presentation?: 'mobile_capture' | 'desktop_inbox';
 }) {
@@ -245,12 +248,30 @@ function FieldNotesWorkspaceContent({
     const spoken = voiceDraft.text.trim();
     setText(text.trim() ? `${text.trimEnd()} ${spoken}` : spoken);
     if (!text.trim()) setSource('voice');
+    // A note closed with X is still unsaved: the words join it in the
+    // reopened editor, and it says so (whole-app audit A11 pass 2 #2).
+    const addedToClosedNote = Boolean(text.trim()) && !captureOpen;
     setCaptureOpen(true);
     if (voiceDraft.projectName?.trim()) setProjectName(voiceDraft.projectName.trim());
     if (voiceDraft.locationName?.trim() && !locationName.trim()) setLocationName(voiceDraft.locationName.trim());
-    setNotice({ tone: 'info', text: 'Voice note is ready. Review it, then save.' });
+    setNotice({
+      tone: 'info',
+      text: addedToClosedNote
+        ? 'Added to your unsaved note. Review it, then save.'
+        : 'Voice note is ready. Review it, then save.',
+    });
     onVoiceDraftConsumed?.(voiceDraft.id);
   }, [onVoiceDraftConsumed, voiceDraft]);
+
+  // "Type Instead" closed the voice sheet and opened nothing (whole-app audit
+  // A11 pass 1 F10); an unsaved note opens with its text as it is.
+  const typeNoteRequestRef = useRef(typeNoteRequest);
+  useEffect(() => {
+    if (typeNoteRequest === typeNoteRequestRef.current) return;
+    typeNoteRequestRef.current = typeNoteRequest;
+    setCaptureOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeNoteRequest]);
 
   const visibleNotes = notes.filter(note => {
     if (note.status !== filter) return false;

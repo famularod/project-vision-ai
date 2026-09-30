@@ -139,6 +139,8 @@ function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: 
     scheduleImportApprovalBlocker: () => null, ScheduleImportReviewError: Error,
     bindPIEScheduleImportBatchProvenance, canonicalizeScheduleIdentityItems: (items: unknown[]) => items,
     normalizeScheduleItem: (item: unknown) => item, identityCorrections: [], ensureScheduleParentProjects: jest.fn(),
+    // Names a correction can never rename (audit A11 pass 2 HIGH, landed after this test).
+    daveRegisteredIdentityNames: () => [],
     mergeApprovedScheduleImportItems: ({ existing, imported }: { existing: unknown[]; imported: unknown[] }) => ({ next: existing, additions: imported }),
     findExactScheduleTaskForCompletionClaim: () => null, scheduleItemsVisibleBeforeImport: () => () => true,
     mergeReportedCompletionClaim: (item: unknown) => item, reconcileDAVEScheduleRecords: (items: unknown[]) => items,

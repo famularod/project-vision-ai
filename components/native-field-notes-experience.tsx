@@ -40,6 +40,7 @@ export function NativeFieldNotesExperience({
   const ownerKey = useNativeWorkspaceOwner() ?? 'local-device';
   const [voiceContext, setVoiceContext] = useState<FieldNoteVoiceContext | null>(null);
   const [voiceDraft, setVoiceDraft] = useState<FieldNoteVoiceDraft | null>(null);
+  const [typeNoteRequest, setTypeNoteRequest] = useState(0);
 
   function beginVoiceCapture(projectName: string | null) {
     const context = resolveFieldNoteVoiceContext(projectName, projectRecords);
@@ -72,6 +73,7 @@ export function NativeFieldNotesExperience({
           voiceDraft={voiceDraft}
           onVoiceDraftConsumed={id => setVoiceDraft(current => current?.id === id ? null : current)}
           onRecordVoice={beginVoiceCapture}
+          typeNoteRequest={typeNoteRequest}
           dataSource={mobileFieldNoteDataSource}
           presentation="mobile_capture"
         />
@@ -103,7 +105,10 @@ export function NativeFieldNotesExperience({
             locationName: result.understanding.recommendedLocation.value,
           });
         }}
-        onTypeInstead={() => setVoiceContext(null)}
+        onTypeInstead={() => {
+          setVoiceContext(null);
+          setTypeNoteRequest(request => request + 1); // opens the typed editor (audit A11 pass 1 F10)
+        }}
         onCancel={() => setVoiceContext(null)}
       />
     </>

@@ -111,6 +111,8 @@ function harness({ cloudRecord = true, saveNeverFinishes = false } = {}) {
     setTalkTypedOpen: jest.fn(),
     setTalkVoiceOpen: jest.fn(),
     setTalkCaptureDraft,
+    // No kept Confirm Memory sheet (audit A11 pass 1 F8 added this to openTalk).
+    keptTalkCapture: { reopen: () => false, keep: jest.fn() },
     setTalkTaskAction: jest.fn(),
     navigateFromTalk: jest.fn(),
     mentionedDAVEProject,
