@@ -309,7 +309,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, scheduleRetirementMessage } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, phoneScheduleActivationTarget, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -11272,9 +11272,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
     void queueReferenceDocumentRecord(synchronizedDocument);
   }
 
-  async function makeProjectScheduleDocumentCurrent(documentId: string) {
+  async function makeProjectScheduleDocumentCurrent(documentId: string, hidingTasksConfirmed = false) {
     const document = projectDocuments.find(item => item.id === documentId);
     if (!document || document.category !== 'Schedule') return;
+    // Asked before either path: a schedule with no imported tasks hides the project's on every device (whole-app audit A8 pass 1 F6, 30 Sep 2026).
+    const projectName = projects.find(name => authorityProjectId(name) === document.projectId) || null;
+    const warning = hidingTasksConfirmed ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
+      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems));
+    if (warning) return Alert.alert(warning.title, warning.message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
+      { text: 'Make Current', onPress: () => { void makeProjectScheduleDocumentCurrent(documentId, true); } },
+    ]);
     const referenceUpdatedAt = new Date().toISOString();
 
     let referenceDocument = document.referenceDocumentId
@@ -11406,6 +11415,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Current schedule saved on this device',
         'The shared cloud record could not be updated yet. Use Sync Now when connected.',
       );
+    }
+  }
+
+  async function reviewProjectScheduleDocumentImport(document: ProjectDocument, projectName: string | null) {
+    try {
+      const { localUri } = await ensureVerifiedProjectDocumentBytes(document);
+      if (!localUri) throw new Error('Verified schedule path is missing.');
+      const batch = await prepareScheduleImportFromAsset({ uri: localUri, name: document.name, mimeType: document.mimeType, size: document.sizeBytes }, projectName ? [projectName] : undefined);
+      if (batch) { setIncomingScheduleImportBatch(batch); setScheduleProjectFilter(null); setScreen('Schedule'); }
+    } catch (error) {
+      Alert.alert('Schedule review unavailable', error instanceof Error ? error.message : 'The schedule file could not be read on this phone.');
     }
   }
 

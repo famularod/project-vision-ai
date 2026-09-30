@@ -1,10 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ReferenceDocument } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import {
   activateECOSCurrentReferenceDocument,
   type ECOSCurrentReferenceActivationResult,
 } from './ECOSHostedIndexer';
-import { currentScheduleDocumentsByProject, scheduleProjectScopeKey } from './PIEScheduleReconciliation';
+import {
+  currentScheduleDocumentsByProject,
+  scheduleProjectScopeKey,
+  selectAuthoritativeScheduleItems,
+} from './PIEScheduleReconciliation';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
  * Making a shared document current goes through the cloud's activation call
@@ -117,12 +122,7 @@ export function scheduleActivationEffects(
 ): ScheduleRetirementEffect[] {
   if (!isScheduleDocument(target)) return [];
   const targetKeys = projectKeys(target);
-  const retired = documents.filter(document =>
-    document.id !== target.id && document.isCurrent && isScheduleDocument(document) &&
-    [...projectKeys(document)].some(key => targetKeys.has(key)));
-  const after = documents.map(document => document.id === target.id
-    ? { ...document, isCurrent: true }
-    : retired.includes(document) ? { ...document, isCurrent: false } : document);
+  const { retired, after } = documentsAfterScheduleActivation(target, documents);
   const showingBefore = currentScheduleDocumentsByProject(documents);
   const showingAfter = currentScheduleDocumentsByProject(after);
   const effects: ScheduleRetirementEffect[] = [];
@@ -142,6 +142,93 @@ export function scheduleActivationEffects(
   return effects;
 }
 
+/** What making a schedule with no tasks of its own current hides. */
+export type ScheduleTasksHiddenByActivation = Readonly<{
+  count: number;
+  /** The schedule the hidden tasks were imported from. */
+  scheduleName: string;
+}>;
+
+/**
+ * The cloud retires every current schedule in the chosen schedule's project,
+ * and each device then shows only the tasks a current schedule contains. A
+ * schedule PDF with no imported tasks, made current, hid every imported task
+ * of the project on every device, without a word (whole-app audit A8 pass 1
+ * F6, 30 Sep 2026). Nothing is deleted; making the older schedule current
+ * again shows them. Null when no task is hidden, or when the schedule brings
+ * tasks of its own (a replacement, which asks nothing, as before).
+ */
+export function scheduleTasksHiddenByActivation(
+  target: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+  scheduleItems: readonly ScheduleItem[],
+): ScheduleTasksHiddenByActivation | null {
+  if (!isScheduleDocument(target) || scheduleItems.some(item => scheduleContainsItem(target, item))) {
+    return null;
+  }
+  const showing = (scheduleDocuments: readonly ReferenceDocument[]) =>
+    selectAuthoritativeScheduleItems({ scheduleItems: [...scheduleItems], scheduleDocuments: [...scheduleDocuments] });
+  const before = showing(documents);
+  const shownBefore = new Set(before.map(item => item.id));
+  const after = showing(documentsAfterScheduleActivation(target, documents).after);
+  // A task shown only afterwards comes with the chosen schedule: a replacement.
+  if (after.some(item => !shownBefore.has(item.id))) return null;
+  const shownAfter = new Set(after.map(item => item.id));
+  const hidden = before.filter(item => !shownAfter.has(item.id));
+  if (hidden.length === 0) return null;
+  const sources = documents
+    .filter(document => document.id !== target.id && isScheduleDocument(document))
+    .map(document => ({ document, count: hidden.filter(item => scheduleContainsItem(document, item)).length }))
+    .filter(source => source.count > 0)
+    .sort((left, right) => right.count - left.count);
+  const current = currentScheduleDocumentsByProject(documents);
+  const projectCurrent = projectNamesOf(target)
+    .map(name => current.get(scheduleProjectScopeKey(name)))
+    .find(document => document && document.id !== target.id);
+  return {
+    count: hidden.length,
+    scheduleName: sources[0]?.document.name || projectCurrent?.name || 'the current schedule',
+  };
+}
+
+/** The question asked before those tasks are hidden, or null when none are. */
+export function scheduleTasksHiddenWarning(
+  targetName: string,
+  hidden: ScheduleTasksHiddenByActivation | null,
+): Readonly<{ title: string; message: string }> | null {
+  if (!hidden) return null;
+  const tasks = `${hidden.count} ${hidden.count === 1 ? 'task' : 'tasks'}`;
+  return {
+    title: `Make ${targetName} current?`,
+    message: `${targetName} has no imported tasks. The ${tasks} from ${hidden.scheduleName} will be hidden on every device.`,
+  };
+}
+
+/**
+ * The shared schedule a phone schedule PDF already is, or the record it is
+ * shared as when it is made current.
+ */
+export function phoneScheduleActivationTarget(
+  document: Readonly<{ id: string; name: string; referenceDocumentId?: string | null; importedAt: string }>,
+  projectName: string | null,
+  documents: readonly ReferenceDocument[],
+): ReferenceDocument {
+  const shared = document.referenceDocumentId
+    ? documents.find(item => item.id === document.referenceDocumentId)
+    : null;
+  return shared || {
+    id: document.id,
+    name: document.name.replace(/\.[^/.]+$/, ''),
+    originalFileName: document.name,
+    uri: '',
+    category: 'Schedules',
+    notes: '',
+    isCurrent: false,
+    importedAt: document.importedAt,
+    projectName,
+  };
+}
+
 /** The Set Active confirmation: what each other project shows next. */
 export function scheduleRetirementMessage(effects: readonly ScheduleRetirementEffect[]): string {
   return [
@@ -150,6 +237,30 @@ export function scheduleRetirementMessage(effects: readonly ScheduleRetirementEf
       ? `${effect.projectName} goes back to ${effect.fallbackSchedule.name}, an older schedule still marked current there.`
       : `${effect.projectName} is left with no current schedule and shows no schedule tasks until you set one.`),
   ].join(' ');
+}
+
+/** As the cloud does it: the chosen schedule current, every current schedule sharing a project with it retired. */
+function documentsAfterScheduleActivation(
+  target: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): { retired: ReferenceDocument[]; after: ReferenceDocument[] } {
+  const targetKeys = projectKeys(target);
+  const retired = documents.filter(document =>
+    document.id !== target.id && document.isCurrent && isScheduleDocument(document) &&
+    [...projectKeys(document)].some(key => targetKeys.has(key)));
+  const withTarget = documents.some(document => document.id === target.id) ? documents : [...documents, target];
+  const after = withTarget.map(document => document.id === target.id
+    ? { ...document, isCurrent: true }
+    : retired.includes(document) ? { ...document, isCurrent: false } : document);
+  return { retired, after };
+}
+
+/** A task imported from the schedule, or found unchanged in its import. */
+function scheduleContainsItem(document: ReferenceDocument, item: ScheduleItem): boolean {
+  const key = (value: string | null | undefined) => (value || '').trim().toLowerCase();
+  const batchId = key(document.importBatchId);
+  return (Boolean(key(item.sourceDocumentId)) && key(item.sourceDocumentId) === key(document.id)) ||
+    (Boolean(batchId) && scheduleItemImportBatchIds(item).some(id => key(id) === batchId));
 }
 
 function isScheduleDocument(document: ReferenceDocument): boolean {

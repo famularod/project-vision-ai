@@ -5,11 +5,14 @@
  * through the cloud's activation call and changes nothing locally first.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ReferenceDocument } from '../../types';
+import type { ReferenceDocument, ScheduleItem } from '../../types';
 import {
   activateSharedReferenceDocument,
+  phoneScheduleActivationTarget,
   scheduleActivationEffects,
   scheduleRetirementMessage,
+  scheduleTasksHiddenByActivation,
+  scheduleTasksHiddenWarning,
 } from '../../services/SharedDocumentActivation';
 
 const client = {} as SupabaseClient;
@@ -214,5 +217,87 @@ describe('the Set Active confirmation says what each other project shows next (a
       listDocuments: async () => [combined, betaOld], confirmRetiringProjects: async () => true,
     })).resolves.toEqual({ status: 'refresh_required' });
     expect(activate).not.toHaveBeenCalled();
+  });
+});
+
+// Whole-app audit A8 pass 1 F6 (30 Sep 2026): Make Current on a schedule PDF
+// with no imported tasks retired the project's schedule, and every device then
+// hid the project's imported tasks, without a word. Nothing is deleted.
+describe('Make Current on a schedule with no imported tasks warns first (audit A8 pass 1 F6)', () => {
+  const task = (id: string, extra: Partial<ScheduleItem> = {}) => ({
+    id, projectName: 'Alpha', taskName: `Task ${id}`, locationName: 'Lot', owner: '', startDate: '07/01/2026',
+    finishDate: '07/10/2026', milestone: '', status: 'Not Started', percentComplete: 0, notes: '',
+    createdAt: '2026-07-01T00:00:00.000Z', ...extra,
+  }) as ScheduleItem;
+  const alphaMaster = schedule('Alpha master', ['Alpha'], { isCurrent: true, importBatchId: 'batch-master' });
+  const betaMaster = schedule('Beta master', ['Beta'], { isCurrent: true, importBatchId: 'batch-beta' });
+  const alphaPdf = schedule('Alpha rev 5', ['Alpha'], { importedAt: '2026-09-20T00:00:00.000Z' });
+  const fromMaster = (id: string, extra: Partial<ScheduleItem> = {}) =>
+    task(id, { sourceDocumentId: alphaMaster.id, importBatchId: 'batch-master', importedFrom: 'Alpha master.pdf', ...extra });
+  const items = [
+    fromMaster('a1'), fromMaster('a2'), fromMaster('a3'),
+    task('b1', { projectName: 'Beta', sourceDocumentId: betaMaster.id, importBatchId: 'batch-beta' }),
+  ];
+  const documents = [alphaMaster, betaMaster, alphaPdf];
+
+  it('counts the project\'s tasks it hides and names the schedule they come from', () => {
+    expect(scheduleTasksHiddenByActivation(alphaPdf, documents, items)).toEqual({ count: 3, scheduleName: 'Alpha master' });
+    expect(scheduleTasksHiddenWarning('Alpha rev 5.pdf', { count: 3, scheduleName: 'Alpha master' })).toEqual({
+      title: 'Make Alpha rev 5.pdf current?',
+      message: 'Alpha rev 5.pdf has no imported tasks. The 3 tasks from Alpha master will be hidden on every device.',
+    });
+    expect(scheduleTasksHiddenWarning('R.pdf', { count: 1, scheduleName: 'M' })?.message)
+      .toBe('R.pdf has no imported tasks. The 1 task from M will be hidden on every device.');
+    expect(scheduleTasksHiddenWarning('R.pdf', null)).toBeNull();
+  });
+
+  it('asks nothing for a replacement that brings its own tasks, as before', () => {
+    const alphaRev = schedule('Alpha rev 6', ['Alpha'], { importBatchId: 'batch-rev6' });
+    const revised = [
+      ...items.slice(0, 2),
+      task('a3-new', { sourceDocumentId: alphaRev.id, importBatchId: 'batch-rev6', taskName: 'Task a3 revised' }),
+      items[3],
+    ];
+    expect(scheduleTasksHiddenByActivation(alphaRev, [...documents, alphaRev], revised)).toBeNull();
+    // A revision whose tasks were all found unchanged in its import, with one dropped, is a replacement too.
+    const unchanged = [
+      fromMaster('a1', { alsoImportedInBatchIds: ['batch-rev6'] }), fromMaster('a2', { alsoImportedInBatchIds: ['batch-rev6'] }),
+      fromMaster('a3'), items[3],
+    ];
+    expect(scheduleTasksHiddenByActivation(alphaRev, [...documents, alphaRev], unchanged)).toBeNull();
+    // Older tasks known only by the file they came from are its own too.
+    const byFileName = [
+      ...items,
+      task('legacy', { importedFrom: 'Alpha rev 6.pdf', taskName: 'Legacy task' }),
+    ];
+    expect(scheduleTasksHiddenByActivation(alphaRev, [...documents, alphaRev], byFileName)).toBeNull();
+  });
+
+  it('asks nothing when no task would be hidden', () => {
+    expect(scheduleTasksHiddenByActivation(alphaPdf, documents, [items[3]])).toBeNull();
+    expect(scheduleTasksHiddenByActivation({ ...alphaPdf, category: 'Drawing' }, documents, items)).toBeNull();
+    expect(scheduleTasksHiddenByActivation(alphaMaster, documents, items)).toBeNull();
+  });
+
+  it('works out a phone PDF not shared yet as the record it will be shared as', () => {
+    const phonePdf = { id: 'phone-doc', name: 'Alpha rev 5.pdf', referenceDocumentId: null, importedAt: alphaPdf.importedAt };
+    const target = phoneScheduleActivationTarget(phonePdf, 'Alpha', [alphaMaster, betaMaster]);
+    expect(target).toMatchObject({ id: 'phone-doc', name: 'Alpha rev 5', originalFileName: 'Alpha rev 5.pdf', category: 'Schedules', projectName: 'Alpha', isCurrent: false });
+    expect(scheduleTasksHiddenByActivation(target, [alphaMaster, betaMaster], items)).toEqual({ count: 3, scheduleName: 'Alpha master' });
+    // Already shared: its shared record.
+    expect(phoneScheduleActivationTarget({ ...phonePdf, referenceDocumentId: alphaPdf.id }, 'Alpha', documents)).toBe(alphaPdf);
+  });
+
+  it('a same-project replacement still goes through activation with no question', async () => {
+    const alphaRev = schedule('Alpha rev 6', ['Alpha']);
+    const cloud = [alphaMaster, betaMaster, alphaRev];
+    const confirm = jest.fn(async () => true);
+    const activate = jest.fn(async () => activated(alphaRev.id));
+    await expect(activateSharedReferenceDocument({
+      documentId: alphaRev.id, documents: cloud, client, activate,
+      listDocuments: async () => cloud, confirmRetiringProjects: confirm,
+    })).resolves.toMatchObject({ status: 'activated' });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(activate).toHaveBeenCalledTimes(1);
   });
 });
