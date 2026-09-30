@@ -7,7 +7,11 @@
  */
 import { act, render, renderHook, screen, waitFor } from '@testing-library/react-native';
 import { ProjectPhotoImage } from '../../components/ProjectPhotoImage';
-import { useProjectPhotoDisplayUri } from '../../hooks/use-project-photo-display-uri';
+import {
+  PHOTO_SIGNING_RETRY_FIRST_MS,
+  useProjectPhotoDisplayUri,
+} from '../../hooks/use-project-photo-display-uri';
+import { AppState } from 'react-native';
 import { createPhotoSignedUrl } from '../../services/SupabaseService';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -15,9 +19,15 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   setItem: jest.fn(() => Promise.resolve()),
   removeItem: jest.fn(() => Promise.resolve()),
 }));
+/** Sign-in events the hook listens to (A4 pass 7 L1). */
+const mockAuthListeners = new Set<(event: string) => void>();
 jest.mock('../../services/SupabaseService', () => ({
   ...jest.requireActual('../../services/SupabaseService'),
   createPhotoSignedUrl: jest.fn(),
+  subscribeToAuthStateChange: jest.fn((listener: (event: string) => void) => {
+    mockAuthListeners.add(listener);
+    return () => { mockAuthListeners.delete(listener); };
+  }),
 }));
 
 const MINUTE = 60_000;
@@ -162,5 +172,73 @@ describe('useProjectPhotoDisplayUri (whole-app audit A4 pass 6)', () => {
     await waitFor(() => expect(screen.getByTestId('second').props.source.uri).toBe(signedFor('p/h7/a.jpg', 1)));
     expect(screen.getByTestId('first').props.source.uri).toBe(signedFor('p/h7/a.jpg', 1));
     expect(signedUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 7 L1 (30 Sep 2026): a photo whose signing failed
+ * with no signal stayed blank after signal returned, until it was scrolled
+ * away or reopened. It is now tried again on return to the app, when the
+ * sign-in refreshes, and after a wait that doubles; never in a loop.
+ */
+describe('a signing that failed with no signal (A4 pass 7 L1)', () => {
+  const noSignal = async () => ({ ok: false, stubbed: false, data: null, error: 'Network request failed' });
+  const appStateListeners = () => (AppState.addEventListener as jest.Mock).mock.calls
+    .filter(([type]) => type === 'change')
+    .map(([, listener]) => listener as (state: string) => void);
+  afterEach(() => jest.useRealTimers());
+
+  it('signs again when the app comes back to the foreground, once, and stops listening when shown', async () => {
+    signedUrl.mockImplementation(noSignal);
+    const { result } = await renderHook(() => useProjectPhotoDisplayUri(photo('p/l1a/a.jpg'), ''));
+    await flush();
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+    expect(result.current.uri).toBe('');
+
+    // Signal is back; nothing asks until the owner returns to the app.
+    signedUrl.mockImplementation(async (path: string) => ({ ok: true, stubbed: false, data: signedFor(path, ++signings) }));
+    await flush();
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+    await act(async () => { appStateListeners().forEach(listener => listener('active')); });
+    await waitFor(() => expect(result.current.uri).toBe(signedFor('p/l1a/a.jpg', 1)));
+    expect(signedUrl).toHaveBeenCalledTimes(2);
+    await act(async () => { appStateListeners().forEach(listener => listener('active')); });
+    await flush();
+    expect(signedUrl).toHaveBeenCalledTimes(2);
+    expect(mockAuthListeners.size).toBe(0);
+  });
+
+  it('signs again when the sign-in refreshes (signal back after an offline start)', async () => {
+    signedUrl.mockImplementation(noSignal);
+    const { result } = await renderHook(() => useProjectPhotoDisplayUri(photo('p/l1b/a.jpg'), ''));
+    await flush();
+    expect(mockAuthListeners.size).toBe(1);
+    signedUrl.mockImplementation(async (path: string) => ({ ok: true, stubbed: false, data: signedFor(path, ++signings) }));
+    await act(async () => { [...mockAuthListeners].forEach(listener => listener('TOKEN_REFRESHED')); });
+    await waitFor(() => expect(result.current.uri).toBe(signedFor('p/l1b/a.jpg', 1)));
+    expect(mockAuthListeners.size).toBe(0);
+  });
+
+  it('otherwise tries again after 10 s, then 20 s, and never sooner', async () => {
+    jest.useFakeTimers();
+    signedUrl.mockImplementation(noSignal);
+    const { result, unmount } = await renderHook(() => useProjectPhotoDisplayUri(photo('p/l1c/a.jpg'), ''));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+    await act(async () => { await jest.advanceTimersByTimeAsync(PHOTO_SIGNING_RETRY_FIRST_MS - 1); });
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+    await act(async () => { await jest.advanceTimersByTimeAsync(1); });
+    expect(signedUrl).toHaveBeenCalledTimes(2);
+    await act(async () => { await jest.advanceTimersByTimeAsync(2 * PHOTO_SIGNING_RETRY_FIRST_MS - 1); });
+    expect(signedUrl).toHaveBeenCalledTimes(2);
+    signedUrl.mockImplementation(async (path: string) => ({ ok: true, stubbed: false, data: signedFor(path, ++signings) }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(1); });
+    expect(signedUrl).toHaveBeenCalledTimes(3);
+    expect(result.current.uri).toBe(signedFor('p/l1c/a.jpg', 1));
+    // Shown: no timer or listener is left behind.
+    await act(async () => { await jest.advanceTimersByTimeAsync(10 * 60_000); });
+    expect(signedUrl).toHaveBeenCalledTimes(3);
+    unmount();
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

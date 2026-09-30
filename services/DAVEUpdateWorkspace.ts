@@ -43,7 +43,16 @@ export type DAVEUpdateWorkspaceRecord = {
   }>;
 };
 
-export type DAVEUpdatePhotoComparison = {
+export type DAVEUpdatePhotoComparison<
+  TPhoto = DAVEUpdateWorkspaceRecord['photos'][number],
+> = {
+  /**
+   * The photos themselves, so each side can show a photo this device holds
+   * only in the cloud (whole-app audit A4 pass 7 M2): a photo taken on the
+   * other device has no path here, and its `uri` is empty.
+   */
+  currentPhoto: TPhoto;
+  priorPhoto: TPhoto;
   currentPhotoId: string;
   currentPhotoUri: string;
   currentUpdateId: string;
@@ -155,9 +164,36 @@ export function resolveUpdateWorkspaceUpdate<
   return updates.find(update => update.id === selectedUpdateId) || updates[0] || null;
 }
 
+/**
+ * The exact prior photo an analysis recorded (its chosen photo id, or its
+ * asset id), from the same project's updates. Shared by the Updates
+ * comparison and the Before/After row of a photo being edited.
+ */
+export function findDAVEExactPriorPhoto<T extends DAVEUpdateWorkspaceRecord>(
+  updates: readonly T[],
+  projectName: string,
+  current: Readonly<{ updateId: string | null; photoId: string }>,
+  intelligence: NonNullable<DAVEUpdateWorkspaceRecord['photos'][number]['photoIntelligence']>,
+): { update: T; photo: T['photos'][number] } | undefined {
+  const selectedPriorPhotoId = intelligence.diagnostics?.selectedPriorPhotoId?.trim();
+  const priorAssetId = intelligence.priorPhotoAssetId?.trim();
+  return updates
+    .filter(update => sameProject(update.projectName, projectName))
+    .flatMap(update => update.photos.map(photo => ({ update, photo })))
+    .find(({ update, photo }) => {
+      // No update id (a photo being edited): its own saved copy is not its prior.
+      if ((current.updateId === null || update.id === current.updateId) && photo.id === current.photoId) return false;
+      if (selectedPriorPhotoId && photo.id === selectedPriorPhotoId) return true;
+      return Boolean(
+        priorAssetId &&
+        photo.photoIntelligence?.currentPhotoAssetId === priorAssetId,
+      );
+    });
+}
+
 export function buildDAVEUpdatePhotoComparison<
   T extends DAVEUpdateWorkspaceRecord,
->(currentUpdate: T | null, updates: T[]): DAVEUpdatePhotoComparison | null {
+>(currentUpdate: T | null, updates: T[]): DAVEUpdatePhotoComparison<T['photos'][number]> | null {
   if (!currentUpdate) return null;
 
   for (const currentPhoto of currentUpdate.photos) {
@@ -165,23 +201,18 @@ export function buildDAVEUpdatePhotoComparison<
     if (!intelligence) continue;
     if (intelligence.userReview === 'incorrect' || intelligence.userReview === 'not_useful') continue;
 
-    const selectedPriorPhotoId = intelligence.diagnostics?.selectedPriorPhotoId?.trim();
-    const priorAssetId = intelligence.priorPhotoAssetId?.trim();
-    const exactPrior = updates
-      .filter(update => sameProject(update.projectName, currentUpdate.projectName))
-      .flatMap(update => update.photos.map(photo => ({ update, photo })))
-      .find(({ update, photo }) => {
-        if (update.id === currentUpdate.id && photo.id === currentPhoto.id) return false;
-        if (selectedPriorPhotoId && photo.id === selectedPriorPhotoId) return true;
-        return Boolean(
-          priorAssetId &&
-          photo.photoIntelligence?.currentPhotoAssetId === priorAssetId,
-        );
-      });
+    const exactPrior = findDAVEExactPriorPhoto(
+      updates,
+      currentUpdate.projectName,
+      { updateId: currentUpdate.id, photoId: currentPhoto.id },
+      intelligence,
+    );
 
     if (!exactPrior) continue;
 
     return {
+      currentPhoto,
+      priorPhoto: exactPrior.photo,
       currentPhotoId: currentPhoto.id,
       currentPhotoUri: currentPhoto.uri,
       currentUpdateId: currentUpdate.id,

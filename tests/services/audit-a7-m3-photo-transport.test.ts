@@ -564,6 +564,52 @@ describe('a pending edit after an app update moves the app folder (whole-app aud
   });
 });
 
+describe('a save that lands while photos are judged, changing no photo (whole-app audit A4 pass 7 L2)', () => {
+  // A copy left by Build 228: the other device's path, no file here.
+  const stale = () => A.normalizeStoredUpdateRecord({
+    ...cloudRow().updateData, status: 'sent', photos: [photo('p1', `${OLD}aaa-IMG_p1.jpg`), photo('p2', `${OLD}bbb-IMG_p2.jpg`)],
+  });
+  const uris = (updates: unknown[]) => (updates as Array<Record<string, any>>)[0].photos.map((item: { uri: string }) => item.uri);
+  /** Any commit meanwhile: the merge rebuilds every update object, paths unchanged. */
+  const rebuild = (ref: { current: unknown[] }) => () => {
+    ref.current = A.mergeSavedUpdatesWithTombstones({ localUpdates: ref.current, cloudUpdates: [], tombstones: [] });
+  };
+
+  it('the refresh keeps the paths it found missing cleared, so the photos show from the cloud', async () => {
+    const { run, savedUpdatesRef } = refreshDeps({ saved: [stale()], queue: [] });
+    mockDuringFileCheck.push(rebuild(savedUpdatesRef));
+    await run();
+    expect(uris(savedUpdatesRef.current)).toEqual(['', '']);
+    // No path here: the image signs the cloud copy when shown (A4 pass 6).
+    expect((savedUpdatesRef.current as Array<Record<string, any>>)[0].photos.map((item: { cloudStoragePath: string }) => item.cloudStoragePath))
+      .toEqual(['p/u1/p1-IMG_p1.jpg', 'p/u1/p2-IMG_p2.jpg']);
+  });
+
+  it('a realtime row keeps them cleared too; a photo whose path did change meanwhile still takes the new one', async () => {
+    const restoredFile = `${PHOTO_STORAGE_DIR}restored-IMG_p2.jpg`;
+    mockExisting.add(restoredFile);
+    const commitUpdates = jest.fn();
+    const state = { projects: [], projectRecords: [], archivedProjects: [], deletedProjectNames: [], updates: [stale()] as unknown[],
+      deletedUpdates: [], tombstones: [], areas: [], scheduleItems: [], documents: [] };
+    const apply = createDAVEOperationalRealtimeApplier({
+      isActive: () => true, snapshot: () => state as never, getPendingQueue: async () => [],
+      normalizeUpdate: A.normalizeStoredUpdateRecord as never, normalizeAreas: () => [], normalizeSchedule: () => [],
+      normalizeDocuments: () => [], migrateSchedule: item => item, localPhotoUri: A.resolveProjectPhotoUri,
+      mergeProjectNames: (names: string[]) => names, updateHasPendingLocalWork: () => false,
+      mergeUpdates: A.mergeSavedUpdatesWithTombstones as never, buildUpdateTombstone: A.buildUpdateTombstone as never,
+      buildCloudDeletionBarrier: A.buildCloudUpdateDeletionBarrier as never, upsertDeletedUpdate: A.upsertDeletedUpdateTombstone as never,
+      commitProjects: jest.fn(), commitDeletedProjects: jest.fn(), commitUpdates, commitDeletedUpdates: jest.fn(),
+      commitTombstones: jest.fn(), commitAreas: jest.fn(), commitSchedule: jest.fn(), commitDocuments: jest.fn(),
+    });
+    mockDuringFileCheck.push(() => {
+      const [current] = A.mergeSavedUpdatesWithTombstones({ localUpdates: state.updates, cloudUpdates: [], tombstones: [] });
+      state.updates = [{ ...current, photos: [current.photos[0], { ...current.photos[1], uri: restoredFile }] }];
+    });
+    await apply('project_update', { eventType: 'UPDATE', newRow: { id: 'u1', update_data: cloudRow().updateData }, oldRow: null, raw: null });
+    expect(uris(commitUpdates.mock.calls[0][0])).toEqual(['', restoredFile]);
+  });
+});
+
 // Last in the file: without the fix, signings still queued at the time limit
 // would hold the shared 3-at-a-time runner for any test after this one.
 describe('a refresh on a device holding many photos from another device (whole-app audit A4 pass 6)', () => {

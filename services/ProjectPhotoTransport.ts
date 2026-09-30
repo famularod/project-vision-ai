@@ -72,11 +72,14 @@ export function preserveLocalPhotoTransport<TPhoto extends UpdatePhoto>(
 /**
  * A cloud copy whose photos were judged against one local copy, taking this
  * device's photo transport again from the local copy read after that await
- * when it changed meanwhile. A restore that committed during a refresh got
- * the pre-restore paths, its restored files were left unreferenced, and the
- * 14-day photo cleanup deleted them (whole-app audit A4 pass 6 F3 (30 Sep
- * 2026)). An unchanged copy keeps the judgement: a path found missing stays
- * cleared.
+ * for each photo whose path changed meanwhile. A restore that committed
+ * during a refresh got the pre-restore paths, its restored files were left
+ * unreferenced, and the 14-day photo cleanup deleted them (whole-app audit A4
+ * pass 6 F3 (30 Sep 2026)). Any other photo keeps the judgement: a path found
+ * missing stays cleared. Compared by value, per photo: every save or merge
+ * rebuilds the update, and taking the whole copy again whenever it was a new
+ * object brought back a path already found missing, so the photo showed
+ * blank (whole-app audit A4 pass 7 L2).
  */
 export function withLatestLocalPhotoTransport<TUpdate extends { photos: UpdatePhoto[] }>(
   judgedCloudUpdate: TUpdate,
@@ -85,9 +88,15 @@ export function withLatestLocalPhotoTransport<TUpdate extends { photos: UpdatePh
   localPhotoUri: (photo: Partial<UpdatePhoto>) => string,
 ): TUpdate {
   if (!latestLocalUpdate || latestLocalUpdate === judgedLocalUpdate) return judgedCloudUpdate;
-  return {
-    ...judgedCloudUpdate,
-    photos: judgedCloudUpdate.photos.map(photo =>
-      preserveLocalPhotoTransport(photo, latestLocalUpdate, localPhotoUri)),
-  };
+  const judgedUri = (photoId: string) =>
+    judgedLocalUpdate?.photos.find(photo => photo.id === photoId)?.uri || '';
+  const latestUri = (photoId: string) =>
+    latestLocalUpdate.photos.find(photo => photo.id === photoId)?.uri || '';
+  let changed = false;
+  const photos = judgedCloudUpdate.photos.map(photo => {
+    if (latestUri(photo.id) === judgedUri(photo.id)) return photo;
+    changed = true;
+    return preserveLocalPhotoTransport(photo, latestLocalUpdate, localPhotoUri);
+  });
+  return changed ? { ...judgedCloudUpdate, photos } : judgedCloudUpdate;
 }

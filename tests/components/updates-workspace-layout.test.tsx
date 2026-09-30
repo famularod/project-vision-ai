@@ -7,6 +7,14 @@ import {
   type UpdatePhotoComparisonViewModel,
 } from '../../components/updates-workspace-layout';
 
+// The comparison's photos sign their cloud previews when shown (whole-app
+// audit A4 pass 7 M2), which loads the sync service and its phone storage.
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(() => Promise.resolve(null)),
+  setItem: jest.fn(() => Promise.resolve()),
+  removeItem: jest.fn(() => Promise.resolve()),
+}));
+
 const comparison: UpdatePhotoComparisonViewModel = {
   priorUri: 'file:///prior.jpg',
   priorLabel: 'July 10 · Canopy A',

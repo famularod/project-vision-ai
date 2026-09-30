@@ -148,6 +148,7 @@ import {
 import {
   UpdatePhotoComparison,
   UpdatesWideWorkspace,
+  updatePhotoComparisonViewModel,
 } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { SharedReferenceDocumentCard } from './components/shared-reference-document-card';
@@ -201,6 +202,7 @@ import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components
 import { useNativeWorkspaceOwner, useNativeWorkspaceSignInPendingRef } from './components/native-workspace-owner';
 import { fieldUpdateSyncCategoryWithoutSession } from './services/FieldUpdateSessionWait';
 import { ProjectPhotoImage } from './components/ProjectPhotoImage';
+import { PhotoComparisonPreviewRow, SavedFieldUpdatesContext } from './components/photo-comparison-preview-row';
 import {
   DailyBriefSection,
   DAVEProjectNeedsVerificationLabel,
@@ -564,10 +566,10 @@ import {
   normalizeProjectRecords,
   projectRecordFromCloud,
   removeCachedProjectCoverPhoto,
-  resolveProjectCoverPhotoUri,
   type ProjectCoverPhoto,
   type ProjectRecord,
 } from './services/ProjectCoverPhotoService';
+import { mostRecentProjectHeroPhoto, resolveProjectCoverImage, type ProjectCoverImage } from './services/ProjectCoverImage';
 import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
@@ -4461,16 +4463,6 @@ function buildOverviewProjectRows(
     right.priorityRank - left.priorityRank ||
     left.project.localeCompare(right.project),
   );
-}
-
-function mostRecentHeroPhotoUri(
-  scopedUpdates: ProjectUpdate[],
-): string | null {
-  const candidateUpdates = scopedUpdates
-    .filter(update => update.photos.length > 0)
-    .sort((a, b) => updateSortTime(b) - updateSortTime(a));
-
-  return candidateUpdates[0]?.photos[0]?.uri || null;
 }
 
 function buildPhase2ActivityItems(
@@ -13574,7 +13566,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     : null;
 
   return (
-    <PIELiveAuthorityProvider input={liveAuthorityInput}>
+    <PIELiveAuthorityProvider input={liveAuthorityInput}><SavedFieldUpdatesContext.Provider value={savedUpdates}>
       <StartupHydrationBoundary
         ready={startupHydrationReady}
         failures={startupHydration.failures}
@@ -13745,15 +13737,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
               coverPhotoMode={projectRecords.find(project =>
                 project.name.toLowerCase() === selectedWorkspaceProject.toLowerCase()
               )?.coverPhotoMode || 'automatic'}
-              coverPhotoUri={resolveProjectCoverPhotoUri(
+              coverImage={resolveProjectCoverImage(
                 projectRecords,
                 selectedWorkspaceProject,
-                mostRecentHeroPhotoUri(
+                mostRecentProjectHeroPhoto(
                   projectUpdatesForParentProject(
                     activeSavedUpdates,
                     selectedWorkspaceProject,
                     authoritativeScheduleItems,
                   ),
+                  updateSortTime,
+                  resolveProjectPhotoUri,
                 ),
               )}
               onTakeNewCoverPhoto={() => {
@@ -14404,7 +14398,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           </OverlayErrorBoundary>
         </AppShellFrame>
       </StartupHydrationBoundary>
-    </PIELiveAuthorityProvider>
+    </SavedFieldUpdatesContext.Provider></PIELiveAuthorityProvider>
   );
 }
 
@@ -14594,10 +14588,10 @@ function HomeScreen({
       projectName,
       scheduleItems,
     );
-    return resolveProjectCoverPhotoUri(
+    return resolveProjectCoverImage(
       projectRecords,
       projectName,
-      mostRecentHeroPhotoUri(scopedUpdates) || undefined,
+      mostRecentProjectHeroPhoto(scopedUpdates, updateSortTime, resolveProjectPhotoUri),
     );
   }
 
@@ -14763,8 +14757,8 @@ function HomeScreen({
       </View>
       <View style={styles.overviewPriorityCard}>
         {currentFocusProject && overviewPhotoForProject(currentFocusProject) ? (
-          <Image
-            source={{ uri: overviewPhotoForProject(currentFocusProject)! }}
+          <ProjectPhotoImage
+            {...overviewPhotoForProject(currentFocusProject)!}
             style={styles.overviewPriorityImage}
           />
         ) : currentFocusProject ? (
@@ -14919,7 +14913,7 @@ function HomeScreen({
                 onPress={() => onOpenProject(row.project)}
               >
                 {photo ? (
-                  <Image source={{ uri: photo }} style={styles.overviewProjectImage} />
+                  <ProjectPhotoImage {...photo} style={styles.overviewProjectImage} />
                 ) : (
                   <View style={styles.overviewProjectImagePlaceholder}>
                     <Ionicons name="business-outline" size={28} color={colors.primary} />
@@ -16193,18 +16187,7 @@ function RootPhotoIntelligenceCard({
           </Text>
         </View>
       </View>
-      {result.priorPhotoUri && photo?.uri ? (
-        <View style={styles.photoComparisonPreviewRow}>
-          <View style={styles.photoComparisonPreviewItem}>
-            <Image source={{ uri: result.priorPhotoUri }} style={styles.photoComparisonPreviewImage} />
-            <Text style={styles.photoComparisonPreviewLabel}>Before</Text>
-          </View>
-          <View style={styles.photoComparisonPreviewItem}>
-            <ProjectPhotoImage photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.photoComparisonPreviewImage} />
-            <Text style={styles.photoComparisonPreviewLabel}>After</Text>
-          </View>
-        </View>
-      ) : null}
+      <PhotoComparisonPreviewRow result={result} photo={photo} projectName={projectName} localUri={resolveProjectPhotoUri} />
       <PIEDetailLine label="What changed" value={primaryFinding} />
       {reviewCandidate ? <PIEDetailLine label="Why it matters" value={whyItMatters} /> : null}
       {reviewCandidate ? <PIEDetailLine label="Next action" value={nextAction} /> : null}
@@ -17175,7 +17158,7 @@ function ProjectWorkspaceScreen({
   contactBook,
   coverPhoto,
   coverPhotoMode,
-  coverPhotoUri,
+  coverImage,
   onTakeNewCoverPhoto,
   onChooseCoverFromLibrary,
   onUseBestProjectPhoto,
@@ -17218,7 +17201,7 @@ function ProjectWorkspaceScreen({
   contactBook: ContactBook;
   coverPhoto: ProjectCoverPhoto | null;
   coverPhotoMode: 'automatic' | 'manual';
-  coverPhotoUri: string | null;
+  coverImage: ProjectCoverImage | null; // may be cloud-only (A4 pass 7 M2)
   onTakeNewCoverPhoto: () => void;
   onChooseCoverFromLibrary: () => void;
   onUseBestProjectPhoto: () => void;
@@ -17437,9 +17420,9 @@ function ProjectWorkspaceScreen({
       />
 
       <View style={styles.projectWorkspaceHero}>
-        {coverPhotoUri ? (
-          <Image
-            source={{ uri: coverPhotoUri }}
+        {coverImage ? (
+          <ProjectPhotoImage
+            {...coverImage}
             style={styles.projectWorkspaceHeroImage}
             accessibilityLabel={`${projectName} project cover photo`}
           />
@@ -18773,16 +18756,8 @@ function SavedUpdatesScreen({
   ) {
     const group = updateTimelineGroup(update.date);
     const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
-    const mobileComparison = buildDAVEUpdatePhotoComparison(update, updates);
-    const mobileComparisonViewModel = mobileComparison ? {
-      priorUri: mobileComparison.priorPhotoUri,
-      priorLabel: formatDisplayDate(mobileComparison.priorUpdateDate),
-      currentUri: mobileComparison.currentPhotoUri,
-      currentLabel: formatDisplayDate(mobileComparison.currentUpdateDate),
-      summary: mobileComparison.summary,
-      confidence: mobileComparison.comparisonConfidence,
-      comparability: mobileComparison.comparability,
-    } : null;
+    const mobileComparisonViewModel = updatePhotoComparisonViewModel(
+      buildDAVEUpdatePhotoComparison(update, updates), formatDisplayDate, resolveProjectPhotoUri);
 
     return (
       <>
@@ -18860,15 +18835,8 @@ function SavedUpdatesScreen({
       <Text style={styles.updateEmptyText}>{activeTab === 'Needs Action' ? 'No field records require action today.' : activeTab === 'Drafts' ? 'Start from Overview or a project when you are ready to capture field work.' : 'Saved field activity will appear here.'}</Text>
     </View>
   );
-  const comparison = exactComparison ? {
-    priorUri: exactComparison.priorPhotoUri,
-    priorLabel: formatDisplayDate(exactComparison.priorUpdateDate),
-    currentUri: exactComparison.currentPhotoUri,
-    currentLabel: formatDisplayDate(exactComparison.currentUpdateDate),
-    summary: exactComparison.summary,
-    confidence: exactComparison.comparisonConfidence,
-    comparability: exactComparison.comparability,
-  } : null;
+  // Photo objects, not their `uri` (empty for a cloud-only photo): A4 pass 7 M2.
+  const comparison = updatePhotoComparisonViewModel(exactComparison, formatDisplayDate, resolveProjectPhotoUri);
 
   if (sizeClass === 'wide') {
     return <UpdatesWideWorkspace
