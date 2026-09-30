@@ -70,6 +70,7 @@ import {
 } from '../services/DAVEReportSnapshotRepository';
 import { markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave } from '../services/DAVEReportSnapshot';
 import {
+  approvedReportFingerprint,
   recallReportSessionState,
   rememberReportAcknowledgement,
   rememberReportApproval,
@@ -556,7 +557,13 @@ export function ReportsScreen({
 
     const startedReportIdentity = reportCommunicationIdentityKey;
     const startedReport = effectiveReportDraft;
-    const startedFingerprint = reportSourceFingerprint;
+    // The facts the approval was given on, so a change the report text does
+    // not show (stage, checklist, next action) or a sync landing between
+    // Approve and Share still records the approved report as sent (whole-app
+    // audit A6 pass 6 (30 Sep 2026)). The Word copy needs no approval.
+    const startedFingerprint = (requireApproval
+      ? approvedReportFingerprint(recallReportSessionState(reportStateIdentityKey), approvalTextKey)
+      : null) ?? reportSourceFingerprint;
     const communicationToken = Symbol(startedReportIdentity);
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
@@ -608,7 +615,7 @@ export function ReportsScreen({
     setReportApproved(true);
     setCommunicationError('');
     setSnapshotSaveError('');
-    rememberReportApproval(reportStateIdentityKey, approvalTextKey);
+    rememberReportApproval(reportStateIdentityKey, approvalTextKey, reportSourceFingerprint);
     if (snapshotLoadFailed) {
       // The owner's baseline could not be read; approving must not replace it blind.
       setSnapshotSaveError(

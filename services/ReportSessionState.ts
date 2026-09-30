@@ -20,6 +20,8 @@ export type ReportSessionState = Readonly<{
   edits: ReportSessionEdits | null;
   /** The approval text key of the report that was approved, or null. */
   approvedTextKey: string | null;
+  /** The project facts that approval was given on, or null. */
+  approvedFingerprint?: string | null;
   /** Review items acknowledged for one exact set of report facts. */
   acknowledgement: ReportSessionAcknowledgement | null;
 }>;
@@ -47,8 +49,16 @@ export function rememberReportEdits(scopeKey: string, edits: ReportSessionEdits 
   write(scopeKey, { ...(recallReportSessionState(scopeKey) ?? EMPTY), edits });
 }
 
-export function rememberReportApproval(scopeKey: string, approvedTextKey: string | null): void {
-  write(scopeKey, { ...(recallReportSessionState(scopeKey) ?? EMPTY), approvedTextKey });
+export function rememberReportApproval(
+  scopeKey: string,
+  approvedTextKey: string | null,
+  approvedFingerprint: string | null = null,
+): void {
+  write(scopeKey, {
+    ...(recallReportSessionState(scopeKey) ?? EMPTY),
+    approvedTextKey,
+    approvedFingerprint: approvedTextKey ? approvedFingerprint : null,
+  });
 }
 
 export function rememberReportAcknowledgement(
@@ -61,6 +71,17 @@ export function rememberReportAcknowledgement(
 /** Approval stands only for the exact text that was approved. */
 export function restoredReportApproval(state: ReportSessionState | null, approvalTextKey: string): boolean {
   return Boolean(state?.approvedTextKey) && state?.approvedTextKey === approvalTextKey;
+}
+
+/**
+ * The facts the standing approval was given on, so a send records the
+ * approved report even when facts the text does not show changed since
+ * (whole-app audit A6 pass 6 (30 Sep 2026): a stage or checklist change
+ * after approval left the sent report unsent, and the next report's period
+ * repeated what the client already had).
+ */
+export function approvedReportFingerprint(state: ReportSessionState | null, approvalTextKey: string): string | null {
+  return restoredReportApproval(state, approvalTextKey) ? state?.approvedFingerprint ?? null : null;
 }
 
 /** On sign-out: another account must not inherit this one's narrative or approval. */

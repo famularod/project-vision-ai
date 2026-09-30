@@ -91,7 +91,7 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     rememberReportEdits('daily|pm|p', edits);
     rememberReportApproval('daily|pm|p', 'text-a');
     rememberReportAcknowledgement('daily|pm|p', { fingerprint: 'f2', ids: ['r1'] });
-    expect(recallReportSessionState('daily|pm|p')).toEqual({ edits, approvedTextKey: 'text-a', acknowledgement: { fingerprint: 'f2', ids: ['r1'] } });
+    expect(recallReportSessionState('daily|pm|p')).toEqual({ edits, approvedTextKey: 'text-a', approvedFingerprint: null, acknowledgement: { fingerprint: 'f2', ids: ['r1'] } });
     expect(recallReportSessionState('daily|pm|other')).toBeNull();
     expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-a')).toBe(true);
     expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-b')).toBe(false);
@@ -116,7 +116,8 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && restoredReportApproval\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\)\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed\]\);/);
     expect(screen).not.toMatch(/if \(reportApprovalAllowed\) return;\n\s+setReportApproved\(false\);/);
     expect(screen).toMatch(/const remembered = recallReportSessionState\(reportStateIdentityKey\);\n\s+setReportEditing\(false\);\n\s+setReportEdits\(remembered\?\.edits \?\? null\);\n\s+setReviewAcknowledgement\(remembered\?\.acknowledgement \?\? \{ fingerprint: '', ids: \[\] \}\);/);
-    expect(screen).toContain('rememberReportApproval(reportStateIdentityKey, approvalTextKey);');
+    // A6 pass 6: with the facts the approval was given on.
+    expect(screen).toContain('rememberReportApproval(reportStateIdentityKey, approvalTextKey, reportSourceFingerprint);');
     // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
     expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
     expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);
