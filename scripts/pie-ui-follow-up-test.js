@@ -158,7 +158,6 @@ const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems',
   'Queued update waiting to sync',
   'Sync failed · Retry',
   'Update ready to sync',
-  'Missing recipients',
   'Blocker tagged',
   'Document upload failed · Retry',
   'areaLabel',
@@ -172,6 +171,9 @@ const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems',
 ].forEach(marker => {
   assert(attentionBuilder.includes(marker), `Needs Attention should include ${marker}`);
 });
+// The app never sends an update to its recipients, so Needs Attention does
+// not ask for them (owner answer Q18, 30 Sep 2026).
+assert(!attentionBuilder.includes("title: 'Missing recipients'"), 'Needs Attention must not ask for recipients the app never sends to');
 assert(
   !attentionBuilder.includes('Open item needs follow-up'),
   'Needs Attention must not use repeated generic Open item needs follow-up copy.',

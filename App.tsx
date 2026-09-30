@@ -4577,30 +4577,16 @@ function buildPhase2AttentionItems(
               statusRole: 'needsRetry' as StatusStyleRole,
             }
           : null,
-        lifecycle === 'ready_to_send' && update.recipients.contactIds.length === 0
-          ? {
-              id: `${update.id}-missing-recipients`,
-              updateId: update.id,
-              actionTarget: 'update' as const,
-              projectName: update.projectName,
-              title: 'Missing recipients',
-              detail: 'Add recipients before sending this update.',
-              areaLabel: update.selectedAreaName || 'No area selected',
-              dateLabel: formatDisplayDate(update.date),
-              priority: ATTENTION_PRIORITY.readyToSend,
-              urgent: false,
-              retryable: false,
-              statusRole: 'informational' as StatusStyleRole,
-            }
-          : null,
-        lifecycle === 'ready_to_send' && update.recipients.contactIds.length > 0
+        // No "Missing recipients" item: the app never sends an update to
+        // its recipients, so none are needed (owner answer Q18, 30 Sep 2026).
+        lifecycle === 'ready_to_send'
           ? {
               id: `${update.id}-ready-to-send`,
               updateId: update.id,
               actionTarget: 'update' as const,
               projectName: update.projectName,
               title: 'Update ready to sync',
-              detail: 'Open the update to review recipients and send.',
+              detail: 'Open the update to review it.',
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
               priority: ATTENTION_PRIORITY.readyToSend,
@@ -15553,7 +15539,8 @@ function RecipientSummaryRow({
         <Text style={styles.phase2SelectorLabel}>Recipients</Text>
         <Text style={styles.projectName}>{label}</Text>
         <Text style={styles.rowSub}>
-          {contacts.length > 0 ? 'Recent recipients available' : 'Add recipients before sending'}
+          {/* Nothing sends an update to them; the list is kept with the update (owner answer Q18). */}
+          Optional · kept with the update; the app does not send it to them
         </Text>
       </View>
       <TouchableOpacity style={styles.phase3ChangeButton} onPress={onChange}>
