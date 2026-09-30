@@ -587,6 +587,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
+  scheduleDocumentIsScheduleLike,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -616,6 +617,7 @@ import {
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
   scheduleItemsForExactImportBatch,
+  scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
   resolveScheduleParentActions,
   scheduleParentProjectNames,
@@ -655,6 +657,7 @@ import {
 } from './services/DAVEIdentity';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems } from './services/ScheduleImportMerge';
+import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
   isDavePdfTextExtractionAvailable,
@@ -5958,6 +5961,18 @@ useEffect(() => {
     if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
+  useEffect(() => {
+    // A schedule labelled with projects none of its rows belong to (every
+    // project the import could use, before 30 Sep) is narrowed to its rows'
+    // projects, or it hid another project's schedule (audit A5 pass 2).
+    if (!startupHydrationReady || !scheduleItemsLoaded || !referenceDocumentsLoaded) return;
+    const repair = narrowScheduleDocumentLabels(referenceDocuments, scheduleItems, new Date().toISOString());
+    if (repair.changed.length === 0) return;
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = repair.documents;
+    setReferenceDocuments(repair.documents);
+    void Promise.all(repair.changed.map(document => queueReferenceDocumentRecord(document))).catch(() => undefined);
+  }, [referenceDocuments, referenceDocumentsLoaded, scheduleItems, scheduleItemsLoaded, startupHydrationReady]);
 
   useStringStoragePersistence({
     enabled: startupHydrationReady && displayNameLoaded,
@@ -11507,14 +11522,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const document = referenceDocuments.find(item => item.id === documentId);
 
     if (!document) return;
+    // Only the tasks no other schedule contains: one unchanged across revisions stays (audit A5 pass 2).
     const relatedScheduleItems = document.importBatchId
-      ? scheduleItemsForExactImportBatch(scheduleItems, document)
+      ? scheduleItemsOnlyInImportBatch(scheduleItems, document, referenceDocuments.filter(scheduleDocumentIsScheduleLike))
       : scheduleItems.filter(item =>
           item.importedFrom === document.originalFileName || item.importedFrom === document.name);
+    const sharedCount = document.importBatchId
+      ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
+      : 0;
 
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove schedule items that were extracted or added from this PDF so outdated dates do not confuse Upcoming.`,
+      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -12415,59 +12434,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
         .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)));
     }
 
-    let synchronizedDocuments = referenceDocumentsCurrentRef.current;
-    if (approvedBatch.documents.length) {
-      const referenceUpdatedAt = new Date().toISOString();
-      const importedProjectNames = scheduleParentProjectNames(
-        approvedItems as unknown as import('./types').ScheduleItem[],
+    // Labelled by the approved rows' projects (a later Accept Selected widens
+    // the saved one); no other schedule is demoted, since each project picks
+    // its own current schedule (audit A5 pass 2).
+    const labelledDocuments = scheduleDocumentsAfterApproval({
+      documents: referenceDocumentsCurrentRef.current,
+      approvedDocuments: approvedBatch.documents,
+      approvedItems: approvedItems as unknown as import('./types').ScheduleItem[],
+      updatedAt: new Date().toISOString(),
+    });
+    const previousDocuments = new Set<ReferenceDocument>(referenceDocumentsCurrentRef.current);
+    const synchronizedDocuments = labelledDocuments.map(document =>
+      previousDocuments.has(document) ? document : normalizeReferenceDocument(document));
+    const previousDocumentById = new Map(
+      referenceDocumentsCurrentRef.current.map(document => [document.id, document]),
+    );
+    referenceDocumentSyncRecords = synchronizedDocuments
+      .filter(document =>
+        JSON.stringify(document) !== JSON.stringify(previousDocumentById.get(document.id)),
       );
-      const scopedDocuments = approvedBatch.documents.map(document => {
-        const documentProjectNames = document.projectNames?.length
-          ? document.projectNames
-          : importedProjectNames;
-        const importedProjectName = documentProjectNames.length === 1
-          ? documentProjectNames[0]
-          : null;
-        return normalizeReferenceDocument({
-          ...document,
-          projectNames: documentProjectNames,
-          projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
-          projectName: importedProjectName,
-          updatedAt: referenceUpdatedAt,
-        });
-      });
-      const scopedById = new Map(
-        scopedDocuments.map(document => [document.id, document]),
-      );
-      const currentScheduleScope = new Set(
-        scopedDocuments
-          .filter(document => document.category === 'Schedules' && document.isCurrent)
-          .flatMap(document => document.projectNames || [])
-          .map(name => name.trim().toLowerCase()),
-      );
-      const existingDocuments = referenceDocumentsCurrentRef.current
-        .filter(document => !scopedById.has(document.id))
-        .map(document => {
-          const documentScope = (document.projectNames || [])
-            .map(name => name.trim().toLowerCase());
-          const sharesCurrentScope = documentScope.some(name =>
-            currentScheduleScope.has(name),
-          );
-          return sharesCurrentScope &&
-            document.category === 'Schedules' &&
-            document.isCurrent
-            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
-            : document;
-        });
-      synchronizedDocuments = [...scopedDocuments, ...existingDocuments];
-      const previousById = new Map(
-        referenceDocumentsCurrentRef.current.map(document => [document.id, document]),
-      );
-      referenceDocumentSyncRecords = synchronizedDocuments
-        .filter(document =>
-          JSON.stringify(document) !== JSON.stringify(previousById.get(document.id)),
-        );
-    }
 
     const syncResult = await runScheduleImportCloudSync({
       scheduleItems: scheduleSyncItems,
@@ -12511,7 +12496,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       scheduleItemsCurrentRef.current = appliedSynchronizedItems;
       setScheduleItems(appliedSynchronizedItems);
     }
-    if (approvedBatch.documents.length) {
+    if (referenceDocumentSyncRecords.length > 0) {
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = appliedSynchronizedDocuments;
       setReferenceDocuments(appliedSynchronizedDocuments);

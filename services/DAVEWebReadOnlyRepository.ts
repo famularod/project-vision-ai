@@ -12,12 +12,13 @@ import {
   reconcileDAVEScheduleRecords,
 } from './DAVEScheduleRecovery';
 import {
-  scheduleItemsForExactImportBatch,
+  scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
 } from './PIEScheduleImportBatch';
 import {
   reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
+  scheduleDocumentIsScheduleLike,
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
@@ -71,7 +72,8 @@ export async function loadDAVEWebReadOnlySnapshot(
   const referenceDocuments = reconciledDocuments.map(document => ({
     ...document,
     linkedScheduleItems: Object.freeze(
-      scheduleItemsForExactImportBatch(reconciledScheduleItems, document).map(item => ({
+      // The tasks "Delete Document + N Tasks" takes: those no other schedule contains (audit A5 pass 2).
+      scheduleItemsOnlyInImportBatch(reconciledScheduleItems, document, reconciledDocuments.filter(scheduleDocumentIsScheduleLike)).map(item => ({
         id: item.id,
         cloudUpdatedAt: (item as DAVEWebScheduleItem).cloudUpdatedAt,
       })),

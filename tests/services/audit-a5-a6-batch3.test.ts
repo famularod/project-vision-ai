@@ -28,7 +28,7 @@ describe('a revised import of a schedule saved before the area rule changed (A5 
     const result = merge([saved], [revised]);
     expect(result.additions).toEqual([]);
     expect(result.rehomedIds).toEqual(['old-1']);
-    expect(result.next[0]).toMatchObject({ id: 'old-1', importBatchId: 'v2', locationName: 'Building B', percentComplete: 60 });
+    expect(result.next[0]).toMatchObject({ id: 'old-1', importBatchId: 'v1', alsoImportedInBatchIds: ['v2'], locationName: 'Building B', percentComplete: 60 });
   });
 
   it('carries the manager’s progress to a changed task saved with no area; a different saved area still does not match', () => {

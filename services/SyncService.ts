@@ -3604,10 +3604,8 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       changedAt: new Date().toISOString(),
       autoUpload: false,
     });
-    const result = await uploadPendingChanges();
-    if (result.queued > 0 || result.errors.length > 0) {
-      throw new Error(result.errors[0] || 'sync_conflict_save_failed');
-    }
+    const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId));
+    if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
     await clearResolvedConflict(conflict.id);
     return cloudUpdate as TUpdate;
   }
@@ -3624,14 +3622,31 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     changedAt: new Date().toISOString(),
     autoUpload: false,
   });
-  const result = await uploadPendingChanges();
-
-  if (result.queued > 0 || result.errors.length > 0) {
-    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
-  }
+  const exact = await uploadExactQueueItem(projectUpdateQueueItemId(localPayload.id));
+  if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * Uploads the queue and says whether this one item landed, whatever else is
+ * still queued (whole-app audit A7 pass 3: Keep Phone and Keep Cloud failed,
+ * and said "Neither copy was changed", whenever any other item was waiting,
+ * after they had in fact written the chosen copy). One more pass when an
+ * older in-flight upload missed the item, as for tasks.
+ */
+async function uploadExactQueueItem(queueItemId: string): Promise<{ landed: boolean; error: string | null }> {
+  let result = await uploadPendingChanges();
+  let remaining = (await getOfflineQueue()).find(item => item.id === queueItemId);
+  let outcome = result.itemOutcomes?.[queueItemId];
+  if (remaining && (!outcome || outcome === 'uploaded')) {
+    result = await uploadPendingChanges();
+    remaining = (await getOfflineQueue()).find(item => item.id === queueItemId);
+    outcome = result.itemOutcomes?.[queueItemId];
+  }
+  const landed = outcome === 'uploaded' && !remaining;
+  return { landed, error: landed ? null : remaining?.lastError || result.errors[0] || null };
 }
 
 export async function resolveScheduleItemSyncConflict(

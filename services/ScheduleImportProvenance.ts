@@ -44,7 +44,41 @@ export function scheduleItemsForExactImportBatch(
 ): ScheduleItem[] {
   const batchId = provenanceBatchId(document);
   if (!batchId) return [];
-  return items.filter(item => provenanceBatchId(item) === batchId);
+  return items.filter(item => scheduleItemImportBatchIds(item).includes(batchId));
+}
+
+/**
+ * The batches an imported task belongs to: its own import, then any later
+ * import it was found unchanged in.
+ */
+export function scheduleItemImportBatchIds(item: ScheduleItem): string[] {
+  return [item.importBatchId, ...(item.alsoImportedInBatchIds || [])]
+    .map(value => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean);
+}
+
+/**
+ * The tasks deleting this schedule document takes: those no other schedule
+ * document still contains. A task unchanged across revisions belongs to each
+ * of them and stays with the others (whole-app audit A5 pass 2: "Delete PDF
+ * + Items" on a revision deleted the unchanged tasks carried from the
+ * previous one, on every device).
+ */
+export function scheduleItemsOnlyInImportBatch(
+  items: readonly ScheduleItem[],
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): ScheduleItem[] {
+  const batchId = provenanceBatchId(document);
+  if (!batchId) return [];
+  const otherBatchIds = new Set(documents
+    .filter(candidate => candidate.id !== document.id)
+    .map(provenanceBatchId)
+    .filter((value): value is string => Boolean(value) && value !== batchId));
+  return items.filter(item => {
+    const batches = scheduleItemImportBatchIds(item);
+    return batches.includes(batchId) && !batches.some(batch => otherBatchIds.has(batch));
+  });
 }
 
 export function scheduleImportDocumentOwnsItem(
@@ -52,7 +86,7 @@ export function scheduleImportDocumentOwnsItem(
   item: ScheduleItem,
 ): boolean {
   const batchId = provenanceBatchId(document);
-  return Boolean(batchId && provenanceBatchId(item) === batchId);
+  return Boolean(batchId && scheduleItemImportBatchIds(item).includes(batchId));
 }
 
 function exactSourceDocumentId(

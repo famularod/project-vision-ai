@@ -1970,6 +1970,22 @@ describe('project and field-update queue rules from the audit', () => {
     }));
   });
 
+  it('Keep Cloud judges its own item: another update still waiting on photos does not fail it (A7 pass 3)', async () => {
+    storeConflict('u-own-item');
+    await enqueuePendingChange({
+      ...updateItem('u-waiting-on-photos', 'Unrelated, photos not uploaded yet', '2026-08-16T09:00:00.000Z'),
+      payload: {
+        ...updateItem('u-waiting-on-photos', 'Unrelated, photos not uploaded yet', '2026-08-16T09:00:00.000Z').payload,
+        pendingPhotoAssetIds: ['photo-not-uploaded'],
+      },
+    });
+    const [conflict] = await getSyncConflicts();
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(cloudCopy('u-own-item'));
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    const queue = await getOfflineQueue();
+    expect(queue.map(item => item.id)).toEqual(['project-update-u-waiting-on-photos']);
+  });
+
   it('Keep Cloud never writes back an update deleted on any device', async () => {
     storeConflict('u-deleted');
     mockCloudTombstonesResult = {

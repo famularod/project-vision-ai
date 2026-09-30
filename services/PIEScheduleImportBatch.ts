@@ -7,9 +7,10 @@ import {
 import {
   bindScheduleImportBatch,
   scheduleItemsForExactImportBatch,
+  scheduleItemsOnlyInImportBatch,
 } from './ScheduleImportProvenance';
 
-export { scheduleItemsForExactImportBatch };
+export { scheduleItemsForExactImportBatch, scheduleItemsOnlyInImportBatch };
 
 export type PIEScheduleImportKind = 'schedule_file' | 'message_screenshots';
 

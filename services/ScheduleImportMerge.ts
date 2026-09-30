@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
  * How an approved schedule import joins the tasks already saved.
@@ -11,11 +12,14 @@ import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
  * changed task came in as a fresh row at 0% while the project manager's
  * progress stayed on the hidden old copy.
  *
- * Now an unchanged task that an earlier import owns moves to the new batch
- * (its progress and confirmations intact), and a changed task takes the
- * project manager's confirmed progress from the one earlier row for the
- * same task in the same project and area. A completion claim that names an
- * existing task still merges into it first, as before.
+ * Now an unchanged task that an earlier import owns also belongs to the new
+ * import (alsoImportedInBatchIds; its id, progress and confirmations
+ * intact), and a changed task takes the project manager's confirmed
+ * progress from the one earlier row for the same task in the same project
+ * and area. A completion claim that names an existing task still merges into
+ * it first, as before. The unchanged task keeps its own import identity: a
+ * revision that rewrote it made "Set Active" on the older schedule hide it
+ * and "Delete PDF + Items" on the revision delete it (audit A5 pass 2).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -84,18 +88,17 @@ export function mergeApprovedScheduleImportItems({
     if (additions.some(item => scheduleImportItemIdentity(item) === identity)) return;
     const duplicate = next.find(item => sameImportIdentity(item, importedItem));
     if (duplicate) {
-      // An unchanged task an earlier import owns now belongs to this import;
-      // a task entered by hand keeps its own provenance and stays visible.
+      // An unchanged task an earlier import owns now belongs to this import
+      // too; a task entered by hand keeps its own provenance and stays visible.
       const owned = Boolean(key(duplicate.importBatchId) || key(duplicate.sourceDocumentId));
-      if (owned && key(duplicate.importBatchId) !== key(importedItem.importBatchId)) {
+      const newBatchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
+      const batches = scheduleItemImportBatchIds(duplicate).map(key);
+      if (owned && newBatchId && !batches.includes(key(newBatchId))) {
         next = next.map(item => item.id === duplicate.id
           ? {
               ...item,
               locationName: key(item.locationName) ? item.locationName : importedItem.locationName,
-              importBatchId: importedItem.importBatchId ?? item.importBatchId,
-              sourceDocumentId: importedItem.sourceDocumentId ?? item.sourceDocumentId,
-              importedFrom: importedItem.importedFrom ?? item.importedFrom,
-              importedAt: importedItem.importedAt ?? item.importedAt,
+              alsoImportedInBatchIds: [...(item.alsoImportedInBatchIds || []), newBatchId],
             }
           : item);
         rehomedIds.push(duplicate.id);

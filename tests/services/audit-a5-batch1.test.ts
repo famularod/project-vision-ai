@@ -116,7 +116,8 @@ describe('a revised import keeps the tasks and the manager’s progress', () => 
   it('moves an unchanged task to the new import, carries confirmed progress onto a changed one, and leaves a manual task alone', () => {
     const merged = mergeApprovedScheduleImportItems({ existing, imported, ...noClaims });
     expect(merged.rehomedIds).toEqual(['pour']);
-    expect(merged.next.find(item => item.id === 'pour')).toEqual(expect.objectContaining({ importBatchId: 'b2', sourceDocumentId: 'd2', importedFrom: 'v2.pdf', percentComplete: 0 }));
+    // A5 pass 2: the unchanged task keeps its own import and also belongs to the revision.
+    expect(merged.next.find(item => item.id === 'pour')).toEqual(expect.objectContaining({ importBatchId: 'b1', alsoImportedInBatchIds: ['b2'], percentComplete: 0 }));
     expect(merged.carriedProgressIds).toEqual(['bolts-2']);
     expect(merged.additions.map(item => item.id)).toEqual(['bolts-2']);
     expect(merged.additions[0]).toEqual(expect.objectContaining({

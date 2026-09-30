@@ -749,6 +749,12 @@ export type ScheduleItem = {
   importedAt?: string | null;
   /** Immutable import identity; filenames are display data only. */
   importBatchId?: string | null;
+  /**
+   * Later imports this task was found unchanged in. The task keeps its own
+   * import identity and belongs to each of these too, so a revision shows it
+   * without taking it over (whole-app audit A5 pass 2).
+   */
+  alsoImportedInBatchIds?: string[] | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
   /** Immutable activity identifier captured from the source schedule row. */

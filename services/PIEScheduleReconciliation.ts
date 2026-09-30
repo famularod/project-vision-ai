@@ -17,6 +17,7 @@ import {
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -153,6 +154,7 @@ export function selectAuthoritativeScheduleItems({
   scheduleDocuments?: ReferenceDocument[];
 }) {
   const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
+  const currentByProject = currentScheduleDocumentsByProject(scheduleSources);
   const activeSchedules = currentScheduleDocumentWinners(scheduleSources);
   const activeScheduleSources = new Set(
     activeSchedules
@@ -166,23 +168,33 @@ export function selectAuthoritativeScheduleItems({
       .map(normalize)
       .filter(Boolean),
   );
-  const activeBatchIds = new Set(activeSchedules.map(document => normalize(document.importBatchId || '')).filter(Boolean));
-  const knownBatchIds = new Set(scheduleSources.map(document => normalize(document.importBatchId || '')).filter(Boolean));
   const activeDocumentIds = new Set(activeSchedules.map(document => normalize(document.id)).filter(Boolean));
-  const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
+  // The schedule documents that contain a task: its own source document and
+  // import, and any later import it was found unchanged in (whole-app audit
+  // A5 pass 2: a revision used to take unchanged tasks over).
+  const containingDocuments = (item: ScheduleItem) => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    const batchIds = scheduleItemImportBatchIds(item).map(normalize);
+    return scheduleSources.filter(document =>
+      (Boolean(sourceDocumentId) && normalize(document.id) === sourceDocumentId) ||
+      (Boolean(normalize(document.importBatchId || '')) && batchIds.includes(normalize(document.importBatchId || ''))));
+  };
+  // Shown when the current schedule for the task's own project contains it;
+  // with none current for that project, when any current schedule does.
+  const containedByCurrentSchedule = (item: ScheduleItem, containing: readonly ReferenceDocument[]) => {
+    const current = currentByProject.get(normalize(item.scheduleProjectName || item.projectName || ''));
+    if (current) return containing.includes(current);
+    return containing.some(document => activeDocumentIds.has(normalize(document.id)));
+  };
   const itemHasActiveProvenance = (item: ScheduleItem) => {
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && activeDocumentIds.has(sourceDocumentId)) return true;
-    const importBatchId = normalize(item.importBatchId || '');
-    return Boolean(importBatchId && activeBatchIds.has(importBatchId));
+    const containing = containingDocuments(item);
+    return containing.length > 0 && containedByCurrentSchedule(item, containing);
   };
-  const itemHasOrphanedProvenance = (item: ScheduleItem) => {
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && !knownDocumentIds.has(sourceDocumentId)) return true;
-    const importBatchId = normalize(item.importBatchId || '');
-    return Boolean(importBatchId && !knownBatchIds.has(importBatchId));
-  };
+  const itemHasOrphanedProvenance = (item: ScheduleItem) => (
+    containingDocuments(item).length === 0 &&
+    Boolean(normalize(item.sourceDocumentId || '') || scheduleItemImportBatchIds(item).length > 0)
+  );
   const activeOccurrenceKeys = new Set(
     scheduleItems
       .filter(itemHasActiveProvenance)
@@ -215,14 +227,8 @@ export function selectAuthoritativeScheduleItems({
       activeOccurrenceKeys.has(occurrenceKey)
     ) return scheduleHasAuthoritativeProgressJudgment(item);
 
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && knownDocumentIds.has(sourceDocumentId)) {
-      return activeDocumentIds.has(sourceDocumentId);
-    }
-    const importBatchId = normalize(item.importBatchId || '');
-    if (importBatchId && knownBatchIds.has(importBatchId)) {
-      return activeBatchIds.has(importBatchId);
-    }
+    const containing = containingDocuments(item);
+    if (containing.length > 0) return containedByCurrentSchedule(item, containing);
     const importedFrom = normalize(item.importedFrom || '');
     return !importedFrom ||
       !knownScheduleSources.has(importedFrom) ||
@@ -275,35 +281,43 @@ function selectLatestImportedScheduleBatches(
 }
 
 /**
- * The current schedule documents that drive intelligence: the newest
- * marked-current schedule for each project. Two schedules compete only when
- * they share a project name; schedules with no project names form one
- * shared scope. Until 30 Sep 2026 a single app-wide winner was kept, so
- * importing a second project's schedule hid the first project's whole
- * schedule (whole-app audit A5).
+ * For each project, the newest marked-current schedule that covers it
+ * (schedules with no project form one shared scope, key ''). Until 30 Sep
+ * 2026 a single app-wide winner was kept, so importing a second project's
+ * schedule hid the first project's whole schedule (whole-app audit A5); then
+ * a schedule that shared any project with a newer one lost every project, so
+ * a newer single-project schedule retired a combined master for the other
+ * project too (A5 pass 2). Now each project picks its own.
  */
-export function currentScheduleDocumentWinners<T extends ReferenceDocument>(
+export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
   documents: readonly T[],
-): T[] {
-  const winners: T[] = [];
-  const claimed = new Set<string>();
-  let globalClaimed = false;
+): Map<string, T> {
+  const current = new Map<string, T>();
   documents
     .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
     .sort(compareScheduleDocumentAuthority)
     .forEach(document => {
-      const scope = (document.projectNames || []).map(normalize).filter(Boolean);
-      if (scope.length === 0) {
-        if (globalClaimed) return;
-        globalClaimed = true;
-        winners.push(document);
-        return;
-      }
-      if (scope.some(name => claimed.has(name))) return;
-      scope.forEach(name => claimed.add(name));
-      winners.push(document);
+      const scope = scheduleDocumentScope(document);
+      (scope.length > 0 ? scope : ['']).forEach(project => {
+        if (!current.has(project)) current.set(project, document);
+      });
     });
-  return winners;
+  return current;
+}
+
+/** The current schedule documents that drive intelligence: each is current for at least one project. */
+export function currentScheduleDocumentWinners<T extends ReferenceDocument>(
+  documents: readonly T[],
+): T[] {
+  return [...new Set(currentScheduleDocumentsByProject(documents).values())]
+    .sort(compareScheduleDocumentAuthority);
+}
+
+function scheduleDocumentScope(document: ReferenceDocument): string[] {
+  const names = (document.projectNames || []).map(normalize).filter(Boolean);
+  if (names.length > 0) return [...new Set(names)];
+  const single = normalize(document.projectName || '');
+  return single ? [single] : [];
 }
 
 export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
@@ -317,7 +331,13 @@ export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
 }
 
 export function scheduleDocumentIsScheduleLike(document: ReferenceDocument): boolean {
-  if (document.category === 'Schedules') return true;
+  if (document.category === 'Schedules' || document.category === 'Schedule') return true;
+  // Only an uncategorised document may be a schedule by its name: a drawing
+  // named "E-601 Panel Schedule" retired the master, and a message screenshot
+  // ("Schedule message - ...", never current) hid every task approved from
+  // it (whole-app audit A5 pass 2).
+  if (document.category && document.category !== 'Other') return false;
+  if (/^\[Schedule communication screenshot\]/.test(document.notes || '')) return false;
   return /\b(schedule|look[\s-]?ahead)\b/i.test(
     `${document.name} ${document.originalFileName}`,
   );

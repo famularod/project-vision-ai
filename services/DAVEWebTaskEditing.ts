@@ -187,6 +187,8 @@ export function buildDAVEWebScheduleItem({
     importedFrom: current?.importedFrom ?? null,
     importedAt: current?.importedAt ?? null,
     importBatchId: current?.importBatchId ?? null,
+    // Kept on a web edit, as the phone keeps it (whole-app audit A5 pass 2).
+    ...(current?.alsoImportedInBatchIds?.length ? { alsoImportedInBatchIds: current.alsoImportedInBatchIds } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,

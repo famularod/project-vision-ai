@@ -149,6 +149,10 @@ function mergeScheduleRevisions(
   const noteSource = compareRecordRevision(local, cloud) >= 0 ? local : cloud;
   const progressSource = compareProgressAuthority(local, cloud) >= 0 ? local : cloud;
 
+  const alsoImportedInBatchIds = [...new Set([
+    ...(local.alsoImportedInBatchIds || []),
+    ...(cloud.alsoImportedInBatchIds || []),
+  ])];
   return {
     ...base,
     notes: noteSource.notes,
@@ -159,6 +163,8 @@ function mergeScheduleRevisions(
     progressConfirmedBy: progressSource.progressConfirmedBy,
     completionVerification: progressSource.completionVerification,
     projectControls: mergeScheduleProjectControls(local, cloud, base),
+    // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).
+    ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),
   };
 }
 
