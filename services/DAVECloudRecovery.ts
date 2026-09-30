@@ -168,6 +168,52 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
 }
 
 /**
+ * A phone edit the cloud copy outranks only because the document was made
+ * current (or another one was) since the phone last saw it. The activation
+ * (ecos_activate_current_reference_document) stamps document_data.updatedAt
+ * with the time it ran, so text typed before Make Current, or a note edited
+ * offline before the document was made current on the iPad or the web, lost
+ * to the cloud copy and was dropped as already uploaded; the card kept it
+ * and the other devices never got it (whole-app audit A8 pass 3 M2).
+ *
+ * The edit is kept when the cloud copy's current flags differ from the ones
+ * the phone's copy carries (only an activation changes them), the phone's
+ * copy was edited after the cloud copy it last saw, and it still differs
+ * from the cloud's. It is returned stamped just after the cloud copy, so it
+ * wins here and on the other devices; the cloud's current flags still win
+ * in every merge. Null when the ordinary ranking stands. A web edit made
+ * between the phone's last look and the activation cannot be told apart and
+ * gives way to the phone's edit, as it would to any later edit.
+ */
+export function referenceDocumentEditOutlivingActivation(
+  local: ReferenceDocument,
+  cloud: ReferenceDocument,
+  now = Date.now(),
+): ReferenceDocument | null {
+  const cloudRevision = referenceDocumentRevision(cloud);
+  if (referenceDocumentRevision(local) > cloudRevision) return null;
+  if (currentFlags(local) === currentFlags(cloud)) return null;
+  const seen = new Date(local.cloudUpdatedAt || '').getTime();
+  const edited = new Date(local.updatedAt || '').getTime();
+  if (!Number.isFinite(seen) || !Number.isFinite(edited) || edited <= seen) return null;
+  if (sharedMetadataWithoutRevision(local) === sharedMetadataWithoutRevision(cloud)) return null;
+  return { ...local, updatedAt: new Date(Math.max(now, cloudRevision + 1)).toISOString() };
+}
+
+function currentFlags(document: ReferenceDocument): string {
+  const retired = Array.isArray(document.retiredForProjectNames) ? document.retiredForProjectNames : [];
+  return JSON.stringify([
+    Boolean(document.isCurrent),
+    [...new Set(retired.map(name => String(name).trim().toLowerCase()).filter(Boolean))].sort(),
+  ]);
+}
+
+function sharedMetadataWithoutRevision(document: ReferenceDocument): string {
+  const { updatedAt: _updatedAt, ...metadata } = document;
+  return stableReferenceDocumentMetadata(metadata as ReferenceDocument);
+}
+
+/**
  * Return only device documents whose user-owned shared metadata would change
  * the current cloud record. Device URIs and cloud-owned ECOS/index authority
  * never make an otherwise current document eligible for a generic upsert.

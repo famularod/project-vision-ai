@@ -1,4 +1,4 @@
-import { classifySyncFailureText, CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
+import { classifySyncFailureText, CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE, currentDrawingProjectsKeptMessage, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
 import {
   archiveProjectUpdate,
   countCloudProjects,
@@ -55,6 +55,7 @@ import {
 import {
   daveReferenceDocumentsNeedingCloudUpload,
   mergeDAVEReferenceDocumentRecoveryRecords,
+  referenceDocumentEditOutlivingActivation,
 } from './DAVECloudRecovery';
 import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
 import {
@@ -434,7 +435,7 @@ export function sanitizeUserFacingSyncMessage(message: string): string {
   // A Current drawing the cloud refused to change is named in plain words,
   // not by its raw database code (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
   if (classifySyncFailureText([message]) === 'current_drawing_protected') {
-    return CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE;
+    return message.startsWith('This drawing is Current for ECOS') ? message : CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE;
   }
 
   // Deliberately narrow to signals that only appear in a genuine local
@@ -1695,6 +1696,31 @@ export async function queueReferenceDocumentRecord(
     changedAt,
     autoUpload,
   });
+}
+
+/**
+ * After this phone's Make Current: each phone edit still queued that the
+ * activation's stamp now outranks (text typed just before it, whose upload
+ * starts after the activation call) is queued again, stamped after the
+ * activation and carrying the cloud's current flags, so it reaches the
+ * other devices and a stale copy never undoes the activation. Returns the
+ * documents queued again, for this phone's list (whole-app audit A8 pass 3
+ * M2). Another account's queued work is left alone.
+ */
+export async function requeueReferenceDocumentEditsOutlivingActivation(
+  cloudDocuments: readonly ReferenceDocument[],
+): Promise<ReferenceDocument[]> {
+  const owner = currentCloudOwner();
+  const cloudById = new Map(cloudDocuments.map(document => [document.id, document]));
+  const kept = (await getOfflineQueue()).flatMap(item => {
+    if (item.entity !== 'reference_document' || item.operation === 'delete' || heldForAnotherOwner(item.ownerId, owner)) return [];
+    const local = (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData;
+    const cloud = local ? cloudById.get(local.id) : undefined;
+    const edit = local && cloud ? referenceDocumentEditOutlivingActivation(local, cloud) : null;
+    return edit && cloud ? mergeDAVEReferenceDocumentRecoveryRecords({ local: [edit], cloud: [cloud] }) : [];
+  });
+  await Promise.all(kept.map(document => queueReferenceDocumentRecord(document)));
+  return kept;
 }
 
 /**
@@ -4232,18 +4258,23 @@ async function uploadQueueItem(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
     const remote = context.referenceDocumentsById.get(payload.id);
+    // An edit made before the document was made current, here or on another
+    // device, is not outranked by the activation's stamp (whole-app audit A8
+    // pass 3 M2).
+    const local = (remote && referenceDocumentEditOutlivingActivation(payload.documentData, remote)) ||
+      payload.documentData;
     const merged = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
-          local: [payload.documentData],
+          local: [local],
           cloud: [remote],
-        }).find(candidate => candidate.id === payload.id) || payload.documentData
-      : payload.documentData;
+        }).find(candidate => candidate.id === payload.id) || local
+      : local;
     const pending = remote
       ? daveReferenceDocumentsNeedingCloudUpload({
-          local: [payload.documentData],
+          local: [local],
           cloud: [remote],
         }).find(candidate => candidate.id === payload.id)
-      : payload.documentData;
+      : local;
     if (remote && !pending) {
       return {
         outcome: 'uploaded',
@@ -4271,10 +4302,26 @@ async function uploadQueueItem(
         referenceDocument: authoritative,
       };
     }
-    return result.error || result.message || 'Document sync is waiting for Supabase.';
+    const reason = result.error || result.message || 'Document sync is waiting for Supabase.';
+    // A Current drawing whose projects the cloud kept says so (whole-app audit A8 pass 3 L2).
+    return remote && classifySyncFailureText([reason]) === 'current_drawing_protected' &&
+      projectNamesKey(authoritative) !== projectNamesKey(remote)
+      ? currentDrawingProjectsKeptMessage(projectNamesOf(remote))
+      : reason;
   }
 
   return `Unsupported sync entity: ${item.entity}`;
+}
+
+/** A shared record's projects, as its list or its single project name. */
+function projectNamesOf(document: ReferenceDocument): string[] {
+  const listed = (document.projectNames || []).filter(name => typeof name === 'string' && name.trim());
+  return listed.length > 0 ? listed : [document.projectName || ''].filter(name => name.trim());
+}
+
+function projectNamesKey(document: ReferenceDocument): string {
+  return [...new Set([document.projectName, ...(document.projectNames || [])]
+    .map(name => String(name || '').trim().toLowerCase()).filter(Boolean))].sort().join('|');
 }
 
 async function uploadProjectQueueItem(

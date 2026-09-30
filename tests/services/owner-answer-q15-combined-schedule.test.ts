@@ -327,6 +327,8 @@ describe('Set Active is offered again on a combined schedule retired for some of
         mergeDAVEReferenceDocumentRecoveryRecords: ({ cloud }: { cloud: ReferenceDocument[] }) => cloud,
         reconcileCurrentScheduleDocuments: (documents: ReferenceDocument[]) => documents,
         markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
+        // Audit A8 pass 3 M2 (landed after this test): queued text outlives the activation; none is queued here.
+        requeueReferenceDocumentEditsOutlivingActivation: async () => [],
         Alert: { alert: jest.fn() },
       };
       const js = ts.transpileModule(`module.exports = ${app.slice(start, end).trim()}`, {

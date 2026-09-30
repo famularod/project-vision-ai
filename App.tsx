@@ -30,7 +30,7 @@ import {
   runScheduleImportCloudSync,
   runScheduleItemCloudSync,
   queueProjectAreaRecord,
-  queueReferenceDocumentRecord,
+  queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
   queueProjectUpdateRecord,
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
@@ -11021,9 +11021,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         operationalSyncTombstonesRef.current,
         'reference_document',
       );
+      const kept = await requeueReferenceDocumentEditsOutlivingActivation(outcome.documents).catch(() => []); // text typed first outlives the activation's stamp (whole-app audit A8 pass 3 M2)
       const mergedDocuments = reconcileCurrentScheduleDocuments(
         mergeDAVEReferenceDocumentRecoveryRecords({
-          local: referenceDocumentsCurrentRef.current,
+          local: [...referenceDocumentsCurrentRef.current, ...kept],
           cloud: [...outcome.documents],
           deletedIds,
         }),

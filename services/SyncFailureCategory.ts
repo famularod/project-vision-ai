@@ -36,6 +36,17 @@ export const CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE =
   'This drawing is Current for ECOS, so the cloud kept its shared record. Make another revision current first, then edit this one again.';
 const CURRENT_DRAWING_PROTECTED = /ecos_atomic_current_activation_required|this drawing is current for ecos, so the cloud kept its shared record/;
 
+/**
+ * The same refusal when what changed is the drawing's list of projects,
+ * most often a project deleted on this phone that the drawing was shared
+ * with. The owner had not edited the drawing, and was told to edit it
+ * again (whole-app audit A8 pass 3 L2).
+ */
+export function currentDrawingProjectsKeptMessage(projectNames: readonly string[]): string {
+  const kept = projectNames.length > 0 ? ` (${projectNames.join(', ')})` : '';
+  return `This drawing is Current for ECOS, so the cloud kept its shared record and its projects${kept}. Its projects change only once another revision is current: make one current first, then edit this drawing again.`;
+}
+
 /** The sentences sanitizeUserFacingSyncMessage writes, mapped back to their meaning. */
 const SANITIZED_SENTENCES: ReadonlyArray<readonly [RegExp, SyncFailureCategory]> = [
   [/cloud sync could not connect/, 'offline'],
