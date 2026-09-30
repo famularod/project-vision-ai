@@ -14,3 +14,13 @@ export function useNativeWorkspaceOwner(): string | null {
   }
   return owner;
 }
+
+/**
+ * True while the workspace is open offline on a saved sign-in whose refresh
+ * could not reach the server (owner answer Q13). Uploads wait meanwhile.
+ */
+export const NativeWorkspaceSignInPendingContext = createContext(false);
+
+export function useNativeWorkspaceSignInPending(): boolean {
+  return useContext(NativeWorkspaceSignInPendingContext);
+}

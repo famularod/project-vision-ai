@@ -9,6 +9,7 @@ import { accountDisplayNameForMetadata } from './AccountProfile';
 import { AppState } from 'react-native';
 import {
   createClient,
+  isAuthRetryableFetchError,
   type Session,
   type SupabaseClient,
   type User,
@@ -344,6 +345,11 @@ let authAutoRefreshSubscriptionStarted = false;
 // Audit P0-14/P1-30: tokens live in SecureStore (Keychain/Keystore), never
 // plain AsyncStorage. See services/SupabaseAuthStorage.ts.
 const supabaseAuthStorage = supabaseSecureAuthStorage;
+// supabase-js's own default key, named so this service can read the saved
+// sign-in without the network (owner answer Q13).
+const SUPABASE_AUTH_STORAGE_KEY = supabaseAuthStorageKey(SUPABASE_URL);
+// Used when a saved session lacks expires_in; Supabase issues hourly tokens.
+const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -351,11 +357,116 @@ function createSupabaseClient(): SupabaseClient | null {
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       storage: supabaseAuthStorage,
+      storageKey: SUPABASE_AUTH_STORAGE_KEY,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,
     },
+    global: { fetch: fetchObservingSignInRefresh },
   });
+}
+
+function supabaseAuthStorageKey(url: string): string | undefined {
+  try {
+    return url ? `sb-${new URL(url).hostname.split('.')[0]}-auth-token` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Owner answer Q13 (30 Sep 2026): whether the last sign-in refresh reached the
+ * server. auth-js reports a refresh whose request failed at the network (or a
+ * 5xx) as AuthRetryableFetchError and keeps the session; any other answer (400
+ * invalid or revoked refresh token) removes the session and emits SIGNED_OUT.
+ * It retries a network failure for about 25 seconds before saying so, and the
+ * first failed request already settles it: no answer is no rejection.
+ */
+let lastSignInRefreshTransport: 'failed' | 'answered' | null = null;
+const signInRefreshFailureWaiters = new Set<() => void>();
+
+function fetchObservingSignInRefresh(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): Promise<Response> {
+  const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
+  const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
+  return fetch(input, init).then(response => {
+    if (refresh) lastSignInRefreshTransport = 'answered';
+    return response;
+  }, error => {
+    if (refresh) {
+      lastSignInRefreshTransport = 'failed';
+      signInRefreshFailureWaiters.forEach(notify => notify());
+    }
+    throw error;
+  });
+}
+
+export type SavedSignIn = Readonly<{
+  ownerId: string;
+  /** When the server issued the saved token: its expiry minus its lifetime. */
+  lastRefreshedAtMs: number;
+  expiresAtMs: number;
+}>;
+
+/** The sign-in saved on this phone, read from the Keychain without the network. */
+export async function readSavedSignIn(): Promise<SavedSignIn | null> {
+  if (!getSupabaseClient() || !SUPABASE_AUTH_STORAGE_KEY) return null;
+  const raw = await supabaseAuthStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const session = JSON.parse(raw) as {
+      refresh_token?: unknown;
+      expires_at?: unknown;
+      expires_in?: unknown;
+      user?: { id?: unknown } | null;
+    };
+    const ownerId = typeof session.user?.id === 'string' ? session.user.id.trim() : '';
+    if (!ownerId || typeof session.refresh_token !== 'string' || !session.refresh_token) return null;
+    if (typeof session.expires_at !== 'number' || !Number.isFinite(session.expires_at)) return null;
+    const lifetime = typeof session.expires_in === 'number' && session.expires_in > 0
+      ? session.expires_in
+      : DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS;
+    return Object.freeze({
+      ownerId,
+      lastRefreshedAtMs: (session.expires_at - lifetime) * 1000,
+      expiresAtMs: session.expires_at * 1000,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export type SavedSignInRefresh =
+  | Readonly<{ status: 'signed_in'; ownerId: string }>
+  | Readonly<{ status: 'signed_out' | 'rejected' | 'network_unavailable' | 'unreadable' }>;
+
+/**
+ * How the saved sign-in's refresh ends (owner answer Q13): 'network_unavailable'
+ * only when the server never answered, as described above; a rejection has
+ * already signed out through auth-js by the time this returns 'rejected'.
+ */
+export async function awaitSavedSignInRefresh(): Promise<SavedSignInRefresh> {
+  const client = getSupabaseClient();
+  if (!client) return { status: 'signed_out' };
+  const unanswered: SavedSignInRefresh = { status: 'network_unavailable' };
+  let notify: () => void = () => undefined;
+  const refreshFailed = new Promise<SavedSignInRefresh>(resolve => {
+    notify = () => resolve(unanswered);
+  });
+  if (lastSignInRefreshTransport === 'failed') notify();
+  signInRefreshFailureWaiters.add(notify);
+  const settled = client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
+    if (error) return isAuthRetryableFetchError(error) ? unanswered : { status: 'rejected' };
+    const ownerId = data.session?.user?.id;
+    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
+  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+  try {
+    return await Promise.race([settled, refreshFailed]);
+  } finally {
+    signInRefreshFailureWaiters.delete(notify);
+  }
 }
 
 export const supabase = createSupabaseClient();
@@ -576,14 +687,55 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
 
   if (!client) return notConfiguredResult<null>();
 
-  const { error } = await client.auth.signOut();
+  // Owner answer Q13: an expired saved sign-in whose last refresh got no
+  // answer cannot be ended on the server (that needs a refreshed token), so
+  // it is not tried again here; the library's retries take about 25 seconds.
+  const saved = await readSavedSignIn().catch(() => null);
+  const unreachable = Boolean(
+    saved && saved.expiresAtMs <= Date.now() && lastSignInRefreshTransport === 'failed',
+  );
+  const error = unreachable ? null : (await client.auth.signOut()).error;
 
-  if (error) return errorResult(error.message);
+  if (!unreachable && !error) {
+    lastAuthEvent = 'SIGNED_OUT';
+    authHydrationCompleted = true;
+    return okResult(null);
+  }
+  if (error && !isAuthRetryableFetchError(error)) return errorResult(error.message);
 
+  // No signal (owner answer Q13): sign out on this phone. The server session
+  // is not ended, then or later; no copy of its token stays on the phone.
+  return signOutOnThisPhone();
+}
+
+const localAuthListeners = new Set<(event: string, session: Session | null) => void>();
+
+/**
+ * The local half of a sign-out, the step auth-js runs once the server has
+ * confirmed one: the saved session leaves the Keychain, then every subscriber
+ * hears SIGNED_OUT, which moves this owner's data into its sandbox (entry.ts)
+ * exactly as an online sign-out does. Unsynced work goes with it and uploads
+ * after this account signs in here again.
+ */
+async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
+  if (!SUPABASE_AUTH_STORAGE_KEY) return errorResult('Sign-in storage is not configured.');
+  try {
+    for (const suffix of ['', '-code-verifier', '-user']) {
+      await supabaseAuthStorage.removeItem(`${SUPABASE_AUTH_STORAGE_KEY}${suffix}`);
+    }
+  } catch {
+    return errorResult(
+      'Vitruvius could not remove the saved sign-in from this phone. You are still signed in.',
+    );
+  }
   lastAuthEvent = 'SIGNED_OUT';
   authHydrationCompleted = true;
-
-  return okResult(null);
+  [...localAuthListeners].forEach(listener => listener('SIGNED_OUT', null));
+  return okResult(
+    null,
+    undefined,
+    'Signed out on this phone. With no signal, the account was not signed out on the server or on other devices.',
+  );
 }
 
 export async function getCurrentUser(): Promise<SupabaseServiceResult<User | null>> {
@@ -644,8 +796,14 @@ export function subscribeToAuthStateChange(
   const { data } = client.auth.onAuthStateChange((event, session) => {
     callback(event, session);
   });
+  // Also hears a sign-out made on this phone without signal (owner answer Q13).
+  const local = (event: string, session: Session | null) => callback(event, session);
+  localAuthListeners.add(local);
 
-  return () => data.subscription.unsubscribe();
+  return () => {
+    localAuthListeners.delete(local);
+    data.subscription.unsubscribe();
+  };
 }
 
 export async function subscribeToDAVEOperationalChanges({

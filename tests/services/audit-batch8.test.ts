@@ -35,7 +35,11 @@ describe('the sign-out warning counts every unsynced item', () => {
 
 describe('auth events', () => {
   it('drop photo analyses and report state only on a sign-out or another account', () => {
-    expect(app).toMatch(/const accountChanged = event === 'SIGNED_OUT' \|\| \(!firstEvent && userId !== lastUserId\);\n\s+lastUserId = userId;\n\s+if \(accountChanged\) photoAnalysisCoordinator\.clear\(\);/);
+    // Owner answer Q13 (30 Sep 2026): the rule moved, unchanged, into
+    // workspaceAccountChange (services/OwnerWorkspaceAuthDecision.ts; its
+    // behaviour is tested in owner-workspace-auth-decision.test.ts), which also
+    // ignores the transient null INITIAL_SESSION of an offline start.
+    expect(app).toMatch(/const change = workspaceAccountChange\(lastUserId, event, session\?\.user\?\.id\);\n\s+if \(!change\) return;\n\s+const \{ firstEvent, accountChanged \} = change;\n\s+lastUserId = change\.userId;\n\s+if \(accountChanged\) photoAnalysisCoordinator\.clear\(\);/);
     expect(app).toContain('if (accountChanged) forgetAllReportSessionState();');
   });
 

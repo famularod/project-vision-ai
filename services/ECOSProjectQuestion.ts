@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { isAuthRetryableFetchError, type SupabaseClient } from '@supabase/supabase-js';
 import { parseECOSConversationReceipt, validECOSConversationRequest, type ECOSConversationReceipt, type ECOSConversationRequest } from './ECOSConversation';
 import type { DAVEAskEvidence } from './DAVEAsk';
 import { normalizeECOSSheetProvenance } from './ECOSSheetProvenance';
@@ -147,6 +147,14 @@ export async function askECOSProjectQuestion({
 
   const { data: sessionResult, error: sessionError } = await client.auth.getSession();
   const accessToken = sessionResult.session?.access_token;
+  // A sign-in refresh that got no answer (no signal) keeps the session: it is
+  // not a sign-out (whole-app audit A9 #6, as owner answer Q13 reads it).
+  if (sessionError && isAuthRetryableFetchError(sessionError)) {
+    throw new ECOSProjectQuestionError(
+      'request_failed',
+      projectQuestionErrorMessage(0, 'request_failed', cleanProjectName, cleanQuestion, knownProjectNames, null),
+    );
+  }
   if (sessionError || !accessToken) {
     throw new ECOSProjectQuestionError(
       'signed_out',

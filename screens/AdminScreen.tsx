@@ -995,7 +995,11 @@ export function AdminScreen({
     setSigningOut(true);
 
     try {
-      await signOut();
+      const result = await signOut();
+      // A sign-out that did not happen used to say nothing (owner answer Q13).
+      if (!result.ok) {
+        Alert.alert('Sign Out did not finish', result.error || result.message || 'Try Sign Out again.');
+      }
       await refreshAdminStatus();
     } finally {
       setSigningOut(false);

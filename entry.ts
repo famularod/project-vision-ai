@@ -11,10 +11,14 @@ import {
 
 import App from './App';
 import { PendingChangesRetryBoundary } from './components/pending-changes-retry-boundary';
-import { NativeWorkspaceOwnerContext } from './components/native-workspace-owner';
+import {
+  NativeWorkspaceOwnerContext,
+  NativeWorkspaceSignInPendingContext,
+} from './components/native-workspace-owner';
 import { NativeSignInGate } from './components/native-sign-in-gate';
 import {
   createOwnerStorageSandbox,
+  type OwnerStorageSandbox,
   type OwnerStorageSandboxError,
 } from './services/OwnerStorageSandbox';
 import {
@@ -22,6 +26,7 @@ import {
   subscribeToAuthStateChange,
 } from './services/SupabaseService';
 import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecision';
+import { workspaceOwnerAfterFailedLookup } from './services/OfflineSignInGrace';
 
 // Native keeps the established application entry and navigation controller.
 // Metro resolves entry.web.ts on the browser platform instead.
@@ -31,27 +36,42 @@ export function NativeRoot() {
     [],
   );
   const [generation, setGeneration] = useState(0);
+  const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<
     | Readonly<{ status: 'loading' }>
-    | Readonly<{ status: 'ready'; ownerId: string | null }>
+    | Readonly<{ status: 'ready'; ownerId: string | null; signInPending: boolean }>
     | Readonly<{ status: 'error'; message: string }>
   >({ status: 'loading' });
 
   useEffect(() => {
     let active = true;
     let desiredOwnerId: string | null | undefined;
+    let signInPending = false;
     let transitionQueue = Promise.resolve();
 
-    function activate(ownerId: string | null) {
-      if (desiredOwnerId === ownerId) return;
+    function activate(ownerId: string | null, pending = false) {
+      if (desiredOwnerId === ownerId) {
+        // This owner's sign-in refreshed: "offline, sign-in pending" ends in
+        // the open workspace, which is not reopened (owner answer Q13).
+        if (!pending && signInPending) {
+          signInPending = false;
+          if (active) {
+            setState(current => current.status === 'ready'
+              ? { ...current, signInPending: false }
+              : current);
+          }
+        }
+        return;
+      }
       desiredOwnerId = ownerId;
+      signInPending = pending;
       if (active) setState({ status: 'loading' });
       transitionQueue = transitionQueue
         .then(() => sandbox.activateOwner(ownerId))
         .then(() => {
           if (!active || desiredOwnerId !== ownerId) return;
           setGeneration(value => value + 1);
-          setState({ status: 'ready', ownerId });
+          setState({ status: 'ready', ownerId, signInPending });
         })
         .catch((error: OwnerStorageSandboxError | Error) => {
           if (!active) return;
@@ -67,16 +87,12 @@ export function NativeRoot() {
       const decision = ownerWorkspaceAuthDecision(event, session?.user?.id);
       if (decision.action === 'activate') activate(decision.ownerId);
     });
-    void getCurrentSessionUser().then(result => {
-      if (!result.ok) {
-        throw new Error(
-          result.message || result.error ||
-          'Vitruvius could not verify the signed-in account.',
-        );
-      }
-      activate(result.data?.id || null);
+    void openSavedWorkspace(sandbox).then(owner => {
+      activate(owner.ownerId, owner.signInPending);
     }).catch(error => {
-      if (!active) return;
+      // A sign-in event that already chose the workspace outranks a failed
+      // lookup (a refresh the server rejects signs out while this fails).
+      if (!active || desiredOwnerId !== undefined) return;
       setState({
         status: 'error',
         message: error instanceof Error
@@ -89,7 +105,7 @@ export function NativeRoot() {
       active = false;
       unsubscribe();
     };
-  }, [sandbox]);
+  }, [sandbox, attempt]);
 
   if (state.status === 'loading') {
     return createElement(
@@ -123,25 +139,7 @@ export function NativeRoot() {
           accessibilityRole: 'button',
           onPress: () => {
             setState({ status: 'loading' });
-            void getCurrentSessionUser().then(result => {
-              if (!result.ok) {
-                throw new Error(
-                  result.message || result.error ||
-                  'Vitruvius could not verify the signed-in account.',
-                );
-              }
-              return sandbox.activateOwner(result.data?.id || null);
-            }).then(result => {
-              setGeneration(value => value + 1);
-              setState({ status: 'ready', ownerId: result.ownerId });
-            }).catch(error => {
-              setState({
-                status: 'error',
-                message: error instanceof Error
-                  ? error.message
-                  : 'Vitruvius could not safely open this workspace.',
-              });
-            });
+            setAttempt(value => value + 1);
           },
           style: ownerBoundaryStyles.button,
         },
@@ -160,12 +158,35 @@ export function NativeRoot() {
   return createElement(
     NativeWorkspaceOwnerContext.Provider,
     { value: state.ownerId },
-    createElement(PendingChangesRetryBoundary, {
-      key: `owner-${state.ownerId || 'signed-out'}-${generation}`,
-      children: createElement(App, {
-        key: `app-${state.ownerId || 'signed-out'}-${generation}`,
+    createElement(
+      NativeWorkspaceSignInPendingContext.Provider,
+      { value: state.signInPending },
+      createElement(PendingChangesRetryBoundary, {
+        key: `owner-${state.ownerId || 'signed-out'}-${generation}`,
+        children: createElement(App, {
+          key: `app-${state.ownerId || 'signed-out'}-${generation}`,
+        }),
       }),
-    }),
+    ),
+  );
+}
+
+/**
+ * The account whose workspace opens at launch. When the saved sign-in cannot
+ * refresh for lack of network, the workspace already open on this phone for
+ * that same account opens, marked "offline, sign-in pending" (owner answer
+ * Q13); anything else keeps "Workspace protection needs attention".
+ */
+async function openSavedWorkspace(
+  sandbox: OwnerStorageSandbox,
+): Promise<Readonly<{ ownerId: string | null; signInPending: boolean }>> {
+  const result = await getCurrentSessionUser();
+  if (result.ok) return { ownerId: result.data?.id || null, signInPending: false };
+  const offline = await workspaceOwnerAfterFailedLookup(() => sandbox.activeOwnerId());
+  if (offline) return offline;
+  throw new Error(
+    result.message || result.error ||
+    'Vitruvius could not verify the signed-in account.',
   );
 }
 

@@ -102,6 +102,8 @@ import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
 import { useProjectDocumentSharedRecordSync } from './hooks/use-project-document-shared-record-sync';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
+import { OfflineSignInPendingBanner } from './components/offline-sign-in-pending-banner';
+import { workspaceAccountChange } from './services/OwnerWorkspaceAuthDecision';
 import {
   appShellContentTopPadding,
   appShellLayoutForWidth,
@@ -12946,14 +12948,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setLayer4IdentityReady(true);
     }
 
-    function scheduleIdentityRefresh() {
+    function scheduleIdentityRefresh(clearIdentity = true) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshGeneration += 1;
       const generation = refreshGeneration;
-      setLayer4Identity(null);
-      setLayer4IdentityReady(false);
-      setDecisionLedger([]);
-      setDecisionLedgerMigrationStatus(null);
+      // The same account's hourly token refresh keeps what Reports shows while
+      // it re-reads, instead of "Loading Project Data" (whole-app audit A6 pass 6 #5).
+      if (clearIdentity) {
+        setLayer4Identity(null);
+        setLayer4IdentityReady(false);
+        setDecisionLedger([]);
+        setDecisionLedgerMigrationStatus(null);
+      }
       const elapsed = Date.now() - lastRefreshStartedAt;
       const delay = Math.max(0, MIN_REFRESH_INTERVAL_MS - elapsed);
       refreshTimer = setTimeout(() => {
@@ -12968,17 +12974,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Defer client work until after Supabase's auth callback has returned.
       // A sign-out or another account drops photo analyses in progress; the
       // hourly token refresh and a name save do not (whole-app audit A1 pass 1).
-      const userId = session?.user?.id ?? null;
-      const firstEvent = lastUserId === undefined;
-      const accountChanged = event === 'SIGNED_OUT' || (!firstEvent && userId !== lastUserId);
-      lastUserId = userId;
+      // A transient null (an offline start, owner answer Q13) is not an account.
+      const change = workspaceAccountChange(lastUserId, event, session?.user?.id);
+      if (!change) return;
+      const { firstEvent, accountChanged } = change;
+      lastUserId = change.userId;
       if (accountChanged) photoAnalysisCoordinator.clear();
       // The account's name is taken at startup or with another account, not
       // from the echo of this phone's own save, which trimmed the field while
       // it was being typed ("David " then "Famularo" became "DavidFamularo").
       const accountName = accountDisplayNameForUser(session?.user);
       if (accountName && (firstEvent || accountChanged)) setDisplayName(accountName);
-      scheduleIdentityRefresh();
+      scheduleIdentityRefresh(accountChanged);
       // Updates stamped "Sign in required to sync" re-sync after a sign-in
       // anywhere, not only the photo-analysis modal (whole-app audit A4,
       // 29 Sep 2026). Deferred, as above.
@@ -13570,6 +13577,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           }}
         >
           <LiveAuthorityStatusBanner />
+          <OfflineSignInPendingBanner />
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}

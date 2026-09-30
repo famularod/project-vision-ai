@@ -209,6 +209,38 @@ describe('ECOS project question contract', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('reads a sign-in refresh with no signal as unreachable, not signed out (audit A9 #6, owner answer Q13)', async () => {
+    // The auth library's own classes: no answer (no signal) keeps the session;
+    // an answer that rejects the refresh token is a sign-out.
+    const { AuthApiError, AuthRetryableFetchError } = jest.requireActual('@supabase/supabase-js');
+    const ask = (error: unknown) => {
+      const invoke = jest.fn();
+      const request = askECOSProjectQuestion({
+        client: {
+          auth: { getSession: jest.fn().mockResolvedValue({ data: { session: null }, error }) },
+          functions: { invoke },
+        } as never,
+        projectId: 'project-2375',
+        projectName: '2375 Compliance Project',
+        question: 'How thick is the north side concrete?',
+      });
+      return { request, invoke };
+    };
+
+    const offline = ask(new AuthRetryableFetchError('Network request failed', 0));
+    await expect(offline.request).rejects.toMatchObject({
+      message: 'Could not reach Ask ECOS. Check the connection and try again.',
+    });
+    expect(offline.invoke).not.toHaveBeenCalled();
+
+    const rejected = ask(new AuthApiError('Invalid Refresh Token: Refresh Token Not Found', 400, 'refresh_token_not_found'));
+    await expect(rejected.request).rejects.toMatchObject({
+      code: 'signed_out',
+      message: 'Your sign-in could not be verified. Sign in again, then retry.',
+    });
+    expect(rejected.invoke).not.toHaveBeenCalled();
+  });
+
   it('does not mistake a year for a different project number', () => {
     expect(findECOSProjectReferenceMismatch(
       '2321 Compliance Project',

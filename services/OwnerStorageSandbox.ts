@@ -39,6 +39,12 @@ export type OwnerStorageSandbox = Readonly<{
     restoredKeyCount: number;
   }>>;
   recoverInterruptedTransition: () => Promise<boolean>;
+  /**
+   * The owner whose data is open on this phone, or null when signed out or a
+   * transition is unfinished (owner answer Q13: an offline start opens only
+   * this owner's workspace).
+   */
+  activeOwnerId: () => Promise<string | null>;
 }>;
 
 export class OwnerStorageSandboxError extends Error {
@@ -146,6 +152,14 @@ export function createOwnerStorageSandbox({
       );
       transitionQueue = next.then(() => undefined, () => undefined);
       return next;
+    },
+    async activeOwnerId() {
+      await transitionQueue;
+      if (await storage.getItem(OWNER_STORAGE_SANDBOX_JOURNAL_KEY)) return null;
+      return parseMetadata(
+        await storage.getItem(OWNER_STORAGE_SANDBOX_METADATA_KEY),
+        now(),
+      ).activeOwnerId;
     },
   });
 }
