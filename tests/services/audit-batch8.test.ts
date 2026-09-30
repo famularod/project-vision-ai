@@ -25,7 +25,9 @@ describe('this phone’s own deletions reach the realtime applier at once', () =
 
 describe('the sign-out warning counts every unsynced item', () => {
   it('takes the larger of the queue and the updates not yet synced, and says the work stays', () => {
-    expect(admin).toContain('const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount);');
+    // Round 2 (A8 pass 1 F5): documents whose file has not uploaded count too;
+    // pendingSyncCount already includes them.
+    expect(admin).toContain('const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);');
     expect(admin).toContain('on this phone and sync after you sign in here again with this account. Sign out anyway?');
     expect(admin).not.toContain("savedUpdates.filter(update => update.status === 'queued').length;\n    const message");
   });

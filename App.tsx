@@ -397,6 +397,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
+import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from './services/ProjectDocumentUploadRetry';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -4983,6 +4984,7 @@ function AppShell() {
   projectRecordsCurrentRef.current = projectRecords;
   archivedProjectsCurrentRef.current = archivedProjects;
   operationalSyncTombstonesRef.current = operationalSyncTombstones;
+  const [projectDocumentUploadRetry] = useState(() => createProjectDocumentUploadRetryRunner(() => projectDocumentsCurrentRef.current)); // documents added without signal upload by themselves (whole-app audit A8 pass 1 F5, 30 Sep 2026)
 
   const [displayName, setDisplayName] =
     useState('');
@@ -6076,6 +6078,7 @@ useEffect(() => {
     if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
     startAutomaticSyncBackgroundTask('queued_updates_detected', hydrateQueuedUpdates);
   }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
+  useEffect(() => { if (startupHydrationReady && projectDocumentsLoaded) void projectDocumentUploadRetry.run(retryProjectDocumentUpload); }, [projectDocumentsLoaded, startupHydrationReady]);
 
   useEffect(() => {
     const operationalDataLoaded = projectsLoaded || updatesLoaded || projectAreasLoaded ||
@@ -6418,6 +6421,7 @@ useEffect(() => {
           // updates saved offline sync when the connection returns (audit
           // A4, 30 Sep 2026: they waited for a token refresh or a relaunch).
           startAutomaticSyncBackgroundTask('realtime_reconnected', hydrateQueuedUpdates);
+          void projectDocumentUploadRetry.run(retryProjectDocumentUpload); // and documents (whole-app audit A8 pass 1 F5)
           if (realtimeHasSubscribed) void refreshController.request('realtime');
           realtimeHasSubscribed = true;
         }
@@ -6434,6 +6438,7 @@ useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'active') return;
       startAutomaticSyncBackgroundTask('app_active', hydrateQueuedUpdates);
+      void projectDocumentUploadRetry.run(retryProjectDocumentUpload);
       if (shouldRefreshDAVEOperationalDataOnForeground({
         realtimeHealthy, lastSuccessfulRefreshAt,
       })) {
@@ -13930,6 +13935,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onRemoveMissingPhotos={removeMissingSyncPhotos}
               onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
+              onRetryDocumentUploads={() => projectDocumentUploadRetry.run(retryProjectDocumentUpload, { ignoreBackoff: true })}
+              failedDocumentCount={projectDocumentsAwaitingUpload(projectDocuments).length}
               onApplyCloudConflictUpdate={update => {
                 const cloudUpdate = normalizeStoredUpdateRecord(update);
                 // The owner chose the cloud copy: it replaces the local

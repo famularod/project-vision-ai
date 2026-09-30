@@ -63,6 +63,10 @@ import {
   type SyncConflict,
   type SyncStatus,
 } from '../services/SyncService';
+import {
+  projectDocumentsStillUploadingNotice,
+  type ProjectDocumentUploadRetryResult,
+} from '../services/ProjectDocumentUploadRetry';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -140,6 +144,8 @@ export function AdminScreen({
   onUseCurrentLocationForArea,
   onRemoveMissingPhotos,
   onRetryUpdateSync,
+  onRetryDocumentUploads,
+  failedDocumentCount,
   onApplyCloudConflictUpdate,
   onApplyCloudConflictScheduleItem,
   onApplyCloudRecovery,
@@ -164,6 +170,10 @@ export function AdminScreen({
   onUseCurrentLocationForArea: (areaId: string) => void;
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
   onRetryUpdateSync: (update: ProjectUpdate) => Promise<{ status?: string }>;
+  /** Uploads the documents saved on this phone whose file has not uploaded. */
+  onRetryDocumentUploads: () => Promise<ProjectDocumentUploadRetryResult>;
+  /** Those documents: they are not in the sync queue (whole-app audit A8 pass 1 F5, 30 Sep 2026). */
+  failedDocumentCount: number;
   onApplyCloudConflictUpdate: (update: ProjectUpdate) => void;
   onApplyCloudConflictScheduleItem: (item: ScheduleItem) => void;
   onApplyCloudRecovery: (recovered: FullSyncResult['recovered']) => void;
@@ -255,9 +265,9 @@ export function AdminScreen({
   const updateSyncAttentionCount = savedUpdates.filter(
     update => update.status === 'queued' || update.status === 'failed',
   ).length;
-  const pendingSyncCount = syncStatus
+  const pendingSyncCount = (syncStatus
     ? syncStatus.queuedChanges
-    : updateSyncAttentionCount;
+    : updateSyncAttentionCount) + failedDocumentCount;
   const recoveryCopyCount = syncStatus?.recoveryCopies || 0;
   const recoveryCopyLabel = `${recoveryCopyCount} protected sync ${recoveryCopyCount === 1 ? 'copy' : 'copies'}`;
   const recoveryCopyVerb = recoveryCopyCount === 1 ? 'needs' : 'need';
@@ -639,6 +649,9 @@ export function AdminScreen({
     setAdminActionSummary('Cloud sync tools are available.');
 
     try {
+      // A document's shared record is queued once its file uploads, so the
+      // documents go first (whole-app audit A8 pass 1 F5, 30 Sep 2026).
+      const documentRetry = await withSyncTimeout(onRetryDocumentUploads());
       const updatesToRetry = savedUpdates.filter(
         update => update.status === 'queued' || update.status === 'failed',
       );
@@ -661,9 +674,9 @@ export function AdminScreen({
       const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
       const remainingConflicts = nextSyncStatus.conflicts;
       const recoveryAvailable = nextSyncStatus.recoveryAvailable;
+      const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRetry.remaining;
       const syncSucceeded =
-        unsyncedUpdates === 0 &&
-        remainingQueue === 0 &&
+        unsyncedCount === 0 &&
         remainingConflicts === 0 &&
         !recoveryAvailable;
       const message = recoveryAvailable
@@ -672,7 +685,7 @@ export function AdminScreen({
         ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
         ? `${syncedUpdates || queueResult?.uploaded || 0} pending ${syncedUpdates === 1 || queueResult?.uploaded === 1 ? 'item' : 'items'} synced successfully.`
-        : `${Math.max(unsyncedUpdates, remainingQueue)} ${Math.max(unsyncedUpdates, remainingQueue) === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
+        : `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
       setSyncConflicts(
@@ -700,6 +713,8 @@ export function AdminScreen({
     setAdminActionSummary('Preparing project data…');
 
     try {
+      // Uploaded first, so the shared records the uploads queue go in this sync (whole-app audit A8 pass 1 F5).
+      const documentRetry = await onRetryDocumentUploads();
       const result = await synchronizeLocalData(
         {
           projects: localProjects,
@@ -727,8 +742,8 @@ export function AdminScreen({
       setLastFullSyncIssueCount(Math.max(
         result.errors.length,
         nextStatus.recoveryAvailable ? 1 : 0,
-      ));
-      const message = nextStatus.recoveryAvailable
+      ) + documentRetry.remaining);
+      const syncMessage = nextStatus.recoveryAvailable
         ? `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
         : nextConflicts.length > 0
         ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
@@ -741,11 +756,12 @@ export function AdminScreen({
               ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
               : []),
           ].join('\n');
+      const message = [syncMessage, projectDocumentsStillUploadingNotice(documentRetry.remaining)].filter(Boolean).join('\n');
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
       if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);
     } catch {
-      let actualIssueCount = updateSyncAttentionCount;
+      let actualIssueCount = updateSyncAttentionCount + failedDocumentCount;
 
       try {
         const [nextStatus, nextConflicts] = await Promise.all([
@@ -758,7 +774,8 @@ export function AdminScreen({
           actualIssueCount,
           nextStatus.queuedChanges +
             nextConflicts.length +
-            (nextStatus.recoveryAvailable ? 1 : 0),
+            (nextStatus.recoveryAvailable ? 1 : 0) +
+            failedDocumentCount,
         );
       } catch {
         // Keep the known local update count when sync status itself cannot load.
@@ -954,8 +971,9 @@ export function AdminScreen({
   function handleSignOut() {
     // Every unsynced item, not only updates still marked queued: failed
     // updates and queued task, area and document changes were left out of the
-    // warning (whole-app audit A1 pass 1).
-    const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount);
+    // warning (whole-app audit A1 pass 1); so were documents whose file has
+    // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5).
+    const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
     const message =
       unsyncedCount > 0
         ? `${unsyncedCount} item${unsyncedCount === 1 ? ' is' : 's are'} not in the cloud yet. ${unsyncedCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
