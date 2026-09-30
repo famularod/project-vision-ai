@@ -4,6 +4,7 @@
  * F3: Project Truth (Home's brief and the saved snapshot) is built from the
  * Core WITHOUT the unsaved draft, which the provider keeps while only the
  * draft changes, so typing does not rebuild it, rebuild the truth or save it.
+ * F4: no Project Truth is saved for a project the owner does not have.
  */
 import { act, render } from '@testing-library/react-native';
 import { InteractionManager, Text } from 'react-native';
@@ -170,5 +171,16 @@ describe('A10 pass 2: Project Truth from the Core without the draft', () => {
     expect(authority?.projectTruth).toBe(firstTruth);
     expect(buildTruthMock.mock.calls.length).toBe(truthBuilds);
     for (const [, truth] of saveMock.mock.calls.slice(saves)) expect(truth).toBe(firstTruth);
+  });
+
+  it('F4: no Project Truth is saved for a project the owner does not have', async () => {
+    render(
+      <PIELiveAuthorityProvider input={input('', { projectName: 'Building 2321', projectNames: ['Building 2321'], projectTruthPersistencePolicy: 'no_project_truth' })}>
+        <Probe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flush();
+    expect(authority?.core).not.toBeNull();
+    expect(saveMock).not.toHaveBeenCalled();
   });
 });

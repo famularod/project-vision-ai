@@ -82,7 +82,10 @@ assert(
     app.includes('buildCombinedReportAuthorityScope({') &&
     app.includes('buildDailyReportAuthorityScope({') &&
     app.includes("reportType === 'combined_project_update'") &&
-    app.includes("combinedReportScope?.projectTruthPersistencePolicy || 'persist_project'") &&
+    // A10 pass 2 F4 (30 Sep 2026), pin changed deliberately: Project Truth
+    // is persisted only for a project the owner has.
+    app.includes('combinedReportScope?.projectTruthPersistencePolicy || projectTruthPersistencePolicyFor(projectName, projects)') &&
+    reportScope.includes("? 'persist_project' : 'no_project_truth'") &&
     reportScope.includes('matches.length === 1 && scopedScheduleSet.has(matches[0])') &&
     reportScope.includes('owners?.size === 1') &&
     reportScope.includes('if (!allowUniquelyOwnedLegacyAreas) return false;'),

@@ -88,7 +88,9 @@ export type PIELiveAuthorityPolicy = {
 
 export type PIELiveAuthorityProjectTruthPersistencePolicy =
   | 'persist_project'
-  | 'ephemeral_portfolio';
+  | 'ephemeral_portfolio'
+  // Not a project the owner has: show the intelligence, save no Project Truth (A10 pass 2 F4).
+  | 'no_project_truth';
 
 export type PIELiveAuthorityInput = {
   /**
@@ -717,7 +719,7 @@ export function PIELiveAuthorityProvider({
   useEffect(() => {
     if (!readyForAuthority) return;
     if (!authorityResolution.mayPersistProjectTruth || !value.core) return;
-    if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;
+    if ((authorityInput.projectTruthPersistencePolicy || 'persist_project') !== 'persist_project') return;
     const organizationId = authorityInput.identityTrusted ? authorityInput.organizationId : null;
     if (!organizationId || !value.projectTruth.projectId) return;
     const repository = createDAVEProjectTruthRepository({

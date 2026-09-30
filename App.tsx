@@ -385,7 +385,7 @@ import {
 import {
   buildCombinedReportAuthorityScope,
   buildDailyReportAuthorityScope,
-  buildProjectIntelligenceAuthorityScope,
+  buildProjectIntelligenceAuthorityScope, captureIntelligenceProjectName, projectTruthPersistencePolicyFor,
 } from './services/ReportAuthorityScope';
 import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
@@ -13439,7 +13439,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const projectName =
       (authorityMode === 'reports' ? selectedReportProjectNames[0] : workspaceProjectName) ||
       (authorityMode === 'capture' || authorityMode === 'capture-review'
-        ? draft.projectName
+        ? captureIntelligenceProjectName(draft) // its parent, not an older task's building (A10 pass 2 F4)
         : primaryProjectName) ||
       primaryProjectName;
     const reportHasProjects = selectedReportProjectNames.length > 0; // none left: no report (audit A6 pass 5)
@@ -13460,7 +13460,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
           currentUpdate: null,
-          projectAreas,
+          projectAreas, knownScheduleItems: scheduleItems, // every saved task: a revised task's hidden row (A10 pass 2 F1)
           referenceDocuments,
           projectDocuments,
           captureMemories,
@@ -13479,7 +13479,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
           currentUpdate: null,
-          projectAreas,
+          projectAreas, knownScheduleItems: scheduleItems, // every saved task: a revised task's hidden row (A10 pass 2 F1)
           referenceDocuments,
           projectDocuments,
           captureMemories,
@@ -13487,7 +13487,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         })
       : null;
     // Home, workspace and capture: this project's evidence only, as a daily report scopes it (audit round 2 L2).
-    const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName, projectRecords, updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[], scheduleItems: authoritativeScheduleItems, currentUpdate: draft, projectAreas, referenceDocuments, projectDocuments, captureMemories, contacts: contactBook });
+    const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName, projectRecords, updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[], scheduleItems: authoritativeScheduleItems, knownScheduleItems: scheduleItems, currentUpdate: draft, projectAreas, referenceDocuments, projectDocuments, captureMemories, contacts: contactBook });
     const scopedProjectId =
       combinedReportScope?.projectId || authorityProjectId(projectName);
     const verifiedLearningEvents =
@@ -13538,7 +13538,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         layer4Identity.organizationStatus === 'verified',
       ),
       projectTruthPersistencePolicy:
-        combinedReportScope?.projectTruthPersistencePolicy || 'persist_project',
+        combinedReportScope?.projectTruthPersistencePolicy || projectTruthPersistencePolicyFor(projectName, projects),
     };
   }, [
     activeProjects,
@@ -13559,7 +13559,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     reportFormat,
     selectedReportProjectNames,
     activeSavedUpdates,
-    authoritativeScheduleItems,
+    authoritativeScheduleItems, scheduleItems, projects,
     selectedWorkspaceProject,
   ]);
 

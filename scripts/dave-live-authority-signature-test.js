@@ -276,9 +276,12 @@ assert(
     provider.includes(': await buildLivePIECoreIntelligence(coreInput)'),
   'Ephemeral portfolio authority must use the non-persisting Core builder.',
 );
+// A10 pass 2 F4 (30 Sep 2026), pin changed deliberately: Project Truth is
+// saved only under 'persist_project' (an ephemeral portfolio, or a name that
+// is no project of the owner's, saves none).
 assert(
   provider.includes('if (!ephemeralPortfolio && result.longitudinalPhotoIntelligence)') &&
-    provider.includes("if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;"),
+    provider.includes("if ((authorityInput.projectTruthPersistencePolicy || 'persist_project') !== 'persist_project') return;"),
   'Ephemeral portfolio authority must skip photo-progress and project-truth persistence.',
 );
 assert(

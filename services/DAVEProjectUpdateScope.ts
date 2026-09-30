@@ -22,9 +22,16 @@ export type DAVEProjectUpdateScopeInput = Readonly<{
  * Attributes an update to one parent project without treating a shared
  * area/location label as parent identity.
  *
- * Exact task identity is strongest and fails closed when missing or
- * ambiguous. Explicit parent metadata is next. Legacy area-only records are
- * admitted only when the complete schedule assigns that area to one parent.
+ * Exact task identity is strongest and fails closed when ambiguous.
+ * Explicit parent metadata is next. Legacy area-only records are admitted
+ * only when the complete schedule assigns that area to one parent.
+ *
+ * A task id that is in none of the given tasks (A10 pass 2 F1, 30 Sep 2026)
+ * no longer fails closed: a revision that moved a task's dates saves it as a
+ * new row with a new id and hides the old one, and every update on it had
+ * vanished from Home and the project workspace. The update's own parent
+ * decides, as for an update with no task. Updates of a deleted task are
+ * removed before this by tombstone (DAVEDeletedTaskEvidence).
  */
 export function projectUpdateBelongsToParentProject({
   update,
@@ -37,8 +44,8 @@ export function projectUpdateBelongsToParentProject({
   const scheduleItemId = cleanText(update.scheduleItemId);
   if (scheduleItemId) {
     const matches = scheduleItems.filter(item => cleanText(item.id) === scheduleItemId);
-    if (matches.length !== 1) return false;
-    return scheduleParentName(matches[0]) === target;
+    if (matches.length > 1) return false;
+    if (matches.length === 1) return scheduleParentName(matches[0]) === target;
   }
 
   const explicitParent = normalizeName(update.scheduleProjectName);

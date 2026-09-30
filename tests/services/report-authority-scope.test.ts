@@ -69,8 +69,21 @@ describe('combined report authority scope', () => {
         scheduleItemId: 'task-b',
         scheduleProjectName: PROJECT_A,
       }),
-      update('unknown-id-fails-closed', {
+      // A10 pass 2 F1 (30 Sep 2026), pin changed deliberately: a task id
+      // that is no current task (a revision re-created the task under a new
+      // id and hid the old row) no longer fails closed; the update's own
+      // parent decides, and another project's task (current or hidden)
+      // still keeps it out.
+      update('unknown-id-own-parent-decides', {
         scheduleItemId: 'missing-task',
+        scheduleProjectName: PROJECT_A,
+      }),
+      update('unknown-id-other-parent', {
+        scheduleItemId: 'missing-task',
+        scheduleProjectName: PROJECT_B,
+      }),
+      update('hidden-task-of-other-project', {
+        scheduleItemId: 'hidden-task-b',
         scheduleProjectName: PROJECT_A,
       }),
     ];
@@ -80,11 +93,12 @@ describe('combined report authority scope', () => {
       projectRecords,
       updates,
       scheduleItems: [scheduleA, scheduleB],
+      knownScheduleItems: [scheduleA, scheduleB, scheduleItem('hidden-task-b', PROJECT_B)],
       currentUpdate: update('current-shared-area', {}),
     });
 
     expect(scope.scheduleItems.map(item => item.id)).toEqual(['task-a']);
-    expect(scope.updates.map(item => item.id)).toEqual(['a-by-id', 'a-by-parent']);
+    expect(scope.updates.map(item => item.id)).toEqual(['a-by-id', 'a-by-parent', 'unknown-id-own-parent-decides']);
     expect(scope.currentUpdate).toBeNull();
   });
 

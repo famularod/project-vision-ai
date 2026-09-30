@@ -140,8 +140,9 @@ export function createProjectDeletionTransactionRepository({
 /**
  * Whether deleting this project takes the update: the shared scope rule, or
  * an update kept as historical evidence for a task deleted earlier. That
- * update belongs to no project by the scope rule (it fails closed on a
- * missing task), so a project deletion left it behind, still listed under
+ * update belonged to no project by the scope rule (it failed closed on a
+ * missing task until A10 pass 2 F1, 30 Sep 2026; the rule now lets the
+ * update's own parent decide), so a project deletion left it behind, still listed under
  * the deleted project's name (whole-app audit A3, 30 Sep 2026). For the
  * deletion only, it goes with the project it names, the explicit parent
  * first, as the scope rule reads it. The cascade, the App's file cleanup
