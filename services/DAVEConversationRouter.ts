@@ -3,12 +3,17 @@ import {
   routeDAVEAskIntent,
   type DAVEAskAnswer,
 } from './DAVEAsk';
-import type { DAVECaptureMemoryFields } from './DAVECaptureMemory';
+import {
+  createCaptureMemory,
+  type DAVECaptureMemory,
+  type DAVECaptureMemoryFields,
+} from './DAVECaptureMemory';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 import {
   parseDAVETaskUpdateCommand,
   type DAVETaskUpdateCommand,
 } from './DAVETaskConversation';
+import type { DAVEVoiceUnderstandingResponse } from './DAVEVoiceUnderstanding';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -97,16 +102,84 @@ export function mentionedDAVEProject(
   transcript: string,
   projectNames: readonly string[],
 ) {
-  const searchable = normalize(transcript);
-  const exact = projectNames.find(project => searchable.includes(normalize(project)));
+  // Whole-app audit A11 pass 1 F6 (30 Sep 2026): a name matches whole words
+  // only ("Oak" is not in "Oakland"), and a number that is a quantity, an
+  // amount or part of a date ("2375 feet", "$2375", "9/30/2026") is not
+  // read as a project number. A bare number ("What changed at 2375?") still is.
+  const searchable = ` ${normalize(transcript)} `;
+  const exact = projectNames.find(project => {
+    const name = normalize(project);
+    return Boolean(name) && searchable.includes(` ${name} `);
+  });
   if (exact) return exact;
 
+  const numbers = normalize(transcript
+    .replace(DATE_PATTERN, ' ')
+    .replace(/\$\s?\d[\d,]*(?:\.\d+)?/g, ' ')
+    .replace(QUANTITY_PATTERN, ' '));
   const numberMatches = projectNames.filter(project => {
     const number = project.match(/\b\d{3,6}\b/)?.[0];
-    return Boolean(number && new RegExp(`\\b${number}\\b`).test(searchable));
+    return Boolean(number && new RegExp(`\\b${number}\\b`).test(numbers));
   });
   return numberMatches.length === 1 ? numberMatches[0] : null;
 }
+
+/**
+ * The confirmation draft for a note said or typed in Talk.
+ * Whole-app audit A11 pass 1 F6 (30 Sep 2026): a number in the note can move
+ * it to another project, and that move was saved pre-confirmed with the
+ * location heard against the first project's areas. A moved note now needs
+ * the manager to confirm the project, and starts with no location.
+ */
+export function buildDAVETalkMemoryDraft({
+  id,
+  createdAt,
+  projectName,
+  switchedProject,
+  transcript,
+  fields,
+  voiceResult,
+}: {
+  id: string;
+  createdAt: string;
+  projectName: string;
+  switchedProject: boolean;
+  transcript: string;
+  fields: Partial<DAVECaptureMemoryFields>;
+  voiceResult?: DAVEVoiceUnderstandingResponse;
+}): DAVECaptureMemory {
+  const location = switchedProject ? null : voiceResult?.understanding.recommendedLocation;
+  return createCaptureMemory({
+    id,
+    transcript,
+    transcriptSourceRecordId: voiceResult
+      ? `voice-transcription:${id}`
+      : `typed-entry:${id}`,
+    createdAt,
+    recommendedProject: {
+      value: projectName,
+      confidence: switchedProject ? 'medium' : 'high',
+      confirmed: !switchedProject,
+    },
+    recommendedLocation: {
+      value: location?.value || null,
+      confidence: location?.confidence || 'unknown',
+      confirmed: false,
+    },
+    fields,
+  });
+}
+
+const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+const DATE_PATTERN = new RegExp([
+  '\\b\\d{1,4}[/.-]\\d{1,2}[/.-]\\d{1,4}\\b',
+  `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
+  `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+\\d{4}\\b`,
+].join('|'), 'gi');
+const QUANTITY_PATTERN = new RegExp(
+  '\\b\\d[\\d,]*(?:\\.\\d+)?\\s*(?:%|(?:percent|feet|foot|ft|lf|inches|inch|yards?|yds?|sf|sq|square|cubic|cy|meters?|metres?|mm|cm|lbs?|pounds?|tons?|gallons?|gal|psi|amps?|volts?|kw|kva|watts?|dollars?|pieces|pcs)\\b)',
+  'gi',
+);
 
 function classifyDAVEConversation(transcript: string):
   | { intent: 'navigate'; text: string; target: DAVEConversationNavigationTarget }

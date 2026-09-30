@@ -495,6 +495,7 @@ import {
 import { createDAVEPhotoContinuityAnchor } from './services/PIEVisualContinuity';
 import { buildDAVEActionInbox } from './services/DAVEActionInbox';
 import {
+  buildDAVETalkMemoryDraft,
   mentionedDAVEProject,
   routeDAVEConversation,
   type DAVEConversationNavigationTarget,
@@ -13193,36 +13194,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  function talkMemoryDraft(
-    projectName: string,
-    transcript: string,
-    fields: Partial<import('./services/DAVECaptureMemory').DAVECaptureMemoryFields>,
-    voiceResult?: DAVEVoiceUnderstandingResponse,
-  ) {
-    const createdAt = new Date().toISOString();
-    const memoryId = `talk-memory-${uid()}`;
-    const location = voiceResult?.understanding.recommendedLocation;
-    return createCaptureMemory({
-      id: memoryId,
-      transcript,
-      transcriptSourceRecordId: voiceResult
-        ? `voice-transcription:${memoryId}`
-        : `typed-entry:${memoryId}`,
-      createdAt,
-      recommendedProject: {
-        value: projectName,
-        confidence: 'high',
-        confirmed: true,
-      },
-      recommendedLocation: {
-        value: location?.value || null,
-        confidence: location?.confidence || 'unknown',
-        confirmed: false,
-      },
-      fields,
-    });
-  }
-
   async function handleTalkInput(
     transcript: string,
     voiceResult?: DAVEVoiceUnderstandingResponse,
@@ -13336,12 +13307,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const hasUnderstoodFields = understoodFields
       ? Object.values(understoodFields).some(Boolean)
       : false;
-    setTalkCaptureDraft(talkMemoryDraft(
+    setTalkCaptureDraft(buildDAVETalkMemoryDraft({
+      id: `talk-memory-${uid()}`,
+      createdAt: new Date().toISOString(),
       projectName,
-      route.transcript,
-      hasUnderstoodFields ? understoodFields! : route.suggestedFields,
+      switchedProject: projectName !== talkProjectName,
+      transcript: route.transcript,
+      fields: hasUnderstoodFields ? understoodFields! : route.suggestedFields,
       voiceResult,
-    ));
+    }));
   }
 
   function confirmTalkTaskAction() {

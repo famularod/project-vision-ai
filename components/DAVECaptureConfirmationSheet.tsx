@@ -89,7 +89,7 @@ export function DAVECaptureConfirmationSheet({
     setSaveError(null);
   }
 
-  function chooseLocation(location: string) {
+  function chooseLocation(location: string | null) {
     setWorking(current => correctCaptureMemory(current, 'location', location, new Date().toISOString()));
     setSaveError(null);
   }
@@ -181,6 +181,7 @@ export function DAVECaptureConfirmationSheet({
                 options={locations}
                 onConfirm={confirmRecommendedLocation}
                 onChoose={chooseLocation}
+                onChooseNone={() => chooseLocation(null)}
                 optional
               />
               {(!working.recommendedProject.confirmed || (working.recommendedLocation.value && !working.recommendedLocation.confirmed)) ? (
@@ -239,9 +240,9 @@ function commitFieldText(
   return correctCaptureMemory(memory, field, normalized, new Date().toISOString());
 }
 
-function Recommendation({ label, value, confidence, confirmed, options, onConfirm, onChoose, optional = false }: {
+function Recommendation({ label, value, confidence, confirmed, options, onConfirm, onChoose, onChooseNone, optional = false }: {
   label: string; value: string | null; confidence: string; confirmed: boolean;
-  options: readonly string[]; onConfirm: () => void; onChoose: (value: string) => void; optional?: boolean;
+  options: readonly string[]; onConfirm: () => void; onChoose: (value: string) => void; onChooseNone?: () => void; optional?: boolean;
 }) {
   return <View style={styles.recommendation}>
     <Text style={styles.label}>{label}</Text>
@@ -249,7 +250,11 @@ function Recommendation({ label, value, confidence, confirmed, options, onConfir
     <Text style={styles.detail}>Confidence: {friendlyConfidence(confidence)}</Text>
     {value && !confirmed ? <TouchableOpacity style={styles.confirmButton} onPress={onConfirm}><Text style={styles.confirmText}>Confirm {value}</Text></TouchableOpacity> : null}
     {confirmed ? <Text style={styles.confirmedText}>Confirmed</Text> : null}
-    <View style={styles.options}>{options.filter(item => item !== value).map(item => <TouchableOpacity key={item} style={styles.option} onPress={() => onChoose(item)}><Text style={styles.optionText}>{item}</Text></TouchableOpacity>)}</View>
+    <View style={styles.options}>
+      {options.filter(item => item !== value).map(item => <TouchableOpacity key={item} style={styles.option} onPress={() => onChoose(item)}><Text style={styles.optionText}>{item}</Text></TouchableOpacity>)}
+      {/* Whole-app audit A11 pass 1 F6 (30 Sep 2026): a location could be confirmed or swapped but never cleared, so a wrong one blocked Save. */}
+      {onChooseNone && value ? <TouchableOpacity style={styles.option} onPress={onChooseNone} accessibilityRole="button"><Text style={styles.optionText}>No location</Text></TouchableOpacity> : null}
+    </View>
   </View>;
 }
 
