@@ -7924,9 +7924,13 @@ useEffect(() => {
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
       void persistDraftNow(draftRef.current);
-      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
-        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
-      );
+      // A store the save found unreadable stays as it is for recovery; only
+      // a plain commit failure re-arms the cancelled write (audit A4 pass 4).
+      if (!(error instanceof FieldUpdatePersistenceBlockedError)) {
+        persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(persistError =>
+          reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error: persistError }),
+        );
+      }
       recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
@@ -10214,7 +10218,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   /** Whether the body as it will be sent still cites "See Image N" (the executive body never does; an edited body may not). */
   function reportBodyCitesImages(report: PIEReportDraft): boolean {
-    return /\bSee Images?\s+\d/.test(report.body);
+    return /\bSee Images?\s+\d/i.test(report.body);
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
@@ -10412,11 +10416,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
         const unavailableDetail = unavailable === 1
           ? `\n\n${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
           : '';
-        Alert.alert(
+        // Read before anything else is asked (audit A6 pass 4: the Outlook
+        // question opened on top of this notice).
+        await new Promise<void>(resolve => Alert.alert(
           'Word report prepared',
           `${summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia)}` +
             `${unavailableDetail}\n\nEach unavailable source image is listed in Media Requiring Review.`,
-        );
+          [{ text: 'OK', onPress: () => resolve() }],
+          { cancelable: true, onDismiss: () => resolve() },
+        ));
       }
       return true;
     } catch (error) {
@@ -14058,8 +14066,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
               onApplyCloudConflictUpdate={update => {
                 const cloudUpdate = update as unknown as ProjectUpdate;
+                // The owner chose the cloud copy: it replaces the local
+                // failed one rather than lending it a receipt (audit A4 pass 4).
                 setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
-                  localUpdates: previous,
+                  localUpdates: previous.filter(item => item.id !== cloudUpdate.id),
                   cloudUpdates: [cloudUpdate],
                   tombstones: deletedUpdateTombstonesRef.current,
                 }));

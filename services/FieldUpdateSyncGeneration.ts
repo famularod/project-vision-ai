@@ -1,5 +1,3 @@
-import { alignPhotoStoragePaths } from './PhotoStoragePathAlignment';
-
 type FieldUpdateSyncGenerationRecord = {
   id: string;
   status?: unknown;
@@ -46,15 +44,32 @@ export function fieldUpdateSyncGeneration(
 
 /**
  * Whether two copies of an update are the same generation. A photo's cloud
- * storage path counts only when both copies carry one (see
- * PhotoStoragePathAlignment; audit A4 batches 3-4, 30 Sep 2026).
+ * storage path never counts here: only staging writes the queued copy's
+ * path (derived, or the legacy path found at upload), and the phone's copy
+ * carries one only from an earlier cloud merge, so a path difference is
+ * never a user edit (audit A4 pass 4: comparing paths when both were
+ * present broke the guard for a relocation found at upload). The cloud
+ * receipt compares paths when both copies carry one; see
+ * PhotoStoragePathAlignment.
  */
 export function sameFieldUpdateSyncGeneration(
   left: FieldUpdateSyncGenerationRecord,
   right: FieldUpdateSyncGenerationRecord,
 ): boolean {
-  const [alignedLeft, alignedRight] = alignPhotoStoragePaths(left, right);
-  return fieldUpdateSyncGeneration(alignedLeft) === fieldUpdateSyncGeneration(alignedRight);
+  return fieldUpdateSyncGeneration(withoutPhotoStoragePaths(left)) ===
+    fieldUpdateSyncGeneration(withoutPhotoStoragePaths(right));
+}
+
+function withoutPhotoStoragePaths<T extends FieldUpdateSyncGenerationRecord>(update: T): T {
+  if (!Array.isArray(update.photos)) return update;
+  return {
+    ...update,
+    photos: update.photos.map(photo => {
+      if (!photo || typeof photo !== 'object') return photo;
+      const { cloudStoragePath: _path, ...rest } = photo as Record<string, unknown>;
+      return rest;
+    }),
+  };
 }
 
 /**

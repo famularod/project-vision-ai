@@ -40,8 +40,11 @@ export function alignPhotoStoragePaths<TLeft extends UpdateLike, TRight extends 
   };
   const leftById = byId(left.photos);
   const rightById = byId(right.photos);
+  // Compared only when both copies carry a path; otherwise the key goes
+  // from both, so null (a stored record) and absent (a fresh photo) also
+  // read alike (audit A4 pass 4).
   const oneSided = (photo: PhotoLike, other: PhotoLike | undefined) =>
-    Boolean(other) && (pathOf(photo) === '') !== (pathOf(other as PhotoLike) === '');
+    Boolean(other) && (pathOf(photo) === '' || pathOf(other as PhotoLike) === '');
   const align = (photos: unknown[], others: Map<unknown, PhotoLike>) =>
     (photos as PhotoLike[]).map(photo =>
       photo && typeof photo === 'object' && 'cloudStoragePath' in photo && oneSided(photo, others.get(photo.id))

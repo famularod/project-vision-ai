@@ -380,7 +380,8 @@ describe('GPS wiring in the app', () => {
     expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = draftFixTracker\.beginSave\(draftSnapshot\.id\);/);
     // Audit A4 batch 3: the cancelled draft write is put back before the re-fix.
     // Audit A4 batch 4: the saved list may be re-persisted between the draft write and the recapture.
-    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+void persistDraftNow\(draftRef\.current\);\n(?:\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\([\s\S]*?\);\n)?\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
+    // Audit A4 pass 4: the failed branch guards that re-persist on the store not being declared unreadable.
+    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+void persistDraftNow\(draftRef\.current\);\n(?:(?:\s*\/\/.*\n)*\s+(?:if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+)?persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\([\s\S]*?\);\n(?:\s+\}\n)?)?\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
     expect(app).toMatch(/setScreen\('ProjectWorkspace'\);\n\s+\} else \{\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/);
     expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
   });

@@ -38,6 +38,10 @@ describe('a photo’s storage path is compared when both copies carry one', () =
     expect(left.photos[2]).toEqual({ id: 'p3', uri: 'file:///p3.jpg' });
     expect(right.photos[0]).toEqual({ id: 'p1', uri: '', caption: 'Rebar' });
     expect(right.photos[1]).toEqual({ id: 'p2', uri: '', cloudStoragePath: 'P/u1/p2-relocated.jpg' });
+    // Null (a stored record) and absent (a fresh photo) read alike: the key goes from both (pass 4).
+    const [storedSide, freshSide] = alignPhotoStoragePaths({ photos: [{ id: 'p1', uri: 'a', cloudStoragePath: null }] }, { photos: [{ id: 'p1', uri: 'a' }] });
+    expect(storedSide.photos[0]).toEqual({ id: 'p1', uri: 'a' });
+    expect(freshSide.photos[0]).toEqual({ id: 'p1', uri: 'a' });
     // Records without a photo list pass through untouched.
     const plain = { notes: 'x' } as { notes: string; photos?: unknown };
     expect(alignPhotoStoragePaths(plain, plain)).toEqual([plain, plain]);
@@ -53,19 +57,23 @@ describe('a photo’s storage path is compared when both copies carry one', () =
     expect(daveProjectUpdateMatchesCloudReceipt(local, sameRow)).toBe(true);
     expect(daveProjectUpdateMatchesCloudReceipt(unstamped, oldRow)).toBe(true);
 
-    // The generation guard compares the phone's record with the queued copy (its own content plus the stamped path).
+    // The generation guard compares the phone's record with the queued copy and never counts the path
+    // (pass 4: only staging writes the queued copy's path, a relocation found at upload included, so a
+    // path difference is never a user edit; the receipt above still compares paths when both carry one).
     const queuedOld = { ...base, status: 'queued', photos: [photo('P/legacy/p1.jpg')] };
     const queuedSame = { ...base, status: 'queued', photos: [photo('P/u1/p1-relocated.jpg')] };
-    expect(sameFieldUpdateSyncGeneration(local, queuedOld)).toBe(false);
+    expect(sameFieldUpdateSyncGeneration(local, queuedOld)).toBe(true);
     expect(sameFieldUpdateSyncGeneration(local, queuedSame)).toBe(true);
     expect(sameFieldUpdateSyncGeneration(unstamped, queuedOld)).toBe(true);
+    expect(sameFieldUpdateSyncGeneration({ ...local, notes: 'edited' }, queuedOld)).toBe(false);
     const queue = [{ id: 'project-update-u1', entity: 'project_update', operation: 'update', payload: { id: 'u1', updateData: queuedOld }, createdAt: 't', changedAt: 't', retryCount: 0 }];
-    expect(hasMatchingQueuedProjectUpdateRevision(local as never, queue as never)).toBe(false);
+    expect(hasMatchingQueuedProjectUpdateRevision(local as never, queue as never)).toBe(true);
     expect(hasMatchingQueuedProjectUpdateRevision(unstamped as never, queue as never)).toBe(true);
-    // A sync result started from the old path does not land on the relocated record; the unstamped record takes it.
+    // A sync result lands on the record whatever path either copy carries; an edited record refuses it.
     const result = { ...queuedOld, status: 'sent' };
-    expect(reconcileFieldUpdateSyncResult([local], queuedOld, result).applied).toBe(false);
+    expect(reconcileFieldUpdateSyncResult([local], queuedOld, result).applied).toBe(true);
     expect(reconcileFieldUpdateSyncResult([unstamped], queuedOld, result).applied).toBe(true);
+    expect(reconcileFieldUpdateSyncResult([{ ...local, notes: 'edited' }], queuedOld, result).applied).toBe(false);
   });
 });
 
@@ -138,7 +146,9 @@ describe('the three small fixes from pass 3', () => {
   it('a send stamp in the future is not a running sync; a running pass is asked for one more; a refused save re-persists the saved list', () => {
     expect(app).toMatch(/function directSyncIsRecent\(update: ProjectUpdate, now: number\): boolean \{\n\s+const attemptedAt = Date\.parse\(update\.lastSendAttemptAt \?\? ''\);\n\s+if \(!Number\.isFinite\(attemptedAt\)\) return false;\n(?:\s*\/\/.*\n)*\s+const age = now - attemptedAt;\n\s+return age >= 0 && age < DIRECT_SYNC_GRACE_MS;\n\}/);
     expect(app).toMatch(/if \(queuedHydrationInFlight\.current\) queuedHydrationRerunRequested\.current = true;\n\s+else startAutomaticSyncBackgroundTask\('after_direct_sync', hydrateQueuedUpdates\);/);
+    // The refused branch re-persists at once; the failed branch only when the store was not declared unreadable (pass 4).
     const rePersisted = app.match(/void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(/g) ?? [];
-    expect(rePersisted).toHaveLength(2);
+    expect(rePersisted).toHaveLength(1);
+    expect(app).toMatch(/void persistDraftNow\(draftRef\.current\);\n(?:\s*\/\/.*\n)*\s+if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(/);
   });
 });

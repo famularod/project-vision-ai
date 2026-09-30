@@ -434,6 +434,7 @@ export function ReportsScreen({
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
+  const pendingReportSnapshotSaveRef = useRef<{ snapshot: DAVEReportSnapshot; save: Promise<unknown> } | null>(null);
   const reportSnapshotScopeKeyRef = useRef(reportSnapshotScopeKey);
   reportSnapshotScopeKeyRef.current = reportSnapshotScopeKey;
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
@@ -616,7 +617,12 @@ export function ReportsScreen({
     // never went out (audit A6).
     const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
     if (!snapshotToSave) return;
-    void saveDAVEReportSnapshot(snapshotToSave)
+    // A send can complete before this save lands (Approve, Share, Copy in
+    // about a second): the delivered mark waits for it and finds the
+    // snapshot here (audit A6 pass 4).
+    const save = saveDAVEReportSnapshot(snapshotToSave);
+    pendingReportSnapshotSaveRef.current = { snapshot: snapshotToSave, save };
+    void save
       .then(() => {
         if (mountedRef.current && reportSnapshotScopeKeyRef.current === snapshotToSave.scopeKey) {
           setPreviousReportSnapshot(snapshotToSave);
@@ -627,12 +633,22 @@ export function ReportsScreen({
         setCommunicationError(
           'The report is approved, but its reporting-period snapshot could not be saved on this device.',
         );
+      })
+      .finally(() => {
+        if (pendingReportSnapshotSaveRef.current?.save === save) pendingReportSnapshotSaveRef.current = null;
       });
   };
 
   /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
   const markReportDelivered = (sentFingerprint: string) => {
-    const saved = previousReportSnapshotRef.current;
+    const pending = pendingReportSnapshotSaveRef.current;
+    if (pending && pending.snapshot.sourceFingerprint === sentFingerprint) {
+      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint), () => undefined);
+      return;
+    }
+    markSavedReportDelivered(previousReportSnapshotRef.current, sentFingerprint);
+  };
+  const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string) => {
     if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
     const delivered = markReportSnapshotDelivered(saved, new Date().toISOString());
     void saveDAVEReportSnapshot(delivered)
