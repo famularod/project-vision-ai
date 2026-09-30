@@ -24,13 +24,16 @@ describe('a name that would share another project\'s document key is refused', (
       ...extra,
     });
 
+  // Pin updated in audit A3 pass 4: the answer now says which list the
+  // look-alike is on, so an archived one can be offered for reopening and a
+  // deleted one is not said to share documents.
   it('names the listed, archived or deleted project it collides with', () => {
     expect(legacyProjectNameKey('Lot-5')).toBe(legacyProjectNameKey('Lot 5'));
-    expect(availability('Lot-5')).toEqual({ kind: 'similar', projectName: 'Lot 5' });
-    expect(availability('lot   5')).toEqual({ kind: 'similar', projectName: 'Lot 5' });
-    expect(availability('2375 Main St.')).toEqual({ kind: 'similar', projectName: '2375 Main St' });
-    expect(availability('Tower-B')).toEqual({ kind: 'similar', projectName: 'Tower B' });
-    expect(availability('Old-Yard')).toEqual({ kind: 'similar', projectName: 'Old Yard' });
+    expect(availability('Lot-5')).toEqual({ kind: 'similar', projectName: 'Lot 5', source: 'active' });
+    expect(availability('lot   5')).toEqual({ kind: 'similar', projectName: 'Lot 5', source: 'active' });
+    expect(availability('2375 Main St.')).toEqual({ kind: 'similar', projectName: '2375 Main St', source: 'archived' });
+    expect(availability('Tower-B')).toEqual({ kind: 'similar', projectName: 'Tower B', source: 'deleted' });
+    expect(availability('Old-Yard')).toEqual({ kind: 'similar', projectName: 'Old Yard', source: 'deleted' });
     // Only project deletion records count.
     expect(availability('Gate 3')).toEqual({ kind: 'available' });
   });
@@ -53,9 +56,11 @@ describe('a name that would share another project\'s document key is refused', (
   it('is wired in addProject after the exact-name checks', () => {
     const start = app.indexOf('\nfunction addProject(projectName: string) {');
     const body = app.slice(start, app.indexOf('\n  function addAndChangeDraftProject(', start));
-    expect(body).toContain("Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName));");
-    expect(body.indexOf("availability.kind === 'similar'")).toBeGreaterThan(body.indexOf("'Already added'"));
-    expect(body.indexOf("availability.kind === 'similar'")).toBeLessThan(body.indexOf('setProjects(prev => [trimmed, ...prev]);'));
+    // Pin updated in audit A3 pass 4: the reason depends on the look-alike's list,
+    // and an archived look-alike goes to the Reopen offer ahead of these checks.
+    expect(body).toContain("Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName, availability.source));");
+    expect(body.indexOf("if (availability.kind === 'similar') {")).toBeGreaterThan(body.indexOf("'Already added'"));
+    expect(body.indexOf("if (availability.kind === 'similar') {")).toBeLessThan(body.indexOf('setProjects(prev => [trimmed, ...prev]);'));
   });
 });
 

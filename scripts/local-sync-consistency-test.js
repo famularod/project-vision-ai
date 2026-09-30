@@ -481,7 +481,8 @@ includes(supabase, 'export async function listArchivedProjects', 'archived cloud
 includes(projectService, 'loadCloudArchivedProjectNames', 'project loading must include archived cloud project names');
 includes(app, 'setCloudProjectArchived(projectName, true)', 'archiving a project must persist to cloud sync');
 includes(app, 'setCloudProjectArchived(projectName, false)', 'reopening a project must persist to cloud sync');
-includes(app, 'label="Archive Project"', 'the live project workspace must expose the archive path');
+// Audit A3 pass 4: the button reads "Close Project", as its dialog does.
+includes(app, 'label="Close Project"', 'the live project workspace must expose the archive path');
 includes(app, 'Archived Projects', 'the live Projects screen must expose archived projects for reopening');
 assert(!app.includes('SUPABASE_SERVICE_ROLE_KEY'), 'mobile app must not reference service-role env');
 assert(!app.includes('EXPO_PUBLIC_OPENAI_API_KEY'), 'mobile app must not reference public OpenAI API key');

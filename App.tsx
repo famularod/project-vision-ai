@@ -364,7 +364,7 @@ import { buildProjectDeletionCascade, buildProjectDeletionOperations, projectDel
   PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
 import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
-import { deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges, similarProjectNameMessage } from './services/ProjectNameRules';
+import { archivedProjectNameMessage, deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges, similarProjectNameMessage } from './services/ProjectNameRules';
 import {
   FileSizePreflightError,
   hashExpoFileSha256,
@@ -8767,8 +8767,8 @@ function addProject(projectName: string) {
     Alert.alert('Name not available', deletedProjectNameMessage(trimmed, deletedOn));
     return false;
   }
-  if (availability.kind === 'archived') {
-    Alert.alert('Project is archived', `${trimmed} is in your archived projects. Reopen it to record updates against it again.`, [
+  if (availability.kind === 'archived' || (availability.kind === 'similar' && availability.source === 'archived')) {
+    Alert.alert('Project is archived', archivedProjectNameMessage(trimmed, availability.projectName), [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Reopen', onPress: () => reopenProject(availability.projectName) },
     ]);
@@ -8779,7 +8779,7 @@ function addProject(projectName: string) {
     return false;
   }
   if (availability.kind === 'similar') {
-    Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName));
+    Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName, availability.source));
     return false;
   }
 
@@ -8804,7 +8804,7 @@ function addProject(projectName: string) {
     // Work still queued for the project is named first (audit A7 M2).
     const queue = await getOfflineQueue().catch(() => []);
     Alert.alert(
-      'Close project?',
+      'Close Project?',
       closeProjectMessage(projectName, queuedWorkForProject(queue, projectName)),
       [
         {
@@ -17808,7 +17808,7 @@ function ProjectWorkspaceScreen({
         ) : null}
         <Text style={styles.sectionLabel}>Project Management</Text>
         <MoreOptionRow
-          label="Archive Project"
+          label="Close Project"
           icon="archive-outline"
           onPress={() => {
             setProjectOptionsOpen(false);
@@ -17816,7 +17816,7 @@ function ProjectWorkspaceScreen({
           }}
         />
         <Text style={styles.locationDetailText}>
-          Archive hides this project from active views. You can reopen it from Archived Projects on Overview.
+          Closing hides this project from active views. You can reopen it from Archived Projects on Overview.
         </Text>
         <HoldToDeleteButton
           label="Hold to Delete Project"
@@ -18569,7 +18569,7 @@ function RecipientRow({
 
       {emails.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Email to use</Text>
+          <Text style={styles.label}>Email (optional)</Text>
 
           <View style={styles.choiceChipWrap}>
             {emails.map(email => {
@@ -18607,7 +18607,7 @@ function RecipientRow({
 
       {phones.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Phone to use for text</Text>
+          <Text style={styles.label}>Phone (optional)</Text>
 
           <View style={styles.choiceChipWrap}>
             {phones.map(phone => {

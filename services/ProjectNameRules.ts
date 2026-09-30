@@ -22,7 +22,7 @@ export type ProjectNameAvailability =
   | Readonly<{ kind: 'deleted'; deletedAt: string | null }>
   | Readonly<{ kind: 'archived'; projectName: string }>
   | Readonly<{ kind: 'exists' }>
-  | Readonly<{ kind: 'similar'; projectName: string }>;
+  | Readonly<{ kind: 'similar'; projectName: string; source: 'active' | 'archived' | 'deleted' }>;
 
 /**
  * Whether a typed name can start a new project. A deleted project's name is
@@ -60,19 +60,51 @@ export function projectNameAvailability({
   if (archived) return { kind: 'archived', projectName: archived };
   if (projects.some(name => nameKey(name) === key)) return { kind: 'exists' };
   const documentKey = legacyProjectNameKey(projectName);
-  const similar = [
-    ...projects,
-    ...archivedProjects,
+  const lookAlike = (names: readonly string[]) =>
+    names.filter(name => name.trim() && legacyProjectNameKey(name) === documentKey).map(name => name.trim());
+  const active = lookAlike(projects)[0];
+  if (active) return { kind: 'similar', projectName: active, source: 'active' };
+  const archivedLookAlike = lookAlike(archivedProjects)[0];
+  if (archivedLookAlike) return { kind: 'similar', projectName: archivedLookAlike, source: 'archived' };
+  // The cloud keeps a deletion record's name in lower case ("lot 5 eats"),
+  // and that copy reaches this phone's deleted list too: the name is shown as
+  // the owner typed it wherever this phone still has that spelling (audit A3
+  // pass 4).
+  const deleted = lookAlike([
     ...deletedProjectNames,
     ...tombstones.filter(candidate => candidate.entityType === 'project').map(candidate => candidate.recordId),
-  ].find(name => name.trim() && legacyProjectNameKey(name) === documentKey);
-  if (similar) return { kind: 'similar', projectName: similar.trim() };
+  ]);
+  if (deleted.length) {
+    const typed = deleted.find(name => name !== name.toLowerCase()) || deleted[0];
+    return { kind: 'similar', projectName: typed, source: 'deleted' };
+  }
   return { kind: 'available' };
 }
 
-export function similarProjectNameMessage(projectName: string, similarTo: string): string {
+/**
+ * Why a look-alike name is refused. A deleted project shares nothing with the
+ * new one, so it is not said to (audit A3 pass 4); an archived look-alike is
+ * offered for reopening instead (archivedProjectNameMessage).
+ */
+export function similarProjectNameMessage(
+  projectName: string,
+  similarTo: string,
+  source: 'active' | 'archived' | 'deleted' = 'active',
+): string {
+  if (source === 'deleted') {
+    return `${projectName} is too close to ${similarTo}, a deleted project. The app compares project names with ` +
+      'punctuation and spacing ignored, and a deleted project\'s name cannot be used again yet. Please choose a different name.';
+  }
   return `${projectName} is too close to ${similarTo}. The app files documents by project name with ` +
     'punctuation and spacing ignored, so the two projects would share documents. Please choose a different name.';
+}
+
+/** The typed name is an archived project's, or looks like one (audit A3 pass 4): Reopen is offered. */
+export function archivedProjectNameMessage(projectName: string, archivedName: string): string {
+  return nameKey(projectName) === nameKey(archivedName)
+    ? `${projectName} is in your archived projects. Reopen it to record updates against it again.`
+    : `${projectName} is too close to ${archivedName}, which is in your archived projects. ` +
+      `Reopen ${archivedName} to record updates against it again, or choose a different name.`;
 }
 
 export function deletedProjectNameMessage(projectName: string, deletedOn: string | null): string {
