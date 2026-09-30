@@ -1,3 +1,4 @@
+import { classifySyncFailureText, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
 import {
   archiveProjectUpdate,
   countCloudProjects,
@@ -102,6 +103,8 @@ export type SyncQueueItem<TPayload = Record<string, unknown>> = {
   changedAt: string;
   retryCount: number;
   lastError?: string | null;
+  /** Why the last attempt failed, recorded from the raw failure before lastError is sanitised (audit A4). */
+  lastFailureCategory?: SyncFailureCategory | null;
 };
 
 export type SyncConflict<TPayload = unknown> = {
@@ -140,6 +143,8 @@ export type SyncUploadResult = {
   queued: number;
   conflicts: number;
   errors: string[];
+  /** The queue item's recorded failure category, when it is still queued after this pass (audit A4). */
+  failureCategory?: SyncFailureCategory | null;
 };
 
 export type SyncItemOutcome =
@@ -718,6 +723,11 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
     typeof value.lastError === 'string'
   );
   if (!lastErrorIsValid) return false;
+  if (
+    value.lastFailureCategory !== undefined &&
+    value.lastFailureCategory !== null &&
+    !isSyncFailureCategory(value.lastFailureCategory)
+  ) return false;
 
   if (value.entity === 'project_update') {
     if (value.operation === 'create') return false;
@@ -2369,6 +2379,7 @@ export async function runFieldUpdateCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
+    failureCategory: remainingItem?.lastFailureCategory ?? null,
   };
   const metadataBlocked = staged.pendingPhotoAssetIds.length > 0;
 
@@ -2550,6 +2561,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         ...item,
         retryCount: item.retryCount + 1,
         lastError: sanitizedResult,
+        lastFailureCategory: classifySyncFailureText([reason]),
       });
       errors.push(formatQueueItemFailure(item, sanitizedResult));
       continue;
@@ -2573,6 +2585,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         ...item,
         retryCount: item.retryCount + 1,
         lastError: sanitizedResult,
+        lastFailureCategory: classifySyncFailureText([prepared]),
       });
       errors.push(formatQueueItemFailure(item, sanitizedResult));
       continue;
@@ -2614,6 +2627,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       ...attemptedItem,
       retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
+      lastFailureCategory: classifySyncFailureText([resultCode]),
     });
     errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
   }

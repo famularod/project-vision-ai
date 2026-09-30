@@ -110,10 +110,11 @@ describe('App.tsx createNewUpdate wiring', () => {
   });
 
   it('opens the picker, blanks the draft and deletes files only as startNewUpdate steps', () => {
-    expect(body).toMatch(/replaceDraftWithBlank: \(\) => setDraft\(createDraft\(/);
+    expect(body).toMatch(/replaceDraftWithBlank: \(\) => \{\n\s+const blank = createDraft\(/);
     expect(body.match(/setScreen\('SelectProject'\)/g)).toEqual(["setScreen('SelectProject')"]);
     expect(body).toMatch(/openProjectPicker: \(\) => setScreen\('SelectProject'\),/);
-    expect(body.match(/deleteUnreferencedPhotosFromUpdate\(/g)).toHaveLength(1);
-    expect(body).toMatch(/deleteDiscardedPhotos: discarded =>\s*deleteUnreferencedPhotosFromUpdate\(discarded, savedUpdates\),/);
+    // Audit A4 (29 Sep 2026): the files go only after the replacement draft is on disk, through discardDraftAfterReplacement.
+    expect(body.match(/deleteUnreferencedPhotosFromUpdate\(/g)).toBeNull();
+    expect(body).toMatch(/deleteDiscardedPhotos: discardDraftAfterReplacement,/);
   });
 });

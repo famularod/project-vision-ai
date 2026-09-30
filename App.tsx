@@ -268,6 +268,8 @@ import {
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
+import { classifySyncFailureText } from './services/SyncFailureCategory';
+import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
 import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
@@ -3826,25 +3828,13 @@ function upsertDeletedUpdateTombstone(
   ];
 }
 
+// The rules live in services/SyncFailureCategory.ts (whole-app audit A4,
+// 29 Sep 2026): they now recognise the sanitised sentences the queue writes
+// and treat a transport failure anywhere in a message as offline.
 function classifySyncFailureCategory(
   errors: string[],
 ): FieldUpdateSyncFailureCategory {
-  const message = errors.join(' ').toLowerCase();
-
-  if (!message.trim()) return 'unknown';
-  // Highest-confidence, most specific signals are checked first so a message
-  // that happens to also mention "network" or "fetch" (common in wrapped
-  // fetch/auth errors) is never misclassified as offline. Generic
-  // offline/network wording is checked last, only once nothing more
-  // specific has matched.
-  if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
-  if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
-  if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
-  if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
-  if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
-  if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
-  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
-  return 'unknown';
+  return classifySyncFailureText(errors);
 }
 
 function syncCategoryForStorageFailure(
@@ -4035,7 +4025,9 @@ function buildSyncDiagnosticsFromUpload(
     ? null
     : workAttempt.storageUploadResult === 'failed'
       ? syncCategoryForStorageFailure(workAttempt.storageFailureCategory)
-      : classifySyncFailureCategory(
+      // The queue item's recorded category first (audit A4): the sanitised
+      // sentence in `errors` used to read as 'unknown' and so as 'failed'.
+      : syncResult.failureCategory ?? classifySyncFailureCategory(
           combinedErrors.length > 0
             ? combinedErrors
             : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
@@ -6036,6 +6028,10 @@ useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'background' && state !== 'inactive') return;
       void flushPendingStoragePersistence();
+      // The draft's own timer too: a caption or photo added just before
+      // backgrounding sat only in memory while the app was suspended
+      // (whole-app audit A4, 29 Sep 2026). Only a pending write is flushed.
+      if (draftSaveTimer.current) void persistDraftNow(draftRef.current);
       if (!savedUpdatesSaveTimer.current) return;
       clearTimeout(savedUpdatesSaveTimer.current);
       savedUpdatesSaveTimer.current = null;
@@ -6125,28 +6121,7 @@ useEffect(() => {
     }
 
     draftSaveTimer.current = setTimeout(() => {
-      if (!hasMeaningfulDraft(draft)) {
-        setDraftSavedAt(null);
-
-        removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-          reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-        );
-
-        return;
-      }
-
-      const savedAt = new Date().toISOString();
-
-      const storedDraft: StoredDraft = {
-        draft,
-        savedAt,
-      };
-
-      setDraftSavedAt(savedAt);
-
-      persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
-        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-      );
+      void persistDraftNow(draft);
     }, 750);
 
     return () => {
@@ -6155,6 +6130,41 @@ useEffect(() => {
       }
     };
   }, [draft, draftLoaded, startupHydrationReady]);
+
+  /**
+   * Writes the draft now (the 750 ms timer's own work, run at once): the
+   * timer when it fires, the background flush, and a draft replacement
+   * before the old draft's files go (whole-app audit A4, 29 Sep 2026).
+   */
+  function persistDraftNow(nextDraft: ProjectUpdate): Promise<void> {
+    if (draftSaveTimer.current) {
+      clearTimeout(draftSaveTimer.current);
+      draftSaveTimer.current = null;
+    }
+    if (!hasMeaningfulDraft(nextDraft)) {
+      setDraftSavedAt(null);
+      return removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
+    }
+    const savedAt = new Date().toISOString();
+    const storedDraft: StoredDraft = { draft: nextDraft, savedAt };
+    setDraftSavedAt(savedAt);
+    return persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+    );
+  }
+
+  /**
+   * The replacement draft (already in draftRef) is on disk before the
+   * discarded draft's photo files are deleted: a kill inside the timer's
+   * window restored the old draft pointing at deleted files (audit A4; the
+   * same window on every path that replaces a draft, PR #83's included).
+   */
+  async function discardDraftAfterReplacement(discardedDraft: ProjectUpdate): Promise<void> {
+    await persistDraftNow(draftRef.current);
+    await deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdatesRef.current);
+  }
 
   useEffect(() => {
     if (!startupHydrationReady || !updatesLoaded || !draftLoaded || photoCleanupRan.current) {
@@ -8282,10 +8292,13 @@ useEffect(() => {
         target: confidentTarget,
         discardedDraft,
         beginDraftForProject,
-        replaceDraftWithBlank: () => setDraft(createDraft(activeProjects[0] || '')),
+        replaceDraftWithBlank: () => {
+          const blank = createDraft(activeProjects[0] || '');
+          draftRef.current = blank;
+          setDraft(blank);
+        },
         openProjectPicker: () => setScreen('SelectProject'),
-        deleteDiscardedPhotos: discarded =>
-          deleteUnreferencedPhotosFromUpdate(discarded, savedUpdates),
+        deleteDiscardedPhotos: discardDraftAfterReplacement,
       });
 
     if (hasDraftContent(draft)) {
@@ -8357,9 +8370,9 @@ useEffect(() => {
           text: 'Start Task Update',
           style: 'destructive',
           onPress: () => {
-            const discardedDraft = draft;
+            const discardedDraft = draftRef.current;
             proceed();
-            void deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdates);
+            void discardDraftAfterReplacement(discardedDraft);
           },
         },
       ],
@@ -12588,7 +12601,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const lifecycle = lifecycleStatusForUpdate(update);
     updateDetailReturnScreenRef.current = returnScreen;
 
-    if (lifecycle === 'sent' || lifecycle === 'queued') {
+    if (!isResumableFieldUpdateStatus(lifecycle)) {
       // Audit P1-56: opening any update binds the workspace to that update's
       // project, so Back, Talk, and reports target the right project.
       setSelectedWorkspaceProject(update.projectName);
@@ -12597,10 +12610,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
+    if (draftRef.current.id === update.id) {
+      // Already open as the draft, possibly with newer edits than the saved
+      // copy: go to it. Replacing it discarded those edits and deleted their
+      // photo files (whole-app audit A4, 29 Sep 2026).
+      setSelectedWorkspaceProject(update.projectName);
+      setScreen(screenForUpdateResume(draftRef.current));
+      return;
+    }
+
     if (hasDraftContent(draft)) {
+      const photoCount = draft.photos.length;
       Alert.alert(
         'Unfinished update found',
-        'Opening a saved update will replace the current unfinished draft.',
+        `Opening a saved update will replace the current unfinished draft (${draft.projectName || 'no project'}, ${photoCount} photo${photoCount === 1 ? '' : 's'}).`,
         [
           {
             text: 'Cancel',
@@ -12610,16 +12633,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
             text: 'Open Saved Update',
             style: 'destructive',
             onPress: () => {
-              const discardedDraft = draft;
+              const discardedDraft = draftRef.current;
 
+              draftRef.current = update;
               setDraft(update);
               setSelectedWorkspaceProject(update.projectName);
               setScreen(screenForUpdateResume(update));
 
-              void deleteUnreferencedPhotosFromUpdate(
-                discardedDraft,
-                savedUpdates,
-              );
+              void discardDraftAfterReplacement(discardedDraft);
             },
           },
         ],
@@ -12909,12 +12930,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     scheduleIdentityRefresh();
-    const unsubscribe = subscribeToAuthStateChange((_event, session) => {
+    const unsubscribe = subscribeToAuthStateChange((event, session) => {
       // Defer client work until after Supabase's auth callback has returned.
       photoAnalysisCoordinator.clear();
       const accountName = accountDisplayNameForUser(session?.user);
       if (accountName) setDisplayName(accountName);
       scheduleIdentityRefresh();
+      // Updates stamped "Sign in required to sync" re-sync after a sign-in
+      // anywhere, not only the photo-analysis modal (whole-app audit A4,
+      // 29 Sep 2026). Deferred, as above.
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        setTimeout(() => startAutomaticSyncBackgroundTask('signed_in', hydrateQueuedUpdates), 0);
+      }
     });
 
     return () => {
@@ -18772,7 +18799,7 @@ function SavedUpdatesScreen({
         backLabel="Updates"
         onBack={() => undefined}
         embedded
-        onResume={lifecycleStatusForUpdate(selectedUpdate) === 'sent' ? undefined : () => onOpen(selectedUpdate)}
+        onResume={isResumableFieldUpdateStatus(lifecycleStatusForUpdate(selectedUpdate)) ? () => onOpen(selectedUpdate) : undefined}
         onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? () => onRetryQueuedUpdate(selectedUpdate) : undefined}
         onRetryPhotoAnalysis={onRetryPhotoAnalysis}
         onDelete={() => onDelete(selectedUpdate.id)}
