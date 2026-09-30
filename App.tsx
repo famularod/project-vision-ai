@@ -8788,6 +8788,16 @@ function addProject(projectName: string) {
   }
 
   function reopenProject(projectName: string) {
+    const availability = projectNameAvailability({
+      projectName, projects: [], archivedProjects: [],
+      deletedProjectNames: deletedProjectNamesRef.current, tombstones: operationalSyncTombstonesRef.current,
+    });
+    if (availability.kind === 'deleted') {
+      // Deleted on another device: not revived from a stale archived list (audit A3 pass 2).
+      setArchivedProjects(prev => prev.filter(project => project.toLowerCase() !== projectName.toLowerCase()));
+      Alert.alert('Project was deleted', `${projectName} was deleted${availability.deletedAt ? ` on ${formatSavedTime(availability.deletedAt)}` : ''}, so it cannot be reopened.`);
+      return;
+    }
     setProjects(prev => mergeProjectNames(prev, [projectName]));
     setProjectRecords(prev =>
       prev.some(project => project.name.toLowerCase() === projectName.toLowerCase())
@@ -11838,7 +11848,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   );
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
                 dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, itemId) // successors drop it (audit A5)
-                  .forEach(change => updateScheduleItem(change.id, { dependencies: change.dependencies }));
+                  .forEach(change => {
+                    scheduleItemSyncWarningsRef.current.add(change.id); // no alert per successor offline (A5 pass 2)
+                    updateScheduleItem(change.id, { dependencies: change.dependencies });
+                  });
               })
               .catch(() => {
                 Alert.alert(

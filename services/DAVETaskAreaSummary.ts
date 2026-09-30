@@ -42,6 +42,14 @@ function normalizedDay(value: Date) {
   return date;
 }
 
+/**
+ * The calendar day of a parsed date, which is local midnight: through UTC it
+ * read a day early east of UTC (whole-app audit A5 pass 2).
+ */
+export function localDateText(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+}
+
 function dateLabel(value: string, missingLabel: string) {
   return value.trim() ? formatAppDate(value) : missingLabel;
 }
@@ -136,8 +144,8 @@ export function buildDAVETaskAreaSummary({
     overdueCount,
     missingStartCount,
     missingFinishCount,
-    earliestStartLabel: earliestStart ? formatAppDate(earliestStart.toISOString().slice(0, 10)) : 'Not set',
-    latestFinishLabel: latestFinish ? formatAppDate(latestFinish.toISOString().slice(0, 10)) : 'Not set',
+    earliestStartLabel: earliestStart ? formatAppDate(localDateText(earliestStart)) : 'Not set',
+    latestFinishLabel: latestFinish ? formatAppDate(localDateText(latestFinish)) : 'Not set',
     workItems,
     warnings,
   });

@@ -261,6 +261,6 @@ describe('deleting a task', () => {
   });
 
   it('is wired after the task leaves the list, through the normal task update', () => {
-    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => scheduleItem\.id !== itemId\)\);\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, itemId\)[^\n]*\n\s+\.forEach\(change => updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\)\);/);
+    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => scheduleItem\.id !== itemId\)\);\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, itemId\)[^\n]*\n\s+\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
   });
 });

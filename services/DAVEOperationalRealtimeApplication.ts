@@ -105,7 +105,13 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         const key = normalizedKey(tombstone.recordId);
         const records = state.projectRecords.filter(record =>
           normalizedKey(record.id) !== key && normalizedKey(record.name) !== key);
-        options.commitProjects(records, records.map(record => record.name), state.archivedProjects);
+        // Out of the archived list too: Reopen had brought a project deleted
+        // on another device back (whole-app audit A3 pass 2).
+        options.commitProjects(
+          records,
+          records.map(record => record.name),
+          state.archivedProjects.filter(name => normalizedKey(name) !== key),
+        );
         options.commitDeletedProjects(options.mergeProjectNames(
           state.deletedProjectNames,
           [tombstone.recordId],
