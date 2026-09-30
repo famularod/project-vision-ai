@@ -5102,9 +5102,14 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
  * Adds a bandwidth-bounded presentation URL without downloading the original
  * evidence file. Reports, backup, and photo analysis continue to call
  * hydrateRecoveredProjectUpdatePhotos() and therefore retain original bytes.
+ * With `sign: false` (the operational refresh) a photo is judged and keeps its
+ * cloud path, but no preview is signed: the refresh signed every photo from
+ * another device and ran past its time limit, and the image signs its own
+ * preview when shown (whole-app audit A4 pass 6 (30 Sep 2026)).
  */
 export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectUpdate>(
   update: TUpdate,
+  { sign = true }: Readonly<{ sign?: boolean }> = {},
 ): Promise<TUpdate> {
   const photos = await Promise.all(update.photos.map(async current => {
     if (await hasUsablePhotoUri(current)) return current;
@@ -5114,24 +5119,35 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
     if (cloudPhotoPreviewIsFresh(photo)) return photo;
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const transform = projectPhotoPreviewTransform(photo);
-    const signedRequest = await createCachedPhotoPreviewSignedUrl(
-      cloudStoragePath,
-      transform,
-    );
-    const signed = signedRequest.result;
-    if (!signed.ok || !signed.data || signed.stubbed) {
-      return { ...photo, cloudStoragePath };
-    }
+    const preview = sign ? await signProjectPhotoPreview({ ...photo, cloudStoragePath }) : null;
+    if (!preview) return { ...photo, cloudStoragePath };
     return {
       ...photo,
       cloudStoragePath,
-      cloudPreviewUri: signed.data,
-      cloudPreviewSignedUrlExpiresAt:
-        new Date(signedRequest.usableUntil).toISOString(),
+      cloudPreviewUri: preview.uri,
+      cloudPreviewSignedUrlExpiresAt: new Date(preview.usableUntil).toISOString(),
     };
   }));
   return { ...update, photos };
+}
+
+/**
+ * A preview URL for a photo shown without its file, and how long it can be
+ * shown. A signed URL lapses about 9 minutes after signing, so the image signs
+ * again when displayed (whole-app audit A4 pass 6 (30 Sep 2026)); it shares
+ * the cache, request dedupe and 3-at-a-time limit with hydration. `force`
+ * drops a cached URL the image could not load. Null when not signed.
+ */
+export async function signProjectPhotoPreview(
+  photo: Pick<UpdatePhoto, 'cloudStoragePath' | 'mimeType' | 'fileName'>,
+  { force = false }: Readonly<{ force?: boolean }> = {},
+): Promise<Readonly<{ uri: string; usableUntil: number }> | null> {
+  const cloudStoragePath = photo.cloudStoragePath;
+  if (!cloudStoragePath?.trim()) return null;
+  const transform = projectPhotoPreviewTransform(photo);
+  if (force) photoPreviewSignedUrlCache.delete(photoPreviewCacheKey(cloudStoragePath, transform));
+  const { result, usableUntil } = await createCachedPhotoPreviewSignedUrl(cloudStoragePath, transform);
+  return result.ok && result.data && !result.stubbed ? { uri: result.data, usableUntil } : null;
 }
 
 export { cloudPhotoPreviewIsFresh };
@@ -5189,11 +5205,18 @@ export function projectPhotoPreviewTransform(
       };
 }
 
+function photoPreviewCacheKey(
+  cloudStoragePath: string,
+  transform: ReturnType<typeof projectPhotoPreviewTransform>,
+): string {
+  return `${cloudStoragePath}|${JSON.stringify(transform || null)}`;
+}
+
 async function createCachedPhotoPreviewSignedUrl(
   cloudStoragePath: string,
   transform: ReturnType<typeof projectPhotoPreviewTransform>,
 ): Promise<CachedPhotoPreviewSignedUrl> {
-  const cacheKey = `${cloudStoragePath}|${JSON.stringify(transform || null)}`;
+  const cacheKey = photoPreviewCacheKey(cloudStoragePath, transform);
   const now = Date.now();
   for (const [key, cached] of photoPreviewSignedUrlCache) {
     if (cached.usableUntil <= now) photoPreviewSignedUrlCache.delete(key);

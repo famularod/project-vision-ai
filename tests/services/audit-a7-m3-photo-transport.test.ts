@@ -61,6 +61,10 @@ import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUp
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
+import {
+  DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS,
+  runDAVEOperationalCollectionRefreshes,
+} from '../../services/DAVEOperationalRefresh';
 import { optionalString, uid } from '../../services/RecordValues';
 
 const realFetch = global.fetch;
@@ -222,35 +226,45 @@ describe('photos on a device that does not hold their file (audit A7 M3)', () =>
     expect(signed).not.toHaveBeenCalled();
   });
 
-  it('another device: startup, refresh and realtime all display the preview', async () => {
+  it('another device: startup displays the preview; the refresh signs none and keeps the cloud path', async () => {
     listUpdates.mockResolvedValue({ ok: true, stubbed: false, data: [cloudRow()] });
     const [startup] = normalizeStartupArray(await loadCloudUpdates(), A.normalizeStoredUpdateRecord, 'cloud').value;
     expect(displays(startup).every((uri: string) => SIGNED.test(uri))).toBe(true);
+    // The image signs its own preview when shown (whole-app audit A4 pass 6).
+    signed.mockClear();
     const { run, savedUpdatesRef } = refreshDeps({ saved: [], queue: [] });
     await run();
-    expect(displays((savedUpdatesRef.current as Array<Record<string, any>>)[0])
-      .every((uri: string) => SIGNED.test(uri))).toBe(true);
+    const [after] = savedUpdatesRef.current as Array<Record<string, any>>;
+    expect(signed).not.toHaveBeenCalled();
+    expect(after.photos).toEqual([
+      expect.objectContaining({ uri: '', cloudStoragePath: 'p/u1/p1-IMG_p1.jpg' }),
+      expect.objectContaining({ uri: '', cloudStoragePath: 'p/u1/p2-IMG_p2.jpg' }),
+    ]);
+    expect(displays(after)).toEqual(['', '']);
   });
 
-  it('clears the other device\'s path the iPad already saved, and signs no preview it still holds', async () => {
+  it('clears the other device\'s path the iPad already saved, keeps its cloud path, and signs nothing', async () => {
     // Build 228 state: an earlier refresh saved the iPhone's path, which
     // resolves into this device's photo folder where no such file exists.
     const saved = A.normalizeStoredUpdateRecord({ ...cloudRow().updateData, status: 'sent' });
     expect(displays(saved)[0]).toBe(`${PHOTO_STORAGE_DIR}aaa-IMG_p1.jpg`);
+    const paths = ['p/u1/p1-IMG_p1.jpg', 'p/u1/p2-IMG_p2.jpg'];
     const first = refreshDeps({ saved: [saved], queue: [] });
     await first.run();
     const [after] = first.savedUpdatesRef.current as Array<Record<string, any>>;
     expect(after.photos.map((item: { uri: string }) => item.uri)).toEqual(['', '']);
-    expect(displays(after).every((uri: string) => SIGNED.test(uri))).toBe(true);
+    expect(after.photos.map((item: { cloudStoragePath: string }) => item.cloudStoragePath)).toEqual(paths);
+    // No preview is signed here; the image signs its own when shown (A4 pass 6).
+    expect(displays(after)).toEqual(['', '']);
+    expect(signed).not.toHaveBeenCalled();
     // The saved copy keeps its cloud path, so reloading never drops the photo.
     const reloaded = A.normalizeStoredUpdateRecord(JSON.parse(JSON.stringify(after)));
     expect(reloaded.photos.map((item: { id: string }) => item.id)).toEqual(['p1', 'p2']);
 
-    signed.mockClear();
     const second = refreshDeps({ saved: [reloaded], queue: [] });
     await second.run();
-    expect(displays((second.savedUpdatesRef.current as Array<Record<string, any>>)[0])
-      .every((uri: string) => SIGNED.test(uri))).toBe(true);
+    const [again] = second.savedUpdatesRef.current as Array<Record<string, any>>;
+    expect(again.photos.map((item: { cloudStoragePath: string }) => item.cloudStoragePath)).toEqual(paths);
     expect(signed).not.toHaveBeenCalled();
   });
 
@@ -402,5 +416,25 @@ describe('a refresh racing this device\'s own upload (audit A7 M5)', () => {
     );
     await run();
     expect(notes(savedUpdatesRef)).toBe('iPad edit');
+  });
+});
+
+// Last in the file: without the fix, signings still queued at the time limit
+// would hold the shared 3-at-a-time runner for any test after this one.
+describe('a refresh on a device holding many photos from another device (whole-app audit A4 pass 6)', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('finishes inside the refresh time limit with 120 photos at 250 ms per signing', async () => {
+    jest.useFakeTimers();
+    signed.mockImplementation((storagePath: string) => new Promise(resolve => setTimeout(() => resolve({
+      ok: true, stubbed: false, data: `https://signed.example/${storagePath}?preview`,
+    }), 250)));
+    const photos = Array.from({ length: 120 }, (_, index) =>
+      photo(`f${index}`, `${OLD}f${index}.jpg`, { cloudStoragePath: `p/f2/f${index}.jpg` }));
+    const { run } = refreshDeps({ saved: [], queue: [] }, undefined, [cloudRow('Pour day', photos)]);
+    const failures = runDAVEOperationalCollectionRefreshes([{ name: 'project_updates', run }]);
+    await jest.advanceTimersByTimeAsync(DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS);
+    expect(await failures).toEqual([]);
+    expect(signed).not.toHaveBeenCalled();
   });
 });

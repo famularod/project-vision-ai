@@ -194,6 +194,7 @@ import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
 import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
 import { useNativeWorkspaceOwner } from './components/native-workspace-owner';
+import { ProjectPhotoImage } from './components/ProjectPhotoImage';
 import {
   DailyBriefSection,
   DAVEProjectNeedsVerificationLabel,
@@ -220,6 +221,7 @@ import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-re
 import { useCommittedText } from './hooks/use-committed-text';
 import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
+import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -6258,12 +6260,13 @@ useEffect(() => {
             if (cloudUpdate.isArchived) return cloudUpdate;
             const localUpdate = currentById.get(cloudUpdate.id);
             // Every photo is judged on this device: a resolved path can still
-            // name a file that is not here (audit A7 M3).
+            // name a file that is not here (audit A7 M3). Previews are signed
+            // when shown, not here (whole-app audit A4 pass 6 (30 Sep 2026)).
             return hydrateProjectUpdatePhotoPreviews({
               ...cloudUpdate,
               photos: cloudUpdate.photos.map(cloudPhoto =>
                 preserveLocalPhotoTransport(cloudPhoto, localUpdate, resolveProjectPhotoUri)),
-            });
+            }, { sign: false });
           }),
         );
         if (!active || !refreshCommit.isCurrent()) return;
@@ -16153,7 +16156,7 @@ function RootPhotoIntelligenceCard({
             <Text style={styles.photoComparisonPreviewLabel}>Before</Text>
           </View>
           <View style={styles.photoComparisonPreviewItem}>
-            <Image source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.photoComparisonPreviewImage} />
+            <ProjectPhotoImage photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.photoComparisonPreviewImage} />
             <Text style={styles.photoComparisonPreviewLabel}>After</Text>
           </View>
         </View>
@@ -16584,7 +16587,7 @@ function BuildUpdateScreen({
       {update.photos.length > 0 ? (
         <View style={styles.phase3ThumbRow}>
           {update.photos.map(photo => (
-            <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
+            <ProjectPhotoImage key={photo.id} photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.phase3Thumb} />
           ))}
         </View>
       ) : (
@@ -16843,7 +16846,7 @@ function ReadOnlyUpdateDetailScreen({
           <Text style={styles.sectionLabel}>Photos ({update.photos.length})</Text>
           <View style={styles.phase3ThumbRow}>
             {update.photos.map(photo => (
-              <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
+              <ProjectPhotoImage key={photo.id} photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.phase3Thumb} />
             ))}
           </View>
         </>
@@ -19015,9 +19018,7 @@ function UpdateHistoryCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
-  const thumbnail = update.photos[0]
-    ? resolveProjectPhotoDisplayUri(update.photos[0])
-    : '';
+  const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
   const statusLine =
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
@@ -19048,8 +19049,8 @@ function UpdateHistoryCard({
       accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
-        {thumbnail ? (
-          <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
+        {thumbnail.uri ? (
+          <Image source={{ uri: thumbnail.uri }} onError={thumbnail.onError} style={styles.updateCardThumb} />
         ) : (
           <View style={styles.updateCardThumbPlaceholder}>
             <Ionicons name="document-text-outline" size={28} color={colors.primary} />
