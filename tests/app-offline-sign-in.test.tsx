@@ -23,10 +23,15 @@ let mockSignInPendingRef: { readonly current: boolean } | null = null;
 let mockDuringSecureDelete: ((key: string) => Promise<void>) | null = null;
 /** Settings, rendered inside the open workspace when set (A1 pass 2 #1). */
 let mockSettingsProps: Record<string, unknown> | null = null;
+/** Keychain reads fail (the phone is locked), as in audit A2 pass 2 L1. */
+let mockFailingSecureReads = false;
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
-  getItemAsync: jest.fn(async (key: string) => mockSecure.get(key) ?? null),
+  getItemAsync: jest.fn(async (key: string) => {
+    if (mockFailingSecureReads) throw new Error('User interaction is not allowed.');
+    return mockSecure.get(key) ?? null;
+  }),
   setItemAsync: jest.fn(async (key: string, value: string) => { mockSecure.set(key, value); }),
   deleteItemAsync: jest.fn(async (key: string) => {
     if (mockDuringSecureDelete) await mockDuringSecureDelete(key);
@@ -131,6 +136,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
   network.calls.push(`${init?.method || 'GET'} ${url.pathname}${url.search}`);
   if (network.mode === 'hang') await new Promise<void>(resolve => { network.hung.push(resolve); });
   if (network.mode === 'offline') throw new TypeError('Network request failed');
+  // The auth server's health check: the signal check of A1 pass 3 L1.
+  if (url.pathname === '/auth/v1/health') return json(200, { name: 'GoTrue' });
   if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'refresh_token') {
     if (network.mode === 'reject') {
       return json(400, { code: 'refresh_token_not_found', message: 'Invalid Refresh Token: Refresh Token Not Found' });
@@ -206,6 +213,7 @@ beforeEach(() => {
   mockDuringAsyncRead = null;
   mockDuringSecureDelete = null;
   mockSettingsProps = null;
+  mockFailingSecureReads = false;
   network.mode = 'offline';
   network.calls = [];
 });
@@ -216,6 +224,7 @@ afterEach(async () => {
   mockDuringAsyncRead = null;
   mockDuringSecureDelete = null;
   mockFailingSecureDeletes.clear();
+  mockFailingSecureReads = false;
   network.mode = 'reject';
   await client?.auth.stopAutoRefresh();
   for (let round = 0; round < 100; round += 1) {
@@ -768,32 +777,37 @@ describe('field updates saved while offline, sign-in pending (A4 pass 7 M1)', ()
   });
 });
 
+// Shared by the A1 pass 2 and pass 3 reviews below.
+const PENDING_ACCOUNT = 'Signed in as owner-a@example.com (offline, sign-in pending).';
+const settingsProps = () => ({
+  localProjects: ['Canopy B'], savedUpdates: [], projectAreas: [], scheduleItems: [],
+  referenceDocuments: [], syncCleanupNotice: null, displayName: 'Dana', onDisplayNameChange: jest.fn(),
+  failedDocumentCount: 0, onRetryDocumentUploads: jest.fn(async () => ({ status: 'nothing_to_upload' })),
+  onBack: jest.fn(), onDiagnostics: jest.fn(), onBackup: jest.fn(), onRestore: jest.fn(),
+  onAddArea: jest.fn(() => true), onUpdateArea: jest.fn(), onDeleteArea: jest.fn(),
+  onUseCurrentLocationForArea: jest.fn(), onRemoveMissingPhotos: jest.fn(async () => undefined),
+  onRetryUpdateSync: jest.fn(async () => ({ status: 'failed' })), onApplyCloudConflictUpdate: jest.fn(),
+  onApplyCloudConflictScheduleItem: jest.fn(), onApplyCloudRecovery: jest.fn(),
+  onSaveCaptureMemory: jest.fn(async () => undefined),
+});
+type AlertButton = { text?: string; style?: string; onPress?: () => void };
+function captureAlerts() {
+  const shown: { title: string; message: string; buttons: AlertButton[] }[] = [];
+  const { Alert } = require('react-native');
+  const spy = jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
+    const [title, message, buttons] = args as [string, string, AlertButton[] | undefined];
+    shown.push({ title, message, buttons: buttons ?? [] });
+  });
+  return { shown, spy };
+}
+const TIME_SEEN = (owner: string) => `@vitruvius/offline-sign-in/latest-time-seen/v1/${owner}`;
+/** The lockout's wording for a clock earlier than a time already seen (A1 pass 3 L2). */
+const clockMessage = (seenAtMs: number): string =>
+  require('../services/OfflineSignInGrace').offlineSignInRefusalMessage('clock', seenAtMs);
+
 // Whole-app audit A1 pass 2 review (30 Sep 2026): what David saw, end to end.
 describe('A1 pass 2 review', () => {
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-  const PENDING_ACCOUNT = 'Signed in as owner-a@example.com (offline, sign-in pending).';
-  const settingsProps = () => ({
-    localProjects: ['Canopy B'], savedUpdates: [], projectAreas: [], scheduleItems: [],
-    referenceDocuments: [], syncCleanupNotice: null, displayName: 'Dana', onDisplayNameChange: jest.fn(),
-    failedDocumentCount: 0, onRetryDocumentUploads: jest.fn(async () => ({ status: 'nothing_to_upload' })),
-    onBack: jest.fn(), onDiagnostics: jest.fn(), onBackup: jest.fn(), onRestore: jest.fn(),
-    onAddArea: jest.fn(() => true), onUpdateArea: jest.fn(), onDeleteArea: jest.fn(),
-    onUseCurrentLocationForArea: jest.fn(), onRemoveMissingPhotos: jest.fn(async () => undefined),
-    onRetryUpdateSync: jest.fn(async () => ({ status: 'failed' })), onApplyCloudConflictUpdate: jest.fn(),
-    onApplyCloudConflictScheduleItem: jest.fn(), onApplyCloudRecovery: jest.fn(),
-    onSaveCaptureMemory: jest.fn(async () => undefined),
-  });
-  type AlertButton = { text?: string; style?: string; onPress?: () => void };
-  function captureAlerts() {
-    const shown: { title: string; message: string; buttons: AlertButton[] }[] = [];
-    const { Alert } = require('react-native');
-    const spy = jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
-      const [title, message, buttons] = args as [string, string, AlertButton[] | undefined];
-      shown.push({ title, message, buttons: buttons ?? [] });
-    });
-    return { shown, spy };
-  }
-  const TIME_SEEN = (owner: string) => `@vitruvius/offline-sign-in/latest-time-seen/v1/${owner}`;
 
   test('#1 Settings, open offline with the sign-in pending, shows the account signed in and both Sign Out choices', async () => {
     await saveSignIn('owner-a', 14);
@@ -889,6 +903,7 @@ describe('A1 pass 2 review', () => {
     await phoneWorkspaceOf('owner-a');
     const first = launch();
     await first.rtl.waitFor(() => expect(first.screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    const seenAtMs = Number(mockAsync.get(TIME_SEEN('owner-a')));
     first.screen.unmount();
     await client?.auth.stopAutoRefresh();
 
@@ -899,7 +914,10 @@ describe('A1 pass 2 review', () => {
       mockWorkspaceMounts.length = 0;
       const second = launch();
       await second.rtl.waitFor(() => expect(second.screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
-      expect(second.screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy();
+      // Pin changed deliberately (A1 pass 3 L2): it said "The phone's clock
+      // looks wrong. Check Date & Time, then tap Retry.", also when the clock
+      // was right and the time kept earlier was the wrong one.
+      expect(second.screen.getByText(clockMessage(seenAtMs))).toBeTruthy();
       await second.rtl.act(async () => { await pause(300); });
       expect(mockWorkspaceMounts).toEqual([]);
       expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
@@ -915,6 +933,7 @@ describe('A1 pass 2 review', () => {
     const { screen, rtl } = launch();
     await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
     await rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(true), OPEN);
+    const seenAtMs = Number(mockAsync.get(TIME_SEEN('owner-a')));
 
     const realNow = Date.now.bind(Date);
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 2 * HOUR * 1000);
@@ -927,7 +946,8 @@ describe('A1 pass 2 review', () => {
         listeners.forEach(listener => listener('active'));
         await pause(50);
       });
-      await rtl.waitFor(() => expect(screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy(), OPEN);
+      // Pin changed deliberately (A1 pass 3 L2): the time seen, and what to do.
+      await rtl.waitFor(() => expect(screen.getByText(clockMessage(seenAtMs))).toBeTruthy(), OPEN);
       expect(screen.queryByText(/WORKSPACE OPEN/)).toBeNull();
       expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
     } finally {
@@ -940,9 +960,12 @@ describe('A1 pass 2 review', () => {
     await saveSignIn('owner-a', 14);
     await phoneWorkspaceOf('owner-a');
     // Seen three days ahead once (the clock was wrong then).
-    mockAsync.set(TIME_SEEN('owner-a'), String(Date.now() + 3 * 24 * HOUR * 1000));
+    const seenAtMs = Date.now() + 3 * 24 * HOUR * 1000;
+    mockAsync.set(TIME_SEEN('owner-a'), String(seenAtMs));
     const first = launch();
-    await first.rtl.waitFor(() => expect(first.screen.getByText('The phone\'s clock looks wrong. Check Date & Time, then tap Retry.')).toBeTruthy(), OPEN);
+    // Pin changed deliberately (A1 pass 3 L2): the clock is right here, and
+    // the lockout no longer says it "looks wrong".
+    await first.rtl.waitFor(() => expect(first.screen.getByText(clockMessage(seenAtMs))).toBeTruthy(), OPEN);
 
     // Signal: Retry opens the workspace on a refreshed sign-in.
     network.mode = 'online';
@@ -951,5 +974,266 @@ describe('A1 pass 2 review', () => {
     await first.rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(false), OPEN);
     first.screen.unmount();
     await client?.auth.stopAutoRefresh();
+  });
+});
+
+/**
+ * Whole-app audit A1 pass 3 (30 Sep 2026): what David saw, end to end.
+ * L1: after about 25 seconds of failed retries auth-js answers "failed" for 60
+ * more seconds without trying (its cooldown), and that answer was taken for no
+ * signal: Retry on the lockout said "No signal" again, and Sign Out of All
+ * Devices said it needs signal, with signal back and no request sent.
+ * L2: a clock set ahead once, then corrected, was refused as "looks wrong".
+ * L3/L4: the re-check while open offline counted the 7 days from opening when
+ * the saved sign-in could not be read, and called every refusal "7 days".
+ */
+describe('A1 pass 3 review', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const EXPIRED = 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.';
+  const SIGNAL_BACK = 'Signal is back — finishing sign-in…';
+  const REFRESH = 'POST /auth/v1/token?grant_type=refresh_token';
+  const HEALTH = 'GET /auth/v1/health';
+  const authCalls = (from: number) => network.calls.slice(from).filter(call => call === HEALTH || call.startsWith('POST /auth/v1/'));
+  /**
+   * auth-js gives up on the refresh (its ~25 s of retries, woken at once
+   * here). From then on, for 60 seconds, it answers "failed" without trying.
+   */
+  async function refreshGivenUp(rtl: { act: (work: () => Promise<void>) => Promise<void> }) {
+    for (let round = 0, idle = 0; round < 300 && idle < 5; round += 1) {
+      await rtl.act(async () => { wakeSleepingRetries(); await pause(10); });
+      idle = mockSleepingRetries.size === 0 ? idle + 1 : 0;
+    }
+    expect(mockSleepingRetries.size).toBe(0);
+  }
+  /** auth-js's minute of answering from the failure passes. */
+  function afterCooldown() {
+    const realNow = Date.now.bind(Date);
+    return jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+  }
+  function appStateListeners(): ((state: string) => void)[] {
+    const { AppState } = require('react-native');
+    return (AppState.addEventListener as jest.Mock).mock.calls
+      .filter(([type]) => type === 'change')
+      .map(([, listener]) => listener as (state: string) => void);
+  }
+
+  test('L1 auth-js\'s cooldown is the one this fix waits out', () => {
+    expect(jest.requireActual('@supabase/auth-js/dist/main/lib/constants').REFRESH_FAILURE_COOLDOWN_MS).toBe(60_000);
+  });
+
+  test('L1 Retry on the 7-day lockout: no signal still says so; with signal back it finishes the sign-in', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+    await refreshGivenUp(rtl);
+
+    // Still no signal: the signal check fails too, and it says so as before.
+    let from = network.calls.length;
+    await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+    await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+    expect(authCalls(from)).toEqual([HEALTH]);
+
+    // Signal is back. Before: "No signal…" again, and nothing was sent.
+    network.mode = 'online';
+    from = network.calls.length;
+    await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+    await rtl.waitFor(() => expect(screen.getByText(SIGNAL_BACK)).toBeTruthy(), OPEN);
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    // It waits out auth-js's minute rather than refreshing past it.
+    await rtl.act(async () => { await pause(1_500); });
+    expect(authCalls(from)).toEqual([HEALTH]);
+    expect(screen.getByText(SIGNAL_BACK)).toBeTruthy();
+
+    const clock = afterCooldown();
+    try {
+      await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 15_000 });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+    expect(authCalls(from)).toEqual([HEALTH, REFRESH]);
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+    screen.unmount();
+  });
+
+  test('L1 Retry with signal back, and the server refuses the sign-in: the sign-in screen, not "No signal"', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+    await refreshGivenUp(rtl);
+
+    network.mode = 'reject';
+    await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+    await rtl.waitFor(() => expect(screen.getByText(SIGNAL_BACK)).toBeTruthy(), OPEN);
+    const clock = afterCooldown();
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), { timeout: 15_000 });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+    expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    screen.unmount();
+  });
+
+  test('L1 Sign Out of All Devices while offline, sign-in pending, with signal back: every device is signed out through the server', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      network.mode = 'online';
+      const from = network.calls.length;
+
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      // Before: "Signing out your other devices needs signal… Nothing was
+      // signed out", at once, with no request.
+      await rtl.waitFor(() => expect(authCalls(from)).toEqual([HEALTH]), OPEN);
+      await rtl.act(async () => { await pause(1_500); });
+      expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']);
+
+      const clock = afterCooldown();
+      try {
+        await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out', 'Signed out of all devices']), { timeout: 15_000 });
+      } finally {
+        clock.mockRestore();
+      }
+      // The expired token is refreshed first: the sign-out needs a valid one.
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH, 'POST /auth/v1/logout?scope=global']);
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    } finally {
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L1 Sign Out of All Devices with signal back, and the server refuses the sign-in: says truthfully what happened', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      network.mode = 'reject';
+      const from = network.calls.length;
+
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(authCalls(from)).toEqual([HEALTH]), OPEN);
+      const clock = afterCooldown();
+      try {
+        await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out', 'Signed out on this device']), { timeout: 15_000 });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(alerts.shown[1].message).toBe(
+        'This device\'s sign-in had already ended on the server, so this device is now signed out. ' +
+        'Your other devices were not signed out from here. To sign them out, sign in again, then choose Sign Out of All Devices.',
+      );
+      // No sign-out request could be made: the refused sign-in has no valid token.
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH]);
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    } finally {
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L2 a clock that was ahead when the workspace opened offline, since corrected: the lockout says what it saw and what to do', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    // Opened offline once with the clock three days ahead.
+    const realNow = Date.now.bind(Date);
+    const ahead = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 3 * 24 * HOUR * 1000);
+    let seenAtMs = 0;
+    try {
+      const first = launch();
+      await first.rtl.waitFor(() => expect(first.screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+      seenAtMs = Number(mockAsync.get(TIME_SEEN('owner-a')));
+      first.screen.unmount();
+      await client?.auth.stopAutoRefresh();
+    } finally {
+      ahead.mockRestore();
+    }
+    expect(seenAtMs).toBeGreaterThan(Date.now() + 2 * 24 * HOUR * 1000);
+
+    // The clock is right again, and there is still no signal.
+    const second = launch();
+    await second.rtl.waitFor(() => expect(second.screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+    const shown = clockMessage(seenAtMs);
+    expect(second.screen.getByText(shown)).toBeTruthy();
+    const seenAt = new Intl.DateTimeFormat('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    }).format(new Date(seenAtMs));
+    expect(shown).toBe(
+      `The phone's clock is earlier than a time this phone already saw on ${seenAt}. ` +
+      'If the clock is right, connect to the internet, then tap Retry. If not, correct it in Date & Time, then tap Retry.',
+    );
+    second.screen.unmount();
+  });
+
+  test('L3 a saved sign-in that cannot be read while open offline: the 7 days still count from its last refresh', async () => {
+    await saveSignIn('owner-a', 7 * 24 - 1 / 60); // one minute short of 7 days
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    // auth-js's launch refresh ends first: its first sign-in event then reads
+    // the Keychain, which is not what is tested here.
+    await refreshGivenUp(rtl);
+
+    // Five minutes later the phone is locked (the Keychain refuses reads) as
+    // the app returns to the foreground. Before: open for 7 days from opening.
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 5 * 60_000);
+    try {
+      mockFailingSecureReads = true;
+      await rtl.act(async () => {
+        appStateListeners().forEach(listener => listener('active'));
+        await pause(50);
+      });
+      await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+      expect(screen.queryByText(/WORKSPACE OPEN/)).toBeNull();
+    } finally {
+      mockFailingSecureReads = false;
+      clock.mockRestore();
+      screen.unmount();
+    }
+    // Locked, not signed out.
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+  });
+
+  test('L4 the re-check while open offline says why: a sign-in gone from the Keychain is not "7 days"', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    await refreshGivenUp(rtl);
+
+    // The saved sign-in is gone from the Keychain, with no sign-in event.
+    [...mockSecure.keys()].filter(key => key.startsWith(tokenKey())).forEach(key => mockSecure.delete(key));
+    await rtl.act(async () => {
+      appStateListeners().forEach(listener => listener('active'));
+      await pause(50);
+    });
+    await rtl.waitFor(() => expect(screen.getByText(
+      'No signal, and Vitruvius could not confirm your sign-in on this phone. Connect to the internet, then tap Retry.',
+    )).toBeTruthy(), OPEN);
+    expect(screen.queryByText(/has not refreshed for 7 days/)).toBeNull();
+    screen.unmount();
   });
 });

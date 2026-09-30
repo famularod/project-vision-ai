@@ -23,12 +23,15 @@ import {
 } from './services/OwnerStorageSandbox';
 import {
   getCurrentSessionUser,
+  signInRefreshNoAnswerMark,
   subscribeToAuthStateChange,
+  type SavedSignInRefreshOptions,
 } from './services/SupabaseService';
 import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecision';
 import {
   clearLatestTimeSeen,
-  OFFLINE_SIGN_IN_REFUSAL_MESSAGES,
+  offlineSignInRefusalMessage,
+  SIGNAL_BACK_FINISHING_SIGN_IN,
   watchOfflineSignInGrace,
   workspaceOwnerAfterFailedLookup,
 } from './services/OfflineSignInGrace';
@@ -44,7 +47,7 @@ export function NativeRoot() {
   const [generation, setGeneration] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<
-    | Readonly<{ status: 'loading' }>
+    | Readonly<{ status: 'loading'; message?: string }>
     | Readonly<{ status: 'ready'; ownerId: string | null; signInPending: boolean }>
     | Readonly<{ status: 'error'; message: string }>
   >({ status: 'loading' });
@@ -61,7 +64,7 @@ export function NativeRoot() {
       stopGraceWatch = null;
     }
 
-    function activate(ownerId: string | null, pending = false) {
+    function activate(ownerId: string | null, pending = false, lastRefreshedAtMs?: number) {
       // An offline opening decided from the saved sign-in never overrides a
       // sign-in event that already chose the workspace: a refresh the server
       // rejected while the lookup ran has signed out, and A's workspace must
@@ -92,15 +95,18 @@ export function NativeRoot() {
         // minute while open offline (auth security review, 30 Sep 2026).
         stopGraceWatch = watchOfflineSignInGrace({
           ownerId,
-          onExpired: reason => {
+          // The 7 days count from the launch read's last refresh even if the
+          // saved sign-in cannot be read again while open (A1 pass 3 L3).
+          lastRefreshedAtMs,
+          onExpired: (reason, seenAtMs) => {
             if (!active || !signInPending || desiredOwnerId !== ownerId) return;
             // Today's lockout, as at launch after 7 days or with the clock
-            // set back (A1 pass 2 #5). The workspace stays on the phone; a
-            // refresh when there is signal reopens it, and a rejected one
-            // signs out.
+            // set back (A1 pass 2 #5), saying why (A1 pass 3 L4). The
+            // workspace stays on the phone; a refresh when there is signal
+            // reopens it, and a rejected one signs out.
             desiredOwnerId = undefined;
             signInPending = false;
-            setState({ status: 'error', message: OFFLINE_SIGN_IN_REFUSAL_MESSAGES[reason] });
+            setState({ status: 'error', message: offlineSignInRefusalMessage(reason, seenAtMs) });
           },
         });
       }
@@ -130,8 +136,16 @@ export function NativeRoot() {
       }
       if (decision.action === 'activate') activate(decision.ownerId);
     });
-    void openSavedWorkspace(sandbox).then(owner => {
-      activate(owner.ownerId, owner.signInPending);
+    // A1 pass 3 L1: with signal back after an earlier failure, the lookup
+    // finishes the sign-in and says so, until a sign-in event decides.
+    const lookupStillWanted = () => active && desiredOwnerId === undefined;
+    void openSavedWorkspace(sandbox, {
+      stillWanted: lookupStillWanted,
+      onSignalBack: () => {
+        if (lookupStillWanted()) setState({ status: 'loading', message: SIGNAL_BACK_FINISHING_SIGN_IN });
+      },
+    }).then(owner => {
+      activate(owner.ownerId, owner.signInPending, owner.lastRefreshedAtMs);
     }).catch(error => {
       // A sign-in event that already chose the workspace outranks a failed
       // lookup (a refresh the server rejects signs out while this fails).
@@ -159,7 +173,7 @@ export function NativeRoot() {
       createElement(
         Text,
         { style: ownerBoundaryStyles.title },
-        'Opening your Vitruvius workspace…',
+        state.message ?? 'Opening your Vitruvius workspace…',
       ),
     );
   }
@@ -220,17 +234,25 @@ export function NativeRoot() {
  * refresh for lack of network, the workspace already open on this phone for
  * that same account opens, marked "offline, sign-in pending" (owner answer
  * Q13); anything else keeps "Workspace protection needs attention", saying
- * why when there is no signal (A1 pass 2 #3).
+ * why when there is no signal (A1 pass 2 #3). A refresh that got no answer
+ * before this lookup began is not taken for no signal (A1 pass 3 L1).
  */
 async function openSavedWorkspace(
   sandbox: OwnerStorageSandbox,
-): Promise<Readonly<{ ownerId: string | null; signInPending: boolean }>> {
+  lookup: Pick<SavedSignInRefreshOptions, 'onSignalBack' | 'stillWanted'>,
+): Promise<Readonly<{ ownerId: string | null; signInPending: boolean; lastRefreshedAtMs?: number }>> {
+  const noAnswerMark = signInRefreshNoAnswerMark();
   const result = await getCurrentSessionUser();
   if (result.ok) return { ownerId: result.data?.id || null, signInPending: false };
-  const offline = await workspaceOwnerAfterFailedLookup(() => sandbox.activeOwnerId());
+  const offline = await workspaceOwnerAfterFailedLookup(
+    () => sandbox.activeOwnerId(),
+    undefined,
+    undefined,
+    { ...lookup, noAnswerMark },
+  );
   if (offline && 'ownerId' in offline) return offline;
   throw new Error(
-    (offline && OFFLINE_SIGN_IN_REFUSAL_MESSAGES[offline.refused]) ||
+    (offline && offlineSignInRefusalMessage(offline.refused, offline.seenAtMs)) ||
     result.message || result.error ||
     'Vitruvius could not verify the signed-in account.',
   );

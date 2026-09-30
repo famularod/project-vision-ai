@@ -346,6 +346,10 @@ test('All Devices with an expired sign-in and no signal: no request, nothing sig
   clearTimeout(timer);
   expect(result).toMatchObject({ ok: false, code: 'sign_out_of_all_devices_needs_signal', error: NEEDS_SIGNAL });
   expect(logoutCalls()).toEqual([]);
+  // Pin added deliberately (whole-app audit A1 pass 3 L1): the last refresh's
+  // failure is no longer taken for no signal by itself; one signal check (no
+  // sign-in token in it) is made, and with no signal it fails as before.
+  expect(network.calls.filter(call => call === 'GET /auth/v1/health')).toEqual(['GET /auth/v1/health']);
   expectStillSignedIn('owner-a');
 
   await app.rtl.act(async () => { result = await app.service.signOut('local'); });

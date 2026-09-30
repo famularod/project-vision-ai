@@ -21,6 +21,8 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 jest.mock('../../services/SupabaseService', () => ({
   getCurrentSessionUser: jest.fn(),
+  // The startup lookup marks its start (whole-app audit A1 pass 3 L1).
+  signInRefreshNoAnswerMark: jest.fn(() => 0),
   subscribeToAuthStateChange: jest.fn(() => () => undefined),
   getSupabaseClient: jest.fn(() => null),
   signIn: jest.fn(),

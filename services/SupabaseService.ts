@@ -364,6 +364,30 @@ export const SIGNED_OUT_ON_THIS_DEVICE_ONLY = 'signed_out_on_this_device_only';
 export type SignOutScope = 'local' | 'global';
 /** SupabaseServiceResult.code of a Sign Out of All Devices that could not reach the cloud: nothing signed out. */
 export const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL = 'sign_out_of_all_devices_needs_signal';
+/**
+ * SupabaseServiceResult.code of a Sign Out of All Devices whose sign-in the
+ * server had already ended (its refresh was refused): this device is signed
+ * out by that refusal; the other devices could not be signed out from here
+ * (whole-app audit A1 pass 3 L1).
+ */
+export const SIGN_IN_ALREADY_ENDED_ON_SERVER = 'sign_in_already_ended_on_server';
+const SIGN_IN_ALREADY_ENDED_ON_SERVER_MESSAGE =
+  'This device\'s sign-in had already ended on the server, so this device is now signed out. ' +
+  'Your other devices were not signed out from here. To sign them out, sign in again, then choose Sign Out of All Devices.';
+/** How long the signal check waits for the project's auth server (A1 pass 3 L1). */
+export const SIGNAL_CHECK_TIMEOUT_MS = 4_000;
+/**
+ * auth-js 2.108.2's REFRESH_FAILURE_COOLDOWN_MS: after a refresh gives up it
+ * answers from that failure, without sending anything, for this long
+ * (pinned in tests/app-offline-sign-in.test.tsx).
+ */
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS = 60_000;
+/**
+ * With signal back, how long the sign-in may take to finish: auth-js's
+ * cooldown, then its own ~30 seconds of retries (A1 pass 3 L1).
+ */
+const SIGNAL_BACK_REFRESH_WAIT_MS = AUTH_REFRESH_FAILURE_COOLDOWN_MS + 30_000;
+const SIGNAL_BACK_POLL_MS = 1_000;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -399,6 +423,19 @@ function supabaseAuthStorageKey(url: string): string | undefined {
 let lastSignInRefreshTransport: 'failed' | 'answered' | null = null;
 const signInRefreshFailureWaiters = new Set<() => void>();
 /**
+ * Whole-app audit A1 pass 3 L1: after its retries auth-js answers "failed" from
+ * its last failure for AUTH_REFRESH_FAILURE_COOLDOWN_MS, sending nothing. That
+ * answer, or the failed attempt above, was taken for no signal even when
+ * signal had returned: Retry on the 7-day lockout said "No signal" again, and
+ * Sign Out of All Devices said it needed signal, with nothing sent. Counted
+ * here: the refresh requests sent, those that got no answer, and when the
+ * last one ended, so a caller can tell a request of its own that got no answer
+ * from an earlier one.
+ */
+let signInRefreshRequestsSent = 0;
+let signInRefreshRequestsUnanswered = 0;
+let lastSignInRefreshEndedAtMs = 0;
+/**
  * Whole-app audit A1 pass 2 #2: the refresh tokens of sign-ins a Sign Out
  * with no signal removed from this phone. auth-js's guard against saving a
  * refresh over a sign-out only notices its own sign-out, so a waiting retry
@@ -418,7 +455,10 @@ function fetchObservingSignInRefresh(
   const signedOutHere = refresh ? refreshTokenSignedOutHere(init?.body) : () => false;
   // Each attempt starts unknown: an earlier failure says nothing about a
   // refresh under way now (auth security review, 30 Sep 2026).
-  if (refresh) lastSignInRefreshTransport = null;
+  if (refresh) {
+    lastSignInRefreshTransport = null;
+    signInRefreshRequestsSent += 1;
+  }
   const request = signedOutHere()
     ? Promise.reject(new TypeError('Network request failed'))
     : fetch(input, init).then(response => {
@@ -426,15 +466,59 @@ function fetchObservingSignInRefresh(
       return response;
     });
   return request.then(response => {
-    if (refresh) lastSignInRefreshTransport = 'answered';
+    if (refresh) {
+      lastSignInRefreshTransport = 'answered';
+      lastSignInRefreshEndedAtMs = Date.now();
+    }
     return response;
   }, error => {
     if (refresh) {
       lastSignInRefreshTransport = 'failed';
+      signInRefreshRequestsUnanswered += 1;
+      lastSignInRefreshEndedAtMs = Date.now();
       signInRefreshFailureWaiters.forEach(notify => notify());
     }
     throw error;
   });
+}
+
+/**
+ * Marks the start of a sign-in lookup: a refresh request that gets no answer
+ * after this is the lookup's own evidence of no signal (A1 pass 3 L1).
+ */
+export function signInRefreshNoAnswerMark(): number {
+  return signInRefreshRequestsUnanswered;
+}
+
+/**
+ * Whether the project's auth server answers now (A1 pass 3 L1): a GET of its
+ * health endpoint through the same fetch as the sign-in, carrying no sign-in
+ * token. The public anon key goes in a header, never in the URL, and nothing
+ * here is logged. Any answer below 500 is signal; a failure, a 5xx, or no
+ * answer within `timeoutMs` is not.
+ */
+export async function authServerReachable(timeoutMs: number = SIGNAL_CHECK_TIMEOUT_MS): Promise<boolean> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return false;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = fetchObservingSignInRefresh(`${withoutTrailingSlash(SUPABASE_URL)}/auth/v1/health`, {
+    method: 'GET',
+    headers: { apikey: SUPABASE_ANON_KEY },
+    ...(controller ? { signal: controller.signal } : {}),
+  }).then(response => response.status < 500, () => false);
+  try {
+    return await Promise.race([
+      answered,
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => {
+          controller?.abort();
+          resolve(false);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function refreshTokenSignedOutHere(body: unknown): () => boolean {
@@ -497,31 +581,104 @@ export type SavedSignInRefresh =
   | Readonly<{ status: 'signed_in'; ownerId: string }>
   | Readonly<{ status: 'signed_out' | 'rejected' | 'network_unavailable' | 'unreadable' }>;
 
+export type SavedSignInRefreshOptions = Readonly<{
+  /**
+   * signInRefreshNoAnswerMark() when the lookup began (default: now). Only a
+   * request that got no answer after it is taken for no signal as it stands.
+   */
+  noAnswerMark?: number;
+  /** Signal is back, and the sign-in is being finished (A1 pass 3 L1). */
+  onSignalBack?: () => void;
+  /** False once nobody waits for the answer: the wait for the sign-in ends. */
+  stillWanted?: () => boolean;
+}>;
+
+const UNANSWERED_REFRESH: SavedSignInRefresh = Object.freeze({ status: 'network_unavailable' });
+
 /**
  * How the saved sign-in's refresh ends (owner answer Q13): 'network_unavailable'
  * only when the server never answered, as described above; a rejection has
  * already signed out through auth-js by the time this returns 'rejected'.
+ *
+ * Whole-app audit A1 pass 3 L1: when no refresh request of this lookup went
+ * unanswered (auth-js answered from an earlier failure), whether there is
+ * signal is asked instead of assumed. Without signal the answer is as before.
+ * With signal, `onSignalBack` runs and this waits for the sign-in to finish.
  */
-export async function awaitSavedSignInRefresh(): Promise<SavedSignInRefresh> {
+export async function awaitSavedSignInRefresh(
+  options: SavedSignInRefreshOptions = {},
+): Promise<SavedSignInRefresh> {
   const client = getSupabaseClient();
   if (!client) return { status: 'signed_out' };
-  const unanswered: SavedSignInRefresh = { status: 'network_unavailable' };
+  const noAnswerMark = options.noAnswerMark ?? signInRefreshRequestsUnanswered;
+  const stillWanted = options.stillWanted ?? (() => true);
   let notify: () => void = () => undefined;
   const refreshFailed = new Promise<SavedSignInRefresh>(resolve => {
-    notify = () => resolve(unanswered);
+    notify = () => resolve(UNANSWERED_REFRESH);
   });
   if (lastSignInRefreshTransport === 'failed') notify();
   signInRefreshFailureWaiters.add(notify);
-  const settled = client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
-    if (error) return isAuthRetryableFetchError(error) ? unanswered : { status: 'rejected' };
-    const ownerId = data.session?.user?.id;
-    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
-  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+  let outcome: SavedSignInRefresh;
   try {
-    return await Promise.race([settled, refreshFailed]);
+    outcome = await Promise.race([savedSignInRefreshOutcome(client), refreshFailed]);
   } finally {
     signInRefreshFailureWaiters.delete(notify);
   }
+  if (outcome.status !== 'network_unavailable' || signInRefreshRequestsUnanswered > noAnswerMark) {
+    return outcome;
+  }
+  if (!stillWanted() || !(await authServerReachable()) || !stillWanted()) return outcome;
+  options.onSignalBack?.();
+  return savedSignInRefreshWithSignal(client, stillWanted);
+}
+
+/** The saved sign-in as auth-js has it: getSession refreshes an expired one. */
+function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInRefresh> {
+  return client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
+    if (error) return isAuthRetryableFetchError(error) ? UNANSWERED_REFRESH : { status: 'rejected' };
+    const ownerId = data.session?.user?.id;
+    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
+  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+}
+
+/**
+ * Signal is back (A1 pass 3 L1): the sign-in's own refresh through auth-js,
+ * which joins one under way and never runs past its cooldown: while auth-js
+ * answers from its last failure this waits, then asks once more. Ends
+ * 'network_unavailable' only when a refresh request sent meanwhile got no
+ * answer, the wait (SIGNAL_BACK_REFRESH_WAIT_MS) ran out, or nobody waits.
+ */
+async function savedSignInRefreshWithSignal(
+  client: SupabaseClient,
+  stillWanted: () => boolean = () => true,
+): Promise<SavedSignInRefresh> {
+  const deadline = Date.now() + SIGNAL_BACK_REFRESH_WAIT_MS;
+  for (;;) {
+    const sentBefore = signInRefreshRequestsSent;
+    const outcome = await beforeDeadline(savedSignInRefreshOutcome(client), deadline, UNANSWERED_REFRESH);
+    if (outcome.status !== 'network_unavailable' || signInRefreshRequestsSent > sentBefore) return outcome;
+    // Nothing was sent: auth-js answered from its last failure. Wait out its
+    // cooldown, or until a refresh of its own (its timer) goes out.
+    do {
+      if (Date.now() >= deadline || !stillWanted()) return UNANSWERED_REFRESH;
+      await delay(SIGNAL_BACK_POLL_MS);
+    } while (
+      Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS &&
+      signInRefreshRequestsSent === sentBefore
+    );
+  }
+}
+
+function beforeDeadline<T>(work: Promise<T>, deadlineMs: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<T>(resolve => {
+      timer = setTimeout(() => resolve(fallback), Math.max(0, deadlineMs - Date.now()));
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 export const supabase = createSupabaseClient();
@@ -750,11 +907,29 @@ export async function signOut(
   // A token within auth-js's refresh margin counts as expired: auth-js would
   // refresh it first.
   const saved = await readSavedSession().catch(() => null);
-  const unreachable = Boolean(
+  let unreachable = Boolean(
     saved &&
     saved.signIn.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
     lastSignInRefreshTransport === 'failed',
   );
+  // Whole-app audit A1 pass 3 L1: that failure may be a minute old, with
+  // auth-js still answering from it. All Devices is the lost-device choice,
+  // so whether there is signal is asked, not assumed. With signal the expired
+  // token is refreshed first (the sign-out needs a valid one); a refusal
+  // means the server had already ended this sign-in, and that is what is said.
+  if (unreachable && scope === 'global' && await authServerReachable()) {
+    const refreshed = await savedSignInRefreshWithSignal(client);
+    if (refreshed.status === 'signed_in') {
+      unreachable = false;
+    } else if (refreshed.status === 'rejected' || refreshed.status === 'signed_out') {
+      lastAuthEvent = 'SIGNED_OUT';
+      authHydrationCompleted = true;
+      return {
+        ...okResult(null, undefined, SIGN_IN_ALREADY_ENDED_ON_SERVER_MESSAGE),
+        code: SIGN_IN_ALREADY_ENDED_ON_SERVER,
+      };
+    }
+  }
   const error = unreachable ? null : (await client.auth.signOut({ scope })).error;
 
   if (!unreachable && !error) {

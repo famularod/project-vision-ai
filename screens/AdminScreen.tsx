@@ -45,6 +45,7 @@ import {
   getSupabaseConnectionStatus,
   readSavedSignIn,
   signIn,
+  SIGN_IN_ALREADY_ENDED_ON_SERVER,
   signOut,
   SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
   SIGNED_OUT_ON_THIS_DEVICE_ONLY,
@@ -1052,6 +1053,11 @@ export function AdminScreen({
           'Signed out on this device',
           result.message || 'Signed out on this device only. Your other devices stay signed in.',
         );
+      } else if (result.code === SIGN_IN_ALREADY_ENDED_ON_SERVER) {
+        // All Devices with signal back, and the server had already ended this
+        // sign-in: this device is signed out, the others were not signed out
+        // from here, and he is told how (whole-app audit A1 pass 3 L1).
+        Alert.alert('Signed out on this device', result.message || 'This device is signed out.');
       } else if (scope === 'global') {
         Alert.alert('Signed out of all devices', 'Your other devices will be signed out within an hour or when they next have signal.');
       }

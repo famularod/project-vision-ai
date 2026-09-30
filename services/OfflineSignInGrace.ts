@@ -6,6 +6,7 @@ import {
   readSavedSignIn,
   type SavedSignIn,
   type SavedSignInRefresh,
+  type SavedSignInRefreshOptions,
 } from './SupabaseService';
 
 /**
@@ -35,47 +36,115 @@ export const OFFLINE_SIGN_IN_CLOCK_SKEW_MS = 5 * 60 * 1000;
 export const OFFLINE_LOOKUP_TIMEOUT_MS = 8_000;
 /** How often the 7-day limit is re-checked while the workspace is open offline. */
 export const OFFLINE_SIGN_IN_GRACE_RECHECK_MS = 60_000;
+/**
+ * Whole-app audit A1 pass 3 L2: a kept "latest time seen" later than this
+ * after the saved sign-in's last refresh is not trusted. A time is only kept
+ * while the workspace is open offline within the 7 days, so every time this
+ * module keeps is at most the last refresh plus 7 days (and a later sign-in
+ * only moves the last refresh later); the hour is margin. So the cap never
+ * lets a clock set back through; it only ignores a kept time that cannot have
+ * been seen here, which would otherwise refuse a correct clock until signal.
+ */
+export const OFFLINE_SIGN_IN_TIME_SEEN_TRUST_MS = OFFLINE_SIGN_IN_GRACE_MS + 60 * 60 * 1000;
+/** A1 pass 3 L1: shown while the sign-in finishes once signal is back. */
+export const SIGNAL_BACK_FINISHING_SIGN_IN = 'Signal is back — finishing sign-in…';
 
 export type WorkspaceOwnerAfterFailedLookup = Readonly<{
   ownerId: string;
   signInPending: boolean;
+  /**
+   * With signInPending: when the saved sign-in the launch check read last
+   * refreshed, for the re-check while open offline (A1 pass 3 L3).
+   */
+  lastRefreshedAtMs?: number;
 }>;
 
 /** Why an offline opening was refused (whole-app audit A1 pass 2 #3). */
 export type OfflineSignInRefusal = 'expired' | 'other_account' | 'clock' | 'unconfirmed';
 
+/** With 'clock', the latest time this phone saw, which the clock is earlier than (A1 pass 3 L2). */
+export type OfflineSignInRefusalDetail = Readonly<{ reason: OfflineSignInRefusal; seenAtMs?: number }>;
+
 /**
  * What the lockout says for each refusal. Every refused offline opening said
  * "Authentication is still loading. Try opening this workspace again in a
  * moment.", which was not why and did not say what to do (A1 pass 2 #3).
+ * A1 pass 3 L2: the clock refusal said "The phone's clock looks wrong. Check
+ * Date & Time", also when the clock was right and a time kept earlier (with
+ * the clock ahead) was the wrong one. It now says what was seen, and what to
+ * do either way; offlineSignInRefusalMessage adds the time when known.
  */
 export const OFFLINE_SIGN_IN_REFUSAL_MESSAGES: Readonly<Record<OfflineSignInRefusal, string>> = {
   expired: 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.',
   other_account: 'No signal, and this phone was last used with a different account. Connect to the internet, then tap Retry.',
-  clock: 'The phone\'s clock looks wrong. Check Date & Time, then tap Retry.',
+  clock: 'The phone\'s clock is earlier than a time this phone already saw. If the clock is right, connect to the internet, then tap Retry. If not, correct it in Date & Time, then tap Retry.',
   unconfirmed: 'No signal, and Vitruvius could not confirm your sign-in on this phone. Connect to the internet, then tap Retry.',
 };
 
-export function offlineSignInGraceRefusal({
-  saved,
-  workspaceOwnerId,
-  nowMs,
-  latestTimeSeenMs = null,
-}: Readonly<{
+/** The lockout's message; for a clock refusal, with the time seen (A1 pass 3 L2). */
+export function offlineSignInRefusalMessage(reason: OfflineSignInRefusal, seenAtMs?: number | null): string {
+  if (reason !== 'clock' || typeof seenAtMs !== 'number' || !Number.isFinite(seenAtMs)) {
+    return OFFLINE_SIGN_IN_REFUSAL_MESSAGES[reason];
+  }
+  return `The phone's clock is earlier than a time this phone already saw on ${formatTimeSeen(seenAtMs)}. ` +
+    'If the clock is right, connect to the internet, then tap Retry. If not, correct it in Date & Time, then tap Retry.';
+}
+
+/** "Oct 3, 2026, 2:05 PM", in the phone's time zone. */
+function formatTimeSeen(ms: number): string {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(ms));
+}
+
+type OfflineSignInGraceInput = Readonly<{
   saved: SavedSignIn | null;
   workspaceOwnerId: string | null;
   nowMs: number;
   /** The latest time this account's offline workspace saw (A1 pass 2 #5). */
   latestTimeSeenMs?: number | null;
-}>): OfflineSignInRefusal | null {
-  if (!saved || !workspaceOwnerId) return 'unconfirmed';
+}>;
+
+export function offlineSignInGraceRefusal(input: OfflineSignInGraceInput): OfflineSignInRefusal | null {
+  return offlineSignInGraceRefusalDetail(input)?.reason ?? null;
+}
+
+/** As offlineSignInGraceRefusal, with the time seen for a clock refusal (A1 pass 3 L2). */
+export function offlineSignInGraceRefusalDetail({
+  saved,
+  workspaceOwnerId,
+  nowMs,
+  latestTimeSeenMs = null,
+}: OfflineSignInGraceInput): OfflineSignInRefusalDetail | null {
+  if (!saved || !workspaceOwnerId) return { reason: 'unconfirmed' };
   // The phone's open workspace must already be this account's: an offline
   // start never switches accounts or opens another account's data.
-  if (saved.ownerId !== workspaceOwnerId) return 'other_account';
-  const sinceLastRefreshMs = nowMs - saved.lastRefreshedAtMs;
-  if (sinceLastRefreshMs < -OFFLINE_SIGN_IN_CLOCK_SKEW_MS) return 'clock';
-  if (clockSetBack(nowMs, latestTimeSeenMs)) return 'clock';
-  return sinceLastRefreshMs <= OFFLINE_SIGN_IN_GRACE_MS ? null : 'expired';
+  if (saved.ownerId !== workspaceOwnerId) return { reason: 'other_account' };
+  const clock = clockRefusal(nowMs, saved.lastRefreshedAtMs, latestTimeSeenMs);
+  if (clock) return clock;
+  return nowMs - saved.lastRefreshedAtMs <= OFFLINE_SIGN_IN_GRACE_MS ? null : { reason: 'expired' };
+}
+
+/**
+ * A clock earlier, beyond the drift allowance, than the latest time this
+ * phone saw for the sign-in: its last refresh (auth security review), or a
+ * later time kept while open offline (A1 pass 2 #5) that can be trusted
+ * (A1 pass 3 L2). Without a last refresh, a kept time is taken as it is.
+ */
+function clockRefusal(
+  nowMs: number,
+  lastRefreshedAtMs: number | null,
+  latestTimeSeenMs: number | null,
+): OfflineSignInRefusalDetail | null {
+  const kept = trustedTimeSeen(latestTimeSeenMs, lastRefreshedAtMs);
+  const seenAtMs = Math.max(lastRefreshedAtMs ?? -Infinity, kept ?? -Infinity);
+  return Number.isFinite(seenAtMs) && nowMs < seenAtMs - OFFLINE_SIGN_IN_CLOCK_SKEW_MS
+    ? { reason: 'clock', seenAtMs }
+    : null;
 }
 
 export function offlineSignInGraceAllows(
@@ -97,8 +166,11 @@ const LATEST_TIME_SEEN_KEY_PREFIX = '@vitruvius/offline-sign-in/latest-time-seen
 const latestTimeSeenKey = (ownerId: string) =>
   `${LATEST_TIME_SEEN_KEY_PREFIX}${encodeURIComponent(ownerId)}`;
 
-function clockSetBack(nowMs: number, latestTimeSeenMs: number | null): boolean {
-  return latestTimeSeenMs !== null && nowMs < latestTimeSeenMs - OFFLINE_SIGN_IN_CLOCK_SKEW_MS;
+/** A kept time, unless it cannot have been seen here on this sign-in (A1 pass 3 L2). */
+function trustedTimeSeen(latestTimeSeenMs: number | null, lastRefreshedAtMs: number | null): number | null {
+  if (latestTimeSeenMs === null) return null;
+  if (lastRefreshedAtMs === null) return latestTimeSeenMs;
+  return latestTimeSeenMs - lastRefreshedAtMs <= OFFLINE_SIGN_IN_TIME_SEEN_TRUST_MS ? latestTimeSeenMs : null;
 }
 
 /** Null when none is kept or it cannot be read: that alone refuses nothing. */
@@ -111,10 +183,19 @@ export async function readLatestTimeSeen(ownerId: string): Promise<number | null
   }
 }
 
-/** Keeps `nowMs` if it is later than the kept time. Never throws. */
-export async function noteLatestTimeSeen(ownerId: string, nowMs: number): Promise<void> {
+/**
+ * Keeps `nowMs` if it is later than the kept time, or the kept time is one
+ * not trusted for the sign-in last refreshed at `lastRefreshedAtMs` (A1 pass 3
+ * L2): that one is replaced, so the set-back check keeps a time to check
+ * against. Never throws.
+ */
+export async function noteLatestTimeSeen(
+  ownerId: string,
+  nowMs: number,
+  lastRefreshedAtMs: number | null = null,
+): Promise<void> {
   try {
-    const latest = await readLatestTimeSeen(ownerId);
+    const latest = trustedTimeSeen(await readLatestTimeSeen(ownerId), lastRefreshedAtMs);
     if (latest !== null && latest >= nowMs) return;
     await AsyncStorage.setItem(latestTimeSeenKey(ownerId), String(nowMs));
   } catch {
@@ -142,8 +223,13 @@ export async function workspaceOwnerAfterFailedLookup(
   workspaceOwnerOnThisPhone: () => Promise<string | null>,
   now: () => number = Date.now,
   timeoutMs: number = OFFLINE_LOOKUP_TIMEOUT_MS,
-): Promise<WorkspaceOwnerAfterFailedLookup | Readonly<{ refused: OfflineSignInRefusal }> | null> {
-  const refresh = await savedSignInRefreshWithin(timeoutMs);
+  refreshOptions: SavedSignInRefreshOptions = {},
+): Promise<
+  | WorkspaceOwnerAfterFailedLookup
+  | Readonly<{ refused: OfflineSignInRefusal; seenAtMs?: number }>
+  | null
+> {
+  const refresh = await savedSignInRefreshWithin(timeoutMs, refreshOptions);
   if (refresh.status === 'signed_in') {
     return { ownerId: refresh.ownerId, signInPending: false };
   }
@@ -154,22 +240,50 @@ export async function workspaceOwnerAfterFailedLookup(
   ]);
   const latestTimeSeenMs = workspaceOwnerId ? await readLatestTimeSeen(workspaceOwnerId) : null;
   const nowMs = now();
-  const refused = offlineSignInGraceRefusal({ saved, workspaceOwnerId, nowMs, latestTimeSeenMs });
-  if (refused || !workspaceOwnerId) return { refused: refused ?? 'unconfirmed' };
-  await noteLatestTimeSeen(workspaceOwnerId, nowMs);
-  return { ownerId: workspaceOwnerId, signInPending: true };
+  const refused = offlineSignInGraceRefusalDetail({ saved, workspaceOwnerId, nowMs, latestTimeSeenMs });
+  if (refused) {
+    return refused.seenAtMs === undefined
+      ? { refused: refused.reason }
+      : { refused: refused.reason, seenAtMs: refused.seenAtMs };
+  }
+  if (!workspaceOwnerId || !saved) return { refused: 'unconfirmed' };
+  await noteLatestTimeSeen(workspaceOwnerId, nowMs, saved.lastRefreshedAtMs);
+  // The launch read's last refresh goes with the opening (A1 pass 3 L3).
+  return { ownerId: workspaceOwnerId, signInPending: true, lastRefreshedAtMs: saved.lastRefreshedAtMs };
 }
 
-async function savedSignInRefreshWithin(timeoutMs: number): Promise<SavedSignInRefresh> {
+/**
+ * The refresh's outcome, or no signal after `timeoutMs` (a captive portal).
+ * A1 pass 3 L1: once signal is back the sign-in is waited for, not cut at
+ * `timeoutMs`; and once this has answered, signal found later is not
+ * announced (the lookup has already decided).
+ */
+async function savedSignInRefreshWithin(
+  timeoutMs: number,
+  options: SavedSignInRefreshOptions,
+): Promise<SavedSignInRefresh> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let answered = false;
+  const stillWanted = () => !answered && (options.stillWanted?.() ?? true);
+  // Set before the refresh is asked, so signal found at once still cancels it.
+  const timedOut = new Promise<SavedSignInRefresh>(resolve => {
+    timer = setTimeout(() => resolve({ status: 'network_unavailable' }), timeoutMs);
+  });
   try {
     return await Promise.race([
-      awaitSavedSignInRefresh(),
-      new Promise<SavedSignInRefresh>(resolve => {
-        timer = setTimeout(() => resolve({ status: 'network_unavailable' }), timeoutMs);
+      awaitSavedSignInRefresh({
+        ...options,
+        stillWanted,
+        onSignalBack: () => {
+          if (!stillWanted()) return;
+          clearTimeout(timer);
+          options.onSignalBack?.();
+        },
       }),
+      timedOut,
     ]);
   } finally {
+    answered = true;
     if (timer) clearTimeout(timer);
   }
 }
@@ -188,12 +302,21 @@ export async function offlineSignInGraceStillAllows(
   now: () => number = () => Date.now(),
   lastRead: { saved?: SavedSignIn | null } = {},
 ): Promise<boolean | null> {
+  const saved = await savedSignInOrLastGoodRead(lastRead);
+  if (saved === undefined) return null;
+  return offlineSignInGraceAllows({ saved, workspaceOwnerId: ownerId, nowMs: now() });
+}
+
+/** The saved sign-in; if it cannot be read, the last good read; undefined with none. */
+async function savedSignInOrLastGoodRead(
+  lastRead: { saved?: SavedSignIn | null },
+): Promise<SavedSignIn | null | undefined> {
   try {
     lastRead.saved = await readSavedSignIn();
   } catch {
-    if (lastRead.saved === undefined) return null;
+    // Kept as it was: the last good read, or none.
   }
-  return offlineSignInGraceAllows({ saved: lastRead.saved ?? null, workspaceOwnerId: ownerId, nowMs: now() });
+  return lastRead.saved;
 }
 
 type AppStateLike = Readonly<{
@@ -208,41 +331,56 @@ type AppStateLike = Readonly<{
  * time the app returns to the foreground and every minute, not only at launch
  * or Retry (auth security review, 30 Sep 2026); so is the phone's clock, and
  * each passing check keeps the time it saw (A1 pass 2 #5). `onExpired` runs
- * once, with the reason. Returns the function that stops watching.
+ * once, with the reason, and for a clock refusal the time seen (A1 pass 3
+ * L2/L4). Returns the function that stops watching.
  */
 export function watchOfflineSignInGrace({
   ownerId,
+  lastRefreshedAtMs,
   onExpired,
   now = () => Date.now(),
   recheckMs = OFFLINE_SIGN_IN_GRACE_RECHECK_MS,
   appState = AppState as unknown as AppStateLike,
 }: Readonly<{
   ownerId: string;
-  onExpired: (reason: OfflineSignInRefusal) => void;
+  /** When the saved sign-in the launch check read last refreshed (A1 pass 3 L3). */
+  lastRefreshedAtMs?: number;
+  onExpired: (reason: OfflineSignInRefusal, seenAtMs?: number) => void;
   now?: () => number;
   recheckMs?: number;
   appState?: AppStateLike;
 }>): () => void {
   let watching = true;
   const lastRead: { saved?: SavedSignIn | null } = {};
-  // Opened within the 7 days: however long reads keep failing, not beyond this.
-  const latestExpiryMs = now() + OFFLINE_SIGN_IN_GRACE_MS;
+  const launchLastRefreshMs = typeof lastRefreshedAtMs === 'number' && Number.isFinite(lastRefreshedAtMs)
+    ? lastRefreshedAtMs
+    : null;
+  // However long reads keep failing, not beyond 7 days from the last refresh
+  // the launch check read, nor from opening. Before, only from opening: a
+  // sign-in six days old when opened stayed open six more days unread
+  // (A1 pass 3 L3).
+  const openedAtMs = now();
+  const latestExpiryMs = Math.min(openedAtMs, launchLastRefreshMs ?? openedAtMs) + OFFLINE_SIGN_IN_GRACE_MS;
   const check = () => {
-    void offlineSignInGraceStillAllows(ownerId, now, lastRead).then(async allowed => {
+    void savedSignInOrLastGoodRead(lastRead).then(async saved => {
       const nowMs = now();
-      // A clock set back behind a time already seen refuses (A1 pass 2 #5);
-      // an unreadable saved sign-in is unknown, not expired, until the 7 days
-      // from opening have passed (A2 pass 2 L1).
-      const refused: OfflineSignInRefusal | null = clockSetBack(nowMs, await readLatestTimeSeen(ownerId))
-        ? 'clock'
-        : allowed === true || (allowed === null && nowMs <= latestExpiryMs) ? null : 'expired';
+      const latestTimeSeenMs = await readLatestTimeSeen(ownerId);
+      // Decided as at launch, with its reason: a sign-in gone from the
+      // Keychain or switched is not "7 days" (A1 pass 3 L4), and a clock set
+      // back behind a time already seen refuses (A1 pass 2 #5). With no read
+      // at all, unknown is not expired until the latest expiry (A2 pass 2 L1).
+      const refused = saved !== undefined
+        ? offlineSignInGraceRefusalDetail({ saved, workspaceOwnerId: ownerId, nowMs, latestTimeSeenMs })
+        : clockRefusal(nowMs, launchLastRefreshMs, latestTimeSeenMs) ??
+          (nowMs <= latestExpiryMs ? null : { reason: 'expired' as const });
       if (!watching) return;
       if (!refused) {
-        if (allowed === true) await noteLatestTimeSeen(ownerId, nowMs);
+        if (saved) await noteLatestTimeSeen(ownerId, nowMs, saved.lastRefreshedAtMs);
         return;
       }
       stop();
-      onExpired(refused);
+      if (refused.seenAtMs === undefined) onExpired(refused.reason);
+      else onExpired(refused.reason, refused.seenAtMs);
     });
   };
   const interval = setInterval(check, recheckMs);

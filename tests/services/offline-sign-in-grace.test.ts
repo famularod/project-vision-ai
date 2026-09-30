@@ -35,6 +35,7 @@ import {
   OFFLINE_SIGN_IN_REFUSAL_MESSAGES,
   offlineSignInGraceAllows,
   offlineSignInGraceRefusal,
+  offlineSignInRefusalMessage,
   readLatestTimeSeen,
   watchOfflineSignInGrace,
   workspaceOwnerAfterFailedLookup,
@@ -87,7 +88,9 @@ describe('auth security review (30 Sep 2026)', () => {
     await jest.advanceTimersByTimeAsync(OFFLINE_LOOKUP_TIMEOUT_MS - 1);
     expect(outcome).toBe('still waiting');
     await jest.advanceTimersByTimeAsync(1);
-    expect(outcome).toEqual({ ownerId: 'owner-a', signInPending: true });
+    // Pin widened deliberately (A1 pass 3 L3): the launch read's last refresh
+    // goes with the offline opening, for the re-check while open.
+    expect(outcome).toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW - 14 * 3_600_000 });
     expect(OFFLINE_LOOKUP_TIMEOUT_MS).toBe(8_000);
   });
 
@@ -234,7 +237,9 @@ describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
     expect(OFFLINE_SIGN_IN_REFUSAL_MESSAGES).toEqual({
       expired: 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.',
       other_account: 'No signal, and this phone was last used with a different account. Connect to the internet, then tap Retry.',
-      clock: 'The phone\'s clock looks wrong. Check Date & Time, then tap Retry.',
+      // Pin changed deliberately (A1 pass 3 L2): it said "The phone's clock
+      // looks wrong. Check Date & Time", also when the clock was right.
+      clock: 'The phone\'s clock is earlier than a time this phone already saw. If the clock is right, connect to the internet, then tap Retry. If not, correct it in Date & Time, then tap Retry.',
       unconfirmed: 'No signal, and Vitruvius could not confirm your sign-in on this phone. Connect to the internet, then tap Retry.',
     });
   });
@@ -254,16 +259,18 @@ describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
     mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
     // Token issued at NOW; opened offline six days later.
     mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 0));
+    // (Pins here widened deliberately for A1 pass 3: the last refresh goes
+    // with an opening (L3), and a clock refusal says the time seen (L2).)
     await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + 6 * DAY))
-      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW });
     expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 6 * DAY));
     // The clock set back five days: the token alone looks a day old.
     expect(offlineSignInGraceAllows({ saved: saved('owner-a', -DAY), workspaceOwnerId: 'owner-a', nowMs: NOW + DAY })).toBe(true);
     await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + DAY))
-      .resolves.toEqual({ refused: 'clock' });
+      .resolves.toEqual({ refused: 'clock', seenAtMs: NOW + 6 * DAY });
     // Ordinary drift (under 5 minutes) is not refused, and never lowers the mark.
     await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW + 6 * DAY - 4 * MINUTE))
-      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW });
     expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 6 * DAY));
   });
 
@@ -279,8 +286,9 @@ describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
     expect(await readLatestTimeSeen('owner-a')).toBeNull();
     mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
     mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 14 * 3_600_000));
+    // Pin widened deliberately (A1 pass 3 L3).
     await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
-      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true });
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW - 14 * 3_600_000 });
   });
 
   it('#5 while open offline, each passing check keeps the time, and a clock set back locks with its reason', async () => {
@@ -296,7 +304,8 @@ describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
     // Back two hours: still within 7 days of the token, but before a time seen.
     now = NOW - 2 * 60 * MINUTE + 30 * MINUTE;
     await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
-    expect(onExpired).toHaveBeenCalledWith('clock');
+    // Pin widened deliberately (A1 pass 3 L2): with the time seen, for the message.
+    expect(onExpired).toHaveBeenCalledWith('clock', NOW + 30 * MINUTE);
 
     const expired = jest.fn();
     mockReadSavedSignIn.mockImplementation(async () => saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS + MINUTE));
@@ -304,5 +313,149 @@ describe('whole-app audit A1 pass 2 (30 Sep 2026)', () => {
     watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired: expired, now: () => now, appState: { addEventListener: () => undefined } });
     await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
     expect(expired).toHaveBeenCalledWith('expired');
+  });
+});
+
+describe('whole-app audit A1 pass 3 (30 Sep 2026)', () => {
+  const DAY = 24 * 60 * MINUTE;
+  const HOUR = 60 * MINUTE;
+  const TIME_SEEN = '@vitruvius/offline-sign-in/latest-time-seen/v1/owner-a';
+  const noAppState = { addEventListener: () => undefined };
+  beforeEach(() => {
+    mockPhone.clear();
+    mockPhoneReadFails = false;
+    mockReadSavedSignIn.mockReset();
+    mockAwaitSavedSignInRefresh.mockReset();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('L1 once signal is back the lookup waits for the sign-in to finish, not 8 seconds; it says so meanwhile', async () => {
+    jest.useFakeTimers();
+    const onSignalBack = jest.fn();
+    let finish: (value: unknown) => void = () => undefined;
+    mockAwaitSavedSignInRefresh.mockImplementation((options?: { onSignalBack?: () => void; noAnswerMark?: number }) => {
+      options?.onSignalBack?.();
+      return new Promise(resolve => { finish = resolve; });
+    });
+    let outcome: unknown = 'still waiting';
+    void workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW, OFFLINE_LOOKUP_TIMEOUT_MS, { noAnswerMark: 3, onSignalBack })
+      .then(value => { outcome = value; });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(onSignalBack).toHaveBeenCalledTimes(1);
+    expect(mockAwaitSavedSignInRefresh.mock.calls[0][0]).toMatchObject({ noAnswerMark: 3 });
+
+    // Before: after 8 seconds the lookup decided as if there were no signal.
+    await jest.advanceTimersByTimeAsync(10 * OFFLINE_LOOKUP_TIMEOUT_MS);
+    expect(outcome).toBe('still waiting');
+    expect(mockReadSavedSignIn).not.toHaveBeenCalled();
+    finish({ status: 'signed_in', ownerId: 'owner-a' });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(outcome).toEqual({ ownerId: 'owner-a', signInPending: false });
+  });
+
+  it('L1 signal back after the 8 seconds ran out is not announced: the lookup has already answered', async () => {
+    jest.useFakeTimers();
+    const onSignalBack = jest.fn();
+    let signalBack: () => void = () => undefined;
+    mockAwaitSavedSignInRefresh.mockImplementation((options?: { onSignalBack?: () => void; stillWanted?: () => boolean }) => {
+      signalBack = () => { if (options?.stillWanted?.() !== false) options?.onSignalBack?.(); };
+      return new Promise(() => undefined);
+    });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 14 * HOUR));
+    let outcome: unknown = 'still waiting';
+    void workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW, OFFLINE_LOOKUP_TIMEOUT_MS, { onSignalBack })
+      .then(value => { outcome = value; });
+    await jest.advanceTimersByTimeAsync(OFFLINE_LOOKUP_TIMEOUT_MS);
+    expect(outcome).toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW - 14 * HOUR });
+    signalBack();
+    expect(onSignalBack).not.toHaveBeenCalled();
+  });
+
+  it('L2 a clock refusal says the time already seen, and what to do either way', () => {
+    const seenAtMs = Date.parse('2026-10-03T14:05:00.000Z');
+    const seenAt = new Intl.DateTimeFormat('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    }).format(new Date(seenAtMs));
+    expect(seenAt).toMatch(/^Oct \d, 2026, \d{1,2}:\d{2}\s[AP]M$/);
+    expect(offlineSignInRefusalMessage('clock', seenAtMs)).toBe(
+      `The phone's clock is earlier than a time this phone already saw on ${seenAt}. ` +
+      'If the clock is right, connect to the internet, then tap Retry. If not, correct it in Date & Time, then tap Retry.',
+    );
+    // Without a time, and for the other reasons, the fixed wording.
+    expect(offlineSignInRefusalMessage('clock')).toBe(OFFLINE_SIGN_IN_REFUSAL_MESSAGES.clock);
+    expect(offlineSignInRefusalMessage('expired', seenAtMs)).toBe(OFFLINE_SIGN_IN_REFUSAL_MESSAGES.expired);
+    expect(OFFLINE_SIGN_IN_REFUSAL_MESSAGES.clock).not.toMatch(/looks wrong/);
+  });
+
+  it('L2 a kept time more than 7 days and an hour after the last refresh is not trusted; one within it still refuses a clock set back', async () => {
+    const refreshed = saved('owner-a', 14 * HOUR); // last refresh: NOW - 14 h
+    const refusal = (latestTimeSeenMs: number, nowMs = NOW) =>
+      offlineSignInGraceRefusal({ saved: refreshed, workspaceOwnerId: 'owner-a', nowMs, latestTimeSeenMs });
+    const lastRefresh = refreshed.lastRefreshedAtMs;
+    // Could not have been seen while open offline on this sign-in: ignored.
+    expect(refusal(lastRefresh + OFFLINE_SIGN_IN_GRACE_MS + 2 * HOUR)).toBeNull();
+    expect(refusal(NOW + 400 * DAY)).toBeNull();
+    // Could have been (the 7 days, plus the hour's margin): the set-back check stands.
+    expect(refusal(lastRefresh + OFFLINE_SIGN_IN_GRACE_MS)).toBe('clock');
+    expect(refusal(lastRefresh + OFFLINE_SIGN_IN_GRACE_MS + 30 * MINUTE)).toBe('clock');
+    expect(refusal(NOW + 3 * DAY)).toBe('clock');
+    expect(refusal(NOW + 4 * MINUTE)).toBeNull();
+
+    // Through the lookup: an untrustworthy mark does not refuse, and is
+    // replaced by the time seen, so a clock set back after it still refuses.
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
+    mockReadSavedSignIn.mockResolvedValue(refreshed);
+    mockPhone.set(TIME_SEEN, String(NOW + 30 * DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: lastRefresh });
+    expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW - 2 * HOUR))
+      .resolves.toEqual({ refused: 'clock', seenAtMs: NOW });
+    // A trusted mark is never lowered.
+    mockPhone.set(TIME_SEEN, String(NOW + 3 * DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ refused: 'clock', seenAtMs: NOW + 3 * DAY });
+    expect(mockPhone.get(TIME_SEEN)).toBe(String(NOW + 3 * DAY));
+  });
+
+  it('L3 a saved sign-in never readable while open offline: closed 7 days after its last refresh, not after opening', async () => {
+    jest.useFakeTimers();
+    let now = NOW;
+    mockReadSavedSignIn.mockRejectedValue(new Error('User interaction is not allowed.'));
+    const onExpired = jest.fn();
+    // The launch read: refreshed six days before this offline opening.
+    watchOfflineSignInGrace({
+      ownerId: 'owner-a', lastRefreshedAtMs: NOW - 6 * DAY, onExpired, now: () => now,
+      appState: noAppState, recheckMs: DAY,
+    });
+    now += DAY - MINUTE;
+    await jest.advanceTimersByTimeAsync(DAY);
+    expect(onExpired).not.toHaveBeenCalled();
+    now += 2 * MINUTE;
+    await jest.advanceTimersByTimeAsync(DAY);
+    // Before: open until 7 days after opening (13 days after the last refresh).
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(onExpired).toHaveBeenCalledWith('expired');
+  });
+
+  it('L4 the re-check says why: a sign-in gone from the Keychain, another account\'s, or a clock before the last refresh', async () => {
+    jest.useFakeTimers();
+    const recheck = async (read: unknown) => {
+      mockReadSavedSignIn.mockReset();
+      mockReadSavedSignIn.mockResolvedValue(read);
+      const onExpired = jest.fn();
+      const stop = watchOfflineSignInGrace({ ownerId: 'owner-a', onExpired, now: () => NOW, appState: noAppState });
+      await jest.advanceTimersByTimeAsync(OFFLINE_SIGN_IN_GRACE_RECHECK_MS);
+      stop();
+      return onExpired.mock.calls;
+    };
+    // Before: each of these closed the workspace with "has not refreshed for 7 days".
+    expect(await recheck(null)).toEqual([['unconfirmed']]);
+    expect(await recheck(saved('owner-b', MINUTE))).toEqual([['other_account']]);
+    expect(await recheck(saved('owner-a', -DAY))).toEqual([['clock', NOW + DAY]]);
+    expect(await recheck(saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS + MINUTE))).toEqual([['expired']]);
+    expect(await recheck(saved('owner-a', HOUR))).toEqual([]);
   });
 });
