@@ -210,6 +210,7 @@ import {
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
+import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -12931,6 +12932,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Another account must not inherit this one's report narrative or
       // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
       if (accountChanged) forgetAllReportSessionState();
+      if (accountChanged) forgetFieldNoteDraft(); // nobody's unsaved field note carries over (audit A2 M3)
     });
 
     return () => {
@@ -19903,7 +19905,10 @@ function ScheduleScreen({
             </>
           )}
           inspector={selectedTask ? (
+            // One row per task: a reused row carried a typed Owner onto the
+            // next task picked (audit A2 M3).
             <ScheduleItemRow
+              key={selectedTask.id}
               item={selectedTask}
               scheduleItems={scheduleItems}
               projectAreas={projectAreas}

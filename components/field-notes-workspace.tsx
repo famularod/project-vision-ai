@@ -23,6 +23,7 @@ import {
   type FieldNoteStatus,
 } from '../services/FieldNoteRepository';
 import type { FieldNoteWorkspaceDataSource } from '../services/FieldNoteMobileSync';
+import { useFieldNoteDraft } from '../hooks/use-field-note-draft';
 import { colors, radius, spacing } from '../theme';
 
 const ACTION_OPTIONS: ReadonlyArray<Readonly<{
@@ -92,13 +93,25 @@ function FieldNotesWorkspaceContent({
   const compactMobileLayout = presentation === 'mobile_capture' && windowWidth <= 480;
   const [notes, setNotes] = useState<readonly FieldNote[]>([]);
   const [filter, setFilter] = useState<FieldNoteStatus>('open');
-  const [text, setText] = useState('');
-  const [source, setSource] = useState<FieldNoteSource>('typed');
-  const [projectName, setProjectName] = useState(initialProjectName?.trim() || '');
-  const [locationName, setLocationName] = useState('');
-  const [actionKind, setActionKind] = useState<FieldNoteActionKind>('none');
-  const [actionText, setActionText] = useState('');
-  const [captureOpen, setCaptureOpen] = useState(false);
+  // Kept outside the screen until Save, so leaving it keeps the note
+  // (whole-app audit A2 M3).
+  const [draft, updateDraft] = useFieldNoteDraft(`${presentation}:${ownerKey}`, {
+    text: '',
+    source: 'typed',
+    projectName: initialProjectName?.trim() || '',
+    locationName: '',
+    actionKind: 'none',
+    actionText: '',
+    captureOpen: false,
+  });
+  const { text, source, projectName, locationName, actionKind, actionText, captureOpen } = draft;
+  const setText = (value: string) => updateDraft('text', value);
+  const setSource = (value: FieldNoteSource) => updateDraft('source', value);
+  const setProjectName = (value: string) => updateDraft('projectName', value);
+  const setLocationName = (value: string) => updateDraft('locationName', value);
+  const setActionKind = (value: FieldNoteActionKind) => updateDraft('actionKind', value);
+  const setActionText = (value: string) => updateDraft('actionText', value);
+  const setCaptureOpen = (value: boolean) => updateDraft('captureOpen', value);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger' | 'info'; text: string } | null>(null);
