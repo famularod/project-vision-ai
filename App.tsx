@@ -5228,6 +5228,8 @@ function AppShell() {
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
+      // Opening pass: cloud rows into the live list, no stale re-read (audit A2 pass 2 M1).
+      if (startupHydrationReady) return await mergeCloudSavedUpdates();
       await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, tombstoneResult] = await Promise.all([
         readStartupJsonArray<ProjectUpdate>(
@@ -5255,9 +5257,8 @@ useEffect(() => {
       setDeletedUpdateTombstones(tombstones);
       // Field fix 2026-07-18: deletion-journal reconciliation talks to the
       // cloud; its failure is a sync concern retried later, never a local
-      // hydration failure (that mis-filing drove the startup loop).
+      // hydration failure (that mis-filing drove the startup loop). Before opening, once.
       await reconcileProjectUpdateDeletionJournal(tombstones).catch(() => undefined);
-
       setSavedUpdates(mergeSavedUpdatesWithTombstones({
         localUpdates,
         cloudUpdates: [],
@@ -5266,44 +5267,45 @@ useEffect(() => {
       setUpdatesLocalLoaded(true);
       setUpdatesLoaded(true);
       setDeletedUpdateTombstonesLoaded(true);
-
-      if (!startupHydrationReady) return;
-      try {
-        const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
-        const normalizedCloudUpdates = normalizeStartupArray(
-          cloudUpdates,
-          normalizeStoredUpdateRecord,
-          'cloud saved updates',
-        ).value;
-        const effectiveTombstones = normalizedCloudUpdates
-          .filter(update => update.isArchived)
-          .map(update => buildUpdateTombstone(
-            update,
-            'hide_cloud_update',
-            update.archivedAt || update.date,
-          ))
-          .reduce(
-            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
-            deletedUpdateTombstonesRef.current,
-          );
-        deletedUpdateTombstonesRef.current = effectiveTombstones;
-        setDeletedUpdateTombstones(effectiveTombstones);
-
-        setSavedUpdates(current => {
-          const merged = mergeSavedUpdatesWithTombstones({
-            localUpdates: current,
-            cloudUpdates: normalizedCloudUpdates,
-            tombstones: effectiveTombstones,
-          });
-          savedUpdatesRef.current = merged;
-          return merged;
-        });
-      } catch {
-        // Cloud recovery failures are retried by sync (audit P1-27); local
-        // hydration already succeeded and must stay hydrated.
-      }
     } catch (error) {
       startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
+    }
+  }
+
+  async function mergeCloudSavedUpdates() {
+    try {
+      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+      const normalizedCloudUpdates = normalizeStartupArray(
+        cloudUpdates,
+        normalizeStoredUpdateRecord,
+        'cloud saved updates',
+      ).value;
+      const effectiveTombstones = normalizedCloudUpdates
+        .filter(update => update.isArchived)
+        .map(update => buildUpdateTombstone(
+          update,
+          'hide_cloud_update',
+          update.archivedAt || update.date,
+        ))
+        .reduce(
+          (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+          deletedUpdateTombstonesRef.current,
+        );
+      deletedUpdateTombstonesRef.current = effectiveTombstones;
+      setDeletedUpdateTombstones(effectiveTombstones);
+
+      setSavedUpdates(current => {
+        const merged = mergeSavedUpdatesWithTombstones({
+          localUpdates: current,
+          cloudUpdates: normalizedCloudUpdates,
+          tombstones: effectiveTombstones,
+        });
+        savedUpdatesRef.current = merged;
+        return merged;
+      });
+    } catch {
+      // Cloud recovery failures are retried by sync (audit P1-27); local
+      // hydration already succeeded and must stay hydrated.
     }
   }
 
@@ -5527,6 +5529,8 @@ useEffect(() => {
 useEffect(() => {
   async function loadProjects() {
     try {
+      // Opening pass: cloud rows only, into the live lists (audit A2 pass 2 M1).
+      if (startupHydrationReady) return await mergeCloudProjects();
       await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, deletedProjectsResult, queuedChanges] = await Promise.all([
         readStartupJsonArray<ProjectRecord>(
@@ -5576,61 +5580,62 @@ useEffect(() => {
       setDeletedProjectNamesLocalLoaded(true);
       setProjectsLoaded(true);
       setDeletedProjectNamesLoaded(true);
-
-      if (!startupHydrationReady) return;
-      try {
-        const [cloudProjects, cloudArchivedProjects] = await Promise.all([
-          loadCloudProjectRecords(),
-          loadCloudArchivedProjectNames(),
-        ]);
-        const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
-        const visibleCloudProjects = cloudProjects.filter(
-          project => !isLegacyNonProjectShellName(project.name),
-        );
-        const shellMigrationComplete = await AsyncStorage.getItem(
-          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
-        );
-        if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
-          await queueCloudProjectArchives(nonProjectShellNames);
-          await persistStorageItem(
-            LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
-            'complete',
-          );
-        }
-        const currentDeletedNames = deletedProjectNamesRef.current;
-        const deletedKeys = new Set(
-          currentDeletedNames.map(name => name.toLowerCase()),
-        );
-        const { reopenedKeys } = queuedProjectChanges;
-        setProjectRecords(current => {
-          return mergeProjectRecords(
-            [],
-            current,
-            visibleCloudProjects,
-            currentDeletedNames,
-          );
-        });
-        setProjects(current => mergeProjectNames(
-          current,
-          visibleCloudProjects.map(project => project.name),
-        ).filter(project => !deletedKeys.has(project.toLowerCase())));
-        setArchivedProjects(previous =>
-          // A reopen still in the offline queue is not re-archived (audit A3).
-          mergeProjectNames(
-            previous,
-            cloudArchivedProjects.filter(project => !reopenedKeys.has(project.trim().toLowerCase())),
-          ).filter(
-            project => !deletedKeys.has(project.toLowerCase()),
-          ),
-        );
-
-      } catch {
-        // Field fix 2026-07-18: cloud recovery failures are sync concerns
-        // (audit P1-27) and must never mis-file as a LOCAL hydration failure
-        // — that oscillated startupHydrationReady in an infinite loop.
-      }
     } catch (error) {
       startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
+    }
+  }
+
+  async function mergeCloudProjects() {
+    try {
+      const [cloudProjects, cloudArchivedProjects, queuedChanges] = await Promise.all([
+        loadCloudProjectRecords(),
+        loadCloudArchivedProjectNames(),
+        getOfflineQueue().catch(() => []),
+      ]);
+      const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
+      const visibleCloudProjects = cloudProjects.filter(
+        project => !isLegacyNonProjectShellName(project.name),
+      );
+      const shellMigrationComplete = await AsyncStorage.getItem(
+        LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+      );
+      if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
+        await queueCloudProjectArchives(nonProjectShellNames);
+        await persistStorageItem(
+          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+          'complete',
+        );
+      }
+      const currentDeletedNames = deletedProjectNamesRef.current;
+      const deletedKeys = new Set(
+        currentDeletedNames.map(name => name.toLowerCase()),
+      );
+      const { reopenedKeys } = queuedProjectNameChanges(queuedChanges);
+      setProjectRecords(current => {
+        return mergeProjectRecords(
+          [],
+          current,
+          visibleCloudProjects,
+          currentDeletedNames,
+        );
+      });
+      setProjects(current => mergeProjectNames(
+        current,
+        visibleCloudProjects.map(project => project.name),
+      ).filter(project => !deletedKeys.has(project.toLowerCase())));
+      setArchivedProjects(previous =>
+        // A reopen still in the offline queue is not re-archived (audit A3).
+        mergeProjectNames(
+          previous,
+          cloudArchivedProjects.filter(project => !reopenedKeys.has(project.trim().toLowerCase())),
+        ).filter(
+          project => !deletedKeys.has(project.toLowerCase()),
+        ),
+      );
+    } catch {
+      // Field fix 2026-07-18: cloud recovery failures are sync concerns
+      // (audit P1-27) and must never mis-file as a LOCAL hydration failure
+      // — that oscillated startupHydrationReady in an infinite loop.
     }
   }
 

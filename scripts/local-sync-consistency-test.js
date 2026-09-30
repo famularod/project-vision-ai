@@ -432,7 +432,10 @@ includes(app, 'const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS
 includes(projectDeletionTransaction, 'normalizedScope(item.scheduleProjectName) === projectKey', 'deleting a parent project must remove its child schedule rows');
 includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
 includes(app, 'await reconcileProjectUpdateDeletionJournal(tombstones)', 'startup must replay durable permanent-delete intent before cloud load');
-includes(updateService, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup reconciliation must remove stale tombstoned update work');
+// Audit A2 pass 2 M1: the replay is one queue pass (replayProjectUpdateTombstonesInQueue)
+// instead of a remove + re-queue per tombstone; the same protections are pinned there.
+includes(updateService, 'replayProjectUpdateTombstonesInQueue(tombstones.map(', 'startup reconciliation must remove stale tombstoned update work');
+includes(sync, "item.entity === 'project_update' && item.operation !== 'delete'", 'the one-pass replay must drop only record work, never a queued delete');
 includes(updateService, "tombstone.action === 'delete_update_everywhere'", 'only permanent update tombstones may reconstruct a cloud delete');
 includes(updateService, 'queueProjectUpdateDelete({ id: tombstone.updateId })', 'a permanent tombstone must reconstruct a missing cloud-delete queue item');
 includes(sync, "if (item.operation === 'delete') return true", 'startup tombstone cleanup must preserve queued permanent deletes');

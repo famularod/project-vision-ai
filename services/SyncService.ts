@@ -2342,6 +2342,67 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
   });
 }
 
+export type ProjectUpdateTombstoneReplay = {
+  updateId: string;
+  /** Re-queue a cloud archive when none is queued; null for any archive time. */
+  archive: false | { archivedAt: string | null };
+};
+
+/**
+ * The startup replay of the field-update deletion journal as ONE queue pass
+ * (whole-app audit A2 pass 2 M1). Before, every tombstone ever made removed
+ * and re-added its own queue item: about five queue rewrites per old archive
+ * on every launch. Now record work for a tombstoned update is dropped, an
+ * archive already queued is kept as it is (with its retry state), a missing
+ * archive is added, and the queue is written once, only when something
+ * changed. Queued deletes are never touched; their ids are returned.
+ */
+export async function replayProjectUpdateTombstonesInQueue(
+  replays: readonly ProjectUpdateTombstoneReplay[],
+): Promise<{ queuedDeleteIds: ReadonlySet<string> }> {
+  const byId = new Map(replays.filter(replay => replay.updateId.trim()).map(replay => [replay.updateId, replay]));
+  const ownerId = currentCloudOwner().ownerId;
+  const queuedAt = new Date().toISOString();
+  const outcome = await mutateOfflineQueue(queue => {
+    const updateItems = queue.filter(item => item.entity === 'project_update');
+    const payloadId = (item: SyncQueueItem) => (item.payload as Partial<ProjectUpdateRecordPayload>).id;
+    const queuedDeleteIds = new Set(updateItems.flatMap(item => {
+      const id = item.operation === 'delete' ? payloadId(item) : undefined;
+      return id ? [id] : [];
+    }));
+    const archiveKept = new Set<string>();
+    const kept = queue.filter(item => {
+      const replay = item.entity === 'project_update' && item.operation !== 'delete'
+        ? byId.get(payloadId(item) ?? '')
+        : undefined;
+      if (!replay) return true;
+      const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+      const sameArchive = replay.archive !== false && payload.archiveOnly === true &&
+        item.id === projectUpdateQueueItemId(replay.updateId) &&
+        (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt);
+      if (sameArchive) archiveKept.add(replay.updateId);
+      return sameArchive;
+    });
+    const added: SyncQueueItem[] = [...byId.values()].flatMap(replay => {
+      if (replay.archive === false || archiveKept.has(replay.updateId) || queuedDeleteIds.has(replay.updateId)) return [];
+      const archivedAt = replay.archive.archivedAt || queuedAt;
+      return [{
+        id: projectUpdateQueueItemId(replay.updateId), entity: 'project_update', operation: 'update',
+        payload: { id: replay.updateId, updateData: undefined, archiveOnly: true, archivedAt },
+        createdAt: queuedAt, changedAt: archivedAt, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
+      }];
+    });
+    const changed = added.length > 0 || kept.length !== queue.length;
+    return {
+      nextQueue: [...kept, ...added],
+      result: { queuedDeleteIds, added: added.length },
+      persist: changed,
+    };
+  });
+  if (outcome.added > 0) requestPendingChangesUpload('queue_item_enqueued');
+  return { queuedDeleteIds: outcome.queuedDeleteIds };
+}
+
 export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
 ): Promise<StagedProjectUpdateSync> {

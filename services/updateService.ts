@@ -3,10 +3,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   hydrateProjectUpdatePhotoPreviews,
   hydrateRecoveredProjectUpdatePhotos,
-  queueProjectUpdateArchive,
   queueProjectUpdateDelete,
   queueProjectUpdateRecord,
-  removeProjectUpdateFromSyncQueue,
+  replayProjectUpdateTombstonesInQueue,
   requestPendingChangesUpload,
   runFieldUpdateCloudSync,
 } from './SyncService';
@@ -143,20 +142,21 @@ export async function reconcileProjectUpdateDeletionJournal(
     'updateId' | 'action' | 'deletedAt' | 'cloudIdPresent'
   >[],
 ): Promise<void> {
-  await Promise.allSettled(tombstones.map(async tombstone => {
-    await removeProjectUpdateFromSyncQueue(tombstone.updateId);
-    if (tombstone.action === 'delete_update_everywhere') {
-      await queueProjectUpdateDelete({ id: tombstone.updateId });
-    } else if (
-      tombstone.action === 'archive_sent_update' ||
+  // One queue pass for every tombstone (whole-app audit A2 pass 2 M1): stale
+  // record work goes, an archive already queued stays, and only a missing
+  // delete or archive is added. It was about five queue rewrites per old
+  // archive on every launch. An archive the cloud has confirmed is already a
+  // 'hide_cloud_update' tombstone (the startup cloud merge), so it is not sent again.
+  const { queuedDeleteIds } = await replayProjectUpdateTombstonesInQueue(tombstones.map(tombstone => ({
+    updateId: tombstone.updateId,
+    archive: tombstone.action === 'archive_sent_update' ||
       (tombstone.action === 'remove_from_device' && tombstone.cloudIdPresent)
-    ) {
-      await queueProjectUpdateArchive(
-        tombstone.updateId,
-        tombstone.deletedAt || new Date().toISOString(),
-      );
-    }
-  }));
+      ? { archivedAt: tombstone.deletedAt || null }
+      : false,
+  })));
+  await Promise.allSettled(tombstones
+    .filter(tombstone => tombstone.action === 'delete_update_everywhere' && !queuedDeleteIds.has(tombstone.updateId))
+    .map(tombstone => queueProjectUpdateDelete({ id: tombstone.updateId })));
 }
 
 export async function loadCloudUpdates<TUpdate>(): Promise<TUpdate[]> {
