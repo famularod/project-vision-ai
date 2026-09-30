@@ -214,12 +214,24 @@ export function buildProjectDeletionCascade<
 
   const projectMatches = (value: string | null | undefined) =>
     normalizedScope(value) === normalizedProjectName;
+  const scheduleItemIds = new Set(scheduleItems.map(item => normalizedScope(item.id)).filter(Boolean));
+  // An update kept as historical evidence for a task deleted earlier
+  // belongs to no project by the shared scope rule (it fails closed on a
+  // missing task), so a project deletion left it behind, still listed under
+  // the deleted project's name (whole-app audit A3, 30 Sep 2026). For the
+  // cascade only: such an update goes with the project it names, the
+  // explicit parent first, as the scope rule reads it.
+  const historicalEvidenceOfProject = (update: TUpdate) => {
+    const scheduleItemId = normalizedScope(update.scheduleItemId);
+    if (!scheduleItemId || scheduleItemIds.has(scheduleItemId)) return false;
+    return projectMatches(normalizedScope(update.scheduleProjectName) || update.projectName);
+  };
   const updateMatchesProject = (update: TUpdate) =>
     projectUpdateBelongsToParentProject({
       update,
       projectName,
       scheduleItems,
-    });
+    }) || historicalEvidenceOfProject(update);
   const remainingUpdates = updates.filter(update => !updateMatchesProject(update));
   const removedUpdates = updates.filter(update => updateMatchesProject(update));
   const remainingProjectDocuments = projectDocuments.filter(document =>

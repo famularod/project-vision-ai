@@ -135,11 +135,14 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       const record = projectRecordFromCloud(cloudProject);
       const keys = new Set([normalizedKey(record.id), normalizedKey(record.name)].filter(Boolean));
       if (pendingQueue.some(item => queuedProjectTouches(item, keys))) return true;
-      const records = replaceOperationalRecord(
-        state.projectRecords,
-        record,
-        candidate => candidate.id || candidate.name,
-      );
+      // A row for a project this device deleted (a teammate's late edit
+      // echo) does not bring it back; the refresh applies the same list
+      // (whole-app audit A3, 30 Sep 2026).
+      if (state.deletedProjectNames.some(name => keys.has(normalizedKey(name)))) return true;
+      // The local record of a project added on this phone has no id yet; the
+      // echo of its create carries one, so match by id, then by name, or the
+      // list held two rows for the name until the next launch (audit A3).
+      const records = replaceProjectRecord(state.projectRecords, record);
       const projects = options.mergeProjectNames(state.projects, [record.name]);
       const archived = cloudProject.archived
         ? options.mergeProjectNames(state.archivedProjects, [record.name])
@@ -260,6 +263,19 @@ export function createDAVEOperationalRealtimeCommit<T>(
     ref.current = value;
     commit(value);
   };
+}
+
+function replaceProjectRecord(current: readonly ProjectRecord[], next: ProjectRecord): ProjectRecord[] {
+  const nextId = normalizedKey(next.id || '');
+  const nextName = normalizedKey(next.name);
+  const matches = (candidate: ProjectRecord) =>
+    (Boolean(nextId) && normalizedKey(candidate.id || '') === nextId) ||
+    (Boolean(nextName) && normalizedKey(candidate.name) === nextName);
+  const index = current.findIndex(matches);
+  if (index < 0) return [next, ...current];
+  const merged = current.filter((candidate, position) => position === index || !matches(candidate));
+  merged[merged.indexOf(current[index])] = next;
+  return merged;
 }
 
 export function replaceOperationalRecord<T>(

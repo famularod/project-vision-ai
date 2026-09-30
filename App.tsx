@@ -213,6 +213,7 @@ import {
   useStartupHydration,
 } from './hooks/use-startup-hydration';
 import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
+import { useCommittedText } from './hooks/use-committed-text';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import type {
   ActionStatus,
@@ -349,6 +350,7 @@ import { buildProjectDeletionCascade, buildProjectDeletionOperations,
   PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
 import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
+import { deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges } from './services/ProjectNameRules';
 import {
   FileSizePreflightError,
   hashExpoFileSha256,
@@ -5709,12 +5711,8 @@ useEffect(() => {
       ]);
       if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
       const localProjects = normalizeProjectRecords(localResult.value);
-      const queuedDeletedNames = queuedChanges
-        .filter(item => item.entity === 'project' && item.operation === 'delete')
-        .map(item => {
-          const payload = item.payload as Record<string, unknown>;
-          return typeof payload.name === 'string' ? payload.name : '';
-        });
+      const queuedProjectChanges = queuedProjectNameChanges(queuedChanges);
+      const queuedDeletedNames = queuedProjectChanges.deletedNames;
       const deletedNames = mergeProjectNames(
         mergeProjectNames(
           mergeProjectNames(
@@ -5767,6 +5765,7 @@ useEffect(() => {
         const deletedKeys = new Set(
           currentDeletedNames.map(name => name.toLowerCase()),
         );
+        const { reopenedKeys } = queuedProjectChanges;
         setProjectRecords(current => {
           return mergeProjectRecords(
             [],
@@ -5780,7 +5779,11 @@ useEffect(() => {
           visibleCloudProjects.map(project => project.name),
         ).filter(project => !deletedKeys.has(project.toLowerCase())));
         setArchivedProjects(previous =>
-          mergeProjectNames(previous, cloudArchivedProjects).filter(
+          // A reopen still in the offline queue is not re-archived (audit A3).
+          mergeProjectNames(
+            previous,
+            cloudArchivedProjects.filter(project => !reopenedKeys.has(project.trim().toLowerCase())),
+          ).filter(
             project => !deletedKeys.has(project.toLowerCase()),
           ),
         );
@@ -8913,23 +8916,30 @@ function addProject(projectName: string) {
     return false;
   }
 
-  const exists = projects.some(
-    project =>
-      project.toLowerCase() === trimmed.toLowerCase(),
-  );
-
-  if (exists) {
-    Alert.alert(
-      'Already added',
-      `${trimmed} is already in your project list.`,
-    );
-
+  // A deleted name is refused with the reason; an archived one is offered for reopening (audit A3).
+  const availability = projectNameAvailability({
+    projectName: trimmed, projects, archivedProjects,
+    deletedProjectNames: deletedProjectNamesRef.current, tombstones: operationalSyncTombstonesRef.current,
+  });
+  if (availability.kind === 'deleted') {
+    const deletedOn = availability.deletedAt ? formatSavedTime(availability.deletedAt) : null;
+    Alert.alert('Name not available', deletedProjectNameMessage(trimmed, deletedOn));
+    return false;
+  }
+  if (availability.kind === 'archived') {
+    Alert.alert('Project is archived', `${trimmed} is in your archived projects. Reopen it to record updates against it again.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Reopen', onPress: () => reopenProject(availability.projectName) },
+    ]);
+    return false;
+  }
+  if (availability.kind === 'exists') {
+    Alert.alert('Already added', `${trimmed} is already in your project list.`);
     return false;
   }
 
   setProjects(prev => [trimmed, ...prev]);
   setProjectRecords(prev => [{ name: trimmed }, ...prev]);
-  clearProjectDeletion(trimmed);
 
   saveCloudProject(trimmed);
 
@@ -9132,6 +9142,8 @@ function addProject(projectName: string) {
       ]);
       void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
       void synchronizeDAVESyncTombstones().catch(() => undefined);
+      const deletedCoverPhoto = projectRecords.find(project => project.name.toLowerCase() === projectName.toLowerCase())?.coverPhoto;
+      void removeCachedProjectCoverPhoto(deletedCoverPhoto).catch(() => undefined); // goes with the project (audit A3)
       const [cloudQueueResult, fileCleanupResult] = await Promise.allSettled([
         projectDeletionRuntime.processPendingCloudIntents(),
         projectDeletionRuntime.processPendingFileCleanupIntents(),
@@ -18301,6 +18313,8 @@ function AreaDetailModal({
   onUseCurrentLocation: () => void;
 }) {
   const [radiusText, setRadiusText] = useState(area ? String(area.radiusFeet) : '250');
+  // Committed when the field is left or the sheet closes (audit A3).
+  const areaName = useCommittedText(area?.name, area?.id, name => onUpdate({ name }));
 
   // Deliberately keyed on area?.id only, not area?.radiusFeet: this field is
   // actively edited via onUpdate -> a parent state update -> a new `area`
@@ -18313,6 +18327,11 @@ function AreaDetailModal({
   }, [area?.id]);
 
   if (!area) return null;
+
+  function closeWithName() {
+    areaName.commit();
+    onClose();
+  }
 
   function updateRadius(value: string) {
     setRadiusText(value);
@@ -18329,7 +18348,7 @@ function AreaDetailModal({
       visible={visible}
       animationType="slide"
       transparent
-      onRequestClose={onClose}
+      onRequestClose={closeWithName}
     >
       <View style={styles.detailModalBackdrop}>
         <View style={[styles.detailModalCardFrame, styles.detailModalCardContent]}>
@@ -18341,7 +18360,7 @@ function AreaDetailModal({
 
             <TouchableOpacity
               style={styles.detailCloseButton}
-              onPress={onClose}
+              onPress={closeWithName}
               accessibilityLabel="Close location details"
             >
               <Ionicons name="close" size={22} color={colors.text} />
@@ -18351,8 +18370,9 @@ function AreaDetailModal({
           <Text style={styles.label}>Location name</Text>
           <TextInput
             style={styles.input}
-            value={area.name}
-            onChangeText={name => onUpdate({ name })}
+            value={areaName.text}
+            onChangeText={areaName.setText}
+            onBlur={areaName.commit}
             placeholder="Location name"
             placeholderTextColor={colors.muted}
           />
@@ -18406,7 +18426,10 @@ function AreaDetailModal({
             <PrimaryButton
               label="Update GPS"
               icon="navigate-outline"
-              onPress={onUseCurrentLocation}
+              onPress={() => {
+                areaName.commit();
+                onUseCurrentLocation();
+              }}
               compact
             />
             <SecondaryButton
