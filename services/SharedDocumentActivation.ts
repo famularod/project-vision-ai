@@ -282,6 +282,79 @@ export function importedScheduleOfPhoneSchedule(
 }
 
 /**
+ * Whether a phone schedule card reads "Current Schedule": the schedule this
+ * phone shows for the card's project (Q15 retirements included) is the
+ * card's shared copy or its import. The card's own flag was set only by
+ * its Make Current and never followed the cloud, so the badge stayed and
+ * the button stayed disabled after Set Active, an import, the iPad or the
+ * web made another schedule current (whole-app audit A8 pass 3 L1). The
+ * flag is used only when the card has no shared copy or import on this
+ * phone, or no known project.
+ */
+export function phoneScheduleCardIsCurrent(
+  card: Readonly<{
+    id: string;
+    isCurrent?: boolean | null;
+    referenceDocumentId?: string | null;
+    ownedFileId?: string | null;
+    ownedFileManifest?: unknown;
+  }>,
+  projectName: string | null,
+  documents: readonly ReferenceDocument[],
+): boolean {
+  const sharedId = card.referenceDocumentId || card.id;
+  const own = [
+    documents.find(document => document.id === sharedId && isScheduleDocument(document)),
+    importedScheduleOfPhoneSchedule(card, projectName, documents),
+  ].filter((document): document is ReferenceDocument => Boolean(document));
+  if (own.length === 0 || !projectName?.trim()) return Boolean(card.isCurrent);
+  const shown = currentScheduleDocumentsByProject(documents);
+  const current = [shown.get(scheduleProjectScopeKey(projectName)), shown.get('')];
+  return own.some(document => current.some(candidate => candidate?.id === document.id));
+}
+
+/**
+ * Whether these schedule bytes are already imported for exactly these
+ * projects, so the import is refused as a duplicate. Only an import counts:
+ * a schedule with an import batch (the phone's, the iPad's and the web's
+ * imports all have one) or with tasks of its own. A phone schedule card's
+ * shared copy (its upload, or the record Make Current made of it) has
+ * neither, and it refused "Import This Schedule" on every card that had
+ * uploaded, and the same file from the Schedule screen, with "Schedule
+ * already added" (whole-app audit A8 pass 3 M1).
+ */
+export function scheduleImportAlreadyAdded({
+  documents,
+  scheduleItems,
+  documentId,
+  contentSha256,
+  projectNames,
+}: Readonly<{
+  documents: readonly ReferenceDocument[];
+  scheduleItems: readonly ScheduleItem[];
+  /** The import's own record id; the same id is the same import. */
+  documentId: string;
+  contentSha256: string;
+  projectNames: readonly string[];
+}>): boolean {
+  const scope = canonicalProjectNames(projectNames);
+  return documents.some(document => document.id === documentId || (
+    isScheduleDocument(document) &&
+    document.contentSha256 === contentSha256 &&
+    canonicalProjectNames(document.projectNames || []) === scope &&
+    (Boolean(cloudKey(document.importBatchId)) || scheduleItems.some(item => scheduleContainsItem(document, item)))
+  ));
+}
+
+function canonicalProjectNames(projectNames: readonly unknown[]): string {
+  return [...new Set(projectNames
+    .map(name => typeof name === 'string' ? name.trim().toLowerCase().replace(/\s+/g, ' ') : '')
+    .filter(Boolean))]
+    .sort()
+    .join('|');
+}
+
+/**
  * What the web says once a schedule is made current, true before and after
  * the Q15 migration: the projects it is now current for and, when the
  * activation's response says the cloud keeps combined schedules current per

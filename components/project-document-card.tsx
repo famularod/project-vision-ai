@@ -80,6 +80,7 @@ function projectDocumentStatusDetail(document: ProjectDocumentCardDocument) {
 export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocument>({
   document,
   sharedReferenceDocument,
+  scheduleCurrent,
   projectAreas,
   updates,
   onOpen,
@@ -92,6 +93,11 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
 }: {
   document: TDocument;
   sharedReferenceDocument: ReferenceDocument | null;
+  /**
+   * A schedule card's current state as this phone shows the schedules; the
+   * card's own flag when not given (whole-app audit A8 pass 3 L1).
+   */
+  scheduleCurrent?: boolean;
   projectAreas: ProjectDocumentCardArea[];
   updates: ProjectDocumentCardUpdate[];
   onOpen: () => void;
@@ -103,6 +109,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
   onDelete: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const isCurrentSchedule = document.category === 'Schedule' && (scheduleCurrent ?? Boolean(document.isCurrent));
   const selectedUpdate = updates.find(update => update.id === document.updateId);
   const selectedArea = projectAreas.find(area => area.id === document.areaId);
   const updateDocument = (next: Partial<ProjectDocumentCardDocument>) => {
@@ -130,7 +137,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           <Text style={styles.rowSub}>
             {document.category} · {projectDocumentStatusDetail(document)}
           </Text>
-          {document.category === 'Schedule' && document.isCurrent ? (
+          {isCurrentSchedule ? (
             <View style={[styles.statusPill, styles.documentCurrentBadge]}>
               <Text style={[styles.statusPillText, { color: colors.success }]}>Current Schedule</Text>
             </View>
@@ -199,21 +206,21 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           style={[
             styles.photoControlButton,
             styles.documentCurrentControl,
-            document.isCurrent && { backgroundColor: colors.successSoft, borderColor: colors.success },
+            isCurrentSchedule && { backgroundColor: colors.successSoft, borderColor: colors.success },
           ]}
           onPress={onSetCurrentSchedule}
-          disabled={document.isCurrent}
+          disabled={isCurrentSchedule}
         >
           <Ionicons
-            name={document.isCurrent ? 'checkmark-circle' : 'calendar-outline'}
+            name={isCurrentSchedule ? 'checkmark-circle' : 'calendar-outline'}
             size={18}
-            color={document.isCurrent ? colors.success : colors.primary}
+            color={isCurrentSchedule ? colors.success : colors.primary}
           />
           <Text style={[
             styles.photoControlText,
-            document.isCurrent && { color: colors.success },
+            isCurrentSchedule && { color: colors.success },
           ]}>
-            {document.isCurrent ? 'Current Schedule' : 'Make Current Schedule'}
+            {isCurrentSchedule ? 'Current Schedule' : 'Make Current Schedule'}
           </Text>
         </TouchableOpacity>
       ) : null}

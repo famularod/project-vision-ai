@@ -312,7 +312,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, scheduleDocumentsAfterActivation, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportAlreadyAdded, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -1206,12 +1206,6 @@ const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Medium',
   'High',
 ];
-function canonicalProjectNameSet(projectNames: readonly string[]) {
-  return [...new Set(projectNames
-    .map(name => name.trim().toLowerCase().replace(/\s+/g, ' '))
-    .filter(Boolean))]
-    .sort();
-}
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -12072,15 +12066,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projects: scopedProjectRecords,
       documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
     });
-    const alreadyImported = referenceDocumentsCurrentRef.current.some(document =>
-      document.id === sourceIdentity.documentId ||
-      (
-        document.category === 'Schedules' &&
-        document.contentSha256 === sourceIdentity.contentSha256 &&
-        canonicalProjectNameSet(document.projectNames || []).join('|') ===
-          canonicalProjectNameSet(scopeProjects).join('|')
-      ),
-    );
+    const alreadyImported = scheduleImportAlreadyAdded({ // an import, not a card's own shared copy (whole-app audit A8 pass 3 M1)
+      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current,
+      documentId: sourceIdentity.documentId, contentSha256: sourceIdentity.contentSha256, projectNames: scopeProjects,
+    });
     if (alreadyImported) {
       Alert.alert(
         'Schedule already added',
@@ -17906,6 +17895,7 @@ function ProjectDocumentsScreen({
       <ProjectDocumentCard
         document={item}
         sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(item, referenceDocuments)}
+        scheduleCurrent={phoneScheduleCardIsCurrent(item, projectNames.find(name => projectDocumentMatchesProject(item, name)) || projectName, referenceDocuments)}
         projectAreas={projectAreas}
         updates={updates}
         onOpen={() => onOpen(item)}
