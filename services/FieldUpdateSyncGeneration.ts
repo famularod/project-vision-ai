@@ -61,17 +61,22 @@ function generationSignature(
  * recovery fields, and a field stored as null reads as a missing one: a
  * relaunch writes those fields as null on the phone's copy while the queued
  * copy has none, which read as a new generation and let the sign-in refresh
- * replace a resumed edit (audit A4 pass 5).
+ * replace a resumed edit (audit A4 pass 5). Nor does the photo's local file
+ * path count, as in the cloud receipt: an app update moves the app's folder,
+ * the phone's copy is read back under the new path while the queued copy
+ * keeps the old one, and the refresh put the older cloud copy over the
+ * pending edit (whole-app audit A7 pass 4 #2 (30 Sep 2026)).
  */
 export function sameFieldUpdateSyncGeneration(
   left: FieldUpdateSyncGenerationRecord,
   right: FieldUpdateSyncGenerationRecord,
 ): boolean {
-  return generationSignature(withoutPhotoCloudFields(left), true) ===
-    generationSignature(withoutPhotoCloudFields(right), true);
+  return generationSignature(withoutPhotoTransportFields(left), true) ===
+    generationSignature(withoutPhotoTransportFields(right), true);
 }
 
-const PHOTO_CLOUD_FIELDS = [
+const PHOTO_TRANSPORT_FIELDS = [
+  'uri',
   'cloudStoragePath',
   'cloudRecoveredAt',
   'cloudRecoveryStatus',
@@ -80,14 +85,14 @@ const PHOTO_CLOUD_FIELDS = [
   'cloudPreviewSignedUrlExpiresAt',
 ] as const;
 
-function withoutPhotoCloudFields<T extends FieldUpdateSyncGenerationRecord>(update: T): T {
+function withoutPhotoTransportFields<T extends FieldUpdateSyncGenerationRecord>(update: T): T {
   if (!Array.isArray(update.photos)) return update;
   return {
     ...update,
     photos: update.photos.map(photo => {
       if (!photo || typeof photo !== 'object') return photo;
       const rest = { ...(photo as Record<string, unknown>) };
-      PHOTO_CLOUD_FIELDS.forEach(field => {
+      PHOTO_TRANSPORT_FIELDS.forEach(field => {
         delete rest[field];
       });
       return rest;

@@ -9,7 +9,8 @@ describe('A4 pass 4 lows', () => {
   it('the generation guard ignores photo storage paths and the receipt aligns them (behaviour in audit-a4-batch4)', () => {
     const generation = read('services/FieldUpdateSyncGeneration.ts');
     // Batch 6 (A4 pass 5) widened it to every cloud photo field, null read as missing.
-    expect(generation).toMatch(/return generationSignature\(withoutPhotoCloudFields\(left\), true\) ===\n\s+generationSignature\(withoutPhotoCloudFields\(right\), true\);/);
+    // Round 2 (A7 pass 4 #2) added the local file path, so the helper now names photo transport.
+    expect(generation).toMatch(/return generationSignature\(withoutPhotoTransportFields\(left\), true\) ===\n\s+generationSignature\(withoutPhotoTransportFields\(right\), true\);/);
     expect(generation).not.toContain('alignPhotoStoragePaths');
     expect(read('services/PhotoStoragePathAlignment.ts')).toContain("Boolean(other) && (pathOf(photo) === '' || pathOf(other as PhotoLike) === '');");
   });

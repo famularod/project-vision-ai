@@ -527,6 +527,41 @@ describe('a restore that commits while photos are judged (whole-app audit A4 pas
   });
 });
 
+describe('a pending edit after an app update moves the app folder (whole-app audit A7 pass 4 #2)', () => {
+  const file = `${PHOTO_STORAGE_DIR}aaa-IMG_p1.jpg`;
+  // The phone's copy as read back at relaunch: its photo path now names the new folder.
+  const edited = () => A.normalizeStoredUpdateRecord({
+    ...cloudRow('Rebar placed; inspector due', [photo('p1', `${OLD}aaa-IMG_p1.jpg`)]).updateData, status: 'queued',
+  });
+  // The same copy as it was queued before the update, under the old folder.
+  const beforeUpdate = (update: Record<string, any>) => ({
+    ...update, photos: update.photos.map((item: { uri: string }) => ({ ...item, uri: item.uri.replace(PHOTO_STORAGE_DIR, OLD) })),
+  });
+  const queued = (updateData: unknown) => ({ id: 'project-update-u1', entity: 'project_update', operation: 'update',
+    payload: { id: 'u1', updateData }, createdAt: 't', changedAt: '2026-09-30T12:00:00.000Z', retryCount: 0 });
+
+  it('the refresh keeps the queued edit over the older cloud copy', async () => {
+    mockExisting.add(file);
+    const local = edited();
+    expect(local.photos[0].uri).toBe(file);
+    const { run, savedUpdatesRef } = refreshDeps(
+      { saved: [local], queue: [queued(beforeUpdate(local))] }, undefined,
+      [cloudRow('Rebar placed', [photo('p1', `${OLD}aaa-IMG_p1.jpg`)])],
+    );
+    await run();
+    expect((savedUpdatesRef.current as Array<Record<string, any>>)[0].notes).toBe('Rebar placed; inspector due');
+  });
+
+  it('the path alone is not a new revision; a photo edit still is', () => {
+    const local = edited();
+    const queue = [queued(beforeUpdate(local))];
+    expect(hasMatchingQueuedProjectUpdateRevision(local as never, queue as never)).toBe(true);
+    const recaptioned = { ...local, photos: [{ ...local.photos[0], caption: 'Rebar, east bay' }] };
+    expect(hasMatchingQueuedProjectUpdateRevision(recaptioned as never, queue as never)).toBe(false);
+    expect(hasMatchingQueuedProjectUpdateRevision({ ...local, photos: [] } as never, queue as never)).toBe(false);
+  });
+});
+
 // Last in the file: without the fix, signings still queued at the time limit
 // would hold the shared 3-at-a-time runner for any test after this one.
 describe('a refresh on a device holding many photos from another device (whole-app audit A4 pass 6)', () => {
