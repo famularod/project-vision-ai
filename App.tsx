@@ -270,6 +270,11 @@ import { optionalString, uid } from './services/RecordValues';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
 import { classifySyncFailureText } from './services/SyncFailureCategory';
 import { forgetAllReportSessionState } from './services/ReportSessionState';
+import {
+  archiveDraftEnvelopeForValidation,
+  archiveUpdateForValidation,
+  markPhotoUnavailableInBackup,
+} from './services/BackupArchivePhotos';
 import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
 import {
   normalizeProjectItemActivity,
@@ -406,6 +411,7 @@ import {
   decryptedBytesAssetProvider, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
   type UnavailableBackupDocument, type UnavailableBackupPhoto,
+  unavailablePhotosNotice,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
@@ -2697,9 +2703,18 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
   };
 }
 
-function normalizeBackupData(value: unknown) {
+function normalizeBackupData(value: unknown, options: Readonly<{ archive?: boolean }> = {}) {
+  // An archive locates carried photos by asset id and may declare photos
+  // unavailable; judged as such, or the whole backup was refused (whole-app
+  // audit A7, 30 Sep 2026). The device rules themselves are unchanged.
+  const savedUpdate = options.archive
+    ? (item: unknown) => isStartupDeviceSavedUpdateRecord(archiveUpdateForValidation(item))
+    : isStartupDeviceSavedUpdateRecord;
+  const draftEnvelope = options.archive
+    ? (item: unknown) => isStartupDeviceDraftEnvelope(archiveDraftEnvelopeForValidation(item))
+    : isStartupDeviceDraftEnvelope;
   const preflight = preflightAppBackup(value, {
-    savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
+    savedUpdate, projectName: isStartupProjectName,
     projectRecord: value => normalizeProjectRecord(value) !== null,
     contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
     referenceDocument: isStartupReferenceDocumentRecord,
@@ -2712,7 +2727,7 @@ function normalizeBackupData(value: unknown) {
         return false;
       }
     },
-    draftEnvelope: isStartupDeviceDraftEnvelope,
+    draftEnvelope,
   });
   if (!preflight.ok) return preflight;
   const data = preflight.data;
@@ -10458,8 +10473,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // the photo's metadata with no bytes and no asset id, so a restore never
       // looks for a file this archive does not have.
       if (!source) {
-        if (includeFiles) unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date });
-        photos.push({ ...photo, uri: '' });
+        // A photo with a cloud copy is restored from it. One with neither a
+        // file in this archive nor a cloud copy (records-only, or the file
+        // is gone) is declared unavailable, so the owner is told and the
+        // restore accepts the archive and drops that photo, instead of
+        // refusing the whole backup (whole-app audit A7, 30 Sep 2026).
+        if (photo.cloudStoragePath?.trim()) {
+          photos.push({ ...photo, uri: '' });
+          continue;
+        }
+        unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date });
+        photos.push(markPhotoUnavailableInBackup(photo));
         continue;
       }
       sources.push(source);
@@ -10617,6 +10641,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
             }
           : null,
       };
+      // What is about to be written must restore: the same check the
+      // restore runs, before anything is encrypted (audit A7).
+      const restorable = normalizeBackupData(backup, { archive: true });
+      if (!restorable.ok) {
+        onProgress?.('Backup not written.');
+        Alert.alert('Backup not written', `This backup would not restore: ${restorable.message}`);
+        return;
+      }
+      if (!includeFiles && unavailablePhotos.length > 0) {
+        // Records-only carries no files: photos not yet in the cloud will
+        // not be in this backup, and the owner decides with that known.
+        const proceed = await askToContinue(
+          'Some photos are only on this phone',
+          `${unavailablePhotosNotice(unavailablePhotos)} A records-only backup cannot carry them; a full backup can.`,
+          'Back up without them',
+        );
+        if (!proceed) {
+          onProgress?.('Backup not written.');
+          return;
+        }
+      }
       const randomBytes = (length: number) => Crypto.getRandomBytesAsync(length);
 
       if (!includeFiles) {
@@ -10796,7 +10841,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         expoBackupFileIO,
         onProgress,
       ));
-      const preflight = normalizeBackupData(opened.state);
+      const preflight = normalizeBackupData(opened.state, { archive: true });
 
       if (!preflight.ok) {
         onProgress?.('Restore did not finish.');
@@ -10848,7 +10893,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       importProjectDocument: importProjectDocumentIntoOwnedStorage,
                     },
                   );
-                  const normalized = normalizeBackupData(materialized.state);
+                  // Carried photos have their files now; photos declared
+                  // unavailable are accepted here and dropped by normalizeUpdate.
+                  const normalized = normalizeBackupData(materialized.state, { archive: true });
                   if (!normalized.ok) {
                     await materialized.cleanup();
                     onProgress?.('Restore did not finish.');
