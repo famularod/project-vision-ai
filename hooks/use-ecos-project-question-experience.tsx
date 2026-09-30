@@ -156,5 +156,12 @@ export function useECOSProjectQuestionExperience({
     />
   </>;
 
-  return { open, sheets };
+  // Closes every Ask ECOS sheet (a panel that failed to render, audit A2 pass 2).
+  const close = useCallback(() => {
+    setVoiceOpen(false);
+    setTypedOpen(false);
+    dismissResult();
+  }, [dismissResult]);
+
+  return { open, close, sheets };
 }

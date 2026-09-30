@@ -96,6 +96,7 @@ import {
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
+import { OverlayErrorBoundary } from './components/overlay-error-boundary';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
 import {
@@ -9665,6 +9666,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setPhotoAuthMessage(null);
   }
 
+  function dismissAllOverlays() { // a sheet that failed to render closes (audit A2 pass 2)
+    closePhotoIntelligenceSignIn(); setPreviewPhoto(null); cancelDocumentProjectSelection(); ecosProjectQuestion.close();
+    setTalkVoiceOpen(false); setTalkTypedOpen(false); setTalkCaptureDraft(null); setTalkAnswer(null); setTalkTaskAction(null);
+    ecosDocumentEvidence.close();
+  }
+
   function markPhotoAnalysisRetryRoutedToSignIn(photoId: string) {
     const applyToUpdate = (update: ProjectUpdate): ProjectUpdate => ({
       ...update,
@@ -14099,235 +14106,236 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </ScreenScroll>
           )}
 
-          <SignInModal
-            visible={Boolean(photoAuthRequest)}
-            email={photoAuthEmail}
-            password={photoAuthPassword}
-            message={photoAuthMessage}
-            submitting={photoAuthSubmitting}
-            onEmailChange={setPhotoAuthEmail}
-            onPasswordChange={setPhotoAuthPassword}
-            onSubmit={() => {
-              void submitPhotoIntelligenceSignIn();
-            }}
-            developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
-            onDevelopmentSignUp={() => {
-              void submitPhotoIntelligenceDevelopmentSignUp();
-            }}
-            onClose={closePhotoIntelligenceSignIn}
-          />
+          <OverlayErrorBoundary screen={screen} onError={dismissAllOverlays}>
+            <SignInModal
+              visible={Boolean(photoAuthRequest)}
+              email={photoAuthEmail}
+              password={photoAuthPassword}
+              message={photoAuthMessage}
+              submitting={photoAuthSubmitting}
+              onEmailChange={setPhotoAuthEmail}
+              onPasswordChange={setPhotoAuthPassword}
+              onSubmit={() => {
+                void submitPhotoIntelligenceSignIn();
+              }}
+              developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
+              onDevelopmentSignUp={() => {
+                void submitPhotoIntelligenceDevelopmentSignUp();
+              }}
+              onClose={closePhotoIntelligenceSignIn}
+            />
 
-          <Modal
-            visible={Boolean(previewPhoto)}
-            animationType="fade"
-            transparent
-            onRequestClose={() => setPreviewPhoto(null)}
-          >
-            <View style={styles.photoModalBackdrop}>
-              <SafeAreaView style={styles.photoModalSafeArea}>
-                <View style={styles.photoModalHeader}>
-                  <View style={styles.photoModalTitleWrap}>
-                    <Text style={styles.photoModalTitle}>
-                      Photo Preview
-                    </Text>
-
-                    {previewPhoto?.caption.trim() ? (
-                      <Text
-                        style={styles.photoModalCaption}
-                        numberOfLines={2}
-                      >
-                        {previewPhoto.caption}
+            <Modal
+              visible={Boolean(previewPhoto)}
+              animationType="fade"
+              transparent
+              onRequestClose={() => setPreviewPhoto(null)}
+            >
+              <View style={styles.photoModalBackdrop}>
+                <SafeAreaView style={styles.photoModalSafeArea}>
+                  <View style={styles.photoModalHeader}>
+                    <View style={styles.photoModalTitleWrap}>
+                      <Text style={styles.photoModalTitle}>
+                        Photo Preview
                       </Text>
-                    ) : null}
+
+                      {previewPhoto?.caption.trim() ? (
+                        <Text
+                          style={styles.photoModalCaption}
+                          numberOfLines={2}
+                        >
+                          {previewPhoto.caption}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.photoModalCloseButton}
+                      onPress={() => setPreviewPhoto(null)}
+                      accessibilityLabel="Close photo preview"
+                      hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                    >
+                      <Ionicons
+                        name="close"
+                        size={30}
+                        color="#FFFFFF"
+                      />
+                    </TouchableOpacity>
                   </View>
 
-                  <TouchableOpacity
-                    style={styles.photoModalCloseButton}
-                    onPress={() => setPreviewPhoto(null)}
-                    accessibilityLabel="Close photo preview"
-                    hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                  >
-                    <Ionicons
-                      name="close"
-                      size={30}
-                      color="#FFFFFF"
+                  {previewPhoto ? (
+                    <Image
+                      source={{ uri: previewPhoto.uri }}
+                      style={styles.photoModalImage}
+                      resizeMode="contain"
                     />
-                  </TouchableOpacity>
-                </View>
+                  ) : null}
 
-                {previewPhoto ? (
-                  <Image
-                    source={{ uri: previewPhoto.uri }}
-                    style={styles.photoModalImage}
-                    resizeMode="contain"
-                  />
-                ) : null}
+                  <View style={styles.photoModalBottomBar}>
+                    <TouchableOpacity
+                      style={styles.photoModalBottomCloseButton}
+                      onPress={() => setPreviewPhoto(null)}
+                      accessibilityLabel="Close photo preview"
+                    >
+                      <Ionicons
+                        name="close-circle-outline"
+                        size={22}
+                        color="#FFFFFF"
+                      />
 
-                <View style={styles.photoModalBottomBar}>
-                  <TouchableOpacity
-                    style={styles.photoModalBottomCloseButton}
-                    onPress={() => setPreviewPhoto(null)}
-                    accessibilityLabel="Close photo preview"
-                  >
-                    <Ionicons
-                      name="close-circle-outline"
-                      size={22}
-                      color="#FFFFFF"
-                    />
+                      <Text style={styles.photoModalBottomCloseText}>
+                        Close Photo
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </SafeAreaView>
+              </View>
+            </Modal>
 
-                    <Text style={styles.photoModalBottomCloseText}>
-                      Close Photo
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </SafeAreaView>
-            </View>
-          </Modal>
-
-          <DocumentUploadDetailsSheet
-            visible={Boolean(documentUploadRequest)}
-            projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
-            selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
-            categories={PROJECT_DOCUMENT_CATEGORIES}
-            selectedCategory={documentUploadRequest?.category || 'Other'}
-            drawingControls={documentUploadRequest?.drawingControls}
-            replacementDocuments={
-              documentUploadRequest?.category === 'Drawing' &&
-              documentUploadRequest.selected.size === 1
-                ? referenceDocuments
-                    .filter(document => {
-                      const projectName = Array.from(documentUploadRequest.selected)[0];
-                      return document.isCurrent &&
-                        canonicalReferenceCategory(document) === 'drawing' &&
-                        (referenceDocumentAppliesToProject(document, projectName) ||
-                          document.projectId === authorityProjectId(projectName));
-                    })
-                    .map(document => ({
-                      id: document.id,
-                      name: document.name,
-                      revision: document.drawingRevision || null,
-                      isCurrent: document.isCurrent,
-                    }))
-                : []
-            }
-            onCategoryChange={setDocumentUploadCategory}
-            onDrawingControlsChange={setDocumentUploadDrawingControls}
-            onToggleProject={toggleDocumentUploadProject}
-            onConfirm={confirmDocumentProjectSelection}
-            onClose={cancelDocumentProjectSelection}
-          />
-
-          {ecosProjectQuestion.sheets}
-
-          <DAVEVoiceCaptureSheet
-            visible={talkVoiceOpen}
-            projectId={projectRecords.find(project => project.name.trim().toLowerCase() === talkProjectName.trim().toLowerCase())?.id?.trim() || null}
-            projectName={talkProjectName}
-            candidateProjects={reportAvailableProjectNames}
-            candidateTasks={talkCandidateTasks}
-            selectedTaskId={talkTaskId}
-            candidateLocations={talkProjectAreas.map(area => area.name)}
-            title="Talk"
-            prompt="What do you need?"
-            guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
-            continueLabel="Continue"
-            operationLabel="Create a task"
-            operationGuidance="Answer guided questions so every task field is reviewed before saving."
-            showWalkContext={false}
-            onMemoryReady={result => handleTalkInput(result.transcript, result)}
-            onProjectChange={projectName => {
-              setTalkProjectName(projectName);
-              setTalkTaskId(null);
-            }}
-            onTaskChange={setTalkTaskId}
-            onOperation={openGuidedTaskFromTalk}
-            onTypeInstead={() => {
-              setTalkVoiceOpen(false);
-              setTalkTypedOpen(true);
-            }}
-            onCancel={() => setTalkVoiceOpen(false)}
-          />
-
-          <DAVETypedCaptureSheet
-            visible={talkTypedOpen}
-            projectName={talkProjectName}
-            title="Talk"
-            prompt="What do you need?"
-            guidance="Ask a question, update a task, open a screen, or enter project information to remember."
-            placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
-            continueLabel="Continue"
-            accessibilityLabel="Talk message"
-            operationLabel="Create a task"
-            operationGuidance="Answer guided questions so every task field is reviewed before saving."
-            onContinue={text => handleTalkInput(text)}
-            onOperation={openGuidedTaskFromTalk}
-            onCancel={() => setTalkTypedOpen(false)}
-          />
-
-          {talkCaptureDraft ? (
-            <DAVECaptureConfirmationSheet
-              visible
-              transcript={talkCaptureDraft.transcript}
-              draft={talkCaptureDraft}
-              projects={reportAvailableProjectNames}
-              locations={talkProjectAreas.map(area => area.name)}
-              sourceLabel={talkCaptureDraft.evidence.some(
-                evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
-              ) ? 'Source transcript' : 'Source note'}
-              onSave={async memory => {
-                await saveCaptureMemory(memory);
-                setTalkCaptureDraft(null);
-                Alert.alert('Saved', 'The confirmed project information was added to memory.');
-              }}
-              onCancel={() => setTalkCaptureDraft(null)}
+            <DocumentUploadDetailsSheet
+              visible={Boolean(documentUploadRequest)}
+              projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
+              selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
+              categories={PROJECT_DOCUMENT_CATEGORIES}
+              selectedCategory={documentUploadRequest?.category || 'Other'}
+              drawingControls={documentUploadRequest?.drawingControls}
+              replacementDocuments={
+                documentUploadRequest?.category === 'Drawing' &&
+                documentUploadRequest.selected.size === 1
+                  ? referenceDocuments
+                      .filter(document => {
+                        const projectName = Array.from(documentUploadRequest.selected)[0];
+                        return document.isCurrent &&
+                          canonicalReferenceCategory(document) === 'drawing' &&
+                          (referenceDocumentAppliesToProject(document, projectName) ||
+                            document.projectId === authorityProjectId(projectName));
+                      })
+                      .map(document => ({
+                        id: document.id,
+                        name: document.name,
+                        revision: document.drawingRevision || null,
+                        isCurrent: document.isCurrent,
+                      }))
+                  : []
+              }
+              onCategoryChange={setDocumentUploadCategory}
+              onDrawingControlsChange={setDocumentUploadDrawingControls}
+              onToggleProject={toggleDocumentUploadProject}
+              onConfirm={confirmDocumentProjectSelection}
+              onClose={cancelDocumentProjectSelection}
             />
-          ) : null}
 
-          <DAVEConversationAnswerSheet
-            visible={Boolean(talkAnswer)}
-            projectName={talkAnswer?.projectName || talkProjectName}
-            question={talkAnswer?.question || ''}
-            answer={talkAnswer?.answer || null}
-            onOpenEvidence={citation => openTalkSupportingEvidence(
-              talkAnswer?.projectName || talkProjectName,
-              citation,
-            )}
-            onAskAnother={() => {
-              setTalkAnswer(null);
-              setTalkVoiceOpen(true);
-            }}
-            onClose={() => setTalkAnswer(null)}
-          />
+            {ecosProjectQuestion.sheets}
 
-          <ECOSDocumentEvidenceSheet
-            visible={Boolean(ecosDocumentEvidence.state)}
-            evidence={ecosDocumentEvidence.state?.evidence || null}
-            document={ecosDocumentEvidence.state?.document || null}
-            imageUri={ecosDocumentEvidence.state?.imageUri || null}
-            imageWidth={ecosDocumentEvidence.state?.imageWidth || 0}
-            imageHeight={ecosDocumentEvidence.state?.imageHeight || 0}
-            imageBounds={ecosDocumentEvidence.state?.imageBounds || null}
-            binding={ecosDocumentEvidence.state?.binding || null}
-            loading={ecosDocumentEvidence.state?.loading || false}
-            error={ecosDocumentEvidence.state?.error || null}
-            onOpenDocument={ecosDocumentEvidence.openFullDocument}
-            onClose={ecosDocumentEvidence.close}
-          />
+            <DAVEVoiceCaptureSheet
+              visible={talkVoiceOpen}
+              projectId={projectRecords.find(project => project.name.trim().toLowerCase() === talkProjectName.trim().toLowerCase())?.id?.trim() || null}
+              projectName={talkProjectName}
+              candidateProjects={reportAvailableProjectNames}
+              candidateTasks={talkCandidateTasks}
+              selectedTaskId={talkTaskId}
+              candidateLocations={talkProjectAreas.map(area => area.name)}
+              title="Talk"
+              prompt="What do you need?"
+              guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
+              continueLabel="Continue"
+              operationLabel="Create a task"
+              operationGuidance="Answer guided questions so every task field is reviewed before saving."
+              showWalkContext={false}
+              onMemoryReady={result => handleTalkInput(result.transcript, result)}
+              onProjectChange={projectName => {
+                setTalkProjectName(projectName);
+                setTalkTaskId(null);
+              }}
+              onTaskChange={setTalkTaskId}
+              onOperation={openGuidedTaskFromTalk}
+              onTypeInstead={() => {
+                setTalkVoiceOpen(false);
+                setTalkTypedOpen(true);
+              }}
+              onCancel={() => setTalkVoiceOpen(false)}
+            />
 
-          <DAVETaskActionConfirmationSheet
-            visible={Boolean(talkTaskAction)}
-            projectName={talkTaskAction?.projectName || talkProjectName}
-            command={talkTaskAction?.command || null}
-            candidates={talkTaskAction?.candidates || []}
-            selectedTaskId={talkTaskAction?.selectedTaskId || null}
-            onSelectTask={taskId => setTalkTaskAction(current => current ? {
-              ...current,
-              selectedTaskId: taskId,
-            } : null)}
-            onConfirm={confirmTalkTaskAction}
-            onCancel={() => setTalkTaskAction(null)}
-          />
+            <DAVETypedCaptureSheet
+              visible={talkTypedOpen}
+              projectName={talkProjectName}
+              title="Talk"
+              prompt="What do you need?"
+              guidance="Ask a question, update a task, open a screen, or enter project information to remember."
+              placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
+              continueLabel="Continue"
+              accessibilityLabel="Talk message"
+              operationLabel="Create a task"
+              operationGuidance="Answer guided questions so every task field is reviewed before saving."
+              onContinue={text => handleTalkInput(text)}
+              onOperation={openGuidedTaskFromTalk}
+              onCancel={() => setTalkTypedOpen(false)}
+            />
 
+            {talkCaptureDraft ? (
+              <DAVECaptureConfirmationSheet
+                visible
+                transcript={talkCaptureDraft.transcript}
+                draft={talkCaptureDraft}
+                projects={reportAvailableProjectNames}
+                locations={talkProjectAreas.map(area => area.name)}
+                sourceLabel={talkCaptureDraft.evidence.some(
+                  evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
+                ) ? 'Source transcript' : 'Source note'}
+                onSave={async memory => {
+                  await saveCaptureMemory(memory);
+                  setTalkCaptureDraft(null);
+                  Alert.alert('Saved', 'The confirmed project information was added to memory.');
+                }}
+                onCancel={() => setTalkCaptureDraft(null)}
+              />
+            ) : null}
+
+            <DAVEConversationAnswerSheet
+              visible={Boolean(talkAnswer)}
+              projectName={talkAnswer?.projectName || talkProjectName}
+              question={talkAnswer?.question || ''}
+              answer={talkAnswer?.answer || null}
+              onOpenEvidence={citation => openTalkSupportingEvidence(
+                talkAnswer?.projectName || talkProjectName,
+                citation,
+              )}
+              onAskAnother={() => {
+                setTalkAnswer(null);
+                setTalkVoiceOpen(true);
+              }}
+              onClose={() => setTalkAnswer(null)}
+            />
+
+            <ECOSDocumentEvidenceSheet
+              visible={Boolean(ecosDocumentEvidence.state)}
+              evidence={ecosDocumentEvidence.state?.evidence || null}
+              document={ecosDocumentEvidence.state?.document || null}
+              imageUri={ecosDocumentEvidence.state?.imageUri || null}
+              imageWidth={ecosDocumentEvidence.state?.imageWidth || 0}
+              imageHeight={ecosDocumentEvidence.state?.imageHeight || 0}
+              imageBounds={ecosDocumentEvidence.state?.imageBounds || null}
+              binding={ecosDocumentEvidence.state?.binding || null}
+              loading={ecosDocumentEvidence.state?.loading || false}
+              error={ecosDocumentEvidence.state?.error || null}
+              onOpenDocument={ecosDocumentEvidence.openFullDocument}
+              onClose={ecosDocumentEvidence.close}
+            />
+
+            <DAVETaskActionConfirmationSheet
+              visible={Boolean(talkTaskAction)}
+              projectName={talkTaskAction?.projectName || talkProjectName}
+              command={talkTaskAction?.command || null}
+              candidates={talkTaskAction?.candidates || []}
+              selectedTaskId={talkTaskAction?.selectedTaskId || null}
+              onSelectTask={taskId => setTalkTaskAction(current => current ? {
+                ...current,
+                selectedTaskId: taskId,
+              } : null)}
+              onConfirm={confirmTalkTaskAction}
+              onCancel={() => setTalkTaskAction(null)}
+            />
+          </OverlayErrorBoundary>
         </AppShellFrame>
       </StartupHydrationBoundary>
     </PIELiveAuthorityProvider>

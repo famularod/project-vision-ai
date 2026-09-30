@@ -7,7 +7,7 @@
  * injection only: one leaf screen and one Overview card throw.)
  */
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
-import { Dimensions } from 'react-native';
+import { Alert, Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
 import { getCurrentSessionUser } from '../services/SupabaseService';
 import { getStartupDiagnostics } from '../services/StartupDiagnostics';
@@ -155,7 +155,21 @@ jest.mock('../services/SupabaseService', () => {
 
 // Fault injection only: one leaf screen and one Overview card throw during
 // render. The boundary, the shell and the navigation under test stay real.
-const faults = { reports: true, overviewCard: false };
+const faults = { reports: true, overviewCard: false, voiceSheet: 'none' as 'none' | 'open' | 'always' };
+const voiceSheetRenders: boolean[] = [];
+jest.mock('../components/DAVEVoiceCaptureSheet', () => {
+  const actual = jest.requireActual('../components/DAVEVoiceCaptureSheet');
+  return {
+    ...actual,
+    DAVEVoiceCaptureSheet: (props: { visible: boolean }) => {
+      if (faults.voiceSheet === 'always' || (faults.voiceSheet === 'open' && props.visible)) {
+        throw new TypeError("Cannot read properties of undefined (reading 'map')");
+      }
+      voiceSheetRenders.push(props.visible);
+      return actual.DAVEVoiceCaptureSheet(props);
+    },
+  };
+});
 jest.mock('../screens/ReportsScreen', () => {
   const actual = jest.requireActual('../screens/ReportsScreen');
   return {
@@ -189,6 +203,8 @@ beforeEach(() => {
   session.mockResolvedValue({ ok: true, data: { id: 'owner-a2' } } as never);
   faults.reports = true;
   faults.overviewCard = false;
+  faults.voiceSheet = 'none';
+  voiceSheetRenders.length = 0;
 });
 
 
@@ -238,6 +254,63 @@ describe('a screen that fails to render stays inside the content area (audit A2 
     await act(async () => { fireEvent.press(within(tree.getByTestId('app-bottom-tabs')).getByLabelText('Overview')); });
     expect(tree.getByTestId('screen-error-fallback')).toBeTruthy();
     expect(caughtCount()).toBe(caughtBefore + 1);
+    tree.unmount();
+  });
+});
+
+// Audit A2 pass 2 (30 Sep 2026): the screen boundary also caught the app's
+// sheets, whose open state lives in App, so a sheet that threw while open
+// threw again after Try Again, Overview, Settings and every tab until the
+// app was force-quit (the root Retry used to remount the shell and recover).
+describe('a sheet that fails to render closes and leaves the screen alone (audit A2 pass 2)', () => {
+  it('a sheet that throws while open is closed with a notice; the screen and tabs stay; it opens again once fixed', async () => {
+    faults.reports = false;
+    faults.voiceSheet = 'open';
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+    const tabs = () => within(tree.getByTestId('app-bottom-tabs'));
+    await waitFor(() => expect(tree.getByLabelText('Open Settings')).toBeTruthy(), COLD);
+    const mountsBefore = mountedCount();
+    const caughtBefore = caughtCount();
+    await act(async () => { fireEvent.press(tabs().getByLabelText('Ask ECOS')); });
+    expect(alert).toHaveBeenCalledWith('That panel could not open.', 'It was closed. Your saved project data is safe.');
+    expect(tree.queryByTestId('screen-error-fallback')).toBeNull();
+    expect(tree.getByLabelText('Open Settings')).toBeTruthy();
+    expect(caughtCount()).toBe(caughtBefore + 1);
+    expect(mountedCount()).toBe(mountsBefore);
+    // Tabs work, and nothing keeps throwing.
+    await act(async () => { fireEvent.press(tabs().getByLabelText('Tasks')); });
+    expect(tabs().getByRole('tab', { name: 'Tasks' }).props.accessibilityState).toEqual({ selected: true });
+    expect(tree.queryByTestId('screen-error-fallback')).toBeNull();
+    expect(caughtCount()).toBe(caughtBefore + 1);
+    // Fixed: Ask ECOS opens its sheet again.
+    faults.voiceSheet = 'none';
+    voiceSheetRenders.length = 0;
+    await act(async () => { fireEvent.press(tabs().getByLabelText('Ask ECOS')); });
+    expect(voiceSheetRenders).toContain(true);
+    alert.mockRestore();
+    tree.unmount();
+  });
+
+  it('a sheet that throws even while closed leaves Overview and Settings reachable, with no loop', async () => {
+    faults.reports = false;
+    faults.voiceSheet = 'always';
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByLabelText('Open Settings')).toBeTruthy(), COLD);
+    expect(tree.queryByTestId('screen-error-fallback')).toBeNull();
+    const caughtAtOverview = caughtCount();
+    await act(async () => { fireEvent.press(tree.getByLabelText('Open Settings')); });
+    await waitFor(() => expect(tree.getByText('Data Recovery')).toBeTruthy(), COLD);
+    expect(tree.queryByTestId('screen-error-fallback')).toBeNull();
+    // At most one close-and-retry per screen: two catches on arrival, then quiet.
+    expect(caughtCount() - caughtAtOverview).toBeLessThanOrEqual(2);
+    const settled = caughtCount();
+    await act(async () => { fireEvent.press(tree.getByText('Data Recovery')); });
+    expect(tree.getByText('Export Limited Device Backup')).toBeTruthy();
+    expect(caughtCount()).toBe(settled);
+    alert.mockRestore();
     tree.unmount();
   });
 });
