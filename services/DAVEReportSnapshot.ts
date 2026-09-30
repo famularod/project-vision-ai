@@ -250,6 +250,8 @@ export type DAVEReportPeriodComparison = Readonly<{
   openDelta: number;
   overdueDelta: number;
   changes: readonly DAVEReportPeriodChange[];
+  /** How many changes there were; `changes` lists the first 20 (A6 pass 8 L1). */
+  changeCount?: number;
 }>;
 
 export function buildDAVEReportSnapshot({
@@ -332,16 +334,25 @@ export function compareDAVEReportSnapshots({
 
   const previousById = new Map(previous.tasks.map(task => [task.taskId, task]));
   const currentById = new Map(current.tasks.map(task => [task.taskId, task]));
+  // A task on new dates in a revised schedule is a new row with the file's id
+  // (whole-app audit A6 pass 8 M2): it is compared with the task the
+  // previous report had, not listed as added and removed.
+  const revisions = pairRevisedTasks(
+    previous.tasks.filter(task => !currentById.has(task.taskId)),
+    current.tasks.filter(task => !previousById.has(task.taskId)),
+  );
+  const revisedPriorIds = new Set([...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
 
   for (const task of current.tasks) {
-    const prior = previousById.get(task.taskId);
+    const prior = previousById.get(task.taskId) ?? revisions.get(task);
     if (!prior) {
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
       continue;
     }
     const wasComplete = snapshotTaskIsComplete(prior);
     const isComplete = snapshotTaskIsComplete(task);
+    const completionChanged = wasComplete !== isComplete;
     if (!wasComplete && isComplete) {
       changes.push(changeFor(task, 'completed', `${task.taskName} was completed.`));
     } else if (wasComplete && !isComplete) {
@@ -353,7 +364,9 @@ export function compareDAVEReportSnapshots({
         `${task.taskName} moved from ${prior.percentComplete}% to ${task.percentComplete}% complete.`,
       ));
     }
-    if (normalized(prior.status) !== normalized(task.status)) {
+    // "Was completed" (or reopened) already says it; the status line took a
+    // second of the report's six lines for the same task (A6 pass 8 L1).
+    if (!completionChanged && normalized(prior.status) !== normalized(task.status)) {
       changes.push(changeFor(task, 'status', `${task.taskName} changed from ${prior.status} to ${task.status}.`));
     }
     if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
@@ -394,10 +407,11 @@ export function compareDAVEReportSnapshots({
   }
 
   for (const task of previous.tasks) {
-    if (currentById.has(task.taskId)) continue;
+    if (currentById.has(task.taskId) || revisedPriorIds.has(task.taskId)) continue;
     changes.push(changeFor(task, 'removed', `${task.taskName} was removed from the current project plan.`));
   }
 
+  const distinctChanges = dedupeChanges(changes);
   return Object.freeze({
     basis: 'previous_approved_report',
     label: `Since the report approved ${formatPeriodDate(previous.capturedAt)}`,
@@ -406,7 +420,8 @@ export function compareDAVEReportSnapshots({
     completeDelta: completeCount(current.tasks) - completeCount(previous.tasks),
     openDelta: openCount(current.tasks) - openCount(previous.tasks),
     overdueDelta: overdueCount(current.tasks) - overdueCount(previous.tasks),
-    changes: Object.freeze(dedupeChanges(changes).slice(0, 20).map(change => Object.freeze(change))),
+    changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
+    changeCount: distinctChanges.length,
   });
 }
 
@@ -416,6 +431,53 @@ export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
     .filter(Boolean)
     .sort()
     .join('|') || 'selected-projects';
+}
+
+/**
+ * The previous report's task each unmatched current task revises (whole-app
+ * audit A6 pass 8 M2, 30 Sep 2026), paired as the schedule import pairs a
+ * revised row with the saved task (ScheduleImportMerge pairTaskRevisions):
+ * by project, task name and area, where a task the previous report had with
+ * no area matches any area. Same-named tasks pair in finish-date order, and
+ * only when there are as many of them before as now and no earlier task
+ * could be either of two; otherwise they stay added and removed.
+ */
+function pairRevisedTasks(
+  previous: readonly DAVEReportSnapshotTask[],
+  current: readonly DAVEReportSnapshotTask[],
+): Map<DAVEReportSnapshotTask, DAVEReportSnapshotTask> {
+  const pairs = new Map<DAVEReportSnapshotTask, DAVEReportSnapshotTask>();
+  if (!previous.length || !current.length) return pairs;
+  const groups = new Map<string, DAVEReportSnapshotTask[]>();
+  current.forEach(task => {
+    const group = [task.projectName, task.taskName, task.areaName].map(normalized).join('|');
+    groups.set(group, [...(groups.get(group) || []), task]);
+  });
+  const candidates = [...groups.values()].map(rows => ({
+    rows,
+    earlier: previous.filter(task => sameRevisedTask(task, rows[0])),
+  }));
+  const groupCount = new Map<DAVEReportSnapshotTask, number>();
+  candidates.forEach(({ earlier }) => earlier.forEach(task => groupCount.set(task, (groupCount.get(task) || 0) + 1)));
+  candidates
+    .filter(({ rows, earlier }) => rows.length === earlier.length && earlier.every(task => groupCount.get(task) === 1))
+    .forEach(({ rows, earlier }) => {
+      const earlierInOrder = inFinishOrder(earlier);
+      inFinishOrder(rows).forEach((task, index) => pairs.set(task, earlierInOrder[index]));
+    });
+  return pairs;
+}
+
+function sameRevisedTask(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): boolean {
+  if (normalized(earlier.projectName) !== normalized(now.projectName)) return false;
+  if (normalized(earlier.taskName) !== normalized(now.taskName)) return false;
+  return !normalized(earlier.areaName) || normalized(earlier.areaName) === normalized(now.areaName);
+}
+
+function inFinishOrder(tasks: readonly DAVEReportSnapshotTask[]): DAVEReportSnapshotTask[] {
+  const finish = (task: DAVEReportSnapshotTask) => parsePlainDate(task.finishDate) || '\uffff';
+  return [...tasks].sort((left, right) =>
+    finish(left).localeCompare(finish(right)) || left.taskId.localeCompare(right.taskId));
 }
 
 function changeFor(

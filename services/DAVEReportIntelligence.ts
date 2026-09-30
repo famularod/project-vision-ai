@@ -120,6 +120,11 @@ export type DAVEReportBriefing = Readonly<{
   dashboard: DAVEReportDashboardMetrics;
   projectConditions: readonly DAVEReportProjectCondition[];
   recentChanges: readonly DAVEReportRecentChange[];
+  /**
+   * How many changes there were in the period; `recentChanges` lists the
+   * first 12, and the written report names six and counts the rest (A6 pass 8 L1).
+   */
+  recentChangeCount?: number;
   milestones: readonly DAVEReportMilestone[];
   completedWork: readonly string[];
   currentWork: readonly string[];
@@ -218,7 +223,11 @@ export function buildDAVEReportBriefing({
     .map(decision =>
       `${truthProjectName(truths, decision.taskId)} — ${decision.taskName}: ${decision.recommendation.action}`,
     )).slice(0, 8);
-  const recentChanges = buildRecentChanges({ truths, reportingPeriod });
+  const allRecentChanges = buildRecentChanges({ truths, reportingPeriod });
+  const recentChanges = allRecentChanges.slice(0, 12);
+  // The period's own list stops at 20; the ones it left out still count.
+  const recentChangeCount = allRecentChanges.length +
+    Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
   const completedWork = unique(truths.flatMap(truth => truth.schedule
     .filter(scheduleProgressIsComplete)
@@ -275,6 +284,7 @@ export function buildDAVEReportBriefing({
     dashboard,
     projectConditions,
     recentChanges,
+    recentChangeCount,
     milestones,
     completedWork,
     currentWork,
@@ -609,7 +619,8 @@ function formatReportBody(
         `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
           `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
           `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
-        ...briefing.recentChanges.slice(0, 6).map(change => change.summary),
+        ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
+        ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
       ]
     : ['This approval establishes the baseline for the next reporting period.'];
   const actions = (format === 'executive'
@@ -653,6 +664,13 @@ function formatReportBody(
   const lines = format === 'executive' ? executiveLines : projectManagerLines;
   lines.push('', draft.closingLine);
   return lines.filter((value, index, values) => value || values[index - 1]).join('\n').trim();
+}
+
+/** The changes the written report names; the rest are counted (A6 pass 8 L1). */
+const SINCE_LINES = 6;
+
+function moreChangesLine(more: number): string[] {
+  return more > 0 ? [`And ${more} more change${more === 1 ? '' : 's'}.`] : [];
 }
 
 function formatReportAction(action: DAVEReportAction) {
@@ -841,7 +859,7 @@ function buildRecentChanges({
     [...comparisonChanges, ...taskChanges]
       .sort((left, right) => (dateValue(right.occurredAt) ?? 0) - (dateValue(left.occurredAt) ?? 0)),
     change => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`,
-  ).slice(0, 12);
+  );
 }
 
 function buildReportMilestones(
