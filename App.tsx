@@ -318,6 +318,7 @@ import {
   validateECOSMobileDrawingControls,
 } from './services/ECOSMobileDrawingOnboarding';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
+import { withRestoredReferenceDocumentBytes, type ReferenceDocumentByteRestoreResult } from './services/ReferenceDocumentByteRestore';
 import { openGoogleDriveReferenceDocument } from './services/ReferenceDocumentBrowser';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
@@ -10957,23 +10958,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  function updateReferenceDocument(
-    documentId: string,
-    next: Partial<ReferenceDocument>,
-  ) {
-    const updatedAt = new Date().toISOString();
-    const updated = referenceDocumentsCurrentRef.current.map(document =>
-      document.id === documentId
-        ? normalizeReferenceDocument({ ...document, ...next, updatedAt })
-        : document,
-    );
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = updated;
-    setReferenceDocuments(updated);
-    const changed = updated.find(document => document.id === documentId);
-    if (changed) void queueReferenceDocumentRecord(changed);
-  }
-
   async function activateReferenceDocument(documentId: string): Promise<boolean> {
     const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
     if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
@@ -11093,7 +11077,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         sizeBytes: restored.sizeBytes,
         contentSha256: restored.sha256,
       };
-      updateReferenceDocument(document.id, readableDocument);
+      saveRestoredReferenceDocumentLocally(restored);
       return readableDocument;
     }
 
@@ -11106,6 +11090,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ...document,
       uri: resolvedUri,
     };
+  }
+
+  /** An open keeps the restored file on this phone only: no new edit time, nothing queued (whole-app audit A8 pass 1 F4 (30 Sep 2026)). */
+  function saveRestoredReferenceDocumentLocally(restored: ReferenceDocumentByteRestoreResult) {
+    const updated = withRestoredReferenceDocumentBytes(referenceDocumentsCurrentRef.current, restored);
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
   }
 
   async function openReferenceDocument(document: ReferenceDocument) {
