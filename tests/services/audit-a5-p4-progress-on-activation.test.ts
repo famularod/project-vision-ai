@@ -164,6 +164,8 @@ describe('Set Active carries progress recorded since the import to the task now 
       reconcileCurrentScheduleDocuments: (documents: ReferenceDocument[]) => documents,
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
       scheduleProgressCarriedOnActivation, scheduleItemsCurrentRef, markScheduleItemsAuthorityReady: jest.fn(), setScheduleItems: jest.fn(),
+      // Audit A8 pass 3 M2 (landed alongside): no typed text is waiting here.
+      requeueReferenceDocumentEditsOutlivingActivation: async () => [],
       syncScheduleItemRevision, advanceScheduleItemSyncGeneration: () => 1,
       Alert: { alert: jest.fn() },
     };

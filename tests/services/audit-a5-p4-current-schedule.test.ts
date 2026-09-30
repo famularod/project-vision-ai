@@ -97,6 +97,8 @@ describe('a newer lookahead no longer strands the combined master (A5 pass 4 #2)
       reconcileCurrentScheduleDocuments: (next: ReferenceDocument[]) => next,
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
       scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: items },
+      // Audit A8 pass 3 M2 (landed alongside): no typed text is waiting here.
+      requeueReferenceDocumentEditsOutlivingActivation: async () => [],
       Alert: { alert: jest.fn() },
     };
     const js = ts.transpileModule(`module.exports = ${app.slice(start, end).trim()}`, {

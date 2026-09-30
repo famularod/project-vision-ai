@@ -214,6 +214,8 @@ describe('after this phone\'s Make Current, the typed text is queued again and s
       normalizeReferenceDocuments: (rows: unknown) => rows, scheduleRetirementMessage: () => '', Alert: { alert: jest.fn() },
       deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
       requeueReferenceDocumentEditsOutlivingActivation, mergeDAVEReferenceDocumentRecoveryRecords, reconcileCurrentScheduleDocuments,
+      // Audit A5 pass 4 #3 (landed alongside): no schedule progress to carry for a drawing.
+      scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: [] },
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
     };
     const js = ts.transpileModule(`${componentFunction('activateReferenceDocument')}\nmodule.exports = activateReferenceDocument;`, {
