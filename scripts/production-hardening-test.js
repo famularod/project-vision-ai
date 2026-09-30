@@ -231,7 +231,7 @@ for (const marker of [
   );
 }
 for (const marker of [
-  'npm audit --audit-level=low',
+  'npm audit --audit-level=high', // owner answer Q4 (30 Sep 2026)
   'npx expo prebuild --platform all --no-install --clean',
   'npm run check:release-metadata',
 ]) {

@@ -22,11 +22,12 @@ assert.equal(
   undefined,
   'Unused @expo/ngrok must not restore its vulnerable development tunnel chain.',
 );
-assert.equal(packageJson.overrides?.['brace-expansion'], '5.0.9');
+// 5.0.12: the 30 Sep 2026 brace-expansion advisories (owner answer Q11).
+assert.equal(packageJson.overrides?.['brace-expansion'], '5.0.12');
 assert.equal(packageJson.overrides?.xcode?.uuid, '11.1.1');
 assert.equal(
   packageLock.packages?.['node_modules/brace-expansion']?.version,
-  '5.0.9',
+  '5.0.12',
 );
 assert.equal(
   packageLock.packages?.['node_modules/uuid']?.version,
@@ -36,10 +37,13 @@ assert.equal(
   packageLock.packages?.['node_modules/@expo/ngrok'],
   undefined,
 );
+// CI fails on a high or critical advisory in the exact lock; the three
+// deferred moderates (decode-uri-component through expo-router) are warned
+// below, as the local gate always did (owner answer Q4, 30 Sep 2026).
 assert.match(
   mobileWorkflow,
-  /npm audit --audit-level=low/,
-  'CI must fail when the exact dependency lock regains a known advisory.',
+  /npm audit --audit-level=high/,
+  'CI must fail when the exact dependency lock regains a high or critical advisory.',
 );
 
 // Asserting that CI *mentions* npm audit proves the workflow text, not the
