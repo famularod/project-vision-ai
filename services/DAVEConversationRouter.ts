@@ -55,36 +55,42 @@ export function routeDAVEConversation({
   intelligence: DAVEProjectIntelligence;
   interface?: 'text' | 'voice';
 }): DAVEConversationRoute {
-  const text = transcript.replace(/\s+/g, ' ').trim();
-  const navigationTarget = navigationTargetFor(text);
-  if (navigationTarget) {
-    return { intent: 'navigate', transcript: text, target: navigationTarget };
+  const route = classifyDAVEConversation(transcript);
+  if (route.intent === 'navigate') {
+    return { intent: 'navigate', transcript: route.text, target: route.target };
   }
 
-  const taskUpdate = parseDAVETaskUpdateCommand(text);
-  if (taskUpdate) {
-    return { intent: 'task_update', transcript: text, command: taskUpdate };
+  if (route.intent === 'task_update') {
+    return { intent: 'task_update', transcript: route.text, command: route.command };
   }
 
-  const askIntent = routeDAVEAskIntent(text);
-  if (askIntent !== 'unknown' || looksLikeQuestion(text)) {
+  if (route.intent === 'ask') {
     return {
       intent: 'ask',
-      transcript: text,
+      transcript: route.text,
       answer: askDAVE({
-        question: text,
+        question: route.text,
         intelligence,
         interface: conversationInterface,
       }),
     };
   }
 
-  const memoryIntent = memoryIntentFor(text);
   return {
-    intent: memoryIntent.intent,
-    transcript: text,
-    suggestedFields: { [memoryIntent.field]: text },
+    intent: route.intent,
+    transcript: route.text,
+    suggestedFields: { [route.field]: route.text },
   };
+}
+
+/**
+ * The intent routeDAVEConversation chooses, without building an answer.
+ * Whole-app audit A9 pass 1 #1 (30 Sep 2026): the Talk context check uses
+ * this to tell a field note or task update from a question before it reads
+ * "it", "this" or "they" as pointing at a previous answer.
+ */
+export function classifyDAVEConversationIntent(transcript: string): DAVEConversationRoute['intent'] {
+  return classifyDAVEConversation(transcript).intent;
 }
 
 export function mentionedDAVEProject(
@@ -100,6 +106,23 @@ export function mentionedDAVEProject(
     return Boolean(number && new RegExp(`\\b${number}\\b`).test(searchable));
   });
   return numberMatches.length === 1 ? numberMatches[0] : null;
+}
+
+function classifyDAVEConversation(transcript: string):
+  | { intent: 'navigate'; text: string; target: DAVEConversationNavigationTarget }
+  | { intent: 'task_update'; text: string; command: DAVETaskUpdateCommand }
+  | { intent: 'ask'; text: string }
+  | { intent: 'remember' | 'field_information' | 'follow_up'; text: string; field: keyof DAVECaptureMemoryFields } {
+  const text = transcript.replace(/\s+/g, ' ').trim();
+  const target = navigationTargetFor(text);
+  if (target) return { intent: 'navigate', text, target };
+
+  const command = parseDAVETaskUpdateCommand(text);
+  if (command) return { intent: 'task_update', text, command };
+
+  if (routeDAVEAskIntent(text) !== 'unknown' || looksLikeQuestion(text)) return { intent: 'ask', text };
+
+  return { ...memoryIntentFor(text), text };
 }
 
 function navigationTargetFor(value: string): DAVEConversationNavigationTarget | null {

@@ -3,38 +3,48 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'services/DAVEConversationContext.ts'), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-}).outputText;
-const moduleUnderTest = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(
-  specifier => {
-    if (specifier === './DAVEAsk') {
-      return {
-        askDAVE: () => ({
-          answer: 'Fresh project answer.',
-          confidence: 'medium',
-          limitations: [],
-          supportingEvidence: [{ sourceType: 'schedule', recordId: 'fresh-task', summary: 'Fresh schedule evidence.', timelineEventId: null }],
-          timelineReferences: [],
-          recommendedNextAction: 'Review the fresh task.',
-          navigationTargets: [],
-        }),
-      };
-    }
-    throw new Error(`Unexpected runtime dependency: ${specifier}`);
-  },
-  moduleUnderTest,
-  moduleUnderTest.exports,
-);
+
+// Whole-app audit A9 pass 1 #1 (30 Sep 2026): the context check now asks the
+// conversation router whether an input is a question, so the real modules
+// load here, the way dave-conversation-router-test.js loads them.
+function loadTs(relativePath, cache = new Map()) {
+  const filename = path.join(root, relativePath);
+  if (cache.has(filename)) return cache.get(filename);
+  const module = { exports: {} };
+  cache.set(filename, module.exports);
+  const compiled = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  });
+  const localRequire = request => request.startsWith('.')
+    ? loadTs(path.relative(root, path.resolve(path.dirname(filename), `${request}.ts`)), cache)
+    : require(request);
+  vm.runInNewContext(compiled.outputText, {
+    module,
+    exports: module.exports,
+    require: localRequire,
+    Date,
+    Set,
+    Map,
+    WeakMap,
+    Math,
+    JSON,
+    Object,
+    Array,
+    RegExp,
+    encodeURIComponent,
+  }, { filename });
+  cache.set(filename, module.exports);
+  return module.exports;
+}
+
 const {
   answerDAVEConversationContext,
   resolveDAVEConversationContext,
-} = moduleUnderTest.exports;
+} = loadTs('services/DAVEConversationContext.ts');
 
 const answer = {
   answer: 'The project is at risk because controls startup is overdue.',
@@ -110,6 +120,23 @@ const stale = resolveDAVEConversationContext({
   now,
 });
 assert.strictEqual(stale.status, 'ambiguous_follow_up', 'stale history must not silently control a new conversation');
+
+for (const note of [
+  'Drywall crew said they will finish level two on Friday',
+  'Mark it complete',
+  'Is this project on track?',
+]) {
+  assert.strictEqual(
+    resolveDAVEConversationContext({ transcript: note, history, projectId: 'project-a', now }).status,
+    'standalone',
+    `${note} must not be answered with the previous reply (audit A9 pass 1 #1)`,
+  );
+}
+assert.strictEqual(
+  resolveDAVEConversationContext({ transcript: 'Did they send it?', history: [], projectId: 'project-a', now }).status,
+  'standalone',
+  'a question with "they" and no earlier answer is answered as asked, not refused',
+);
 
 // DAVEAskExperience.tsx was deleted on 2026-09-20: unreachable from either
 // entry point, and this script's own assertion below says it 'must remain

@@ -1,5 +1,6 @@
-import { askDAVE, type DAVEAskAnswer, type DAVEAskEvidence } from './DAVEAsk';
+import { askDAVE, routeDAVEAskIntent, type DAVEAskAnswer, type DAVEAskEvidence } from './DAVEAsk';
 import type { DAVEAskConversationEntry } from './DAVEAskConversation';
+import { classifyDAVEConversationIntent } from './DAVEConversationRouter';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 
 export type DAVEConversationFollowUpKind =
@@ -33,7 +34,8 @@ export function resolveDAVEConversationContext({
   maxAgeDays?: number;
 }): DAVEConversationContextResolution {
   const originalQuestion = clean(transcript);
-  if (!looksContextDependent(originalQuestion)) {
+  const dependence = contextDependence(originalQuestion);
+  if (!dependence) {
     return resolution('standalone', originalQuestion, originalQuestion, null, null, 'The question is self-contained.');
   }
 
@@ -42,6 +44,11 @@ export function resolveDAVEConversationContext({
     .filter(entry => recentEnough(entry.createdAt, now, maxAgeDays))
     .sort((left, right) => timestamp(right.createdAt) - timestamp(left.createdAt))[0] || null;
 
+  if (!prior && dependence === 'pronoun') {
+    // Whole-app audit A9 pass 1 #1 (30 Sep 2026): "Did they send it?" with
+    // nothing earlier to point at is answered as asked, not refused.
+    return resolution('standalone', originalQuestion, originalQuestion, null, null, 'No recent answer exists, so the question is answered as asked.');
+  }
   if (!prior) {
     return resolution(
       'ambiguous_follow_up',
@@ -130,8 +137,6 @@ export function answerDAVEConversationContext({
     };
   }
 
-  if (context.followUpKind === 'prior_answer') return prior;
-
   const focused = askDAVE({
     question: context.effectiveQuestion,
     intelligence,
@@ -155,13 +160,26 @@ export function answerDAVEConversationContext({
   };
 }
 
-function looksContextDependent(value: string) {
+/**
+ * Whole-app audit A9 pass 1 #1 (30 Sep 2026): every short Talk input with
+ * "it", "this" or "they" was read as a follow-up, so a field note or task
+ * update was answered with the previous reply, or refused when there was
+ * none. Only a question can point back at an answer. 'explicit' openings
+ * ("And…", "Why?", "Show me the evidence") need one; a 'pronoun' question
+ * uses one when it exists and is otherwise answered as asked.
+ */
+function contextDependence(value: string): 'explicit' | 'pronoun' | null {
   const text = normalize(value);
   const words = text.split(' ').filter(Boolean);
-  if (words.length > 14) return false;
-  if (/^(?:and\b|also\b|what about\b|what next\b|show me (?:the |that |those )?(?:evidence|records?|sources?)\b|explain (?:that|this|it)\b)/.test(text)) return true;
-  if (/^(?:why|how come)(?:\s+(?:that|this|it|so|the recommendation))?$/.test(text)) return true;
-  return /\b(?:that|this|it|those|them|they|previous)\b/.test(text);
+  if (words.length > 14) return null;
+  if (classifyDAVEConversationIntent(value) !== 'ask') {
+    // The router files "Show me the evidence" as a note, yet it asks about the previous answer.
+    return /^show me (?:the |that |those )?(?:evidence|records?|sources?)\b/.test(text) ? 'explicit' : null;
+  }
+  if (/^(?:and\b|also\b|what about\b|what next\b|show me (?:the |that |those )?(?:evidence|records?|sources?)\b|explain (?:that|this|it)\b)/.test(text)) return 'explicit';
+  if (/^(?:why|how come)(?:\s+(?:that|this|it|so|the recommendation))?$/.test(text)) return 'explicit';
+  if (routeDAVEAskIntent(value) !== 'unknown') return null;
+  return /\b(?:that|this|it|those|them|they|previous)\b/.test(text) ? 'pronoun' : null;
 }
 
 function resolved(
