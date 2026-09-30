@@ -9827,19 +9827,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function removePhoto(photoId: string) {
-    const deletedPhoto = draft.photos.find(
+    const shownDraft = draftRef.current;
+    const deletedPhoto = shownDraft.photos.find(
       photo => photo.id === photoId,
     );
     const nextDraft = {
-      ...draft,
-      photos: draft.photos.filter(photo => photo.id !== photoId),
+      ...shownDraft,
+      photos: shownDraft.photos.filter(photo => photo.id !== photoId),
     };
     photoAnalysisCoordinator.invalidate({
-      projectId: authorityProjectId(draft.projectName),
-      updateId: draft.id,
+      projectId: authorityProjectId(shownDraft.projectName),
+      updateId: shownDraft.id,
       photoId,
     });
 
+    draftRef.current = nextDraft;
     setDraft(prev => ({
       ...prev,
       photos: prev.photos.filter(
@@ -9847,11 +9849,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ),
     }));
 
+    // The draft without the photo is on disk before its file goes: a kill in
+    // the 750 ms save window reopened it on a deleted file, and saving it
+    // marked the photo missing (whole-app audit A4 pass 6 F5 (30 Sep 2026)).
     if (deletedPhoto) {
-      void deleteStoredPhotoIfUnused(deletedPhoto.uri, [
-        nextDraft,
-        ...savedUpdates,
-      ]);
+      void persistDraftNow(nextDraft).then(() => deleteStoredPhotoIfUnused(
+        deletedPhoto.uri, [draftRef.current, ...savedUpdatesRef.current]));
     }
   }
 
