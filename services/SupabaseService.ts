@@ -314,6 +314,7 @@ const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
 const DAVE_SYNC_TOMBSTONES_TABLE = 'dave_sync_tombstones';
+const REPORT_SNAPSHOTS_TABLE = 'report_snapshots';
 const DAVE_STORAGE_CLEANUP_INTENTS_TABLE = 'dave_storage_cleanup_intents';
 const DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE = 'dave_project_truth_snapshots';
 const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
@@ -1878,6 +1879,76 @@ export async function listDAVESyncTombstones(): Promise<
         .filter((value): value is DAVESyncTombstone => Boolean(value));
 
   return okResult(tombstones, result.status);
+}
+
+/**
+ * The owner's shared "since the last report" period for one project set and
+ * report format (owner answer Q16, 30 Sep 2026), with the account it was read
+ * for. Before the report_snapshots migration is applied the result is the
+ * quiet stub of a missing table.
+ */
+export async function loadReportSnapshotCloud(
+  scopeKey: string,
+  format: string,
+): Promise<SupabaseServiceResult<Readonly<{ ownerId: string; snapshot: unknown }>>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(REPORT_SNAPSHOTS_TABLE)
+    .select('snapshot')
+    .eq('owner_id', owner.data)
+    .eq('scope_key', scopeKey)
+    .eq('format', format)
+    .maybeSingle();
+
+  if (error) return tableAwareErrorResult(error.message, status);
+  return okResult({ ownerId: owner.data, snapshot: data ? toRecord(data).snapshot ?? null : null }, status);
+}
+
+/**
+ * Upserts the owner's shared period. `deliveredAt` is when the report the
+ * period runs from was sent; the table keeps the later one. With
+ * `expectedOwnerId`, nothing is written once another account is signed in.
+ */
+export async function saveReportSnapshotCloud(row: Readonly<{
+  scopeKey: string;
+  format: string;
+  snapshot: unknown;
+  approvedAt: string;
+  deliveredAt: string | null;
+  expectedOwnerId?: string;
+}>): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (row.expectedOwnerId && row.expectedOwnerId !== owner.data) {
+    return errorResult('The signed-in account changed before the report period was shared.', 409, 'owner_changed');
+  }
+
+  const { error, status } = await client
+    .from(REPORT_SNAPSHOTS_TABLE)
+    .upsert(
+      {
+        owner_id: owner.data,
+        scope_key: row.scopeKey,
+        format: row.format,
+        snapshot: toJsonValue(row.snapshot),
+        approved_at: row.approvedAt,
+        delivered_at: row.deliveredAt,
+      },
+      { onConflict: 'owner_id,scope_key,format' },
+    );
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
 }
 
 export async function loadLatestDAVEProjectTruthSnapshotCloud(

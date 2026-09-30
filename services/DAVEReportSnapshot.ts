@@ -137,6 +137,42 @@ export function markReportSnapshotDelivered(snapshot: DAVEReportSnapshot, delive
   return Object.freeze({ ...snapshot, deliveredAt });
 }
 
+/**
+ * When the report this period runs from was sent: the snapshot's own send,
+ * or, for an approval not yet sent, the send of the report it superseded;
+ * null when none was sent. A legacy snapshot counts as sent when captured.
+ */
+export function reportPeriodSentAt(snapshot: DAVEReportSnapshot | null | undefined): string | null {
+  if (!snapshot) return null;
+  if (snapshot.deliveredAt === null) return reportPeriodSentAt(snapshot.supersedes);
+  return snapshot.deliveredAt ?? snapshot.capturedAt;
+}
+
+function periodSentTime(snapshot: DAVEReportSnapshot) {
+  const time = Date.parse(reportPeriodSentAt(snapshot) ?? '');
+  return Number.isNaN(time) ? -Infinity : time;
+}
+
+/** Whether `snapshot`'s period runs from a report sent after `other`'s (or `other` has none). */
+export function reportPeriodIsLater(snapshot: DAVEReportSnapshot, other: DAVEReportSnapshot | null | undefined): boolean {
+  return !other || periodSentTime(snapshot) > periodSentTime(other);
+}
+
+/**
+ * This device's period against the owner's shared copy (owner answer Q16, 30
+ * Sep 2026: the phone and the iPad count from the same last sent report). The
+ * later send wins. An approval not yet sent carries the send of the report it
+ * superseded, so it never moves the period's start; on a tie this device's
+ * own copy stays, with any approval of its own still waiting to be sent.
+ */
+export function laterReportPeriod(
+  local: DAVEReportSnapshot | null,
+  shared: DAVEReportSnapshot | null,
+): DAVEReportSnapshot | null {
+  if (!local) return shared;
+  return shared && reportPeriodIsLater(shared, local) ? shared : local;
+}
+
 export type DAVEReportSnapshotSourceReference = Readonly<{
   documentId: string;
   documentName: string;
