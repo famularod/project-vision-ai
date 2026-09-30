@@ -409,6 +409,7 @@ import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRun
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
   fieldUpdateLifecycleLabel,
@@ -6126,7 +6127,7 @@ useEffect(() => {
       getPendingQueue: getOfflineQueue, normalizeUpdate: normalizeStoredUpdateRecord,
       normalizeAreas: normalizeProjectAreas, normalizeSchedule: normalizeScheduleItems,
       normalizeDocuments: normalizeReferenceDocuments, migrateSchedule: migrateLegacyScheduleItem,
-      localPhotoUri: resolveProjectPhotoUri, mergeProjectNames,
+      localPhotoUri: resolveProjectPhotoUri, mergeProjectNames, deviceDocuments: () => projectDocumentsCurrentRef.current,
       updateHasPendingLocalWork: updateNeedsAutomaticSyncRetry,
       mergeUpdates: mergeSavedUpdatesWithTombstones, buildUpdateTombstone,
       buildCloudDeletionBarrier: buildCloudUpdateDeletionBarrier,
@@ -6320,7 +6321,7 @@ useEffect(() => {
           return cloudUpdate &&
             !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
             !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
-            ? withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri)
+            ? withDeviceDocumentUploadState(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current) // a document's upload state is this device's own (A7 pass 5 M1)
             : localUpdate;
         });
         const mergedUpdates = mergeSavedUpdatesWithTombstones({
@@ -6339,6 +6340,8 @@ useEffect(() => {
               ? currentUpdates
               : mergedUpdates,
           );
+          documentsUploadedAfterCloudCopy(hydratedCloudUpdates, currentUpdates, pendingQueue, projectDocumentsCurrentRef.current) // the iPad's copy says so too (A7 pass 5 M1)
+            .forEach(documentId => resendUpdatesListingDocument(documentId, update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)));
         });
       }});
 
@@ -6909,6 +6912,14 @@ useEffect(() => {
     return projectDocumentsCurrentRef.current.find(document => document.id === documentId) || null;
   }
 
+  /** A document change the other devices must see goes up again with each sent update listing it (whole-app audit A7 pass 5 M1). */
+  function resendUpdatesListingDocument(documentId: string, change: (update: ProjectUpdate) => ProjectUpdate) {
+    const resent = new Map(fieldUpdatesToResendForDocument(savedUpdatesRef.current, documentId, change).map(update => [update.id, update]));
+    savedUpdatesRef.current = savedUpdatesRef.current.map(update => resent.get(update.id) || change(update));
+    setSavedUpdates(prev => prev.map(update => resent.get(update.id) || change(update)));
+    resent.forEach(update => void queueProjectUpdateRecord(update, false).catch(() => undefined).finally(requestQueuedUpdateSync));
+  }
+
   async function persistProjectDocumentsImmediately(
     documents: readonly ProjectDocument[],
   ) {
@@ -7094,6 +7105,7 @@ useEffect(() => {
           }
         }
       }
+      if (completedDocument && sameAccount()) resendUpdatesListingDocument(documentId, update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)); // the iPad sees it uploaded (A7 pass 5 M1)
       return true;
     } catch (error) {
       if (!sameAccount()) return false;
@@ -11448,7 +11460,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // The owner chooses this phone only or every device (owner answer Q14, audit A7 pass 4).
     const message = sensitive
       ? `${document.name} is categorized as ${document.category}. It will be hidden from active project documents.`
-      : `Delete from This Device removes ${document.name} from this phone; a copy already shared stays on your other devices. Delete from All Devices also removes the shared copy from the iPad, the web and the cloud. This cannot be undone.`;
+      : `Delete from This Device removes ${document.name} from this phone; a copy already shared stays on your other devices. Delete from All Devices also removes the shared copy from the iPad, the web and the cloud. Either way it is taken off any field update it was attached to. This cannot be undone.`;
     const sharedRecord = findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current);
     const sharedWithAnotherDocument = Boolean(sharedRecord) && projectDocumentsCurrentRef.current.some(item =>
       item.id !== documentId && (item.referenceDocumentId === sharedRecord?.id || item.id === sharedRecord?.id));
@@ -11492,14 +11504,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ),
       }));
 
-      setSavedUpdates(prev =>
-        prev.map(update => ({
-          ...update,
-          documents: (update.documents || []).filter(
-            item => item.id !== documentId,
-          ),
-        })),
-      );
+      // An update is shared by every device: one that was sent goes up again without it, whichever delete (A7 pass 5 M1).
+      const withoutDocument = (update: ProjectUpdate) => withoutFieldUpdateDocument(update, documentId);
+      if (sensitive) setSavedUpdates(prev => prev.map(withoutDocument));
+      else resendUpdatesListingDocument(documentId, withoutDocument);
 
       if (!sensitive && localFileCleanupStatus === 'unavailable') {
         Alert.alert(

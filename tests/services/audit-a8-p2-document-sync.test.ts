@@ -123,6 +123,8 @@ function uploader(documents: PhoneDocument[], upload: (document: PhoneDocument) 
     projectDocumentUploadAttemptsAfterFailure,
     // Audit A8 pass 3 M3 (landed after this test): the upload stops once another account signs in.
     bindProjectDocumentUploadToAccount,
+    // Audit A7 pass 5 M1 (landed after this test): a finished upload sends each sent update listing it again.
+    resendUpdatesListingDocument: jest.fn(), withDeviceDocumentUploadState: (update: unknown) => update,
   };
   const { retryProjectDocumentUpload } = compile<{
     retryProjectDocumentUpload: (documentId: string) => Promise<boolean | undefined>;

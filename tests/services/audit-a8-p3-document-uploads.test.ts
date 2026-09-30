@@ -34,6 +34,7 @@ import {
   createOwnedLocalFileManifest,
   createOwnedLocalFileManifestRecord,
 } from '../../services/OwnedLocalFileRepository';
+import { withDeviceDocumentUploadState, withoutFieldUpdateDocument } from '../../services/FieldUpdateDocumentUploadState';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
 const path = jest.requireActual('path') as typeof import('path');
@@ -124,6 +125,9 @@ function phone(documents: PhoneDocument[], upload: (onProgress: (progress: numbe
     withdrawUnsentProjectDocumentBridge: async () => null, getOfflineQueue: async () => [],
     removeOperationalRecordFromSyncQueue: async () => undefined, setReferenceDocuments: jest.fn(),
     removeReferenceDocumentEverywhere: async () => undefined,
+    // Audit A7 pass 5 M1 (landed after this test): a sent update goes up again without a deleted
+    // document, and again with one whose upload finished.
+    resendUpdatesListingDocument: jest.fn(), withoutFieldUpdateDocument, withDeviceDocumentUploadState,
   };
   const fns = compile<{
     retryProjectDocumentUpload: (documentId: string, provided?: PhoneDocument) => Promise<boolean | undefined>;

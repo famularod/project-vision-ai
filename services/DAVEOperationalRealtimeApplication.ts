@@ -17,6 +17,7 @@ import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
+import { withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import type { DeletedUpdateTombstone } from './updateService';
 import type { SyncQueueItem } from './SyncService';
 import type {
@@ -59,6 +60,11 @@ type Options = Readonly<{
   mergeProjectNames: (base: string[], ...sources: string[][]) => string[];
   /** A local record still owed its own sync (queued, failed): a cloud row must not replace it. */
   updateHasPendingLocalWork: (update: OperationalProjectUpdate) => boolean;
+  /**
+   * This device's own documents: an attached document's upload state comes
+   * from here, not from the row (whole-app audit A7 pass 5 M1).
+   */
+  deviceDocuments?: () => readonly Readonly<{ id: string }>[];
   mergeUpdates: (input: {
     localUpdates: OperationalProjectUpdate[];
     cloudUpdates: OperationalProjectUpdate[];
@@ -189,12 +195,12 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // The photo paths come from that read too, or a restore committed
       // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
-      const cloudCopy = withLatestLocalPhotoTransport(
+      const cloudCopy = withDeviceDocumentUploadState(withLatestLocalPhotoTransport(
         previewReady,
         localUpdate,
         fresh.updates.find(update => update.id === previewReady.id),
         options.localPhotoUri,
-      );
+      ), options.deviceDocuments?.());
       let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {
         deletedUpdates = options.upsertDeletedUpdate(
