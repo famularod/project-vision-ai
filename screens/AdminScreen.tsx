@@ -44,6 +44,7 @@ import {
   getSupabaseConnectionStatus,
   signIn,
   signOut,
+  SIGNED_OUT_ON_THIS_DEVICE_ONLY,
   signUp,
   subscribeToAuthStateChange,
   testSupabaseConnection,
@@ -999,6 +1000,13 @@ export function AdminScreen({
       // A sign-out that did not happen used to say nothing (owner answer Q13).
       if (!result.ok) {
         Alert.alert('Sign Out did not finish', result.error || result.message || 'Try Sign Out again.');
+      } else if (result.code === SIGNED_OUT_ON_THIS_DEVICE_ONLY) {
+        // With no signal only this device signs out; the owner is told so
+        // (auth security review, 30 Sep 2026).
+        Alert.alert(
+          'Signed out on this device',
+          result.message || 'Signed out on this device only. Your other devices stay signed in.',
+        );
       }
       await refreshAdminStatus();
     } finally {

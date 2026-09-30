@@ -225,16 +225,16 @@ describe('M4 and A9 #5: report baselines and Talk history belong to one account'
 
     await sandbox.activateOwner(null);
     await sandbox.activateOwner('owner-b');
-    expect(await loadDAVEReportSnapshot(scopeKey)).toBeNull();
+    expect(await loadDAVEReportSnapshot(scopeKey, 'project_manager')).toBeNull();
     await saveDAVEReportSnapshot(snapshotFor('Set steel at level 2 (B crew)', '2026-09-30T09:00:00.000Z'));
 
     await sandbox.activateOwner(null);
     await sandbox.activateOwner('owner-a');
-    expect((await loadDAVEReportSnapshot(scopeKey))?.tasks.map(item => item.taskName))
+    expect((await loadDAVEReportSnapshot(scopeKey, 'project_manager'))?.tasks.map(item => item.taskName))
       .toEqual(['Pour slab at grid C (A crew)']);
     await sandbox.activateOwner(null);
     await sandbox.activateOwner('owner-b');
-    expect((await loadDAVEReportSnapshot(scopeKey))?.tasks.map(item => item.taskName))
+    expect((await loadDAVEReportSnapshot(scopeKey, 'project_manager'))?.tasks.map(item => item.taskName))
       .toEqual(['Set steel at level 2 (B crew)']);
   });
 
@@ -267,10 +267,10 @@ describe('M4 and A9 #5: report baselines and Talk history belong to one account'
     await AsyncStorage.setItem(OWNER_STORAGE_SANDBOX_METADATA_KEY, JSON.stringify({ ...metadata, lastOwnerId: undefined }));
 
     await sandbox.activateOwner('owner-b');
-    expect(await loadDAVEReportSnapshot(scopeKey)).toBeNull();
+    expect(await loadDAVEReportSnapshot(scopeKey, 'project_manager')).toBeNull();
     await sandbox.activateOwner(null);
     await sandbox.activateOwner('owner-a');
-    expect(await loadDAVEReportSnapshot(scopeKey)).toBeNull(); // set aside on B's sign-in, kept
+    expect(await loadDAVEReportSnapshot(scopeKey, 'project_manager')).toBeNull(); // set aside on B's sign-in, kept
     expect((await quarantines()).some(item => Object.keys(item.snapshot).some(key => key.startsWith('@vitruvius/report-snapshots/'))))
       .toBe(true);
   });
@@ -283,7 +283,7 @@ describe('M4 and A9 #5: report baselines and Talk history belong to one account'
     await saveDAVEReportSnapshot(snapshotFor('Pour slab at grid C (A crew)', '2026-09-29T16:00:00.000Z'));
 
     await sandbox.activateOwner('owner-a');
-    expect((await loadDAVEReportSnapshot(scopeKey))?.tasks.map(item => item.taskName))
+    expect((await loadDAVEReportSnapshot(scopeKey, 'project_manager'))?.tasks.map(item => item.taskName))
       .toEqual(['Pour slab at grid C (A crew)']);
     expect(await AsyncStorage.getItem('projectPhotoUpdate.projects.v2')).toBe('["Canopy B"]');
   });

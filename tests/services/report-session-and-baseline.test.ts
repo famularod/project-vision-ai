@@ -18,6 +18,7 @@ const fs = jest.requireActual('fs') as typeof import('fs');
 const path = jest.requireActual('path') as typeof import('path');
 const screen = fs.readFileSync(path.resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
 const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+const decision = fs.readFileSync(path.resolve(__dirname, '../../services/OwnerWorkspaceAuthDecision.ts'), 'utf8');
 
 // Whole-app audit, area A6 (29-30 Sep 2026), batches 2 and 3.
 describe('the reporting period runs from the report the owner has', () => {
@@ -129,7 +130,12 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     expect(screen).toContain('Narrative edits are kept until you leave the app.');
     // A1 pass 1: on any change of account, whether or not a sign-out came first.
     expect(app).toContain('if (accountChanged) forgetAllReportSessionState();');
-    expect(app).toContain("const accountChanged = event === 'SIGNED_OUT' || (!firstEvent && userId !== lastUserId);");
+    // Owner answer Q13 (30 Sep 2026) moved the account-change rule, unchanged,
+    // into workspaceAccountChange (services/OwnerWorkspaceAuthDecision.ts), so
+    // this pin follows it there; the auth security review found it still
+    // pointed at the old App.tsx line.
+    expect(app).toContain('const { firstEvent, accountChanged } = change;');
+    expect(decision).toContain("accountChanged: event === 'SIGNED_OUT' ||\n      (!firstEvent && decision.ownerId !== previousUserId),");
   });
 });
 

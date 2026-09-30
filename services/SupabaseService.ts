@@ -352,6 +352,11 @@ const supabaseAuthStorage = supabaseSecureAuthStorage;
 const SUPABASE_AUTH_STORAGE_KEY = supabaseAuthStorageKey(SUPABASE_URL);
 // Used when a saved session lacks expires_in; Supabase issues hourly tokens.
 const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600;
+// auth-js refreshes a token this close to its expiry before using it
+// (EXPIRY_MARGIN_MS), so Sign Out treats it as expired as early.
+const SIGN_IN_EXPIRY_MARGIN_MS = 90_000;
+/** SupabaseServiceResult.code of a Sign Out made on this device only, with no signal. */
+export const SIGNED_OUT_ON_THIS_DEVICE_ONLY = 'signed_out_on_this_device_only';
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -393,6 +398,9 @@ function fetchObservingSignInRefresh(
 ): Promise<Response> {
   const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
   const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
+  // Each attempt starts unknown: an earlier failure says nothing about a
+  // refresh under way now (auth security review, 30 Sep 2026).
+  if (refresh) lastSignInRefreshTransport = null;
   return fetch(input, init).then(response => {
     if (refresh) lastSignInRefreshTransport = 'answered';
     return response;
@@ -692,9 +700,13 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
   // Owner answer Q13: an expired saved sign-in whose last refresh got no
   // answer cannot be ended on the server (that needs a refreshed token), so
   // it is not tried again here; the library's retries take about 25 seconds.
+  // A token within auth-js's refresh margin counts as expired: auth-js would
+  // refresh it first.
   const saved = await readSavedSignIn().catch(() => null);
   const unreachable = Boolean(
-    saved && saved.expiresAtMs <= Date.now() && lastSignInRefreshTransport === 'failed',
+    saved &&
+    saved.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
+    lastSignInRefreshTransport === 'failed',
   );
   const error = unreachable ? null : (await client.auth.signOut()).error;
 
@@ -722,7 +734,9 @@ const localAuthListeners = new Set<(event: string, session: Session | null) => v
 async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
   if (!SUPABASE_AUTH_STORAGE_KEY) return errorResult('Sign-in storage is not configured.');
   try {
-    for (const suffix of ['', '-code-verifier', '-user']) {
+    // The session itself goes last, so a failure before it leaves the sign-in
+    // whole and "You are still signed in" true (auth security review).
+    for (const suffix of ['-code-verifier', '-user', '']) {
       await supabaseAuthStorage.removeItem(`${SUPABASE_AUTH_STORAGE_KEY}${suffix}`);
     }
   } catch {
@@ -734,11 +748,16 @@ async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
   authHydrationCompleted = true;
   noteSignedInOwner(null);
   [...localAuthListeners].forEach(listener => listener('SIGNED_OUT', null));
-  return okResult(
-    null,
-    undefined,
-    'Signed out on this phone. With no signal, the account was not signed out on the server or on other devices.',
-  );
+  // True as worded: nothing reached the server, so the account's other
+  // devices keep their own sign-ins, now and when this one has signal again.
+  return {
+    ...okResult(
+      null,
+      undefined,
+      'Signed out on this device only. There was no signal, so your other devices stay signed in.',
+    ),
+    code: SIGNED_OUT_ON_THIS_DEVICE_ONLY,
+  };
 }
 
 export async function getCurrentUser(): Promise<SupabaseServiceResult<User | null>> {

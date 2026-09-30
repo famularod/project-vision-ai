@@ -13,16 +13,27 @@
 const mockSecure = new Map<string, string>();
 const mockAsync = new Map<string, string>();
 const mockWorkspaceMounts: string[] = [];
+/** Keychain entries whose removal fails (a Sign Out that cannot finish). */
+const mockFailingSecureDeletes = new Set<string>();
+/** Runs inside a phone-storage read, after its value was read. */
+let mockDuringAsyncRead: ((key: string) => Promise<void>) | null = null;
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
   getItemAsync: jest.fn(async (key: string) => mockSecure.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => { mockSecure.set(key, value); }),
-  deleteItemAsync: jest.fn(async (key: string) => { mockSecure.delete(key); }),
+  deleteItemAsync: jest.fn(async (key: string) => {
+    if (mockFailingSecureDeletes.has(key)) throw new Error('Keychain item could not be removed');
+    mockSecure.delete(key);
+  }),
 }));
 jest.mock('@react-native-async-storage/async-storage', () => {
   const api = {
-    getItem: async (key: string) => mockAsync.get(key) ?? null,
+    getItem: async (key: string) => {
+      const value = mockAsync.get(key) ?? null;
+      if (mockDuringAsyncRead) await mockDuringAsyncRead(key);
+      return value;
+    },
     setItem: async (key: string, value: string) => { mockAsync.set(key, value); },
     removeItem: async (key: string) => { mockAsync.delete(key); },
     getAllKeys: async () => [...mockAsync.keys()],
@@ -48,6 +59,30 @@ jest.mock('expo-crypto', () => ({
 jest.mock('../components/pending-changes-retry-boundary', () => ({
   PendingChangesRetryBoundary: ({ children }: { children: unknown }) => children,
 }));
+// auth-js retries a refresh that gets no answer for about 25 seconds, sleeping
+// between attempts. Its sleeps are tracked so that each test ends them: left
+// running, they logged after this file had finished ("Cannot log after tests
+// are done"), which fails the gate's combined run (auth security review).
+const mockSleepingRetries = new Set<() => void>();
+jest.mock('@supabase/auth-js/dist/main/lib/helpers', () => {
+  const actual = jest.requireActual('@supabase/auth-js/dist/main/lib/helpers');
+  return {
+    ...actual,
+    sleep: (time: number) => new Promise(resolve => {
+      const wake = () => {
+        clearTimeout(timer);
+        mockSleepingRetries.delete(wake);
+        resolve(null);
+      };
+      const timer = setTimeout(wake, time);
+      mockSleepingRetries.add(wake);
+    }),
+  };
+});
+/** auth-js's waiting refresh retry runs now. */
+function wakeSleepingRetries() {
+  [...mockSleepingRetries].forEach(wake => wake());
+}
 jest.mock('../App', () => {
   const React = require('react');
   const { Text, View } = require('react-native');
@@ -66,8 +101,12 @@ jest.mock('../App', () => {
   return { __esModule: true, default: WorkspaceMarker };
 });
 
-type Mode = 'offline' | 'reject' | 'online';
-const network = { mode: 'offline' as Mode, calls: [] as string[] };
+// 'hang': requests get no answer until released (a captive portal).
+type Mode = 'offline' | 'reject' | 'online' | 'hang';
+const network = { mode: 'offline' as Mode, calls: [] as string[], hung: [] as (() => void)[] };
+function releaseHungRequests() {
+  network.hung.splice(0).forEach(release => release());
+}
 const HOUR = 3600;
 const userFor = (id: string) => ({
   id, aud: 'authenticated', role: 'authenticated', email: `${id}@example.com`,
@@ -79,6 +118,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 (global as { fetch?: unknown }).fetch = jest.fn(async (input: unknown, init?: { method?: string; body?: string }) => {
   const url = new URL(String(typeof input === 'string' ? input : (input as { url: string }).url));
   network.calls.push(`${init?.method || 'GET'} ${url.pathname}${url.search}`);
+  if (network.mode === 'hang') await new Promise<void>(resolve => { network.hung.push(resolve); });
   if (network.mode === 'offline') throw new TypeError('Network request failed');
   if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'refresh_token') {
     if (network.mode === 'reject') {
@@ -151,11 +191,25 @@ beforeEach(() => {
   mockSecure.clear();
   mockAsync.clear();
   mockWorkspaceMounts.length = 0;
+  mockFailingSecureDeletes.clear();
+  mockDuringAsyncRead = null;
   network.mode = 'offline';
   network.calls = [];
 });
 afterEach(async () => {
+  // Every refresh auth-js is still retrying ends here: its next attempt runs
+  // now and gets the server's refusal, which is final. Nothing is left to log
+  // after the file ends (auth security review, 30 Sep 2026).
+  mockDuringAsyncRead = null;
+  mockFailingSecureDeletes.clear();
+  network.mode = 'reject';
   await client?.auth.stopAutoRefresh();
+  for (let round = 0; round < 100; round += 1) {
+    releaseHungRequests();
+    wakeSleepingRetries();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    if (mockSleepingRetries.size === 0 && network.hung.length === 0 && round >= 2) break;
+  }
   client = null;
 });
 
@@ -282,7 +336,12 @@ test('offline Sign Out signs out on this phone, keeps unsynced work, and the nex
   const started = Date.now();
   let result: { ok: boolean; message?: string } | undefined;
   await first.rtl.act(async () => { result = await first.service.signOut(); });
-  expect(result).toMatchObject({ ok: true, message: expect.stringMatching(/^Signed out on this phone/) });
+  // Worded as it is: nothing reached the server (auth security review).
+  expect(result).toMatchObject({
+    ok: true,
+    code: 'signed_out_on_this_device_only',
+    message: 'Signed out on this device only. There was no signal, so your other devices stay signed in.',
+  });
   // It does not wait out the library's retries of an unreachable refresh.
   expect(Date.now() - started).toBeLessThan(5_000);
   await first.rtl.waitFor(() => expect(first.screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
@@ -326,9 +385,11 @@ test('Settings > Sign Out with no signal (token still valid) signs out instead o
   const React = require('react');
   const { Alert } = require('react-native');
   const alerts: string[] = [];
-  jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
-    const [title, , buttons] = args as [string, string, { style?: string; onPress?: () => void }[] | undefined];
+  const alertMessages: string[] = [];
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
+    const [title, message, buttons] = args as [string, string, { style?: string; onPress?: () => void }[] | undefined];
     alerts.push(title);
+    alertMessages.push(message);
     buttons?.find(button => button.style === 'destructive')?.onPress?.();
   });
   const { AdminScreen } = require('../screens/AdminScreen');
@@ -346,11 +407,158 @@ test('Settings > Sign Out with no signal (token still valid) signs out instead o
   await rtl.act(async () => { rtl.fireEvent.press(settings.getByText('Sign Out')); });
 
   await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
-  expect(alerts).toEqual(['Sign Out']);
+  // The owner is told, in plain words, that only this device signed out
+  // (auth security review, 30 Sep 2026; previously nothing was said).
+  await rtl.waitFor(() => expect(alerts).toEqual(['Sign Out', 'Signed out on this device']), OPEN);
+  expect(alertMessages[1]).toBe('Signed out on this device only. There was no signal, so your other devices stay signed in.');
   expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
   // The server was tried first and could not be reached.
   expect(network.calls.some(call => call.startsWith('POST /auth/v1/logout'))).toBe(true);
   expect((await service.getCurrentSessionUser()).data).toBeNull();
+  alertSpy.mockRestore();
   settings.unmount();
   screen.unmount();
+});
+
+// Auth security review (30 Sep 2026): the fixes it asked for, end to end.
+describe('auth security review', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  test('a sign-out while the offline lookup runs is final: the saved sign-in it had read does not reopen the workspace', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    let raced = false;
+    // The offline lookup has read the saved sign-in and is reading which
+    // workspace is on the phone (the first read of it at this launch) when
+    // signal returns and the server refuses the sign-in: auth-js removes it
+    // and says SIGNED_OUT before the lookup returns.
+    mockDuringAsyncRead = async key => {
+      if (key !== META || raced) return;
+      raced = true;
+      await pause(0);
+      network.mode = 'reject';
+      wakeSleepingRetries();
+      for (let i = 0; i < 500 && mockSecure.has(`${tokenKey()}.meta`); i += 1) await pause(10);
+      await pause(50);
+    };
+    const { screen, rtl } = launch();
+
+    await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+    await rtl.act(async () => { await pause(500); });
+    expect(raced).toBe(true);
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+    expect(screen.getByText(/^Sign in to /)).toBeTruthy();
+    expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+    expect(mockWorkspaceMounts).toEqual([]);
+    // Not re-bound: the phone and its uploads stay signed out.
+    expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBeNull();
+    expect(require('../services/CloudOwnerBinding').currentCloudOwner().ownerId).toBeNull();
+    expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    screen.unmount();
+  });
+
+  test('open offline near the 7-day limit: returning to the app after it passed locks the workspace again', async () => {
+    await saveSignIn('owner-a', 7 * 24 - 1 / 60); // one minute short of 7 days
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 5 * 60_000);
+    try {
+      const { AppState } = require('react-native');
+      const listeners = (AppState.addEventListener as jest.Mock).mock.calls
+        .filter(([type]) => type === 'change')
+        .map(([, listener]) => listener as (state: string) => void);
+      expect(listeners.length).toBeGreaterThan(0);
+      await rtl.act(async () => {
+        listeners.forEach(listener => listener('background'));
+        listeners.forEach(listener => listener('active'));
+        await pause(50);
+      });
+      await rtl.waitFor(() => expect(screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+      expect(screen.getByText(/has not refreshed for 7 days/)).toBeTruthy();
+      expect(screen.queryByText(/WORKSPACE OPEN/)).toBeNull();
+      // Locked, not signed out: the sign-in and the workspace stay on the phone.
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBe('owner-a');
+    } finally {
+      clock.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('Sign Out during a refresh under way asks the server; an earlier failed attempt is not taken for no signal', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+
+    // Signal is coming back: auth-js's next attempt is under way, unanswered.
+    network.mode = 'hang';
+    wakeSleepingRetries();
+    await rtl.waitFor(() => expect(network.hung.length).toBeGreaterThan(0), OPEN);
+    let result: { ok: boolean; code?: string } | undefined;
+    const signingOut = service.signOut().then((value: typeof result) => { result = value; });
+    await rtl.act(async () => { await pause(100); });
+    network.mode = 'online';
+    releaseHungRequests();
+    await rtl.act(async () => { await signingOut; });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result?.code).toBeUndefined();
+    expect(network.calls.some(call => call.startsWith('POST /auth/v1/logout'))).toBe(true);
+    await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+    screen.unmount();
+  });
+
+  test('Sign Out with no signal and a token a minute from expiry signs out on this device at once', async () => {
+    await saveSignIn('owner-a', 1 - 1 / 60); // expires in one minute
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+
+    let result: unknown = 'still waiting';
+    await rtl.act(async () => {
+      result = await Promise.race([service.signOut(), pause(5_000).then(() => 'still waiting')]);
+    });
+    // auth-js would refresh a token this close to expiry first (its 90 s
+    // margin), so asking the server would wait out its retries.
+    expect(result).toMatchObject({ ok: true, code: 'signed_out_on_this_device_only' });
+    expect(network.calls.some(call => call.startsWith('POST /auth/v1/logout'))).toBe(false);
+    await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+    screen.unmount();
+  });
+
+  test('an offline Sign Out that cannot finish leaves the sign-in whole, so "You are still signed in" is true', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+
+    mockFailingSecureDeletes.add(`${tokenKey()}-user.meta`);
+    let result: { ok: boolean; error?: string } | undefined;
+    await rtl.act(async () => { result = await service.signOut(); });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/You are still signed in\.$/) });
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+    expect((await service.readSavedSignIn())?.ownerId).toBe('owner-a');
+    expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy();
+    expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBe('owner-a');
+    screen.unmount();
+  });
+
+  test('a refresh that never answers (captive portal) opens the workspace offline after about 8 seconds', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    network.mode = 'hang';
+    const started = Date.now();
+    const { screen, rtl } = launch();
+
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 15_000 });
+    expect(screen.getByText('Offline, sign-in pending')).toBeTruthy();
+    expect(Date.now() - started).toBeLessThan(13_000);
+    expect(network.hung.length).toBeGreaterThan(0);
+    screen.unmount();
+  });
 });

@@ -26,7 +26,11 @@ import {
   subscribeToAuthStateChange,
 } from './services/SupabaseService';
 import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecision';
-import { workspaceOwnerAfterFailedLookup } from './services/OfflineSignInGrace';
+import {
+  watchOfflineSignInGrace,
+  workspaceOwnerAfterFailedLookup,
+} from './services/OfflineSignInGrace';
+import { noteSignedInOwner } from './services/CloudOwnerBinding';
 
 // Native keeps the established application entry and navigation controller.
 // Metro resolves entry.web.ts on the browser platform instead.
@@ -48,13 +52,28 @@ export function NativeRoot() {
     let desiredOwnerId: string | null | undefined;
     let signInPending = false;
     let transitionQueue = Promise.resolve();
+    let stopGraceWatch: (() => void) | null = null;
+
+    function endGraceWatch() {
+      stopGraceWatch?.();
+      stopGraceWatch = null;
+    }
 
     function activate(ownerId: string | null, pending = false) {
+      // An offline opening decided from the saved sign-in never overrides a
+      // sign-in event that already chose the workspace: a refresh the server
+      // rejected while the lookup ran has signed out, and A's workspace must
+      // not reopen (auth security review, 30 Sep 2026). Nor does a lookup
+      // that outlived its attempt (Retry started a new one).
+      if (pending && (desiredOwnerId !== undefined || !active)) return;
+      // Work queued meanwhile is this account's (whole-app audit A1 M3).
+      if (pending && ownerId) noteSignedInOwner(ownerId);
       if (desiredOwnerId === ownerId) {
         // This owner's sign-in refreshed: "offline, sign-in pending" ends in
         // the open workspace, which is not reopened (owner answer Q13).
         if (!pending && signInPending) {
           signInPending = false;
+          endGraceWatch();
           if (active) {
             setState(current => current.status === 'ready'
               ? { ...current, signInPending: false }
@@ -65,6 +84,26 @@ export function NativeRoot() {
       }
       desiredOwnerId = ownerId;
       signInPending = pending;
+      endGraceWatch();
+      if (pending && ownerId) {
+        // The 7 days are checked again on return to the foreground and every
+        // minute while open offline (auth security review, 30 Sep 2026).
+        stopGraceWatch = watchOfflineSignInGrace({
+          ownerId,
+          onExpired: () => {
+            if (!active || !signInPending || desiredOwnerId !== ownerId) return;
+            // Today's lockout, as at launch after 7 days. The workspace stays
+            // on the phone; a refresh when there is signal reopens it, and a
+            // rejected one signs out.
+            desiredOwnerId = undefined;
+            signInPending = false;
+            setState({
+              status: 'error',
+              message: 'Your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to a network, then tap Retry.',
+            });
+          },
+        });
+      }
       if (active) setState({ status: 'loading' });
       transitionQueue = transitionQueue
         .then(() => sandbox.activateOwner(ownerId))
@@ -103,6 +142,7 @@ export function NativeRoot() {
 
     return () => {
       active = false;
+      endGraceWatch();
       unsubscribe();
     };
   }, [sandbox, attempt]);
