@@ -243,6 +243,41 @@ function DesktopSessionGate() {
     if (accepted) setPassword('');
   };
 
+  if (auth.phase === 'unavailable') {
+    // Still signed in: the owner check or first load did not finish. No
+    // password form; Try Again, and the provider retries on its own
+    // (audit round 2 follow-up, 30 Sep 2026).
+    return (
+      <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
+        <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />
+        <View style={styles.gateCard}>
+          <Text style={styles.eyebrow}>VITRUVIUS PROJECT INTELLIGENCE</Text>
+          <Text style={styles.gateTitle}>Your projects are not loaded yet</Text>
+          <Text style={styles.description}>
+            {auth.userEmail
+              ? `You are still signed in as ${auth.userEmail}. The cloud check did not finish; nothing was changed.`
+              : 'You are still signed in. The cloud check did not finish; nothing was changed.'}
+          </Text>
+          {auth.message ? (
+            <View style={styles.errorBanner} accessibilityRole="alert">
+              <Text style={styles.errorText}>{auth.message}</Text>
+            </View>
+          ) : null}
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+            onPress={() => { void auth.refreshSnapshot().catch(() => undefined); }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>Try Again</Text>
+          </Pressable>
+          <Text style={styles.sessionNote}>
+            Vitruvius tries again automatically while this tab is open.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
       <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />

@@ -61,6 +61,8 @@ export type DesktopAuthPhase =
   | 'loading'
   | 'ready'
   | 'unauthorized'
+  /** Signed in, but the owner check or first load could not finish; retrying. */
+  | 'unavailable'
   | 'error';
 
 type DesktopAuthContextValue = Readonly<{
@@ -154,6 +156,13 @@ type DesktopAuthContextValue = Readonly<{
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
 const AUTOMATIC_REFRESH_WAITING_MESSAGE =
   'Automatic cloud refresh is waiting. Your current workspace remains available.';
+const WORKSPACE_UNAVAILABLE_MESSAGE =
+  'Your projects could not be loaded just now. Vitruvius will try again automatically, or choose Try Again.';
+/**
+ * Signed in, but nothing has loaded yet: try again after 5 s, 15 s, 30 s,
+ * then every minute while the tab is visible (audit round 2 follow-up).
+ */
+export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 
 export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<DesktopAuthPhase>('checking');
@@ -164,6 +173,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     initialDAVEWebFreshnessState,
   );
   const [message, setMessage] = useState<string | null>(null);
+  /** Loads in a row that could not finish before any workspace loaded. */
+  const [unavailableAttempts, setUnavailableAttempts] = useState(0);
   const mountedRef = useRef(true);
   const loadSequenceRef = useRef(0);
   const snapshotRef = useRef<DAVEWebReadOnlySnapshot | null>(null);
@@ -189,6 +200,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setSnapshot(null);
     setFreshness(initialDAVEWebFreshnessState());
     setMessage(null);
+    setUnavailableAttempts(0);
     setPhase(nextPhase);
   }, []);
 
@@ -220,6 +232,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
       setSnapshot(nextSnapshot);
       setPhase('ready');
+      setUnavailableAttempts(0);
       setFreshness(recordDAVEWebRefreshSuccess(nextSnapshot.refreshedAt));
       if (options.background) {
         setMessage(current =>
@@ -248,8 +261,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
           recordDAVEWebRefreshFailure(current, new Date().toISOString()));
         setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
       } else {
-        setPhase('error');
-        setMessage('Authorized project data could not be loaded. Try refreshing the workspace.');
+        // Still signed in; the owner check or first read did not finish (a
+        // timeout, a dropped connection). This had shown the password form
+        // with no way to try again, and nothing retried until a workspace had
+        // loaded (audit round 2 follow-up, 30 Sep 2026).
+        setPhase('unavailable');
+        setMessage(WORKSPACE_UNAVAILABLE_MESSAGE);
+        setUnavailableAttempts(count => count + 1);
       }
       return false;
     }
@@ -329,6 +347,39 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     }
     return loadAuthorizedSnapshot(status.session);
   }, [clearSessionView, loadAuthorizedSnapshot]);
+
+  useEffect(() => {
+    if (phase !== 'unavailable' || unavailableAttempts === 0) return;
+    const delay = DESKTOP_WORKSPACE_RETRY_DELAYS_MS[
+      Math.min(unavailableAttempts, DESKTOP_WORKSPACE_RETRY_DELAYS_MS.length) - 1
+    ];
+    const visible = () =>
+      typeof document === 'undefined' || document.visibilityState === 'visible';
+    let due = false;
+    const retry = () => {
+      due = false;
+      // A retry that fails before reaching the load still schedules the next.
+      void refreshSnapshot().catch(() => {
+        if (mountedRef.current) setUnavailableAttempts(count => count + 1);
+      });
+    };
+    const timer = setTimeout(() => {
+      if (visible()) retry();
+      else due = true;
+    }, delay);
+    const retryWhenVisible = () => {
+      if (due && visible()) retry();
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', retryWhenVisible);
+    }
+    return () => {
+      clearTimeout(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', retryWhenVisible);
+      }
+    };
+  }, [phase, refreshSnapshot, unavailableAttempts]);
 
   const getArtifactUrl = useCallback((
     bucket: DAVEWebStorageBucket,
@@ -584,11 +635,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       if (updated > 0) announceMutation(collections);
       // A refusal on the first item refreshes too: "Apply all date changes"
       // says the schedule was refreshed, and the next try needs the latest
-      // revisions (whole-app audit round 2 F7, 30 Sep 2026).
-      if (updated > 0 || failed) await refreshSnapshotInBackground(collections);
+      // revisions (whole-app audit round 2 F7, 30 Sep 2026). After a refusal
+      // it is a full read: a targeted one was answered from the copy an
+      // earlier save in the batch had marked up to date, so the refused task
+      // kept the version the web had opened (audit round 2 follow-up).
+      if (failed) await refreshSnapshot().catch(() => false);
+      else if (updated > 0) await refreshSnapshotInBackground(collections);
     }
     return updated;
-  }, [announceMutation, refreshSnapshotInBackground]);
+  }, [announceMutation, refreshSnapshot, refreshSnapshotInBackground]);
 
   const deleteTask = useCallback(async (item: DAVEWebScheduleItem) => {
     await daveWebSupabaseGateway.deleteAuthorizedScheduleItem(

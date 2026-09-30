@@ -20,7 +20,10 @@ import {
   type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
 import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
-import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
+import {
+  chunkSupabaseFilterValues,
+  paginateSupabaseCollection,
+} from './SupabaseCollectionPagination';
 import {
   attachDAVEOperationalRealtime,
   type DAVEOperationalCollectionName,
@@ -227,6 +230,18 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       scheduleItems: Object.freeze(scheduleItems),
     });
     realtimeSatisfiedCollections.add('schedule_items');
+  }
+
+  /**
+   * A write the cloud refused because another device got there first means
+   * this copy of the table is behind. Clearing its up-to-date mark makes the
+   * next refresh of it, even a targeted one, read the cloud again. An earlier
+   * save in the same batch had set the mark, so "Apply all date changes" said
+   * the schedule was refreshed while it still showed the refused task as the
+   * web had opened it (whole-app audit round 2 follow-up, 30 Sep 2026).
+   */
+  function markBehindCloud(...collections: DAVEOperationalCollectionName[]) {
+    collections.forEach(collection => realtimeSatisfiedCollections.delete(collection));
   }
 
   function invalidateAuthorization() {
@@ -649,8 +664,9 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       const ownerId = await requireAuthorizedOwnerCached();
       const requested = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
       const unrestorable = new Set<string>();
-      for (let start = 0; start < requested.length; start += 200) {
-        const chunk = requested.slice(start, start + 200);
+      // 100 ids a request, as everywhere else: 200 made ~7.9 KB request
+      // addresses, near what some proxies refuse (audit round 2 follow-up).
+      for (const chunk of chunkSupabaseFilterValues(requested)) {
         const [existing, deleted] = await Promise.all([
           client
             .from('schedule_items')
@@ -687,9 +703,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       expectedCloudUpdatedAt: string | null,
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      if (!expectedCloudUpdatedAt) throw staleTaskError();
+      if (!expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const ownerId = await requireAuthorizedOwnerCached();
       if (await scheduleItemWasDeleted(client, ownerId, item.id)) {
+        markBehindCloud('schedule_items', 'sync_tombstones');
         throw new DAVEWebTaskMutationError(
           'deleted',
           'This task was deleted on another device. The workspace has been refreshed.',
@@ -712,7 +732,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           'The task could not be updated. Refresh the workspace and try again.',
         );
       }
-      if (!data) throw staleTaskError();
+      if (!data) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const acknowledgedAt = readCloudTimestamp(data) ?? cloudUpdatedAt;
       cacheAcknowledgedScheduleItem(item, ownerId, acknowledgedAt);
       return acknowledgedAt;
@@ -723,7 +746,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       expectedCloudUpdatedAt: string | null,
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      if (!expectedCloudUpdatedAt) throw staleTaskError();
+      if (!expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const ownerId = await requireAuthorizedOwnerCached();
 
       if (await scheduleItemWasDeleted(client, ownerId, itemId)) {
@@ -743,12 +769,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
       if (!current) {
+        markBehindCloud('schedule_items');
         throw new DAVEWebTaskMutationError(
           'not_found',
           'This task no longer exists. The workspace has been refreshed.',
         );
       }
-      if (readCloudTimestamp(current) !== expectedCloudUpdatedAt) throw staleTaskError();
+      if (readCloudTimestamp(current) !== expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
 
       const deletedAt = new Date().toISOString();
       const { error } = await client
@@ -782,6 +812,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
       if (revisedScheduleItems.some(revision => !revision.cloudUpdatedAt)) {
+        markBehindCloud('schedule_items');
         throw scheduleImportConflictError();
       }
       if (bytes.byteLength <= 0) {
@@ -903,7 +934,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
               'The schedule tasks could not be saved. The incomplete document was blocked, but file cleanup could not be confirmed. Refresh before retrying.',
             );
           }
-          if (saved.stale) throw scheduleImportConflictError();
+          if (saved.stale) {
+            markBehindCloud('schedule_items');
+            throw scheduleImportConflictError();
+          }
           throw new DAVEWebDocumentMutationError(
             'write_failed',
             'The schedule tasks could not be saved. The incomplete document import was rolled back and its file was removed.',

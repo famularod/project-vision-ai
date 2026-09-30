@@ -121,6 +121,35 @@ describe('web provider refresh after refused task writes (audit round 2 F7, F8)'
     await waitFor(() => expect(screen.getByTestId('outcome').props.children)
       .toBe('error:changed on another device'));
     expect(mockedGateway.updateAuthorizedScheduleItem).toHaveBeenCalledTimes(1);
+    // Was toHaveBeenCalledWith(['schedule_items']). A refusal now refreshes
+    // everything: a targeted refresh could be answered from a copy an
+    // earlier save had marked up to date (audit round 2 follow-up, 30 Sep).
+    expect(mockedLoadSnapshot).toHaveBeenCalledTimes(1);
+    expect(mockedLoadSnapshot).toHaveBeenCalledWith(undefined);
+  });
+
+  test('"Apply all date changes" that saves A and is refused on B refreshes everything, not only the saved copy', async () => {
+    mockedGateway.updateAuthorizedScheduleItem
+      .mockResolvedValueOnce('2026-09-30T13:00:00.000Z')
+      .mockRejectedValueOnce(new Error('changed on another device'));
+    const screen = await renderReady(auth => auth.updateTasks([task('a'), task('b')]));
+
+    fireEvent.press(screen.getByTestId('run'));
+
+    await waitFor(() => expect(screen.getByTestId('outcome').props.children)
+      .toBe('error:changed on another device'));
+    expect(mockedGateway.updateAuthorizedScheduleItem).toHaveBeenCalledTimes(2);
+    expect(mockedLoadSnapshot).toHaveBeenCalledTimes(1);
+    expect(mockedLoadSnapshot).toHaveBeenCalledWith(undefined);
+  });
+
+  test('"Apply all date changes" that saves every task keeps the quick schedule-only refresh', async () => {
+    mockedGateway.updateAuthorizedScheduleItem.mockResolvedValue('2026-09-30T13:00:00.000Z');
+    const screen = await renderReady(auth => auth.updateTasks([task('a'), task('b')]));
+
+    fireEvent.press(screen.getByTestId('run'));
+
+    await waitFor(() => expect(screen.getByTestId('outcome').props.children).toBe('ok:2'));
     expect(mockedLoadSnapshot).toHaveBeenCalledWith(['schedule_items']);
   });
 

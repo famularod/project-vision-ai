@@ -56,6 +56,24 @@ describe('listAuthorizedUnrestorableScheduleItemIds (audit round 2 F8)', () => {
     expect(tombstones.in).toHaveBeenCalledWith('record_id', ['hidden-task', 'deleted-task', 'gone-task']);
   });
 
+  // 200 ids a request made ~7.9 KB request addresses; the rest of the app
+  // asks 100 at a time (chunkSupabaseFilterValues). Audit round 2 follow-up.
+  test('asks about at most 100 tasks per request, like the rest of the app', async () => {
+    const { gateway, schedule, tombstones } = gatewayWith(
+      { data: [], error: null },
+      { data: [], error: null },
+    );
+    const ids = Array.from({ length: 250 }, (_, index) => `task-${index}`);
+
+    await gateway.listAuthorizedUnrestorableScheduleItemIds(ids);
+
+    const scheduleChunks = schedule.in.mock.calls.map(([, chunk]) => chunk as string[]);
+    const tombstoneChunks = tombstones.in.mock.calls.map(([, chunk]) => chunk as string[]);
+    expect(scheduleChunks.map(chunk => chunk.length)).toEqual([100, 100, 50]);
+    expect(tombstoneChunks.map(chunk => chunk.length)).toEqual([100, 100, 50]);
+    expect(scheduleChunks.flat()).toEqual(ids);
+  });
+
   test('restores nothing when the shared record cannot be checked', async () => {
     const { gateway } = gatewayWith(
       { data: null, error: { message: 'timeout' } },
