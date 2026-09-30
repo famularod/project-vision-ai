@@ -32,7 +32,44 @@ export type DAVEReportSnapshot = Readonly<{
    * document excerpts were connected.
    */
   sourceReferences?: readonly DAVEReportSnapshotSourceReference[];
+  /**
+   * The snapshot this one replaced, one level deep: the report the owner had
+   * before this content was approved. Re-approving the same content (after
+   * leaving the tab, or an unsent approval) must not make the report compare
+   * against itself (whole-app audit A6, 29 Sep 2026).
+   */
+  supersedes?: DAVEReportSnapshot | null;
 }>;
+
+/**
+ * The baseline a report with `currentFingerprint` is compared against: the
+ * previous approved snapshot, unless that snapshot is this same content, in
+ * which case the one it superseded.
+ */
+export function reportBaselineSnapshot(
+  previous: DAVEReportSnapshot | null | undefined,
+  currentFingerprint: string,
+): DAVEReportSnapshot | null {
+  if (!previous) return null;
+  return previous.sourceFingerprint === currentFingerprint ? previous.supersedes ?? null : previous;
+}
+
+/**
+ * What approving `current` saves: nothing when the same content is already
+ * the saved baseline; otherwise `current`, remembering the previous snapshot
+ * (without its own history) as the one it supersedes.
+ */
+export function reportSnapshotToSave(
+  current: DAVEReportSnapshot,
+  previous: DAVEReportSnapshot | null | undefined,
+): DAVEReportSnapshot | null {
+  if (previous && previous.scopeKey === current.scopeKey && previous.sourceFingerprint === current.sourceFingerprint) {
+    return null;
+  }
+  if (!previous || previous.scopeKey !== current.scopeKey) return current;
+  const { supersedes: _older, ...superseded } = previous;
+  return Object.freeze({ ...current, supersedes: Object.freeze(superseded) });
+}
 
 export type DAVEReportSnapshotSourceReference = Readonly<{
   documentId: string;

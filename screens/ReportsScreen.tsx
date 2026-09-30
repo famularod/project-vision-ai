@@ -68,6 +68,12 @@ import {
   loadDAVEReportSnapshot,
   saveDAVEReportSnapshot,
 } from '../services/DAVEReportSnapshotRepository';
+import { reportBaselineSnapshot, reportSnapshotToSave } from '../services/DAVEReportSnapshot';
+import {
+  recallReportSessionState,
+  rememberReportSessionState,
+  restoredReportApproval,
+} from '../services/ReportSessionState';
 import {
   buildVitruviusCommitmentControl,
   type VitruviusCommitmentControl,
@@ -329,9 +335,14 @@ export function ReportsScreen({
   const reportBriefing = useMemo(() => buildDAVEReportBriefing({
     truths: reportTruths,
     selectedProjectNames,
-    previousSnapshot: snapshotScopeLoaded ? previousReportSnapshot : null,
+    // Never this same content's own snapshot (audit A6): re-approving after
+    // leaving the tab compared the report against itself.
+    previousSnapshot: snapshotScopeLoaded
+      ? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)
+      : null,
   }), [
     previousReportSnapshot,
+    reportSourceFingerprint,
     reportTruths,
     selectedProjectNames,
     snapshotScopeLoaded,
@@ -457,8 +468,14 @@ export function ReportsScreen({
     drawingReferences.map(reference => reference.id),
   );
   useEffect(() => {
-    setReportApproved(false);
-  }, [approvalTextKey]);
+    // The approval belongs to one exact report text: a change clears it,
+    // unless this session already approved exactly this text (audit A6:
+    // leaving the tab unmounted the screen and lost the approval).
+    setReportApproved(restoredReportApproval(
+      recallReportSessionState(reportStateIdentityKey),
+      approvalTextKey,
+    ));
+  }, [approvalTextKey, reportStateIdentityKey]);
 
   useEffect(() => {
     if (reportApprovalAllowed) return;
@@ -483,18 +500,30 @@ export function ReportsScreen({
     onCreateDecisionSnapshot,
   ]);
   useEffect(() => {
-    setReportApproved(false);
+    // Edits typed for this scope earlier in the session come back (audit
+    // A6); the approval is decided by the approval-text effect above.
     setReportEditing(false);
-    setReportEdits(null);
+    setReportEdits(recallReportSessionState(reportStateIdentityKey)?.edits ?? null);
     setCommunicationPending(false);
     setCommunicationError('');
     pendingCommunicationTokenRef.current = null;
   }, [reportStateIdentityKey]);
+  useEffect(() => {
+    rememberReportSessionState(reportStateIdentityKey, {
+      edits: reportEdits,
+      approvedTextKey: reportApproved ? approvalTextKey : null,
+    });
+  }, [approvalTextKey, reportApproved, reportEdits, reportStateIdentityKey]);
 
   const completeCommunication = (
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
+    options: Readonly<{ requireApproval?: boolean }> = {},
   ) => {
-    if (!reportApproved || !reportApprovalAllowed) {
+    // The Word review copy needs no approval, only a report that could be
+    // approved (audit A6: the button did nothing before approval and put a
+    // status sentence in red).
+    const requireApproval = options.requireApproval ?? true;
+    if ((requireApproval && !reportApproved) || !reportApprovalAllowed) {
       setCommunicationError(reportApprovalMessage);
       return;
     }
@@ -547,12 +576,21 @@ export function ReportsScreen({
     setReportEditing(false);
     setReportApproved(true);
     setCommunicationError('');
-    void saveDAVEReportSnapshot(currentReportSnapshot).catch(() => {
-      if (!mountedRef.current) return;
-      setCommunicationError(
-        'The report is approved, but its reporting-period snapshot could not be saved on this device.',
-      );
-    });
+    // Approving the same content again saves nothing; otherwise the saved
+    // snapshot remembers the one it supersedes, so this report is never
+    // compared against itself (audit A6).
+    const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
+    if (!snapshotToSave) return;
+    void saveDAVEReportSnapshot(snapshotToSave)
+      .then(() => {
+        if (mountedRef.current) setPreviousReportSnapshot(snapshotToSave);
+      })
+      .catch(() => {
+        if (!mountedRef.current) return;
+        setCommunicationError(
+          'The report is approved, but its reporting-period snapshot could not be saved on this device.',
+        );
+      });
   };
   const reportHeader = (
     <ScreenHeader
@@ -649,8 +687,12 @@ export function ReportsScreen({
               completeCommunication(onTextReport);
             }}
             onDownloadWordReport={() => {
+              // A review copy before approval is titled as one (audit A6).
               completeCommunication(report =>
-                onDownloadWordReport(report, drawingReferences));
+                onDownloadWordReport(
+                  reportApproved ? report : { ...report, title: `${report.title} — Review copy (not approved)` },
+                  drawingReferences,
+                ), { requireApproval: false });
             }}
             onOutlookReport={() => {
               completeCommunication(report =>

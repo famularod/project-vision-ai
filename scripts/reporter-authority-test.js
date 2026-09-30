@@ -35,7 +35,8 @@ assert(reports.includes('completeCommunication(onCopyReport)'), 'Copy action mus
 assert(reports.includes('completeCommunication(onTextReport)'), 'Text action must pass through the reviewed communication boundary.');
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&
-    reports.includes('if (!reportApproved || !reportApprovalAllowed)') &&
+    reports.includes('if ((requireApproval && !reportApproved) || !reportApprovalAllowed)') && // audit A6: the Word review copy alone skips approval, never the authority check
+    reports.includes('), { requireApproval: false });') &&
     reports.includes('reportEdits.sourceFingerprint === reportSourceFingerprint') &&
     reports.includes('shouldApplyCommunicationOutcome({'),
   'Approval and every communication path must revalidate report review authority.',
