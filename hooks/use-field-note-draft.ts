@@ -51,6 +51,14 @@ export function useFieldNoteDraft(
       slot = null;
       notify();
     }
+    // Leaving with nothing written starts the next visit fresh, so a saved
+    // note's project no longer sticks to every later note (audit A4 pass 6).
+    return () => {
+      if (slot?.key === key && !hasWrittenContent(slot.draft)) {
+        slot = null;
+        notify();
+      }
+    };
   }, [key]);
 
   const update = useCallback(<K extends keyof FieldNoteDraft>(field: K, value: FieldNoteDraft[K]) => {
@@ -61,6 +69,10 @@ export function useFieldNoteDraft(
   }, [key]);
 
   return [stored ?? initialRef.current, update];
+}
+
+function hasWrittenContent(draft: FieldNoteDraft): boolean {
+  return Boolean(draft.text.trim() || draft.actionText.trim() || draft.locationName.trim());
 }
 
 /** Account change or sign-out: nobody's unsaved note carries over. */

@@ -48,4 +48,22 @@ describe('field note draft (audit A2 M3)', () => {
     expect(ownerAAgain.result.current[0].text).toBe('');
     await ownerAAgain.unmount();
   });
+
+  // Audit A4 pass 6: after one note was saved for Project A, every later visit
+  // started with Project A selected (the mic included) until sign-out.
+  it("a saved note's project does not stick to the next visit; a chosen project stays while writing", async () => {
+    const visit = await renderHook(() => useFieldNoteDraft('mobile_capture:owner-a', empty()));
+    await act(async () => {
+      visit.result.current[1]('projectName', 'Project A');
+      visit.result.current[1]('text', 'Pour scheduled');
+    });
+    // Save clears the written fields; the project stays for this visit.
+    await act(async () => { visit.result.current[1]('text', ''); });
+    expect(visit.result.current[0].projectName).toBe('Project A');
+    await visit.unmount();
+    const next = await renderHook(() => useFieldNoteDraft('mobile_capture:owner-a', empty()));
+    expect(next.result.current[0]).toEqual(empty());
+    await next.unmount();
+  });
 });
+

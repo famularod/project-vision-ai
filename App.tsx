@@ -10335,9 +10335,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const update = activeSavedUpdates.find(candidate =>
       candidate.photos.some(photo => photo.id === photoId));
     if (!update) return null;
-    try {
-      const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
-      return hydrated.photos.find(photo => photo.id === photoId)?.uri?.trim() || null;
+    try { // only the requested photo, as email and Word fetch (audit A6 pass 6)
+      const hydrated = await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: update.photos.filter(photo => photo.id === photoId) });
+      return hydrated.photos[0]?.uri?.trim() || null;
     } catch {
       return null;
     }
