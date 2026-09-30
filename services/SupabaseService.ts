@@ -357,6 +357,13 @@ const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600;
 const SIGN_IN_EXPIRY_MARGIN_MS = 90_000;
 /** SupabaseServiceResult.code of a Sign Out made on this device only, with no signal. */
 export const SIGNED_OUT_ON_THIS_DEVICE_ONLY = 'signed_out_on_this_device_only';
+/**
+ * Owner answer Q21 (30 Sep 2026): Sign Out ends this device's sign-in only
+ * ('local', the default) or every device's ('global', auth-js's own default).
+ */
+export type SignOutScope = 'local' | 'global';
+/** SupabaseServiceResult.code of a Sign Out of All Devices that could not reach the cloud: nothing signed out. */
+export const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL = 'sign_out_of_all_devices_needs_signal';
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -692,7 +699,9 @@ export async function signUp({
   });
 }
 
-export async function signOut(): Promise<SupabaseServiceResult<null>> {
+export async function signOut(
+  scope: SignOutScope = 'local',
+): Promise<SupabaseServiceResult<null>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<null>();
@@ -708,7 +717,7 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
     saved.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
     lastSignInRefreshTransport === 'failed',
   );
-  const error = unreachable ? null : (await client.auth.signOut()).error;
+  const error = unreachable ? null : (await client.auth.signOut({ scope })).error;
 
   if (!unreachable && !error) {
     lastAuthEvent = 'SIGNED_OUT';
@@ -716,6 +725,15 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
     return okResult(null);
   }
   if (error && !isAuthRetryableFetchError(error)) return errorResult(error.message);
+  // Owner answer Q21: only the cloud can sign out the other devices. Without
+  // it nothing is signed out here either; the owner is told and chooses.
+  if (scope === 'global') {
+    return errorResult(
+      'Signing out your other devices needs signal, and Vitruvius could not reach the cloud just now. Nothing was signed out.',
+      undefined,
+      SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
+    );
+  }
 
   // No signal (owner answer Q13): sign out on this phone. The server session
   // is not ended, then or later; no copy of its token stays on the phone.

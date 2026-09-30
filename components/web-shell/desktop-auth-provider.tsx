@@ -19,6 +19,7 @@ import {
   DAVEWebDocumentMutationError,
   DAVEWebTaskMutationError,
   daveWebSupabaseGateway,
+  type DAVEWebSignOutScope,
   type DAVEWebStorageBucket,
 } from '../../services/DAVEWebSupabaseClient';
 import {
@@ -70,7 +71,8 @@ type DesktopAuthContextValue = Readonly<{
   freshness: DAVEWebFreshnessState;
   message: string | null;
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
-  signOutOfDesktop: () => Promise<void>;
+  /** This computer only unless 'global' (owner answer Q21); throws when it did not finish. */
+  signOutOfDesktop: (scope?: DAVEWebSignOutScope) => Promise<void>;
   refreshSnapshot: () => Promise<boolean>;
   loadDocumentCoverageSummary: (
     documentId: string,
@@ -231,7 +233,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
       if (error instanceof DAVEWebAuthorizationError) {
-        await daveWebSupabaseGateway.signOut();
+        // This browser only: an automatic sign-out never ends the owner's
+        // iPhone and iPad sign-ins (owner answer Q21).
+        await daveWebSupabaseGateway.signOut('local');
         if (mountedRef.current) {
           setPhase('unauthorized');
           setMessage(error.message);
@@ -312,8 +316,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return loadAuthorizedSnapshot(result.session);
   }, [loadAuthorizedSnapshot]);
 
-  const signOutOfDesktop = useCallback(async () => {
-    await daveWebSupabaseGateway.signOut();
+  const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
+    await daveWebSupabaseGateway.signOut(scope);
     clearSessionView();
   }, [clearSessionView]);
 

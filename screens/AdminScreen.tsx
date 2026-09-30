@@ -44,10 +44,12 @@ import {
   getSupabaseConnectionStatus,
   signIn,
   signOut,
+  SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
   SIGNED_OUT_ON_THIS_DEVICE_ONLY,
   signUp,
   subscribeToAuthStateChange,
   testSupabaseConnection,
+  type SignOutScope,
   type SupabaseConnectionStatus,
   type SupabaseConnectionTestResult,
 } from '../services/SupabaseService';
@@ -86,6 +88,10 @@ const ENABLE_DEV_AUTH_SIGNUP =
 const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
 const SETTINGS_STATUS_TIMEOUT_MS = 8_000;
 const SETTINGS_SYNC_TIMEOUT = Symbol('settings_sync_timeout');
+/** What each Sign Out choice does, in the owner's words (owner answer Q21). */
+const SIGN_OUT_CHOICES =
+  'This Device: your other devices stay signed in.\n' +
+  'All Devices: your other devices are signed out too, within an hour or when they next have signal. Use this if a device is lost.';
 
 const APP_VERSION = Constants.expoConfig?.version || 'Unknown';
 const APP_BUILD_NUMBER = getInstalledBuildNumber();
@@ -985,25 +991,34 @@ export function AdminScreen({
         ? `${unsyncedCount} item${unsyncedCount === 1 ? ' is' : 's are'} not in the cloud yet. ${unsyncedCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
         : 'You will need to sign in again to resume cloud sync and photo intelligence.';
 
-    Alert.alert('Sign Out', message, [
+    // Owner answer Q21 (30 Sep 2026): he chooses this device or all devices.
+    // Every Sign Out used to sign out his other devices too. The warning above
+    // still comes first; both choices clear this phone the same way.
+    Alert.alert('Sign Out', `${message}\n\n${SIGN_OUT_CHOICES}`, [
+      { text: 'Sign Out of This Device', style: 'destructive', onPress: () => { void performSignOut('local'); } },
+      { text: 'Sign Out of All Devices', style: 'destructive', onPress: () => { void performSignOut('global'); } },
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: () => {
-          void performSignOut();
-        },
-      },
     ]);
   }
 
-  async function performSignOut() {
+  async function performSignOut(scope: SignOutScope) {
     setSigningOut(true);
 
     try {
-      const result = await signOut();
-      // A sign-out that did not happen used to say nothing (owner answer Q13).
-      if (!result.ok) {
+      const result = await signOut(scope);
+      if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {
+        // No silent sign-out of this device alone (owner answer Q21): he is
+        // told why, and this device is his to choose.
+        Alert.alert(
+          'Other devices not signed out',
+          `${result.error}\n\nYou can sign out of this device now. Your other devices stay signed in.`,
+          [
+            { text: 'Sign Out of This Device', style: 'destructive', onPress: () => { void performSignOut('local'); } },
+            { text: 'Cancel', style: 'cancel' },
+          ],
+        );
+      } else if (!result.ok) {
+        // A sign-out that did not happen used to say nothing (owner answer Q13).
         Alert.alert('Sign Out did not finish', result.error || result.message || 'Try Sign Out again.');
       } else if (result.code === SIGNED_OUT_ON_THIS_DEVICE_ONLY) {
         // With no signal only this device signs out; the owner is told so
@@ -1012,6 +1027,8 @@ export function AdminScreen({
           'Signed out on this device',
           result.message || 'Signed out on this device only. Your other devices stay signed in.',
         );
+      } else if (scope === 'global') {
+        Alert.alert('Signed out of all devices', 'Your other devices will be signed out within an hour or when they next have signal.');
       }
       await refreshAdminStatus();
     } finally {

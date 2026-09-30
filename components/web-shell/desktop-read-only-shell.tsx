@@ -26,7 +26,9 @@ import {
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
 import {
   DAVEWebDocumentMutationError,
+  DAVEWebSignOutNeedsConnectionError,
   DAVEWebTaskMutationError,
+  type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
@@ -5922,6 +5924,73 @@ function ReportWorkspace({
   );
 }
 
+/**
+ * Owner answer Q21 (30 Sep 2026): Sign out asks which devices. Every sign-out
+ * used to end the iPhone's and iPad's sign-ins as well. Signing out every
+ * device needs the cloud; without it nothing is signed out and he is told.
+ */
+function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
+  const auth = useDesktopAuth();
+  const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
+  const [problem, setProblem] = useState('');
+
+  const signOut = async (scope: DAVEWebSignOutScope) => {
+    if (pending) return;
+    setPending(scope);
+    setProblem('');
+    try {
+      // Once signed out, the sign-in page replaces this workspace.
+      await auth.signOutOfDesktop(scope);
+    } catch (error) {
+      // On the web, This Computer needs the cloud too, so it is not offered as
+      // the way out here (unlike the phone, which can sign out with no signal).
+      setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
+        ? `${error.message} Try again when this computer is back online.`
+        : 'Sign out did not finish. Check the internet connection and try again.');
+      setPending(null);
+    }
+  };
+
+  return (
+    <View style={styles.deleteConfirm} accessibilityRole="alert">
+      <View style={styles.dataGrow}>
+        <Text style={styles.deleteConfirmTitle}>Sign out of which devices?</Text>
+        <Text style={styles.dataMeta}>This Computer: your iPhone and iPad stay signed in.</Text>
+        <Text style={styles.dataMeta}>
+          All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.
+        </Text>
+        {problem ? <Text style={styles.errorText}>{problem}</Text> : null}
+      </View>
+      <View style={styles.inlineButtons}>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+          onPress={onCancel}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+          onPress={() => { void signOut('local'); }}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>{pending === 'local' ? 'Signing out…' : 'Sign Out of This Computer'}</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+          onPress={() => { void signOut('global'); }}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>{pending === 'global' ? 'Signing out…' : 'Sign Out of All Devices'}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function SettingsWorkspace({
   snapshot,
   displayName,
@@ -5941,6 +6010,7 @@ function SettingsWorkspace({
     'connected' | 'disconnected' | 'uncertain'
   >(() => googleDriveSessionIsAuthorized() ? 'connected' : 'disconnected');
   const [driveConnectionNotice, setDriveConnectionNotice] = useState('');
+  const [signOutChoiceOpen, setSignOutChoiceOpen] = useState(false);
 
   useEffect(() => {
     setDisplayNameDraft(displayName);
@@ -6040,12 +6110,13 @@ function SettingsWorkspace({
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
-            onPress={() => { void auth.signOutOfDesktop(); }}
+            onPress={() => setSignOutChoiceOpen(true)}
             accessibilityRole="button"
           >
             <Text style={styles.secondaryButtonText}>Sign out</Text>
           </Pressable>
         </View>
+        {signOutChoiceOpen ? <DesktopSignOutChoice onCancel={() => setSignOutChoiceOpen(false)} /> : null}
       </View>
 
       <View style={styles.syncGuideGrid}>

@@ -107,9 +107,11 @@ describe('Settings counts and uploads documents saved without signal (audit A8 p
   it('names them in the sign-out warning, which says they sync after signing in again', async () => {
     const { screen } = renderAdmin({ failedDocumentCount: 2 });
     fireEvent.press(await screen.findByText('Sign Out'));
+    // Owner answer Q21 (30 Sep 2026): the same warning, first, now followed by
+    // what each of the two Sign Out choices does.
     expect(Alert.alert).toHaveBeenCalledWith(
       'Sign Out',
-      '3 items are not in the cloud yet. They stay on this phone and sync after you sign in here again with this account. Sign out anyway?',
+      expect.stringMatching(/^3 items are not in the cloud yet\. They stay on this phone and sync after you sign in here again with this account\. Sign out anyway\?\n\nThis Device: /),
       expect.any(Array),
     );
   });

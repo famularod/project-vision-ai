@@ -225,7 +225,9 @@ async function executeLiveCases(cases) {
       endToEndLatencyMs,
     ));
   }
-  await client.auth.signOut();
+  // This harness session only: the default ('global') also signed the owner
+  // out of his iPhone, iPad and computer (owner answer Q21, 30 Sep 2026).
+  await client.auth.signOut({ scope: 'local' });
   return { actualById, missing: [] };
 }
 

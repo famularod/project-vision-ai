@@ -1,5 +1,7 @@
 import {
   createClient,
+  isAuthRetryableFetchError,
+  isAuthSessionMissingError,
   type AuthChangeEvent,
   type Session,
   type SupabaseClient,
@@ -95,6 +97,20 @@ export class DAVEWebAuthorizationError extends Error {
   constructor(message = 'This account is not authorized for the Vitruvius desktop pilot.') {
     super(message);
     this.name = 'DAVEWebAuthorizationError';
+  }
+}
+
+/**
+ * Owner answer Q21 (30 Sep 2026): sign out of this computer only ('local') or
+ * of every device ('global', which ends the iPhone's and iPad's sign-ins too).
+ */
+export type DAVEWebSignOutScope = 'local' | 'global';
+
+/** Sign out of all devices could not reach the cloud; nothing was signed out. */
+export class DAVEWebSignOutNeedsConnectionError extends Error {
+  constructor() {
+    super('Signing out your other devices needs an internet connection, and Vitruvius could not reach the cloud just now. Nothing was signed out.');
+    this.name = 'DAVEWebSignOutNeedsConnectionError';
   }
 }
 
@@ -392,9 +408,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return { ok: true, session: data.session };
     },
 
-    async signOut(): Promise<void> {
+    /** This computer only unless 'global' is asked for (owner answer Q21). */
+    async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
-      const { error } = await client.auth.signOut();
+      const { error } = await client.auth.signOut({ scope });
+      if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
+        throw new DAVEWebSignOutNeedsConnectionError();
+      }
       if (error) throw new Error('The desktop session could not be closed.');
       invalidateAuthorization();
       cachedRowsOwnerId = null;
@@ -1805,16 +1825,38 @@ async function setAuthorizedCurrentReferenceDocument({
   );
 }
 
+/**
+ * Audit A12 F2 (owner answer Q21, 30 Sep 2026): the web signs itself out only
+ * on a definite answer: the owner check says false or 401/403, or the sign-in
+ * check says the session is missing or 401/403. A check that could not finish
+ * (timeout 57014, a 5xx, no network) used to sign out too; it now throws a
+ * plain Error, so the workspace stays and says automatic refresh is waiting.
+ * Nothing is read until a check returns true.
+ */
 async function requireAuthorizedOwner(client: SupabaseClient): Promise<string> {
   const { data: userResult, error: userError } = await client.auth.getUser();
   const userId = userResult.user?.id ?? null;
+  if (userError && !isAuthSessionMissingError(userError) && !isRefusalStatus(userError.status)) {
+    throw ownerCheckIncomplete();
+  }
   if (userError || !userId) {
     throw new DAVEWebAuthorizationError('Sign in is required for the Vitruvius desktop pilot.');
   }
 
-  const { data: authorized, error: authorizationError } = await client.rpc('dave_is_app_owner');
-  if (authorizationError || authorized !== true) throw new DAVEWebAuthorizationError();
-  return userId;
+  const { data: authorized, error: authorizationError, status } = await client.rpc('dave_is_app_owner');
+  if (!authorizationError && authorized === true) return userId;
+  if ((!authorizationError && authorized === false) || isRefusalStatus(status)) {
+    throw new DAVEWebAuthorizationError();
+  }
+  throw ownerCheckIncomplete();
+}
+
+function isRefusalStatus(status: unknown): boolean {
+  return status === 401 || status === 403;
+}
+
+function ownerCheckIncomplete(): Error {
+  return new Error('The owner check could not be completed. Try again shortly.');
 }
 
 function scheduleItemRow(item: ScheduleItem, ownerId: string, updatedAt: string) {
