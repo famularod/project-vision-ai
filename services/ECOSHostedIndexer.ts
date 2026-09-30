@@ -221,6 +221,66 @@ export async function loadECOSHostedIndexStatuses({
   return Object.freeze((Array.isArray(data) ? data : []).map(normalizeStatus).filter(isPresent));
 }
 
+/** The preparation-status copy the hosted indexer's status is mirrored into on a document. */
+export const ECOS_HOSTED_INDEX_STATUS_FIELDS = [
+  'ecosHostedIndexStatus',
+  'ecosHostedIndexProgressPercent',
+  'ecosHostedIndexCustomerMessage',
+  'ecosHostedIndexLimitationCount',
+  'ecosHostedIndexSupportReference',
+  'ecosHostedIndexEvidenceVersion',
+  'ecosHostedIndexUpdatedAt',
+] as const;
+
+const ECOS_HOSTED_INDEX_SAME_FILE_FIELDS = [
+  'contentSha256',
+  'webFileFingerprint',
+  'storagePath',
+] as const;
+
+/**
+ * A live (Realtime) document row carries the document's stored copy of its
+ * preparation status, which is often missing or older than the status the
+ * last refresh read from the hosted indexer: the echo of Make Current only
+ * flips isCurrent. Laid over the held document, it turned "Prepared — not
+ * current" back into "Preparing for ECOS" and disabled Make Current until a
+ * full refresh (whole-app audit round 2 F3, 30 Sep 2026). The held status is
+ * carried onto the incoming document when it is newer (the row has none, or
+ * an earlier ecosHostedIndexUpdatedAt), and only when the file is the same
+ * one (contentSha256, webFileFingerprint and storagePath unchanged), so a
+ * replaced file never inherits "Prepared". Shared by the web and the phone.
+ */
+export function carryECOSHostedIndexStatus<T extends object>(
+  incoming: T,
+  held: object | null | undefined,
+): T {
+  if (!held) return incoming;
+  const next = incoming as Record<string, unknown>;
+  const previous = held as Record<string, unknown>;
+  if (!hasHostedIndexStatus(previous)) return incoming;
+  const sameFile = ECOS_HOSTED_INDEX_SAME_FILE_FIELDS.every(field =>
+    text(next[field]) === text(previous[field]));
+  if (!sameFile) return incoming;
+  if (
+    hasHostedIndexStatus(next) &&
+    hostedIndexStatusTime(next) >= hostedIndexStatusTime(previous)
+  ) return incoming;
+  const carried: Record<string, unknown> = { ...next };
+  ECOS_HOSTED_INDEX_STATUS_FIELDS.forEach(field => {
+    carried[field] = previous[field] ?? null;
+  });
+  return carried as T;
+}
+
+function hasHostedIndexStatus(value: Record<string, unknown>): boolean {
+  return Boolean(text(value.ecosHostedIndexStatus));
+}
+
+function hostedIndexStatusTime(value: Record<string, unknown>): number {
+  const parsed = Date.parse(text(value.ecosHostedIndexUpdatedAt));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function normalizeStatus(value: unknown): ECOSHostedIndexStatus | null {
   const row = record(value);
   const documentId = text(row.document_id);

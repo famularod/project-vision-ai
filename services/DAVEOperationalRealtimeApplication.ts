@@ -8,6 +8,7 @@ import { projectRecordFromCloud, type ProjectRecord } from './ProjectCoverPhotoS
 import { deletedDAVERecordIds, mergeDAVESyncTombstones } from './DAVESyncTombstones';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
+import { carryECOSHostedIndexStatus } from './ECOSHostedIndexer';
 import {
   reconcileCurrentScheduleDocuments,
   scheduleDocumentIsScheduleLike,
@@ -281,7 +282,12 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       options.commitDocuments(reconcileCurrentScheduleDocuments(
         mergeDAVEReferenceDocumentRecoveryRecords({
           local: state.documents,
-          cloud: [cloudDocument],
+          // The row's stored preparation status is missing or older than the
+          // one this device read from the hosted indexer; the merge takes the
+          // cloud copy's, so "Prepared" was lost until the next refresh
+          // (whole-app audit round 2 F3, 30 Sep 2026). A replaced file keeps
+          // the row's own.
+          cloud: [carryECOSHostedIndexStatus(cloudDocument, localDocument)],
           deletedIds: deletedDAVERecordIds(state.tombstones, 'reference_document'),
         }),
       ));

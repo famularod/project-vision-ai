@@ -48,6 +48,7 @@ import {
 import {
   activateECOSCurrentReferenceDocument,
   enqueueECOSHostedIndex,
+  carryECOSHostedIndexStatus,
   loadECOSHostedIndexStatuses,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
@@ -1362,7 +1363,9 @@ function applyDAVEWebRealtimeRows(
   // knows the name to keep out.
   const nextCollection = mergeRealtimeRows(
     rows[property],
-    candidate,
+    entity === 'reference_document' && payload.eventType !== 'DELETE'
+      ? withHeldHostedIndexStatus(candidate, rows.referenceDocuments, id)
+      : candidate,
     payload.eventType,
     value => readRawString(value, 'id'),
   );
@@ -1370,6 +1373,26 @@ function applyDAVEWebRealtimeRows(
     rows: Object.freeze({ ...rows, [property]: nextCollection }),
     collections: Object.freeze([collection]),
   });
+}
+
+/**
+ * The live row's stored preparation status is missing or older than the one
+ * the web read from the hosted indexer; the collection is then marked up to
+ * date, so no refresh would correct it (whole-app audit round 2 F3).
+ */
+function withHeldHostedIndexStatus(
+  candidate: Readonly<Record<string, unknown>>,
+  heldRows: readonly unknown[],
+  id: string,
+): Readonly<Record<string, unknown>> {
+  const held = heldRows.find(row => readRawString(row, 'id') === id);
+  const incomingData = candidate.document_data;
+  const heldData = isRecord(held) ? held.document_data : null;
+  if (!isRecord(incomingData) || !isRecord(heldData)) return candidate;
+  const documentData = carryECOSHostedIndexStatus(incomingData, heldData);
+  return documentData === incomingData
+    ? candidate
+    : { ...candidate, document_data: documentData };
 }
 
 function daveWebCollectionForRealtimeEntity(
