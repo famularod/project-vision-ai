@@ -132,9 +132,10 @@ export function resolveOperationalProjectIdentity(
  * identity contract above.
  */
 export function resolveOperationalReferenceDocumentScope(
-  record: OperationalReferenceDocumentScopeInput,
+  input: OperationalReferenceDocumentScopeInput,
   authority: OperationalProjectIdentityAuthority,
 ): OperationalReferenceDocumentScopeResult {
+  const record = withoutOwnLegacyProjectNameKey(input);
   const hasSingleIdentity = Boolean(
     record.projectId !== undefined && record.projectId !== null ||
     record.projectName?.trim(),
@@ -223,6 +224,42 @@ export function resolveOperationalReferenceDocumentScope(
       projectNames: identities.map(identity => identity.name),
     },
   };
+}
+
+/**
+ * The phone keys a project by a slug of its name (App.tsx authorityProjectId,
+ * "project-2375-main-st"). Project documents still use it as their local key.
+ * It is never a cloud project id.
+ */
+export function legacyProjectNameKey(projectName: string): string {
+  const normalized = projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return `project-${normalized || 'unassigned'}`;
+}
+
+/**
+ * Audit A7 M1: documents added on the phone were shared with the name key as
+ * their project id, which never resolves, so they never synced. A key that is
+ * the slug of the document's own project name is read as "identified by that
+ * name"; any other non-cloud id still fails closed.
+ */
+function withoutOwnLegacyProjectNameKey(
+  record: OperationalReferenceDocumentScopeInput,
+): OperationalReferenceDocumentScopeInput {
+  const projectId = record.projectId;
+  if (typeof projectId !== 'string' || exactProjectId(projectId)) return record;
+  const key = projectId.trim();
+  const projectName = record.projectName?.trim() || '';
+  const ownName = projectName
+    ? (legacyProjectNameKey(projectName) === key ? projectName : null)
+    : (record.projectNames || []).find(name =>
+      typeof name === 'string' && name.trim() && legacyProjectNameKey(name) === key,
+    )?.trim() || null;
+  return ownName ? { ...record, projectId: null, projectName: ownName } : record;
 }
 
 export function exactProjectId(value: unknown): string | null {

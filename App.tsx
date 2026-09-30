@@ -391,6 +391,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
+import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -14335,16 +14336,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       </StartupHydrationBoundary>
     </PIELiveAuthorityProvider>
   );
-}
-
-function authorityProjectId(projectName: string) {
-  const normalized = projectName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-
-  return `project-${normalized || 'unassigned'}`;
 }
 
 type PIELiveAuthorityMode =

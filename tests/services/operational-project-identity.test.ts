@@ -1,5 +1,6 @@
 import {
   buildOperationalProjectIdentityAuthority,
+  legacyProjectNameKey,
   resolveOperationalProjectIdentity,
   resolveOperationalReferenceDocumentScope,
 } from '../../services/OperationalProjectIdentity';
@@ -92,6 +93,43 @@ describe('operational project identity', () => {
       ok: false,
       code: 'project_identity_ambiguous',
     });
+  });
+
+  it('reads a document keyed by its own project name as named by it (audit A7 M1)', () => {
+    expect(legacyProjectNameKey(' 2375 Compliance Project ')).toBe('project-2375-compliance-project');
+    expect(legacyProjectNameKey('  ')).toBe('project-unassigned');
+    const resolved = {
+      ok: true,
+      scope: {
+        projectId: PROJECT_2375,
+        projectName: '2375 Compliance Project',
+        projectNames: ['2375 Compliance Project'],
+      },
+    };
+    expect(resolveOperationalReferenceDocumentScope({
+      projectId: 'project-2375-compliance-project',
+      projectName: '2375 Compliance Project',
+      projectNames: ['2375 Compliance Project'],
+    }, authority)).toEqual(resolved);
+    expect(resolveOperationalReferenceDocumentScope({
+      projectId: 'project-2375-compliance-project',
+      projectNames: ['2321 Compliance Project', '2375 Compliance Project'],
+    }, authority)).toEqual({
+      ok: true,
+      scope: {
+        projectId: PROJECT_2375,
+        projectName: '2375 Compliance Project',
+        projectNames: ['2321 Compliance Project', '2375 Compliance Project'],
+      },
+    });
+    // Any other non-cloud id still fails closed.
+    expect(resolveOperationalReferenceDocumentScope({
+      projectId: 'project-2321-compliance-project',
+      projectName: '2375 Compliance Project',
+    }, authority)).toMatchObject({ ok: false, code: 'project_identity_invalid' });
+    expect(resolveOperationalReferenceDocumentScope({
+      projectId: 'project-2375-compliance-project',
+    }, authority)).toMatchObject({ ok: false, code: 'project_identity_invalid' });
   });
 
   it('canonicalizes a one-project document scope to its active cloud identity', () => {

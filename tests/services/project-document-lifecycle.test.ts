@@ -17,6 +17,13 @@ import {
 import type { OwnedLocalFileStoreDependencies } from '../../services/OwnedLocalFileStore';
 
 const NOW = '2026-07-18T12:00:00.000Z';
+// The phone keys a project document by its project name (App.tsx
+// authorityProjectId). Earlier fixtures used "project-2375", a key the app
+// never produces for "2375 Compliance Project" (audit A7 M1).
+const KEY_2375 = 'project-2375-compliance-project';
+const KEY_2321 = 'project-2321-compliance-project';
+const CLOUD_2375 = '72e941d8-8114-4082-a976-ae5b2b5daba9';
+const CLOUD_2321 = '607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
 
 describe('recoverStaleUploadingDocuments (audit P1-23)', () => {
   it('converts stale uploading documents to retryable failed', () => {
@@ -49,7 +56,7 @@ describe('shared project-document metadata', () => {
       document: {
         id: 'drawing-1',
         referenceDocumentId: 'shared-drawing-1',
-        projectId: 'project-2375',
+        projectId: KEY_2375,
         name: '2375-site-plan.pdf',
         category: 'Drawing',
         storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
@@ -63,7 +70,7 @@ describe('shared project-document metadata', () => {
     expect(findSharedReferenceDocumentForProjectDocument({
       id: 'drawing-1',
       referenceDocumentId: 'shared-drawing-1',
-      projectId: 'project-2375',
+      projectId: KEY_2375,
       storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
     }, [shared])).toBe(shared);
   });
@@ -72,7 +79,7 @@ describe('shared project-document metadata', () => {
     const shared = buildSharedReferenceDocument({
       document: {
         id: 'drawing-1',
-        projectId: 'project-2321',
+        projectId: KEY_2321,
         name: 'site-plan.pdf',
         category: 'Drawing',
         storagePath: 'project-2321/drawing-1/site-plan.pdf',
@@ -85,7 +92,7 @@ describe('shared project-document metadata', () => {
 
     expect(findSharedReferenceDocumentForProjectDocument({
       id: 'drawing-1',
-      projectId: 'project-2375',
+      projectId: KEY_2375,
       storagePath: 'project-2321/drawing-1/site-plan.pdf',
     }, [shared])).toBeNull();
   });
@@ -95,7 +102,7 @@ describe('shared project-document metadata', () => {
       document: {
         id: 'drawing-1',
         referenceDocumentId: null,
-        projectId: 'project-2375',
+        projectId: KEY_2375,
         name: '2375-site-plan.pdf',
         category: 'Drawing',
         mimeType: 'application/pdf',
@@ -118,7 +125,8 @@ describe('shared project-document metadata', () => {
     expect(reference).toMatchObject({
       id: 'drawing-1',
       category: 'Drawing',
-      projectId: 'project-2375',
+      // Named, not keyed: the upload resolves the cloud id (audit A7 M1).
+      projectId: null,
       projectName: '2375 Compliance Project',
       projectNames: ['2375 Compliance Project'],
       storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
@@ -139,7 +147,7 @@ describe('shared project-document metadata', () => {
       ...buildSharedReferenceDocument({
         document: {
           id: 'drawing-1',
-          projectId: 'project-2375',
+          projectId: KEY_2375,
           name: 'site-plan.pdf',
           category: 'Drawing' as const,
           drawingNumber: 'C5',
@@ -167,7 +175,7 @@ describe('shared project-document metadata', () => {
       sharedDocument: original,
       document: {
         id: 'drawing-1',
-        projectId: 'project-2375',
+        projectId: KEY_2375,
         name: 'renamed-site-plan.pdf',
         category: 'Drawing',
         drawingNumber: 'C5',
@@ -199,12 +207,103 @@ describe('shared project-document metadata', () => {
     expect(synchronized.extractedPages).toEqual(original.extractedPages);
   });
 
+  it('never shares the phone name key as a project id (audit A7 M1)', () => {
+    const source = {
+      id: 'spec-1',
+      projectId: KEY_2375,
+      name: 'spec.pdf',
+      category: 'Contract' as const,
+      importedAt: NOW,
+    };
+    expect(buildSharedReferenceDocument({
+      document: source,
+      projectName: '2375 Compliance Project',
+      contentSha256: null,
+      updatedAt: NOW,
+    })).toMatchObject({
+      projectId: null,
+      projectName: '2375 Compliance Project',
+      projectNames: ['2375 Compliance Project'],
+    });
+    // A project this phone cannot name keeps its key, so the upload is held
+    // for review instead of being sent without a project.
+    expect(buildSharedReferenceDocument({
+      document: source,
+      projectName: null,
+      contentSha256: null,
+      updatedAt: NOW,
+    }).projectId).toBe(KEY_2375);
+    expect(buildSharedReferenceDocument({
+      document: { ...source, projectId: CLOUD_2375 },
+      projectName: '2375 Compliance Project',
+      contentSha256: null,
+      updatedAt: NOW,
+    }).projectId).toBe(CLOUD_2375);
+  });
+
+  it('keeps a document linked after its shared record gains the cloud project id (audit A7 M1)', () => {
+    const uploaded = {
+      ...buildSharedReferenceDocument({
+        document: {
+          id: 'spec-1',
+          projectId: KEY_2375,
+          name: 'spec.pdf',
+          category: 'Contract',
+          storagePath: 'owner/project-documents/spec-1/spec.pdf',
+          importedAt: NOW,
+        },
+        projectName: '2375 Compliance Project',
+        contentSha256: null,
+        updatedAt: NOW,
+      }),
+      projectId: CLOUD_2375,
+    };
+    const phoneDocument = {
+      id: 'spec-1',
+      referenceDocumentId: 'spec-1',
+      projectId: KEY_2375,
+      storagePath: 'owner/project-documents/spec-1/spec.pdf',
+    };
+    expect(findSharedReferenceDocumentForProjectDocument(phoneDocument, [uploaded]))
+      .toBe(uploaded);
+    // Another project's uploaded record is still never borrowed.
+    const otherProject = {
+      ...uploaded,
+      projectId: CLOUD_2321,
+      projectName: '2321 Compliance Project',
+      projectNames: ['2321 Compliance Project'],
+    };
+    expect(findSharedReferenceDocumentForProjectDocument(phoneDocument, [otherProject]))
+      .toBeNull();
+
+    // A later edit keeps the cloud id rather than writing the key back.
+    const edited = synchronizeSharedReferenceDocumentMetadata({
+      sharedDocument: uploaded,
+      document: {
+        id: 'spec-1',
+        projectId: KEY_2375,
+        name: 'spec-rev-b.pdf',
+        category: 'Contract',
+        importedAt: NOW,
+      },
+      projectName: '2375 Compliance Project',
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    });
+    expect(edited).toMatchObject({
+      name: 'spec-rev-b',
+      projectId: CLOUD_2375,
+      projectName: '2375 Compliance Project',
+    });
+    expect(findSharedReferenceDocumentForProjectDocument(phoneDocument, [edited]))
+      .toBe(edited);
+  });
+
   it('does not make an uploaded schedule current without PM confirmation', () => {
     expect(referenceCategoryForProjectDocument('Schedule')).toBe('Schedules');
     expect(buildSharedReferenceDocument({
       document: {
         id: 'schedule-1',
-        projectId: 'project-2321',
+        projectId: KEY_2321,
         name: 'lookahead.pdf',
         category: 'Schedule',
         importedAt: NOW,

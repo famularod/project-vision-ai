@@ -19,6 +19,7 @@ import {
   type OwnedLocalFileManifestRecord,
 } from './OwnedLocalFileRepository';
 import { MAX_PROJECT_DOCUMENT_FILE_BYTES } from './FileSizePreflight';
+import { exactProjectId, legacyProjectNameKey } from './OperationalProjectIdentity';
 import type { ReferenceDocument } from '../types';
 import type { ProjectDocumentCategory } from './ProjectDocumentClassification';
 
@@ -129,8 +130,16 @@ export function findSharedReferenceDocumentForProjectDocument(
   referenceDocuments: readonly ReferenceDocument[],
 ): ReferenceDocument | null {
   const projectId = document.projectId.trim();
-  const belongsToProject = (candidate: ReferenceDocument) =>
-    !candidate.projectId || candidate.projectId === projectId;
+  // A shared record names its project; once uploaded it carries the cloud
+  // project id while the phone's document keeps the name key (audit A7 M1).
+  const belongsToProject = (candidate: ReferenceDocument) => {
+    if (candidate.projectId === projectId) return true;
+    const candidateProjectName = candidate.projectName?.trim();
+    if (candidateProjectName) {
+      return legacyProjectNameKey(candidateProjectName) === projectId;
+    }
+    return !candidate.projectId;
+  };
   const referenceDocumentId = document.referenceDocumentId?.trim();
 
   if (referenceDocumentId) {
@@ -151,6 +160,28 @@ export function findSharedReferenceDocumentForProjectDocument(
   return referenceDocuments.find(candidate =>
     candidate.storagePath === storagePath && belongsToProject(candidate),
   ) || null;
+}
+
+/**
+ * The project id a shared record carries for a phone document. The phone's
+ * name key never syncs (audit A7 M1), so a known project is written by name
+ * (the upload resolves its cloud id) or keeps the cloud id the shared record
+ * already holds for that name. An unknown project keeps the phone key, so the
+ * upload is held for review instead of being sent without a project.
+ */
+function sharedReferenceProjectId(
+  localProjectId: string,
+  projectName: string | null,
+  existing?: Readonly<{ projectId?: string | null; projectName?: string | null }>,
+): string | null {
+  const local = localProjectId.trim();
+  if (exactProjectId(local)) return local;
+  const name = projectName?.trim().toLowerCase();
+  if (!name) return local || null;
+  const existingId = exactProjectId(existing?.projectId);
+  return existingId && existing?.projectName?.trim().toLowerCase() === name
+    ? existingId
+    : null;
 }
 
 export function referenceCategoryForProjectDocument(
@@ -188,7 +219,7 @@ export function buildSharedReferenceDocument({
     // current schedule or drawing revision.
     isCurrent: false,
     importedAt: document.importedAt,
-    projectId: document.projectId,
+    projectId: sharedReferenceProjectId(document.projectId, projectName),
     projectName,
     projectNames: projectName ? [projectName] : [],
     importBatchId: null,
@@ -232,7 +263,11 @@ export function synchronizeSharedReferenceDocumentMetadata({
     mimeType: document.mimeType || null,
     category: referenceCategoryForProjectDocument(document.category),
     notes: document.note || '',
-    projectId: document.projectId,
+    projectId: sharedReferenceProjectId(
+      document.projectId,
+      projectName || sharedDocument.projectName || null,
+      sharedDocument,
+    ),
     projectName: projectName || sharedDocument.projectName || null,
     projectNames: projectName
       ? [projectName]
