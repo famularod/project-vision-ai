@@ -154,7 +154,9 @@ describe('a revised import keeps the tasks and the manager’s progress', () => 
   });
 
   it('is what the approval uses', () => {
-    expect(app).toMatch(/const merged = mergeApprovedScheduleImportItems\(\{\n\s+existing: scheduleItemsCurrentRef\.current as unknown as import\('\.\/types'\)\.ScheduleItem\[\],\n\s+imported: approvedItems as unknown as import\('\.\/types'\)\.ScheduleItem\[\],\n\s+completionMatch: findExactScheduleTaskForCompletionClaim,/);
+    // A5 pass 3 F3: the approval also says which saved tasks the manager
+    // sees, so a hidden older copy never makes a revised task ambiguous.
+    expect(app).toMatch(/const merged = mergeApprovedScheduleImportItems\(\{\n\s+existing: scheduleItemsCurrentRef\.current as unknown as import\('\.\/types'\)\.ScheduleItem\[\],\n\s+imported: approvedItems as unknown as import\('\.\/types'\)\.ScheduleItem\[\],\n\s+completionMatch: findExactScheduleTaskForCompletionClaim,\n\s+isCurrent: scheduleItemsVisibleBeforeImport\(scheduleItemsCurrentRef\.current, referenceDocumentsCurrentRef\.current, approvedBatch\.id\),/);
     expect(app).toContain('synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);');
   });
 });

@@ -664,7 +664,7 @@ import {
   scheduleTaskGroupName,
 } from './services/DAVEIdentity';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
-import { mergeApprovedScheduleImportItems } from './services/ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from './services/ScheduleImportMerge';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -12444,6 +12444,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         existing: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[],
         imported: approvedItems as unknown as import('./types').ScheduleItem[],
         completionMatch: findExactScheduleTaskForCompletionClaim,
+        isCurrent: scheduleItemsVisibleBeforeImport(scheduleItemsCurrentRef.current, referenceDocumentsCurrentRef.current, approvedBatch.id),
         mergeCompletion: (item, importedItem) => normalizeScheduleItem(
           mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
         ) as unknown as import('./types').ScheduleItem,
