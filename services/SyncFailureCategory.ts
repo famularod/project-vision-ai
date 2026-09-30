@@ -33,7 +33,7 @@ const SANITIZED_SENTENCES: ReadonlyArray<readonly [RegExp, SyncFailureCategory]>
 
 /** Unambiguous transport failures, wherever they appear in a message. */
 const TRANSPORT_FAILURE =
-  /network request failed|failed to fetch|fetch failed|load failed|timed out|timeout|econn|enotfound|internet connection|appears to be offline|\boffline\b|socket|unreachable/;
+  /network request failed|failed to fetch|fetch failed|load failed|econn|enotfound|internet connection|appears to be offline|\boffline\b|unreachable/;
 
 export function classifySyncFailureText(errors: readonly string[]): SyncFailureCategory {
   const message = errors.join(' ').toLowerCase();
@@ -42,15 +42,14 @@ export function classifySyncFailureText(errors: readonly string[]): SyncFailureC
   for (const [pattern, category] of SANITIZED_SENTENCES) {
     if (pattern.test(message)) return category;
   }
-  if (TRANSPORT_FAILURE.test(message)) return 'offline';
-  // Highest-confidence, most specific signals are checked first so a message
-  // that happens to also mention "network" or "fetch" (common in wrapped
-  // fetch/auth errors) is never misclassified as offline. Generic
-  // offline/network wording is checked last, only once nothing more
-  // specific has matched.
+  // Access and sign-in failures first, whatever else the message says; then
+  // an unambiguous transport failure anywhere in it (a statement timeout is
+  // not one: 'timed out' alone stays with the step that reported it); then
+  // the step words; generic network wording last.
   if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
   if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
   if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
+  if (TRANSPORT_FAILURE.test(message)) return 'offline';
   if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
   if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
   if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';

@@ -107,7 +107,8 @@ describe('saving a draft whose update was deleted while it was open', () => {
 
   it('is wired into the save and the delete', () => {
     // The save keeps the draft and offers a new record when the commit did not apply.
-    expect(app).toMatch(/if \(!persisted\.applied\) \{\n(?:\s*\/\/.*\n)*\s+fieldUpdateSaveInFlightRef\.current = false;\n\s+setFieldUpdateSaving\(false\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+offerToSaveDeletedDraftAsNewUpdate\(draftSnapshot\.projectName\);\n\s+return;/);
+    // Batch 3: the cancelled draft write is put back, and the barrier's kind decides the wording.
+    expect(app).toMatch(/if \(!persisted\.applied\) \{\n(?:\s*\/\/.*\n)*\s+fieldUpdateSaveInFlightRef\.current = false;\n\s+setFieldUpdateSaving\(false\);\n(?:\s*\/\/.*\n)*\s+void persistDraftNow\(draftRef\.current\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+offerToSaveDeletedDraftAsNewUpdate\(draftSnapshot\.projectName, persisted\.barrierAction\);\n\s+return;/);
     expect(app).toContain('const reissued = reissueDraftAsNewUpdate(draftRef.current, uid());');
     // Deleting the open draft's update clears the draft (by the ref, not a stale closure).
     expect(app).toContain('const openDraftDeleted = draftRef.current.id === updateId;');

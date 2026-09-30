@@ -36,6 +36,18 @@ export function fieldUpdateSyncGeneration(
 
   return stableStringify({
     ...content,
+    // The storage path is transport: staging stamps it on the queued copy
+    // only, and the path is derived from the ids, so it is not a new
+    // generation (whole-app audit A4/A7, 30 Sep 2026: the queued copy never
+    // matched the local record, so a refresh could replace an unsynced edit
+    // and the 'sent' stamp was refused).
+    photos: Array.isArray(content.photos)
+      ? content.photos.map(photo => {
+          if (!photo || typeof photo !== 'object') return photo;
+          const { cloudStoragePath: _cloudStoragePath, ...rest } = photo as Record<string, unknown>;
+          return rest;
+        })
+      : content.photos,
     workflowTimestamps: Object.keys(contentWorkflowTimestamps).length > 0
       ? contentWorkflowTimestamps
       : undefined,

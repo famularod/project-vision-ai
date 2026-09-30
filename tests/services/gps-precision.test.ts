@@ -347,7 +347,8 @@ describe('GPS wiring in the app', () => {
   // Review pass 2: the fix was checked against the previous draft and discarded.
   it('captures GPS for the draft just started, against its own project’s areas', () => {
     expect(app).not.toContain('captureDraftLocation();');
-    expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(2);
+    // Three since audit A4 batch 3: the Project Walk draft sets the ref too, before its files are handled.
+    expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(3);
     expect(app.match(/draftLocationCaptureRef\.current = captureDraftLocation\(nextDraft\);/g)).toHaveLength(2);
     expect(app).toContain('const generation = draftFixTracker.start(targetDraft.id);');
     expect(app).toContain('projectName: targetDraft.projectName,');
@@ -377,7 +378,8 @@ describe('GPS wiring in the app', () => {
 
   it('drops a pending fix when a save starts, and re-fixes only a draft left open by that save', () => {
     expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = draftFixTracker\.beginSave\(draftSnapshot\.id\);/);
-    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
+    // Audit A4 batch 3: the cancelled draft write is put back before the re-fix.
+    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+void persistDraftNow\(draftRef\.current\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
     expect(app).toMatch(/setScreen\('ProjectWorkspace'\);\n\s+\} else \{\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/);
     expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
   });

@@ -3739,9 +3739,12 @@ function mergeSavedUpdatesWithTombstones({
     // A local update takes a cloud copy's receipt only when there is one:
     // merged with itself it read "Cloud Synced" before any upload (whole-app
     // audit A4, 29 Sep 2026).
+    // A row read from the cloud has been uploaded: it is synced whatever
+    // status the phone wrote into it (rows carry 'queued' verbatim; audit
+    // A4/A7, 30 Sep 2026).
     const effectiveUpdate = sourceAfterReload === 'local'
       ? mergeLocalUpdateWithCloudCopy(update, cloudUpdateById.get(update.id))
-      : update;
+      : { ...update, status: 'sent' as const };
     const tombstone = tombstoneById.get(update.id);
     const localArchiveCanStayHidden =
       tombstone?.action === 'archive_sent_update' && sourceAfterReload === 'local';
@@ -3826,6 +3829,14 @@ function upsertDeletedUpdateTombstone(
     tombstone,
     ...tombstones.filter(item => item.updateId !== tombstone.updateId),
   ];
+}
+
+/** How long a save's or retry's own sync is left alone by the queued-updates loop. */
+const DIRECT_SYNC_GRACE_MS = 20_000;
+
+function directSyncIsRecent(update: ProjectUpdate, now: number): boolean {
+  const attemptedAt = Date.parse(update.lastSendAttemptAt ?? '');
+  return Number.isFinite(attemptedAt) && now - attemptedAt < DIRECT_SYNC_GRACE_MS;
 }
 
 // The rules live in services/SyncFailureCategory.ts (whole-app audit A4,
@@ -6542,6 +6553,10 @@ useEffect(() => {
         if (status === 'subscribed') {
           realtimeHealthy = true;
           requestPendingChangesUpload('realtime_reconnected');
+          // The durable queue moves rows; only this loop re-stages photos, so
+          // updates saved offline sync when the connection returns (audit
+          // A4, 30 Sep 2026: they waited for a token refresh or a relaunch).
+          startAutomaticSyncBackgroundTask('realtime_reconnected', hydrateQueuedUpdates);
           if (realtimeHasSubscribed) void refreshController.request('realtime');
           realtimeHasSubscribed = true;
         }
@@ -6556,7 +6571,9 @@ useEffect(() => {
     }).catch(() => { if (active) setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE); });
 
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active' && shouldRefreshDAVEOperationalDataOnForeground({
+      if (state !== 'active') return;
+      startAutomaticSyncBackgroundTask('app_active', hydrateQueuedUpdates);
+      if (shouldRefreshDAVEOperationalDataOnForeground({
         realtimeHealthy, lastSuccessfulRefreshAt,
       })) {
         void refreshController.request('foreground');
@@ -7854,8 +7871,10 @@ useEffect(() => {
         // a new update (whole-app audit A4, 29 Sep 2026).
         fieldUpdateSaveInFlightRef.current = false;
         setFieldUpdateSaving(false);
+        // The save cancelled the draft's pending write; put it back.
+        void persistDraftNow(draftRef.current);
         recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
-        offerToSaveDeletedDraftAsNewUpdate(draftSnapshot.projectName);
+        offerToSaveDeletedDraftAsNewUpdate(draftSnapshot.projectName, persisted.barrierAction);
         return;
       }
       savedUpdatesRef.current = persisted.nextUpdates;
@@ -7871,6 +7890,7 @@ useEffect(() => {
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
+      void persistDraftNow(draftRef.current);
       recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
@@ -7901,23 +7921,35 @@ useEffect(() => {
     void syncQueuedFieldUpdateInBackground(queuedUpdate);
   }
 
-  /** The open draft is replaced by a blank one for the project, on screen and on disk. */
-  function clearOpenDraft(projectName: string) {
+  /**
+   * The open draft is replaced by a blank one for the project, on disk
+   * first; the discarded draft's own photo files go afterwards when it is
+   * passed (audit A4, 30 Sep 2026: they were left as orphans, or deleted
+   * before the blank draft was on disk).
+   */
+  function clearOpenDraft(projectName: string, discardedDraft?: ProjectUpdate) {
     const blank = createDraft(projectName);
     draftRef.current = blank;
     setDraft(blank);
-    setDraftSavedAt(null);
-    removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-      reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-    );
+    if (discardedDraft) {
+      void discardDraftAfterReplacement(discardedDraft);
+    } else {
+      void persistDraftNow(blank);
+    }
   }
 
-  function offerToSaveDeletedDraftAsNewUpdate(projectName: string) {
+  function offerToSaveDeletedDraftAsNewUpdate(
+    projectName: string,
+    barrierAction: string | null | undefined,
+  ) {
+    const archived = barrierAction === 'hide_cloud_update' || barrierAction === 'archive_sent_update';
     Alert.alert(
-      'Update was deleted',
-      'This update was deleted while it was open, on this phone or another device, so it cannot be saved under its old record. Save it as a new update?',
+      archived ? 'Update was archived' : 'Update was deleted',
+      archived
+        ? 'This update was archived in the cloud while it was open, so it cannot be saved under its old record. Save it as a new update?'
+        : 'This update was deleted while it was open, on this phone or another device, so it cannot be saved under its old record. Save it as a new update?',
       [
-        { text: 'Discard draft', style: 'destructive', onPress: () => clearOpenDraft(projectName) },
+        { text: 'Discard draft', style: 'destructive', onPress: () => clearOpenDraft(projectName, draftRef.current) },
         {
           text: 'Save as new update',
           onPress: () => {
@@ -8141,6 +8173,8 @@ useEffect(() => {
     }
   }
 
+  const queuedHydrationDeferredRerun = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   async function hydrateQueuedUpdates() {
     if (queuedHydrationInFlight.current) return;
     queuedHydrationInFlight.current = true;
@@ -8164,7 +8198,18 @@ useEffect(() => {
   }
 
   async function hydrateQueuedUpdatesPass() {
-    const queuedUpdates = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
+    // An update whose own save or retry is still syncing is left to it: the
+    // loop used to stage and upload the same photos a second time, alongside
+    // the direct sync (audit A4, 30 Sep 2026). One deferred pass follows.
+    const now = Date.now();
+    const retryable = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
+    const queuedUpdates = retryable.filter(update => !directSyncIsRecent(update, now));
+    if (queuedUpdates.length < retryable.length && !queuedHydrationDeferredRerun.current) {
+      queuedHydrationDeferredRerun.current = setTimeout(() => {
+        queuedHydrationDeferredRerun.current = null;
+        startAutomaticSyncBackgroundTask('after_direct_sync', hydrateQueuedUpdates);
+      }, DIRECT_SYNC_GRACE_MS);
+    }
 
     if (queuedUpdates.length === 0) return;
 
@@ -8429,11 +8474,16 @@ useEffect(() => {
           reviewOpenedAt: new Date().toISOString(),
         },
       };
+      // The replaced draft's files go only after this draft is on disk
+      // (audit A4, 30 Sep 2026: they were left behind, and the ref lagged).
+      const discardedDraft = draftRef.current;
+      draftRef.current = nextDraft;
       setDraft(nextDraft);
       setSelectedWorkspaceProject(projectName);
-      setDraftSavedAt(null);
       setScreen('BuildUpdate');
       onPrepared?.();
+      if (hasDraftContent(discardedDraft)) void discardDraftAfterReplacement(discardedDraft);
+      else void persistDraftNow(nextDraft);
     }
 
     if (hasDraftContent(draft)) {
@@ -8758,21 +8808,8 @@ useEffect(() => {
           text: 'Discard',
           style: 'destructive',
           onPress: () => {
-            const discardedDraft = draft;
-            const projectName =
-              activeProjects[0] || '';
-
-            setDraft(createDraft(projectName));
-            setDraftSavedAt(null);
-
-            removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-              reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-            );
-
-            void deleteUnreferencedPhotosFromUpdate(
-              discardedDraft,
-              savedUpdates,
-            );
+            // The blank draft is on disk before the discarded draft's files go (audit A4).
+            clearOpenDraft(activeProjects[0] || '', draftRef.current);
           },
         },
       ],

@@ -17,6 +17,12 @@ const RECEIPT_ONLY_KEYS = new Set([
 
 const DEVICE_PHOTO_TRANSPORT_KEYS = new Set([
   'uri',
+  // The storage path is derived from the update and photo ids and is stamped
+  // only on the queued and cloud copies; the phone's own copy lacks it until
+  // the cloud copy is merged back, so it must not stop the two from matching
+  // (whole-app audit A4/A7, 30 Sep 2026: the phone's own upload echo never
+  // matched its local record and read "Waiting to Sync").
+  'cloudStoragePath',
   'cloudPreviewUri',
   'cloudRecoveredAt',
   'cloudRecoveryStatus',

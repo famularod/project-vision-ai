@@ -723,10 +723,13 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
     typeof value.lastError === 'string'
   );
   if (!lastErrorIsValid) return false;
+  // A category this build does not know (a newer build's, after a downgrade)
+  // must not sideline a pending upload: any string is kept and read as
+  // unknown (audit A4, 30 Sep 2026).
   if (
     value.lastFailureCategory !== undefined &&
     value.lastFailureCategory !== null &&
-    !isSyncFailureCategory(value.lastFailureCategory)
+    typeof value.lastFailureCategory !== 'string'
   ) return false;
 
   if (value.entity === 'project_update') {
@@ -2379,7 +2382,7 @@ export async function runFieldUpdateCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
-    failureCategory: remainingItem?.lastFailureCategory ?? null,
+    failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory) ? remainingItem.lastFailureCategory : null,
   };
   const metadataBlocked = staged.pendingPhotoAssetIds.length > 0;
 

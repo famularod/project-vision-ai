@@ -157,7 +157,9 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         preserveLocalPhotoTransport(cloudPhoto, localUpdate, options.localPhotoUri));
       const previewReady = await hydrateProjectUpdatePhotoPreviews({ ...cloudUpdate, photos });
       if (!options.isActive()) return true;
-      let deletedUpdates = state.deletedUpdates;
+      // Re-read after the awaits: a save or another event may have landed.
+      const fresh = options.snapshot();
+      let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {
         deletedUpdates = options.upsertDeletedUpdate(
           deletedUpdates,
@@ -169,13 +171,16 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         );
         options.commitDeletedUpdates(deletedUpdates);
       }
+      // The row is a cloud copy, not a replacement: the local record takes
+      // its receipt when the two match (the phone's own upload echo, or a
+      // teammate's row already held), keeps its own newer content when they
+      // do not, and a row with no local record joins the list as synced.
+      // Replacing the local record with the row had turned a just-sent
+      // update back into "Waiting to Sync" (whole-app audit A4/A7, 30 Sep
+      // 2026), since rows carry the phone's 'queued' status verbatim.
       options.commitUpdates(options.mergeUpdates({
-        localUpdates: replaceOperationalRecord(
-          state.updates,
-          previewReady,
-          update => update.id,
-        ),
-        cloudUpdates: [],
+        localUpdates: fresh.updates,
+        cloudUpdates: [previewReady],
         tombstones: deletedUpdates,
       }));
       return true;

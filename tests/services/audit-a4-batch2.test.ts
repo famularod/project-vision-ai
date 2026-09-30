@@ -29,7 +29,9 @@ describe('why a sync failed is read from the failure, not from a sentence writte
 
   it('is recorded on the queue item from the raw failure and carried into the sync result', () => {
     expect(sync.match(/lastFailureCategory: classifySyncFailureText\(\[(reason|prepared|resultCode)\]\),/g)?.length).toBe(3);
-    expect(sync).toContain('failureCategory: remainingItem?.lastFailureCategory ?? null,');
+    // Batch 3: a category this build does not know reads as unknown instead of sidelining the item.
+    expect(sync).toContain('failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory) ? remainingItem.lastFailureCategory : null,');
+    expect(sync).toContain("typeof value.lastFailureCategory !== 'string'");
     expect(sync).toContain('lastFailureCategory?: SyncFailureCategory | null;');
     expect(app).toContain(': syncResult.failureCategory ?? classifySyncFailureCategory(');
     expect(app).toContain('return classifySyncFailureText(errors);');
@@ -42,7 +44,8 @@ describe('a replaced draft is on disk before the old draft’s files go, and the
     expect(app).toContain('if (draftSaveTimer.current) void persistDraftNow(draftRef.current);');
     expect(app).toMatch(/async function discardDraftAfterReplacement\(discardedDraft: ProjectUpdate\): Promise<void> \{\n\s+await persistDraftNow\(draftRef\.current\);\n\s+await deleteUnreferencedPhotosFromUpdate\(discardedDraft, savedUpdatesRef\.current\);/);
     expect(app).toContain('deleteDiscardedPhotos: discardDraftAfterReplacement,');
-    expect(app.match(/void discardDraftAfterReplacement\(discardedDraft\);/g)?.length).toBe(2);
+    // Task update, open-over-draft, clearOpenDraft (Home Discard and the deleted-draft discard) and the Project Walk (batch 3).
+    expect(app.match(/void discardDraftAfterReplacement\(discardedDraft\);/g)?.length).toBe(4);
     expect(app).not.toContain('void deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdates);');
     // The blank replacement is in the ref before it is persisted.
     expect(app).toMatch(/replaceDraftWithBlank: \(\) => \{\n\s+const blank = createDraft\(activeProjects\[0\] \|\| ''\);\n\s+draftRef\.current = blank;\n\s+setDraft\(blank\);/);
