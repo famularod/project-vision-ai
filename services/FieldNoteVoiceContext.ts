@@ -38,3 +38,19 @@ export function resolveFieldNoteVoiceContext(
     noteProjectName: requested || null,
   };
 }
+
+/**
+ * Whole-app audit A11 pass 3 (30 Sep 2026): voice for a project made on this
+ * phone and not yet uploaded (no cloud id) said "Voice is still loading" and
+ * asked the owner to wait, which never ended. Voice needs a project the cloud
+ * knows; this says so and points to syncing or typing.
+ */
+export function fieldNoteVoiceUnavailable(noteProjectName: string | null) {
+  const project = noteProjectName?.trim();
+  return {
+    title: 'Voice needs a synced project',
+    message: project
+      ? `${project} hasn't reached the cloud yet, so voice can't transcribe for it. Connect so it syncs, then record again, or type the note now.`
+      : "No project has reached the cloud yet, so voice can't transcribe. Connect so your projects sync, then record again, or type the note now.",
+  };
+}

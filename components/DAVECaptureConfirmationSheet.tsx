@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import {
@@ -51,6 +51,7 @@ export function DAVECaptureConfirmationSheet({
   sourceLabel = 'Source transcript',
   onSave,
   onCancel,
+  onWorkingChange,
 }: {
   visible: boolean;
   transcript: string;
@@ -62,6 +63,12 @@ export function DAVECaptureConfirmationSheet({
   sourceLabel?: string;
   onSave: (memory: DAVEConfirmedCaptureMemory) => void | Promise<void>;
   onCancel: () => void;
+  /**
+   * The owner's working copy, typed text included, after every change. A
+   * panel failure closes this sheet and its state (audit A11 pass 3); Talk
+   * reopens the memory from this copy.
+   */
+  onWorkingChange?: (memory: DAVECaptureMemory) => void;
 }) {
   const [working, setWorking] = useState(draft);
   const [fieldTexts, setFieldTexts] = useState<Record<EditableField, string>>(() => editableFieldTexts(draft));
@@ -77,6 +84,21 @@ export function DAVECaptureConfirmationSheet({
     setSaveError(null);
     setIsSaving(false);
   }, [draft, visible]);
+
+  const onWorkingChangeRef = useRef(onWorkingChange);
+  onWorkingChangeRef.current = onWorkingChange;
+  useEffect(() => {
+    const report = onWorkingChangeRef.current;
+    if (!report) return;
+    try {
+      report(FIELD_LABELS.reduce(
+        (current, [field]) => commitFieldText(current, field, fieldTexts[field]),
+        working,
+      ));
+    } catch {
+      report(working);
+    }
+  }, [working, fieldTexts]);
 
   function editField(field: EditableField, value: string) {
     setFieldTexts(current => ({ ...current, [field]: value }));

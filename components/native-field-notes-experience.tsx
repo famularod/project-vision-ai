@@ -17,6 +17,7 @@ import {
   type FieldNoteVoiceDraft,
 } from './field-notes-workspace';
 import {
+  fieldNoteVoiceUnavailable,
   resolveFieldNoteVoiceContext,
   type FieldNoteVoiceContext,
   type FieldNoteVoiceProjectRecord,
@@ -45,10 +46,11 @@ export function NativeFieldNotesExperience({
   function beginVoiceCapture(projectName: string | null) {
     const context = resolveFieldNoteVoiceContext(projectName, projectRecords);
     if (!context) {
-      Alert.alert(
-        'Voice is still loading',
-        'Wait for your project access to finish loading, then record the field note again. The note can still remain general.',
-      );
+      const { title, message } = fieldNoteVoiceUnavailable(projectName); // audit A11 pass 3
+      Alert.alert(title, message, [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Type Note', onPress: () => setTypeNoteRequest(request => request + 1) },
+      ]);
       return;
     }
     setVoiceContext(context);

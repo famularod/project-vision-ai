@@ -14369,6 +14369,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   Alert.alert('Saved', 'The confirmed project information was added to memory.');
                 }}
                 onCancel={() => setTalkCaptureDraft(null)}
+                onWorkingChange={keptTalkCapture.track}
               />
             ) : null}
 

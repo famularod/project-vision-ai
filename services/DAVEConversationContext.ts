@@ -225,8 +225,24 @@ const FOLLOW_UP_RULES: ReadonlyArray<Readonly<{ kind: DAVEConversationFollowUpKi
     pattern: /\b(?:schedule|dates?|deadline|deadlines|late|overdue|due)\b/,
     words: new Set(['schedule', 'date', 'dates', 'deadline', 'deadlines', 'late', 'overdue', 'due']),
   },
-  { kind: 'next_action', pattern: /\b(?:what next|next|do now|should i do|action)\b/, words: new Set(['next', 'action', 'do', 'now', 'should', 'i']) },
+  {
+    kind: 'next_action',
+    pattern: /\b(?:what next|next|do now|should i do|action)\b/,
+    words: new Set(['next', 'action', 'actions', 'step', 'steps', 'do', 'now', 'should', 'i']),
+  },
 ];
+
+/**
+ * Whole-app audit A11 pass 3 (30 Sep 2026): after an answer, "And the dumpster
+ * full" or "Also the roof hatch open" (no "?") was answered as a follow-up and
+ * never reached Confirm Memory. Without "?", only these subjects continue the
+ * answer ("And the schedule", "Also the inspections"); anything else is a note.
+ */
+const FOLLOW_UP_TOPIC_WORDS: ReadonlySet<string> = new Set([
+  ...FOLLOW_UP_RULES.flatMap(rule => [...rule.words]),
+  'status', 'risk', 'risks', 'attention', 'issues', 'problems', 'blockers', 'changes', 'commitments',
+  'inspection', 'inspections', 'updates',
+]);
 
 // Words that carry no subject in "And the…?", "Also what about that?".
 const FOLLOW_UP_FILLER = new Set([
@@ -271,7 +287,8 @@ function contextDependence(value: string, hasPriorAnswer: boolean): 'explicit' |
     // A9 pass 2 F3: "And the schedule" without "?" continues this Talk session's answer, unless it reads as a note.
     return hasPriorAnswer && intent !== 'task_update' && intent !== 'navigate' &&
       /^(?:and|also|what about)\b/.test(text) && !/\d/.test(text) && words.length <= 8 &&
-      !words.some(word => FIELD_NOTE_WORDS.has(word)) ? 'explicit' : null;
+      !words.some(word => FIELD_NOTE_WORDS.has(word)) &&
+      (addedSubjectWords(text) || []).every(word => FOLLOW_UP_TOPIC_WORDS.has(word)) ? 'explicit' : null;
   }
   if (/^(?:and\b|also\b|what about\b|what next\b|show me (?:the |that |those )?(?:evidence|records?|sources?)\b|explain (?:that|this|it)\b)/.test(text)) return 'explicit';
   if (/^(?:why|how come)(?:\s+(?:(?:is|was)\s+)?(?:that|this|it|so|the recommendation))?$/.test(text)) return 'explicit';

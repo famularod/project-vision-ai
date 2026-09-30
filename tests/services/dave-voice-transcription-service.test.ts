@@ -167,12 +167,26 @@ describe('DAVE native voice transcription upload', () => {
   });
 
   it('rejects a fabricated or missing project identifier before upload', async () => {
+    // Audit A11 pass 3: this said "This project is still loading. Close and
+    // reopen Talk", which never ended for a project not yet uploaded.
     await expect(transcribe({
       uri: 'file:///recording.m4a',
       projectId: 'project-2321-compliance-project',
       projectName: '2321 Compliance Project',
       candidateLocations: [],
-    })).rejects.toThrow('project is still loading');
+    })).rejects.toThrow("2321 Compliance Project hasn't reached the cloud yet");
+    await expect(transcribe({
+      uri: 'file:///recording.m4a',
+      projectId: null,
+      projectName: '2321 Compliance Project',
+      candidateLocations: [],
+    })).rejects.toThrow(/^(?!.*loading).*type it instead\.$/);
+    await expect(transcribe({
+      uri: 'file:///recording.m4a',
+      projectId: null,
+      projectName: ' ',
+      candidateLocations: [],
+    })).rejects.toThrow('Choose a project');
     expect(mockUploadAsync).not.toHaveBeenCalled();
   });
 });

@@ -244,7 +244,11 @@ describe('audit A9 pass 2: follow-ups within one Talk session', () => {
     expect(talk(session, 'Also the inspections?').context.effectiveQuestion).toBe('What guardrail is required at the parking edge? Also the inspections?');
   });
 
-  it.each(['And the schedule', 'Also the inspections', 'And the ramp'])(
+  // A11 pass 3 (30 Sep 2026): "And the ramp" without "?" was here too; without
+  // "?" only a follow-up subject (schedule, why, evidence, next steps,
+  // inspections…) continues the answer now, so it is a note (see
+  // audit-a11-pass3-talk-notes.test.ts). "And the ramp?" is still a follow-up.
+  it.each(['And the schedule', 'Also the inspections'])(
     '"%s" without "?" is a follow-up after an answer in this session, and a note with none (F3)',
     input => {
       expect(CAPTURE).toContain(classifyDAVEConversationIntent(input));

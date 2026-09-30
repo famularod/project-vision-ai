@@ -258,6 +258,23 @@ describe('follow-ups in one Talk session (audit A9 pass 2 F1a/c/d, F3)', () => {
     await say(h, 'And the drywall crew finished level two');
     expect(h.setTalkCaptureDraft).toHaveBeenCalledTimes(1);
   });
+
+  // Whole-app audit A11 pass 3 (30 Sep 2026): these were answered as
+  // follow-ups and never reached Confirm Memory.
+  it.each([
+    'And the guardrail missing at the roof edge',
+    'Also the roof hatch open',
+    'And the dumpster full',
+    'Also east stair handrail loose',
+  ])('"%s" after an answer opens Confirm Memory with those words', async input => {
+    const h = harness();
+    h.openTalk();
+    const shown = await say(h, 'What is overdue?');
+    await say(h, input);
+    expect(h.setTalkCaptureDraft).toHaveBeenCalledTimes(1);
+    expect(h.setTalkCaptureDraft.mock.calls[0][0].transcript).toBe(input);
+    expect(h.current()).toBe(shown); // no new answer
+  });
 });
 
 describe('"Ask in Ask ECOS" from a Talk answer (audit A9 pass 2 F2/F4)', () => {
