@@ -10104,7 +10104,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
-    const images = await reportImageFiles(report, REPORT_EMAIL_IMAGE_LIMIT);
+    // A body without citations (the executive format, or an edited body)
+    // takes no images and no "not attached" note (whole-app audit A6).
+    const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_EMAIL_IMAGE_LIMIT);
     const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
       subject: report.subject || report.title,
       body: report.body + note,
@@ -10118,6 +10120,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return compose([], `\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     });
     return mailComposerOutcome(result.status);
+  }
+
+  /** Whether the body as it will be sent still cites "See Image N" (the executive body never does; an edited body may not). */
+  function reportBodyCitesImages(report: PIEReportDraft): boolean {
+    return /\bSee Images?\s+\d/.test(report.body);
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
@@ -10152,7 +10159,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return 'unknown';
     }
 
-    const images = await reportImageFiles(report, REPORT_TEXT_IMAGE_LIMIT);
+    const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);
     const reportText = `${report.title}\n\n${report.body}`;
     const textOnly = () => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     const attachments = await buildSmsAttachments(images.photos).catch(() => null);
@@ -10206,11 +10213,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return 'unknown';
     }
 
-    const reportPhotoIds = uniqueStrings(
-      report.locationGroups.flatMap(group =>
-        group.workAreas.flatMap(area =>
-          area.imageReferences.map(reference => reference.photoId))),
-    );
     const reportPhotoNumbers = new Map(
       report.locationGroups.flatMap(group =>
         group.workAreas.flatMap(area =>
@@ -10219,11 +10221,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
             reference.imageNumber,
           ] as const))),
     );
+    // In the order the report text numbers them, so the Word file's "Photo
+    // 3" is the body's "Image 3" whether or not its file is present
+    // (whole-app audit A6, 29 Sep 2026).
+    const reportPhotoIds = [...reportPhotoNumbers.keys()].sort(
+      (left, right) => (reportPhotoNumbers.get(left) ?? 0) - (reportPhotoNumbers.get(right) ?? 0),
+    );
     const reportPhotoIdSet = new Set(reportPhotoIds);
     const relevantUpdates = activeSavedUpdates.filter(update =>
       update.photos.some(photo => reportPhotoIdSet.has(photo.id)));
+    // Only the cited photos are fetched, not every cloud-only photo of their
+    // updates, as the email path already does (audit A6).
     const hydratedUpdates = await Promise.all(
-      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos(update)),
+      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos({
+        ...update,
+        photos: update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
+      })),
     );
     const readableDrawingReferences = await Promise.all(
       drawingReferences.map(async reference => {
@@ -13351,9 +13364,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? buildCombinedReportAuthorityScope({
           selectedProjectNames: selectedReportProjectNames,
           projectRecords,
-          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          // Recorded field updates only: the open draft had leaked into the
+          // report (its photos cited, then declared missing, since the
+          // attachments and the Word file read the saved updates); updates
+          // of a deleted task stay out (whole-app audit A6, 29 Sep 2026).
+          updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
-          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          currentUpdate: null,
           projectAreas,
           referenceDocuments,
           projectDocuments,
@@ -13366,9 +13383,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
           selectedProjectName: projectName,
           selectedProjectNames: [projectName],
           projectRecords,
-          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          // Recorded field updates only: the open draft had leaked into the
+          // report (its photos cited, then declared missing, since the
+          // attachments and the Word file read the saved updates); updates
+          // of a deleted task stay out (whole-app audit A6, 29 Sep 2026).
+          updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
-          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          currentUpdate: null,
           projectAreas,
           referenceDocuments,
           projectDocuments,

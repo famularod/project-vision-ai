@@ -119,8 +119,10 @@ const baseDraft = {
   body: '', locationGroups: [{ id: 'group', title: 'Pump House', workAreas: [{
     id: 'area', title: 'Pump House', projectName: '2321 Compliance Project',
     bullets: [
-      { text: 'Equipment was visibly installed.' },
-      { text: 'Current condition is unknown and needs verification.' },
+      { text: 'Equipment was visibly installed.', kind: 'progress' },
+      // Engine review text goes through the report-language filter; the manager's own words do not (audit A6, 29 Sep 2026).
+      { text: 'Current condition is unknown and needs verification.', kind: 'needs_review' },
+      { text: 'Guardrail missing at stair 2 landing.', kind: 'safety' },
     ],
   }] }],
 };
@@ -134,6 +136,7 @@ assert.match(pm.body, /SCHEDULE RISKS/);
 assert.match(pm.body, /WORK AREAS \/ PHOTO NOTES/);
 assert(!/REPORT NOTES/.test(pm.body));
 assert(!/verification|not verified|uncertain|unknown|missing evidence|low confidence/i.test(pm.body));
+assert.match(pm.body, /Guardrail missing at stair 2 landing\./, 'the manager\'s own caption must reach the owner report as written (audit A6)');
 assert(!/No material field change|No immediate action|No problem requiring/i.test(pm.body));
 assert(!/verified construction progress/i.test(pm.body));
 assert.match(executive.body, /EXECUTIVE STATUS/);

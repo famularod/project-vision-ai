@@ -586,7 +586,7 @@ function formatReportBody(
 ) {
   const workAreaUpdates = unique(draft.locationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.bullets
-      .map(bullet => toPMReportLanguage(bullet.text))
+      .map(reportBulletText)
       .filter(Boolean)
       .map(bullet => `${area.projectName} — ${area.title}: ${bullet}`)),
   ));
@@ -922,7 +922,26 @@ const NON_REPORTABLE_STATE =
 
 function isReportableCurrentState(value: string) {
   const text = clean(value);
-  return Boolean(text) && !NON_REPORTABLE_STATE.test(text);
+  if (!text) return false;
+  // A safety statement is never dropped for its wording: "An unresolved
+  // safety concern is recorded" was filtered out of SCHEDULE RISKS
+  // (whole-app audit A6, 29 Sep 2026).
+  if (/\bsafety\b/i.test(text)) return true;
+  return !NON_REPORTABLE_STATE.test(text);
+}
+
+/**
+ * A work-area bullet as the report prints it. Bullets carry the manager's
+ * own captions and notes, so they are printed as written; only a
+ * needs-review bullet is engine text and goes through the report-language
+ * filter. Whole-app audit A6 (29 Sep 2026): the filter had deleted the
+ * manager's sentences containing "missing", "cannot", "could not",
+ * "unknown", "unresolved" or "insufficient" ("Guardrail missing at stair 2
+ * landing." left nothing) and rewrote their words.
+ */
+export function reportBulletText(bullet: Readonly<{ text: string; kind?: string }>): string {
+  if (bullet.kind === 'needs_review') return toPMReportLanguage(bullet.text);
+  return stripProjectWalkBoilerplate(bullet.text).replace(/\s{2,}/g, ' ').trim();
 }
 
 function reportableCurrentState(value: string) {

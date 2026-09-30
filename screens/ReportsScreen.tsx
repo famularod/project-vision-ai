@@ -56,7 +56,7 @@ import {
   buildDAVEReportSourceFingerprint,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
-  toPMReportLanguage,
+  reportBulletText,
   type DAVEReportBriefing,
 } from '../services/DAVEReportIntelligence';
 import {
@@ -1479,7 +1479,8 @@ function ReportPeriodSummary({
           This approval establishes the baseline for the next reporting period.
         </Text>
       )}
-      {changes.length > 0 ? (
+      {/* Changes are listed only against a previous approved report, as the sent body does (audit A6). */}
+      {changes.length > 0 && period.basis === 'previous_approved_report' ? (
         <View style={styles.reportChangeList}>
           {changes.map(change => (
             <View key={change.id} style={styles.reportChangeRow}>
@@ -1832,7 +1833,7 @@ function ReportWorkArea({
   // The project name is already the heading above this group of areas.
   const title = area.title;
   const bullets = area.bullets
-    .map(bullet => ({ ...bullet, text: toPMReportLanguage(bullet.text) }))
+    .map(bullet => ({ ...bullet, text: reportBulletText(bullet) }))
     .filter(bullet => Boolean(bullet.text));
   return (
     <View style={styles.reportDocumentArea}>
