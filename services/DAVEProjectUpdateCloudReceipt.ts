@@ -1,3 +1,4 @@
+import { alignPhotoStoragePaths } from './PhotoStoragePathAlignment';
 type IdentifiedProjectUpdate = Readonly<{ id: string }>;
 
 type CloudProjectUpdateReceipt<TUpdate extends IdentifiedProjectUpdate> = Readonly<{
@@ -17,12 +18,6 @@ const RECEIPT_ONLY_KEYS = new Set([
 
 const DEVICE_PHOTO_TRANSPORT_KEYS = new Set([
   'uri',
-  // The storage path is derived from the update and photo ids and is stamped
-  // only on the queued and cloud copies; the phone's own copy lacks it until
-  // the cloud copy is merged back, so it must not stop the two from matching
-  // (whole-app audit A4/A7, 30 Sep 2026: the phone's own upload echo never
-  // matched its local record and read "Waiting to Sync").
-  'cloudStoragePath',
   'cloudPreviewUri',
   'cloudRecoveredAt',
   'cloudRecoveryStatus',
@@ -40,8 +35,15 @@ export function daveProjectUpdatesSemanticallyMatch(
   left: unknown,
   right: unknown,
 ): boolean {
-  return stableStringify(normalizeProjectUpdateMeaning(left)) ===
-    stableStringify(normalizeProjectUpdateMeaning(right));
+  // A photo's storage path counts only when both copies carry one: the
+  // phone's copy lacks it until the cloud copy is merged back, while a path
+  // relocated on the phone must still reach the cloud row (audit A4
+  // batches 3-4, 30 Sep 2026).
+  const [alignedLeft, alignedRight] = isRecord(left) && isRecord(right)
+    ? alignPhotoStoragePaths(left, right)
+    : [left, right];
+  return stableStringify(normalizeProjectUpdateMeaning(alignedLeft)) ===
+    stableStringify(normalizeProjectUpdateMeaning(alignedRight));
 }
 
 /**

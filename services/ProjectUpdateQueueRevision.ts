@@ -1,4 +1,4 @@
-import { fieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
+import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
 import type { SyncQueueItem } from './SyncService';
 import type { ProjectUpdate } from '../types';
 
@@ -18,8 +18,6 @@ export function hasMatchingQueuedProjectUpdateRevision(
   update: ProjectUpdate,
   queue: readonly SyncQueueItem[],
 ): boolean {
-  const expectedGeneration = fieldUpdateSyncGeneration(update);
-
   return queue.some(item => {
     if (item.entity !== 'project_update' || item.operation === 'delete') {
       return false;
@@ -32,7 +30,7 @@ export function hasMatchingQueuedProjectUpdateRevision(
     ) {
       return false;
     }
-    return fieldUpdateSyncGeneration(payload.updateData) === expectedGeneration;
+    return sameFieldUpdateSyncGeneration(payload.updateData, update);
   });
 }
 

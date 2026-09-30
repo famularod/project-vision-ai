@@ -1,3 +1,5 @@
+import { alignPhotoStoragePaths } from './PhotoStoragePathAlignment';
+
 type FieldUpdateSyncGenerationRecord = {
   id: string;
   status?: unknown;
@@ -36,22 +38,23 @@ export function fieldUpdateSyncGeneration(
 
   return stableStringify({
     ...content,
-    // The storage path is transport: staging stamps it on the queued copy
-    // only, and the path is derived from the ids, so it is not a new
-    // generation (whole-app audit A4/A7, 30 Sep 2026: the queued copy never
-    // matched the local record, so a refresh could replace an unsynced edit
-    // and the 'sent' stamp was refused).
-    photos: Array.isArray(content.photos)
-      ? content.photos.map(photo => {
-          if (!photo || typeof photo !== 'object') return photo;
-          const { cloudStoragePath: _cloudStoragePath, ...rest } = photo as Record<string, unknown>;
-          return rest;
-        })
-      : content.photos,
     workflowTimestamps: Object.keys(contentWorkflowTimestamps).length > 0
       ? contentWorkflowTimestamps
       : undefined,
   });
+}
+
+/**
+ * Whether two copies of an update are the same generation. A photo's cloud
+ * storage path counts only when both copies carry one (see
+ * PhotoStoragePathAlignment; audit A4 batches 3-4, 30 Sep 2026).
+ */
+export function sameFieldUpdateSyncGeneration(
+  left: FieldUpdateSyncGenerationRecord,
+  right: FieldUpdateSyncGenerationRecord,
+): boolean {
+  const [alignedLeft, alignedRight] = alignPhotoStoragePaths(left, right);
+  return fieldUpdateSyncGeneration(alignedLeft) === fieldUpdateSyncGeneration(alignedRight);
 }
 
 /**
@@ -72,10 +75,7 @@ export function reconcileFieldUpdateSyncResult<
   }
 
   const current = currentUpdates[currentIndex];
-  if (
-    fieldUpdateSyncGeneration(current) !==
-    fieldUpdateSyncGeneration(attemptedUpdate)
-  ) {
+  if (!sameFieldUpdateSyncGeneration(current, attemptedUpdate)) {
     return { updates: [...currentUpdates], applied: false, current };
   }
 

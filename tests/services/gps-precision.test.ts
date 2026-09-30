@@ -379,7 +379,8 @@ describe('GPS wiring in the app', () => {
   it('drops a pending fix when a save starts, and re-fixes only a draft left open by that save', () => {
     expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = draftFixTracker\.beginSave\(draftSnapshot\.id\);/);
     // Audit A4 batch 3: the cancelled draft write is put back before the re-fix.
-    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+void persistDraftNow\(draftRef\.current\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
+    // Audit A4 batch 4: the saved list may be re-persisted between the draft write and the recapture.
+    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+void persistDraftNow\(draftRef\.current\);\n(?:\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\([\s\S]*?\);\n)?\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
     expect(app).toMatch(/setScreen\('ProjectWorkspace'\);\n\s+\} else \{\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/);
     expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
   });

@@ -8,7 +8,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 import { daveProjectUpdateMatchesCloudReceipt } from '../../services/DAVEProjectUpdateCloudReceipt';
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
-import { fieldUpdateSyncGeneration } from '../../services/FieldUpdateSyncGeneration';
+import { fieldUpdateSyncGeneration, sameFieldUpdateSyncGeneration } from '../../services/FieldUpdateSyncGeneration';
 import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { classifySyncFailureText } from '../../services/SyncFailureCategory';
@@ -41,7 +41,9 @@ describe('the storage path is transport: the phone’s own record matches its up
   });
 
   it('is the same generation, so the queue guard recognises the stamped queued copy', () => {
-    expect(fieldUpdateSyncGeneration(local)).toBe(fieldUpdateSyncGeneration(queued));
+    // Batch 4: the path counts only when both copies carry one.
+    expect(sameFieldUpdateSyncGeneration(local, queued)).toBe(true);
+    expect(fieldUpdateSyncGeneration(local)).not.toBe(fieldUpdateSyncGeneration(queued));
     const queue = [{ id: 'project-update-u1', entity: 'project_update', operation: 'update', payload: { id: 'u1', updateData: queued }, createdAt: 't', changedAt: 't', retryCount: 0 }];
     expect(hasMatchingQueuedProjectUpdateRevision(local as never, queue as never)).toBe(true);
     expect(hasMatchingQueuedProjectUpdateRevision({ ...local, notes: 'edited' } as never, queue as never)).toBe(false);
@@ -81,6 +83,7 @@ describe('a realtime row is a cloud copy, not a replacement', () => {
       migrateSchedule: (value: unknown) => value,
       localPhotoUri: () => '',
       mergeProjectNames: (baseNames: string[]) => baseNames,
+      updateHasPendingLocalWork: (update: Record<string, unknown>) => update.status !== 'sent',
       mergeUpdates,
       buildUpdateTombstone: jest.fn(),
       buildCloudDeletionBarrier: (updateId: string, deletedAt: string) => ({ updateId, deletedAt, action: 'hide_cloud_update' }),
@@ -113,10 +116,12 @@ describe('a realtime row is a cloud copy, not a replacement', () => {
 
   it('is wired that way, and a cloud-sourced row is synced in the app’s merge', () => {
     const applier = read('services/DAVEOperationalRealtimeApplication.ts');
-    expect(applier).toMatch(/options\.commitUpdates\(options\.mergeUpdates\(\{\n\s+localUpdates: fresh\.updates,\n\s+cloudUpdates: \[previewReady\],\n\s+tombstones: deletedUpdates,\n\s+\}\)\);/);
+    // Batch 4: a local record with no pending work takes the newer row; one still owed its sync keeps its content.
+    expect(applier).toMatch(/options\.commitUpdates\(options\.mergeUpdates\(\{\n\s+localUpdates: fresh\.updates\.map\(update =>\n\s+update\.id === previewReady\.id && !options\.updateHasPendingLocalWork\(update\) \? previewReady : update\),\n\s+cloudUpdates: \[previewReady\],\n\s+tombstones: deletedUpdates,\n\s+\}\)\);/);
+    expect(app).toContain('updateHasPendingLocalWork: updateNeedsAutomaticSyncRetry,');
     expect(applier).toContain('const fresh = options.snapshot();');
     expect(app).toContain(": { ...update, status: 'sent' as const };");
-    expect(read('services/DAVEProjectUpdateCloudReceipt.ts')).toMatch(/DEVICE_PHOTO_TRANSPORT_KEYS = new Set\(\[\n\s+'uri',\n(?:\s*\/\/.*\n)*\s+'cloudStoragePath',/);
+    expect(read('services/DAVEProjectUpdateCloudReceipt.ts')).toContain('alignPhotoStoragePaths(left, right)');
   });
 });
 
@@ -124,7 +129,8 @@ describe('the retry loop after a save, on reconnect and on return to the foregro
   it('leaves an update to its own sync for a grace period, then follows once; runs on reconnect and when the app becomes active', () => {
     expect(app).toContain('const DIRECT_SYNC_GRACE_MS = 20_000;');
     expect(app).toContain('const queuedUpdates = retryable.filter(update => !directSyncIsRecent(update, now));');
-    expect(app).toMatch(/queuedHydrationDeferredRerun\.current = setTimeout\(\(\) => \{\n\s+queuedHydrationDeferredRerun\.current = null;\n\s+startAutomaticSyncBackgroundTask\('after_direct_sync', hydrateQueuedUpdates\);\n\s+\}, DIRECT_SYNC_GRACE_MS\);/);
+    // Batch 4: a pass still running is asked for one more instead of a new task.
+    expect(app).toMatch(/queuedHydrationDeferredRerun\.current = setTimeout\(\(\) => \{\n\s+queuedHydrationDeferredRerun\.current = null;\n(?:\s*\/\/.*\n)*\s+if \(queuedHydrationInFlight\.current\) queuedHydrationRerunRequested\.current = true;\n\s+else startAutomaticSyncBackgroundTask\('after_direct_sync', hydrateQueuedUpdates\);\n\s+\}, DIRECT_SYNC_GRACE_MS\);/);
     expect(app).toContain("startAutomaticSyncBackgroundTask('realtime_reconnected', hydrateQueuedUpdates);");
     expect(app).toContain("startAutomaticSyncBackgroundTask('app_active', hydrateQueuedUpdates);");
   });

@@ -3852,7 +3852,10 @@ const DIRECT_SYNC_GRACE_MS = 20_000;
 
 function directSyncIsRecent(update: ProjectUpdate, now: number): boolean {
   const attemptedAt = Date.parse(update.lastSendAttemptAt ?? '');
-  return Number.isFinite(attemptedAt) && now - attemptedAt < DIRECT_SYNC_GRACE_MS;
+  if (!Number.isFinite(attemptedAt)) return false;
+  // A stamp from a clock later corrected is not "still running" (audit A4 pass 3).
+  const age = now - attemptedAt;
+  return age >= 0 && age < DIRECT_SYNC_GRACE_MS;
 }
 
 // The rules live in services/SyncFailureCategory.ts (whole-app audit A4,
@@ -6246,6 +6249,7 @@ useEffect(() => {
       normalizeAreas: normalizeProjectAreas, normalizeSchedule: normalizeScheduleItems,
       normalizeDocuments: normalizeReferenceDocuments, migrateSchedule: migrateLegacyScheduleItem,
       localPhotoUri: resolveProjectPhotoUri, mergeProjectNames,
+      updateHasPendingLocalWork: updateNeedsAutomaticSyncRetry,
       mergeUpdates: mergeSavedUpdatesWithTombstones, buildUpdateTombstone,
       buildCloudDeletionBarrier: buildCloudUpdateDeletionBarrier,
       upsertDeletedUpdate: upsertDeletedUpdateTombstone,
@@ -7887,8 +7891,11 @@ useEffect(() => {
         // a new update (whole-app audit A4, 29 Sep 2026).
         fieldUpdateSaveInFlightRef.current = false;
         setFieldUpdateSaving(false);
-        // The save cancelled the draft's pending write; put it back.
+        // The save cancelled the pending draft and saved-updates writes; put both back.
         void persistDraftNow(draftRef.current);
+        persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
+          reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+        );
         recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
         offerToSaveDeletedDraftAsNewUpdate(draftSnapshot.projectName, persisted.barrierAction);
         return;
@@ -7907,6 +7914,9 @@ useEffect(() => {
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
       void persistDraftNow(draftRef.current);
+      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+      );
       recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
@@ -8223,7 +8233,10 @@ useEffect(() => {
     if (queuedUpdates.length < retryable.length && !queuedHydrationDeferredRerun.current) {
       queuedHydrationDeferredRerun.current = setTimeout(() => {
         queuedHydrationDeferredRerun.current = null;
-        startAutomaticSyncBackgroundTask('after_direct_sync', hydrateQueuedUpdates);
+        // A pass still running owes one more (as a late analysis result
+        // does); a new task could be dropped by the guard's run cap.
+        if (queuedHydrationInFlight.current) queuedHydrationRerunRequested.current = true;
+        else startAutomaticSyncBackgroundTask('after_direct_sync', hydrateQueuedUpdates);
       }, DIRECT_SYNC_GRACE_MS);
     }
 

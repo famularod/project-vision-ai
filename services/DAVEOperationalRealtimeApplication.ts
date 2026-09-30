@@ -52,6 +52,8 @@ type Options = Readonly<{
   migrateSchedule: (item: ScheduleItem) => ScheduleItem;
   localPhotoUri: (photo: Partial<UpdatePhoto>) => string;
   mergeProjectNames: (base: string[], ...sources: string[][]) => string[];
+  /** A local record still owed its own sync (queued, failed): a cloud row must not replace it. */
+  updateHasPendingLocalWork: (update: OperationalProjectUpdate) => boolean;
   mergeUpdates: (input: {
     localUpdates: OperationalProjectUpdate[];
     cloudUpdates: OperationalProjectUpdate[];
@@ -178,8 +180,13 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // Replacing the local record with the row had turned a just-sent
       // update back into "Waiting to Sync" (whole-app audit A4/A7, 30 Sep
       // 2026), since rows carry the phone's 'queued' status verbatim.
+      // A newer revision of an update the device already holds and owes
+      // nothing for (another device's edit) replaces it, as the refresh
+      // does (audit A4 pass 3); one still owed its own sync keeps its own
+      // content and takes the row only as a receipt.
       options.commitUpdates(options.mergeUpdates({
-        localUpdates: fresh.updates,
+        localUpdates: fresh.updates.map(update =>
+          update.id === previewReady.id && !options.updateHasPendingLocalWork(update) ? previewReady : update),
         cloudUpdates: [previewReady],
         tombstones: deletedUpdates,
       }));

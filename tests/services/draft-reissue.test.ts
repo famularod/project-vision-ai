@@ -106,9 +106,10 @@ describe('saving a draft whose update was deleted while it was open', () => {
   });
 
   it('is wired into the save and the delete', () => {
+    // Audit A4 batch 4: the saved list may be re-persisted between the draft write and the recapture.
     // The save keeps the draft and offers a new record when the commit did not apply.
     // Batch 3: the cancelled draft write is put back, and the barrier's kind decides the wording.
-    expect(app).toMatch(/if \(!persisted\.applied\) \{\n(?:\s*\/\/.*\n)*\s+fieldUpdateSaveInFlightRef\.current = false;\n\s+setFieldUpdateSaving\(false\);\n(?:\s*\/\/.*\n)*\s+void persistDraftNow\(draftRef\.current\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+offerToSaveDeletedDraftAsNewUpdate\(draftSnapshot\.projectName, persisted\.barrierAction\);\n\s+return;/);
+    expect(app).toMatch(/if \(!persisted\.applied\) \{\n(?:\s*\/\/.*\n)*\s+fieldUpdateSaveInFlightRef\.current = false;\n\s+setFieldUpdateSaving\(false\);\n(?:\s*\/\/.*\n)*\s+void persistDraftNow\(draftRef\.current\);\n(?:\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\([\s\S]*?\);\n)?\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+offerToSaveDeletedDraftAsNewUpdate\(draftSnapshot\.projectName, persisted\.barrierAction\);\n\s+return;/);
     expect(app).toContain('const reissued = reissueDraftAsNewUpdate(draftRef.current, uid());');
     // Deleting the open draft's update clears the draft (by the ref, not a stale closure).
     expect(app).toContain('const openDraftDeleted = draftRef.current.id === updateId;');

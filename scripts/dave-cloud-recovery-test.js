@@ -13,8 +13,22 @@ const receiptCompiled = ts.transpileModule(fs.readFileSync(receiptSourcePath, 'u
     target: ts.ScriptTarget.ES2020,
   },
 }).outputText;
+// The receipt aligns photo storage paths through a helper (audit A4 batch 4, 30 Sep 2026).
+const alignmentSourcePath = path.join(root, 'services/PhotoStoragePathAlignment.ts');
+const alignmentCompiled = ts.transpileModule(fs.readFileSync(alignmentSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const alignmentModule = { exports: {} };
+new Function('module', 'exports', alignmentCompiled)(alignmentModule, alignmentModule.exports);
 const receiptModule = { exports: {} };
-new Function('module', 'exports', receiptCompiled)(receiptModule, receiptModule.exports);
+const receiptRequire = specifier => {
+  if (specifier === './PhotoStoragePathAlignment') return alignmentModule.exports;
+  return require(specifier);
+};
+new Function('module', 'exports', 'require', receiptCompiled)(receiptModule, receiptModule.exports, receiptRequire);
 
 const sourcePath = path.join(root, 'services/DAVECloudRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
