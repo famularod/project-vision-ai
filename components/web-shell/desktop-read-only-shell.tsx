@@ -4695,8 +4695,9 @@ function DocumentManagementWorkspace({
                   : openDeleteCandidate
               }
               onMakeCurrent={
-                // A combined schedule retired for some of its projects can be made current again (owner answer Q15).
-                !scheduleDocumentIsCurrentEverywhere(selectedDocument)
+                // A combined schedule retired for some of its projects (owner answer Q15), or one a newer
+                // partial schedule replaces for some (audit A5 pass 4 #2), can be made current again.
+                !scheduleDocumentIsCurrentEverywhere(selectedDocument, auth.snapshot?.referenceDocuments)
                   ? document => { void makeCurrent(document); }
                   : undefined
               }
@@ -4774,6 +4775,7 @@ function DocumentList({
   onMakeCurrent?: (document: DAVEWebReferenceDocument) => void;
   emptyText?: string;
 }) {
+  const auth = useDesktopAuth();
   const progressive = useProgressiveListLimit(
     documents.length,
     `${documents.length}:${documents[0]?.id || ''}:${documents[documents.length - 1]?.id || ''}`,
@@ -4815,7 +4817,7 @@ function DocumentList({
               </View>
               <View style={styles.documentListStatus}>
                 <StatusBadge
-                  label={documentStatusLabel(document)}
+                  label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
                   tone={document.isCurrent ? 'good' : 'neutral'}
                 />
                 <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
@@ -4951,7 +4953,7 @@ function DocumentDetailsPanel({
       />
       <View style={styles.taskDetailsBadges}>
         <StatusBadge
-          label={documentStatusLabel(document)}
+          label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
           tone={document.isCurrent ? 'good' : 'neutral'}
         />
         <StatusBadge label={document.category} tone="neutral" />
@@ -6748,12 +6750,13 @@ function documentStatusKind(document: DAVEWebReferenceDocument): Exclude<Documen
   return scheduleDocumentIsScheduleLike(document) ? 'prior' : 'other';
 }
 
-function documentStatusLabel(document: DAVEWebReferenceDocument): string {
+/** With every document: "Current for Beta" when a newer partial schedule shows for Alpha (audit A5 pass 4 #2). */
+function documentStatusLabel(document: DAVEWebReferenceDocument, allDocuments?: readonly ReferenceDocument[]): string {
   if (!scheduleDocumentIsScheduleLike(document)) {
     return buildECOSDocumentReadiness(document).label;
   }
   const kind = documentStatusKind(document);
-  if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current');
+  if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current', allDocuments);
   if (kind === 'prior') return 'Prior version';
   return buildECOSDocumentReadiness(document).label;
 }

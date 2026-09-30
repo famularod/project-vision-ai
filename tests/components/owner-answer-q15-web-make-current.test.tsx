@@ -138,6 +138,18 @@ describe('a combined schedule current for some of its projects, on the web (owne
     await waitFor(() => expect(mockAuth.setCurrentSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: 'Combined master' })));
   });
 
+  // Whole-app audit A5 pass 4 #2 (30 Sep 2026): a newer lookahead for Alpha
+  // wins Alpha by date; the master read "Current" and offered no Make Current.
+  it('a master a newer Alpha lookahead replaces for Alpha reads "Current for Beta" and offers Make Current', async () => {
+    const lookahead = scheduleDocument('Alpha 3-week lookahead', ['Alpha'], { isCurrent: true, importedAt: '2026-09-20T12:00:00.000Z' });
+    withDocuments([master, lookahead]);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    expect(screen.getAllByText('Current for Beta').length).toBeGreaterThan(0);
+    fireEvent.press(screen.getByLabelText('View Combined master'));
+    fireEvent.press(await screen.findByText('Make Current Schedule'));
+    await waitFor(() => expect(mockAuth.setCurrentSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: 'Combined master' })));
+  });
+
   it('a schedule current everywhere offers no Make Current', async () => {
     withDocuments([master, alphaOwn]);
     const screen = render(<DesktopReadOnlyShell page="documents" />);

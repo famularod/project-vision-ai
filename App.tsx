@@ -10958,8 +10958,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   async function activateReferenceDocument(documentId: string): Promise<boolean> {
     const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-    if (!target || scheduleDocumentIsCurrentEverywhere(target) || currentReferenceActivationIdsRef.current.has(documentId)) {
-      return Boolean(target && scheduleDocumentIsCurrentEverywhere(target)); // a combined schedule retired for some projects can be made current again (Q15)
+    if (!target || scheduleDocumentIsCurrentEverywhere(target, referenceDocumentsCurrentRef.current) || currentReferenceActivationIdsRef.current.has(documentId)) {
+      return Boolean(target && scheduleDocumentIsCurrentEverywhere(target, referenceDocumentsCurrentRef.current)); // retired for some projects (Q15), or a newer partial schedule shows for some (A5 pass 4 #2): made current again
     }
     // A schedule has no ECOS preparation to wait for (audit A5 F4).
     const readiness = buildECOSDocumentReadiness(target);
@@ -11277,7 +11277,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (!document || document.category !== 'Schedule') return;
     // Asked before either path: a schedule with no imported tasks hides the project's on every device (whole-app audit A8 pass 1 F6, 30 Sep 2026).
     const projectName = projects.find(name => authorityProjectId(name) === document.projectId) || null;
-    const retirement = (await loadECOSScheduleRetirementScope(getSupabaseClient())) ?? 'schedule'; // as the cloud retires (owner answer Q15); unknown offline: whole schedules, as before it
+    const retirement = await loadECOSScheduleRetirementScope(getSupabaseClient()); // as the cloud retires (owner answer Q15); unknown (null): only this schedule changes here, the cloud settles the rest (A5 pass 4 #5)
     // The same file already imported for the project is made current, unasked, not its task-less copy (whole-app audit A8 pass 2 #2).
     const importedCopy = importedScheduleOfPhoneSchedule(document, projectName, referenceDocuments);
     const warning = hidingTasksConfirmed || importedCopy ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
@@ -19780,7 +19780,7 @@ function ScheduleScreen({
                     <Text style={styles.rowSub}>
                       Imported {formatSavedTime(document.importedAt)} • {isScreenshot
                         ? 'Supporting message screenshot'
-                        : document.isCurrent ? scheduleDocumentCurrentLabel(document, 'Active schedule') : 'Inactive'}
+                        : document.isCurrent ? scheduleDocumentCurrentLabel(document, 'Active schedule', scheduleDocuments) : 'Inactive'}
                     </Text>
                   </View>
 
@@ -19793,7 +19793,7 @@ function ScheduleScreen({
                     >
                       <Text style={styles.compactInlineActionText}>Open</Text>
                     </TouchableOpacity>
-                    {!isScreenshot && !scheduleDocumentIsCurrentEverywhere(document) ? (
+                    {!isScreenshot && !scheduleDocumentIsCurrentEverywhere(document, scheduleDocuments) ? (
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}

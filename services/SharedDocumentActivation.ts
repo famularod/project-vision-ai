@@ -8,6 +8,7 @@ import {
 } from './ECOSHostedIndexer';
 import {
   currentScheduleDocumentsByProject,
+  currentScheduleDocumentWinners,
   scheduleDocumentRetiredProjectNames,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
@@ -142,15 +143,13 @@ export function scheduleActivationEffects(
   if (!isScheduleDocument(target)) return [];
   const targetKeys = projectKeys(target);
   const { retired, after } = documentsAfterScheduleActivation(target, documents, scope);
-  const showingBefore = currentScheduleDocumentsByProject(documents);
-  const showingAfter = currentScheduleDocumentsByProject(after);
   const effects: ScheduleRetirementEffect[] = [];
   for (const document of retired) {
     for (const name of projectNamesOf(document)) {
       const key = name.trim().toLowerCase();
       if (targetKeys.has(key) || effects.some(effect => effect.projectName.toLowerCase() === key)) continue;
-      if (showingBefore.get(scheduleProjectScopeKey(name))?.id !== document.id) continue;
-      const fallback = showingAfter.get(scheduleProjectScopeKey(name));
+      if (scheduleShownFor(name, documents)?.id !== document.id) continue;
+      const fallback = scheduleShownFor(name, after);
       if (fallback?.id === target.id) continue;
       effects.push({
         projectName: name.trim(),
@@ -159,6 +158,21 @@ export function scheduleActivationEffects(
     }
   }
   return effects;
+}
+
+/**
+ * The schedule a project shows: its own current schedule or, with none, a
+ * current schedule that lists it, as the task list falls back
+ * (selectAuthoritativeScheduleItems). A combined schedule retired for Alpha
+ * still shows Alpha's tasks once Alpha has no schedule of its own; the Set
+ * Active question left Alpha out when that schedule was retired for Beta
+ * too (whole-app audit A5 pass 4 #4, 30 Sep 2026).
+ */
+function scheduleShownFor(name: string, documents: readonly ReferenceDocument[]): ReferenceDocument | undefined {
+  const key = scheduleProjectScopeKey(name);
+  return currentScheduleDocumentsByProject(documents).get(key) ??
+    currentScheduleDocumentWinners(documents).find(document =>
+      projectNamesOf(document).some(listed => scheduleProjectScopeKey(listed) === key));
 }
 
 /** What making a schedule with no tasks of its own current hides. */
@@ -182,7 +196,7 @@ export function scheduleTasksHiddenByActivation(
   target: ReferenceDocument,
   documents: readonly ReferenceDocument[],
   scheduleItems: readonly ScheduleItem[],
-  scope: ScheduleRetirementScope = 'schedule',
+  scope: ScheduleRetirementScope | null = 'schedule',
 ): ScheduleTasksHiddenByActivation | null {
   if (!isScheduleDocument(target) || scheduleItems.some(item => scheduleContainsItem(target, item))) {
     return null;
@@ -398,11 +412,17 @@ export function scheduleRetirementMessage(effects: readonly ScheduleRetirementEf
  * schedule of every project. Only the documents that change are new objects,
  * stamped with updatedAt when given; a chosen schedule not in the list comes
  * first.
+ *
+ * With the cloud's rule unknown (scope null: offline, or no answer in 5 s)
+ * only the chosen schedule is marked current here (whole-app audit A5 pass 4
+ * #5, 30 Sep 2026). The old rule retired the combined master for Beta
+ * without asking, until the next refresh put it back; another schedule's
+ * flags never reach the cloud from here, so the cloud settles them.
  */
 export function scheduleDocumentsAfterActivation<T extends ReferenceDocument>(
   target: T,
   documents: readonly T[],
-  scope: ScheduleRetirementScope,
+  scope: ScheduleRetirementScope | null,
   updatedAt?: string,
 ): T[] {
   const withTarget = documents.some(document => document.id === target.id) ? documents : [target, ...documents];
@@ -423,10 +443,11 @@ export function scheduleDocumentsAfterActivation<T extends ReferenceDocument>(
 function documentsAfterScheduleActivation(
   target: ReferenceDocument,
   documents: readonly ReferenceDocument[],
-  scope: ScheduleRetirementScope,
+  scope: ScheduleRetirementScope | null,
 ): { retired: ReferenceDocument[]; after: ReferenceDocument[] } {
   const targetKeys = projectKeys(target);
-  const sharing = documents.filter(document =>
+  // Unknown (null): no other schedule changes (A5 pass 4 #5).
+  const sharing = scope === null ? [] : documents.filter(document =>
     document.id !== target.id && document.isCurrent && isScheduleDocument(document) &&
     [...projectKeys(document)].some(key => targetKeys.has(key)));
   const partly = new Map<ReferenceDocument, string[]>();

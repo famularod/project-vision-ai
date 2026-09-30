@@ -325,9 +325,41 @@ export function scheduleDocumentRetiredProjectNames(document: ReferenceDocument)
   return scheduleDocumentScopeNames(document).filter(name => retired.has(normalize(name)));
 }
 
-/** Current, and not retired for any of its projects: Make Current has nothing left to do. */
-export function scheduleDocumentIsCurrentEverywhere(document: ReferenceDocument): boolean {
-  return Boolean(document.isCurrent) && scheduleDocumentRetiredProjectNames(document).length === 0;
+/**
+ * Current, not retired for any of its projects and, given the schedules,
+ * the one each of its projects shows: Make Current has nothing left to do.
+ *
+ * Whole-app audit A5 pass 4 #2 (30 Sep 2026): a newer partial schedule (a
+ * three-week lookahead for Alpha) wins Alpha from the combined master by
+ * date, so Alpha's master tasks outside the lookahead disappeared, while the
+ * master still read "Active schedule" and Set Active and Make Current were
+ * hidden: deleting the lookahead was the only way back. The cloud's
+ * activation of a schedule already current retires the others covering its
+ * projects, so offering it again is all it takes.
+ */
+export function scheduleDocumentIsCurrentEverywhere(
+  document: ReferenceDocument,
+  documents?: readonly ReferenceDocument[],
+): boolean {
+  if (!document.isCurrent || scheduleDocumentRetiredProjectNames(document).length > 0) return false;
+  return !documents || scheduleDocumentProjectsShownElsewhere(document, documents).length === 0;
+}
+
+/**
+ * The projects of a current schedule that show another, newer current
+ * schedule instead (A5 pass 4 #2); '' for a schedule with no project.
+ */
+function scheduleDocumentProjectsShownElsewhere(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): string[] {
+  if (!document.isCurrent || !scheduleDocumentIsScheduleLike(document)) return [];
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  const current = currentScheduleDocumentsByProject(listed);
+  const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+  const names = scheduleDocumentScopeNames(document);
+  return (names.length > 0 ? names : [''])
+    .filter(name => !retired.has(normalize(name)) && current.get(normalize(name))?.id !== document.id);
 }
 
 /** Whether the schedule was retired for this project (Q15). */
@@ -340,9 +372,20 @@ export function scheduleDocumentRetiredForProject(
     scheduleDocumentRetiredProjectNames(document).some(name => normalize(name) === key);
 }
 
-/** "Current", or "Current for Beta" for a combined schedule retired for some of its projects. */
-export function scheduleDocumentCurrentLabel(document: ReferenceDocument, label: string): string {
-  const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+/**
+ * "Current", or "Current for Beta" for a combined schedule retired for some
+ * of its projects or, given the schedules, one a newer schedule replaces for
+ * some of them (A5 pass 4 #2).
+ */
+export function scheduleDocumentCurrentLabel(
+  document: ReferenceDocument,
+  label: string,
+  documents?: readonly ReferenceDocument[],
+): string {
+  const retired = new Set([
+    ...scheduleDocumentRetiredProjectNames(document),
+    ...(documents ? scheduleDocumentProjectsShownElsewhere(document, documents) : []),
+  ].map(normalize));
   if (retired.size === 0) return label;
   const remaining = scheduleDocumentScopeNames(document).filter(name => !retired.has(normalize(name)));
   return remaining.length > 0 ? `${label} for ${remaining.join(', ')}` : label;

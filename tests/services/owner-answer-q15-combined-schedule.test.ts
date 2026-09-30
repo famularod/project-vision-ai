@@ -293,14 +293,16 @@ describe('a schedule made current on the phone before it is shared follows the s
       ['Alpha rev 1', false, null],
     ]);
     expect(after.current.find(document => document.id === 'Gamma')).toBe(gamma);
-    // Before the migration, and offline (unknown), as the old cloud does it: the master is retired, Gamma is not.
-    for (const scope of ['schedule', null] as const) {
-      expect((await run(scope)).queued).toEqual([
-        ['new-ref', true, null],
-        ['Master', false, null],
-        ['Alpha rev 1', false, null],
-      ]);
-    }
+    // Before the migration, as the old cloud does it: the master is retired, Gamma is not.
+    expect((await run('schedule')).queued).toEqual([
+      ['new-ref', true, null],
+      ['Master', false, null],
+      ['Alpha rev 1', false, null],
+    ]);
+    // Offline (unknown), changed by audit A5 pass 4 #5 (30 Sep 2026): the old rule retired
+    // the master for Beta without asking until the next refresh put it back. Now only the
+    // chosen schedule is marked here; the cloud settles the others.
+    expect((await run(null)).queued).toEqual([['new-ref', true, null]]);
   });
 });
 
