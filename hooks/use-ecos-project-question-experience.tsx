@@ -49,6 +49,10 @@ export function useECOSProjectQuestionExperience({
   const [typedOpen, setTypedOpen] = useState(false);
   const [result, setResult] = useState<QuestionState | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<Readonly<{ projectName: string; question: string }> | null>(null);
+  // Bumped only by askFor: a question sent from Talk starts a new Ask ECOS
+  // conversation, so the server cannot read it against an older Ask ECOS
+  // question of the project (audit A9 pass 2 F2).
+  const [conversationEpoch, setConversationEpoch] = useState(0);
   const requestGeneration = useRef(0);
   const dismissResult = useCallback(() => {
     requestGeneration.current += 1;
@@ -63,7 +67,7 @@ export function useECOSProjectQuestionExperience({
     [candidateProjects],
   );
   const ownerKey = useNativeWorkspaceOwner();
-  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
+  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName, conversationEpoch]));
   useEffect(() => { dismissResult(); }, [conversation, dismissResult]);
 
   const open = useCallback(() => {
@@ -115,16 +119,28 @@ export function useECOSProjectQuestionExperience({
     if (pendingQuestion.projectName === projectName) void ask(pendingQuestion.question);
   }, [ask, pendingQuestion, projectName]);
 
-  /** Asks one question for a named project, e.g. from a Talk document match (audit A9 pass 1 #3). */
-  const askFor = useCallback((name: string, question: string) => {
+  /** Whether Ask ECOS can ask about this project: it has a cloud record (audit A9 pass 2 F4). */
+  const canAskFor = useCallback(
+    (name: string) => Boolean(name.trim() && projectIdFor(projectRecords, name.trim())),
+    [projectRecords],
+  );
+
+  /**
+   * Asks one question for a named project, e.g. from a Talk document match
+   * (audit A9 pass 1 #3), in a new Ask ECOS conversation. Returns whether it
+   * started, so Talk keeps its answer when it did not (audit A9 pass 2 F4).
+   */
+  const askFor = useCallback((name: string, question: string): boolean => {
     const selectedProjectName = name.trim();
-    if (!selectedProjectName || !projectIdFor(projectRecords, selectedProjectName)) {
+    if (!canAskFor(selectedProjectName)) {
       alertChooseProject();
-      return;
+      return false;
     }
     setProjectName(selectedProjectName);
+    setConversationEpoch(epoch => epoch + 1);
     setPendingQuestion({ projectName: selectedProjectName, question });
-  }, [projectRecords]);
+    return true;
+  }, [canAskFor]);
 
   const sheets = <>
     <DAVEVoiceCaptureSheet
@@ -196,5 +212,5 @@ export function useECOSProjectQuestionExperience({
     dismissResult();
   }, [dismissResult]);
 
-  return { open, close, askFor, sheets };
+  return { open, close, askFor, canAskFor, sheets };
 }

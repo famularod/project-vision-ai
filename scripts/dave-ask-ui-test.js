@@ -153,9 +153,15 @@ assert(workspace.indexOf('<ProjectTaskControlPanel') >= 0,
   'Hiding the Assistant must leave the task-first project workflow available.');
 assert(app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'));
 assert(app.includes('createDAVEAskHistoryPersistence'));
-assert(app.includes('history = await talkHistoryPersistence.read(projectId)'));
+// Whole-app audit A9 pass 2 F1 (30 Sep 2026): Talk's "previous answer" is an
+// answer from this Talk session, not any saved answer of the project, so the
+// saved history is no longer read back as context (and the 'Talk history
+// unavailable' refusal of that read is gone). Answers are still saved, and
+// added to the session before the save starts.
+assert(app.includes('const history = talkSession.history();'));
+assert(!app.includes('talkHistoryPersistence.read('), 'Talk must not answer from saved history of earlier sessions.');
+assert(app.includes('talkSession.add(entry); // before saving'));
 assert(app.includes('await talkHistoryPersistence.append(projectId, entry)'));
-assert(app.includes("'Talk history unavailable'"));
 assert(app.includes('reportTalkAnswerPersistenceFailure(projectName, error)'));
 assert(!app.includes('AsyncStorage.getItem(daveAskHistoryStorageKey(projectId)).catch(() => null)'),
   'Talk must never convert a failed history read into authoritative empty history.');

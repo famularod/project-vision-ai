@@ -17,6 +17,19 @@ export function talkEvidenceTypeLabel(citation: DAVEAskEvidence): string {
   return ecosDocumentProofClaimFromEvidence(citation) ? 'Verified document source' : UNCHECKED_DOCUMENT_SOURCE_LABEL;
 }
 
+/**
+ * What VoiceOver reads for a supporting record: the words shown on it, so a
+ * Talk document match is heard as not checked, as it reads (audit A9 pass 2 F6).
+ */
+export function talkEvidenceAccessibilityLabel(citation: DAVEAskEvidence): string {
+  if (!citation.documentCitation) return `Open supporting ${citation.sourceType}: ${citation.summary}`;
+  return [
+    `Open ${citation.documentCitation.label || citation.summary}`,
+    citation.excerpt || null,
+    talkEvidenceTypeLabel(citation),
+  ].filter((part): part is string => Boolean(part)).map(part => part.trim().replace(/\.+$/, '')).join('. ');
+}
+
 export function DAVEConversationAnswerSheet({
   visible,
   projectName,
@@ -44,7 +57,7 @@ export function DAVEConversationAnswerSheet({
               <Text style={styles.title}>Answer</Text>
               <Text style={styles.subtitle}>{projectName}</Text>
             </View>
-            <TouchableOpacity style={styles.closeButton} onPress={onClose} accessibilityLabel="Close answer">
+            <TouchableOpacity style={styles.closeButton} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close answer">
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -75,7 +88,7 @@ export function DAVEConversationAnswerSheet({
                   style={styles.evidenceButton}
                   onPress={() => onOpenEvidence(citation)}
                   accessibilityRole="button"
-                  accessibilityLabel={`Open supporting ${citation.sourceType}: ${citation.summary}`}
+                  accessibilityLabel={talkEvidenceAccessibilityLabel(citation)}
                 >
                   <View style={styles.main}>
                     <Text style={styles.evidenceSummary}>

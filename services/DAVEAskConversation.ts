@@ -1,4 +1,5 @@
 import type { DAVEAskAnswer, DAVEAskEvidence } from './DAVEAsk';
+import type { DAVEConversationFollowUpKind } from './DAVEConversationContext';
 import type { DAVEBriefNavigationTarget } from './DAVEDailyBrief';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 
@@ -23,6 +24,8 @@ export type DAVEAskConversationEntry = {
   contextStatus?: 'standalone' | 'resolved_follow_up' | 'ambiguous_follow_up';
   resolvedQuestion?: string | null;
   priorEntryId?: string | null;
+  /** How a follow-up used priorEntryId, so the next one reaches the underlying answer (audit A9 pass 2 F1c). */
+  followUpKind?: DAVEConversationFollowUpKind | null;
 };
 
 export type DAVEAskWhyModel = {

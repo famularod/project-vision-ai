@@ -506,6 +506,7 @@ import {
 } from './services/DAVEConversationRouter';
 import {
   answerDAVEConversationContext,
+  askECOSQuestionForTalk,
   resolveDAVEConversationContext,
 } from './services/DAVEConversationContext';
 import {
@@ -687,6 +688,7 @@ import {
   loadAuthorizedECOSDocumentProofBundle,
 } from './services/ECOSDocumentProofAuthority';
 import { useECOSProjectQuestionExperience } from './hooks/use-ecos-project-question-experience';
+import { useTalkSession } from './hooks/use-talk-session';
 import { countLabel, pluralWord } from './utils/pluralization';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -4907,6 +4909,7 @@ function AppShell() {
     projectName: string;
     question: string;
     answer: DAVEAskAnswer;
+    askECOSQuestion: string | null; // what "Ask in Ask ECOS" sends (audit A9 pass 2 F2)
   } | null>(null);
   const [talkTaskAction, setTalkTaskAction] = useState<{
     projectName: string;
@@ -5166,6 +5169,7 @@ function AppShell() {
     persistItem: persistStorageItem,
     removeItem: removePersistedStorageItem,
   })).current;
+  const talkSession = useTalkSession(); // "previous answer" = this Talk session only (audit A9 pass 2 F1)
   const legacyProjectStructureMigrationInFlight = useRef(false);
   const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
   const deletedProjectNamesRef = useRef(deletedProjectNames);
@@ -13102,6 +13106,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
     setTalkProjectName(contextualProject || '');
     setTalkTaskId(null);
+    talkSession.start();
     setTalkAnswer(null);
     setTalkTypedOpen(false);
     setTalkVoiceOpen(true);
@@ -13151,11 +13156,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return;
       }
       // Talk answers are local; their document matches carry no proof claim (audit A9 pass 1 #3).
-      const question = talkAnswer?.question || '';
-      Alert.alert('Not checked by Ask ECOS', 'Talk found this in a project document, but Ask ECOS has not checked it, so its page cannot open here. Ask the same question in Ask ECOS for checked proof.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Ask in Ask ECOS', onPress: () => { setTalkAnswer(null); ecosProjectQuestion.askFor(projectName, question); } },
-      ]);
+      // A follow-up's bare words are never sent, and Talk closes only once Ask ECOS starts (A9 pass 2 F2/F4).
+      const question = talkAnswer?.askECOSQuestion || null;
+      const notChecked = 'Talk found this in a project document, but Ask ECOS has not checked it, so its page cannot open here.';
+      if (!ecosProjectQuestion.canAskFor(projectName)) {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask ECOS can check documents only for a synchronized project, and this project is not synchronized.`);
+      } else if (!question) {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask the full question in Ask ECOS for checked proof.`);
+      } else {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask ECOS can check it with this question: “${question}”`, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Ask in Ask ECOS', onPress: () => { if (ecosProjectQuestion.askFor(projectName, question)) setTalkAnswer(null); } },
+        ]);
+      }
       return;
     }
     const intelligence = projectIntelligenceForTalk(projectName);
@@ -13211,7 +13224,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ? context.effectiveQuestion
         : null,
       priorEntryId: context?.priorEntryId || null,
+      followUpKind: context?.followUpKind || null,
     };
+    talkSession.add(entry); // before saving, so a quick follow-up sees it (audit A9 pass 2 F1)
     await talkHistoryPersistence.append(projectId, entry);
   }
 
@@ -13236,16 +13251,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? null
       : talkTaskId;
     const projectId = authorityProjectId(projectName);
-    let history: DAVEAskConversationEntry[];
-    try {
-      history = await talkHistoryPersistence.read(projectId);
-    } catch {
-      Alert.alert(
-        'Talk history unavailable',
-        'The saved conversation could not be opened safely. No history was changed. Try again after checking available phone storage.',
-      );
-      return;
-    }
+    // Only answers given since Talk was opened; saved history is not read back (audit A9 pass 2 F1).
+    const history = talkSession.history();
     const context = resolveDAVEConversationContext({
       transcript,
       history,
@@ -13282,15 +13289,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
+    const askECOSQuestion = askECOSQuestionForTalk(context, history);
     if (contextualAnswer) {
-      setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer });
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer, askECOSQuestion });
       void persistTalkAnswer(projectName, transcript.trim(), contextualAnswer, context)
         .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;
     }
 
     if (route.intent === 'ask') {
-      setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer });
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer, askECOSQuestion });
       void persistTalkAnswer(projectName, transcript.trim(), route.answer, context)
         .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;

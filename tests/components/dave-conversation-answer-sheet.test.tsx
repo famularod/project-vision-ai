@@ -8,6 +8,7 @@ import { render } from '@testing-library/react-native';
 import {
   DAVEConversationAnswerSheet,
   UNCHECKED_DOCUMENT_SOURCE_LABEL,
+  talkEvidenceAccessibilityLabel,
   talkEvidenceTypeLabel,
 } from '../../components/DAVEConversationAnswerSheet';
 import type { DAVEAskAnswer, DAVEAskEvidence } from '../../services/DAVEAsk';
@@ -95,5 +96,42 @@ describe('Talk answer source label (audit A9 pass 1 #3)', () => {
     expect(screen.getByText('Verified document source')).toBeTruthy();
     expect(screen.queryByText(UNCHECKED_DOCUMENT_SOURCE_LABEL)).toBeNull();
     expect(screen.getByText('schedule')).toBeTruthy();
+  });
+});
+
+// Whole-app audit A9 pass 2 F6 (30 Sep 2026): VoiceOver read a Talk document
+// match as "Open supporting document: …", never hearing that Ask ECOS had not
+// checked it, and the close button was not announced as a button.
+describe('Talk answer VoiceOver wording (audit A9 pass 2 F6)', () => {
+  function renderSheet(evidence: DAVEAskEvidence[]) {
+    return render(
+      <DAVEConversationAnswerSheet
+        visible
+        projectName="2321 Compliance Project"
+        question="What guardrail protection is required at the parking edge?"
+        answer={answer(evidence)}
+        onOpenEvidence={jest.fn()}
+        onAskAnother={jest.fn()}
+        onClose={jest.fn()}
+      />,
+    );
+  }
+
+  it('reads a document source with the words shown on it', () => {
+    const screen = renderSheet([talkSource, checkedSource, taskSource]);
+    expect(screen.getByLabelText(
+      'Open Architectural drawings, Sheet A101. Provide galvanized steel guardrails at all open parking edges. Document match – not checked by Ask ECOS',
+    )).toBeTruthy();
+    expect(screen.getByLabelText(
+      'Open Architectural drawings, Sheet A102. Provide galvanized steel guardrails at all open parking edges. Verified document source',
+    )).toBeTruthy();
+    expect(screen.getByLabelText('Open supporting schedule: Install guardrails')).toBeTruthy();
+    expect(screen.queryByLabelText(/^Open supporting document/)).toBeNull();
+    expect(talkEvidenceAccessibilityLabel(talkSource)).toContain(UNCHECKED_DOCUMENT_SOURCE_LABEL);
+  });
+
+  it('announces the close control as a button', () => {
+    const screen = renderSheet([talkSource]);
+    expect(screen.getByLabelText('Close answer').props.accessibilityRole).toBe('button');
   });
 });

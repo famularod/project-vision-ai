@@ -173,11 +173,40 @@ describe('askFor (a Talk document match asked again in Ask ECOS, audit A9 pass 1
       candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(),
     }));
     await act(async () => { result.current.open(); });
-    await act(async () => { result.current.askFor('Project Nine', 'Where are the guardrails?'); });
+    let started: boolean | undefined;
+    await act(async () => { started = result.current.askFor('Project Nine', 'Where are the guardrails?'); });
+    // Audit A9 pass 2 F4: Talk keeps its answer when Ask ECOS did not start.
+    expect(started).toBe(false);
+    expect(result.current.canAskFor('Project Nine')).toBe(false);
+    expect(result.current.canAskFor(' project two ')).toBe(true);
     expect(alert).toHaveBeenCalledWith('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
     expect(askMock).not.toHaveBeenCalled();
     expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });
     alert.mockRestore();
+  });
+
+  // Audit A9 pass 2 F2: a question sent from Talk is read on its own, never
+  // against an older Ask ECOS question of the project. expo-crypto is mocked
+  // to one id, so the new conversation shows as no priorTurnId.
+  it('starts a new Ask ECOS conversation (no priorTurnId), and a question after it continues that one', async () => {
+    const turnIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
+    askMock.mockImplementation(async input => ({
+      answer: 'Answer', conversation: { conversationId: input.conversationId, turnId: turnIds[askMock.mock.calls.length - 1], priorTurnId: input.priorTurnId || null },
+    }) as never);
+    const { result } = renderHook(() => useECOSProjectQuestionExperience({
+      contextualProjectName: 'Project One', projectRecords: records,
+      candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(),
+    }));
+    await start(result);
+    let started: boolean | undefined;
+    await act(async () => { started = result.current.askFor('Project One', 'Why is that?'); });
+    expect(started).toBe(true);
+    expect(askMock).toHaveBeenCalledTimes(2);
+    expect(askMock.mock.calls[1][0]).toMatchObject({ projectId: 'one', question: 'Why is that?' });
+    expect(askMock.mock.calls[1][0].priorTurnId).toBeUndefined();
+    await act(async () => { sheet(result, 2).onAskAnother(); });
+    await act(async () => { sheet(result, 0).onMemoryReady({ transcript: 'And canopy C?' }); });
+    expect(askMock.mock.calls[2][0].priorTurnId).toBe(turnIds[1]);
   });
 });
 

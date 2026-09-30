@@ -40,17 +40,25 @@ type Harness = {
   askFor: jest.Mock;
 };
 
-function harness(): Harness {
+// Audit A9 pass 2 F2/F4: the Talk answer carries the question "Ask in Ask ECOS"
+// sends (null when a follow-up's words cannot stand alone); askFor says whether
+// it started; canAskFor says whether the project has a cloud record.
+function harness({
+  question = 'What guardrail is required at the parking edge?',
+  askECOSQuestion = question as string | null,
+  cloudRecord = true,
+  askStarts = true,
+} = {}): Harness {
   const alert = jest.fn();
   const setTalkAnswer = jest.fn();
   const openEvidence = jest.fn(async () => undefined);
-  const askFor = jest.fn();
+  const askFor = jest.fn(() => askStarts);
   const deps: Record<string, unknown> = {
     Alert: { alert },
     ecosDocumentProofClaimFromEvidence,
     ecosDocumentEvidence: { openEvidence },
-    ecosProjectQuestion: { askFor },
-    talkAnswer: { projectName: 'Garage', question: 'What guardrail is required at the parking edge?', answer: {} },
+    ecosProjectQuestion: { askFor, canAskFor: () => cloudRecord },
+    talkAnswer: { projectName: 'Garage', question, answer: {}, askECOSQuestion },
     setTalkAnswer,
     projectIntelligenceForTalk: () => { throw new Error('a document source must not navigate'); },
   };
@@ -104,6 +112,42 @@ describe('a Talk document source (audit A9 pass 1 #3)', () => {
     expect(h.setTalkAnswer).toHaveBeenCalledWith(null);
     expect(h.askFor).toHaveBeenCalledWith('Garage', 'What guardrail is required at the parking edge?');
     expect(h.openEvidence).not.toHaveBeenCalled();
+  });
+
+  it('a follow-up sends the question it follows and quotes it (audit A9 pass 2 F2)', () => {
+    const h = harness({ question: 'Show me the evidence', askECOSQuestion: 'What guardrail is required at the parking edge?' });
+    h.open('Garage', talkSource);
+    expect(h.alert.mock.calls[0][1]).toContain('“What guardrail is required at the parking edge?”');
+    (h.alert.mock.calls[0][2] as Button[]).find(button => button.text === 'Ask in Ask ECOS')!.onPress!();
+    expect(h.askFor).toHaveBeenCalledWith('Garage', 'What guardrail is required at the parking edge?');
+    expect(h.askFor).not.toHaveBeenCalledWith('Garage', 'Show me the evidence');
+  });
+
+  it('a follow-up that cannot stand alone asks for the full question and asks nothing (audit A9 pass 2 F2)', () => {
+    const h = harness({ question: 'What next?', askECOSQuestion: null });
+    h.open('Garage', talkSource);
+    expect(h.alert).toHaveBeenCalledTimes(1);
+    expect(h.alert.mock.calls[0][1]).toContain('Ask the full question in Ask ECOS');
+    expect(((h.alert.mock.calls[0][2] || []) as Button[]).map(button => button.text)).not.toContain('Ask in Ask ECOS');
+    expect(h.askFor).not.toHaveBeenCalled();
+    expect(h.setTalkAnswer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Talk answer when Ask ECOS does not start (audit A9 pass 2 F4)', () => {
+    const h = harness({ askStarts: false });
+    h.open('Garage', talkSource);
+    (h.alert.mock.calls[0][2] as Button[]).find(button => button.text === 'Ask in Ask ECOS')!.onPress!();
+    expect(h.askFor).toHaveBeenCalledTimes(1);
+    expect(h.setTalkAnswer).not.toHaveBeenCalled();
+  });
+
+  it('a project with no cloud record is not offered Ask in Ask ECOS (audit A9 pass 2 F4)', () => {
+    const h = harness({ cloudRecord: false });
+    h.open('Garage', talkSource);
+    expect(h.alert.mock.calls[0][1]).toContain('not synchronized');
+    expect(((h.alert.mock.calls[0][2] || []) as Button[]).map(button => button.text)).not.toContain('Ask in Ask ECOS');
+    expect(h.askFor).not.toHaveBeenCalled();
+    expect(h.setTalkAnswer).not.toHaveBeenCalled();
   });
 
   it('with a proof claim opens the proof and keeps the Talk answer to return to', () => {
