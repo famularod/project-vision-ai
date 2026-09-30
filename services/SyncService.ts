@@ -87,6 +87,12 @@ import {
   createBoundedTaskRunner,
   mapWithBoundedConcurrency,
 } from './BoundedConcurrency';
+import {
+  cloudOwnerUnchanged,
+  currentCloudOwner,
+  heldForAnotherOwner,
+  type CloudOwnerBinding,
+} from './CloudOwnerBinding';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -115,6 +121,8 @@ export type SyncQueueItem<TPayload = Record<string, unknown>> = {
   lastError?: string | null;
   /** Why the last attempt failed, recorded from the raw failure before lastError is sanitised (audit A4). */
   lastFailureCategory?: SyncFailureCategory | null;
+  /** The account it was queued under; only that account sends it (audit A1 M3). */
+  ownerId?: string;
 };
 
 export type SyncConflict<TPayload = unknown> = {
@@ -1366,6 +1374,7 @@ export async function enqueuePendingChange<TPayload>(
   },
 ): Promise<SyncQueueItem<TPayload>> {
   const createdAt = item.createdAt ?? new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
   const queueItem: SyncQueueItem<TPayload> = {
     id: item.id ?? createQueueId(item.entity, createdAt),
     entity: item.entity,
@@ -1375,6 +1384,7 @@ export async function enqueuePendingChange<TPayload>(
     changedAt: item.changedAt,
     retryCount: item.retryCount ?? 0,
     lastError: null,
+    ...(ownerId ? { ownerId } : {}),
   };
 
   await mutateOfflineQueue(queue => {
@@ -2307,8 +2317,9 @@ export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
 ): Promise<StagedProjectUpdateSync> {
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
+  const owner = currentCloudOwner();
   await queueProjectUpdateRecord(cloudRecoverableUpdate, false);
-  const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate);
+  const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate, owner);
   // A photo found under a legacy project path keeps that path, so the cloud
   // record (and the desktop) point at the file that exists.
   const recordToPersist = Object.keys(photoAttempt.relocatedPhotoPaths).length === 0
@@ -2319,11 +2330,14 @@ export async function stageProjectUpdateForSync(
         ? { ...photo, cloudStoragePath: photoAttempt.relocatedPhotoPaths[photo.id], cloudRecoveryStatus: null }
         : photo),
     };
-  await persistProjectUpdateRecord(
-    recordToPersist,
-    false,
-    photoAttempt.failedPhotoIds,
-  );
+  // Not into the next account's storage (whole-app audit A1 H2/M3).
+  if (cloudOwnerUnchanged(owner)) {
+    await persistProjectUpdateRecord(
+      recordToPersist,
+      false,
+      photoAttempt.failedPhotoIds,
+    );
+  }
 
   return {
     workAttempt: {
@@ -2475,6 +2489,10 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
+  // One pass sends one account's work (whole-app audit A1 M3): items queued
+  // under another account are held, and a sign-out or another sign-in stops
+  // the pass before its next item.
+  const owner = currentCloudOwner();
   const initialQueue = await getOfflineQueue();
   // Active user work is always the first recovery authority. Some older
   // devices retain hundreds of forensic quarantine snapshots; scanning every
@@ -2487,7 +2505,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const queue = initialQueue.length === 0
     ? await getOfflineQueue()
     : initialQueue;
-  const orderedQueue = pendingUploadOrder(queue);
+  const orderedQueue = pendingUploadOrder(
+    queue.filter(item => !heldForAnotherOwner(item.ownerId, owner)),
+  );
   const {
     taskPriorityBatch,
     uploadBatch,
@@ -2560,6 +2580,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   // durably reconcile task rows as one bounded batch; unrelated historical
   // field-update retries must not keep the Save button waiting.
   for (const item of uploadBatch) {
+    if (!cloudOwnerUnchanged(owner)) break;
     if (resolvedIds.has(item.id)) continue;
     let attemptedItem = item;
 
@@ -2683,6 +2704,12 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
   }
 
+  // The account changed: the queue on this phone is no longer this pass's,
+  // so nothing is written back; its items stay queued for their account.
+  if (!cloudOwnerUnchanged(owner)) {
+    return accountChangedDuringUpload(uploaded, uploadedByEntity, itemOutcomes, queue.length);
+  }
+
   // Reconcile against the queue as it stands right now, not the snapshot
   // read at the top of this function - anything enqueued while the uploads
   // above were in flight needs to survive this write.
@@ -2732,6 +2759,23 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     conflicts: (await getSyncConflicts()).length,
     errors,
     heldErrorCount,
+  };
+}
+
+function accountChangedDuringUpload(
+  uploaded: number,
+  uploadedByEntity: Record<SyncEntity, number>,
+  itemOutcomes: Record<string, SyncItemOutcome>,
+  queued: number,
+): SyncUploadResult {
+  return {
+    configured: true,
+    uploaded,
+    uploadedByEntity,
+    itemOutcomes,
+    queued,
+    conflicts: 0,
+    errors: ['The account changed during sync. Work not yet sent waits for the account that saved it.'],
   };
 }
 
@@ -2955,6 +2999,8 @@ export async function synchronizeLocalData(
   onProgress?: (event: SyncProgressEvent) => void,
 ): Promise<FullSyncResult> {
   const configuration = getSupabaseConfigurationStatus();
+  // This phone's records are sent only as the account signed in now (A1 M3).
+  const owner = currentCloudOwner();
   const errors: string[] = [];
   const missingPhotos: MissingSyncPhoto[] = [];
   const details = {
@@ -3223,6 +3269,7 @@ export async function synchronizeLocalData(
   );
 
   for (const projectName of syncableProjects) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const normalizedName = projectName.trim();
 
     if (!normalizedName) {
@@ -3279,6 +3326,7 @@ export async function synchronizeLocalData(
   errors.push(...stagedUpdateUpload.errors);
 
   for (const area of syncableProjectAreas) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const result = await upsertProjectArea(area);
 
     if (result.ok && !result.stubbed) {
@@ -3297,6 +3345,7 @@ export async function synchronizeLocalData(
   );
 
   for (const item of syncableScheduleItems) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const binding = resolveOperationalProjectIdentity(item, operationalProjectAuthority);
     if (!binding.ok) {
       errors.push(`Schedule task “${item.taskName}” could not sync. ${binding.error}`);
@@ -3320,6 +3369,7 @@ export async function synchronizeLocalData(
   }
 
   for (const document of syncableReferenceDocuments) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const binding = resolveOperationalReferenceDocumentScope(
       document,
       operationalProjectAuthority,
@@ -3368,6 +3418,26 @@ export async function synchronizeLocalData(
     }
 
     progress(`Document synced: ${document.name}`);
+  }
+
+  // Another account's cloud records must not be handed to this one's screen,
+  // which merges and saves them on this phone (whole-app audit A1 M3).
+  if (!cloudOwnerUnchanged(owner)) {
+    return {
+      configured: true,
+      connected: true,
+      downloadStatus: 'partial',
+      uploaded: 0,
+      downloaded: 0,
+      queued: 0,
+      conflicts: 0,
+      cloudProjectCount: null,
+      lastSyncAt: null,
+      errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
+      missingPhotos,
+      details,
+      recovered: emptyRecovery,
+    };
   }
 
   progress('Downloading cloud changes');
@@ -5295,8 +5365,32 @@ async function createCachedPhotoPreviewSignedUrl(
   }
 }
 
+/** A photo not sent because the account changed (whole-app audit A1 M3); it retries under its own. */
+function photoHeldForItsAccount(photo: UpdatePhoto): LocalPhotoUploadResult {
+  return {
+    result: 'failed',
+    message: 'The account changed during sync. This photo waits for the account that saved it.',
+    diagnostic: {
+      bucketName: PROJECT_PHOTOS_BUCKET,
+      bucketExists: 'unknown',
+      uploadAttempted: false,
+      uploadResult: 'skipped',
+      failureCategory: null,
+      httpStatus: null,
+      errorCode: null,
+      localFileExists: null,
+      localFileReadable: null,
+      fileByteSizeCategory: 'unknown',
+      uploadPayloadType: 'unknown',
+      contentType: photo.mimeType || 'image/jpeg',
+      objectPathCategory: null,
+    },
+  };
+}
+
 async function uploadUpdatePhotosForSync(
   update: ProjectUpdate,
+  owner: CloudOwnerBinding = currentCloudOwner(),
 ): Promise<Omit<
   FieldUpdateSyncWorkAttempt,
   'cloudUpdateInsertAttempted' | 'databaseUpsertResult'
@@ -5333,7 +5427,9 @@ async function uploadUpdatePhotosForSync(
   const results = await mapWithBoundedConcurrency(
     update.photos,
     PROJECT_PHOTO_NETWORK_CONCURRENCY,
-    photo => uploadLocalPhotoWithDiagnostics(update, photo),
+    photo => cloudOwnerUnchanged(owner)
+      ? uploadLocalPhotoWithDiagnostics(update, photo)
+      : Promise.resolve(photoHeldForItsAccount(photo)),
   );
   const failures = results.flatMap((result, index) =>
     result.result !== 'uploaded' && result.result !== 'skipped'

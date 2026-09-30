@@ -31,9 +31,11 @@ export class FieldNoteCloudError extends Error {
 export type FieldNoteCloudRealtimeStatus = 'subscribed' | 'retrying' | 'closed';
 
 export type FieldNoteCloudGateway = Readonly<{
-  list: () => Promise<readonly FieldNote[]>;
-  create: (note: FieldNote) => Promise<FieldNote>;
-  update: (note: FieldNote, expectedRevision: number) => Promise<FieldNote>;
+  // `ownerId`: the account whose notes these are. When the signed-in account
+  // is another, nothing is read or written (whole-app audit A1 M3).
+  list: (ownerId?: string) => Promise<readonly FieldNote[]>;
+  create: (note: FieldNote, ownerId?: string) => Promise<FieldNote>;
+  update: (note: FieldNote, expectedRevision: number, ownerId?: string) => Promise<FieldNote>;
   subscribe: (
     onChange: (note: FieldNote) => void,
     onStatus?: (status: FieldNoteCloudRealtimeStatus) => void,
@@ -44,7 +46,7 @@ export function createFieldNoteCloudGateway(
   client: SupabaseClient | null,
   getAuthorizedOwnerId: () => Promise<string>,
 ): FieldNoteCloudGateway {
-  async function authorizedContext() {
+  async function authorizedContext(expectedOwnerId?: string) {
     if (!client) {
       throw new FieldNoteCloudError(
         'authorization',
@@ -58,12 +60,18 @@ export function createFieldNoteCloudGateway(
         'Sign in is required before Field Notes can synchronize.',
       );
     }
+    if (expectedOwnerId !== undefined && ownerId !== expectedOwnerId) {
+      throw new FieldNoteCloudError(
+        'authorization',
+        'Saved on this device. It synchronizes when the account that wrote it is signed in.',
+      );
+    }
     return { client, ownerId } as const;
   }
 
   return Object.freeze({
-    async list(): Promise<readonly FieldNote[]> {
-      const context = await authorizedContext();
+    async list(expectedOwnerId?: string): Promise<readonly FieldNote[]> {
+      const context = await authorizedContext(expectedOwnerId);
       const result = await paginateSupabaseCollection<Record<string, unknown>>(
         async ({ from, to }) => {
           const response = await context.client
@@ -84,8 +92,8 @@ export function createFieldNoteCloudGateway(
       return Object.freeze(result.rows.map(normalizeFieldNoteCloudRow));
     },
 
-    async create(note: FieldNote): Promise<FieldNote> {
-      const context = await authorizedContext();
+    async create(note: FieldNote, expectedOwnerId?: string): Promise<FieldNote> {
+      const context = await authorizedContext(expectedOwnerId);
       const local = normalizeFieldNote(note);
       const { data, error } = await context.client
         .from(FIELD_NOTES_TABLE)
@@ -117,8 +125,8 @@ export function createFieldNoteCloudGateway(
       return existing;
     },
 
-    async update(note: FieldNote, expectedRevision: number): Promise<FieldNote> {
-      const context = await authorizedContext();
+    async update(note: FieldNote, expectedRevision: number, expectedOwnerId?: string): Promise<FieldNote> {
+      const context = await authorizedContext(expectedOwnerId);
       const local = normalizeFieldNote(note);
       if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
         throw new FieldNoteCloudError(

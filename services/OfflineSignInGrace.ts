@@ -1,3 +1,4 @@
+import { noteSignedInOwner } from './CloudOwnerBinding';
 import {
   awaitSavedSignInRefresh,
   readSavedSignIn,
@@ -58,7 +59,10 @@ export async function workspaceOwnerAfterFailedLookup(
     readSavedSignIn(),
     workspaceOwnerOnThisPhone(),
   ]);
-  return offlineSignInGraceAllows({ saved, workspaceOwnerId, nowMs: now() }) && workspaceOwnerId
-    ? { ownerId: workspaceOwnerId, signInPending: true }
-    : null;
+  if (!offlineSignInGraceAllows({ saved, workspaceOwnerId, nowMs: now() }) || !workspaceOwnerId) {
+    return null;
+  }
+  // Work queued meanwhile is this account's (whole-app audit A1 M3).
+  noteSignedInOwner(workspaceOwnerId);
+  return { ownerId: workspaceOwnerId, signInPending: true };
 }

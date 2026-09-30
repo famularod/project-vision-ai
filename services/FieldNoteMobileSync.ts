@@ -66,17 +66,18 @@ export function createMobileFieldNoteDataSource({
   async function synchronizeNote(ownerKey: string, note: FieldNote): Promise<FieldNote> {
     const local = normalizeFieldNote(note);
     try {
+      // Sent only as the account that wrote it (whole-app audit A1 M3).
       const cloud = local.revision > 0
-        ? await cloudGateway.update(local, local.revision)
-        : await cloudGateway.create(local);
+        ? await cloudGateway.update(local, local.revision, ownerKey)
+        : await cloudGateway.create(local, ownerKey);
       return localRepository.replaceIfUnchanged(ownerKey, local, cloud);
     } catch (error) {
       if (error instanceof FieldNoteCloudError && error.code === 'conflict') {
         try {
-          const merged = await persistMerged(ownerKey, await cloudGateway.list());
+          const merged = await persistMerged(ownerKey, await cloudGateway.list(ownerKey));
           const rebased = merged.find(item => item.id === local.id);
           if (rebased?.syncState === 'pending' && rebased.revision > local.revision) {
-            const cloud = await cloudGateway.update(rebased, rebased.revision);
+            const cloud = await cloudGateway.update(rebased, rebased.revision, ownerKey);
             return localRepository.replaceIfUnchanged(ownerKey, rebased, cloud);
           }
           if (rebased) return rebased;
@@ -109,7 +110,7 @@ export function createMobileFieldNoteDataSource({
     if (!current || current.syncState !== 'conflict') {
       throw new Error('This field note no longer has a conflict to resolve.');
     }
-    const cloud = (await cloudGateway.list()).find(item => item.id === current.id);
+    const cloud = (await cloudGateway.list(ownerKey)).find(item => item.id === current.id);
     if (!cloud) {
       throw new Error('The cloud version of this field note is no longer available.');
     }
@@ -119,7 +120,7 @@ export function createMobileFieldNoteDataSource({
     const rebased = rebaseLocalFieldNote(current, cloud);
     await localRepository.replace(ownerKey, rebased);
     try {
-      const updated = await cloudGateway.update(rebased, cloud.revision);
+      const updated = await cloudGateway.update(rebased, cloud.revision, ownerKey);
       return localRepository.replaceIfUnchanged(ownerKey, rebased, updated);
     } catch (error) {
       const waiting = markFieldNoteWaiting(rebased, cloudWaitingMessage(error));
@@ -133,7 +134,7 @@ export function createMobileFieldNoteDataSource({
     async list(ownerKey) {
       let notes = await localRepository.list(ownerKey);
       try {
-        notes = await persistMerged(ownerKey, await cloudGateway.list());
+        notes = await persistMerged(ownerKey, await cloudGateway.list(ownerKey));
       } catch {
         // Local-first: a failed refresh must not hide safely persisted notes.
       }

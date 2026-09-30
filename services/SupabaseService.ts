@@ -6,6 +6,8 @@ import {
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
 import { accountDisplayNameForMetadata } from './AccountProfile';
+import { noteSignedInOwner } from './CloudOwnerBinding';
+import { ownerWorkspaceAuthDecision } from './OwnerWorkspaceAuthDecision';
 import { AppState } from 'react-native';
 import {
   createClient,
@@ -730,6 +732,7 @@ async function signOutOnThisPhone(): Promise<SupabaseServiceResult<null>> {
   }
   lastAuthEvent = 'SIGNED_OUT';
   authHydrationCompleted = true;
+  noteSignedInOwner(null);
   [...localAuthListeners].forEach(listener => listener('SIGNED_OUT', null));
   return okResult(
     null,
@@ -3103,9 +3106,12 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
       if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
     });
 
-  client.auth.onAuthStateChange(event => {
+  client.auth.onAuthStateChange((event, session) => {
     authHydrationCompleted = true;
     lastAuthEvent = event;
+    // Uploads bind to the signed-in account (whole-app audit A1 M3).
+    const decision = ownerWorkspaceAuthDecision(event, session?.user?.id);
+    if (decision.action === 'activate') noteSignedInOwner(decision.ownerId);
   });
 
   if (authAutoRefreshSubscriptionStarted) return;

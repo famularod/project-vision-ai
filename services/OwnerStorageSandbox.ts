@@ -6,6 +6,8 @@ export const OWNER_STORAGE_SANDBOX_JOURNAL_KEY =
   '@vitruvius/owner-storage-sandbox/journal/v1';
 const OWNER_STORAGE_NAMESPACE_PREFIX =
   '@vitruvius/owner-storage-sandbox/owner/';
+export const OWNER_STORAGE_QUARANTINE_PREFIX =
+  '@vitruvius/owner-storage-sandbox/quarantine/';
 
 type EnumerableOwnerStorage = OwnerScopedStorage & Readonly<{
   getAllKeys: () => Promise<readonly string[]>;
@@ -18,7 +20,19 @@ type OwnerStorageSandboxMetadata = Readonly<{
   version: 1;
   activeOwnerId: string | null;
   legacyAssignedOwnerId: string | null;
+  /** The most recent signed-in account (absent before audit A1 H2). */
+  lastOwnerId: string | null;
   updatedAt: string;
+}>;
+
+/**
+ * Account data found while signed out, set aside for the account that most
+ * likely wrote it (whole-app audit A1 H2). Never opened for any account.
+ */
+type OwnerStorageQuarantine = Readonly<{
+  id: string;
+  suspectedOwnerId: string | null;
+  snapshot: Readonly<Record<string, string>>;
 }>;
 
 type OwnerStorageSandboxJournal = Readonly<{
@@ -27,8 +41,10 @@ type OwnerStorageSandboxJournal = Readonly<{
   sourceOwnerId: string | null;
   targetOwnerId: string | null;
   legacyAssignedOwnerId: string | null;
+  lastOwnerId: string | null;
   sourceSnapshot: Readonly<Record<string, string>>;
   targetSnapshot: Readonly<Record<string, string>>;
+  quarantine: OwnerStorageQuarantine | null;
   createdAt: string;
 }>;
 
@@ -92,35 +108,55 @@ export function createOwnerStorageSandbox({
     const canonicalSnapshot = await readCanonicalSnapshot(storage);
     let legacyAssignedOwnerId = metadata.legacyAssignedOwnerId;
     let sourceOwnerId = metadata.activeOwnerId;
+    let quarantine: OwnerStorageQuarantine | null = null;
+    const signedOutData = sourceOwnerId === null &&
+      Object.keys(canonicalSnapshot).length > 0;
 
-    // The first authenticated launch owns the pre-boundary local data. Signed-
-    // out data is never silently assigned after an account has been established.
-    if (
-      sourceOwnerId === null &&
-      targetOwnerId !== null &&
-      legacyAssignedOwnerId === null &&
-      Object.keys(canonicalSnapshot).length > 0
-    ) {
+    // The first authenticated launch owns the pre-boundary local data (an
+    // upgrade from before this sandbox). Signed-out data is never silently
+    // assigned after an account has been established on this phone. A fresh
+    // install establishes one at its first sign-in too, with nothing to claim;
+    // it used to be told apart only by that claim, so a sync finishing after
+    // a sign-out left data the next sign-in took as its own: another account
+    // was handed it, or the same account's saved work was replaced by it
+    // (whole-app audit A1 H2). That data is now set aside whole, never
+    // deleted and never opened for another account; the account that most
+    // likely wrote it gets back only keys its saved data lacks (such as
+    // report baselines kept outside the sandbox before this change).
+    if (signedOutData && targetOwnerId !== null &&
+        !await accountEstablished(storage, metadata)) {
       sourceOwnerId = targetOwnerId;
       legacyAssignedOwnerId = targetOwnerId;
+    } else if (signedOutData) {
+      quarantine = Object.freeze({
+        id: createId(),
+        suspectedOwnerId: metadata.lastOwnerId ?? await soleSavedOwner(storage),
+        snapshot: canonicalSnapshot,
+      });
     }
 
     const sourceSnapshot = sourceOwnerId
       ? canonicalSnapshot
       : Object.freeze({});
-    const targetSnapshot = targetOwnerId === sourceOwnerId
+    const savedTargetSnapshot = targetOwnerId === sourceOwnerId
       ? sourceSnapshot
       : targetOwnerId
         ? await readOwnerSnapshot(storage, targetOwnerId)
         : Object.freeze({});
+    const targetSnapshot = quarantine && targetOwnerId &&
+      quarantine.suspectedOwnerId === targetOwnerId
+      ? sortedSnapshot({ ...quarantine.snapshot, ...savedTargetSnapshot })
+      : savedTargetSnapshot;
     const journal: OwnerStorageSandboxJournal = Object.freeze({
       version: 1,
       id: createId(),
       sourceOwnerId,
       targetOwnerId,
       legacyAssignedOwnerId,
+      lastOwnerId: targetOwnerId ?? sourceOwnerId ?? metadata.lastOwnerId,
       sourceSnapshot,
       targetSnapshot,
+      quarantine,
       createdAt: now(),
     });
     await storage.setItem(
@@ -169,8 +205,43 @@ export function isOwnerSensitiveCanonicalStorageKey(key: string): boolean {
     key.startsWith('projectPhotoUpdate.') ||
     key.startsWith('projectPhotoUpdates.') ||
     key.startsWith('projectVisionAI.') ||
-    key.startsWith('@dave/')
+    key.startsWith('@dave/') ||
+    // Approved-report baselines (whole-app audit A1 M4) and Talk history
+    // (A9 #5) are keyed by project name only, so another account on this
+    // phone read them for its own project of that name.
+    key.startsWith('@vitruvius/report-snapshots/') ||
+    key.startsWith('dave-ask-history:') ||
+    key.startsWith('dave-ask-history-journal:')
   );
+}
+
+function sortedSnapshot(
+  snapshot: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return Object.freeze(Object.fromEntries(
+    Object.keys(snapshot).sort().map(key => [key, snapshot[key]]),
+  ));
+}
+
+/** The one account with saved data on this phone, if there is exactly one. */
+async function soleSavedOwner(storage: EnumerableOwnerStorage): Promise<string | null> {
+  const owners = (await storage.getAllKeys())
+    .filter(key => key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX) && key.endsWith('/index'))
+    .map(key => decodeURIComponent(key.slice(OWNER_STORAGE_NAMESPACE_PREFIX.length, -'/index'.length)));
+  return owners.length === 1 ? owners[0] : null;
+}
+
+/** Whether an account has used this phone since the sandbox existed. */
+async function accountEstablished(
+  storage: EnumerableOwnerStorage,
+  metadata: OwnerStorageSandboxMetadata,
+): Promise<boolean> {
+  if (metadata.legacyAssignedOwnerId !== null || metadata.lastOwnerId !== null) {
+    return true;
+  }
+  // Metadata written before lastOwnerId: an account's saved data shows it.
+  return (await storage.getAllKeys())
+    .some(key => key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX));
 }
 
 async function commitPreparedTransition(
@@ -178,6 +249,12 @@ async function commitPreparedTransition(
   journal: OwnerStorageSandboxJournal,
   now: () => string,
 ) {
+  if (journal.quarantine) {
+    await storage.setItem(
+      `${OWNER_STORAGE_QUARANTINE_PREFIX}${encodeURIComponent(journal.quarantine.id)}`,
+      JSON.stringify({ version: 1, ...journal.quarantine, createdAt: journal.createdAt }),
+    );
+  }
   if (journal.sourceOwnerId) {
     await writeOwnerSnapshot(storage, journal.sourceOwnerId, journal.sourceSnapshot);
   }
@@ -195,6 +272,7 @@ async function commitPreparedTransition(
     version: 1,
     activeOwnerId: journal.targetOwnerId,
     legacyAssignedOwnerId: journal.legacyAssignedOwnerId,
+    lastOwnerId: journal.lastOwnerId,
     updatedAt: now(),
   });
   await storage.setItem(
@@ -318,6 +396,7 @@ function parseMetadata(
       version: 1,
       activeOwnerId: null,
       legacyAssignedOwnerId: null,
+      lastOwnerId: null,
       updatedAt: fallbackTimestamp,
     });
   }
@@ -328,6 +407,7 @@ function parseMetadata(
       version: 1,
       activeOwnerId: normalizeOwner(value.activeOwnerId ?? null),
       legacyAssignedOwnerId: normalizeOwner(value.legacyAssignedOwnerId ?? null),
+      lastOwnerId: normalizeOwner(value.lastOwnerId ?? null),
       updatedAt: typeof value.updatedAt === 'string'
         ? value.updatedAt
         : fallbackTimestamp,
@@ -348,7 +428,11 @@ function parseJournal(raw: string | null): OwnerStorageSandboxJournal | null {
       typeof value.id !== 'string' ||
       !isSnapshot(value.sourceSnapshot) ||
       !isSnapshot(value.targetSnapshot) ||
-      typeof value.createdAt !== 'string'
+      typeof value.createdAt !== 'string' ||
+      (value.quarantine != null && (
+        typeof value.quarantine.id !== 'string' ||
+        !isSnapshot(value.quarantine.snapshot)
+      ))
     ) {
       throw new Error('shape');
     }
@@ -358,8 +442,16 @@ function parseJournal(raw: string | null): OwnerStorageSandboxJournal | null {
       sourceOwnerId: normalizeOwner(value.sourceOwnerId ?? null),
       targetOwnerId: normalizeOwner(value.targetOwnerId ?? null),
       legacyAssignedOwnerId: normalizeOwner(value.legacyAssignedOwnerId ?? null),
+      lastOwnerId: normalizeOwner(value.lastOwnerId ?? null),
       sourceSnapshot: Object.freeze({ ...value.sourceSnapshot }),
       targetSnapshot: Object.freeze({ ...value.targetSnapshot }),
+      quarantine: value.quarantine
+        ? Object.freeze({
+            id: value.quarantine.id,
+            suspectedOwnerId: normalizeOwner(value.quarantine.suspectedOwnerId ?? null),
+            snapshot: Object.freeze({ ...value.quarantine.snapshot }),
+          })
+        : null,
       createdAt: value.createdAt,
     });
   } catch {
