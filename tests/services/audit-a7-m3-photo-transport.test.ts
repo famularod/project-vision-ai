@@ -1,7 +1,8 @@
 /**
  * Audit A7 M3 (30 Sep 2026): photos taken on one device showed blank on the
  * other, and after a restore a restored photo copy lost its reference at the
- * next launch. Runs the App's own photo resolvers, normalizers, merge and the
+ * next launch. Also A7 M5: a refresh put a row listed before this device's own
+ * upload over the newer local copy. Runs the App's own photo resolvers, normalizers, merge and the
  * project_updates refresh closure, compiled from App.tsx, with the real
  * SyncService preview hydration, realtime applier, cloud-recovery merge and
  * queue matcher. Network is mocked; no Supabase call is made. (Harness from
@@ -51,6 +52,7 @@ import { createPhotoSignedUrl, listProjectUpdates } from '../../services/Supabas
 import {
   cloudPhotoPreviewIsFresh,
   hydrateProjectUpdatePhotoPreviews,
+  projectUpdateUploadedSince,
 } from '../../services/SyncService';
 import { loadCloudUpdates } from '../../services/updateService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
@@ -164,7 +166,12 @@ const cloudRow = (notes = 'Rebar placed', photos = [photo('p1', `${OLD}aaa-IMG_p
 });
 const exists = async (uri: string) => mockExisting.has(uri);
 
-function refreshDeps(state: { saved: unknown[]; queue: unknown[] }, onList?: () => void, rows = [cloudRow()]) {
+function refreshDeps(
+  state: { saved: unknown[]; queue: unknown[] },
+  onList?: () => void,
+  rows = [cloudRow()],
+  uploadedSince: (id: string, since: number) => boolean = projectUpdateUploadedSince,
+) {
   const savedUpdatesRef = { current: state.saved };
   listUpdates.mockImplementation(async () => { onList?.(); return { ok: true, stubbed: false, data: rows }; });
   return {
@@ -177,6 +184,7 @@ function refreshDeps(state: { saved: unknown[]; queue: unknown[] }, onList?: () 
       hydrateProjectUpdatePhotoPreviews, getOfflineQueue: async () => state.queue,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
+      projectUpdateUploadedSince: uploadedSince,
       mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: () => undefined,
     }),
@@ -354,5 +362,45 @@ describe('photos on a device that does not hold their file (audit A7 M3)', () =>
     await apply('project_update', { eventType: 'UPDATE', newRow: { id: 'u1', update_data: cloudRow().updateData }, oldRow: null, raw: null });
     const [committed] = commitUpdates.mock.calls[0][0] as Array<Record<string, any>>;
     expect(A.resolveProjectPhotoDisplayUri(committed.photos[0])).toMatch(SIGNED);
+  });
+});
+
+describe('a refresh racing this device\'s own upload (audit A7 M5)', () => {
+  const uploadedAt = new Map<string, number>();
+  const uploadedSince = (id: string, since: number) => (uploadedAt.get(id) ?? -1) >= since;
+  const v1 = () => cloudRow('Rebar placed', []).updateData;
+  const vN = (notes: string, status: string) => ({ ...A.normalizeStoredUpdateRecord({ ...v1(), notes }), status });
+  const queued = (updateData: unknown) => ({ id: 'project-update-u1', entity: 'project_update', operation: 'update',
+    payload: { id: 'u1', updateData }, createdAt: 't', changedAt: '2026-09-30T12:00:00.000Z', retryCount: 0 });
+  const rowsV1 = [cloudRow('Rebar placed', [])];
+  const notes = (ref: { current: unknown[] }) => (ref.current as Array<Record<string, any>>)[0].notes;
+  beforeEach(() => uploadedAt.clear());
+
+  it('keeps a queued edit that uploads while the rows are listed', async () => {
+    const local = vN('v2', 'queued');
+    const state = { saved: [local] as unknown[], queue: [queued(local)] as unknown[] };
+    const { run, savedUpdatesRef } = refreshDeps(state, () => {
+      uploadedAt.set('u1', Date.now()); state.queue = []; savedUpdatesRef.current = [{ ...local, status: 'sent' }];
+    }, rowsV1, uploadedSince);
+    await run();
+    expect(notes(savedUpdatesRef)).toBe('v2');
+  });
+
+  it('keeps an edit made and uploaded entirely while the rows are listed', async () => {
+    const state = { saved: [vN('v2', 'sent')] as unknown[], queue: [] as unknown[] };
+    const { run, savedUpdatesRef } = refreshDeps(state, () => {
+      uploadedAt.set('u1', Date.now()); savedUpdatesRef.current = [vN('v3', 'sent')];
+    }, rowsV1, uploadedSince);
+    await run();
+    expect(notes(savedUpdatesRef)).toBe('v3');
+  });
+
+  it('still takes another device\'s newer row over an idle local copy', async () => {
+    uploadedAt.set('u1', Date.now() - 60_000);
+    const { run, savedUpdatesRef } = refreshDeps(
+      { saved: [vN('old', 'sent')], queue: [] }, undefined, [cloudRow('iPad edit', [])], uploadedSince,
+    );
+    await run();
+    expect(notes(savedUpdatesRef)).toBe('iPad edit');
   });
 });

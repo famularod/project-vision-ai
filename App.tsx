@@ -20,6 +20,7 @@ import {
   cloudPhotoPreviewIsFresh,
   getOfflineQueue,
   hydrateProjectUpdatePhotoPreviews,
+  projectUpdateUploadedSince,
   hydrateRecoveredProjectUpdatePhotos,
   markMissingPhotosUnavailable,
   requestPendingChangesUpload,
@@ -6225,6 +6226,9 @@ useEffect(() => {
       }});
 
       if (updatesLoaded && shouldRefresh('project_updates')) collectionRefreshes.push({ name: 'project_updates', run: async () => {
+        // A row listed before this device's own upload landed is older than
+        // the phone's copy (audit A7 M5).
+        const listStartedAt = Date.now();
         const updatesResult = await listProjectUpdates<ProjectUpdate>();
         if (!updatesResult.ok || updatesResult.stubbed || !Array.isArray(updatesResult.data)) {
           throw new Error('field_update_refresh_incomplete');
@@ -6279,7 +6283,8 @@ useEffect(() => {
         const localUpdatesForMerge = currentUpdates.map(localUpdate => {
           const cloudUpdate = cloudUpdateById.get(localUpdate.id);
           return cloudUpdate &&
-            !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue)
+            !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
+            !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
             ? cloudUpdate
             : localUpdate;
         });

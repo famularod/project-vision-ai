@@ -4261,6 +4261,7 @@ async function uploadProjectUpdateQueueItem(
   ) {
     if (projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)) {
       await clearConflictsForLocalRecord('project_update', payload.id);
+      recordProjectUpdateUpload(payload.id);
       return 'uploaded';
     }
 
@@ -4293,12 +4294,31 @@ async function uploadProjectUpdateQueueItem(
     // A retry after a conflict put the phone's copy in the cloud: that
     // conflict is settled, as when the cloud already matched (audit A4 pass 5).
     await clearConflictsForLocalRecord('project_update', payload.id);
+    recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
 
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/**
+ * Audit A7 M5: when this device last put each field update in the cloud. A
+ * refresh lists the cloud's rows first and merges them afterwards; an upload
+ * that lands in between leaves the listed row older than the phone's copy,
+ * which then replaced it (shown as sent, with the older content). The
+ * refresh keeps the phone's copy of an update uploaded since it started
+ * listing. Held in memory: a relaunch starts a fresh refresh.
+ */
+const projectUpdateUploadedAt = new Map<string, number>();
+
+function recordProjectUpdateUpload(updateId: string) {
+  projectUpdateUploadedAt.set(updateId, Date.now());
+}
+
+export function projectUpdateUploadedSince(updateId: string, since: number): boolean {
+  return (projectUpdateUploadedAt.get(updateId) ?? Number.NEGATIVE_INFINITY) >= since;
 }
 
 async function projectUpdateAlreadyHasCloudReceipt(
@@ -4319,6 +4339,7 @@ async function projectUpdateAlreadyHasCloudReceipt(
   }
 
   await clearConflictsForLocalRecord('project_update', payload.id);
+  recordProjectUpdateUpload(payload.id);
   return true;
 }
 

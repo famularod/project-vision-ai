@@ -201,6 +201,7 @@ import {
   enqueuePendingChange,
   getOfflineQueue,
   getSyncConflicts,
+  projectUpdateUploadedSince,
   queueScheduleItemRecord,
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
@@ -2064,6 +2065,21 @@ describe('work queued for a project that was then closed (audit A7 M2)', () => {
     }));
     expect(mockListArchivedProjects).toHaveBeenCalledTimes(1);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('remembers when this device put an update in the cloud, for the refresh (audit A7 M5)', async () => {
+    closed();
+    const before = Date.now();
+    await queueUpdate('remembered-update');
+    expect(projectUpdateUploadedSince('remembered-update', before)).toBe(false);
+    await uploadPendingChanges();
+    expect(projectUpdateUploadedSince('remembered-update', before)).toBe(true);
+    expect(projectUpdateUploadedSince('remembered-update', Date.now() + 1)).toBe(false);
+
+    mockSaveProjectUpdate.mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'offline' } as never);
+    await queueUpdate('failed-update');
+    await uploadPendingChanges();
+    expect(projectUpdateUploadedSince('failed-update', before)).toBe(false);
   });
 
   it('keeps a task for a closed project waiting until it is reopened', async () => {
