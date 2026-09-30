@@ -90,8 +90,11 @@ describe('one current schedule per project', () => {
   });
 
   it('is what the App and the web view use', () => {
-    expect(app).toMatch(/const competes = \(document: ReferenceDocument\) => \{\n\s+const scope = \(document\.projectNames \|\| \[\]\)/);
-    expect(app).toContain("document.category === 'Schedules' && (document.id === documentId || competes(document))");
+    // Set Active no longer flips flags on the phone: the cloud's activation
+    // call chooses (audit A5 F4), and the refreshed list is reconciled per
+    // project. The phone's own competing rule was removed with the flip.
+    expect(app).toContain('function setActiveScheduleDocument(documentId: string) {\n    markReferenceDocumentCurrent(documentId);');
+    expect(app).toContain('const mergedDocuments = reconcileCurrentScheduleDocuments(');
     expect(read('services/DAVEWebOperations.ts')).toContain('currentSchedules.length > currentScheduleDocumentWinners(currentSchedules).length');
     expect(read('scripts/schedule-import-batch-test.js')).toContain("scheduleScreenSource.includes('sections={mobileTaskSections}')");
   });

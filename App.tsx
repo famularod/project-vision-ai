@@ -302,7 +302,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateECOSCurrentReferenceDocument } from './services/ECOSHostedIndexer';
+import { activateSharedReferenceDocument } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -10940,80 +10940,91 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (changed) void queueReferenceDocumentRecord(changed);
   }
 
-  function markReferenceDocumentCurrent(documentId: string) {
-    void (async () => {
-      const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-      if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
-        return;
-      }
-      const readiness = buildECOSDocumentReadiness(target);
-      if (!readiness.canMakeCurrent) {
-        Alert.alert('Document is not ready for ECOS', readiness.detail);
-        return;
-      }
-      const client = getSupabaseClient();
-      if (!client || !target.cloudUpdatedAt) {
+  async function activateReferenceDocument(documentId: string): Promise<boolean> {
+    const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
+      return Boolean(target?.isCurrent);
+    }
+    // A schedule has no ECOS preparation to wait for (audit A5 F4).
+    const readiness = buildECOSDocumentReadiness(target);
+    if (canonicalReferenceCategory(target) !== 'schedule' && !readiness.canMakeCurrent) {
+      Alert.alert('Document is not ready for ECOS', readiness.detail);
+      return false;
+    }
+    currentReferenceActivationIdsRef.current.add(documentId);
+    try {
+      const outcome = await activateSharedReferenceDocument({
+        documentId,
+        documents: referenceDocumentsCurrentRef.current,
+        client: getSupabaseClient(),
+        listDocuments: async () => {
+          const result = await listReferenceDocuments();
+          return result.ok && !result.stubbed && Array.isArray(result.data)
+            ? normalizeReferenceDocuments(result.data)
+            : null;
+        },
+        confirmRetiringProjects: projects => new Promise(resolve => Alert.alert(
+          'Change the current schedule?',
+          `The schedule now current for ${projects.join(', ')} will be retired too. Until you set a new one there, ${projects.length === 1 ? 'that project shows' : 'those projects show'} no schedule tasks.`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Set Active', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        )),
+      });
+      if (outcome.status === 'cancelled') return false;
+      if (outcome.status === 'refresh_required') {
         Alert.alert(
           'Refresh required',
           'Sign in and refresh the project documents before changing the current revision.',
         );
-        return;
+        return false;
       }
-
-      currentReferenceActivationIdsRef.current.add(documentId);
-      try {
-        const activation = await activateECOSCurrentReferenceDocument({
-          client,
-          documentId,
-          expectedUpdatedAt: target.cloudUpdatedAt,
-        });
-        if (activation.status !== 'activated') {
-          Alert.alert(
-            activation.status === 'not_prepared'
-              ? 'Document is not ready for ECOS'
-              : 'Current revision was not changed',
-            activation.message || 'Refresh the project documents and try again.',
-          );
-          return;
-        }
-
-        const documentsResult = await listReferenceDocuments();
-        if (
-          !documentsResult.ok ||
-          documentsResult.stubbed ||
-          !Array.isArray(documentsResult.data)
-        ) {
-          Alert.alert(
-            'Current revision changed',
-            'The shared record was updated, but this device could not refresh it yet. Refresh Project Documents before making another change.',
-          );
-          return;
-        }
-
-        const cloudDocuments = normalizeReferenceDocuments(documentsResult.data);
-        const deletedIds = deletedDAVERecordIds(
-          operationalSyncTombstonesRef.current,
-          'reference_document',
-        );
-        const mergedDocuments = reconcileCurrentScheduleDocuments(
-          mergeDAVEReferenceDocumentRecoveryRecords({
-            local: referenceDocumentsCurrentRef.current,
-            cloud: cloudDocuments,
-            deletedIds,
-          }),
-        );
-        markReferenceDocumentsAuthorityReady(true);
-        referenceDocumentsCurrentRef.current = mergedDocuments;
-        setReferenceDocuments(mergedDocuments);
-      } catch {
+      if (outcome.status !== 'activated') {
         Alert.alert(
-          'Current revision was not changed',
-          'Vitruvius could not verify the shared revision change. Try again shortly.',
+          outcome.status === 'not_prepared'
+            ? 'Document is not ready for ECOS'
+            : 'Current revision was not changed',
+          outcome.message,
         );
-      } finally {
-        currentReferenceActivationIdsRef.current.delete(documentId);
+        return false;
       }
-    })();
+      if (!outcome.documents) {
+        Alert.alert(
+          'Current revision changed',
+          'The shared record was updated, but this device could not refresh it yet. Refresh Project Documents before making another change.',
+        );
+        return true;
+      }
+      const deletedIds = deletedDAVERecordIds(
+        operationalSyncTombstonesRef.current,
+        'reference_document',
+      );
+      const mergedDocuments = reconcileCurrentScheduleDocuments(
+        mergeDAVEReferenceDocumentRecoveryRecords({
+          local: referenceDocumentsCurrentRef.current,
+          cloud: [...outcome.documents],
+          deletedIds,
+        }),
+      );
+      markReferenceDocumentsAuthorityReady(true);
+      referenceDocumentsCurrentRef.current = mergedDocuments;
+      setReferenceDocuments(mergedDocuments);
+      return true;
+    } catch {
+      Alert.alert(
+        'Current revision was not changed',
+        'Vitruvius could not verify the shared revision change. Try again shortly.',
+      );
+      return false;
+    } finally {
+      currentReferenceActivationIdsRef.current.delete(documentId);
+    }
+  }
+
+  function markReferenceDocumentCurrent(documentId: string) {
+    void activateReferenceDocument(documentId);
   }
 
   async function ensureVerifiedReferenceDocumentBytes(
@@ -11241,6 +11252,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     let referenceDocument = document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
       : null;
+    const alreadyShared = Boolean(referenceDocument);
 
     try {
       if (!referenceDocument) {
@@ -11310,7 +11322,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     const selectedReferenceDocument = referenceDocument;
-    const nextReferenceDocuments = [
+    // A schedule already shared is made current by the cloud; a flag flipped
+    // here never reached it (audit A5 F4).
+    if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;
+    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current : [
       ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
         ? []
         : [selectedReferenceDocument]),
@@ -11325,8 +11340,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         : item.updatedAt,
     }));
 
-    markReferenceDocumentsAuthorityReady(true);
-    setReferenceDocuments(nextReferenceDocuments);
+    if (!alreadyShared) {
+      markReferenceDocumentsAuthorityReady(true);
+      setReferenceDocuments(nextReferenceDocuments);
+    }
 
     const updatedAt = referenceUpdatedAt;
     const markCurrent = (documents: ProjectDocument[]) =>
@@ -11349,6 +11366,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       })),
     );
 
+    if (alreadyShared) return;
     referenceDocumentsCurrentRef.current = nextReferenceDocuments;
     const queueResults = await Promise.allSettled(
       nextReferenceDocuments
@@ -11479,27 +11497,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
+  // The cloud makes the choice; a flag flipped on the phone was undone by the
+  // next refresh and never reached the other device (audit A5 F4).
   function setActiveScheduleDocument(documentId: string) {
-    const updatedAt = new Date().toISOString();
-    const chosen = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-    const chosenScope = new Set((chosen?.projectNames || []).map(name => name.trim().toLowerCase()).filter(Boolean));
-    // Only schedules for the same project step aside; another project's
-    // current schedule stays current (audit A5).
-    const competes = (document: ReferenceDocument) => {
-      const scope = (document.projectNames || []).map(name => name.trim().toLowerCase()).filter(Boolean);
-      return chosenScope.size === 0 ? scope.length === 0 : scope.some(name => chosenScope.has(name));
-    };
-    const updated = referenceDocumentsCurrentRef.current.map(document =>
-      document.category === 'Schedules' && (document.id === documentId || competes(document))
-        ? { ...document, isCurrent: document.id === documentId, updatedAt }
-        : document,
-    );
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = updated;
-    setReferenceDocuments(updated);
-    void Promise.all(updated
-      .filter(document => document.category === 'Schedules')
-      .map(document => queueReferenceDocumentRecord(document)));
+    markReferenceDocumentCurrent(documentId);
   }
 
   function deleteScheduleDocument(documentId: string) {
