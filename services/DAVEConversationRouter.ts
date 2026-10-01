@@ -141,7 +141,13 @@ export function mentionedDAVEProject(
   const target = talkMoveTarget(named, intent, projectNames);
   if (!target || target === currentProjectName || intent === 'navigate') return target;
   const alongside = new Set(named.map(project => project.key).filter(key => key !== talkProjectKey(target)));
-  const notAlongside = (name: string) => !alongside.has(talkProjectKey(name));
+  // Audit A9 pass 18 L1: a note also leaves out, by name, every other project
+  // it names. Projects of one job share Talk's key, so the key left none out
+  // ("Crew from 400 N Main St moves to 2375 Main St Annex" stayed on 2321).
+  // A question or task update keeps them, so Talk never moves to refuse.
+  const note = intent !== 'ask' && intent !== 'task_update';
+  const namedHere = new Set(note ? named.flatMap(project => project.names).filter(name => name !== target).map(normalize) : []);
+  const notAlongside = (name: string) => !alongside.has(talkProjectKey(name)) && !namedHere.has(normalize(name));
   const askWouldRefuse = ecosProjectReferenceMismatchMessage(
     target,
     transcript.replace(/\s+/g, ' ').trim(),
@@ -186,6 +192,8 @@ type TalkNamedProject = {
   /** Open projects with this key, and those of them named in full. */
   open: string[];
   exactOpen: string[];
+  /** Every project, open or closed, the transcript names by it (audit A9 pass 18 L1). */
+  names: string[];
   /** Where the transcript first names it. */
   at: number;
   /** Named only by a part of a comma group ("1,200" for 200; audit A9 pass 8 L2). */
@@ -254,7 +262,8 @@ function talkNamedProjects(
   const add = (name: string, at: number, inFull: boolean, unsure: boolean, number = '') => {
     const key = talkProjectKey(name);
     const label = key.startsWith('name:') ? name : number ? ecosProjectNamedAs(name, number) : key;
-    const project = named.get(key) ?? { key, label, open: [], exactOpen: [], at, unsure };
+    const project = named.get(key) ?? { key, label, open: [], exactOpen: [], names: [], at, unsure };
+    if (!project.names.includes(name)) project.names.push(name);
     project.at = Math.min(project.at, at);
     project.unsure = project.unsure && unsure;
     const isOpen = openKeys.has(normalize(name));

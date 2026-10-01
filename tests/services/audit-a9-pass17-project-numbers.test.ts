@@ -231,3 +231,30 @@ describe('audit A9 pass 17 L1: Talk never moves to a project on which Ask ECOS w
     expect(refusedWhereMoved).toEqual([]);
   });
 });
+
+// Audit A9 pass 18 L1 (1 Oct 2026): fe9cbc6 left a note's other projects out
+// of the Ask ECOS check by Talk's key, the job number, so projects of one job
+// left none out: a note naming two of them stayed on a project it never names.
+describe('audit A9 pass 18 L1: a note naming two projects of one job still moves for confirmation', () => {
+  const ANNEX = '24117 - 2375 Main St Annex';
+  const CLOSED_MAIN = '24117 - 400 N Main St';
+  const note = 'Crew from 400 N Main St moves to 2375 Main St Annex tomorrow';
+
+  it('pre-filled, unconfirmed, to the open project it names (stayed on 2321)', async () => {
+    const result = await talk(note, SELECTED, [SELECTED, ANNEX], [CLOSED_MAIN]);
+    expect(result.projects).toEqual([ANNEX]);
+    expect(result.draft).toMatchObject({ value: ANNEX, confirmed: false });
+  });
+
+  it('control: the same with the closed job under another number moves, as before', async () => {
+    const result = await talk(note, SELECTED, [SELECTED, ANNEX], ['23088 - 400 N Main St']);
+    expect(result.projects).toEqual([ANNEX]);
+    expect(result.draft).toMatchObject({ value: ANNEX, confirmed: false });
+  });
+
+  it('a question naming both still stays and is refused (the key rule is kept for questions)', async () => {
+    const result = await talk('Did the crew from 400 N Main St move to 2375 Main St Annex?', SELECTED, [SELECTED, ANNEX], [CLOSED_MAIN]);
+    expect(result.projects).toEqual([SELECTED]);
+    expect(result.answered).toBe(false);
+  });
+});
