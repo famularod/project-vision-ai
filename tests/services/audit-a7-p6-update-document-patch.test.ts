@@ -3132,3 +3132,49 @@ describe('nothing automatic sends an update in conflict (audit A4 pass 15 H1, A7
     await stillLeftForReview(RETRY_SYNC_OFFLINE_EDIT);
   });
 });
+
+/**
+ * A7 pass 13 L-1 (caused by ec8199d, A4 pass 14 #3): the stamp that lets an
+ * edit go up with this phone's own patches (the time the last of them left on
+ * the cloud's copy) was given to every whole copy, Keep Phone's and a
+ * confirmed Retry's too, which are stamped "now". The copy David chose went
+ * up stamped with the earlier patch time: an iPad edit saved offline after
+ * that time, before his choice, read newer than it, and went over it without
+ * a conflict. Now the copy keeps the later of the two times.
+ */
+describe('a copy David chose is not stamped back to an earlier patch\'s time (audit A7 pass 13 L-1)', () => {
+  /** In conflict while its photo was analysed; the result then lands on the iPad's copy; the iPad saves offline after that. */
+  async function patchLandedThenIPadSavesOffline() {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    await uploadPendingChanges(); // the result goes onto the iPad's copy
+    const patchLandedAt = mockCloud.get('u1')!.updatedAt;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const iPadSavedOfflineAt = new Date().toISOString(); // its upload will compare the cloud's time with this
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return { phone, patchLandedAt, iPadSavedOfflineAt };
+  }
+
+  it('Keep Phone: the kept copy reads newer than the iPad\'s offline save, so the iPad\'s upload finds the conflict', async () => {
+    const { phone, patchLandedAt, iPadSavedOfflineAt } = await patchLandedThenIPadSavesOffline();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(mockCloud.get('u1')!.updatedAt).not.toBe(patchLandedAt);
+    expect(Date.parse(mockCloud.get('u1')!.updatedAt)).toBeGreaterThan(Date.parse(iPadSavedOfflineAt));
+  });
+
+  it('a Retry David confirmed: the same', async () => {
+    const { phone, iPadSavedOfflineAt } = await patchLandedThenIPadSavesOffline();
+    await appRetryQueuedUpdate(phone)(phone.saved()!, { overConflict: true });
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(Date.parse(mockCloud.get('u1')!.updatedAt)).toBeGreaterThan(Date.parse(iPadSavedOfflineAt));
+  });
+});

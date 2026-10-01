@@ -5300,7 +5300,12 @@ async function uploadProjectUpdateQueueItem(
     updateData: ownPatchesSinceEdit
       ? applyFieldUpdateDocumentPatches(payload.updateData as object, ownPatchesSinceEdit.patches) as unknown
       : payload.updateData,
-    updatedAt: ownPatchesSinceEdit ? ownPatchesSinceEdit.at : item.changedAt,
+    // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
+    // copy and a confirmed Retry's are stamped now, after the patches, and
+    // went up stamped back to the last patch's time; an iPad edit saved
+    // offline in between then read newer, and went over the chosen copy.
+    updatedAt: ownPatchesSinceEdit && isRemoteNewer(ownPatchesSinceEdit.at, item.changedAt)
+      ? ownPatchesSinceEdit.at : item.changedAt,
   };
   const result = await saveProjectUpdate({ id: payload.id, ...record });
 
