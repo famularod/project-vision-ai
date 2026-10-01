@@ -6960,30 +6960,21 @@ useEffect(() => {
     document: ProjectDocument,
     sameAccount: () => boolean,
   ) {
-    const ownedRecord = document.ownedFileId
-      ? parseOwnedLocalFileManifest(document.ownedFileManifest)
-          .files[document.ownedFileId]
-      : null;
-    const projectName =
-      projectsCurrentRef.current.find(
-        name => authorityProjectId(name) === document.projectId,
-      ) || null;
-    const sharedDocument = normalizeReferenceDocument(
-      buildSharedReferenceDocument({
-        document,
-        projectName,
-        contentSha256: ownedRecord?.sha256 || null,
-        updatedAt: document.updatedAt,
-      }),
-    );
-    const linkedDocument = updateDocumentEverywhere(document.id, current => ({
-      ...current,
-      referenceDocumentId: sharedDocument.id,
+    const sharedCopyOf = (source: ProjectDocument) => normalizeReferenceDocument(buildSharedReferenceDocument({
+      document: source,
+      projectName: projectsCurrentRef.current.find(name => authorityProjectId(name) === source.projectId) || null,
+      contentSha256: (source.ownedFileId && parseOwnedLocalFileManifest(source.ownedFileManifest).files[source.ownedFileId]?.sha256) || null,
+      updatedAt: source.updatedAt,
     }));
+    const sharedId = sharedCopyOf(document).id;
+    const linkedDocument = updateDocumentEverywhere(document.id, current => ({ ...current, referenceDocumentId: sharedId }));
     if (!linkedDocument) return; // no longer listed: nothing shared (whole-app audit A8 pass 4 L4)
-    await persistProjectDocumentsImmediately(projectDocumentsCurrentRef.current);
+    // A failed save is this phone's storage failure; the copy is still shared, as a card edit's is (A8 pass 5 L1).
+    await persistProjectDocumentsImmediately(projectDocumentsCurrentRef.current).catch(error => reportStoragePersistenceFailure({ storageKey: PROJECT_DOCUMENTS_STORAGE_KEY, label: 'project document', error }));
     // Read again after the save: a delete, an archive or another account's sign-in meanwhile shares and queues nothing (A8 pass 4 L4).
-    if (!uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, document.id, sameAccount, operationalSyncTombstonesRef.current)) return;
+    const listed = uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, document.id, sameAccount, operationalSyncTombstonesRef.current);
+    if (!listed) return;
+    const sharedDocument = sharedCopyOf({ ...listed, referenceDocumentId: sharedId }); // as listed now, under the id linked above: text typed during either save goes with it (A8 pass 5 L1)
     const nextReferenceDocuments = [sharedDocument, ...referenceDocumentsCurrentRef.current.filter(item => item.id !== sharedDocument.id)];
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = nextReferenceDocuments;

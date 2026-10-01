@@ -63,6 +63,7 @@ import {
 import {
   buildSharedReferenceDocument,
   findSharedReferenceDocumentForProjectDocument,
+  synchronizeSharedReferenceDocumentMetadata,
 } from '../../services/ProjectDocumentLifecycle';
 import { withdrawUnsentProjectDocumentBridge } from '../../services/ProjectDocumentBridge';
 import { normalizeReferenceDocument } from '../../services/ReferenceDocumentRepository';
@@ -115,6 +116,7 @@ type PhoneDocument = {
   mimeType: string; sizeBytes: number; localUri: string; ownedFileId: string; ownedFileManifest: unknown;
   uploadAttemptCount?: number; lastUploadAttemptAt?: string | null; updatedAt: string; importedAt: string;
   uploadProgress?: number | null; isArchived?: boolean; storagePath?: string; referenceDocumentId?: string | null; note?: string;
+  drawingNumber?: string | null;
 };
 function phoneDocument(id: string, extra: Partial<PhoneDocument> = {}): PhoneDocument {
   const fileId = `${id.padEnd(8, '0').slice(0, 8)}-e29b-41d4-a716-446655440000`;
@@ -149,13 +151,17 @@ function gate() {
 /**
  * The phone as these functions see it. Lists are set as React does;
  * `render()` reads them back into the refs, as each render does. `holdSave`
- * holds the n-th save of the document list open; `holdFileDelete` holds the
- * delete's removal of the file on this phone.
+ * holds the n-th save of the document list open (`holdLaterSave` a later one
+ * as well, with `laterSave`); `failSave` makes the n-th save fail once it is
+ * let go; `holdFileDelete` holds the delete's removal of the file on this
+ * phone. Saves are counted in the order they start, a card edit's included.
  */
 function phone(options: Readonly<{
   documents?: PhoneDocument[];
   references?: ReferenceDocument[];
   holdSave?: number;
+  holdLaterSave?: number;
+  failSave?: number;
   holdFileDelete?: boolean;
   sensitive?: boolean;
 }> = {}) {
@@ -166,7 +172,10 @@ function phone(options: Readonly<{
   const operationalSyncTombstonesRef = { current: [] as Array<{ entityType: string; recordId: string; deletedAt: string }> };
   const saves: string[][] = [];
   const save = gate();
+  const laterSave = gate();
   const fileDelete = gate();
+  const storageFailures: string[] = [];
+  const sharedEdits: string[] = [];
   const alerts: Array<{ title: string; buttons: Array<{ text: string; onPress?: () => void }> }> = [];
   const hidden: string[] = [];
   const deps: Record<string, unknown> = {
@@ -186,9 +195,13 @@ function phone(options: Readonly<{
     PROJECT_DOCUMENT_UPLOAD_FOLDER: 'project-documents', MAX_PROJECT_DOCUMENT_FILE_BYTES: 1e9,
     persistProjectDocumentsImmediately: async (list: PhoneDocument[]) => {
       saves.push(list.map(document => document.id));
-      if (saves.length === options.holdSave) await save.wait();
+      const count = saves.length;
+      if (count === options.holdSave) await save.wait();
+      if (count === options.holdLaterSave) await laterSave.wait();
+      if (count === options.failSave) throw new Error('This phone could not write the file.');
     },
-    PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE: 'add again', reportStoragePersistenceFailure: jest.fn(),
+    PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE: 'add again',
+    reportStoragePersistenceFailure: ({ label }: { label: string }) => { storageFailures.push(label); },
     PROJECT_DOCUMENTS_STORAGE_KEY: 'projectDocuments',
     Alert: { alert: (title: string, _message?: string, buttons: Array<{ text: string; onPress?: () => void }> = []) => {
       alerts.push({ title, buttons });
@@ -202,7 +215,11 @@ function phone(options: Readonly<{
     queueReferenceDocumentRecord: (document: ReferenceDocument) => queueReferenceDocumentRecord(document, false),
     // deleteProjectDocument and removeReferenceDocumentEverywhere
     isComplianceSensitiveProjectDocument: () => Boolean(options.sensitive),
-    findSharedReferenceDocumentForProjectDocument, projectDocumentSharedRecordSync: { cancel: jest.fn() },
+    findSharedReferenceDocumentForProjectDocument,
+    // A shared copy's edit, queued after a pause (the real lifecycle is tested in audit-a8-p2-document-sync).
+    projectDocumentSharedRecordSync: { cancel: jest.fn(), queueAfterChange: (id: string) => { sharedEdits.push(id); } },
+    // updateProjectDocument (the card's edits). The stored-record normalizer is not under test here.
+    normalizeProjectDocument: (document: PhoneDocument) => document, synchronizeSharedReferenceDocumentMetadata,
     deleteOwnedProjectDocument: async () => {
       if (options.holdFileDelete) await fileDelete.wait();
       return { status: 'deleted' };
@@ -215,9 +232,10 @@ function phone(options: Readonly<{
     retryProjectDocumentUpload: (documentId: string, provided?: PhoneDocument) => Promise<boolean | undefined>;
     publishUploadedProjectDocument: (document: PhoneDocument, sameAccount: () => boolean) => Promise<void>;
     updateDocumentEverywhere: (documentId: string, updater: (document: PhoneDocument) => PhoneDocument) => PhoneDocument | null;
+    updateProjectDocument: (documentId: string, next: Partial<PhoneDocument>) => void;
     deleteProjectDocument: (documentId: string) => void;
   }>([
-    'updateDocumentEverywhere', 'publishUploadedProjectDocument', 'retryProjectDocumentUpload',
+    'updateDocumentEverywhere', 'publishUploadedProjectDocument', 'retryProjectDocumentUpload', 'updateProjectDocument',
     'deleteProjectDocument', 'removeReferenceDocumentEverywhere', 'rememberOperationalTombstones',
   ], deps);
   const render = () => {
@@ -229,11 +247,22 @@ function phone(options: Readonly<{
     await settle();
   };
   return {
-    ...fns, render, press, saves, hidden, alerts, save, fileDelete, operationalSyncTombstonesRef,
+    ...fns, render, press, saves, hidden, alerts, save, laterSave, fileDelete, operationalSyncTombstonesRef, storageFailures, sharedEdits,
     cards: () => documents.filter(document => !document.isArchived).map(document => document.id),
     sharedCopies: () => references.map(document => document.id),
     sharedNotes: () => references.map(document => document.notes),
+    sharedRecord: (id: string) => references.find(document => document.id === id),
   };
+}
+
+/** The shared copies waiting to go up, as queued: id, account, note and drawing number. */
+async function queuedSharedCopyDetails() {
+  return (await getOfflineQueue())
+    .filter(item => item.entity === 'reference_document')
+    .map(item => {
+      const payload = item.payload as { id: string; documentData: { notes?: string; drawingNumber?: string | null } };
+      return [payload.id, item.ownerId, payload.documentData.notes, payload.documentData.drawingNumber ?? null];
+    });
 }
 
 /** The shared copies waiting to go up, with the account each was queued under. */
@@ -376,6 +405,144 @@ describe('a document deleted as its upload finishes is not shared (audit A8 pass
     expect(h.sharedCopies()).toEqual([]);
     expect(h.saves).toEqual([]);
     expect(await queuedSharedCopies()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A8 pass 5 L1 (30 Sep 2026): a note typed on the card during
+ * the second save of a finished upload was missing from the shared copy.
+ * The shared copy was built before that save (the save that links the card
+ * to it) and queued after it; the card's edit, made meanwhile, found no
+ * shared copy to update, so nothing else carried it. Now the copy is built
+ * from the document as listed after the last save, immediately before it is
+ * queued. If that save fails, the copy is still shared: the failure is said
+ * as this phone's storage failure (as for any card edit), not as a cloud
+ * record waiting for Sync Now that nothing would ever send.
+ *
+ * The card's edits run through updateProjectDocument, compiled from App.tsx.
+ */
+describe('text typed on the card while the upload saves goes with the shared copy (audit A8 pass 5 L1)', () => {
+  // Saves are counted in the order they start: the card edit's own save takes the next number.
+  it.each([
+    ['the save after the upload', 1],
+    ['the save after linking the shared copy', 2],
+  ])('a note typed during %s is on the shared copy here and on the copy queued for the iPad and the web', async (_label, holdSave) => {
+    const h = phone({ holdSave });
+    const upload = h.retryProjectDocumentUpload('permit');
+    await h.save.reached;
+    h.updateProjectDocument('permit', { note: 'Pour Tuesday' });
+    h.save.open();
+    await expect(upload).resolves.toBe(true);
+    await settle();
+    h.render();
+    expect(h.sharedNotes()).toEqual(['Pour Tuesday']);
+    expect(await queuedSharedCopyDetails()).toEqual([['permit', 'owner-a', 'Pour Tuesday', null]]);
+  });
+
+  it('text typed during both saves all goes with the one queued copy', async () => {
+    // Save 1 follows the upload, 2 is the card edit's own, 3 links the shared copy.
+    const h = phone({ holdSave: 1, holdLaterSave: 3 });
+    const upload = h.retryProjectDocumentUpload('permit');
+    await h.save.reached;
+    h.updateProjectDocument('permit', { drawingNumber: 'A-101' });
+    h.save.open();
+    await h.laterSave.reached;
+    h.updateProjectDocument('permit', { note: 'Pour Tuesday' });
+    h.laterSave.open();
+    await upload;
+    await settle();
+    h.render();
+    expect(h.sharedNotes()).toEqual(['Pour Tuesday']);
+    expect(await queuedSharedCopyDetails()).toEqual([['permit', 'owner-a', 'Pour Tuesday', 'A-101']]);
+  });
+
+  it('a card linked to another shared record during the save (Make Current) does not have that record rebuilt over', async () => {
+    const current = normalizeReferenceDocument({
+      ...buildSharedReferenceDocument({ document: phoneDocument('schedule'), projectName: PROJECT, contentSha256: null }),
+      id: 'schedule-current', isCurrent: true,
+    });
+    const h = phone({ holdSave: 2, references: [current] });
+    const upload = h.retryProjectDocumentUpload('permit');
+    await h.save.reached;
+    h.updateDocumentEverywhere('permit', document => ({ ...document, referenceDocumentId: 'schedule-current' }));
+    h.save.open();
+    await upload;
+    await settle();
+    h.render();
+    expect((await queuedSharedCopies()).map(([id]) => id)).not.toContain('schedule-current');
+    expect(h.sharedRecord('schedule-current')?.isCurrent).toBe(true); // still the current schedule on this phone
+  });
+
+  it('control: a note typed after the copy is listed goes up as an edit of that copy', async () => {
+    const h = phone();
+    await h.retryProjectDocumentUpload('permit');
+    await settle();
+    h.render();
+    h.updateProjectDocument('permit', { note: 'Pour Tuesday' });
+    expect(h.sharedNotes()).toEqual(['Pour Tuesday']);
+    expect(h.sharedEdits).toEqual(['permit']);
+  });
+
+  describe('the save linking the shared copy fails', () => {
+    it('the copy is still shared, with the text typed meanwhile, and the failure is said as a storage failure', async () => {
+      const h = phone({ holdSave: 2, failSave: 2 });
+      const upload = h.retryProjectDocumentUpload('permit', phoneDocument('permit')); // the owner's Retry: failures are said
+      await h.save.reached;
+      h.updateProjectDocument('permit', { note: 'Pour Tuesday' });
+      h.save.open();
+      await expect(upload).resolves.toBe(true);
+      await settle();
+      h.render();
+      expect(h.sharedCopies()).toEqual(['permit']);
+      expect(await queuedSharedCopyDetails()).toEqual([['permit', 'owner-a', 'Pour Tuesday', null]]);
+      expect(h.storageFailures).toEqual(['project document']);
+      // Not told to wait for a Sync Now that would never send it.
+      expect(h.alerts.map(alert => alert.title)).toEqual([]);
+    });
+
+    it.each(['Delete from This Device', 'Delete from All Devices'])('%s during that save: nothing is shared or queued', async choice => {
+      const h = phone({ holdSave: 2, failSave: 2 });
+      const upload = h.retryProjectDocumentUpload('permit');
+      await h.save.reached;
+      h.render();
+      h.deleteProjectDocument('permit');
+      await h.press(choice);
+      h.save.open();
+      await upload;
+      await settle();
+      h.render();
+      expect(h.cards()).toEqual([]);
+      expect(h.sharedCopies()).toEqual([]);
+      expect(await queuedSharedCopies()).toEqual([]);
+    });
+
+    it('an archive during that save: nothing is shared or queued', async () => {
+      const h = phone({ holdSave: 2, failSave: 2, sensitive: true });
+      const upload = h.retryProjectDocumentUpload('permit');
+      await h.save.reached;
+      h.render();
+      h.deleteProjectDocument('permit');
+      await h.press('Archive Permit Card');
+      h.save.open();
+      await upload;
+      await settle();
+      h.render();
+      expect(h.sharedCopies()).toEqual([]);
+      expect(await queuedSharedCopies()).toEqual([]);
+    });
+
+    it('a sign-in to another account during that save: nothing is queued under either account', async () => {
+      const h = phone({ holdSave: 2, failSave: 2 });
+      const upload = h.retryProjectDocumentUpload('permit');
+      await h.save.reached;
+      signInAnotherAccount();
+      h.save.open();
+      await upload;
+      await settle();
+      h.render();
+      expect(h.sharedCopies()).toEqual([]);
+      expect(await queuedSharedCopies()).toEqual([]);
+    });
   });
 });
 
