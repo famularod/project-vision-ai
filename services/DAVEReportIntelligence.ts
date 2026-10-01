@@ -894,8 +894,9 @@ function buildRecentChanges({
   // one whose activity the earlier report saved does not say it again. Only
   // against a report saved before these keys does the activity's time decide,
   // and (A6 pass 15 L1) for a task paired with a different row of the earlier
-  // report across a master change: the comparison lists neither. An activity
-  // no newer than the one the row saved counts as the same (A6 pass 15 L2).
+  // report across a master change that the report before it does not settle
+  // (A6 pass 16 L1): the comparison lists neither. An activity no newer than
+  // the one the row saved counts as the same (A6 pass 15 L2).
   const newActivityTaskIds = new Set(reportingPeriod.newActivityTaskIds ?? []);
   const sameActivityTaskIds = new Set(reportingPeriod.sameActivityTaskIds ?? []);
   const taskChanges: DAVEReportRecentChange[] = [];

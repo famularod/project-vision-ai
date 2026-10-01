@@ -84,10 +84,13 @@ export type DAVEReportSnapshot = Readonly<{
    */
   sourceReferences?: readonly DAVEReportSnapshotSourceReference[];
   /**
-   * The snapshot this one replaced, one level deep: the report the owner had
-   * before this content was approved. Re-approving the same content (after
-   * leaving the tab, or an unsent approval) must not make the report compare
-   * against itself (whole-app audit A6, 29 Sep 2026).
+   * The snapshot this one replaced: the report the owner had before this
+   * content was approved. Re-approving the same content (after leaving the
+   * tab, or an unsent approval) must not make the report compare against
+   * itself (whole-app audit A6, 29 Sep 2026). That report keeps the one it
+   * replaced in turn, and no more (A6 pass 16 L1, 1 Oct 2026: a task a master
+   * change moved onto another row is checked against it), so the report
+   * reads the same once approved and once sent.
    */
   supersedes?: DAVEReportSnapshot | null;
   /**
@@ -162,8 +165,9 @@ export function reportBaselineSnapshot(
 /**
  * What approving `current` saves: nothing when the same content is already
  * the saved snapshot; otherwise `current`, not yet sent, remembering the
- * report the owner has (the previous snapshot without its own history, or,
- * when that approval was never sent, the one it superseded).
+ * report the owner has (the previous snapshot, or, when that approval was
+ * never sent, the one it superseded), with the report before that one and
+ * no more (A6 pass 16 L1).
  */
 export function reportSnapshotToSave(
   current: DAVEReportSnapshot,
@@ -177,10 +181,23 @@ export function reportSnapshotToSave(
   const pending = { ...current, deliveredAt: null };
   if (!previous || !samePeriod) return Object.freeze(pending);
   if (!wasDelivered(previous)) {
-    return Object.freeze({ ...pending, supersedes: previous.supersedes ?? null });
+    return Object.freeze({ ...pending, supersedes: previous.supersedes ? withReportBefore(previous.supersedes) : null });
   }
-  const { supersedes: _older, ...superseded } = previous;
-  return Object.freeze({ ...pending, supersedes: Object.freeze(superseded) });
+  return Object.freeze({ ...pending, supersedes: withReportBefore(previous) });
+}
+
+/**
+ * A saved report with the report it replaced, but not that one's own history
+ * (whole-app audit A6 pass 16 L1, 1 Oct 2026). The comparison reads the
+ * report before the one a period counts from. Once David approved, the
+ * period counted from the approval's history, which kept one level, so that
+ * report was gone and the text changed under the approval (A6 pass 3).
+ */
+function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
+  const { supersedes: older, ...report } = snapshot;
+  if (!older) return Object.freeze(report);
+  const { supersedes: _deeper, ...before } = older;
+  return Object.freeze({ ...report, supersedes: Object.freeze(before) });
 }
 
 /** The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2). */
@@ -397,8 +414,10 @@ export type DAVEReportPeriodComparison = Readonly<{
    * latest activity that is not its own: the report says that activity even
    * when its time is before the earlier report (A6 pass 14 L2: a note made
    * offline on the other device before the send). Not listed against a task
-   * saved with no activity key, nor against a different row the task is
-   * paired with across a master change (A6 pass 15 L1: those go by time).
+   * saved with no activity key. A task paired with a different row across a
+   * master change (A6 pass 15 L1) is listed by its own row in the report
+   * before the earlier one, or when its activity is newer than that report
+   * (A6 pass 16 L1); otherwise it goes by time.
    */
   newActivityTaskIds?: readonly string[];
   /**
@@ -406,7 +425,9 @@ export type DAVEReportPeriodComparison = Readonly<{
    * activity: that activity was there for the earlier report, so it is not
    * said again, whatever its time (A6 pass 14 L2). Also every task whose
    * latest activity is no newer than the one its row saved (A6 pass 15 L2:
-   * a lost latest note does not bring back the older one).
+   * a lost latest note does not bring back the older one), the row in the
+   * report before the earlier one for a task paired across a master change
+   * (A6 pass 16 L1).
    */
   sameActivityTaskIds?: readonly string[];
   /**
@@ -516,6 +537,9 @@ export function compareDAVEReportSnapshots({
   const unchangedTaskIds = new Set<string>();
   const newActivityTaskIds = new Set<string>();
   const sameActivityTaskIds = new Set<string>();
+  // The report before the earlier one, when it was kept (A6 pass 16 L1).
+  const reportBefore = previous.supersedes?.scopeKey === previous.scopeKey ? previous.supersedes : null;
+  const reportBeforeById = new Map((reportBefore?.tasks ?? []).map(task => [task.taskId, task]));
 
   // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
   // whose copy in the earlier report was the newer row. A note or owner
@@ -533,12 +557,12 @@ export function compareDAVEReportSnapshots({
     // Whole-app audit A6 pass 15 L1 (1 Oct 2026): the keys only for the same
     // row. Going back to master F paired F's row with M's row through M's
     // earlier ids; M's row had no note, so F's old note read as new. A row
-    // paired across a master change keeps the time rule (a hidden row cannot
-    // be given a note).
-    if (prior.taskId === task.taskId && typeof prior.activityKey === 'string') {
-      const isNew = prior.activityKey !== task.activityKey && activityAfterSaved(prior, task);
-      (isNew ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
-    }
+    // paired across a master change is checked against the report before the
+    // earlier one (A6 pass 16 L1), and failing that keeps the time rule.
+    const activity = prior.taskId === task.taskId
+      ? activityAgainstOwnRow(prior, task)
+      : activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
+    if (activity) (activity === 'new' ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
     changes.push(...changesBetween(prior, task));
   }
 
@@ -734,8 +758,53 @@ function reportTaskActivityKey(task: DAVEProjectTruth['schedule'][number]): stri
 function activityAfterSaved(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): boolean {
   const saved = validDate(prior.activityAt);
   if (!saved) return true;
+  return activityAfter(task, saved);
+}
+
+/** Whether the task's latest activity was made after `time`; false when it has none. */
+function activityAfter(task: DAVEReportSnapshotTask, time: string): boolean {
   const latest = validDate(task.activityAt);
-  return Boolean(latest) && new Date(latest).getTime() > new Date(saved).getTime();
+  return Boolean(latest) && new Date(latest).getTime() > new Date(time).getTime();
+}
+
+/**
+ * The task's latest activity against its own row in a saved report (A6 pass
+ * 14 L2, pass 15 L2): new when it is not the one the row saved and is newer;
+ * otherwise the same. Unknown (null) against a row saved with no key.
+ */
+function activityAgainstOwnRow(saved: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): 'new' | 'same' | null {
+  if (typeof saved.activityKey !== 'string') return null;
+  return saved.activityKey !== task.activityKey && activityAfterSaved(saved, task) ? 'new' : 'same';
+}
+
+/**
+ * The latest activity of a task paired with a different row of the earlier
+ * report across a master change (whole-app audit A6 pass 16 L1, 1 Oct 2026).
+ * 131a9b9 (A6 pass 15 L1) left these to the activity's time, so a note that
+ * never reached a report was dropped: the iPad, offline, approved master M
+ * at 17:30 and noted M's Pour slab at 17:45, the phone sent its report under
+ * F at 18:00, and the next report said only the finish change. So too a note
+ * made on F's row after a report, when M was approved before the next one
+ * and F set active again after it.
+ *
+ * The earlier report never had this row, so it is checked against the report
+ * before that one (`reportBefore`): against its own row there, as for the
+ * same row; with no own row there (or one saved with no key), an activity
+ * made after that report is new (no report that showed the row was made
+ * after it). Otherwise unknown (null) and the time decides. Known gap: a note older than `reportBefore`, on a row
+ * neither report had (masters switched back and forth more than two reports
+ * deep, or no report before the earlier one), still goes by the time.
+ */
+function activityAgainstReportBefore(
+  task: DAVEReportSnapshotTask,
+  reportBefore: DAVEReportSnapshot | null,
+  ownRow: DAVEReportSnapshotTask | undefined,
+): 'new' | 'same' | null {
+  if (!reportBefore) return null;
+  const againstOwnRow = ownRow ? activityAgainstOwnRow(ownRow, task) : null;
+  if (againstOwnRow) return againstOwnRow;
+  const before = validDate(reportBefore.capturedAt);
+  return before && activityAfter(task, before) ? 'new' : null;
 }
 
 /** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */
