@@ -13909,6 +13909,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 document.category === 'Schedules' ||
                 document.notes.includes('[Schedule communication screenshot]'),
               )}
+              reviewDocuments={referenceDocuments}
               onBack={() => {
                 setScheduleAddProjectName(null);
                 setScreen('Home');
@@ -19225,6 +19226,7 @@ function ScheduleScreen({
   closedProjects,
   projectRecords,
   scheduleDocuments,
+  reviewDocuments,
   onBack,
   onOpenDocument,
   onDeleteDocument,
@@ -19259,6 +19261,7 @@ function ScheduleScreen({
   closedProjects: readonly string[];
   projectRecords: readonly ProjectRecord[];
   scheduleDocuments: ReferenceDocument[];
+  reviewDocuments: readonly ReferenceDocument[]; // every document, as the pick checks them (whole-app audit A8 pass 7 L2)
   onBack: () => void;
   onOpenDocument: (document: ReferenceDocument) => void;
   onDeleteDocument: (documentId: string) => void;
@@ -19711,7 +19714,7 @@ function ScheduleScreen({
               onCancel={onCancelImport}
               incomingBatch={incomingImportBatch}
               onIncomingBatchConsumed={onIncomingImportConsumed}
-              roleContext={{ documents: scheduleDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
+              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
             />
           ) : null}
 

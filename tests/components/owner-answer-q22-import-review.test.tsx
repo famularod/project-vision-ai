@@ -99,7 +99,10 @@ describe('the import review asks how the schedule is used (owner answer Q22)', (
     const fs = jest.requireActual('fs') as typeof import('fs');
     const path = jest.requireActual('path') as typeof import('path');
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
-    expect(app).toContain("roleContext={{ documents: scheduleDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}");
+    // Pin updated deliberately (audit round 2, A8 pass 7 L2, 30 Sep 2026): the review gets every saved
+    // document, as the pick checks them, not the Schedule screen's Schedules-only list.
+    expect(app).toContain("roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}");
+    expect(app).toContain('reviewDocuments={referenceDocuments}');
   });
 
   it('a file already saved as a full schedule, imported again, is offered as a lookahead only (whole-app audit A8 pass 5 L3)', async () => {
