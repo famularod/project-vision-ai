@@ -2334,6 +2334,12 @@ export async function queueProjectUpdateRecord<TUpdate extends {
  * this device's journal: an older copy sent later by the iPad does not put it
  * back. The whole copy of an update not yet sent waits for its photos, as its
  * own sync does (A4 pass 9 L2): it went up listing photos nothing uploaded.
+ *
+ * An update still owing its own sync ("Waiting to Sync" or failed, not in
+ * conflict) with no record of its own queued goes up whole, with the change,
+ * waiting for its photos (A7 pass 8 L1): its edit's queue write was lost, and
+ * the patch, once landed, stood for that edit, which was never sent. An
+ * update in conflict keeps its copy for review: only the patch goes up.
  */
 export async function queueProjectUpdateDocumentChange<TUpdate extends {
   id: string;
@@ -2348,6 +2354,8 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const patch = fieldUpdateDocumentPatchFor(update, documentId);
   if (patch.remove) await recordRemovedFieldUpdateDocument(update.id, documentId).catch(() => undefined);
+  const owesOwnSync = fieldUpdateOwesOwnSync(update.status) && !(await getSyncConflicts())
+    .some(conflict => conflict.entity === 'project_update' && conflict.localId === update.id);
   const queueId = projectUpdateQueueItemId(update.id);
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
@@ -2358,15 +2366,19 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
       return { nextQueue: queue, result: undefined, persist: false };
     }
     const waitingPatches = queuedFieldUpdateDocumentPatches(existing);
+    const photoIds = uniquePhotoAssetIds((update.photos || []).map(photo => photo.id));
     const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData
       ? { ...existing, payload: { ...existingPayload, updateData: applyFieldUpdateDocumentPatches(existingPayload.updateData as object, [patch]) } }
       : {
           id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
           payload: {
             id: update.id, projectId: update.projectId, projectName: update.projectName, selectedAreaName: update.selectedAreaName,
-            updateData: update, documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
-            pendingPhotoAssetIds: update.status === 'sent' ? []
-              : waitingPatches ? existingPayload?.pendingPhotoAssetIds || [] : uniquePhotoAssetIds((update.photos || []).map(photo => photo.id)),
+            updateData: update,
+            ...(owesOwnSync ? { pendingPhotoAssetIds: photoIds } : {
+              documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
+              pendingPhotoAssetIds: update.status === 'sent' ? []
+                : waitingPatches ? existingPayload?.pendingPhotoAssetIds || [] : photoIds,
+            }),
           },
           ...(ownerId ? { ownerId } : {}),
         };
@@ -2488,6 +2500,10 @@ function projectUpdateQueueItemId(updateId: string) {
  *   replaces only that record. One uploaded meanwhile is not queued again,
  *   whole; a newer record written meanwhile (a late photo-analysis result)
  *   stays.
+ * - a waiting patch stays only while this copy owes nothing beyond it: it
+ *   reads sent, or it is the patch's copy, a Retry's stamps aside (A7 pass
+ *   8 L1). Otherwise this copy goes up whole: an edit whose queue write was
+ *   lost after the document change was never sent.
  * The item left in the queue; null when nothing was written.
  */
 async function writeStagedProjectUpdateRecord(
@@ -2506,7 +2522,8 @@ async function writeStagedProjectUpdateRecord(
     if (existing?.operation === 'delete') return unchanged;
     if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
     if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(update)) return unchanged;
-    const patch = Boolean(queuedFieldUpdateDocumentPatches(existing));
+    const patch = Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(update.status) ||
+      sameProjectUpdateContent((existing!.payload as ProjectUpdateRecordPayload).updateData, update, { retryStampsAside: true }));
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
@@ -4943,9 +4960,27 @@ function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
 
 function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
-  // The project id is the one the upload resolved, not an edit.
-  const content = (copy: ProjectUpdate) => ({ ...withoutDocumentUploadState(copy), projectId: undefined }) as never;
-  return Boolean(sent) && sameFieldUpdateSyncGeneration(content(sent as ProjectUpdate), content(update));
+  return Boolean(sent) && sameProjectUpdateContent(sent, update);
+}
+
+/** A field update still owing its own sync: "Waiting to Sync", or failed (A7 pass 8 L1). */
+function fieldUpdateOwesOwnSync(status: unknown): boolean {
+  return status === 'queued' || status === 'failed';
+}
+
+/**
+ * Two copies of a field update with the same content: its documents' upload
+ * state aside, and the project id the upload resolved, which is not an edit.
+ * With `retryStampsAside`, a Retry's send stamps aside too (A7 pass 8 L1).
+ */
+function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retryStampsAside = false } = {}): boolean {
+  if (!left || typeof left !== 'object') return false;
+  const content = (copy: object) => {
+    const rest: Record<string, unknown> = { ...withoutDocumentUploadState(copy), projectId: undefined };
+    if (retryStampsAside) ['sendAttempts', 'lastSendAttemptAt', 'stableSendId', 'idempotencyKey'].forEach(field => { delete rest[field]; });
+    return rest as never;
+  };
+  return sameFieldUpdateSyncGeneration(content(left), content(right));
 }
 
 function recordProjectUpdateUpload(updateId: string) {

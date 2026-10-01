@@ -19,6 +19,12 @@
  * the patch goes up; a sync attempt does not re-send a copy already in the
  * cloud, and its second save replaces only its own queue record.
  *
+ * A7 pass 8 L1: an edit whose queue write was lost (the update reads
+ * "Waiting to Sync", nothing queued) was gone after a document change: the
+ * patch, once landed, stood for the edit. Now such an update goes up whole
+ * with the change, and staging keeps a waiting patch only while the copy owes
+ * nothing beyond it.
+ *
  * Runs the App's own project_updates refresh closure, retryProjectDocumentUpload,
  * deleteProjectDocument and resendUpdatesListingDocument, compiled from
  * App.tsx, with the real SyncService queue, staging (runFieldUpdateCloudSync)
@@ -935,5 +941,142 @@ describe('the realtime echo reads the queue after its photo previews (audit A4 p
     const shown = await realtimeEcho(phone);
     expect(saved).toBe(true);
     expect(shown).toMatchObject({ notes: 'Pour, 40 yards', status: 'queued' });
+  });
+});
+
+/**
+ * A7 pass 8 L1: David edits a sent update; the phone saves it ("Waiting to
+ * Sync") but the save's queue write never happens (the app is killed in that
+ * window, or the write fails; startup recovery stages it again). Before the
+ * next staging he takes a document off it, or its upload finishes.
+ */
+async function editWhoseQueueWriteWasLost(documents = () => [uploaded('permit'), uploaded('survey')]) {
+  const sent = savedUpdate(documents());
+  putInCloud(sent);
+  const phone = device(documents(), [sent]);
+  phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1'
+    ? { ...update, notes: 'Pour, 40 yards', status: 'queued' } : update));
+  phone.render();
+  expect(await getOfflineQueue()).toEqual([]);
+  return phone;
+}
+const EDIT = 'Pour, 40 yards';
+
+describe('an edit whose queue write was lost survives a document change (audit A7 pass 8 L1)', () => {
+  it('S1a: the upload run lands first, then the waiting-update sync: the edit reaches the cloud and stays on the phone', async () => {
+    const phone = await editWhoseQueueWriteWasLost();
+    await phone.deleteFromThisDevice('permit');
+    expect(phone.requestQueuedUpdateSync).toHaveBeenCalled(); // it still owes its own sync
+
+    await uploadPendingChanges(); // reconnect: the upload run goes first
+    const result = await syncWaitingUpdate(phone);
+    expect(result.itemOutcomes?.['project-update-u1']).toBe('uploaded');
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getOfflineQueue()).toEqual([]);
+    const shown = await realtimeEcho(phone);
+    expect(shown).toMatchObject({ notes: EDIT, status: 'sent' });
+    expect(documentIds(shown)).toEqual(['survey']);
+  });
+
+  it('S1b: the waiting-update sync stages it first: the edit goes up with the document change', async () => {
+    const phone = await editWhoseQueueWriteWasLost();
+    await phone.deleteFromThisDevice('permit');
+
+    const result = await syncWaitingUpdate(phone);
+    expect(result.itemOutcomes?.['project-update-u1']).toBe('uploaded');
+    expect(phone.saved()?.status).toBe('sent');
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    const shown = await realtimeEcho(phone);
+    expect(shown).toMatchObject({ notes: EDIT, status: 'sent' });
+    expect(documentIds(shown)).toEqual(['survey']);
+  });
+
+  it('S1a, a document upload finishing instead of a delete: the edit and the upload state both reach the cloud', async () => {
+    const phone = await editWhoseQueueWriteWasLost(() => [phoneDocument('permit', { status: 'failed' })]);
+    await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+    await phone.settle();
+
+    await uploadPendingChanges();
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(inCloud().documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: EDIT, status: 'sent' });
+  });
+
+  it('S1c: the document change came first, on the sent update; then the edit whose queue write was lost: staging sends the edit', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    const phone = device([uploaded('permit'), uploaded('survey')], [sent]);
+    await phone.deleteFromThisDevice('permit'); // a patch on the sent copy waits
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...update, notes: EDIT, status: 'queued' } : update));
+    phone.render();
+
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: EDIT, status: 'sent' });
+  });
+
+  it('S1, a refresh before either sync: the queued whole copy holds the phone\'s edit on screen, and it goes up', async () => {
+    const phone = await editWhoseQueueWriteWasLost();
+    await phone.deleteFromThisDevice('permit');
+    const item = await queuedFor();
+    expect((item!.payload as Record<string, unknown>).documentPatches).toBeUndefined(); // the whole copy, with the change
+    expect((item!.payload as { updateData: Update }).updateData).toMatchObject({ notes: EDIT });
+
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: EDIT });
+    expect(documentIds(phone.saved())).toEqual(['survey']);
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('a Retry of an update an earlier build left "Waiting to Sync" keeps its waiting patch: a Retry\'s stamps are not an edit', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    leftWaitingByAnEarlierBuild(phone);
+    // As retryQueuedUpdate stamps it.
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1'
+      ? { ...update, sendAttempts: 2, lastSendAttemptAt: '2026-09-30T08:00:00.000Z', stableSendId: 'send-u1', idempotencyKey: 'send-u1' }
+      : update));
+    phone.render();
+
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('an update in conflict still sends only the patch: the phone\'s edit waits for review (A4 pass 9 L1 holds)', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    const phoneEdit = { ...sent, notes: 'Pour, 40 yards (typed on the phone)', status: 'queued' };
+    await queueProjectUpdateRecord(phoneEdit, false);
+    const queuedAt = Date.parse((await queuedFor())!.changedAt);
+    // The iPad's edit reaches the cloud just after the phone queued its own.
+    putInCloud({ ...sent, notes: IPAD_NOTE }, new Date(queuedAt + 1).toISOString());
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5)); // a later change would now be newer than the iPad's
+
+    const phone = device([uploaded('permit'), uploaded('survey')], [{ ...phoneEdit, status: 'failed' }]);
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+
+  it('the sent-update path is unchanged: the document change goes up as a patch, and the iPad keeps its note', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    const item = await queuedFor();
+    expect((item!.payload as Record<string, unknown>).documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await uploadPendingChanges();
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
   });
 });
