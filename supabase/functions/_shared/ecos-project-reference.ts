@@ -77,7 +77,8 @@ export function findECOSProjectReferenceMismatch(
   const selected = new Set(selectedIdentifiers);
   const openIdentifiers = otherProjectIdentifiers(knownNames, selected);
   const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
-  for (const identifier of ecosProjectNumberMentions(question, [...knownNames, ...closedNames])) {
+  // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
+  for (const identifier of ecosProjectNumberMentions(question, [projectName, ...knownNames, ...closedNames])) {
     const open = openIdentifiers.has(identifier);
     // A number both an open and a closed project use is read as the open one.
     if (open || closedIdentifiers.has(identifier)) {
@@ -90,7 +91,10 @@ export function findECOSProjectReferenceMismatch(
 /**
  * A number written with thousands commas ("2,375"). Outside an exempt span
  * (money or a measurement: "$2,375", "2,375 sqft") it is read as its digits,
- * so "project 2,375" is checked as 2375, not as 375 (audit A9 pass 6 L4).
+ * so "project 2,375" is checked as 2375 (audit A9 pass 6 L4). When those
+ * digits are not a known project's number, each 3-6 digit part is checked
+ * too: "Compare 200,375" names 200 and 375, and "2,375" names 375 when there
+ * is a project 375 and no project 2375 (audit A9 pass 7 L2).
  */
 const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+\b`;
 
@@ -110,18 +114,24 @@ export function ecosProjectNumberMentionsAt(
   projectNames: readonly string[] = [],
 ): Array<Readonly<{ number: string; start: number }>> {
   const exempt = exemptSpans(text);
+  const known = new Set(projectNames.map(ecosProjectIdentifier));
   const mentions: Array<Readonly<{ number: string; start: number }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${PROJECT_IDENTIFIER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
-    if (!/^\d{3,6}$/.test(number)) continue;
     const start = match.index;
     const end = start + match[0].length;
     if (
-      !exempt.some(([from, to]) => from <= start && end <= to) ||
-      projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
-    ) {
-      mentions.push({ number, start });
+      exempt.some(([from, to]) => from <= start && end <= to) &&
+      !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
+    ) continue;
+    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start });
+    if (match[0].includes(',') && !known.has(number)) {
+      let partStart = start;
+      for (const part of match[0].split(',')) {
+        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart });
+        partStart += part.length + 1;
+      }
     }
   }
   return mentions;

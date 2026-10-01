@@ -590,10 +590,12 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
   // digits outside money and measurements ("2,375" is 2375, not 375).
   ...([
     ['What is overdue on project 2,375?', OWNER_PROJECTS, '2375'],
-    ['What is overdue on project 2,375?', [SELECTED, '375 Main Street'], null],
+    // Audit A9 pass 7 L2: these two were allowed (null) in pass 6. A grouped
+    // number that is no project's is now checked part by part too.
+    ['What is overdue on project 2,375?', [SELECTED, '375 Main Street'], '375'],
     ['What is overdue on project 2,321?', OWNER_PROJECTS, null],
     ['Is the slab 2,375 sqft?', OWNER_PROJECTS, null],
-    ['Did we lay 1,234,567 bricks?', [SELECTED, '234 Elm'], null],
+    ['Did we lay 1,234,567 bricks?', [SELECTED, '234 Elm'], '234'],
   ] as const).map(([question, knownProjectNames, refused]) => ({
     name: `pass 6 L4: "${question}" with ${knownProjectNames.slice(1).join(', ')}`,
     projectName: SELECTED,
@@ -654,6 +656,34 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames,
     refused,
   })),
+  // Audit A9 pass 7 L2: a comma-grouped number that is not itself a known
+  // project's number is checked part by part as well ("200,375" is 200 and
+  // 375); money and measurements stay exempt, and a known grouped number
+  // (the selected "2,321") is read whole.
+  ...([
+    ['Compare 200,375', [SELECTED, '200 Oak Street', '375 Main Street'], '200'],
+    ['Punch list for 101,205?', [SELECTED, '205 Yard'], '205'],
+    ['Compare 200,375,450', [SELECTED, '450 Bay'], '450'],
+    ['What is overdue on project 2,321?', [SELECTED, '321 Pine'], null],
+    ['What is overdue on project 2,375?', [...OWNER_PROJECTS, '375 Main Street'], '2375'],
+    ['Was the $200,375 change order approved?', [SELECTED, '200 Oak Street', '375 Main Street'], null],
+    ['Is the slab 200,375 sqft?', [SELECTED, '200 Oak Street', '375 Main Street'], null],
+  ] as const).map(([question, knownProjectNames, refused]) => ({
+    name: `pass 7 L2: "${question}" with ${knownProjectNames.slice(1).join(', ')}`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames,
+    refused,
+  })),
+  {
+    name: 'pass 7 L2: a closed project in a comma-grouped list is refused, marked closed',
+    projectName: SELECTED,
+    question: 'Punch list for 101,205?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['101 Shop'],
+    refused: '101',
+    refusedClosed: true,
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

@@ -171,8 +171,12 @@ describe('audit A9 pass 6 L4: a number written with thousands commas is read as 
     expectRefusedClosed(question, OTHER, '2375');
   });
 
-  it('"2,375" is not project 375', () => {
-    expectAllowed('What is overdue on project 2,375?', [SELECTED, '375 Main Street']);
+  it('"2,375" is read as 2375 first', () => {
+    // Until audit A9 pass 7 L2 this also pinned "2,375" as allowed with only
+    // a project 375. Pass 7 checks each part of a grouped number that is no
+    // project's ("Compare 200,375"), so with no project 2375 it now names 375
+    // (when unsure, refuse; audit-a9-pass7-project-numbers.test.ts).
+    expect(ecosProjectNumberMentions('What is overdue on project 2,375?', [SELECTED, OTHER, '375 Main Street'])).toEqual(['2375']);
     expectRefusedOpen('What is overdue on project 375?', [SELECTED, '375 Main Street'], '375', '375 Main Street');
   });
 
@@ -189,7 +193,10 @@ describe('audit A9 pass 6 L4: a number written with thousands commas is read as 
     ['Is the slab 2,375 sqft?', PROJECTS],
     ['Is the bearing 2,375 ksf?', [SELECTED, '375 Main Street']],
     ['Was 2,375 dollars paid?', PROJECTS],
-    ['Did we lay 1,234,567 bricks?', [SELECTED, '234 Elm', '567 Pine']],
+    // "1,234,567 bricks" with projects 234 and 567 was here until audit A9
+    // pass 7 L2: a grouped number that is no project's is checked part by
+    // part, so it now names 234. With no 3-digit project it stays allowed.
+    ['Did we lay 1,234,567 bricks?', [SELECTED, '2375 Compliance Project']],
   ] as const)('"%s" stays allowed (money, a measurement, or more than six digits)', (question, projects) => {
     expectAllowed(question, projects);
   });

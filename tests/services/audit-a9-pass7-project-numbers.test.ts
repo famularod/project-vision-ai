@@ -1,6 +1,7 @@
 // rule simplified A9 pass 5: when unsure, refuse
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import { ecosProjectNumberMentions } from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 7 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -70,5 +71,55 @@ describe('audit A9 pass 7 L1: "meters", "metres" and "pieces" are not units of m
   ])('"%s" keeps m and pcs as measurements with "%s" open or closed', (question, project) => {
     expectAllowed(question, [SELECTED, project]);
     expectAllowed(question, [SELECTED], [project]);
+  });
+});
+
+describe('audit A9 pass 7 L2: a comma-grouped number that is no project is checked part by part', () => {
+  const OAK = '200 Oak Street';
+  const MAIN = '375 Main Street';
+  const SHOP = '101 Shop';
+  const YARD = '205 Yard';
+
+  it.each([
+    ['Compare 200,375', [SELECTED, OAK, MAIN], '200'],
+    ['Compare 200,375?', [SELECTED, OAK, MAIN], '200'],
+    ['Punch list for 101,205?', [SELECTED, SHOP, YARD], '101'],
+    ['Compare 2321,375', [SELECTED, MAIN], '375'],
+    ['Compare 200,375,450', [SELECTED, '450 Bay'], '450'],
+  ] as const)('"%s" is refused', (question, projects, number) => {
+    expect(phone(question, projects)).toBe(switchOnPhone(number));
+    expect(desktop(question, projects)).toBe(switchOnDesktop(number));
+  });
+
+  it('a closed project in a comma-grouped list is refused in the closed wording', () => {
+    expect(phone('Punch list for 101,205?', [SELECTED], [SHOP, YARD])).toBe(reopenOnPhone('101'));
+    expect(desktop('Punch list for 101,205?', [SELECTED], [YARD])).toBe(reopenOnDesktop('205'));
+  });
+
+  it('Talk reads each part: one project moves, two do not', () => {
+    expect(mentionedDAVEProject('Punch list for 101,205?', [SELECTED, YARD])).toBe(YARD);
+    expect(mentionedDAVEProject('Compare 200,375', [SELECTED, OAK, MAIN])).toBeNull();
+  });
+
+  it('a grouped number that is itself a known project is read whole, not split', () => {
+    expect(ecosProjectNumberMentions('What is overdue on project 2,375?', [...PROJECTS, MAIN])).toEqual(['2375']);
+    expect(phone('What is overdue on project 2,375?', [...PROJECTS, MAIN])).toBe(switchOnPhone('2375'));
+    // The selected project's own number is never refused, nor split into 321.
+    expect(phone('What is overdue on project 2,321?', [SELECTED, '321 Pine'])).toBeNull();
+    expect(desktop('What is overdue on project 2,321?', [SELECTED, '321 Pine'])).toBeNull();
+  });
+
+  it('"2,375" with a project 375 and no project 2375 now names 375 (when unsure, refuse)', () => {
+    expect(ecosProjectNumberMentions('What is overdue on project 2,375?', [SELECTED, MAIN])).toEqual(['2375', '375']);
+    expect(phone('What is overdue on project 2,375?', [SELECTED, MAIN])).toBe(switchOnPhone('375'));
+  });
+
+  it.each([
+    ['Was the $200,375 change order approved?', [SELECTED, OAK, MAIN]],
+    ['Is the slab 200,375 sqft?', [SELECTED, OAK, MAIN]],
+    ['Was 101,205 dollars paid?', [SELECTED, SHOP, YARD]],
+    ['Compare 200,375', [SELECTED, '2375 Days Inn']],
+  ] as const)('"%s" stays allowed (money, a measurement, or no part is a project)', (question, projects) => {
+    expectAllowed(question, projects);
   });
 });
