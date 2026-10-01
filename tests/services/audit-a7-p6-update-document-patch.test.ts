@@ -3676,3 +3676,90 @@ describe('Keep Phone and Keep Cloud never act on a cloud copy the screen did not
     expect(await getOfflineQueue()).toEqual([]);
   });
 });
+
+/**
+ * A7 pass 14 L-3 (older): an update archived while it was in conflict (on
+ * this phone, or on the iPad) kept its conflict open, and Keep Phone then
+ * sent the conflict's copy, which was not archived: the cloud read the update
+ * as not archived again. An archive is not a choice between the two copies,
+ * so it does not settle the conflict (that would silently drop David's
+ * offline edit kept in it); instead Keep Phone, and Keep Cloud, keep the
+ * update archived when either device archived it.
+ */
+describe('Keep Phone keeps an update archived during its conflict archived (audit A7 pass 14 L-3)', () => {
+  /** archiveProjectUpdate as the cloud does it: the row is marked archived. */
+  function cloudArchives() {
+    (archiveProjectUpdate as jest.Mock).mockImplementation(async ({ id, archivedAt }: { id: string; archivedAt: string }) => {
+      const row = mockCloud.get(id)!;
+      mockCloud.set(id, { updatedAt: archivedAt, updateData: { ...row.updateData, isArchived: true, archivedAt } });
+      return { ok: true, configured: true, stubbed: false, data: null };
+    });
+  }
+  afterEach(() => {
+    (archiveProjectUpdate as jest.Mock).mockImplementation(async () => ({ ok: true, configured: true, stubbed: false, data: null }));
+  });
+  /** David archives it on this phone, as the App's Archive does: its record is replayed into the queue. */
+  async function archivedOnThePhone(phone: Device) {
+    const archivedAt = new Date().toISOString();
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone(phone.saved()!, 'archive_sent_update', archivedAt)]);
+    expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true });
+    return archivedAt;
+  }
+
+  it('archived on this phone, the archive in the cloud: Keep Phone sends the phone\'s copy, still archived', async () => {
+    cloudArchives();
+    const phone = await offlineEditInConflictWithIPad([]);
+    const archivedAt = await archivedOnThePhone(phone);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, isArchived: true, archivedAt });
+    expect(await getSyncConflicts()).toHaveLength(1); // an archive settles nothing
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, isArchived: true, archivedAt });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  /** Archived on this phone; the cloud refuses the archive for now, so it waits in the queue. */
+  async function archiveWaitingOnThePhone(phone: Device) {
+    (archiveProjectUpdate as jest.Mock).mockResolvedValue({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+    const archivedAt = await archivedOnThePhone(phone);
+    await uploadPendingChanges();
+    expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true, archivedAt });
+    expect(inCloud().isArchived ?? false).toBe(false);
+    return archivedAt;
+  }
+
+  it('archived on this phone, the archive still waiting to go up: the same', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const archivedAt = await archiveWaitingOnThePhone(phone);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, isArchived: true, archivedAt });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('archived on the iPad: Keep Phone sends the phone\'s copy, still archived', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...inCloud(), isArchived: true, archivedAt }, archivedAt);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, isArchived: true, archivedAt });
+  });
+
+  it('archived on this phone, the archive still waiting: Keep Cloud keeps it archived too', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const archivedAt = await archiveWaitingOnThePhone(phone);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, isArchived: true, archivedAt });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('control: an update not archived stays not archived', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(inCloud().isArchived ?? false).toBe(false);
+  });
+});

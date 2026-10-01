@@ -4392,7 +4392,9 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
         sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
         ? currentCopy : cloudUpdate;
-      chosenCloudUpdate = withDocumentChanges(cloudNow) as TUpdate;
+      // Archived on this phone while the archive still waits (whole-app
+      // audit A7 pass 14 L-3): withdrawn with the rest, it is kept.
+      chosenCloudUpdate = withArchiveKept(withDocumentChanges(cloudNow), withdrawn) as TUpdate;
       queuedCloudCopy = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
         id: projectUpdateQueueItemId(conflict.localId),
         entity: 'project_update',
@@ -4425,7 +4427,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   if (localPayload.updateData === undefined) {
     throw new Error('sync_conflict_local_copy_missing');
   }
-  const localUpdateData = withDocumentChanges(localPayload.updateData) as TUpdate;
+  // Archived during the conflict, on either device (whole-app audit A7 pass
+  // 14 L-3): an archive settles neither copy, so the conflict stays for
+  // David's choice, and the copy he keeps stays archived. The conflict's own
+  // copy, never archived, un-archived the update in the cloud.
+  const conflictCopy = withDocumentChanges(localPayload.updateData);
+  const localUpdateData = withArchiveKept(conflictCopy, await getOfflineQueue(), current.data?.updateData) as TUpdate;
   const queueItemId = projectUpdateQueueItemId(localPayload.id);
   // A newer edit saved on this phone since the conflict, still waiting to go
   // up (whole-app audit A7 pass 10 L-4): the copy recorded with the conflict
@@ -4443,7 +4450,8 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   const ownerId = currentCloudOwner().ownerId;
   const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId);
-    const newer = newerPhoneEditForFieldUpdateConflict(conflict, queue, localUpdateData);
+    const newerFound = newerPhoneEditForFieldUpdateConflict(conflict, queue, conflictCopy);
+    const newer = newerFound && withArchiveKeptInQueuedCopy(newerFound, localUpdateData);
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
       payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
@@ -4467,6 +4475,32 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * The copy with the update's archive, when it was archived on either device
+ * and this copy is not (whole-app audit A7 pass 14 L-3): the cloud's copy
+ * reads archived, or this phone's archive waits in `queued`. A copy is never
+ * un-archived here.
+ */
+function withArchiveKept(copy: unknown, queued: readonly SyncQueueItem[], cloudCopy?: unknown): unknown {
+  if (!isRecord(copy) || copy.isArchived === true) return copy;
+  if (isRecord(cloudCopy) && cloudCopy.isArchived === true) {
+    return { ...copy, isArchived: true, archivedAt: typeof cloudCopy.archivedAt === 'string' ? cloudCopy.archivedAt : null };
+  }
+  const archive = queued.find(item => item.entity === 'project_update' && item.operation !== 'delete' &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).id === copy.id &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).archiveOnly === true);
+  if (!archive) return copy;
+  return { ...copy, isArchived: true, archivedAt: (archive.payload as Partial<ProjectUpdateRecordPayload>).archivedAt || archive.changedAt };
+}
+
+/** A newer edit Keep Phone carries, archived as the copy it keeps is (A7 pass 14 L-3). */
+function withArchiveKeptInQueuedCopy(item: SyncQueueItem, kept: unknown): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  const { isArchived, archivedAt } = (isRecord(kept) ? kept : {}) as { isArchived?: unknown; archivedAt?: unknown };
+  if (isArchived !== true || !isRecord(payload.updateData) || payload.updateData.isArchived === true) return item;
+  return { ...item, payload: { ...payload, updateData: { ...payload.updateData, isArchived, archivedAt } } };
 }
 
 /**
