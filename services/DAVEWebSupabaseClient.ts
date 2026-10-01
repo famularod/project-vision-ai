@@ -1416,6 +1416,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       documentId: string,
       expectedCloudUpdatedAt: string | null,
       linkedScheduleItems: readonly Readonly<{ id: string; cloudUpdatedAt: string | null }>[] = [],
+      /**
+       * The saved tasks shown that answer to a removed task from now on
+       * (planDAVEWebScheduleDocumentDelete, A10 pass 8 M1): saved before the
+       * deletion records, each only while its cloud revision matches.
+       */
+      answeringScheduleItems: readonly DAVEWebScheduleImportRevision[] = [],
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) throw staleDocumentError();
@@ -1480,6 +1486,51 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
 
       const deletedAt = new Date().toISOString();
+      if (answeringScheduleItems.length > 0) {
+        // A task a new master moved answers to its removed row before the row is recorded deleted (A10 pass 8 M1).
+        const linksChanged = () => new DAVEWebDocumentMutationError(
+          'conflict',
+          'The document task links changed on another device. Refresh and review them before deleting.',
+        );
+        const answeringIds = answeringScheduleItems.map(revision => revision.item.id);
+        const { data: deletedRows, error: deletedError } = await client
+          .from('dave_sync_tombstones')
+          .select('record_id')
+          .eq('owner_id', ownerId)
+          .eq('entity_type', 'schedule_item')
+          .in('record_id', answeringIds);
+        if (deletedError) {
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            'The document task links could not be checked before deletion. Refresh and try again.',
+          );
+        }
+        if (
+          (deletedRows ?? []).length > 0 ||
+          answeringScheduleItems.some(revision => !revision.cloudUpdatedAt)
+        ) {
+          markBehindCloud('schedule_items', 'sync_tombstones');
+          throw linksChanged();
+        }
+        const saved = await saveScheduleImportRows({
+          client,
+          ownerId,
+          cloudUpdatedAt: deletedAt,
+          additions: [],
+          revisions: answeringScheduleItems,
+        });
+        // The next refresh reads the tasks again, the rows saved here included.
+        markBehindCloud('schedule_items');
+        if (!saved.ok) {
+          if (saved.stale && saved.revertConfirmed) throw linksChanged();
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            saved.revertConfirmed
+              ? 'The document task links could not be saved. Nothing was deleted.'
+              : 'The document task links could not be saved, and their cleanup could not be confirmed. Nothing was deleted; refresh before retrying.',
+          );
+        }
+      }
       const deletionMarkers = [
         {
           owner_id: ownerId,
@@ -1733,7 +1784,8 @@ async function purgeAuthorizedDeletionAudit(
 
 /**
  * Writes a schedule import's tasks (whole-app audit A5 pass 3 F5, 30 Sep
- * 2026). Each saved task the import changes (planDAVEWebScheduleImport) is
+ * 2026), and the tasks a schedule's delete changes before its deletion
+ * records (A10 pass 8 M1, no new rows). Each saved task the import changes (planDAVEWebScheduleImport) is
  * updated only while its cloud revision is the one the web read, the guard
  * updateAuthorizedScheduleItem uses; then the new rows are inserted, never
  * upserted over a saved task. On any failure the saved tasks already changed

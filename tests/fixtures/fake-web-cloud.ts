@@ -5,6 +5,10 @@
  * revision-checked task update (update/eq/select/maybeSingle). It records
  * every table read so a test can tell a real re-read from the gateway's
  * cached copy. Nothing here reaches the network.
+ *
+ * A10 pass 8 (30 Sep 2026): also an id-list read (in, awaited as is), the
+ * deletion-record write (upsert) and the document-metadata read, so a web
+ * delete runs end to end.
  */
 export type FakeWebCloudRow = Record<string, unknown>;
 
@@ -37,6 +41,24 @@ export function createFakeWebCloud({
       eq(column: string, value: unknown) {
         filters.push(row => row[column] === value);
         return chain;
+      },
+      in(column: string, values: readonly unknown[]) {
+        filters.push(row => values.includes(row[column]));
+        return chain;
+      },
+      upsert(value: FakeWebCloudRow | FakeWebCloudRow[], options?: { onConflict?: string }) {
+        const keys = (options?.onConflict || 'id').split(',');
+        (Array.isArray(value) ? value : [value]).forEach(entry => {
+          const rows = rowsOf(table);
+          const index = rows.findIndex(row => keys.every(column => row[column] === entry[column]));
+          if (index >= 0) rows[index] = clone(entry); else rows.push(clone(entry));
+        });
+        return Promise.resolve({ data: null, error: null });
+      },
+      // A query awaited with no terminal call (select ... in ...).
+      then(resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) {
+        reads.push(table);
+        return Promise.resolve({ data: clone(matching()), error: null, status: 200 }).then(resolve, reject);
       },
       update(row: FakeWebCloudRow) {
         patch = clone(row);
@@ -79,7 +101,7 @@ export function createFakeWebCloud({
     async rpc(name: string) {
       if (name === 'dave_is_app_owner') return { data: true, error: null, status: 200 };
       if (name === 'dave_list_reference_document_metadata') {
-        return { data: [], error: null, status: 200 };
+        return { data: clone(rowsOf('reference_documents')), error: null, status: 200 };
       }
       return { data: null, error: null, status: 200 };
     },

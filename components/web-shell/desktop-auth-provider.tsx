@@ -29,6 +29,7 @@ import {
   type DAVEWebScheduleItem,
 } from '../../services/DAVEWebTaskEditing';
 import {
+  planDAVEWebScheduleDocumentDelete,
   planDAVEWebScheduleImport,
   type DAVEWebPreparedUpload,
   type DAVEWebReportRecord,
@@ -972,10 +973,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
   ) => {
+    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1).
+    const current = snapshotRef.current;
     await daveWebSupabaseGateway.deleteAuthorizedReferenceDocument(
       document.id,
       document.cloudUpdatedAt,
       deleteLinkedTasks ? document.linkedScheduleItems : [],
+      deleteLinkedTasks && current ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document }) : [],
     );
     const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks
       ? ['sync_tombstones', 'reference_documents', 'schedule_items']

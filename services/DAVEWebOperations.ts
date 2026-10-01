@@ -31,7 +31,8 @@ import {
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
 import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
-import { scheduleItemForCloud } from './DAVEWebTaskEditing';
+import { scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
@@ -385,6 +386,48 @@ export function planDAVEWebScheduleImport({
     additions: Object.freeze([...merged.additions]),
     revisions: Object.freeze(revisions),
   });
+}
+
+/**
+ * Whole-app audit A10 pass 8 M1 / A8 pass 9 M1 (30 Sep 2026): "Delete
+ * Document + N Tasks" on the web wrote only the deletion records. A row a new
+ * master saved for a task it moved before 79f49d3 lists no earlier id, so a
+ * field update linked to the old row became "Historical evidence — linked
+ * task was deleted." on the web and the phone, and left every summary; the
+ * phone's "Delete PDF + Items" writes the removed id onto the task shown
+ * first (A10 pass 6 M1). The saved tasks the web delete now changes before
+ * its deletion records, worked out by the phone's own helper
+ * (scheduleItemsAfterScheduleDeleted) over every saved task the web read,
+ * each saved only while its cloud revision is the one read. None when the
+ * delete keeps the tasks.
+ */
+export function planDAVEWebScheduleDocumentDelete({
+  snapshot,
+  document,
+  updatedAt = new Date().toISOString(),
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
+  document: DAVEWebReferenceDocument;
+  updatedAt?: string;
+}): readonly DAVEWebScheduleImportRevision[] {
+  const removedIds = new Set(document.linkedScheduleItems.map(item => item.id));
+  if (removedIds.size === 0) return Object.freeze([]);
+  const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
+  const kept = saved.filter(item => !removedIds.has(item.id));
+  const keptById = new Map(kept.map(item => [item.id, item]));
+  const changed = scheduleItemsAfterScheduleDeleted({
+    items: kept,
+    removed: saved.filter(item => removedIds.has(item.id)),
+    document,
+    documents: snapshot.referenceDocuments.filter(other => other.id !== document.id),
+    updatedAt,
+  });
+  return Object.freeze(changed.flatMap(item => {
+    const before = keptById.get(item.id);
+    return before
+      ? [Object.freeze({ item: scheduleItemForCloud(item), previous: scheduleItemForCloud(before), cloudUpdatedAt: before.cloudUpdatedAt ?? null })]
+      : [];
+  }));
 }
 
 function canonicalSha256(value: string): string | null {
