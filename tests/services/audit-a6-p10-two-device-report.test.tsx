@@ -15,12 +15,17 @@
 //     made on the phone after it synced was still held and left out; "Keep
 //     cloud" brought back an older copy and both devices were held; Sync Now
 //     could not clear it.
+// L3. The sender id was in app storage: a reinstall lost it (the phone's own
+//     send then read "Your other device already sent this report"), and an
+//     iPad restored from the phone's backup took the phone's (the phone's
+//     sends counted as the iPad's own).
 //
 // Now: a device is behind when the report it counts from was sent by the
 // other install after this device last downloaded every task. While behind,
 // "since the last report" is not counted and approval waits, saying why; the
 // screen asks the app to download the tasks, and Settings › Sync Now does it
-// too. Once a download started after the send has landed it never waits.
+// too. Once a download started after the send has landed it never waits. The
+// install id lives in the Keychain, this device only.
 
 /** Each simulated device has its own app storage and Keychain; one shared fake cloud stands in for report_snapshots. */
 const mockDevices = new Map<string, Map<string, string>>();
@@ -447,5 +452,56 @@ describe('the wait always ends once this device has downloaded the tasks (A6 pas
     await approvable();
     expect(screen.queryByText(/hasn't received/)).toBeNull();
     expect(await period()).toContain('Frame walls was reopened at 40% complete.');
+  });
+});
+
+const SECURE_SENDER_ID_KEY = 'vitruvius.report-sender-id.v1';
+
+describe('this install\'s sender id lives in the Keychain, on this device only (A6 pass 10 L3)', () => {
+  it('after a reinstall (app storage wiped, Keychain kept), the phone\'s own earlier send is still its own', async () => {
+    const phone = await phoneSendsInTheMorning();
+    phone.rerender(reportsScreen(tower(1)));
+    await approveAndSend();
+    const own = local('phone') as DAVEReportSnapshot;
+    expect(own.sentBy).toBe(mockKeychains.get('phone')?.get(SECURE_SENDER_ID_KEY));
+    await waitFor(() => expect(cloudRow()?.snapshot.sentBy).toBe(own.sentBy), SLOW);
+    phone.unmount();
+
+    mockDevices.get('phone')?.clear();
+    open('phone', tower(1));
+    await approvable();
+    expect(screen.queryByText(/^Your other device/)).toBeNull();
+  });
+
+  it('an iPad restored from the phone\'s backup has an id of its own: the phone\'s send is the other device\'s there', async () => {
+    const phone = await phoneSendsInTheMorning();
+    phone.rerender(reportsScreen(tower(1)));
+    await approveAndSend();
+    const phoneSend = local('phone') as DAVEReportSnapshot;
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(phoneSend.deliveredAt), SLOW);
+    phone.unmount();
+
+    // The backup carries app storage; a this-device-only Keychain item stays on the phone.
+    mockDevices.set('ipad', new Map(mockDevices.get('phone')));
+    await downloadsTasks('ipad');
+    const ipad = open('ipad', tower(1));
+    await approvable();
+    expect(screen.getByText(alreadySent(phoneSend))).toBeTruthy();
+
+    // The iPad completes Pour slab and sends: its send carries its own id.
+    ipad.rerender(reportsScreen(tower(2)));
+    await approveAndSend();
+    const ipadSend = local('ipad') as DAVEReportSnapshot;
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(ipadSend.deliveredAt), SLOW);
+    expect(ipadSend.sentBy).toBe(mockKeychains.get('ipad')?.get(SECURE_SENDER_ID_KEY));
+    expect(ipadSend.sentBy).not.toBe(phoneSend.sentBy);
+    ipad.unmount();
+
+    // So the phone, synced, is told the iPad already sent it, instead of sending it a third time.
+    await downloadsTasks('phone');
+    open('phone', tower(2));
+    await approvable();
+    expect(screen.getByText(alreadySent(ipadSend))).toBeTruthy();
+    expect(onCopyReport).toHaveBeenCalledTimes(3);
   });
 });

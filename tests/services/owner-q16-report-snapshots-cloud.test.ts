@@ -71,6 +71,15 @@ jest.mock('../../services/SupabaseAuthStorage', () => ({
     removeItem: jest.fn(async () => undefined),
   },
 }));
+// Added on purpose by A6 pass 10 L3: the repository keeps this install's
+// report sender id in the Keychain, and this file replaces react-native, so
+// the native module is stood in for here as SupabaseAuthStorage is above.
+jest.mock('expo-secure-store', () => ({
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 6,
+  isAvailableAsync: jest.fn(async () => false),
+  getItemAsync: jest.fn(async () => null),
+  setItemAsync: jest.fn(async () => undefined),
+}));
 jest.mock('../../services/ResumableStorageUpload', () => ({
   RESUMABLE_UPLOAD_THRESHOLD_BYTES: 6 * 1024 * 1024,
   uploadFileResumably: jest.fn(),
