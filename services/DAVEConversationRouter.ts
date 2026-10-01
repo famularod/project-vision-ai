@@ -241,16 +241,19 @@ function talkNamedProjects(
  * electrical done?". A name of two or more words counts wherever it is named
  * in full; a one-word name only with "project", "job", "at", "for", "on",
  * "of", "about", "to", "from" or "with" before it ("at Harbor", "status of
- * Harbor"; audit A9 pass 9 L3 added the last six), at the start or right
- * after "how", "is", "what's" or "status" ("Harbor is behind?", "How is
- * Harbor going?"; pass 9 L3), or with "project" or "job" after it ("the
+ * Harbor"; audit A9 pass 9 L3 added the last six; pass 10 L3 added "in",
+ * "and" and "vs": "What's left in Harbor?", "Compare 2321 and Harbor"), at
+ * the start or right after "how", "is", "what's" or "status" ("Harbor is
+ * behind?", "How is Harbor going?"; pass 9 L3) or "did", "does", "has",
+ * "was" or "will" ("Did Harbor pass final?", "When will Harbor finish?";
+ * pass 10 L3), or with "project" or "job" after it ("the
  * Harbor project"), as for the closed 3-digit numbers in audit A9 pass 4 L3.
  * Its number, if it has one, still names it (talkNamedProjects reads numbers
  * separately). Open projects are matched by name anywhere, as before.
  */
 function closedNameNamesProject(name: string, text: string, start: number, end: number) {
   if (normalize(name).split(' ').length > 1) return true;
-  return /(?:^|\b(?:project|job|at|for|on|of|about|to|from|with|how|is|what['’]?s|status)\s*(?:(?:no|number)\.?\s*)?[:#]?)\s*$/i
+  return /(?:^|\b(?:project|job|at|for|on|of|about|to|from|with|in|and|vs\.?|did|does|has|was|will|how|is|what['’]?s|status)\s*(?:(?:no|number)\.?\s*)?[:#]?)\s*$/i
     .test(text.slice(0, start)) ||
     /^\s+(?:project|job)\b/i.test(text.slice(end));
 }

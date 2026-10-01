@@ -137,3 +137,39 @@ describe('audit A9 pass 10 L2: a hyphen-joined letter in a project name is part 
     expect(desktop('What is left at 2375?', [SELECTED, ANNEX], [], ANNEX)).toBeNull();
   });
 });
+
+describe('audit A9 pass 10 L3: a closed one-word project name after in/and/vs/did/does/has/was/will names it in Talk', () => {
+  const PROJECTS = [SELECTED, '2375 Compliance Project'];
+  const talkReopen = (closed: string) =>
+    `Project 2321 is selected, but ${closed} is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.`;
+
+  it.each([
+    "What's left in Harbor?",
+    'Did Harbor pass final?',
+    'Does Harbor have open RFIs?',
+    'When will Harbor finish?',
+    'Has Harbor closed out?',
+    'Was Harbor on budget?',
+    'Is 2375 ahead vs Harbor?',
+  ])('"%s" with Harbor closed is refused in Talk', question => {
+    expect(mentionedDAVEProject(question, PROJECTS, ['Harbor'])).toBeNull();
+    expect(talkAnswer(question, [SELECTED], ['Harbor'])).toBe(talkReopen('Harbor'));
+  });
+
+  it('"Compare 2321 and Harbor?" names two projects, so Talk asks which', () => {
+    expect(talkAnswer('Compare 2321 and Harbor?', PROJECTS, ['Harbor'])).toBe(
+      'This question names two projects, 2321 and Harbor. Which one do you mean? Ask again about just that project.',
+    );
+  });
+
+  it('accepted: an everyday word after one of these that is a closed project\'s name is refused', () => {
+    expect(talkAnswer('Was main power restored?', PROJECTS, ['Main'])).toBe(talkReopen('Main'));
+  });
+
+  it.each(['Is the harbor crane down?', 'Did the crew finish the main line at the harbor side?'])(
+    '"%s" with Harbor and Main closed is still answered',
+    question => {
+      expect(talkAnswer(question, PROJECTS, ['Harbor', 'Main'])).toBeNull();
+    },
+  );
+});
