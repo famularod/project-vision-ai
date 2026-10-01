@@ -664,8 +664,15 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    * Keep Cloud's chosen copy (whole-app audit A7 pass 17 L-1): landing, or
    * found already in the cloud, it does not close the conflict. Keep Cloud
    * closes it once Settings has put the copy on the card (beforeClose).
+   * It is the cloud's copy, never the phone's work (A4 pass 21 F1).
    */
   keepCloudChoice?: true;
+  /**
+   * Keep Cloud's copy only: the document changes and analysis results it
+   * took in while Keep Cloud tried (whole-app audit A4 pass 21 F1), which go
+   * onto the phone's work it puts back when Keep Cloud fails.
+   */
+  absorbedPatches?: FieldUpdateDocumentPatch[];
 };
 
 type ProjectUpdateDeletePayload = {
@@ -2519,11 +2526,15 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
     // Keep Cloud, which withdraws that edit, lost it. The patch carries the
     // held edit (newerEdit), which is queued again, as it was, once the
     // patch lands (newerEditQueuedAfter). A later change goes into both.
-    const heldForReview = existing && !waitingPatches && existingPayload?.updateData &&
+    // Keep Cloud's copy takes it in, and keeps it (A4 pass 21 F1): a Keep
+    // Cloud that fails, or the next one after a kill, puts it on the phone's work.
+    const heldForReview = existing && !waitingPatches && existingPayload?.updateData && !existingPayload.keepCloudChoice &&
       isFieldUpdatePhotoAnalysisPatch(patch) && fieldUpdateCopyHeldForReview(existing, conflicts) ? existing : null;
     const carried = heldForReview ?? (waitingPatches && isRecord(existingPayload?.newerEdit) ? existingPayload!.newerEdit : null);
+    const absorbed = existingPayload?.keepCloudChoice
+      ? { absorbedPatches: mergeFieldUpdateDocumentPatches(existingPayload.absorbedPatches || [], patch) } : {};
     const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData && !heldForReview
-      ? withChange(existing)
+      ? withChange({ ...existing, payload: { ...existingPayload, ...absorbed } })
       : {
           id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
           payload: {
@@ -2803,15 +2814,44 @@ async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<Syn
  * the conflict. Work queued since is newer, and stays.
  */
 async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueItem[], queued: SyncQueueItem | null): Promise<void> {
-  await mutateOfflineQueue(queue => {
-    const kept = queued ? queue.filter(item => !(item.id === queued.id && sameStagedProjectUpdateRecord(item, queued))) : queue;
+  const chosenFor = (queued?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict;
+  const { back, dropped } = await mutateOfflineQueue(queue => {
+    // Keep Cloud's copy goes by its mark (whole-app audit A4 pass 21 F1),
+    // whatever it took in meanwhile: changed by a document upload or an
+    // analysis result, it stayed, and the phone's work was not put back.
+    const chosen = queued ? queue.find(item => item.id === queued.id && isKeepCloudChoice(item, chosenFor)) : undefined;
+    const kept = queue.filter(item => item !== chosen);
     const queuedIds = new Set(kept.map(item => item.id));
     // The later withdrawal of an id holds the newer work. None of it goes
-    // over the conflict now without a new choice (A4 pass 15 H1).
-    const back = [...new Map(withdrawn.map(item => [item.id, withoutChoiceOverConflict(item)])).values()]
+    // over the conflict now without a new choice (A4 pass 15 H1). A copy an
+    // earlier Keep Cloud left (a kill) is not the phone's work: dropped.
+    const restored = [...new Map(withdrawn.filter(item => !isKeepCloudChoice(item))
+      .map(item => [item.id, withoutChoiceOverConflict(item)])).values()]
       .filter(item => !queuedIds.has(item.id));
-    return { nextQueue: [...kept, ...back], result: undefined, persist: kept.length !== queue.length || back.length > 0 };
+    return {
+      nextQueue: [...kept, ...restored],
+      result: { back: restored, dropped: [...(chosen ? [chosen] : []), ...withdrawn.filter(item => isKeepCloudChoice(item))] },
+      persist: kept.length !== queue.length || restored.length > 0,
+    };
   });
+  // What a copy dropped took in goes onto the phone's work put back, as any
+  // such change does (queueProjectUpdatePatch): an analysis result in a patch
+  // on the cloud's copy that carries the held edit (A7 pass 14 L-2), a
+  // document change into the held edit.
+  for (const copy of dropped) {
+    const card = [...back.filter(item => item.id === copy.id), copy]
+      .map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).updateData).find(isRecord);
+    for (const patch of (copy.payload as Partial<ProjectUpdateRecordPayload>).absorbedPatches ?? []) {
+      if (card) await queueProjectUpdatePatch(card as unknown as PatchedProjectUpdate, patch);
+    }
+  }
+}
+
+/** Keep Cloud's chosen copy (A7 pass 17 L-1), over this conflict when one is named. */
+function isKeepCloudChoice(item: SyncQueueItem, conflictId?: string): boolean {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload> | undefined;
+  return item.entity === 'project_update' && payload?.keepCloudChoice === true &&
+    (conflictId === undefined || payload.overConflict === conflictId);
 }
 
 function withoutChoiceOverConflict(item: SyncQueueItem): SyncQueueItem {
@@ -3439,8 +3479,14 @@ function fieldUpdateCopyHeldForReview(item: SyncQueueItem, conflicts: readonly S
   const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
   if (!payload.id || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return false;
   const conflict = openFieldUpdateConflict(conflicts, payload.id);
-  return Boolean(conflict) && payload.overConflict !== conflict!.id;
+  // Keep Cloud's copy goes up only while Keep Cloud sends it (A4 pass 21
+  // F1): one a killed app left queued waits, and the next choice drops it.
+  return Boolean(conflict) && (payload.overConflict !== conflict!.id ||
+    (payload.keepCloudChoice === true && !keepCloudChoicesSending.has(conflict!.id)));
 }
+
+/** The conflicts whose Keep Cloud is sending its chosen copy now (its uploadExactQueueItem), in this launch (A4 pass 21 F1). */
+const keepCloudChoicesSending = new Set<string>();
 
 function accountChangedDuringUpload(
   uploaded: number,
@@ -4485,7 +4531,9 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
         changedAt: new Date().toISOString(),
         autoUpload: false,
       }) as SyncQueueItem;
-      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId));
+      keepCloudChoicesSending.add(conflict.id); // its copy goes in this pass only (A4 pass 21 F1)
+      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId))
+        .finally(() => keepCloudChoicesSending.delete(conflict.id));
       if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
     } catch (error) {
       await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
@@ -4615,8 +4663,9 @@ function phoneCopiesOfFieldUpdateInConflict(conflict: SyncConflict, queue: reado
     (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId);
   const carried = [...queued.map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).newerEdit), localPayload?.newerEdit]
     .filter((item): item is SyncQueueItem => isRecord(item));
+  // Keep Cloud's copy left queued is the cloud's (A4 pass 21 F1).
   return [localPayload?.updateData, ...[...queued, ...carried]
-    .filter(item => !queuedFieldUpdateDocumentPatches(item))
+    .filter(item => !queuedFieldUpdateDocumentPatches(item) && !isKeepCloudChoice(item))
     .map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).updateData)]
     .filter(isRecord);
 }
@@ -4743,10 +4792,13 @@ export function newerPhoneEditForFieldUpdateConflict(
     isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, conflictCopy)) ?? null;
 }
 
-/** A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4). */
+/**
+ * A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4).
+ * Never Keep Cloud's copy (A4 pass 21 F1): Keep Phone sent it after David's edit, over it.
+ */
 function isNewerQueuedPhoneEdit(item: SyncQueueItem, conflictCopy: unknown): boolean {
   const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
-  return item.entity === 'project_update' && item.operation !== 'delete' && !payload.archiveOnly &&
+  return item.entity === 'project_update' && item.operation !== 'delete' && !payload.archiveOnly && !isKeepCloudChoice(item) &&
     !queuedFieldUpdateDocumentPatches(item) && isRecord(payload.updateData) &&
     !sameProjectUpdateContent(payload.updateData, conflictCopy as ProjectUpdate, { retryStampsAside: true });
 }
