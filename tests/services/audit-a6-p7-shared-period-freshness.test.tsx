@@ -94,6 +94,7 @@ import {
   rememberReportApproval,
   rememberReportEdits,
 } from '../../services/ReportSessionState';
+import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from '../../services/ScheduleCloudPull';
 import type { ScheduleItem } from '../../types';
 
 const KEY = '@vitruvius/report-snapshots/v1:tower:project_manager';
@@ -108,6 +109,18 @@ const cloudRow = () => mockCloud.get('tower|project_manager') as { snapshot: DAV
 
 /** The Reports screen's own AppState listeners, so a test can bring the app back to the front. */
 const appStateListeners = new Set<(state: string) => void>();
+
+// Added on purpose by A6 pass 10 M1/M2: a device whose report counts from
+// the other device's send now waits until it has downloaded every task since
+// that send, and asks the app to do it. These flows give each device's
+// synced tasks as props, so the app here downloads at once when asked.
+let stopAppDownloads: () => void = () => undefined;
+beforeEach(() => {
+  stopAppDownloads = registerScheduleCloudPullRequest(() => {
+    void recordScheduleCloudPull(new Date().toISOString());
+  });
+});
+afterEach(() => stopAppDownloads());
 
 beforeEach(() => {
   mockDevices.clear();

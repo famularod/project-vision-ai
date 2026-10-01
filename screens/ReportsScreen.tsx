@@ -57,6 +57,7 @@ import {
   buildDAVEReportSourceFingerprint,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
+  REPORT_PERIOD_WAITING_LINE,
   reportBulletText,
   type DAVEReportBriefing,
 } from '../services/DAVEReportIntelligence';
@@ -78,12 +79,20 @@ import {
   describeReportSendTime,
   laterSentReportPeriod,
   markReportSnapshotDelivered,
+  otherDeviceSendNotReceived,
   reportBaselineSnapshot,
   reportPeriodKey,
+  reportPeriodSend,
   reportPeriodSentAfter,
   reportPeriodSentAt,
   reportSnapshotToSave,
 } from '../services/DAVEReportSnapshot';
+import {
+  lastScheduleCloudPull,
+  onScheduleCloudPull,
+  reportSendFirstSeenAt,
+  requestScheduleCloudPull,
+} from '../services/ScheduleCloudPull';
 import {
   approvedReportFingerprint,
   approvedReportPeriodSentAt,
@@ -275,6 +284,8 @@ export function ReportsScreen({
   const [periodNotice, setPeriodNotice] = useState('');
   const [snapshotReload, setSnapshotReload] = useState(0);
   const [approvalChecking, setApprovalChecking] = useState(false);
+  // When this device last downloaded every task (whole-app audit A6 pass 10 M1, M2).
+  const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -367,6 +378,32 @@ export function ReportsScreen({
     reportSourceFingerprint,
     reportTruths,
   ]);
+  // Whole-app audit A6 pass 10 M1, M2 (30 Sep 2026): the report this one
+  // counts from was sent by the other device after this device last
+  // downloaded the tasks, so any difference could be the other device's
+  // change read backwards: "Frame walls was reopened" when the phone had only
+  // added a note before its sync, "Punch list was removed" when the iPad had
+  // added it. Pass 9 checked task by task, by row times a note also moves.
+  // Until this device has downloaded the tasks since that send, "since the
+  // last report" is not counted and approval waits.
+  const periodSend = snapshotScopeLoaded ? reportPeriodSend(previousReportSnapshot) : null;
+  const periodSendKey = periodSend?.sentBy && typeof periodSend.deliveredAt === 'string'
+    ? `${periodSend.sentBy}|${periodSend.deliveredAt}`
+    : null;
+  const periodSendSeenAt = useMemo(
+    () => (periodSendKey ? reportSendFirstSeenAt(periodSendKey) : null),
+    [periodSendKey],
+  );
+  const reportDeviceBehindSend = snapshotScopeLoaded
+    ? otherDeviceSendNotReceived({
+        period: previousReportSnapshot,
+        currentFingerprint: reportSourceFingerprint,
+        ownSends: ownReportSendTimes(),
+        pulledAt: schedulePulledAt,
+        seenAt: periodSendSeenAt,
+      })
+    : null;
+  const reportDeviceBehind = Boolean(reportDeviceBehindSend);
   const reportBriefing = useMemo(() => buildDAVEReportBriefing({
     truths: reportTruths,
     selectedProjectNames,
@@ -375,8 +412,10 @@ export function ReportsScreen({
     previousSnapshot: snapshotScopeLoaded
       ? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)
       : null,
+    waitingForOtherDevice: reportDeviceBehind,
   }), [
     previousReportSnapshot,
+    reportDeviceBehind,
     reportSourceFingerprint,
     reportTruths,
     selectedProjectNames,
@@ -465,17 +504,14 @@ export function ReportsScreen({
   const reportBaselineSentAt = snapshotScopeLoaded
     ? reportPeriodSentAt(reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint))
     : null;
+  // Edits made while "since the last report" was not counted keep that line
+  // in their body, so they stand only while it still is not (A6 pass 10).
   const reportEditsPeriodIsCurrent = !reportEdits ||
     !snapshotScopeLoaded ||
-    reportEdits.baselineSentAt === undefined ||
-    reportEdits.baselineSentAt === reportBaselineSentAt;
-  // Whole-app audit A6 pass 9 M2 (30 Sep 2026): the report this one counts
-  // from has newer facts for a task than this device: the other device
-  // changed it and this device's sync has not brought it yet. The phone's
-  // report read "Frame walls was reopened at 40% complete." after the iPad
-  // marked it done, and could be sent. It waits until this device catches up.
-  const reportDeviceBehind = snapshotScopeLoaded &&
-    (reportBriefing.reportingPeriod.staleTaskIds?.length ?? 0) > 0;
+    (
+      (reportEdits.baselineSentAt === undefined || reportEdits.baselineSentAt === reportBaselineSentAt) &&
+      !(reportEdits.periodNotCounted && !reportDeviceBehind)
+    );
   // Approval waits for the owner's baseline to load (audit A6, pass 2: a tap
   // right after a project toggle approved a report built without its
   // period and replaced the stored snapshot).
@@ -488,8 +524,8 @@ export function ReportsScreen({
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : !snapshotScopeLoaded
         ? 'The reporting period is still loading.'
-        : reportDeviceBehind
-          ? REPORT_DEVICE_BEHIND_MESSAGE
+        : reportDeviceBehindSend
+          ? reportDeviceBehindMessage(reportDeviceBehindSend)
           : !reportEditsPeriodIsCurrent
             ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
             : reportApprovalPolicy.message;
@@ -532,6 +568,21 @@ export function ReportsScreen({
     };
   }, []);
 
+  // A download of every task that lands while Reports is open ends a wait
+  // for the other device's changes at once (whole-app audit A6 pass 10 L2).
+  useEffect(() => onScheduleCloudPull(pulledAt => {
+    if (mountedRef.current) setSchedulePulledAt(current => laterTime(current, pulledAt));
+  }), []);
+
+  // While waiting, the app is asked to download the tasks now (its refresh;
+  // Settings › Sync Now does the same), again on each return to the app.
+  const behindSendKey = reportDeviceBehindSend
+    ? `${reportDeviceBehindSend.sentBy}|${reportDeviceBehindSend.deliveredAt}`
+    : null;
+  useEffect(() => {
+    if (behindSendKey) requestScheduleCloudPull();
+  }, [behindSendKey, snapshotReload]);
+
   useEffect(() => {
     // Back in the app with Reports open, the shared period is read again
     // (whole-app audit A6 pass 7): a phone left here since morning kept its
@@ -560,14 +611,19 @@ export function ReportsScreen({
       .then(async loaded => {
         // This device's own send, read back after a relaunch, is known as
         // its own (whole-app audit A6 pass 9 L2), so it is never taken for
-        // the other device's.
-        if (await reportSnapshotSentHere(loaded.snapshot).catch(() => false)) {
-          rememberOwnReportSend(loaded.snapshot?.deliveredAt as string);
+        // the other device's; so is the send an approval not yet sent
+        // counts from (A6 pass 10).
+        for (const sent of new Set([loaded.snapshot, reportPeriodSend(loaded.snapshot)])) {
+          if (await reportSnapshotSentHere(sent).catch(() => false)) {
+            rememberOwnReportSend(sent?.deliveredAt as string);
+          }
         }
-        return loaded;
+        // When this device last downloaded every task, read with the period (A6 pass 10 M1, M2).
+        return { loaded, pulledAt: await lastScheduleCloudPull().catch(() => null) };
       })
-      .then(loaded => {
+      .then(({ loaded, pulledAt }) => {
         if (cancelled) return;
+        setSchedulePulledAt(current => laterTime(current, pulledAt));
         if (refresh) {
           // A send in progress records its own report first; the next return reads again.
           if (!pendingCommunicationTokenRef.current) {
@@ -1024,8 +1080,9 @@ export function ReportsScreen({
                 title,
                 body: reportEdits?.body ?? pieReportDraft.body,
                 sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
-                // The "since" section these edits were made from (A6 pass 8 M1).
+                // The "since" section these edits were made from (A6 pass 8 M1; not counted yet, pass 10).
                 baselineSentAt: reportEdits ? reportEdits.baselineSentAt : reportBaselineSentAt,
+                periodNotCounted: reportEdits ? reportEdits.periodNotCounted : reportDeviceBehind,
               };
               setReportEdits(next);
               rememberReportEdits(reportStateIdentityKey, next);
@@ -1036,6 +1093,7 @@ export function ReportsScreen({
                 body,
                 sourceFingerprint: reportEdits?.sourceFingerprint ?? reportSourceFingerprint,
                 baselineSentAt: reportEdits ? reportEdits.baselineSentAt : reportBaselineSentAt,
+                periodNotCounted: reportEdits ? reportEdits.periodNotCounted : reportDeviceBehind,
               };
               setReportEdits(next);
               rememberReportEdits(reportStateIdentityKey, next);
@@ -1242,9 +1300,24 @@ type SharedPeriodMoment = 'refresh' | 'approve' | 'send';
 
 const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
 
-/** Approval waits for this device to catch up with the other device's changes (whole-app audit A6 pass 9 M2). */
-const REPORT_DEVICE_BEHIND_MESSAGE =
-  "This device hasn't received your other device's latest changes yet. Use Settings › Sync Now, then review.";
+/**
+ * Approval waits for this device to catch up with the other device's changes
+ * (whole-app audit A6 pass 9 M2), and says why (pass 10 L2): the other
+ * device sent the report this one counts from after this device last
+ * downloaded the tasks.
+ */
+function reportDeviceBehindMessage(send: DAVEReportSnapshot): string {
+  return "This device hasn't received your other device's latest changes yet: your other device sent the last report " +
+    `${describeReportSendTime(send.deliveredAt as string)}, after this device last downloaded your tasks. ` +
+    'Use Settings › Sync Now, then review.';
+}
+
+/** The later of two times, either possibly absent. */
+function laterTime(current: string | null, next: string | null): string | null {
+  if (!next || !Number.isFinite(Date.parse(next))) return current;
+  if (!current || !Number.isFinite(Date.parse(current))) return next;
+  return Date.parse(next) > Date.parse(current) ? next : current;
+}
 
 /**
  * What the owner is told when the other device sent a report after the one
@@ -1947,7 +2020,10 @@ function ReportPeriodSummary({
         </View>
       </View>
       {note ? <Text style={styles.reportPeriodCheckNote}>{note}</Text> : null}
-      {period.basis === 'previous_approved_report' ? (
+      {period.waitingForOtherDevice ? (
+        // Not counted until this device has the other device's changes (A6 pass 10 M1, M2).
+        <Text style={styles.reportChartEmpty}>{REPORT_PERIOD_WAITING_LINE}</Text>
+      ) : period.basis === 'previous_approved_report' ? (
         <View style={styles.reportDeltaRow}>
           {deltas.map(delta => (
             <View key={delta.label} style={styles.reportDeltaMetric}>
@@ -1980,7 +2056,7 @@ function ReportPeriodSummary({
             </View>
           ))}
         </View>
-      ) : period.basis === 'previous_approved_report' ? (
+      ) : period.basis === 'previous_approved_report' && !period.waitingForOtherDevice ? (
         <Text style={styles.reportChartEmpty}>No material task changes were recorded in this period.</Text>
       ) : null}
     </View>

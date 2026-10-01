@@ -30,6 +30,12 @@ export type ReportSessionEdits = Readonly<{
    * Absent: edits made before this was kept, taken as current.
    */
   baselineSentAt?: string | null;
+  /**
+   * Made while "since the last report" was not counted, this device waiting
+   * for the other device's changes (whole-app audit A6 pass 10 M1, M2): the
+   * body says so, and the edits stand only while that is still true.
+   */
+  periodNotCounted?: boolean;
 }>;
 
 export type ReportSessionAcknowledgement = Readonly<{ fingerprint: string; ids: readonly string[] }>;

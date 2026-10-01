@@ -9,6 +9,7 @@ import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
   daveReportSnapshotScopeKey,
+  reportPeriodWaitingForOtherDevice,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -159,10 +160,17 @@ export function buildDAVEReportBriefing({
   truths,
   selectedProjectNames,
   previousSnapshot,
+  waitingForOtherDevice = false,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
   previousSnapshot?: DAVEReportSnapshot | null;
+  /**
+   * The report this one counts from was sent by the other device after this
+   * device last downloaded the tasks: "since the last report" is not counted
+   * until it has them (whole-app audit A6 pass 10 M1, M2).
+   */
+  waitingForOtherDevice?: boolean;
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -177,10 +185,11 @@ export function buildDAVEReportBriefing({
     sourceFingerprint: buildDAVEReportSourceFingerprint(truths),
     capturedAt: generatedAt,
   });
-  const reportingPeriod = compareDAVEReportSnapshots({
+  const comparison = compareDAVEReportSnapshots({
     current: currentSnapshot,
     previous: previousSnapshot,
   });
+  const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
   const criticalDecisions = truths.flatMap(truth => truth.reasoning.criticalDecisions);
   const actionDecisions = uniqueBy([
@@ -223,7 +232,8 @@ export function buildDAVEReportBriefing({
     .map(decision =>
       `${truthProjectName(truths, decision.taskId)} — ${decision.taskName}: ${decision.recommendation.action}`,
     )).slice(0, 8);
-  const allRecentChanges = buildRecentChanges({ truths, reportingPeriod });
+  // Nothing is said to have changed in a period not counted yet (A6 pass 10 M1, M2).
+  const allRecentChanges = reportingPeriod.waitingForOtherDevice ? [] : buildRecentChanges({ truths, reportingPeriod });
   const recentChanges = allRecentChanges.slice(0, 12);
   // The period's own list stops at 20; the ones it left out still count.
   // Counted after the de-duplication above, so the report's "And N more
@@ -616,7 +626,9 @@ function formatReportBody(
       `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
   });
   const period = briefing.reportingPeriod;
-  const reportingMovement = period.basis === 'previous_approved_report'
+  const reportingMovement = period.waitingForOtherDevice
+    ? [REPORT_PERIOD_WAITING_LINE]
+    : period.basis === 'previous_approved_report'
     ? [
         `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
           `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
@@ -670,6 +682,10 @@ function formatReportBody(
 
 /** The changes the written report names; the rest are counted (A6 pass 8 L1). */
 const SINCE_LINES = 6;
+
+/** "Since the last report" while this device waits for the other device's changes (A6 pass 10 M1, M2). */
+export const REPORT_PERIOD_WAITING_LINE =
+  "Not counted yet: this device hasn't received your other device's latest changes.";
 
 function moreChangesLine(more: number): string[] {
   return more > 0 ? [`And ${more} more change${more === 1 ? '' : 's'}.`] : [];

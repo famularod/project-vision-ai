@@ -491,6 +491,7 @@ import {
   reconcileDAVEScheduleRecords,
   recoverDAVEScheduleRecords,
 } from './services/DAVEScheduleRecovery';
+import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
 import {
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
@@ -6158,6 +6159,7 @@ useEffect(() => {
       const shouldRefresh = (name: DAVEOperationalCollectionName) =>
         !requestedCollectionSet || requestedCollectionSet.has(name);
       const refreshCommit = operationalRefreshCommitGuard.begin();
+      const refreshStartedAt = new Date().toISOString(); // what the downloads below can hold (A6 pass 10 M1)
       const tombstones = await loadDAVEOperationalTombstones();
       if (!active || !refreshCommit.isCurrent()) return;
       const latestOperationalTombstones = tombstones.tombstones;
@@ -6391,6 +6393,7 @@ useEffect(() => {
           setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
             ? currentItems : mergedItems);
           identityAliasCleanup.markScheduleRefreshed(); // true names are back (audit A11 pass 2)
+          if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(refreshStartedAt); // every task, deletions too: Reports stops waiting for the other device (A6 pass 10 M1, M2)
         });
       }});
 
@@ -6429,6 +6432,7 @@ useEffect(() => {
       },
     });
     refreshController.start();
+    const stopReportPullRequests = registerScheduleCloudPullRequest(() => void refreshController.request('foreground', ['schedule_items'])); // Reports waiting for the other device's changes (A6 pass 10 L2)
 
     let realtimeHasSubscribed = false;
     let realtimeUnsubscribe: () => void = () => undefined;
@@ -6483,6 +6487,7 @@ useEffect(() => {
       active = false;
       operationalRefreshCommitGuard.invalidate();
       refreshController.stop();
+      stopReportPullRequests();
       realtimeUnsubscribe();
       subscription.remove();
     };

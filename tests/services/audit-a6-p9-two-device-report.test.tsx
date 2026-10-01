@@ -76,6 +76,7 @@ import {
   rememberReportApproval,
   rememberReportEdits,
 } from '../../services/ReportSessionState';
+import { forgetScheduleCloudPullSession, recordScheduleCloudPull } from '../../services/ScheduleCloudPull';
 import type { ScheduleItem } from '../../types';
 
 jest.setTimeout(120_000);
@@ -154,8 +155,23 @@ const mount = (scheduleItems: ScheduleItem[]) => {
 /** Opens the Reports tab on `device` (a new app session there: nothing remembered in memory). */
 const open = (device: string, scheduleItems: ScheduleItem[]) => {
   forgetAllReportSessionState();
+  forgetScheduleCloudPullSession();
   onDevice(device);
   return mount(scheduleItems);
+};
+/**
+ * `device` has downloaded every task from the cloud, now. Added on purpose by
+ * A6 pass 10 M1/M2: a device whose report counts from the other device's
+ * send, with other facts, now waits until it has downloaded the tasks since
+ * that send, so a device that made its change after syncing says so here.
+ */
+const downloadsTasks = async (device: string) => {
+  const was = mockDevice;
+  onDevice(device);
+  await act(async () => {
+    await recordScheduleCloudPull(new Date().toISOString());
+  });
+  onDevice(was);
 };
 
 /**
@@ -258,6 +274,7 @@ async function phoneSendsInTheMorning() {
 /** The iPad opens Reports, approves and sends, and is put down; the phone is shown again. */
 async function ipadSends(scheduleItems: ScheduleItem[], phone: View) {
   return keepingPhoneMemory(async () => {
+    await downloadsTasks('ipad');
     const ipad = open('ipad', scheduleItems);
     await approveAndSend();
     const sent = local('ipad') as DAVEReportSnapshot;
@@ -271,8 +288,12 @@ async function ipadSends(scheduleItems: ScheduleItem[], phone: View) {
 
 const alreadySent = (sent: DAVEReportSnapshot) =>
   `Your other device already sent this report ${describeReportSendTime(sent.deliveredAt as string)}. Approve it only if you want to send it a second time.`;
-const DEVICE_BEHIND =
-  "This device hasn't received your other device's latest changes yet. Use Settings › Sync Now, then review.";
+// Changed on purpose by A6 pass 10 L2: the hold now says why (the other
+// device sent the last report after this device last downloaded the tasks),
+// and "since the last report" is not counted while it waits (M1/M2).
+const deviceBehind = (sent: DAVEReportSnapshot) =>
+  `This device hasn't received your other device's latest changes yet: your other device sent the last report ${describeReportSendTime(sent.deliveredAt as string)}, after this device last downloaded your tasks. Use Settings › Sync Now, then review.`;
+const NOT_COUNTED = "Not counted yet: this device hasn't received your other device's latest changes.";
 const SENDER_ID_KEY = '@vitruvius/report-sender-id/v1';
 
 /** The iPad's copy of the plan after it marked Frame walls complete at `at`. */
@@ -285,22 +306,22 @@ describe('a device whose sync is behind does not report the other device\'s chan
     const phone = await phoneSendsInTheMorning();
     const ipadPlan = frameMarkedCompleteOnIpad(new Date().toISOString());
     const midday = await ipadSends(ipadPlan, phone);
-    expect(midday.tasks.find(task => task.taskId === 'frame')?.updatedAt).toBe(ipadPlan[0].updatedAt);
 
     // The phone has not pulled the iPad's change yet.
     const back = await switchTabAndBack(phone, tower(0));
-    expect(screen.getByText(DEVICE_BEHIND)).toBeTruthy();
+    expect(screen.getByText(deviceBehind(midday))).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Approve Report' }).props.accessibilityState).toMatchObject({ disabled: true });
     const behind = await period();
     expect(behind).not.toContain('reopened');
     expect(behind).not.toContain('-1 completed');
-    expect(behind).toContain('+0 completed; +0 open; +0 overdue.');
+    expect(behind).toContain(NOT_COUNTED);
     expect(onCopyReport).toHaveBeenCalledTimes(2);
 
     // Its sync lands: the hold clears, and the report is the one the iPad sent, said as such.
     back.rerender(reportsScreen(ipadPlan));
+    await downloadsTasks('phone');
     await approvable();
-    expect(screen.queryByText(DEVICE_BEHIND)).toBeNull();
+    expect(screen.queryByText(deviceBehind(midday))).toBeNull();
     expect(screen.getByText(alreadySent(midday))).toBeTruthy();
     expect(await period()).not.toContain('reopened');
   });
@@ -310,12 +331,13 @@ describe('a device whose sync is behind does not report the other device\'s chan
     const ipadPlan = frameMarkedCompleteOnIpad(new Date(Date.now() - 60_000).toISOString());
     await ipadSends(ipadPlan, phone);
     // Synced, then reopened on the phone.
+    await downloadsTasks('phone');
     const reopened = ipadPlan.map(item => item.id === 'frame'
       ? { ...item, percentComplete: 60, status: 'In Progress', updatedAt: new Date(Date.now() + 60_000).toISOString() } as ScheduleItem
       : item);
     await switchTabAndBack(phone, reopened);
     await approvable();
-    expect(screen.queryByText(DEVICE_BEHIND)).toBeNull();
+    expect(screen.queryByText(/hasn't received your other device's latest changes/)).toBeNull();
     expect(await period()).toContain('Frame walls was reopened at 60% complete.');
   });
 });
@@ -397,6 +419,8 @@ describe('"already sent" is said on opening Reports, not only when an approval w
   it('a different report the iPad sent is not called "already sent"', async () => {
     const phone = await phoneSendsInTheMorning();
     await ipadSends(tower(1), phone);
+    // Synced, then Pour slab completed on the phone.
+    await downloadsTasks('phone');
     await switchTabAndBack(phone, tower(2));
     await approvable();
     expect(screen.queryByText(/already sent this report/)).toBeNull();

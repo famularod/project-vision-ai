@@ -75,6 +75,11 @@ import {
 } from '../../services/DAVEReportSnapshotRepository';
 import { saveReportSnapshotCloud } from '../../services/SupabaseService';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
+import {
+  recordScheduleCloudPull,
+  registerScheduleCloudPullRequest,
+  SCHEDULE_CLOUD_PULL_KEY,
+} from '../../services/ScheduleCloudPull';
 import type { ScheduleItem } from '../../types';
 
 const PREFIX = '@vitruvius/report-snapshots/v1:';
@@ -83,6 +88,18 @@ const keyFor = (format: DAVEReportFormat) => `${SHARED_KEY}:${format}`;
 const onDevice = (device: string) => {
   mockDevice = device;
 };
+
+// Added on purpose by A6 pass 10 M1/M2: a device whose report counts from
+// the other device's send now waits until it has downloaded every task since
+// that send, and asks the app to do it. These flows give each device's
+// synced tasks as props, so the app here downloads at once when asked.
+let stopAppDownloads: () => void = () => undefined;
+beforeEach(() => {
+  stopAppDownloads = registerScheduleCloudPullRequest(() => {
+    void recordScheduleCloudPull(new Date().toISOString());
+  });
+});
+afterEach(() => stopAppDownloads());
 
 beforeEach(() => {
   mockDevices.clear();
@@ -402,11 +419,14 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
     // Each device's own copy stays under the prefix the per-account storage list covers.
     // Whole-app audit A6 pass 9 L2 (30 Sep 2026): beside it, each device that sent keeps its install's random
     // sender id, outside that list on purpose (it names the install, never the account); pin updated deliberately.
+    // Whole-app audit A6 pass 10 M1/M2: a device that waited for the other device's changes also keeps when it
+    // last downloaded the tasks, under the same per-account prefix; set aside here, pin updated deliberately.
     for (const device of ['phone', 'ipad']) {
-      expect(Array.from(mockDevices.get(device)?.keys() ?? []).sort())
+      expect(Array.from(mockDevices.get(device)?.keys() ?? []).filter(key => key !== SCHEDULE_CLOUD_PULL_KEY).sort())
         .toEqual(['@vitruvius/report-sender-id/v1', keyFor('project_manager')]);
     }
     expect(keyFor('project_manager').startsWith(PREFIX)).toBe(true);
+    expect(SCHEDULE_CLOUD_PULL_KEY.startsWith(PREFIX.slice(0, -'v1:'.length))).toBe(true);
   });
 
   it('an approval on the iPad that was never sent does not move the phone\'s period', async () => {

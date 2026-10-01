@@ -28,11 +28,12 @@ export type DAVEReportSnapshotTask = Readonly<{
   approvalStatus: string | null;
   estimatedScheduleImpactDays: number | null;
   /**
-   * When this task last changed on the device that saved the snapshot (its
-   * update time or latest activity), or null when unknown. Whole-app audit A6
-   * pass 9 M2 (30 Sep 2026): a device whose sync is behind read the other
-   * device's newer facts as changes made backwards. Absent on snapshots saved
-   * before then, which compare as they always did.
+   * When this task last changed on the device that saved the snapshot, saved
+   * by A6 pass 9 M2 only (30 Sep 2026). No longer saved or read: a row's
+   * update time also moves for a note or an owner change, so it could not
+   * tell whose copy of the task was behind (A6 pass 10 M1). Whether this
+   * device has the other device's changes is told by when it last downloaded
+   * the tasks instead (`otherDeviceSendNotReceived`).
    */
   updatedAt?: string | null;
 }>;
@@ -245,6 +246,54 @@ export function describeReportSendTime(value: string, now: Date = new Date()): s
   return `on ${day} at ${time}`;
 }
 
+/**
+ * The sent report a period runs from: the snapshot itself once sent, or, for
+ * an approval not yet sent, the report it superseded; null when none was sent.
+ */
+export function reportPeriodSend(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportSnapshot | null {
+  if (!snapshot) return null;
+  return snapshot.deliveredAt === null ? reportPeriodSend(snapshot.supersedes) : snapshot;
+}
+
+/**
+ * The other device's send this device may not have the changes behind, or
+ * null (whole-app audit A6 pass 10 M1, M2, L2, 30 Sep 2026).
+ *
+ * The report this one counts from (`period`) was sent by the other install
+ * (it carries a sender id and is not one of `ownSends`) and its facts differ
+ * from this device's (`currentFingerprint`); this device is behind when it
+ * has not downloaded every task since. A download counts when it started
+ * after the send (`pulledAt` later than the send time), or, whatever the
+ * other device's clock said, at or after this app session first saw the send
+ * (`seenAt`, this device's clock). So it never waits once such a download
+ * has landed, and Settings › Sync Now always ends it. A send without a sender
+ * id (before A6 pass 9) or the same facts as this device has never waits.
+ */
+export function otherDeviceSendNotReceived({
+  period,
+  currentFingerprint,
+  ownSends,
+  pulledAt,
+  seenAt,
+}: {
+  period: DAVEReportSnapshot | null | undefined;
+  currentFingerprint: string;
+  ownSends: ReadonlySet<string>;
+  /** When this device's last download of every task started, or null for none recorded. */
+  pulledAt: string | null;
+  /** When this app session first saw the send, or null. */
+  seenAt?: string | null;
+}): DAVEReportSnapshot | null {
+  const send = reportPeriodSend(period);
+  if (!send?.sentBy || typeof send.deliveredAt !== 'string' || ownSends.has(send.deliveredAt)) return null;
+  if (send.sourceFingerprint === currentFingerprint) return null;
+  const pulled = Date.parse(pulledAt ?? '');
+  if (Number.isNaN(pulled)) return send;
+  if (pulled > Date.parse(send.deliveredAt)) return null;
+  const seen = Date.parse(seenAt ?? '');
+  return !Number.isNaN(seen) && pulled >= seen ? null : send;
+}
+
 export type DAVEReportSnapshotSourceReference = Readonly<{
   documentId: string;
   documentName: string;
@@ -296,12 +345,12 @@ export type DAVEReportPeriodComparison = Readonly<{
    */
   changedTaskIds?: readonly string[];
   /**
-   * Tasks (by their id on this device) the earlier report has a newer copy
-   * of than this device: the other device changed them and this device has
-   * not received it yet. They are not reported as changed, and the report
-   * waits for this device to catch up (A6 pass 9 M2).
+   * Not counted: the report this one counts from was sent by the other
+   * device after this device last downloaded the tasks, so any difference
+   * could be the other device's change read backwards (A6 pass 10 M1, M2).
+   * No deltas and no changes until this device has the tasks.
    */
-  staleTaskIds?: readonly string[];
+  waitingForOtherDevice?: boolean;
 }>;
 
 export function buildDAVEReportSnapshot({
@@ -332,7 +381,6 @@ export function buildDAVEReportSnapshot({
     urgency: task.urgency,
     approvalStatus: clean(task.approvalStatus) || null,
     estimatedScheduleImpactDays: finiteNumber(task.estimatedScheduleImpactDays),
-    updatedAt: latestValidDate([task.updatedAt, task.latestActivityAt]),
   }))).sort((left, right) =>
     normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
     normalized(left.taskName).localeCompare(normalized(right.taskName)) ||
@@ -394,34 +442,20 @@ export function compareDAVEReportSnapshots({
   );
   const revisedPriorIds = new Set([...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
-  const staleTaskIds: string[] = [];
-  // What each task counts as now: a task this device has not caught up on
-  // counts as the earlier report had it (A6 pass 9 M2).
-  const countedTasks: DAVEReportSnapshotTask[] = [];
 
+  // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
+  // whose copy in the earlier report was the newer row. A note or owner
+  // change on this device stamps the row too, so a device behind on the
+  // other device's progress read it backwards anyway. Whether this device
+  // has the other device's changes is now told for the whole report, by
+  // when it last downloaded the tasks (`otherDeviceSendNotReceived`).
   for (const task of current.tasks) {
-    const sameRow = previousById.get(task.taskId);
-    const prior = sameRow ?? revisions.get(task);
+    const prior = previousById.get(task.taskId) ?? revisions.get(task);
     if (!prior) {
-      countedTasks.push(task);
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
       continue;
     }
-    const taskChanges = changesBetween(prior, task);
-    // The earlier report's copy is newer than this device's, and differs:
-    // the other device changed the task and this device's sync has not
-    // brought it yet. The difference is not a change made backwards (A6
-    // pass 9 M2: "Frame walls was reopened at 40% complete." after the iPad
-    // marked it done). Only the same row: sync orders a row's copies by this
-    // time, so the device catches up; a revised row's time is when its file
-    // was read, which can be before the last edit of the row it replaced.
-    if (sameRow && taskChanges.length > 0 && changedAfter(sameRow.updatedAt, task.updatedAt)) {
-      staleTaskIds.push(task.taskId);
-      countedTasks.push(prior);
-      continue;
-    }
-    countedTasks.push(task);
-    changes.push(...taskChanges);
+    changes.push(...changesBetween(prior, task));
   }
 
   for (const task of previous.tasks) {
@@ -435,13 +469,30 @@ export function compareDAVEReportSnapshots({
     label: `Since the report approved ${formatPeriodDate(previous.capturedAt)}`,
     startedAt: previous.capturedAt,
     endedAt: current.capturedAt,
-    completeDelta: completeCount(countedTasks) - completeCount(previous.tasks),
-    openDelta: openCount(countedTasks) - openCount(previous.tasks),
-    overdueDelta: overdueCount(countedTasks) - overdueCount(previous.tasks),
+    completeDelta: completeCount(current.tasks) - completeCount(previous.tasks),
+    openDelta: openCount(current.tasks) - openCount(previous.tasks),
+    overdueDelta: overdueCount(current.tasks) - overdueCount(previous.tasks),
     changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
     changeCount: distinctChanges.length,
     changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
-    staleTaskIds: Object.freeze(staleTaskIds),
+  });
+}
+
+/**
+ * The comparison, not counted while this device waits for the other
+ * device's changes (A6 pass 10 M1, M2): no deltas and no changes.
+ */
+export function reportPeriodWaitingForOtherDevice(period: DAVEReportPeriodComparison): DAVEReportPeriodComparison {
+  if (period.basis !== 'previous_approved_report') return period;
+  return Object.freeze({
+    ...period,
+    completeDelta: 0,
+    openDelta: 0,
+    overdueDelta: 0,
+    changes: Object.freeze([]),
+    changeCount: 0,
+    changedTaskIds: Object.freeze([]),
+    waitingForOtherDevice: true,
   });
 }
 
@@ -705,19 +756,6 @@ function finiteNumber(value: unknown) {
 function boundedPercent(value: unknown) {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
-}
-
-/** Whether `earlier` (the earlier report's copy) changed after `now` (this device's); unknown is never later. */
-function changedAfter(earlier: string | null | undefined, now: string | null | undefined): boolean {
-  const earlierTime = Date.parse(earlier ?? '');
-  const nowTime = Date.parse(now ?? '');
-  return Number.isFinite(earlierTime) && Number.isFinite(nowTime) && earlierTime > nowTime;
-}
-
-/** The latest of `values` that is a date, as an ISO time, or null. */
-function latestValidDate(values: readonly unknown[]): string | null {
-  const times = values.map(validDate).filter(Boolean).map(value => Date.parse(value));
-  return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
 function validDate(value: unknown) {
