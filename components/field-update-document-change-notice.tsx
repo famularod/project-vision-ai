@@ -19,12 +19,13 @@ import { colors } from './app-shell-theme';
 export { FIELD_UPDATE_CONFLICT_REVIEW_LABEL } from '../services/FieldUpdateDocumentChangeNotice';
 
 /**
- * Whether a waiting or failed field update's card reads "Needs Review": a
- * conflict for it is saved on this phone (whole-app audit A7 pass 12 M-1).
+ * Whether a field update reads "Needs Review": a conflict for it is saved on
+ * this phone (whole-app audit A7 pass 12 M-1), whatever its status reads,
+ * by the one test that holds it from every automatic sync (A4 pass 15 L1).
  */
-export function useFieldUpdateConflictReview(updateId: string, lifecycle: string): boolean {
+export function useFieldUpdateConflictReview(updateId: string): boolean {
   const conflicts = useSyncExternalStore(subscribeToFieldUpdateConflicts, fieldUpdateConflictsSnapshot);
-  return (lifecycle === 'queued' || lifecycle === 'failed') && fieldUpdateHasOpenConflict(conflicts, updateId);
+  return fieldUpdateHasOpenConflict(conflicts, updateId);
 }
 
 export type { FieldUpdateSyncChoice } from '../services/SyncService';

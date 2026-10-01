@@ -19064,7 +19064,7 @@ function UpdateHistoryCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
   const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
-  const conflictReview = useFieldUpdateConflictReview(update.id, lifecycle); // left for Review Conflicts (A7 pass 12 M-1)
+  const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
   const statusLine = conflictReview ? null :
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)

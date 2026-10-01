@@ -3,6 +3,7 @@ import { isFieldUpdatePhotoAnalysisPatch } from './FieldUpdatePhotoAnalysisPatch
 import {
   getOfflineQueue,
   getSyncConflicts,
+  openFieldUpdateConflict,
   subscribeToOfflineQueue,
   subscribeToSyncConflicts,
   type SyncConflict,
@@ -90,22 +91,28 @@ export function queuedDocumentChangesSnapshot(): readonly SyncQueueItem[] {
 }
 
 /**
- * A field update in conflict, waiting or failed on this phone (whole-app
- * audit A7 pass 12 M-1). Every automatic sync (the waiting-update sync, Sync
- * Now, Retry Sync) leaves its own copy for Settings › Review Conflicts, but
- * its card still read "Waiting to Sync" and "Queued — will sync when you're
- * back online", with the phone online. It now says it needs review, and
- * where. Its Retry is still an explicit send of the phone's version: it asks
- * first.
+ * A field update in conflict on this phone (whole-app audit A7 pass 12 M-1,
+ * A4 pass 15 L1). Every automatic sync leaves it for Settings › Review
+ * Conflicts, but its card still read "Waiting to Sync" and "Queued — will
+ * sync when you're back online", with the phone online. It now says it needs
+ * review, and where. Its Retry is still an explicit send of the phone's
+ * version: it asks first.
  */
 export const FIELD_UPDATE_CONFLICT_REVIEW_LABEL = 'Needs Review';
 export const FIELD_UPDATE_CONFLICT_REVIEW_TEXT = 'Needs review — open Settings › Review Conflicts';
 export const FIELD_UPDATE_RETRY_OVER_CONFLICT_TITLE = 'Send your version?';
 export const FIELD_UPDATE_RETRY_OVER_CONFLICT_MESSAGE = 'This update was also changed on another device. Send your version over it?';
 
-/** Whether a conflict saved on this phone is this field update's. */
+/**
+ * Whether a conflict saved on this phone is this field update's: the same
+ * test by which every automatic sync holds it (openFieldUpdateConflict;
+ * whole-app audit A4 pass 15 L1). Its card read "Needs Review" only while
+ * waiting or failed, by a test of its own: a card a refresh showed as Sent
+ * did not, while its update was held, and an edit saved during the conflict
+ * read "Needs Review" while the waiting-update sync sent it by itself.
+ */
 export function fieldUpdateHasOpenConflict(conflicts: readonly SyncConflict[], updateId: string): boolean {
-  return conflicts.some(conflict => conflict.entity === 'project_update' && conflict.localId === updateId);
+  return Boolean(openFieldUpdateConflict(conflicts, updateId));
 }
 
 let conflictsSnapshot: readonly SyncConflict[] = [];

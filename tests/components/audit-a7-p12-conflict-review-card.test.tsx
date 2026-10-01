@@ -70,7 +70,8 @@ import * as notice from '../../components/field-update-document-change-notice';
 import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
 import { fieldUpdateLifecycleLabel } from '../../services/FieldUpdateLifecycle';
 import {
-  clearResolvedConflict, getSyncConflicts, queueProjectUpdateRecord, resolveProjectUpdateSyncConflict, uploadPendingChanges,
+  clearResolvedConflict, getOfflineQueue, getSyncConflicts, queueProjectUpdateRecord, resolveProjectUpdateSyncConflict,
+  runFieldUpdateCloudSync, uploadPendingChanges,
 } from '../../services/SyncService';
 
 const realFetch = global.fetch;
@@ -221,5 +222,63 @@ describe('the card of an update left for conflict review says so (audit A7 pass 
     expect(screen.getByText('Waiting to Sync')).toBeTruthy();
     expect(screen.getByText(WAITING_COPY)).toBeTruthy();
     expect(screen.queryByText(REVIEW)).toBeNull();
+  });
+});
+
+/**
+ * A4 pass 15 L1: the card's "Needs Review" and the sync's hold were two
+ * tests. An edit saved during the conflict and waiting on its photo read
+ * "Needs Review", but the waiting-update sync then sent it by itself; and a
+ * card a refresh showed as Sent never read "Needs Review" while its update
+ * was held. Now both read one test (openFieldUpdateConflict): a conflict open
+ * for the update.
+ */
+describe('the card reads Needs Review exactly when every automatic sync leaves the update (audit A4 pass 15 L1)', () => {
+  const SENT_COPY = { ...sent, notes: 'Pour moved to Tuesday (typed on the iPad)' };
+  const renderAs = (update: object, lifecycle: string) => render(
+    <UpdateHistoryCard update={update} lifecycle={lifecycle} pieStatus={null} onOpen={jest.fn()} onRetry={jest.fn()} onDelete={jest.fn()} onArchive={jest.fn()} />);
+
+  it.each([
+    ['Waiting to Sync', phoneEdit, 'queued'],
+    ['Sync failed', { ...phoneEdit, status: 'failed' }, 'failed'],
+    ['Sent: a refresh showed the iPad\'s copy', SENT_COPY, 'sent'],
+  ])('%s, a conflict open: the automatic sync holds it, and the card reads Needs Review', async (_label, update, lifecycle) => {
+    await phoneEditThenIPadEdit();
+    await uploadPendingChanges();
+    const { heldForConflictReview } = await runFieldUpdateCloudSync(update as never, { automatic: true });
+    expect(heldForConflictReview).toBe(true);
+    renderAs(update, lifecycle);
+    expect(await screen.findByText(REVIEW)).toBeTruthy();
+    expect(screen.getByText('Needs Review')).toBeTruthy();
+  });
+
+  it('an edit saved during the conflict, waiting on its photo: it reads Needs Review, and no automatic sync sends it', async () => {
+    await phoneEditThenIPadEdit();
+    await uploadPendingChanges();
+    const photo = { id: 'photo-l1', uri: 'file:///phone/Documents/project-photos/l1.jpg', caption: '', createdAt: SENT_AT };
+    const newer = { ...phoneEdit, notes: 'Pour, 45 yards (saved during the conflict)', photos: [photo] };
+    await queueProjectUpdateRecord(newer as never, false);
+    renderAs(newer, 'queued');
+    expect(await screen.findByText(REVIEW)).toBeTruthy();
+    let held: boolean | undefined;
+    await act(async () => {
+      held = (await runFieldUpdateCloudSync(newer as never, { automatic: true })).heldForConflictReview;
+      await uploadPendingChanges();
+    });
+    expect(held).toBe(true);
+    expect(mockCloud.get('u1')!.updateData).toMatchObject({ notes: 'Pour moved to Tuesday (typed on the iPad)' });
+    expect((await getOfflineQueue()).map(item => item.id)).toEqual(['project-update-u1']);
+  });
+
+  it('no conflict: not held, and the card reads its status', async () => {
+    renderAs(SENT_COPY, 'sent');
+    await act(async () => { await new Promise(resolve => setImmediate(resolve)); });
+    expect(screen.queryByText(REVIEW)).toBeNull();
+    expect(screen.queryByText('Needs Review')).toBeNull();
+    let held: boolean | undefined = false;
+    await act(async () => {
+      held = (await runFieldUpdateCloudSync({ ...phoneEdit, notes: 'Pour, 50 yards' } as never, { automatic: true })).heldForConflictReview;
+    });
+    expect(held).toBeUndefined();
   });
 });
