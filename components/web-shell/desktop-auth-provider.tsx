@@ -46,6 +46,7 @@ import type {
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
 import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
 import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { scheduleItemIdsDeletedWithTask } from '../../services/DAVEDeletedTaskEvidence';
 import {
   initialDAVEWebFreshnessState,
   recordDAVEWebRefreshFailure,
@@ -943,9 +944,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   }, [announceMutation, refreshSnapshot, refreshSnapshotInBackground]);
 
   const deleteTask = useCallback(async (item: DAVEWebScheduleItem) => {
+    // With the hidden rows of its revision chain, as the phone deletes it (A10 pass 8 L3).
+    const current = snapshotRef.current;
+    const withHiddenRows = current
+      ? scheduleItemIdsDeletedWithTask(current.knownScheduleItems ?? current.scheduleItems, item, current.referenceDocuments)
+      : [item.id];
     await daveWebSupabaseGateway.deleteAuthorizedScheduleItem(
       item.id,
       item.cloudUpdatedAt,
+      withHiddenRows.filter(id => id !== item.id),
     );
     const collections = ['sync_tombstones', 'schedule_items'] as const;
     announceMutation(collections);

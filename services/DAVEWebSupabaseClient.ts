@@ -848,6 +848,11 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async deleteAuthorizedScheduleItem(
       itemId: string,
       expectedCloudUpdatedAt: string | null,
+      /**
+       * The saved hidden rows of the task's revision chain, recorded deleted
+       * with it as the phone does (scheduleItemIdsDeletedWithTask, A10 pass 8 L3).
+       */
+      hiddenRowIds: readonly string[] = [],
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) {
@@ -885,15 +890,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
 
       const deletedAt = new Date().toISOString();
+      const markers = [...new Set([itemId, ...hiddenRowIds.map(id => id.trim()).filter(Boolean)])].map(recordId => ({
+        owner_id: ownerId,
+        entity_type: 'schedule_item',
+        record_id: recordId,
+        deleted_at: deletedAt,
+      }));
       const { error } = await client
         .from('dave_sync_tombstones')
         .upsert(
-          {
-            owner_id: ownerId,
-            entity_type: 'schedule_item',
-            record_id: itemId,
-            deleted_at: deletedAt,
-          },
+          markers.length === 1 ? markers[0] : markers, // one write: the task and its hidden rows together
           { onConflict: 'owner_id,entity_type,record_id' },
         );
       if (error) {
