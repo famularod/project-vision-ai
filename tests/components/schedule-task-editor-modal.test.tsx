@@ -617,14 +617,27 @@ describe('ScheduleTaskEditorModal', () => {
       }));
     });
 
-    it('follows a new project in view only in the fields David has not changed', async () => {
-      const props = { ...listProps, initialProjectName: 'Lot 5', onSubmit: jest.fn() };
+    // A3 pass 8 L1: an iPad rotated or resized across the wide layout while
+    // the form was open changed the project in view; the form switched
+    // project and kept the old project's location, filing the task under one
+    // project with another's location. The form keeps what it opened with.
+    it('keeps the project it opened with when the project in view changes', async () => {
+      const onSubmit = jest.fn();
+      const props = { ...listProps, initialProjectName: 'Tower B', onSubmit };
       const screen = await render(<ScheduleTaskEditorModal {...props} />);
-      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
-      fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
+      expect(form(screen)).toEqual(['', 'Tower B', 'Tower B Yard', 'David']);
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Seal roof');
+      fireEvent.changeText(screen.getByLabelText('Location'), 'Tower B Roof');
 
-      screen.rerender(<ScheduleTaskEditorModal {...props} initialProjectName="Tower B" />);
-      expect(form(screen)).toEqual(['', 'Tower B', 'Tower B Yard', 'Field super']);
+      screen.rerender(<ScheduleTaskEditorModal {...props} initialProjectName={null} />);
+      expect(form(screen)).toEqual(['Seal roof', 'Tower B', 'Tower B Roof', 'David']);
+      screen.rerender(<ScheduleTaskEditorModal {...props} initialProjectName="Lot 5" />);
+      expect(form(screen)).toEqual(['Seal roof', 'Tower B', 'Tower B Roof', 'David']);
+
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        taskName: 'Seal roof', projectName: 'Tower B', locationName: 'Tower B Roof',
+      }));
     });
 
     it('fills the form afresh each time it opens', async () => {
