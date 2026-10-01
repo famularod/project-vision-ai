@@ -130,6 +130,7 @@ import {
   isOwnedLocalFileManifestMember,
 } from '../../services/OwnedLocalFileRepository';
 import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
+import { runDAVECloudMaintenanceIfDue } from '../../services/DAVECloudMaintenanceBudget';
 import {
   bindProjectDocumentUploadToAccount,
   projectDocumentUploadAttemptsAfterFailure,
@@ -4410,6 +4411,105 @@ describe('a document upload finishing during Keep Cloud does not send the discar
     expect(inCloud().documents?.[0]).toMatchObject({ status: 'uploaded' });
     expect(phone.saved()).toMatchObject({ notes: resolution === 'keep_local' ? NEWER : IPAD_NOTE });
     expect(phone.saved()?.documents?.[0]).toMatchObject({ status: 'uploaded' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A7 pass 17 L-1 (the case 52831a5 left open): Keep Cloud's
+ * own upload pass closed the conflict when its chosen copy landed (or already
+ * matched the cloud's), and Settings puts that copy on the card only after
+ * the pass returns. A document upload, or a late photo-analysis result,
+ * finishing at the end of that pass found the card still holding the edit
+ * David discarded and no conflict open, and queued it whole under the same
+ * queue id: the choice's second pass sent it. Settings said "Cloud conflicts
+ * resolved." while the cloud and the iPad held the discarded note. The T8
+ * test above finishes the upload only after the choice returns.
+ */
+describe('a document upload or analysis result finishing inside Keep Cloud\'s landing pass does not send the discarded edit (audit A7 pass 17 L-1)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const maintenanceDone = async () => ({ storageCleanupRemaining: 0, storageCleanupCompleted: 0, storageCleanupErrors: [] });
+  afterEach(() => { (runDAVECloudMaintenanceIfDue as jest.Mock).mockImplementation(maintenanceDone); });
+  /**
+   * `during` runs at the end of Keep Cloud's second upload pass, the one that
+   * lands its chosen copy (its first sends the phone's other waiting work),
+   * where the pass runs the cloud maintenance. Returns whether it ran.
+   */
+  function insideLandingPass(during: () => Promise<void>) {
+    let passes = 0;
+    let ran = false;
+    (runDAVECloudMaintenanceIfDue as jest.Mock).mockImplementation(async () => {
+      passes += 1;
+      if (passes === 2) {
+        await during();
+        ran = true;
+      }
+      return maintenanceDone();
+    });
+    return () => ran;
+  }
+
+  it.each([
+    ['found already in the cloud', false],
+    ['written (a document taken off during the conflict)', true],
+  ])('a document upload, Keep Cloud\'s copy %s: the iPad\'s note stays in the cloud and on the phone, with the document uploaded', async (_label, written) => {
+    const { phone, persistDocuments } = await phoneEditInConflict(() => [
+      phoneDocument('permit', { status: 'failed' }), ...(written ? [uploaded('survey')] : [])]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    if (written) {
+      await phone.deleteFromThisDevice('survey');
+      persistDocuments();
+    }
+    const saves = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    const ran = insideLandingPass(async () => {
+      await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+      await phone.settle();
+      persistDocuments();
+    });
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(ran()).toBe(true);
+    // Keep Cloud's copy (when written), then the finished upload's patch.
+    expect((saveProjectUpdate as jest.Mock).mock.calls.slice(saves).map(([call]) => call.updateData.notes))
+      .toEqual(written ? [IPAD_NOTE, IPAD_NOTE] : [IPAD_NOTE]);
+    expect(await getSyncConflicts()).toEqual([]);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['permit']);
+    expect(inCloud().documents?.[0]).toMatchObject({ status: 'uploaded' });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
+    expect(phone.saved()?.documents?.[0]).toMatchObject({ status: 'uploaded' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('a late photo-analysis result: the iPad\'s note stays in the cloud and on the phone, with the result', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    const saves = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    const ran = insideLandingPass(async () => {
+      lateAnalysisFinishes(phone, finishedAnalysis());
+      await phone.settle();
+    });
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(ran()).toBe(true);
+    // Keep Cloud's copy was found already in the cloud; then the result's patch.
+    expect((saveProjectUpdate as jest.Mock).mock.calls.slice(saves).map(([call]) => call.updateData.notes)).toEqual([IPAD_NOTE]);
+    expect(await getSyncConflicts()).toEqual([]);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
     expect(await getSyncConflicts()).toEqual([]);
   });
 });

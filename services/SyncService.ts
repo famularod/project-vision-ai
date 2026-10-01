@@ -660,6 +660,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    * Any other whole copy of an update in conflict waits for his choice.
    */
   overConflict?: string;
+  /**
+   * Keep Cloud's chosen copy (whole-app audit A7 pass 17 L-1): landing, or
+   * found already in the cloud, it does not close the conflict. Keep Cloud
+   * closes it once Settings has put the copy on the card (beforeClose).
+   */
+  keepCloudChoice?: true;
 };
 
 type ProjectUpdateDeletePayload = {
@@ -4471,6 +4477,10 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           // The cloud copy's photos are already in cloud storage.
           pendingPhotoAssetIds: [],
           overConflict: conflict.id, // David's choice (A4 pass 15 H1)
+          // Closed only after beforeClose (A7 pass 17 L-1): closed as it
+          // landed, the card still held the discarded edit, and a document
+          // upload or analysis result finishing then queued that edit whole.
+          keepCloudChoice: true,
         },
         changedAt: new Date().toISOString(),
         autoUpload: false,
@@ -5935,7 +5945,8 @@ async function uploadProjectUpdateQueueItem(
   if (result.ok && !result.stubbed) {
     // A retry after a conflict put the phone's copy in the cloud: that
     // conflict is settled, as when the cloud already matched (audit A4 pass 5).
-    if (!documentPatches) await clearConflictsForLocalRecord('project_update', payload.id);
+    // Keep Cloud's copy leaves it to Keep Cloud (A7 pass 17 L-1).
+    if (!documentPatches && !payload.keepCloudChoice) await clearConflictsForLocalRecord('project_update', payload.id);
     if (cloudCopy && patchedCloudCopy) {
       noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || []);
     }
@@ -6123,8 +6134,11 @@ async function projectUpdateAlreadyHasCloudReceipt(
 
   // A patch already in the cloud's copy settles no conflict (A4 pass 9 L1):
   // its copy may be the iPad's a refresh showed, while David's offline edit
-  // waits in the conflict (whole-app audit A4 pass 15 H1).
-  if (!queuedFieldUpdateDocumentPatches(item)) await clearConflictsForLocalRecord('project_update', payload.id);
+  // waits in the conflict (whole-app audit A4 pass 15 H1). Nor does Keep
+  // Cloud's own copy: Keep Cloud closes it (A7 pass 17 L-1).
+  if (!queuedFieldUpdateDocumentPatches(item) && !payload.keepCloudChoice) {
+    await clearConflictsForLocalRecord('project_update', payload.id);
+  }
   recordProjectUpdateUpload(payload.id);
   return true;
 }
