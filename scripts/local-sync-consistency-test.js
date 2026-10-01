@@ -303,9 +303,11 @@ assert.strictEqual(
   1,
   'project update database writes must have one queue-owned execution path',
 );
+// Pin changed in A4 pass 16 M1: a Save's own sync also reads whether the
+// update was held for conflict review, and then leaves its card as it was.
 assert(
   app.indexOf('const tokenResult = await getCurrentSessionAccessToken();') <
-    app.indexOf('const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);'),
+    app.indexOf('const { syncResult, workAttempt, heldForConflictReview } = await runFieldUpdateCloudSync(queuedUpdate);'),
   'send must fetch fresh session state before invoking sync work',
 );
 const retryStart = app.indexOf('async function retryQueuedUpdate');

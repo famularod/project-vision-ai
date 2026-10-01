@@ -7906,7 +7906,8 @@ useEffect(() => {
           },
         };
       } else {
-        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+        const { syncResult, workAttempt, heldForConflictReview } = await runFieldUpdateCloudSync(queuedUpdate);
+        if (heldForConflictReview) return; // left Waiting to Sync (Needs Review), as the waiting-update sync leaves it (A4 pass 16 M1)
         const syncDiagnostics = buildSyncDiagnosticsFromUpload(
           syncResult,
           attemptedAt,
