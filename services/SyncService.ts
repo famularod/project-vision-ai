@@ -2890,6 +2890,30 @@ function changesTakenIn(items: readonly SyncQueueItem[]): FieldUpdateDocumentPat
     : queuedFieldUpdateDocumentPatches(item) ?? []);
 }
 
+/**
+ * Keep Cloud's chosen copy queued (whole-app audit A4 pass 22), in the write
+ * that takes whatever was queued for the update since Keep Cloud's second
+ * withdrawal: a patch item's changes go into the copy (it replaced that
+ * item, and the change was lost), and what it took goes back if Keep Cloud
+ * fails. A delete waiting stays, and the copy is not queued, as before
+ * (enqueuePendingChange). The copy as queued.
+ */
+async function queueKeepCloudChoice(choice: SyncQueueItem): Promise<{ chosen: unknown; taken: SyncQueueItem[] }> {
+  const payload = choice.payload as ProjectUpdateRecordPayload;
+  return mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === choice.id);
+    if (existing?.operation === 'delete') {
+      return { nextQueue: queue, result: { chosen: payload.updateData, taken: [] }, persist: false };
+    }
+    const taken = existing ? [existing] : [];
+    const chosen = withArchiveKept(applyFieldUpdateDocumentPatches(payload.updateData as object, changesTakenIn(taken)), taken);
+    return {
+      nextQueue: [...queue.filter(item => item !== existing), { ...choice, payload: { ...payload, updateData: chosen } }],
+      result: { chosen, taken },
+    };
+  });
+}
+
 /** Keep Cloud's chosen copy (A7 pass 17 L-1), over this conflict when one is named. */
 function isKeepCloudChoice(item: SyncQueueItem, conflictId?: string): boolean {
   const payload = item.payload as Partial<ProjectUpdateRecordPayload> | undefined;
@@ -4505,15 +4529,21 @@ export async function clearScheduleItemSyncConflicts(
  * Phone sends the conflict's copy, then David's newer edit; Keep Cloud's
  * chosen copy goes up only inside Keep Cloud's own upload (A4 pass 21 F1).
  *
- * Work that arrives while Keep Cloud runs is treated one way (A4 pass 22):
- * - Patch items (a document change, an analysis result) Keep Cloud took, and
- *   the changes its own queued copy took in, go onto the restored phone work
- *   when it fails, oldest first, through queueProjectUpdatePatch.
- * - The latest whole phone copy it took is always what the put-back restores.
- * - Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
- *   newer cloud copy as it goes up, it records that copy in the open
- *   conflict, nothing is sent, and David reviews again; the phone's work it
- *   withdrew goes back.
+ * Work that arrives while Keep Cloud runs is treated one way (A4 pass 22).
+ * Keep Cloud takes the update's queued work three times: before its upload
+ * pass, after it (the second withdrawal), and in the write that queues its
+ * chosen copy. While that copy is queued, a change goes into it
+ * (absorbedPatches). Then:
+ * 1. Patch items (a document change, an analysis result) are folded into
+ *    the chosen copy when Keep Cloud succeeds, and re-queued onto the
+ *    restored phone work, oldest first, through queueProjectUpdatePatch when
+ *    it fails; so are the changes its own copy took in.
+ * 2. The latest whole phone copy it took is always what the put-back
+ *    restores.
+ * 3. Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
+ *    newer cloud copy as it goes up, it records that copy in the open
+ *    conflict, nothing is sent, and David reviews again; the phone's work it
+ *    withdrew goes back.
  */
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
@@ -4603,9 +4633,19 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       // And this phone's analysis results for the photos the cloud's copy
       // shares (A7 pass 14 L-2): one taken into an edit of the phone's (the
       // conflict's own, or one held for review) never reached the cloud.
-      chosenCloudUpdate = withArchiveKept(
-        withPhoneAnalysisResults(withDocumentChanges(cloudNow), phoneCopies), withdrawn) as TUpdate;
-      queuedCloudCopy = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+      // With every change the work withdrawn took in (A4 pass 22, with A4
+      // pass 20 L1 and A7 pass 19): a document upload or analysis finishing
+      // in the upload pass above was queued on its own, and the second
+      // withdrawal took it and dropped it. The cloud and the card read
+      // "Analyzing", or the cloud kept a finished upload "failed". The
+      // conflict's own copy is read again too: such a result went into it.
+      const conflictNow = (await getSyncConflicts()).find(item => item.id === conflict.id) ?? conflict;
+      chosenCloudUpdate = withArchiveKept(withPhoneAnalysisResults(
+        applyFieldUpdateDocumentPatches(withDocumentChanges(cloudNow) as object, changesTakenIn(withdrawn)),
+        phoneCopiesOfFieldUpdateInConflict(conflictNow, withdrawn)), withdrawn) as TUpdate;
+      const queuedAt = new Date().toISOString();
+      const ownerId = currentCloudOwner().ownerId;
+      queuedCloudCopy = {
         id: projectUpdateQueueItemId(conflict.localId),
         entity: 'project_update',
         operation: 'update',
@@ -4624,10 +4664,16 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           // landed, the card still held the discarded edit, and a document
           // upload or analysis result finishing then queued that edit whole.
           keepCloudChoice: true,
-        },
-        changedAt: new Date().toISOString(),
-        autoUpload: false,
-      }) as SyncQueueItem;
+        } satisfies ProjectUpdateRecordPayload<TUpdate>,
+        createdAt: queuedAt, changedAt: queuedAt, retryCount: 0, lastError: null,
+        ...(ownerId ? { ownerId } : {}),
+      };
+      // Queued in the write that takes what was queued since the second
+      // withdrawal (A4 pass 22): a change finishing while the cloud was read
+      // again goes into the copy; replaced, it was lost.
+      const queuedChoice = await queueKeepCloudChoice(queuedCloudCopy);
+      withdrawn.push(...queuedChoice.taken);
+      chosenCloudUpdate = queuedChoice.chosen as TUpdate;
       keepCloudChoicesSending.add(conflict.id); // its copy goes in this pass only (A4 pass 21 F1)
       keepCloudChoicesMetNewerCloudCopy.delete(conflict.id);
       const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId))

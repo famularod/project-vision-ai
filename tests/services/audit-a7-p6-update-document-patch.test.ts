@@ -4824,6 +4824,9 @@ describe('"Send your version?" keeps a photo analysis that finished while the qu
  *    pass, then a Keep Cloud that failed: only that change was put back, not
  *    David's newer edit, which Keep Phone then lost everywhere.
  * L3: a result Keep Cloud's copy took in before a kill won over a newer one.
+ * The success twins (A4 pass 20 L1, A7 pass 19 L): the same change with a
+ *    Keep Cloud that succeeds was dropped: the card and the cloud read
+ *    "Analyzing", or the cloud kept a finished document upload "failed".
  */
 describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pass 22, A7 pass 19)', () => {
   const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
@@ -4993,6 +4996,34 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     expectChange(what, inCloud(), result);
     expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
     expectChange(what, phone.saved(), result);
+  });
+
+  it.each([
+    ['a photo analysis', 'first pass'],
+    ['a photo analysis', 'second read'],
+    ['a document upload', 'first pass'],
+    ['a document upload', 'second read'],
+  ] as const)('the success twins: %s finishing in Keep Cloud\'s %s reaches the cloud and the card', async (what, moment) => {
+    const { phone, persistDocuments } = await inConflictFor(what);
+    const result = finishedAnalysis();
+    const ran = whileKeepCloudRuns(moment, changeFinishes(what, phone, persistDocuments, result));
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(ran()).toBe(true);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expectChange(what, inCloud(), result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
+    expectChange(what, phone.saved(), result);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expectChange(what, inCloud(), result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expectChange(what, phone.saved(), result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
   });
 
   it('L3: a result Keep Cloud\'s copy took in before the app was killed does not win over a newer one the next, failing, Keep Cloud took in', async () => {
