@@ -1,6 +1,6 @@
 /**
- * Audit round 2, A5 pass 20 (1 Oct 2026): a Low finding in the schedule merge
- * (ScheduleLookahead).
+ * Audit round 2, A5 pass 20 (1 Oct 2026): two Low findings in the schedule
+ * merge (ScheduleLookahead, ScheduleImportMerge).
  *
  * Owner answer Q22: a lookahead adds to the master, and file progress never
  * goes below what David entered. A newer master's dates replace older
@@ -17,6 +17,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
@@ -96,6 +97,14 @@ function deleteWithItems(state: State, target: ReferenceDocument, at: string): S
   const saved = new Map(scheduleItemsAfterScheduleDeleted({ items: kept, removed, document, documents, updatedAt: at }).map(item => [item.id, item]));
   return { items: kept.map(item => saved.get(item.id) || item), documents, question };
 }
+/** David records progress by hand on the phone. */
+const record = (state: State, id: string, pct: number, at: string): State => ({
+  ...state,
+  items: state.items.map(item => item.id === id ? {
+    ...item, percentComplete: pct, status: pct >= 100 ? 'Complete' : 'In Progress', progressSource: 'project_manager',
+    progressConfirmedAt: at, progressConfirmedBy: 'David', updatedAt: at,
+  } as ScheduleItem : item),
+});
 
 /**
  * P1 (Low, caused by fd69155): master F lists Framing 10/15-10/25; lookahead
@@ -196,5 +205,88 @@ describe('P1: a lookahead delete falls back to dates only a master that is curre
       } : item),
     };
     expect(copies(deleteWithItems(state, L2, '2026-09-16T10:00:00.000Z'), 'Framing')).toEqual([G_DATES]);
+  });
+});
+
+/**
+ * P2 (Low, caused by b4f02c1 for hand tasks): David's hand-entered Pour slab
+ * at 40%; master G uploaded on the web at 60%, not current; a lookahead with
+ * no % column restates the task; David makes G current. The task stayed at
+ * 40%, even after the lookahead was deleted. Approving G on the phone, then
+ * the lookahead, gives 60%, as b41718d did.
+ */
+describe('P2: a master made current after a lookahead gives its higher percent', () => {
+  const hand = buildDAVEWebScheduleItem({
+    id: 'hand-pour', now: '2026-09-20T15:00:00.000Z', actor: 'David',
+    draft: {
+      itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+      startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: 'Crew A', contractor: '', percentComplete: '40',
+      priority: 'Medium', status: 'In Progress', notes: 'Pump booked', nextAction: '', activityMessage: '',
+    },
+  }) as unknown as ScheduleItem;
+  const FRIDAY = '2026-09-25T12:00:00.000Z';
+  const L = doc('LOOKAHEAD L', '2026-09-27T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', FRIDAY);
+  const MONDAY = '2026-09-28T12:00:00.000Z';
+  const G_ROW = (percent: string) => `Pour slab,Alpha,Lot,10/08/2026,10/12/2026,${percent}`;
+  const L_ROW = (percent: string) => `Pour slab,Alpha,Lot,10/14/2026,10/18/2026,${percent}`;
+  const webFlow = (gPercent: string, lPercent: string, current: (state: State, document: ReferenceDocument) => State) => {
+    const up = upload({ items: [hand], documents: [] }, 'alpha-master-g.csv', [G_ROW(gPercent)], FRIDAY);
+    const after = current(approve(up.state, L, [L_ROW(lPercent)], true), up.document);
+    return { after, deleted: deleteWithItems(after, L, '2026-09-30T12:00:00.000Z') };
+  };
+  const phoneFlow = (gPercent: string, lPercent: string) => {
+    const after = approve(approve({ items: [hand], documents: [] }, G, [G_ROW(gPercent)]), L, [L_ROW(lPercent)], true);
+    return { after, deleted: deleteWithItems(after, L, '2026-09-30T12:00:00.000Z') };
+  };
+  const web = (state: State, document: ReferenceDocument) => makeCurrent(state, document, MONDAY);
+  const phone = (state: State, document: ReferenceDocument) => setActive(state, document, MONDAY);
+
+  it('phone order (approve G, then the lookahead): 60%, kept after the delete', () => {
+    const { after, deleted } = phoneFlow('60', '');
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 60]]);
+    expect(copies(deleted, 'Pour slab')).toEqual([['10/08/2026', '10/12/2026', 60]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s: 60% on the lookahead\'s dates, kept after the delete', (_how, current) => {
+    const { after, deleted } = webFlow('60', '', current);
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 60]]);
+    const task = after.items.find(item => item.id === 'hand-pour')!;
+    expect(task).toMatchObject({ owner: 'Crew A', notes: 'Pump booked', progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: MONDAY });
+    expect(task).not.toHaveProperty('scheduleRowsAwaitingCurrent');
+    expect(copies(deleted, 'Pour slab')).toEqual([['10/08/2026', '10/12/2026', 60]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s: G\'s 30% never lowers David\'s 40% (unchanged)', (_how, current) => {
+    const { after, deleted } = webFlow('30', '', current);
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 40]]);
+    expect(copies(deleted, 'Pour slab')).toEqual([['10/08/2026', '10/12/2026', 40]]);
+    expect(copies(phoneFlow('30', '').after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 40]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s: a lookahead newer than G that states 50% keeps 50% (unchanged)', (_how, current) => {
+    const { after } = webFlow('60', '50', current);
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+    expect(copies(phoneFlow('60', '50').after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s: G with no % column leaves David\'s 40% (unchanged)', (_how, current) => {
+    const { after } = webFlow('', '', current);
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 40]]);
+  });
+
+  it('David\'s 50% entered after G was uploaded stays: his newer word (unchanged; the phone\'s order gives 50% too)', () => {
+    const up = upload({ items: [hand], documents: [] }, 'alpha-master-g.csv', [G_ROW('60')], FRIDAY);
+    const onL = record(approve(up.state, L, [L_ROW('')], true), 'hand-pour', 50, '2026-09-27T15:00:00.000Z');
+    expect(copies(makeCurrent(onL, up.document, MONDAY), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+    expect(copies(setActive(onL, up.document, MONDAY), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+    const phoneOrder = record(approve(approve({ items: [hand], documents: [] }, G, [G_ROW('60')]), L, [L_ROW('')], true), 'hand-pour', 50, '2026-09-27T15:00:00.000Z');
+    expect(copies(phoneOrder, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+  });
+
+  it('David\'s 80% entered after the lookahead stays (unchanged)', () => {
+    const up = upload({ items: [hand], documents: [] }, 'alpha-master-g.csv', [G_ROW('60')], FRIDAY);
+    const onL = record(approve(up.state, L, [L_ROW('')], true), 'hand-pour', 80, '2026-09-27T15:00:00.000Z');
+    expect(copies(makeCurrent(onL, up.document, MONDAY), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 80]]);
   });
 });

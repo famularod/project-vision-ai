@@ -718,7 +718,16 @@ function handTasksRestatedWhenCurrent(
     const restatedSince = (task.lookaheadOverlay?.lookaheads || []).some(newerThanMaster);
     // Only the lookaheads older than this master have their dates replaced by it (A6 pass 19 M1).
     if (restatedSince) {
-      return [{ ...scheduleTaskMasterRestated(scheduleNoteTakesManagersProgress(base), row, now, noted => !newerThanMaster(noted)), updatedAt: now }];
+      const target = scheduleNoteTakesManagersProgress(base);
+      // Whole-app audit A5 pass 20 P2 (1 Oct 2026): David's 40%, G uploaded at 60%, a lookahead with no % column,
+      // then Make Current: the task stayed at 40% (the phone's order, G then the lookahead, gives 60%). The
+      // master's percent applies as at approval (only above David's, Q22), unless a newer word stands: a
+      // lookahead newer than it that stated a percent (one noted before 30 Sep, unknown, counts as stated), or
+      // David's own percent judged after it was uploaded.
+      const statedSince = (task.lookaheadOverlay?.lookaheads || []).some(noted => newerThanMaster(noted) && noted.percentComplete !== null) ||
+        (scheduleProgressIsManagers(target) && timeOf(scheduleProgressJudgedAt(target)) > madeCurrentAt);
+      const fileProgress = statedSince ? null : scheduleFileProgressAboveManagers(target, fileProgressFor(target, row, now), now);
+      return [{ ...scheduleTaskMasterRestated(target, row, now, noted => !newerThanMaster(noted)), ...(fileProgress || {}), updatedAt: now }];
     }
     // Restated as the phone's approval restates it; a row that no longer pairs (renamed since) only drops the note.
     const { next } = mergeApprovedScheduleImportItems({
