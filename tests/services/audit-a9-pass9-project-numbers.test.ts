@@ -328,3 +328,25 @@ describe('audit A9 pass 9 L3: a closed one-word project name after on/of/about/t
     expect(noteDraft('The main electrical is done.', SELECTED, PROJECTS, ['Main']).recommendedProject.confirmed).toBe(true);
   });
 });
+
+describe('audit A9 pass 9 L4: in a feet-inch pair the inches are one or two digits', () => {
+  it.each([
+    'Is it 12\' 2375"?',
+    'Is it 12\'-2375"?',
+    'Is it 12’2375”?',
+    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
+  ])('"%s" names 2375', question => {
+    expect(desktop(question, PROJECTS)).toBe(switchOnDesktop('2375'));
+    expect(mentionedDAVEProject(question, PROJECTS)).toBe(OTHER);
+  });
+
+  it.each([
+    'Is the run 2375\'-6" long?',
+    'Is the run 2375\' 11.5" long?',
+    'Is the run 2375’-10” long?',
+    'Is the run 2375′ 6″ long?',
+  ])('"%s" is still a measurement', question => {
+    expect(desktop(question, PROJECTS)).toBeNull();
+    expect(mentionedDAVEProject(question, PROJECTS)).toBeNull();
+  });
+});

@@ -271,15 +271,16 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    ″ with a word or a hyphen after them ("2375′ run"); a mark that may
   //    close a quotation ("at 2375′?", "2375′s") is not a measurement. Then a
   //    feet-inch pair with both marks, straight, curly or prime: "12'-6\"",
-  //    "12' 6\"", "12'6\"", "12’-6”", "12′-6″". Audit A9 pass 8: no other ' ’
-  //    " or ” after a number is a measurement, so a lone "2375\"" or "2375'"
-  //    names the project (four passes of quotation tracking each left a
-  //    quotation misread; write "2375 in." or "2375 ft").
+  //    "12' 6\"", "12'6\"", "12’-6”", "12′-6″", with one or two digits of
+  //    inches ("12' 2375\"" names 2375; audit A9 pass 9 L4). Audit A9 pass
+  //    8: no other ' ’ " or ” after a number is a measurement, so a lone
+  //    "2375\"" or "2375'" names the project (four passes of quotation
+  //    tracking each left a quotation misread; write "2375 in." or "2375 ft").
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
   new RegExp(String.raw`${NUMBER}(?:A(?!${WING_LETTER_AFTER_A})| ?[Vm])(?=[\s.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
   new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}[′″](?=\s[a-z0-9]|-)`, 'gi'),
-  new RegExp(String.raw`${NUMBER}['’′]\s?-?\s?\d+(?:\.\d+)?["”″]`, 'g'),
+  new RegExp(String.raw`${NUMBER}['’′]\s?-?\s?\d{1,2}(?:\.\d+)?["”″]`, 'g'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
   new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
   // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",

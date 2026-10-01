@@ -573,7 +573,11 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     // Pass 8: a lone " is not an inch mark (the quotation tracking was removed), so these two flip to refused.
     ['Is the pipe 2375" long?', '2375'],
     ['Is the 6" pipe 2375" long?', '2375'],
-    ['He wrote "set the sleeve at 12\'-2375" above grade" today?', null],
+    // Pass 9 L4: inches are one or two digits, so 12'-2375" is not a
+    // measurement and this flips to refused.
+    ['He wrote "set the sleeve at 12\'-2375" above grade" today?', '2375'],
+    ['Is it 12\' 2375"?', '2375'],
+    ['Is the run 2375\' 11.5" long?', null],
   ] as const).map(([question, refused]) => ({
     name: `pass 6 L2: ${question} when 2375 is another project`,
     projectName: SELECTED,
@@ -733,7 +737,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Is the "2375" job done?', '2375'],
     // Pass 8: a lone " is not an inch mark (the quotation tracking was removed), so this flips to refused.
     ['Is the 6" pipe 2375" long?', '2375'],
-    ['He wrote "set the 6" sleeve at 12\' 2375" above grade" today?', null],
+    // Pass 9 L4: inches are one or two digits, so this flips to refused.
+    ['He wrote "set the 6" sleeve at 12\' 2375" above grade" today?', '2375'],
+    ['He wrote "set the 6" sleeve at 2375\' 6" above grade" today?', null],
   ] as const).map(([question, refused]) => ({
     name: `pass 7 L4: ${question} when 2375 is another project`,
     projectName: SELECTED,

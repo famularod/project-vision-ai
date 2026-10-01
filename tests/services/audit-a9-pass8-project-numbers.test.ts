@@ -81,7 +81,9 @@ describe('audit A9 pass 8 L1, L3: a quote mark after a number is a measurement o
     'Is the run 2375’ 6” long?',
     'Is the run 2375′-6″ long?',
     "He wrote 'set the sleeve at 2375'-6\" above grade' today?",
-    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
+    // 'He wrote "set the sleeve at 12\'-2375" above grade" today?' moved to
+    // audit-a9-pass9-project-numbers.test.ts: since pass 9 L4 the inches of
+    // a feet-inch pair are one or two digits, so it names 2375.
     // Units written as words still count.
     'Is the run 2375 ft long?',
     'Is the run 2375 feet long?',

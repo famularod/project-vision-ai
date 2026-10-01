@@ -183,10 +183,19 @@ describe('audit A9 pass 7 L4: an inch mark inside a double quotation does not cl
 
   it.each([
     // A feet-inch pair is a measurement even inside a quotation.
-    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
-    'He wrote "set the 6" sleeve at 12\' 2375" above grade" today?',
+    'He wrote "set the sleeve at 2375\'-6" above grade" today?',
+    'He wrote "set the 6" sleeve at 2375\' 6" above grade" today?',
   ])('%s is a measurement and is allowed', question => {
     expectAllowed(question, PROJECTS);
+  });
+
+  it.each([
+    // Audit A9 pass 9 L4: these were allowed as feet-inch pairs; the inches
+    // of a pair are now one or two digits, so 2375" names the project.
+    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
+    'He wrote "set the 6" sleeve at 12\' 2375" above grade" today?',
+  ])('%s names 2375 since pass 9 L4', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
   });
 });
 
