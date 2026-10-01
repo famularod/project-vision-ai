@@ -463,6 +463,14 @@ export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
  * no area matches any area. Same-named tasks pair in finish-date order, and
  * only when there are as many of them before as now and no earlier task
  * could be either of two; otherwise they stay added and removed.
+ *
+ * Whole-app audit A6 pass 9 L1 (30 Sep 2026): finish order alone is not
+ * enough. Two inspections whose finish order the revision swapped were
+ * cross-paired: "+0 completed" yet "Inspection was completed." and "…was
+ * reopened", owners swapped. The import pairs them in file order and keeps no
+ * record of it on the new row, so same-named tasks pair in finish order only
+ * when each pair also has the same status, completion and owner; otherwise
+ * which is which cannot be told and they stay added and removed.
  */
 function pairRevisedTasks(
   previous: readonly DAVEReportSnapshotTask[],
@@ -485,9 +493,18 @@ function pairRevisedTasks(
     .filter(({ rows, earlier }) => rows.length === earlier.length && earlier.every(task => groupCount.get(task) === 1))
     .forEach(({ rows, earlier }) => {
       const earlierInOrder = inFinishOrder(earlier);
-      inFinishOrder(rows).forEach((task, index) => pairs.set(task, earlierInOrder[index]));
+      const rowsInOrder = inFinishOrder(rows);
+      if (rows.length > 1 && !rowsInOrder.every((task, index) => sameStanding(earlierInOrder[index], task))) return;
+      rowsInOrder.forEach((task, index) => pairs.set(task, earlierInOrder[index]));
     });
   return pairs;
+}
+
+/** The same status, completion and owner: what tells same-named tasks apart (A6 pass 9 L1). */
+function sameStanding(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): boolean {
+  return normalized(earlier.status) === normalized(now.status) &&
+    snapshotTaskIsComplete(earlier) === snapshotTaskIsComplete(now) &&
+    normalized(earlier.owner) === normalized(now.owner);
 }
 
 function sameRevisedTask(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): boolean {

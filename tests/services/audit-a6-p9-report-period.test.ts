@@ -10,6 +10,11 @@
  *     changes." (none existed), in both formats. A task that already has a
  *     comparison line no longer gets a "was updated." line, and the count is
  *     taken after that, so it equals the lines not shown.
+ * L1. Two same-named tasks in one area, both revised with their finish order
+ *     swapped, were cross-paired: "+0 completed" yet "Inspection was
+ *     completed." and "…was reopened", owners swapped. Same-named tasks pair
+ *     in finish order only when each pair also agrees on status and owner;
+ *     otherwise they are said as added and removed.
  */
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -180,5 +185,71 @@ describe('M1: "And N more changes." counts only the changes not shown', () => {
     });
     expect(briefing.recentChangeCount).toBe(8);
     expect(briefing.recentChanges.map(change => change.source)).toEqual(Array(8).fill('approved_report_comparison'));
+  });
+});
+
+describe('L1: same-named tasks whose finish order swapped are not cross-paired', () => {
+  const task = (id: string, finishDate: string, owner: string, complete: boolean) => ({
+    taskId: id, taskName: 'Inspection', areaName: 'Level 2', owner,
+    status: complete ? 'Complete' : 'In Progress', percentComplete: complete ? 100 : 0,
+    finishDate, urgency: 'not_urgent', approvalStatus: null, estimatedScheduleImpactDays: null,
+  });
+  const at = (tasks: unknown[], capturedAt: string) => buildDAVEReportSnapshot({
+    truths: [{ projectName: 'Tower', schedule: tasks } as never], scopeKey: 'tower', sourceFingerprint: capturedAt, capturedAt,
+  });
+
+  it('Dana\'s open inspection moved later and Eli\'s completed one moved earlier: no "completed" or "reopened"', () => {
+    const comparison = compareDAVEReportSnapshots({
+      previous: at([task('a1', '2026-10-01', 'Dana', false), task('a2', '2026-11-01', 'Eli', true)], REPORT_SENT),
+      current: at([task('b1', '2026-11-05', 'Dana', false), task('b2', '2026-10-05', 'Eli', true)], NOW),
+    });
+    expect(comparison.completeDelta).toBe(0);
+    const kinds = comparison.changes.map(change => change.kind);
+    expect(kinds).not.toContain('completed');
+    expect(kinds).not.toContain('reopened');
+    expect(kinds).not.toContain('owner');
+    expect([...kinds].sort()).toEqual(['added', 'added', 'removed', 'removed']);
+  });
+
+  it('the same through the real import merge, in both report formats', () => {
+    const inspection = (batch: string, id: string, finishDate: string, owner: string, complete: boolean, sourceRowNumber: number) => ({
+      ...row(batch, 'Inspection', finishDate, { id, owner, ...(complete ? { percentComplete: 100, status: 'Complete' } : { percentComplete: 0, status: 'Not Started' }) }),
+      sourceRowNumber,
+    }) as ScheduleItem;
+    const v1 = [
+      inspection('tower-v1', 'tower-v1-inspection-1', '2026-10-01', 'Dana', false, 1),
+      inspection('tower-v1', 'tower-v1-inspection-2', '2026-11-01', 'Eli', true, 2),
+    ];
+    const shown = approveRevision(v1, [
+      inspection('tower-v2', 'tower-v2-inspection-1', '2026-11-05', 'Dana', false, 1),
+      inspection('tower-v2', 'tower-v2-inspection-2', '2026-10-05', 'Eli', true, 2),
+    ]);
+    const lastWeek = snapshotOf(truthOf(v1, REPORT_SENT), REPORT_SENT);
+    for (const lines of sinceLines(shown, lastWeek)) {
+      expect(lines[0]).toMatch(/^• \+0 completed; /);
+      const text = lines.join('\n');
+      expect(text).not.toContain('Inspection was completed.');
+      expect(text).not.toContain('was reopened');
+      expect(text).not.toContain('owner changed');
+    }
+  });
+
+  it('finish order kept, with the same status and owner each: still paired as finish changes', () => {
+    const comparison = compareDAVEReportSnapshots({
+      previous: at([task('a1', '2026-10-01', 'Dana', false), task('a2', '2026-11-01', 'Eli', true)], REPORT_SENT),
+      current: at([task('b1', '2026-10-05', 'Dana', false), task('b2', '2026-11-05', 'Eli', true)], NOW),
+    });
+    expect(comparison.changes.map(change => change.summary)).toEqual([
+      'Inspection finish changed from 2026-10-01 to 2026-10-05.',
+      'Inspection finish changed from 2026-11-01 to 2026-11-05.',
+    ]);
+  });
+
+  it('a single revised task still reports its own completion and owner change', () => {
+    const comparison = compareDAVEReportSnapshots({
+      previous: at([task('a1', '2026-10-01', 'Dana', false)], REPORT_SENT),
+      current: at([task('b1', '2026-10-05', 'Eli', true)], NOW),
+    });
+    expect(comparison.changes.map(change => change.kind)).toEqual(['completed', 'finish_date', 'owner']);
   });
 });
