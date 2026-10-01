@@ -493,6 +493,8 @@ export function mergeApprovedScheduleImportItems({
         progressSource: paired.progressSource,
         progressConfirmedAt: paired.progressConfirmedAt ?? null,
         progressConfirmedBy: paired.progressConfirmedBy ?? null,
+        // When David judged a percent given back to him goes with it (A10 pass 6 L1 / A5 pass 8 L2).
+        ...(paired.progressJudgment ? { progressJudgment: paired.progressJudgment } : {}),
         completionVerification: paired.completionVerification ?? null,
       }));
       carriedProgressIds.push(importedItem.id);
@@ -507,6 +509,7 @@ export function mergeApprovedScheduleImportItems({
         progressSource: paired.progressSource ?? null,
         progressConfirmedAt: paired.progressConfirmedAt ?? null,
         progressConfirmedBy: paired.progressConfirmedBy ?? null,
+        ...(paired.progressJudgment ? { progressJudgment: paired.progressJudgment } : {}), // A10 pass 6 L1
         completionVerification: paired.completionVerification ?? null,
       }));
       carriedProgressIds.push(importedItem.id);
