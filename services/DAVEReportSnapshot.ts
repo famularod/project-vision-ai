@@ -619,36 +619,93 @@ const MOST_SAME_NAMED_TO_PAIR = 6;
 /**
  * How same-named tasks pair (A6 pass 10 L1): the way with the fewest status,
  * completion and owner differences. Several ways tie when the tasks cannot be
- * told apart; when every tied way says the same about status, completion and
- * owner (two of Dana's inspections, one completed), finish order picks one,
- * and otherwise (both reassigned, to whom unknown) none: null. Both lists are
- * in finish order and the same length.
+ * told apart by those; when tied ways say different things about status,
+ * completion or owner (both reassigned, to whom unknown), none: null. Both
+ * lists are in finish order and the same length.
+ *
+ * Whole-app audit A6 pass 11 L2 (30 Sep 2026): finish order then picked
+ * among the tied ways, and could print a change no task made. A at 50% due
+ * Oct 1 and B at 10% due Oct 20; the revision completed B on Oct 2 and moved
+ * A to Oct 30. Finish order paired A with the completed task and B with A's
+ * row: "Inspection moved from 10% to 50% complete." and two false finish
+ * changes. A tie now goes to the way that moves the tasks least
+ * (`movement`), finish order first among equals; when ways that move as
+ * little would still print different lines, none.
  */
 function pairByStanding(
   earlier: readonly DAVEReportSnapshotTask[],
   now: readonly DAVEReportSnapshotTask[],
 ): [DAVEReportSnapshotTask, DAVEReportSnapshotTask][] | null {
+  type Pairs = [DAVEReportSnapshotTask, DAVEReportSnapshotTask][];
   const inOrder = now.map((task, index) => [earlier[index], task] as [DAVEReportSnapshotTask, DAVEReportSnapshotTask]);
   if (now.length === 1) return inOrder;
   if (now.length > MOST_SAME_NAMED_TO_PAIR) {
     return inOrder.every(([prior, task]) => standingDifferences(prior, task) === 0) ? inOrder : null;
   }
-  let best: { pairs: [DAVEReportSnapshotTask, DAVEReportSnapshotTask][]; cost: number; said: string } | null = null;
-  let tiedSayingOtherwise = false;
-  // Finish order first, so it is the one kept among ways that say the same.
+  // The ways with the fewest status, completion and owner differences, finish order first.
+  let fewest: Pairs[] = [];
+  let fewestCost = Infinity;
   for (const order of orderings(now.length)) {
-    const pairs = order.map((nowIndex, index) => [earlier[index], now[nowIndex]] as [DAVEReportSnapshotTask, DAVEReportSnapshotTask]);
+    const pairs: Pairs = order.map((nowIndex, index) => [earlier[index], now[nowIndex]]);
     const cost = pairs.reduce((total, [prior, task]) => total + standingDifferences(prior, task), 0);
-    if (best && cost > best.cost) continue;
-    const said = pairs.map(([prior, task]) => standingChange(prior, task)).sort().join('\n');
-    if (!best || cost < best.cost) {
-      best = { pairs, cost, said };
-      tiedSayingOtherwise = false;
-    } else if (said !== best.said) {
-      tiedSayingOtherwise = true;
-    }
+    if (cost > fewestCost) continue;
+    if (cost < fewestCost) fewest = [];
+    fewestCost = cost;
+    fewest.push(pairs);
   }
-  return best && !tiedSayingOtherwise ? best.pairs : null;
+  if (new Set(fewest.map(pairs => saidBy(pairs, (prior, task) => [standingChange(prior, task)]))).size > 1) return null;
+  const measured = fewest.map(pairs => ({ pairs, movement: movement(pairs) }));
+  const least = measured.reduce((best, way) => lessMovement(way.movement, best.movement) < 0 ? way : best);
+  const asLittle = measured.filter(way => lessMovement(way.movement, least.movement) === 0);
+  const lines = (prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask) =>
+    changesBetween(prior, task).map(change => `${change.kind}|${normalized(change.summary)}`);
+  return new Set(asLittle.map(way => saidBy(way.pairs, lines))).size > 1 ? null : least.pairs;
+}
+
+/** Everything a pairing says, in one comparable text (which task says it does not matter). */
+function saidBy(
+  pairs: readonly (readonly [DAVEReportSnapshotTask, DAVEReportSnapshotTask])[],
+  say: (prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask) => string[],
+): string {
+  return pairs.flatMap(([prior, task]) => say(prior, task)).sort().join('\n');
+}
+
+/** A finish date missing on one side only counts as this many days moved. */
+const FINISH_SET_OR_CLEARED_DAYS = 3650;
+
+/**
+ * How much a pairing moves the tasks (A6 pass 11 L2), compared in order: the
+ * percent change of tasks whose completion did not change (a completion is
+ * said as completed or reopened, not as a percent); then how far the finish
+ * dates moved, squared per task so a schedule shifted by more than the gap
+ * between two same-named tasks still pairs them in finish order; then how
+ * many approval and schedule-impact changes it would print.
+ */
+function movement(pairs: readonly (readonly [DAVEReportSnapshotTask, DAVEReportSnapshotTask])[]): number[] {
+  let percent = 0;
+  let finish = 0;
+  let other = 0;
+  for (const [prior, task] of pairs) {
+    if (snapshotTaskIsComplete(prior) === snapshotTaskIsComplete(task)) {
+      percent += Math.abs(prior.percentComplete - task.percentComplete);
+    }
+    finish += finishDaysMoved(prior.finishDate, task.finishDate) ** 2;
+    other += Number(normalized(prior.approvalStatus) !== normalized(task.approvalStatus)) +
+      Number(prior.estimatedScheduleImpactDays !== task.estimatedScheduleImpactDays);
+  }
+  return [percent, finish, other];
+}
+
+function lessMovement(left: readonly number[], right: readonly number[]): number {
+  const differs = left.findIndex((value, index) => value !== right[index]);
+  return differs < 0 ? 0 : left[differs] - right[differs];
+}
+
+function finishDaysMoved(earlier: string | null | undefined, now: string | null | undefined): number {
+  const from = parsePlainDate(earlier);
+  const to = parsePlainDate(now);
+  if (!from || !to) return from === to ? 0 : FINISH_SET_OR_CLEARED_DAYS;
+  return Math.abs(Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
 }
 
 /** How many of status, completion and owner differ: what tells same-named tasks apart (A6 pass 9 L1). */
