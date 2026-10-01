@@ -71,3 +71,26 @@ describe('audit A9 pass 6 M1: "units" and "sheets" are not units of measure', ()
     expectAllowed(question, [SELECTED], [OTHER]);
   });
 });
+
+describe('audit A9 pass 6 L1: a spaced capital "A" is amps only before punctuation or the end', () => {
+  it.each([
+    'What is left in the 2375 A wing?',
+    'Is the 2375 A building topped out?',
+    'Is 2375 A or B behind?',
+    'Is the service 2375 A or 2375 V?',
+  ])('"%s" is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+  });
+
+  it.each([
+    ['Is the panel 200 A?', [SELECTED, '200 Oak Street']],
+    ['Is the main 2375 A.', PROJECTS],
+    ['Is the main 2375 A, 3 phase?', PROJECTS],
+    ['Is the main 2375 A', PROJECTS],
+    ['Is the main breaker 2375A?', PROJECTS],
+    ['Is the service 208 V or 480 V?', [SELECTED, '208 Pine', '480 Bay']],
+    ['Is the service 2375 V or 480 V?', PROJECTS],
+  ] as const)('"%s" is amps or volts and is allowed', (question, projects) => {
+    expectAllowed(question, projects);
+  });
+});

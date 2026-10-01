@@ -147,12 +147,14 @@ const MEASUREMENT_WORD_UNITS = [
 const EXEMPT_PATTERNS: readonly RegExp[] = [
   // 1. Measurements: word units, then the case-sensitive one-letter units A
   //    (amps), V (volts) and m (metres) with a space or the end after them
-  //    ("2375-A" and "2375 A/C" still name 2375), then %, ° and feet or inch
-  //    marks with a word or a hyphen after them ("2375' run", "12'-6\""); a
-  //    mark that may close a quotation ("at 2375'?", "'2375' job", "2375's")
-  //    is not a measurement.
+  //    ("2375-A" and "2375 A/C" still name 2375). A spaced " A" is amps only
+  //    before punctuation or the end ("panel 200 A?"): before a word it is a
+  //    wing or building letter ("the 2375 A wing", "2375 A or B"; audit A9
+  //    pass 6 L1). Then %, ° and feet or inch marks with a word or a hyphen
+  //    after them ("2375' run", "12'-6\""); a mark that may close a quotation
+  //    ("at 2375'?", "'2375' job", "2375's") is not a measurement.
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
-  new RegExp(String.raw`${NUMBER} ?[AVm](?=[\s.,;:!?)]|$)`, 'g'),
+  new RegExp(String.raw`${NUMBER}(?:A| ?[Vm])(?=[\s.,;:!?)]|$)|${NUMBER} A(?=[.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
   new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}['"’”′″](?=\s[a-z0-9]|-)`, 'gi'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".

@@ -526,6 +526,22 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
+  // Audit A9 pass 6 L1: a spaced capital "A" before a word is a wing or
+  // building letter; before punctuation or the end it is amps.
+  ...([
+    ['What is left in the 2375 A wing?', '2375'],
+    ['Is the 2375 A building topped out?', '2375'],
+    ['Is 2375 A or B behind?', '2375'],
+    ['Is the panel 2375 A?', null],
+    ['Is the breaker 2375A?', null],
+    ['Is the service 2375 V or 480 V?', null],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 6 L1: "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
