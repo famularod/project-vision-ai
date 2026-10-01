@@ -684,6 +684,25 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '101',
     refusedClosed: true,
   },
+  // Audit A9 pass 7 L3: ' or ’ after a number closes an open single
+  // quotation; it is a feet mark only with no quotation open, or in a
+  // feet-inch pair. An apostrophe inside a word opens nothing.
+  ...([
+    ["The super wrote 'delivered to 2375' this morning, right?", '2375'],
+    ['The super wrote ‘delivered to 2375’ this morning, right?', '2375'],
+    ["I don't know, he wrote 'send it to 2375' today?", '2375'],
+    ["Is the '2375' job done?", '2375'],
+    ["Is the run 2375' long?", null],
+    ["I don't think the run is 2375' long?", null],
+    ["He wrote 'set the sleeve at 2375'-6\" above grade' today?", null],
+    ["He wrote 'set the sleeve at 2375'6\" above grade' today?", null],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 7 L3: ${question} when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

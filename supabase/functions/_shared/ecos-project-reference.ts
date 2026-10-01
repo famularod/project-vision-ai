@@ -186,14 +186,14 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    ("2375-A" and "2375 A/C" still name 2375). A spaced " A" is amps only
   //    before punctuation or the end ("panel 200 A?"): before a word it is a
   //    wing or building letter ("the 2375 A wing", "2375 A or B"; audit A9
-  //    pass 6 L1). Then %, ° and feet or inch marks with a word or a hyphen
-  //    after them ("2375' run", "12'-6\""); a mark that may close a quotation
-  //    ("at 2375'?", "'2375' job", "2375's") is not a measurement. A double
-  //    quote mark (" or ”) is checked in exemptSpans (INCH_QUOTE_MARK).
+  //    pass 6 L1). Then %, ° and the prime marks ′ and ″ with a word or a
+  //    hyphen after them ("2375′ run"); a mark that may close a quotation
+  //    ("at 2375′?", "2375′s") is not a measurement. The quote marks ' ’ " ”
+  //    are checked in exemptSpans (FEET_QUOTE_MARK, INCH_QUOTE_MARK).
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
   new RegExp(String.raw`${NUMBER}(?:A| ?[Vm])(?=[\s.,;:!?)]|$)|${NUMBER} A(?=[.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
-  new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}['’′″](?=\s[a-z0-9]|-)`, 'gi'),
+  new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}[′″](?=\s[a-z0-9]|-)`, 'gi'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
   new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
   // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",
@@ -217,6 +217,40 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    "S201", "E-2375" ("RFI-2375" and "a-201" still name the number).
   /\b\d{2} \d{2} \d{2}\b|\b0\d{5}\b|\b[A-Z]{1,2}-?\d{3,6}\b/g,
 ];
+
+/**
+ * A number with ' or ’ after it. It is a feet mark only in a feet-inch pair
+ * ("2375'-6\"", "2375' 6\"", "2375'6\"") or, with a word or a hyphen next,
+ * when no single quotation is open before the number; otherwise it closes
+ * the quotation ("The super wrote 'delivered to 2375' this morning"; audit
+ * A9 pass 7 L3, mirroring the double quote rule below).
+ */
+const FEET_QUOTE_MARK = new RegExp(String.raw`${NUMBER}['’]`, 'g');
+
+function feetQuoteMarkIsMeasurement(before: string, after: string) {
+  if (/^\s?-?\s?\d+(?:\.\d+)?["”″]/.test(after)) return true;
+  if (!/^(?:\s[a-z0-9]|-)/i.test(after)) return false;
+  return !/['"‘“’”′″]$/.test(before) && !singleQuotationOpen(before);
+}
+
+/**
+ * Whether a single quotation opened in `text` is still open at its end: ' or
+ * ‘ at the start of a word opens one, and ' or ’ at the end of a word closes
+ * it. An apostrophe inside a word ("don't", "2375's", "crew’s") does neither.
+ */
+function singleQuotationOpen(text: string) {
+  let open = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character !== "'" && character !== '‘' && character !== '’') continue;
+    const afterWord = /[a-z0-9]/i.test(text[index - 1] ?? '');
+    const beforeWord = /[a-z0-9]/i.test(text[index + 1] ?? '');
+    if (afterWord && beforeWord) continue;
+    if (!afterWord && character !== '’') open = true;
+    else if (afterWord && character !== '‘') open = false;
+  }
+  return open;
+}
 
 /**
  * A number with " or ” after it and a word or a hyphen next. It is an inch
@@ -263,6 +297,13 @@ function exemptSpans(text: string): Array<readonly [number, number]> {
     const pattern = new RegExp(source.source, source.flags);
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  const feetMark = new RegExp(FEET_QUOTE_MARK.source, FEET_QUOTE_MARK.flags);
+  for (let match = feetMark.exec(text); match; match = feetMark.exec(text)) {
+    const end = match.index + match[0].length;
+    if (feetQuoteMarkIsMeasurement(text.slice(0, match.index), text.slice(end))) {
+      spans.push([match.index, end]);
     }
   }
   const inchMark = new RegExp(INCH_QUOTE_MARK.source, INCH_QUOTE_MARK.flags);

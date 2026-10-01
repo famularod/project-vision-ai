@@ -123,3 +123,33 @@ describe('audit A9 pass 7 L2: a comma-grouped number that is no project is check
     expectAllowed(question, projects);
   });
 });
+
+describe('audit A9 pass 7 L3: a closing single quote after a number is not a feet mark', () => {
+  it.each([
+    "The super wrote 'delivered to 2375' this morning, right?",
+    'The super wrote ‘delivered to 2375’ this morning, right?',
+    "I don't know, he wrote 'send it to 2375' today?",
+    "Did he say 'the pour at 2375' went fine?",
+    "He said 'ok' then wrote 'send it to 2375' again?",
+    "Is the '2375' job done?",
+  ])('%s is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it.each([
+    // No single quotation is open before the mark: a feet mark.
+    "Is the run 2375' long?",
+    'Is the run 2375’ long?',
+    "I don't think the run is 2375' long?",
+    'The crew’s run is 2375’ long?',
+    "He said 'ok' and the run is 2375' long?",
+    // A feet-inch pair is a measurement even inside a quotation.
+    "He wrote 'set the sleeve at 2375'-6\" above grade' today?",
+    "He wrote 'set the sleeve at 2375' 6\" above grade' today?",
+    "He wrote 'set the sleeve at 2375'6\" above grade' today?",
+    'He wrote ‘set the sleeve at 2375’-6” above grade’ today?',
+  ])('%s is a measurement and is allowed', question => {
+    expectAllowed(question, PROJECTS);
+  });
+});
