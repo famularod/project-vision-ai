@@ -291,7 +291,9 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * "2375 B 2nd floor"), or '' (audit A9 pass 9 L1). Audit A9 pass 10 L1: a
  * lower-case letter is a word ("Is 2375 a priority?"), and a spaced capital
  * that continues the name of a project numbered just this ("2375 A?" for
- * "2375 A Street") is that project's, so neither is one (with a word
+ * "2375 A Street"; since audit A9 pass 15 M1 of any project with the number
+ * as a word: "400 N. Main" for "24117 - 400 N Main St") is that project's,
+ * so neither is one (with a word
  * after the capital, only when that word continues the name too: "2375 A
  * Phase" is not "2375 A Street"; pass 12 L3); a hyphen letter always is one
  * (audit A9 pass 11 F2). Audit A9 pass 11 F1: a
@@ -325,9 +327,11 @@ export function ecosProjectNumberMentionsAt(
     // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2). Audit
     // A9 pass 12 L3: with a word after the capital, the name must continue
     // with that word too ("2375 A Phase 2" does not continue "2375 A Street";
-    // "2375 A St." does, pass 13 L2).
+    // "2375 A St." does, pass 13 L2). Audit A9 pass 15 M1: any project
+    // whose name has the number as a word of its own, not only one numbered
+    // just this ("400 N. Main" continues "24117 - 400 N Main St").
     const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
-      hasIdentifier(name, number) && projectNameAroundNumber(number, '', text.slice(end), [name]) &&
+      nameContinuesAfterPlainNumber(name, number, text.slice(end)) &&
       (!capitalBeforeWord || sameNameWord(wordsAfterNumber(text.slice(end))[1], wordsAfterNumber(name, number)[1])))
       ? capital
       : '');
@@ -497,15 +501,25 @@ export function ecosProjectsAroundNumber(
   { number, start, end }: Readonly<{ number: string; start: number; end: number }>,
   projectNames: readonly string[],
 ): string[] {
-  const plain = new RegExp(String.raw`(?<![A-Za-z0-9])${number}(?![A-Za-z0-9]|-[A-Za-z](?![A-Za-z0-9]))`);
   const reach = projectNames.map(name => {
-    const at = plain.exec(name);
+    const at = plainNumberIn(name, number);
     return at ? nameWordsAround(name, at, text.slice(0, start), text.slice(end)) : { count: 0, full: false };
   });
   const furthest = Math.max(0, ...reach.map(({ count }) => count));
   if (furthest === 0) return [];
   const inFull = projectNames.filter((_, index) => reach[index].count === furthest && reach[index].full);
   return inFull.length > 0 ? inFull : projectNames.filter((_, index) => reach[index].count === furthest);
+}
+
+/** Where `number` is a word of its own in the name ("450" in "24117 - 450 Elm St"; not "2375A" or "2375-B"). */
+function plainNumberIn(name: string, number: string) {
+  return new RegExp(String.raw`(?<![A-Za-z0-9])${number}(?![A-Za-z0-9]|-[A-Za-z](?![A-Za-z0-9]))`).exec(name);
+}
+
+/** Whether the name has `number` as a word of its own and continues in `after` (audit A9 pass 15 M1). */
+function nameContinuesAfterPlainNumber(name: string, number: string, after: string) {
+  const at = plainNumberIn(name, number);
+  return Boolean(at) && nameContinuesAt(name, at!, '', after);
 }
 
 /** Whether the name around name[at] continues in `before` or `after`. */
@@ -579,9 +593,12 @@ function sameNameWord(word: string | undefined, nameWord: string | undefined) {
   return Boolean(word && nameWord && streetWord(word) === streetWord(nameWord));
 }
 
+/** Audit A9 pass 15 M1: compass words too ("400 North Main" continues "400 N Main St"). */
 const STREET_WORDS: ReadonlyMap<string, string> = new Map([
   ['st', 'street'], ['ave', 'avenue'], ['rd', 'road'], ['blvd', 'boulevard'], ['dr', 'drive'],
   ['ln', 'lane'], ['ct', 'court'], ['pl', 'place'], ['hwy', 'highway'], ['pkwy', 'parkway'],
+  ['n', 'north'], ['s', 'south'], ['e', 'east'], ['w', 'west'],
+  ['ne', 'northeast'], ['nw', 'northwest'], ['se', 'southeast'], ['sw', 'southwest'],
 ]);
 
 function streetWord(word: string) {

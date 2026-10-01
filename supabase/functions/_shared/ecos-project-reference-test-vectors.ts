@@ -1312,6 +1312,24 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 15 M1: an address with a compass word ("400 N. Main",
+  // "400 North Main") continues a name that has the number as a word of its
+  // own, so it names that project and not another numbered just that.
+  ...([
+    ['Is 400 N. Main done?', SELECTED, [SELECTED, '24117 - 400 N Main St'], '400 (24117 - 400 N Main St)', undefined],
+    ['Is 400 North Main done?', SELECTED, [SELECTED, '24117 - 400 N Main St'], '400 (24117 - 400 N Main St)', undefined],
+    ['Is 1200 S. Broadway done?', SELECTED, [SELECTED, '24117 - 1200 S Broadway'], '1200 (24117 - 1200 S Broadway)', undefined],
+    ['Is 400 N. Main done?', SELECTED, [SELECTED, '24117 - 400 N Main St', '400 Oak Ave'], '400 (24117 - 400 N Main St)', undefined],
+    ['Is 400 N. Main St done?', '24117 - 400 N Main St', [SELECTED, '24117 - 400 N Main St', '400 Oak Ave'], null, undefined],
+    ['Is 2375 B done?', SELECTED, [SELECTED, '2375B Annex', '2375 Main St'], '2375B', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 15 M1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
