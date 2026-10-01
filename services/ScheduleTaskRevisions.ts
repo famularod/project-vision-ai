@@ -112,9 +112,26 @@ export function scheduleTaskRevisedFrom<T extends ScheduleItem>(row: T, saved: P
   return earlier.length > 0 ? { ...row, revisedFromTaskIds: earlier } : row;
 }
 
-function sameProject(item: ScheduleItem, reference: ScheduleTaskReference): boolean {
+/**
+ * Whether a task is in the update's project: its app project
+ * (scheduleTaskProjectKey) is one the update names. Whole-app audit A5 pass
+ * 14 L2 (1 Oct 2026): separate North and South Microsoft Project masters
+ * keep their shared root ("2400 Compliance Project") as every row's schedule
+ * project, and the root counted as a project match, so after a newer North
+ * master dropped ROOF DRAINS a North report linked by name to South's ROOF
+ * DRAINS (evidence correlation: "completion_reported"). The root still
+ * matches an update filed under the root itself (the web files a task's
+ * update under its schedule project), unless the update's own saved row
+ * names another app project. A row naming no app project keys by its root,
+ * as before.
+ */
+function sameProject(item: ScheduleItem, reference: ScheduleTaskReference, saved?: ScheduleItem): boolean {
   const projects = [reference.scheduleProjectName, reference.projectName].map(nameKey).filter(Boolean);
-  return [item.scheduleProjectName, item.projectName].map(nameKey).some(project => Boolean(project) && projects.includes(project));
+  const project = scheduleTaskProjectKey(item);
+  if (projects.includes(project)) return true;
+  const root = nameKey(item.scheduleProjectName);
+  return Boolean(root) && nameKey(reference.projectName || reference.scheduleProjectName) === root &&
+    (!saved || [root, project].includes(scheduleTaskProjectKey(saved)));
 }
 
 function sameArea(item: ScheduleItem, reference: ScheduleTaskReference): boolean {
@@ -197,7 +214,7 @@ export function scheduleTaskLinks(
   };
   const nameSharedInOwnSchedule = (reference: ScheduleTaskReference, own: ScheduleItem, name: string): boolean => {
     const named = new Set(scheduleKeys(own).flatMap(key => inScheduleNamed(key, name)));
-    return [...named].filter(item => sameProject(item, reference) && sameArea(item, reference)).length > 1;
+    return [...named].filter(item => sameProject(item, reference, own) && sameArea(item, reference)).length > 1;
   };
   const byId = new Map<string, ScheduleItem>();
   const byEarlierId = new Map<string, ScheduleItem[]>();
@@ -262,7 +279,7 @@ export function scheduleTaskLinks(
     const owners = saved ? [saved] : knownListing(taskId);
     const name = nameKey(reference.scheduleTaskName);
     const named = name && !owners.some(own => nameSharedInOwnSchedule(reference, own, name))
-      ? (byName.get(name) || []).filter(item => sameProject(item, reference) && sameArea(item, reference))
+      ? (byName.get(name) || []).filter(item => sameProject(item, reference, saved) && sameArea(item, reference))
       : [];
     return named.length === 1 ? { item: named[0], basis: 'stored_task_name' } : null;
   };
