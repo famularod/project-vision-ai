@@ -4091,20 +4091,35 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       await clearConflictsForLocalRecord('project_update', conflict.localId);
       throw new Error('sync_conflict_record_deleted');
     }
-    const chosenCloudUpdate = (await withDocumentChangesSinceConflict(conflict.localId))(cloudUpdate) as TUpdate;
+    const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
+    const phoneCopies = [localPayload.updateData, ...(await getOfflineQueue())
+      .filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
+        (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId && !queuedFieldUpdateDocumentPatches(item))
+      .map(item => (item.payload as ProjectUpdateRecordPayload).updateData)];
     await removeProjectUpdateFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
     await removeProjectUpdateFromSyncQueue(conflict.localId);
+    // The cloud's copy as it is now (whole-app audit A4 pass 11 O1): the one
+    // saved when the conflict was found put that older copy back over an
+    // iPad edit made since. Not one of this phone's own copies, which a retry
+    // in flight may have put there: that is not the cloud's choice.
+    const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
+    if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+    const currentCopy = current.data?.updateData;
+    const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
+      sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
+      ? currentCopy : cloudUpdate;
+    const chosenCloudUpdate = withDocumentChanges(cloudNow) as TUpdate;
     await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
       id: projectUpdateQueueItemId(conflict.localId),
       entity: 'project_update',
       operation: 'update',
       payload: {
         id: conflict.localId,
-        projectId: typeof cloudUpdate.projectId === 'string' ? cloudUpdate.projectId : localPayload.projectId,
-        projectName: typeof cloudUpdate.projectName === 'string' ? cloudUpdate.projectName : localPayload.projectName,
-        selectedAreaName: typeof cloudUpdate.selectedAreaName === 'string'
-          ? cloudUpdate.selectedAreaName
+        projectId: typeof cloudNow.projectId === 'string' ? cloudNow.projectId : localPayload.projectId,
+        projectName: typeof cloudNow.projectName === 'string' ? cloudNow.projectName : localPayload.projectName,
+        selectedAreaName: typeof cloudNow.selectedAreaName === 'string'
+          ? cloudNow.selectedAreaName
           : localPayload.selectedAreaName,
         updateData: chosenCloudUpdate,
         // The cloud copy's photos are already in cloud storage.

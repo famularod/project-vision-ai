@@ -1475,3 +1475,45 @@ describe('a stale "Waiting to Sync" or failed status does not send the phone\'s 
     expect(documentIds(inCloud())).toEqual(['survey']);
   });
 });
+
+describe('Keep Cloud takes the cloud\'s copy as it is now (audit A4 pass 11 O1)', () => {
+  it('an iPad edit made after the conflict was found stays in the cloud and comes to the phone', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await chooseInSettings(phone, conflict, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('with a document change waiting: the change goes onto the cloud\'s current copy', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(chosen).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(chosen)).toEqual(['survey']);
+  });
+
+  it('a retry of the phone\'s copy that reached the cloud meanwhile does not become the cloud\'s choice', async () => {
+    const { conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    putInCloud({ ...inCloud(), notes: PHONE_NOTE }, new Date().toISOString()); // the phone's own copy, sent by a retry
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud');
+    expect(chosen).toMatchObject({ notes: IPAD_NOTE });
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+  });
+
+  it('the cloud cannot be read: neither copy changes', async () => {
+    const { conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    const { getProjectUpdateSyncMetadata } = jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock };
+    getProjectUpdateSyncMetadata.mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+    await expect(resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud')).rejects.toThrow();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+});

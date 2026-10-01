@@ -2022,6 +2022,21 @@ describe('project and field-update queue rules from the audit', () => {
     remotePayload: cloudCopy(id),
   }]));
 
+  /**
+   * The cloud still holds the copy the conflict recorded. Keep Cloud reads
+   * the cloud's copy again before writing it (whole-app audit A4 pass 11 O1:
+   * an iPad edit made after the conflict was found was overwritten); the
+   * default receipt here is another copy, which it would now take.
+   */
+  const cloudUnchangedSinceConflict = () => mockGetProjectUpdateSyncMetadata.mockImplementation((id: string) =>
+    Promise.resolve({
+      ok: true, configured: true, stubbed: false,
+      data: {
+        id, projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9', updatedAt: '2026-08-15T08:00:00.000Z',
+        projectName: '2375 Compliance Project', areaName: 'Canopy A', updateData: cloudCopy(id),
+      },
+    }));
+
   beforeEach(() => {
     deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(false);
   });
@@ -2049,26 +2064,25 @@ describe('project and field-update queue rules from the audit', () => {
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
-  it('Keep Cloud withdraws the phone’s queued copies and writes the chosen copy back', async () => {
+  it('Keep Cloud withdraws the phone’s queued copies and keeps the chosen copy in the cloud', async () => {
     storeConflict('u-keep-cloud');
+    cloudUnchangedSinceConflict();
     await enqueuePendingChange(updateItem('u-keep-cloud', 'A newer phone edit', '2026-08-16T08:00:00.000Z'));
     const [conflict] = await getSyncConflicts();
 
     await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(cloudCopy('u-keep-cloud'));
     await expect(getOfflineQueue()).resolves.toEqual([]);
     await expect(getSyncConflicts()).resolves.toEqual([]);
-    expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
-    expect(mockSaveProjectUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
-      id: 'u-keep-cloud',
-      projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
-      projectName: '2375 Compliance Project',
-      areaName: 'Canopy A',
-      updateData: cloudCopy('u-keep-cloud'),
-    }));
+    // Pin changed in A4 pass 11 O1: Keep Cloud reads the cloud's copy again
+    // and writes that one, which the cloud already holds, so nothing is
+    // saved. Before, it wrote the copy recorded with the conflict over the
+    // receipt this mock returns by default (an iPad edit made since).
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
   });
 
   it('Keep Cloud judges its own item: another update still waiting on photos does not fail it (A7 pass 3)', async () => {
     storeConflict('u-own-item');
+    cloudUnchangedSinceConflict();
     await enqueuePendingChange({
       ...updateItem('u-waiting-on-photos', 'Unrelated, photos not uploaded yet', '2026-08-16T09:00:00.000Z'),
       payload: {
