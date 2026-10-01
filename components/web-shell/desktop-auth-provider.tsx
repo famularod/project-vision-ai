@@ -536,8 +536,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // tab's guard. It had made every later sign-in here wait the full 10 s
     // and ignored this tab's own refreshes until its hung request ended
     // (A12 pass 8 L1). Its late answer leaves this sign-in be: the gateway
-    // keeps a sign-in that succeeded here (A12 pass 8 H1). A sign-in that
-    // failed leaves the guard on.
+    // keeps a sign-in of another session than the one it ends (A12 pass 9).
+    // A sign-in that failed leaves the guard on.
     if (endingPastLimit && endingSignInRef.current === endingPastLimit) {
       endingSignInRef.current = null;
     }

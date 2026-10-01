@@ -9,9 +9,10 @@
  * sign-in behind it ("Sign in is required…" on the next read).
  *
  * Now it keeps a sign-in made here meanwhile. The provider's wait makes such
- * a sign-in rare; this keeps it if one happens. Since A12 pass 8 H1 it keeps
- * only one that SUCCEEDED, and waits for one still awaiting an answer
- * (tests/services/audit-r2-a12p8-web-ending-failed-sign-in.test.ts).
+ * a sign-in rare; this keeps it if one happens. Since A12 pass 9 it tells
+ * that sign-in from the one it is ending by session (the access token's
+ * `session_id`), without waiting for a sign-in still awaiting an answer
+ * (tests/services/audit-r2-a12p9-web-ending-by-session.test.ts).
  */
 import { createTabStorage, type TabStorage } from '../fixtures/browser-tabs';
 
@@ -33,6 +34,7 @@ import {
   createTabClient,
   createTabCloud,
   storeTabSignIn,
+  tabSessionId,
   tabSignIn,
   type TabCloud,
 } from '../fixtures/browser-tabs';
@@ -138,14 +140,16 @@ describe('signOutThisTabToo keeps a sign-in made here while it ran (A12 pass 7 L
     expect(newSignIn?.refreshToken).not.toBe('refresh:owner-1:1');
     logout.release();
 
-    // Re-pinned for A12 pass 8 H1: the ending now waits for a sign-in still
-    // under way to answer before it decides (one that then fails must not
-    // keep anything), so it settles after this sign-in finishes. Meanwhile
-    // it takes nothing out, and the successful sign-in is kept.
+    // Re-pinned for A12 pass 9: the ending no longer waits for a sign-in
+    // still under way (A12 pass 8 H1 had it wait, and one that never
+    // answered kept the ended sign-in for good). It decides by session at
+    // once: the stored sign-in is a new session, so it is kept, before
+    // this sign-in has finished.
+    expect(newSignIn?.sessionId).not.toBe(tabSessionId('owner-1', 1));
     let ended = false;
     void ending.then(() => { ended = true; });
     await new Promise(resolve => setTimeout(resolve, 20));
-    expect(ended).toBe(false);
+    expect(ended).toBe(true);
     expect(tabSignIn(tab.storage)).toEqual(newSignIn);
     letSignInFinish();
     expect((await signIn).ok).toBe(true);

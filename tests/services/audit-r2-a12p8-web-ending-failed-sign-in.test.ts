@@ -12,10 +12,11 @@
  * sign-in: still valid on the server, so a reload opened his projects with
  * no password, and auth-js's automatic refresh would have opened them too.
  *
- * Now a stored sign-in outlives the ending only when it is one that a
- * sign-in here SUCCEEDED with since the ending began; the ending waits for
- * sign-ins still awaiting an answer before it decides. A failed sign-in,
- * one still under way, or one that threw never keeps it.
+ * Now the refreshed old sign-in never outlives the ending: a sign-in here
+ * that failed, or threw, stores no new session. Since A12 pass 9 the ending
+ * decides by session (the access token's `session_id`, which the refresh
+ * keeps) without waiting for a sign-in still awaiting an answer
+ * (tests/services/audit-r2-a12p9-web-ending-by-session.test.ts).
  */
 import { createTabStorage, type TabStorage } from '../fixtures/browser-tabs';
 
