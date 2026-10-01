@@ -25,10 +25,11 @@ export type DAVEConversationContextResolution = Readonly<{
  * Whole-app audit A9 pass 2 F1 (30 Sep 2026): `history` is the answers given
  * since Talk was opened (hooks/use-talk-session.ts), not every saved answer of
  * the project. A question that only leans on "this", "that", "it" or "they"
- * ("Why is this wall cracked?") is answered in the owner's own words; the
- * earlier answer only lends its records. "Why?", "Show me the evidence",
- * "Explain that" and "And…/Also…/What about…" stay follow-ups, and the answer
- * they explain is the underlying one, so replies never nest.
+ * ("Why is this wall cracked?") is answered in the owner's own words, on its
+ * own records (audit A9 pass 3 L4: it no longer borrows the earlier answer's).
+ * "Why?", "Show me the evidence", "Explain that" and "And…/Also…/What about…"
+ * stay follow-ups, and the answer they explain is the underlying one, so
+ * replies never nest.
  */
 export function resolveDAVEConversationContext({
   transcript,
@@ -69,7 +70,7 @@ export function resolveDAVEConversationContext({
 
   if (dependence === 'pronoun') {
     // A9 pass 2 F1a: his own words are the question answered and searched.
-    return resolved(originalQuestion, originalQuestion, latest, 'prior_answer', 'The question is answered as asked; the latest answer in this Talk session only adds its records.');
+    return resolved(originalQuestion, originalQuestion, latest, 'prior_answer', 'The question is answered as asked, on its own records.');
   }
 
   const text = normalize(originalQuestion);
@@ -192,6 +193,11 @@ export function answerDAVEConversationContext({
     intelligence,
     interface: conversationInterface,
   });
+  // Audit A9 pass 3 L4 (30 Sep 2026): after "What is overdue?", "Is this wall
+  // rated for 3 hours?" listed the overdue task as its support, and "Show me the
+  // evidence" then cited it for the wall answer. A question answered in his own
+  // words ("this", "it", "they") stands on its own records.
+  if (answersOwnWords(context)) return focused;
   return {
     ...focused,
     supportingEvidence: uniqueEvidence([
@@ -206,7 +212,7 @@ export function answerDAVEConversationContext({
       ...prior.navigationTargets,
       ...focused.navigationTargets,
     ]),
-    // A pronoun question or a new subject takes only the earlier records, not its caveats.
+    // A new subject or "What about that?" takes only the earlier records, not its caveats.
     limitations: context.followUpKind === 'prior_answer' || context.followUpKind === 'added_subject'
       ? focused.limitations
       : uniqueText([...prior.limitations, ...focused.limitations]),
@@ -348,6 +354,11 @@ function ecosQuestionForEntry(entry: DAVEAskConversationEntry) {
 function askable(question: string) {
   const text = clean(question);
   return text.length >= 3 && text.length <= 1_000 ? text : null;
+}
+
+/** A pronoun question ("Is this wall rated?"): a follow-up only in name, answered as asked. */
+function answersOwnWords(context: DAVEConversationContextResolution) {
+  return context.followUpKind === 'prior_answer' && sameWords(context.effectiveQuestion, context.originalQuestion);
 }
 
 function sameWords(left: string, right: string) {

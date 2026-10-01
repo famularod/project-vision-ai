@@ -109,7 +109,7 @@ describe('audit A9 pass 1 #1: Talk inputs with it/this/they', () => {
 
   it.each(cases.filter(([, , dependence]) => dependence !== 'none'))(
     '%s (%s) resolves against the earlier answer and never returns it verbatim',
-    input => {
+    (input, _route, dependence) => {
       const context = resolve(input, true);
       expect(context.status).toBe('resolved_follow_up');
       expect(context.priorEntryId).toBe('entry-1');
@@ -117,7 +117,11 @@ describe('audit A9 pass 1 #1: Talk inputs with it/this/they', () => {
       expect(answer).not.toBeNull();
       expect(answer).not.toBe(priorAnswer);
       expect(answer!.answer).not.toBe(priorAnswer.answer);
-      expect(answer!.supportingEvidence.map(item => item.recordId)).toContain('prior-task');
+      // Pin changed deliberately (audit A9 pass 3 L4, 30 Sep 2026): a pronoun
+      // question no longer lists the earlier answer's records as its support;
+      // an explicit follow-up ("Why?", "Show me the evidence") still does.
+      if (dependence === 'pronoun') expect(answer!.supportingEvidence.map(item => item.recordId)).not.toContain('prior-task');
+      else expect(answer!.supportingEvidence.map(item => item.recordId)).toContain('prior-task');
     },
   );
 
@@ -136,13 +140,15 @@ describe('audit A9 pass 1 #1: Talk inputs with it/this/they', () => {
     expect(context.effectiveQuestion).toBe('Did they send it?');
   });
 
-  it('a pronoun follow-up gets a fresh answer with the earlier records, not the earlier reply', () => {
+  // Pin changed deliberately (audit A9 pass 3 L4, 30 Sep 2026): the fresh
+  // answer used to carry the earlier records as its own support.
+  it('a pronoun follow-up gets a fresh answer on its own records, not the earlier reply or its records', () => {
     const context = resolve('Did they send it?', true);
     expect(context.followUpKind).toBe('prior_answer');
     const answer = answerDAVEConversationContext({ resolution: context, intelligence })!;
     expect(answer).not.toBe(priorAnswer);
     expect(answer.answer).not.toBe(priorAnswer.answer);
-    expect(answer.supportingEvidence.map(item => item.recordId)).toContain('prior-task');
+    expect(answer.supportingEvidence.map(item => item.recordId)).not.toContain('prior-task');
   });
 });
 
@@ -193,14 +199,16 @@ describe('audit A9 pass 2: follow-ups within one Talk session', () => {
     'Why is this wall cracked?',
     'Did they support the formwork?',
     'What guardrail protection is required at this parking edge?',
-  ])('"%s" is answered in the owner\'s own words, with the earlier records only', input => {
+  ])('"%s" is answered in the owner\'s own words, on its own records', input => {
     const session = sessionAfter('What is overdue?');
     const { context, answer, askECOSQuestion } = talk(session, input);
     expect(context.effectiveQuestion).toBe(input);
     expect(context.followUpKind).toBe('prior_answer');
     expect(answer!.answer).toBe(askDAVE({ question: input, intelligence }).answer);
     expect(answer!.answer).not.toContain(priorAnswer.answer);
-    expect(answer!.supportingEvidence.map(item => item.recordId)).toContain('prior-task');
+    // Pin changed deliberately (audit A9 pass 3 L4, 30 Sep 2026): it used to
+    // take the earlier answer's records ('prior-task') as its own support.
+    expect(answer!.supportingEvidence.map(item => item.recordId)).not.toContain('prior-task');
     expect(askECOSQuestion).toBe(input);
   });
 
