@@ -200,7 +200,10 @@ describe('when this device last downloaded every task', () => {
     expect(start).toBeGreaterThan(-1);
     expect(start).toBeLessThan(refresh.indexOf('await loadDAVEOperationalTombstones()'));
     const tasks = refresh.slice(refresh.indexOf("shouldRefresh('schedule_items')"));
-    expect(tasks.slice(0, 2600)).toContain('if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(refreshStartedAt);');
+    // Pin changed in A6 pass 11 (limit b): the time recorded is when the
+    // deletion history used was read, which is earlier than the refresh when
+    // it was handed a read already in flight (audit-a6-p11-download-start).
+    expect(tasks.slice(0, 2600)).toContain('if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(tombstones.readStartedAt ?? refreshStartedAt);');
     expect(app).toContain("registerScheduleCloudPullRequest(() => void refreshController.request('foreground', ['schedule_items']))");
     expect(app).toContain('stopReportPullRequests();');
   });

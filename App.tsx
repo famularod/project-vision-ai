@@ -6396,7 +6396,7 @@ useEffect(() => {
           setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
             ? currentItems : mergedItems);
           identityAliasCleanup.markScheduleRefreshed(); // true names are back (audit A11 pass 2)
-          if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(refreshStartedAt); // every task, deletions too: Reports stops waiting for the other device (A6 pass 10 M1, M2)
+          if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(tombstones.readStartedAt ?? refreshStartedAt); // every task, deletions too, from when the history used was read: Reports stops waiting (A6 pass 10 M1, M2; pass 11)
         });
       }});
 
