@@ -148,3 +148,42 @@ describe('audit A9 pass 6 L3: a date exempts its year only when the year is 19xx
     expectAllowed('Was the survey on Mar 2, 1999 filed?', [SELECTED, '1999 Survey Archive']);
   });
 });
+
+describe('audit A9 pass 6 L4: a number written with thousands commas is read as its digits', () => {
+  it.each([
+    'What is overdue on project 2,375?',
+    'Is 2,375 done?',
+    'Pull the closeout docs from 2,375.',
+  ])('"%s" is refused as 2375 and Talk moves to 2375', question => {
+    expect(ecosProjectNumberMentions(question, PROJECTS)).toEqual(['2375']);
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it('"2,375" is not project 375', () => {
+    expectAllowed('What is overdue on project 2,375?', [SELECTED, '375 Main Street']);
+    expectRefusedOpen('What is overdue on project 375?', [SELECTED, '375 Main Street'], '375', '375 Main Street');
+  });
+
+  it('the selected project\'s own number with a comma is never refused', () => {
+    const question = 'What is overdue on project 2,321?';
+    expect(phone(question, PROJECTS)).toBeNull();
+    expect(desktop(question, PROJECTS)).toBeNull();
+    // Talk names the selected project itself, so it stays.
+    expect(mentionedDAVEProject(question, PROJECTS)).toBe(SELECTED);
+  });
+
+  it.each([
+    ['Was the $2,375 change order approved?', PROJECTS],
+    ['Is the slab 2,375 sqft?', PROJECTS],
+    ['Is the bearing 2,375 ksf?', [SELECTED, '375 Main Street']],
+    ['Was 2,375 dollars paid?', PROJECTS],
+    ['Did we lay 1,234,567 bricks?', [SELECTED, '234 Elm', '567 Pine']],
+  ] as const)('"%s" stays allowed (money, a measurement, or more than six digits)', (question, projects) => {
+    expectAllowed(question, projects);
+  });
+
+  it('a list written with ", " still checks each number', () => {
+    expectRefusedOpen('Are RFIs 2374, 2375 and 2376 answered?', PROJECTS, '2375', OTHER);
+  });
+});

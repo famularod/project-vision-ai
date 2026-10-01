@@ -16,8 +16,9 @@
  * answered from the wrong project ("Compare the drawings from 2375 and 2321",
  * "Is 200 done?" with 200 closed). A wrong refusal costs David a tap; a missed
  * one answers from the wrong project. Now every 3-6 digit number that is
- * another known project's number names that project, unless it is written as
- * one of five things (EXEMPT_PATTERNS below):
+ * another known project's number names that project ("2,375" is read as
+ * 2375; pass 6 L4), unless it is written as one of five things
+ * (EXEMPT_PATTERNS below):
  *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or A, V, m, %, °,
  *      a feet or inch mark) right after it: "4000 psi", "2375mm", "200 bags";
  *   2. money: "$2,375", "USD 2375", "2375 dollars";
@@ -86,6 +87,13 @@ export function findECOSProjectReferenceMismatch(
 }
 
 /**
+ * A number written with thousands commas ("2,375"). Outside an exempt span
+ * (money or a measurement: "$2,375", "2,375 sqft") it is read as its digits,
+ * so "project 2,375" is checked as 2375, not as 375 (audit A9 pass 6 L4).
+ */
+const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+\b`;
+
+/**
  * The 3-6 digit numbers in `text` that can name a project, in order: every
  * one, except a number written as a measurement, money, a date or time, a
  * phone number, or a spec section or sheet, and not even then when the
@@ -94,11 +102,12 @@ export function findECOSProjectReferenceMismatch(
 export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
   const exempt = exemptSpans(text);
   const mentions: string[] = [];
-  const pattern = new RegExp(PROJECT_IDENTIFIER_SOURCE, 'g');
+  const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${PROJECT_IDENTIFIER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    const number = match[0];
+    const number = match[0].replace(/,/g, '');
+    if (!/^\d{3,6}$/.test(number)) continue;
     const start = match.index;
-    const end = start + number.length;
+    const end = start + match[0].length;
     if (
       !exempt.some(([from, to]) => from <= start && end <= to) ||
       projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)

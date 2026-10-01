@@ -586,6 +586,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [...OWNER_PROJECTS, '2026 Fit-Out'],
     refused: null,
   })),
+  // Audit A9 pass 6 L4: a number written with thousands commas is read as its
+  // digits outside money and measurements ("2,375" is 2375, not 375).
+  ...([
+    ['What is overdue on project 2,375?', OWNER_PROJECTS, '2375'],
+    ['What is overdue on project 2,375?', [SELECTED, '375 Main Street'], null],
+    ['What is overdue on project 2,321?', OWNER_PROJECTS, null],
+    ['Is the slab 2,375 sqft?', OWNER_PROJECTS, null],
+    ['Did we lay 1,234,567 bricks?', [SELECTED, '234 Elm'], null],
+  ] as const).map(([question, knownProjectNames, refused]) => ({
+    name: `pass 6 L4: "${question}" with ${knownProjectNames.slice(1).join(', ')}`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
