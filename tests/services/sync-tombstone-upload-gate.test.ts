@@ -1748,6 +1748,30 @@ describe('offline upload deletion barriers', () => {
       await expect(getOfflineQueue()).resolves.toEqual([]);
     });
 
+    // Whole-app audit A5 pass 20 P3 (1 Oct 2026): a Microsoft Project
+    // revision also records the row it gave the task (alsoImportedSourceRow),
+    // which Keep Phone keeps from the copy that knows that import. Changed on
+    // the cloud's row alone, it made Keep Phone ask David to review again.
+    it('a revision that re-homed the task with its row number is no change of David\'s: Keep Phone goes ahead and keeps the row', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      const current = cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({
+        notes: phoneTask.notes,
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      }));
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+    });
+
     it('settles without a new conflict when the cloud differs only by a newer revision', async () => {
       const conflict = await conflictWithRehomedCloudCopy();
       const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;

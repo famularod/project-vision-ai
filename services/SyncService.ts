@@ -5113,9 +5113,15 @@ function taskFieldsHoldingPhoneEdits(
   }))];
 }
 
-/** Identity, stamps, and the ids Keep Phone keeps from both copies: no edit of David's (whole-app audit A7 pass 15). */
+/**
+ * Identity, stamps, and the ids Keep Phone keeps from both copies: no edit of
+ * David's (whole-app audit A7 pass 15). With the row a later import gave the
+ * task, which Keep Phone keeps from the copy that knows that import (32a2187):
+ * a re-homing revision on another device made Keep Phone ask David to review
+ * again (A5 pass 20 P3).
+ */
 const TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK: ReadonlySet<string> = new Set([
-  'id', 'projectId', 'updatedAt', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds',
+  'id', 'projectId', 'updatedAt', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds', 'alsoImportedSourceRow',
 ]);
 
 /** One field of a task copy, as compared: key order aside, and a missing field reads as null. */
