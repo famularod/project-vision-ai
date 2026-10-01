@@ -4,7 +4,12 @@ import {
   findECOSProjectReferenceMismatch,
 } from '../../services/ECOSProjectQuestion';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
-import { ecosProjectNumberMentions } from '../../supabase/functions/_shared/ecos-project-reference';
+import { ecosProjectNumberMentionsAt } from '../../supabase/functions/_shared/ecos-project-reference';
+
+// The numbers ecosProjectNumberMentionsAt finds (the test-only
+// ecosProjectNumberMentions wrapper was removed in audit A9 pass 9).
+const ecosProjectNumberMentions = (text: string, projectNames?: readonly string[]) =>
+  ecosProjectNumberMentionsAt(text, projectNames).map(mention => mention.number);
 
 // Audit A9 pass 4 and 5 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number and never the selected project's own.

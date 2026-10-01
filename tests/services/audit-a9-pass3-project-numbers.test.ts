@@ -1,7 +1,12 @@
 // rule simplified A9 pass 5: when unsure, refuse
 import { findECOSProjectReferenceMismatch } from '../../services/ECOSProjectQuestion';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
-import { ecosProjectNumberMentions } from '../../supabase/functions/_shared/ecos-project-reference';
+import { ecosProjectNumberMentionsAt } from '../../supabase/functions/_shared/ecos-project-reference';
+
+// The numbers ecosProjectNumberMentionsAt finds (the test-only
+// ecosProjectNumberMentions wrapper was removed in audit A9 pass 9).
+const ecosProjectNumberMentions = (text: string, projectNames?: readonly string[]) =>
+  ecosProjectNumberMentionsAt(text, projectNames).map(mention => mention.number);
 
 // Audit A9 pass 3 L2 (30 Sep 2026): Talk and Ask ECOS share one number rule.
 // Pass 3 also let reference words ("RFI", "unit", "suite"...) and street

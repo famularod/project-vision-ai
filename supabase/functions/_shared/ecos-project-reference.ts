@@ -163,15 +163,8 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * The 3-6 digit numbers in `text` that can name a project, in order: every
  * one, except a number written as a measurement, money, a date or time, a
  * phone number, or a spec section or sheet, and not even then when the
- * project's own name continues around it (see the header).
- */
-export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
-  return ecosProjectNumberMentionsAt(text, projectNames).map(mention => mention.number);
-}
-
-/**
- * ecosProjectNumberMentions with where each number starts in `text` (Talk
- * orders projects by it). `unsure`: the number was found only by splitting a
+ * project's own name continues around it (see the header). With where each
+ * number starts in `text` (Talk orders projects by it). `unsure`: the number was found only by splitting a
  * comma group ("1,200" read as 200). Ask ECOS refuses it like any other; Talk
  * asks instead of moving to it (audit A9 pass 8 L2). `letter`: one letter
  * glued after the number ("2375B"), or ''. A number and letter that are a
