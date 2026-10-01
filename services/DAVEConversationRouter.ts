@@ -168,6 +168,8 @@ type TalkNamedProject = {
  * L6c: a project named just a number ("2375") is not matched by name inside
  * those spans either ("Is the slab 2375 sqft?", "Call 555-2375"). Projects
  * that share a number are one project here, keyed by that number.
+ * Audit A9 pass 8 L5: a closed project's name of one word ("Main", "Harbor")
+ * counts only when it is named as the project (closedNameNamesProject).
  */
 function talkNamedProjects(
   transcript: string,
@@ -179,8 +181,10 @@ function talkNamedProjects(
   const closed = uniqueNames(closedNames).filter(name => !openKeys.has(normalize(name)));
   const all = [...open, ...closed];
   const exempt = ecosProjectNumberExemptSpans(transcript);
+  const closedSet = new Set(closed);
   const occurrences = all.flatMap(name => nameOccurrences(transcript, name)
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
+    .filter(([start, end]) => !closedSet.has(name) || closedNameNamesProject(name, transcript, start, end))
     .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
   // "Oak Street" names one project even when another is called "Oak".
   const exact = occurrences.filter(occurrence => !occurrences.some(other =>
@@ -205,6 +209,22 @@ function talkNamedProjects(
     for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false, unsure);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Audit A9 pass 8 L5: whether a closed project's name found at text[start,
+ * end) names that project. A closed project named "Main" refused "Is the main
+ * electrical done?". A name of two or more words counts wherever it is named
+ * in full; a one-word name only with "project", "job", "at" or "for" before
+ * it ("at Harbor", "project Main") or "project" or "job" after it ("the Harbor
+ * project"), as for the closed 3-digit numbers in audit A9 pass 4 L3. Its
+ * number, if it has one, still names it (talkNamedProjects reads numbers
+ * separately). Open projects are matched by name anywhere, as before.
+ */
+function closedNameNamesProject(name: string, text: string, start: number, end: number) {
+  if (normalize(name).split(' ').length > 1) return true;
+  return /\b(?:project|job|at|for)\s*(?:(?:no|number)\.?\s*)?[:#]?\s*$/i.test(text.slice(0, start)) ||
+    /^\s+(?:project|job)\b/i.test(text.slice(end));
 }
 
 /** Whether text[start, end) is part of a comma-grouped number ("200" in "1,200" or "200,375"). */

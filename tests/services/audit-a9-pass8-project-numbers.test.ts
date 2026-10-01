@@ -274,3 +274,62 @@ describe('audit A9 pass 8 L4: a 3-4 digit time with am or pm is a clock time', (
     expect(ecosProjectNumberExemptSpans('arrive at 11:30 p.m.')).toContainEqual([10, 20]);
   });
 });
+
+const talkReopen = (closed: string) =>
+  `Project 2321 is selected, but ${closed} is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.`;
+
+function noteDraft(note: string, open: readonly string[], closed: readonly string[]) {
+  return buildDAVETalkMemoryDraft({
+    id: 'note-1',
+    createdAt: '2026-09-30T12:00:00.000Z',
+    projectName: SELECTED,
+    switchedProject: false,
+    projectNames: open,
+    closedProjectNames: closed,
+    transcript: note,
+    fields: { generalMemory: note },
+  });
+}
+
+describe('audit A9 pass 8 L5: a closed one-word project name counts only when named as the project', () => {
+  it.each([
+    ['Is the main electrical done?', 'Main'],
+    ['Is the Main panel energized?', 'Main'],
+    ['Is the harbor crane down?', 'Harbor'],
+    ['Did the crew finish the main line at the harbor side?', 'Harbor'],
+  ])('"%s" with "%s" closed is answered on 2321', (question, closed) => {
+    expect(mentionedDAVEProject(question, PROJECTS, [closed])).toBeNull();
+    expect(talkAnswer(question, PROJECTS, [closed])).toBeNull();
+  });
+
+  it('a note with the everyday word is pre-confirmed on 2321', () => {
+    expect(noteDraft('The main electrical is done.', PROJECTS, ['Main']).recommendedProject.confirmed).toBe(true);
+  });
+
+  it.each([
+    ['What is left at Harbor?', 'Harbor'],
+    ['What is overdue for Harbor?', 'Harbor'],
+    ['What is overdue on project Harbor?', 'Harbor'],
+    ['What is overdue on job Main?', 'Main'],
+    ['Is the Harbor project done?', 'Harbor'],
+    ['Is the main job closed out?', 'Main'],
+  ])('"%s" with "%s" closed names it and is refused', (question, closed) => {
+    expect(mentionedDAVEProject(question, PROJECTS, [closed])).toBeNull();
+    expect(talkAnswer(question, PROJECTS, [closed])).toBe(talkReopen(closed));
+  });
+
+  it('a closed name of two or more words counts wherever it is named in full', () => {
+    expect(talkAnswer('Is riverside clinic closed out?', PROJECTS, ['Riverside Clinic'])).toBe(talkReopen('Riverside Clinic'));
+    expect(talkAnswer('Did the main street crew leave?', PROJECTS, ['Main Street'])).toBe(talkReopen('Main Street'));
+    expect(noteDraft('The Main Street crew left early.', PROJECTS, ['Main Street']).recommendedProject.confirmed).toBe(false);
+  });
+
+  it('an open one-word project keeps its behaviour: named anywhere, Talk moves to it', () => {
+    expect(mentionedDAVEProject('Is the main electrical done?', [SELECTED, 'Main'])).toBe('Main');
+    expect(mentionedDAVEProject('Shipment arrived at Oak today', ['Oak', 'Pine'])).toBe('Oak');
+  });
+
+  it('a closed project with a number is still named by its number', () => {
+    expect(talkAnswer('Is 4410 done?', PROJECTS, ['4410'])).toBe(talkReopen('4410'));
+  });
+});
