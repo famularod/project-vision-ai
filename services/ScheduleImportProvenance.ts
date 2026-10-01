@@ -57,13 +57,36 @@ export function scheduleItemsForExactImportBatch(
  */
 export function withScheduleImportMembershipOf(
   item: ScheduleItem,
-  other: Pick<ScheduleItem, 'alsoImportedInBatchIds'> | null | undefined,
+  other: Pick<ScheduleItem, 'alsoImportedInBatchIds' | 'alsoImportedSourceRow' | 'importBatchId'> | null | undefined,
 ): ScheduleItem {
   const own = item.alsoImportedInBatchIds || [];
   const added = (other?.alsoImportedInBatchIds || []).filter(batchId => !own.includes(batchId));
-  return added.length > 0
-    ? { ...item, alsoImportedInBatchIds: [...new Set([...own, ...added])] }
-    : item;
+  const row = laterScheduleImportSourceRow(item, other);
+  if (added.length === 0 && row === item.alsoImportedSourceRow) return item;
+  return {
+    ...item,
+    ...(added.length > 0 ? { alsoImportedInBatchIds: [...new Set([...own, ...added])] } : {}),
+    ...(row ? { alsoImportedSourceRow: row } : {}),
+  };
+}
+
+/**
+ * The row number the task's latest import gave it (alsoImportedSourceRow,
+ * A5 pass 19 L4), of two copies: the one from an import the other copy does
+ * not know, or the only one (whole-app audit A7 pass 22 L-3: Full Sync wrote
+ * a device's copy from before the revision without it, and at the next
+ * Microsoft Project revision the twins swapped David's percents).
+ */
+export function laterScheduleImportSourceRow(
+  item: Pick<ScheduleItem, 'alsoImportedInBatchIds' | 'alsoImportedSourceRow' | 'importBatchId'>,
+  other: Pick<ScheduleItem, 'alsoImportedInBatchIds' | 'alsoImportedSourceRow' | 'importBatchId'> | null | undefined,
+): ScheduleItem['alsoImportedSourceRow'] {
+  const own = item.alsoImportedSourceRow;
+  const theirs = other?.alsoImportedSourceRow;
+  if (!theirs || own?.importBatchId === theirs.importBatchId) return own;
+  if (!own) return theirs;
+  const knows = (copy: typeof item, batchId: string) => scheduleItemImportBatchIds(copy as ScheduleItem).includes(batchId);
+  return knows(item, theirs.importBatchId) || !knows(other!, own.importBatchId) ? own : theirs;
 }
 
 /**
