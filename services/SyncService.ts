@@ -4430,15 +4430,14 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // copy's own record, written in the same queue write (A7 pass 11 L-2):
   // held in memory, it was lost when the app was killed while the kept copy
   // uploaded, or before it was queued again. One an earlier kept copy still
-  // carries (queued, or recorded with this conflict) is still one.
-  const { newerEdit: carried, ...conflictPayload } = localPayload;
+  // carries (queued, or recorded with this conflict) is still one. Review
+  // Conflicts shows the same edit (A4 pass 15b F1).
+  const { newerEdit: _carried, ...conflictPayload } = localPayload;
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
   const { written, newerEdit } = await mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId);
-    const queuedCarried = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.newerEdit;
-    const newer = [existing, queuedCarried, carried].find((item): item is SyncQueueItem =>
-      isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, localUpdateData)) ?? null;
+    const newer = newerPhoneEditForFieldUpdateConflict(conflict, queue, localUpdateData);
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
       payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
@@ -4455,6 +4454,27 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * The newer edit Keep Phone sends after a field update conflict's own copy:
+ * the update's queued whole copy when it is not the conflict's copy, or one
+ * an earlier kept copy still carries (queued, or recorded with the conflict).
+ * Settings › Review Conflicts shows it as the phone's side, what Keep Phone
+ * ends with (whole-app audit A4 pass 15b F1); `conflictCopy` defaults to the
+ * copy recorded with the conflict, as the screen reads it.
+ */
+export function newerPhoneEditForFieldUpdateConflict(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+  conflictCopy: unknown = (conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData,
+): SyncQueueItem | null {
+  if (conflict.entity !== 'project_update' || !isRecord(conflict.localPayload)) return null;
+  const localPayload = conflict.localPayload as Partial<ProjectUpdateRecordPayload>;
+  const existing = queue.find(item => item.id === projectUpdateQueueItemId(localPayload.id ?? conflict.localId));
+  const queuedCarried = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.newerEdit;
+  return [existing, queuedCarried, localPayload.newerEdit].find((item): item is SyncQueueItem =>
+    isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, conflictCopy)) ?? null;
 }
 
 /** A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4). */

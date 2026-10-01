@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -21,6 +21,7 @@ import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '..
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
+import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
@@ -63,6 +64,7 @@ import {
 import {
   getSyncConflicts,
   getSyncStatus,
+  newerPhoneEditForFieldUpdateConflict,
   projectUpdateCopyIsLastInCloud,
   reconcileSyncConflicts,
   resolveProjectUpdateSyncConflict,
@@ -72,6 +74,7 @@ import {
   type MissingSyncPhoto,
   type FullSyncResult,
   type SyncConflict,
+  type SyncQueueItem,
   type SyncStatus,
 } from '../services/SyncService';
 import {
@@ -480,7 +483,7 @@ export function AdminScreen({
         conflicts={syncConflicts}
         resolvingConflictId={resolvingConflictId}
         onKeepPhone={conflict => confirmConflictResolution(conflict, 'keep_local')}
-        onKeepCloud={conflict => confirmConflictResolution(conflict, 'keep_cloud')}
+        onKeepCloud={(conflict, newerPhoneEdit) => confirmConflictResolution(conflict, 'keep_cloud', newerPhoneEdit)}
         onClose={() => {
           if (!resolvingConflictId) setConflictReviewVisible(false);
         }}
@@ -887,6 +890,8 @@ export function AdminScreen({
   function confirmConflictResolution(
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
+    /** Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1). */
+    newerPhoneEdit = false,
   ) {
     const update = conflictUpdate(conflict, resolution);
     const task = conflictScheduleItem(conflict, resolution);
@@ -894,7 +899,7 @@ export function AdminScreen({
     const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
     const message = resolution === 'keep_local'
       ? `The version saved on this phone for ${recordName} will replace the cloud copy.`
-      : `The cloud version for ${recordName} will replace the copy saved on this phone.`;
+      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
 
     Alert.alert(title, message, [
       { text: 'Cancel', style: 'cancel' },
@@ -1364,7 +1369,8 @@ function SyncConflictReviewModal({
   conflicts: SyncConflict[];
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
-  onKeepCloud: (conflict: SyncConflict) => void;
+  /** `newerPhoneEdit`: the phone side shown is an edit saved during the conflict, which Keep Cloud discards too. */
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
   onClose: () => void;
 }) {
   return (
@@ -1393,55 +1399,109 @@ function SyncConflictReviewModal({
 
           {conflicts.length === 0 ? (
             <Text style={styles.cardText}>No cloud conflicts remain.</Text>
-          ) : conflicts.map(conflict => {
-            const phoneUpdate = conflictUpdate(conflict, 'keep_local');
-            const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
-            const phoneTask = conflictScheduleItem(conflict, 'keep_local');
-            const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
-            const resolving = resolvingConflictId === conflict.id;
-
-            return (
-              <View key={conflict.id} style={styles.conflictCard}>
-                <Text style={styles.conflictTitle}>
-                  {phoneTask?.taskName ||
-                    cloudTask?.taskName ||
-                    phoneUpdate?.projectName ||
-                    cloudUpdate?.projectName ||
-                    'Project record'}
-                </Text>
-                <Text style={styles.settingsRowDetail}>
-                  Phone: {phoneTask
-                    ? formatTaskConflictCopy(phoneTask)
-                    : formatConflictCopy(phoneUpdate)}
-                </Text>
-                <Text style={styles.settingsRowDetail}>
-                  Cloud: {cloudTask
-                    ? formatTaskConflictCopy(cloudTask)
-                    : formatConflictCopy(cloudUpdate)}
-                </Text>
-                <View style={styles.conflictActions}>
-                  <SecondaryButton
-                    label={resolving ? 'Saving…' : 'Keep Phone'}
-                    icon="phone-portrait-outline"
-                    onPress={() => onKeepPhone(conflict)}
-                    disabled={Boolean(resolvingConflictId)}
-                    compact
-                  />
-                  <SecondaryButton
-                    label={resolving ? 'Saving…' : 'Keep Cloud'}
-                    icon="cloud-outline"
-                    onPress={() => onKeepCloud(conflict)}
-                    disabled={Boolean(resolvingConflictId)}
-                    compact
-                  />
-                </View>
-              </View>
-            );
-          })}
+          ) : (
+            <SyncConflictReviewList
+              conflicts={conflicts}
+              resolvingConflictId={resolvingConflictId}
+              onKeepPhone={onKeepPhone}
+              onKeepCloud={onKeepCloud}
+            />
+          )}
         </KeyboardAvoidingModalCard>
       </View>
     </Modal>
   );
+}
+
+/**
+ * The conflicts under review, each with the phone's copy and the cloud's.
+ * The phone's side is what Keep Phone ends with (whole-app audit A4 pass 15b
+ * F1): an edit David saved on this phone during the conflict waits, and Keep
+ * Phone sends it after the conflict's own copy, so it is that edit, read from
+ * this phone's queue, and not the older copy saved with the conflict. Shown
+ * only while Review Conflicts is open.
+ */
+function SyncConflictReviewList({
+  conflicts,
+  resolvingConflictId,
+  onKeepPhone,
+  onKeepCloud,
+}: {
+  conflicts: SyncConflict[];
+  resolvingConflictId: string | null;
+  onKeepPhone: (conflict: SyncConflict) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+}) {
+  const queue = useSyncExternalStore(subscribeToQueuedDocumentChanges, queuedDocumentChangesSnapshot);
+  return (
+    <>
+      {conflicts.map(conflict => {
+        const newerPhoneUpdate = conflictNewerPhoneUpdate(conflict, queue);
+        const phoneUpdate = newerPhoneUpdate ?? conflictUpdate(conflict, 'keep_local');
+        const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
+        const phoneTask = conflictScheduleItem(conflict, 'keep_local');
+        const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
+        const resolving = resolvingConflictId === conflict.id;
+
+        return (
+          <View key={conflict.id} style={styles.conflictCard}>
+            <Text style={styles.conflictTitle}>
+              {phoneTask?.taskName ||
+                cloudTask?.taskName ||
+                phoneUpdate?.projectName ||
+                cloudUpdate?.projectName ||
+                'Project record'}
+            </Text>
+            <Text style={styles.settingsRowDetail}>
+              Phone: {phoneTask
+                ? formatTaskConflictCopy(phoneTask)
+                : formatConflictCopy(phoneUpdate)}
+            </Text>
+            {newerPhoneUpdate ? (
+              <Text style={styles.settingsRowDetail}>{CONFLICT_NEWER_PHONE_EDIT_NOTE}</Text>
+            ) : null}
+            <Text style={styles.settingsRowDetail}>
+              Cloud: {cloudTask
+                ? formatTaskConflictCopy(cloudTask)
+                : formatConflictCopy(cloudUpdate)}
+            </Text>
+            <View style={styles.conflictActions}>
+              <SecondaryButton
+                label={resolving ? 'Saving…' : 'Keep Phone'}
+                icon="phone-portrait-outline"
+                onPress={() => onKeepPhone(conflict)}
+                disabled={Boolean(resolvingConflictId)}
+                compact
+              />
+              <SecondaryButton
+                label={resolving ? 'Saving…' : 'Keep Cloud'}
+                icon="cloud-outline"
+                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate))}
+                disabled={Boolean(resolvingConflictId)}
+                compact
+              />
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
+const CONFLICT_NEWER_PHONE_EDIT_NOTE = 'Includes a change you made after the conflict was found.';
+/** Keep Cloud withdraws every copy of the update waiting on this phone, that edit too, and the card takes the cloud's copy. */
+const CONFLICT_NEWER_PHONE_EDIT_DISCARDED = 'The change you made after the conflict was found will also be discarded.';
+
+/** The field update edit saved on this phone during the conflict that Keep Phone sends last, if any (A4 pass 15b F1). */
+function conflictNewerPhoneUpdate(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+): ProjectUpdate | null {
+  if (conflict.entity !== 'project_update') return null;
+  const newer = newerPhoneEditForFieldUpdateConflict(conflict, queue);
+  const update = (newer?.payload as { updateData?: unknown } | undefined)?.updateData;
+  if (!update || typeof update !== 'object' || Array.isArray(update)) return null;
+  return update as ProjectUpdate;
 }
 
 function conflictUpdate(
