@@ -4370,3 +4370,46 @@ describe('after Keep Cloud the App holds the cloud\'s copy at once (audit A4 pas
     expect(await getSyncConflicts()).toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 19 (T8, the case left after L2): a document upload
+ * that finished after Keep Cloud cleared the conflict, but before Settings
+ * put the cloud's copy on the card, found the card still holding the
+ * discarded edit and no conflict, and queued that copy whole: it went up over
+ * the copy David kept. The chosen copy now goes on the card before the
+ * conflict is cleared.
+ */
+describe('a document upload finishing during Keep Cloud does not send the discarded edit (audit A4 pass 19)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it.each(['keep_local', 'keep_cloud'] as const)('%s: the chosen copy stays in the cloud and the document reaches it', async resolution => {
+    const { phone, persistDocuments } = await phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed' })]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const wiring = /onRetryUpdateSync=\{(.+)\}\n/.exec(app)![1];
+    const retry = evaluate<(...args: unknown[]) => Promise<unknown>>(
+      transpile(`module.exports = ${wiring};`), { retryQueuedUpdate: appRetryQueuedUpdate(phone) });
+    const calls: Array<Promise<unknown>> = [];
+    const onRetryUpdateSync = jest.fn((...args: unknown[]) => {
+      const call = retry(...args);
+      calls.push(call);
+      return call;
+    });
+    await chooseInSettings(phone, (await getSyncConflicts())[0], resolution, onRetryUpdateSync, async () => {
+      await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+      await phone.settle();
+      persistDocuments();
+    });
+    await Promise.all(calls);
+    phone.render();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: resolution === 'keep_local' ? NEWER : IPAD_NOTE });
+    expect(inCloud().documents?.[0]).toMatchObject({ status: 'uploaded' });
+    expect(phone.saved()).toMatchObject({ notes: resolution === 'keep_local' ? NEWER : IPAD_NOTE });
+    expect(phone.saved()?.documents?.[0]).toMatchObject({ status: 'uploaded' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});

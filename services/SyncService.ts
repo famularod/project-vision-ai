@@ -4366,7 +4366,16 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
    * A4 pass 17 L1): the check below compares the cloud with it. Without it,
    * the copy saved with the conflict, as before.
    */
-  { cloudCopyShown }: { cloudCopyShown?: unknown } = {},
+  { cloudCopyShown, beforeClose }: {
+    cloudCopyShown?: unknown;
+    /**
+     * Keep Cloud: puts the chosen copy on the card before the conflict is
+     * cleared (whole-app audit A4 pass 19): a document upload finishing in
+     * between found the discarded edit on the card and no conflict, and
+     * queued it whole over the copy David kept.
+     */
+    beforeClose?: (chosen: TUpdate) => void;
+  } = {},
 ): Promise<TUpdate> {
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
@@ -4464,6 +4473,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
       throw error;
     }
+    beforeClose?.(chosenCloudUpdate);
     await clearResolvedConflict(conflict.id);
     return chosenCloudUpdate;
   }

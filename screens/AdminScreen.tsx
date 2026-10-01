@@ -983,7 +983,13 @@ export function AdminScreen({
         const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
           conflict.id,
           resolution,
-          { cloudCopyShown: conflict.remotePayload },
+          {
+            cloudCopyShown: conflict.remotePayload,
+            // Keep Cloud's copy goes on the card before the conflict is
+            // cleared (A4 pass 19): a document upload finishing in between
+            // sent the discarded edit.
+            ...(resolution === 'keep_cloud' ? { beforeClose: onApplyCloudConflictUpdate } : {}),
+          },
         );
         // Either choice is now the cloud's copy, with nothing more queued for
         // it: the phone shows it as sent. Keep Phone left the card failed,
@@ -999,7 +1005,9 @@ export function AdminScreen({
         const phoneCopy = savedUpdatesRef.current.find(update => update.id === conflict.localId);
         const newerPhoneEdit = Boolean(phoneCopy) && (phoneCopy!.status === 'queued' || phoneCopy!.status === 'failed') &&
           !projectUpdateCopyIsLastInCloud(phoneCopy!);
-        if (resolution === 'keep_cloud' || !newerPhoneEdit) {
+        if (resolution === 'keep_cloud') {
+          // On the card already: put there before the conflict was cleared.
+        } else if (!newerPhoneEdit) {
           onApplyCloudConflictUpdate(resolvedUpdate);
         } else {
           // The newer edit goes up now, after the kept copy, through Settings'
