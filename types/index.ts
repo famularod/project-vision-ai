@@ -737,6 +737,13 @@ export type ScheduleLookaheadOverlay = {
   masterProgressConfirmedBy?: string | null;
   masterProgressConfirmedAt?: string | null;
   /**
+   * The status stated with masterPercentComplete (whole-app audit A5 pass 7
+   * L3, 30 Sep 2026), given back with it: David's "Waiting 40%" comes back
+   * Waiting. Missing on a note made before, which gives back the task's
+   * status then, as before.
+   */
+  masterStatus?: ScheduleStatus | null;
+  /**
    * The percent the master schedule file itself last stated for the task,
    * which the manager's own percent may stand over (A5 pass 6 M2): null when
    * no master file has stated one since the manager's. Missing on a task

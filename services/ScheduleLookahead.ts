@@ -180,10 +180,17 @@ export function scheduleNoteTakesManagersProgress(task: ScheduleItem): ScheduleI
 function managersStatement(task: ScheduleItem) {
   return {
     masterPercentComplete: percentOf(task),
+    // With its status, given back with it (A5 pass 7 L3).
+    masterStatus: task.status,
     masterProgressSource: task.progressSource ?? null,
     masterProgressConfirmedBy: task.progressConfirmedBy ?? null,
     masterProgressConfirmedAt: scheduleProgressJudgedAt(task),
   };
+}
+
+/** The noted percent with the status noted with it (A5 pass 7 L3); a note made before, with the task's status. */
+function notedProgress(overlay: ScheduleLookaheadOverlay, task: ScheduleItem) {
+  return reconcileScheduleProgress(overlay.masterStatus ?? task.status, overlay.masterPercentComplete);
 }
 
 /**
@@ -201,7 +208,7 @@ export function scheduleFileProgressAboveManagers(
   const overlay = overlayOf(task);
   if (!progress || !overlay || !notedPercentIsManagers(overlay) || scheduleProgressIsManagers(task)) return progress;
   if (percentOf({ percentComplete: Number(progress.percentComplete) }) > overlay.masterPercentComplete) return progress;
-  const kept = reconcileScheduleProgress(task.status, overlay.masterPercentComplete);
+  const kept = notedProgress(overlay, task);
   return { percentComplete: kept.percentComplete, status: kept.status, ...notedProvenance(overlay, approvedAt), updatedAt: approvedAt };
 }
 
@@ -296,6 +303,7 @@ export function scheduleTaskMasterRestated(
   const percent = stated === null || (managers && stated <= overlay.masterPercentComplete) ? {}
     : {
         masterPercentComplete: stated,
+        ...(overlay.masterStatus !== undefined ? { masterStatus: row.status } : {}),
         ...(managers ? { masterProgressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, masterProgressConfirmedAt: approvedAt } : {}),
       };
   const next: ScheduleLookaheadOverlay = {
@@ -308,6 +316,7 @@ export function scheduleTaskMasterRestated(
   if (
     sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, row) &&
     next.masterPercentComplete === overlay.masterPercentComplete &&
+    next.masterStatus === overlay.masterStatus &&
     next.masterProgressConfirmedBy === overlay.masterProgressConfirmedBy &&
     next.masterFilePercentComplete === overlay.masterFilePercentComplete
   ) return task;
@@ -346,7 +355,9 @@ function tasksAfterLookaheadDeleted(
     const backPercent = toNoted ? overlay.masterPercentComplete : earlier[earlier.length - 1];
     const percentBack = given !== null && !laterGave && given === percentOf(item) && backPercent !== percentOf(item) &&
       !scheduleProgressIsManagers(item);
-    const progress = percentBack ? reconcileScheduleProgress(item.status, backPercent) : null;
+    // The noted percent comes back with the status noted with it (A5 pass 7 L3).
+    const progress = !percentBack ? null
+      : toNoted ? notedProgress(overlay, item) : reconcileScheduleProgress(item.status, backPercent);
     // Given back with who stated it: the manager's percent reads as the manager's again.
     const provenance = (toNoted && notedProvenance(overlay, updatedAt)) ||
       (item.progressSource === 'project_manager' ? { progressConfirmedAt: updatedAt } : {});

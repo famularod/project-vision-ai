@@ -159,7 +159,8 @@ describe('A5 p6 M2 / A10 p4 M1: the lookahead notes whether the progress before 
     expect(view(state, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 60%']);
     expect(pour(state)).toMatchObject({ progressSource: 'project_manager', progressConfirmedBy: 'Schedule update' });
     expect(pour(state).lookaheadOverlay).toEqual({
-      masterStartDate: '10/01/2026', masterFinishDate: '10/03/2026', masterPercentComplete: 40,
+      // A5 pass 7 L3: the note also keeps the status stated with the percent, given back with it.
+      masterStartDate: '10/01/2026', masterFinishDate: '10/03/2026', masterPercentComplete: 40, masterStatus: 'In Progress',
       masterProgressSource: 'project_manager', masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: DAVID_AT,
       masterFilePercentComplete: null,
       lookaheads: [{ batchId: lookahead.importBatchId, startDate: '09/28/2026', finishDate: '09/30/2026', percentComplete: 60 }],

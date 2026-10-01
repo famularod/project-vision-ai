@@ -241,3 +241,24 @@ describe('A10 p5 L1: David\'s percent given back keeps the time he judged it', (
     expect(scheduleProgressJudgedAt(pour(later))).toBe('2026-09-26T08:00:00.000Z');
   });
 });
+
+describe('A5 p7 L3: David\'s own status comes back with his percent', () => {
+  it('"Waiting 40%" is noted with the lookahead and given back by the floor and by the delete', () => {
+    const state = davidThenLookahead(20, 60, 'Waiting');
+    expect(pour(state).lookaheadOverlay).toMatchObject({ masterPercentComplete: 40, masterStatus: 'Waiting' });
+    const floored = approve(state, lookahead2, pourRow(lookahead2, 30, '09/29/2026', '10/01/2026'));
+    expect(pour(floored)).toMatchObject({ percentComplete: 40, status: 'Waiting', progressConfirmedBy: 'David' });
+    const after = deleteLookahead(state, lookahead);
+    expect(pour(after)).toMatchObject({ percentComplete: 40, status: 'Waiting', progressConfirmedBy: 'David' });
+  });
+
+  it('a status David sets under the lookahead is the one the note keeps', () => {
+    const waiting = edit(davidThenLookahead(), 'm-pour', 45, CORRECTED_AT, 'Waiting');
+    const floored = approve(waiting, lookahead2, pourRow(lookahead2, 30, '09/29/2026', '10/01/2026'));
+    expect(pour(floored)).toMatchObject({ percentComplete: 45, status: 'Waiting', progressConfirmedBy: 'David' });
+    const above = approve(waiting, lookahead2, pourRow(lookahead2, 50, '09/29/2026', '10/01/2026'));
+    expect(pour(above)).toMatchObject({ percentComplete: 50, status: 'In Progress' });
+    expect(pour(above).lookaheadOverlay).toMatchObject({ masterPercentComplete: 45, masterStatus: 'Waiting' });
+    expect(pour(deleteLookahead(above, lookahead2))).toMatchObject({ percentComplete: 45, status: 'Waiting', progressConfirmedBy: 'David' });
+  });
+});
