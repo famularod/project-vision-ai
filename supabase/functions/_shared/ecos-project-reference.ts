@@ -61,15 +61,37 @@ export function findECOSProjectReferenceMismatch(
   const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
   if (openIdentifiers.size === 0 && closedIdentifiers.size === 0) return null;
 
-  for (const identifier of ecosProjectNumberMentions(question, [...knownNames, ...closedNames])) {
+  for (const mention of projectNumberMentions(question, [...knownNames, ...closedNames])) {
+    const identifier = mention.number;
     const open = openIdentifiers.has(identifier);
     if (!open && !closedIdentifiers.has(identifier)) continue;
     // A year stays a year, as in the check before Q20 ("due in 2026").
     if (/^(?:19|20)\d\d$/.test(identifier)) continue;
+    // Audit A9 pass 4 L3: a closed 3-digit number only when it is named as the project.
+    if (!open && identifier.length === 3 && !namesClosedProject(mention, closedNames)) continue;
     // A number both an open and a closed project use is read as the open one.
     return projectReferenceMismatch(selectedIdentifiers[0], identifier, !open);
   }
   return null;
+}
+
+/*
+ * Audit A9 pass 4 L3 (30 Sep 2026): with "200 Oak Street" closed, "Did the 200
+ * bags of grout arrive?" was refused and David was told to reopen project 200.
+ * A 3-digit number is often a count, and a closed project is not one David is
+ * working in, so a closed 3-digit project's number is refused only when it is
+ * named as the project: its own name word follows ("200 Oak St") or comes
+ * before it, "project", "job", "at" or "for" comes before it ("job no. 200",
+ * "at 200"), or "job" or "project" follows it ("the 200 job"). An open project's
+ * number and a closed 4-6 digit number are refused as before.
+ */
+const PROJECT_WORD_BEFORE_NUMBER = /\b(?:project|job|at|for)\s*(?:(?:no|number)\.?\s*)?[:#]?\s*$/i;
+const PROJECT_WORD_AFTER_NUMBER = /^\s+(?:project|job)\b/i;
+
+function namesClosedProject({ number, before, after }: ProjectNumberMention, closedNames: readonly string[]) {
+  return projectNameAroundNumber(number, before, after, closedNames) ||
+    PROJECT_WORD_BEFORE_NUMBER.test(before) ||
+    PROJECT_WORD_AFTER_NUMBER.test(after);
 }
 
 function otherProjectIdentifiers(projectNames: readonly string[], selected: ReadonlySet<string>): Set<string> {
@@ -109,7 +131,8 @@ const DOLLAR_SOURCE = String.raw`\$\s?\d[\d,]*(?:\.\d+)?`;
 // "555-2375", "415-555-2375", "(415) 555-2375", "415.555.2375".
 const PHONE_SOURCE = String.raw`(?:\(\d{3}\)\s*|\b\d{3}[-.\s])?\b\d{3}[-.]\d{4}\b`;
 // A measurement or amount: "4000 psi", "2,375 ft", "95%", "450 kcmil", "208 V", "100 cubic yards".
-const QUANTITY_SOURCE = String.raw`\b\d[\d,]*(?:\.\d+)?\s*-?\s*(?:%|°|(?:percent|feet|foot|ft|lf|sf|sq|square|cubic|cy|inches|inch|yards?|yds?|meters?|metres?|mm|cm|lbs?|pounds?|tons?|kips?|gallons?|gal|gpm|psi|ksi|psf|plf|amps?|amperes?|volts?|v|kv|kw|kwh|kva|watts?|hp|hz|btuh?|mbh|cfm|kcmil|mcm|awg|dollars?|pieces|pcs|degrees?)\b)`;
+// Audit A9 pass 4 L3: also "2375 linear feet", "2375 sqft" and "120 days".
+const QUANTITY_SOURCE = String.raw`\b\d[\d,]*(?:\.\d+)?\s*-?\s*(?:%|°|(?:percent|linear\s+(?:feet|foot|ft)|sqft|days?|weeks?|months?|hours?|hrs?|feet|foot|ft|lf|sf|sq|square|cubic|cy|inches|inch|yards?|yds?|meters?|metres?|mm|cm|lbs?|pounds?|tons?|kips?|gallons?|gal|gpm|psi|ksi|psf|plf|amps?|amperes?|volts?|v|kv|kw|kwh|kva|watts?|hp|hz|btuh?|mbh|cfm|kcmil|mcm|awg|dollars?|pieces|pcs|degrees?)\b)`;
 const NOT_A_PROJECT_NUMBER_SOURCE = [DATE_SOURCE, DOLLAR_SOURCE, PHONE_SOURCE, QUANTITY_SOURCE]
   .map(source => `(?:${source})`)
   .join('|');
@@ -212,11 +235,17 @@ const NOT_A_STREET_NAME = new Set([
  * abbreviations.
  */
 export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
+  return projectNumberMentions(text, projectNames).map(mention => mention.number);
+}
+
+type ProjectNumberMention = Readonly<{ number: string; before: string; after: string }>;
+
+function projectNumberMentions(text: string, projectNames: readonly string[]): ProjectNumberMention[] {
   const blanked = text.replace(new RegExp(NOT_A_PROJECT_NUMBER_SOURCE, 'gi'), match => ' '.repeat(match.length));
   const addressProjectNumbers = new Set(
     projectNames.filter(name => ADDRESS_PROJECT_NAME.test(name)).map(ecosProjectIdentifier),
   );
-  const mentions: string[] = [];
+  const mentions: ProjectNumberMention[] = [];
   const pattern = new RegExp(PROJECT_IDENTIFIER_SOURCE, 'g');
   for (let match = pattern.exec(blanked); match; match = pattern.exec(blanked)) {
     const number = match[0];
@@ -227,7 +256,7 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
       (!referenceWordLabelsNumber(before, after) &&
         (addressProjectNumbers.has(number) || !streetAddressAfterNumber(after)))
     ) {
-      mentions.push(number);
+      mentions.push({ number, before, after });
     }
   }
   return mentions;

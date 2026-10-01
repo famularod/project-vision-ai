@@ -128,6 +128,66 @@ describe('audit A9 pass 4 L2: reference words exempt only the number they label'
   });
 });
 
+describe('audit A9 pass 4 L3: a closed 3-digit project is refused only when named as a project', () => {
+  const OAK = '200 Oak Street';
+  const ELM = '120 Elm';
+
+  it.each([
+    ['Did the 200 bags of grout arrive?', OAK],
+    ['What is due in the next 120 days?', ELM],
+    ['Did the crew log 120 hours this week?', ELM],
+    ['Is the slab cure 120 hours?', ELM],
+    ['Is the lead time 120 weeks?', ELM],
+  ])('"%s" is allowed with closed project "%s"', (question, closed) => {
+    expectAllowed(question, [SELECTED], [closed]);
+  });
+
+  it.each([
+    ['What is left at 200 Oak Street?', OAK],
+    ['What is left at 200 Oak St?', OAK],
+    ['Is 200 Oak done?', OAK],
+    ['What was the slab thickness at 200?', OAK],
+    ['Is the rebar for 200 on site?', OAK],
+    ['What is overdue on project 200?', OAK],
+    ['What is overdue on job 200?', OAK],
+    ['What is overdue on job no. 200?', OAK],
+    ['What is open on the 200 job?', OAK],
+    ['Is 120 Elm closed out?', ELM],
+  ])('"%s" is refused as the closed project "%s"', (question, closed) => {
+    const number = closed.split(' ')[0];
+    expect(phone(question, [SELECTED], [closed])).toBe(reopenOnPhone(number));
+    expect(desktop(question, [SELECTED], [closed])).toBe(reopenOnDesktop(number));
+  });
+
+  it('an open 3-digit project is unchanged: a bare count still names it (when unsure, refuse)', () => {
+    expectRefusedOpen('Did the 200 bags of grout arrive?', [SELECTED, OAK], '200', OAK);
+  });
+
+  it('a closed 4-digit project is unchanged: a bare number still names it', () => {
+    expect(phone('Did the 2375 bags of grout arrive?', [SELECTED], [OTHER])).toBe(reopenOnPhone('2375'));
+  });
+
+  it.each([
+    'Is the trench 2375 linear feet?',
+    'Is the slab 2375 sqft?',
+    'Is the slab 2375 sq. ft.?',
+    'Is the slab 2375 square feet?',
+    'Is the slab 2375 SF?',
+    'Is the curb 2375 LF?',
+    'Is the float 2375 days?',
+  ])('"%s" is a measurement, not project 2375', question => {
+    expectAllowed(question, PROJECTS);
+    expect(phone(question, [SELECTED], [OTHER])).toBeNull();
+  });
+
+  it.each([
+    ['What is due in the next 120 days?', '120 Elm'],
+    ['Is the trench 375 linear feet?', '375 Main Street'],
+  ])('"%s" is a measurement even when "%s" is open', (question, project) => {
+    expectAllowed(question, [SELECTED, project]);
+  });
+});
+
 describe('audit A9 pass 4: what the review found correctly refused stays refused', () => {
   const MAIN = '2375 Main Street';
   const SUITE = 'Suite 2375 Tenant Improvement';

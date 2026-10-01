@@ -381,6 +381,55 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused: null,
   })),
+  // Audit A9 pass 4 L3: a closed 3-digit project is refused only when it is
+  // named as the project; days, hours, linear feet and sqft are measurements.
+  ...([
+    ['Did the 200 bags of grout arrive?', '200 Oak Street'],
+    ['What is due in the next 120 days?', '120 Elm'],
+    ['Did the crew log 120 hours this week?', '120 Elm'],
+  ] as const).map(([question, closed]) => ({
+    name: `allows "${question}" when "${closed}" is closed`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED],
+    closedProjectNames: [closed],
+    refused: null,
+  })),
+  ...([
+    ['What is left at 200 Oak St?', '200 Oak Street', '200'],
+    ['Is 200 Oak done?', '200 Oak Street', '200'],
+    ['What is overdue on job no. 200?', '200 Oak Street', '200'],
+    ['Is the rebar for 200 on site?', '200 Oak Street', '200'],
+    ['What is open on the 200 job?', '200 Oak Street', '200'],
+    ['Is 120 Elm closed out?', '120 Elm', '120'],
+    ['Did the 2375 bags of grout arrive?', '2375 Compliance Project', '2375'],
+  ] as const).map(([question, closed, refused]) => ({
+    name: `refuses "${question}" as the closed project "${closed}"`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED],
+    closedProjectNames: [closed],
+    refused,
+    refusedClosed: true,
+  })),
+  {
+    name: 'an open 3-digit project is still named by a bare count (when unsure, refuse)',
+    projectName: SELECTED,
+    question: 'Did the 200 bags of grout arrive?',
+    knownProjectNames: [SELECTED, '200 Oak Street'],
+    refused: '200',
+  },
+  ...[
+    'Is the trench 2375 linear feet?',
+    'Is the slab 2375 sqft?',
+    'Is the float 2375 days?',
+  ].map(question => ({
+    name: `allows the measurement "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused: null,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
