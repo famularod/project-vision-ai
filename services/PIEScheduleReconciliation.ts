@@ -221,10 +221,11 @@ export function selectAuthoritativeScheduleItems({
   };
   // Shown when the current schedule for the task's own project contains it;
   // with none current for that project, when any current schedule does. A
-  // lookahead's tasks always show: it adds to the master (Q22).
+  // lookahead's tasks always show: it adds to the master (Q22). The task's
+  // app project, not its Gantt root (A5 pass 12 M).
   const containedByCurrentSchedule = (item: ScheduleItem, containing: readonly ReferenceDocument[]) => {
     if (containing.some(scheduleDocumentAddsToMaster)) return true;
-    const current = currentByProject.get(normalize(item.scheduleProjectName || item.projectName || ''));
+    const current = currentByProject.get(scheduleTaskAppProject(item));
     if (current) return containing.includes(current);
     return containing.some(document => activeDocumentIds.has(normalize(document.id)));
   };
@@ -296,14 +297,13 @@ function withoutLookaheadDuplicates(
 ): ScheduleItem[] {
   const groups = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
-    const project = normalize(item.scheduleProjectName || item.projectName || '');
-    const key = [project, normalize(item.locationName || ''), normalize(item.taskName || '')].join('|');
+    const key = [scheduleTaskAppProject(item), normalize(item.locationName || ''), normalize(item.taskName || '')].join('|');
     groups.set(key, [...(groups.get(key) || []), item]);
   });
   const hidden = new Set<ScheduleItem>();
   groups.forEach(group => {
     if (group.length < 2) return;
-    const master = currentByProject.get(normalize(group[0].scheduleProjectName || group[0].projectName || ''));
+    const master = currentByProject.get(scheduleTaskAppProject(group[0]));
     const sources = new Map(group.map(item => [item, containingDocuments(item)
       .filter(document => document === master || scheduleDocumentAddsToMaster(document))] as const));
     if ([...sources.values()].some(documents => documents.length === 0)) return;
@@ -319,9 +319,28 @@ function withoutLookaheadDuplicates(
   return items.filter(item => !hidden.has(item));
 }
 
+/**
+ * The app project a task belongs to, keyed as currentScheduleDocumentsByProject
+ * keys a schedule's projects: its projectName, the schedule's Gantt root
+ * (scheduleProjectName) only when it names none, as scheduleTaskProjectKey
+ * keys the merge, the delete and the recovery (A8 pass 9 M1, A5 pass 11 M-a).
+ *
+ * Whole-app audit A5 pass 12 M (1 Oct 2026): a combined Microsoft Project
+ * master uploaded on the web keeps its root ("2400 Compliance Project") as
+ * every row's schedule project. The shown schedule keyed a task by that root,
+ * which is none of the schedules' projects, so after Make Current retired the
+ * master for Harbor North only (owner answer Q15), its North rows still
+ * showed, the master being current for Harbor South: North showed its moved
+ * task twice. The lookahead fold and the orphan check keyed by the root too,
+ * so one building's copy could hide the other's twin.
+ */
+function scheduleTaskAppProject(item: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>) {
+  return normalize(item.projectName || item.scheduleProjectName || '');
+}
+
 function scheduleOccurrenceKey(item: ScheduleItem) {
   return [
-    normalize(item.scheduleProjectName || item.projectName || ''),
+    scheduleTaskAppProject(item),
     normalize(item.locationName || ''),
     normalize(item.taskName || ''),
     normalize(item.startDate || ''),
