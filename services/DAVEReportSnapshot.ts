@@ -267,6 +267,12 @@ export type DAVEReportPeriodComparison = Readonly<{
   changes: readonly DAVEReportPeriodChange[];
   /** How many changes there were; `changes` lists the first 20 (A6 pass 8 L1). */
   changeCount?: number;
+  /**
+   * Every task (by its id now) with a change, the ones past the first 20
+   * included, so a report adds no second "was updated." line for one (A6
+   * pass 9 M1).
+   */
+  changedTaskIds?: readonly string[];
 }>;
 
 export function buildDAVEReportSnapshot({
@@ -437,6 +443,7 @@ export function compareDAVEReportSnapshots({
     overdueDelta: overdueCount(current.tasks) - overdueCount(previous.tasks),
     changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
     changeCount: distinctChanges.length,
+    changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
   });
 }
 

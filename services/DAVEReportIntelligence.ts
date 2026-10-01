@@ -226,6 +226,8 @@ export function buildDAVEReportBriefing({
   const allRecentChanges = buildRecentChanges({ truths, reportingPeriod });
   const recentChanges = allRecentChanges.slice(0, 12);
   // The period's own list stops at 20; the ones it left out still count.
+  // Counted after the de-duplication above, so the report's "And N more
+  // changes." is the lines it did not show (A6 pass 9 M1).
   const recentChangeCount = allRecentChanges.length +
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
@@ -822,6 +824,14 @@ function buildRecentChanges({
     source: 'approved_report_comparison' as const,
   }));
   const reportingPeriodStart = dateValue(reportingPeriod.startedAt);
+  // Whole-app audit A6 pass 9 M1 (30 Sep 2026): a task the comparison
+  // already reports gets no "was updated." line as well. A revised task is a
+  // new row made at the import, so each one read "Frame walls was updated."
+  // next to its finish change, and "And N more changes." counted both (8
+  // moved: "And 10 more changes." with 2 left).
+  const comparedTaskIds = new Set(
+    reportingPeriod.changedTaskIds ?? reportingPeriod.changes.map(change => change.taskId),
+  );
   const taskChanges: DAVEReportRecentChange[] = [];
   for (const truth of truths) {
     for (const task of truth.schedule) {
@@ -841,7 +851,7 @@ function buildRecentChanges({
           summary: `${truth.projectName}: ${task.taskName} — ${toPMReportLanguage(activity) || activity}`,
           source: 'task_activity',
         }));
-      } else if (occurredAt) {
+      } else if (occurredAt && !comparedTaskIds.has(task.taskId)) {
         taskChanges.push(Object.freeze({
           id: `report-change:${task.taskId}:revision`,
           projectName: truth.projectName,
