@@ -106,24 +106,23 @@ export function DesktopSchedulePage({
   const projectNames = uniqueText([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
-    ...tasks.map(task => task.scheduleProjectName || task.projectName),
+    ...tasks.map(taskProjectName),
   ]);
+  // Each task under its app project (A5 pass 12 K1). The project chosen shows
+  // with no items only while there are none: chosen as a schedule's root, its
+  // tasks show under their buildings, not under an empty root heading.
   const groupedProjects = useMemo(
     () => projectNames
       .map(projectName => ({
         projectName,
-        tasks: tasks.filter(task =>
-          normalize(task.scheduleProjectName || task.projectName) === normalize(projectName),
-        ),
+        tasks: tasks.filter(task => inProject(task, projectName)),
       }))
-      .filter(group => group.tasks.length > 0 || selectedProject === group.projectName),
+      .filter(group => group.tasks.length > 0 || (selectedProject === group.projectName && tasks.length === 0)),
     [projectNames, selectedProject, tasks],
   );
   const defaultProject = selectedProject || projectNames[0] || '';
   const editorProjectTasks = editor
-    ? tasks.filter(task =>
-        normalize(task.scheduleProjectName || task.projectName) === normalize(editor.projectName),
-      )
+    ? tasks.filter(task => inProject(task, editor.projectName))
     : [];
   const editorScenario = useMemo(() => {
     if (!editor || !editingTask || editor.kind === 'phase') return null;
@@ -153,9 +152,7 @@ export function DesktopSchedulePage({
   }, [editingTask, editor, tasks]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
-    const projectTasks = tasks.filter(task =>
-      normalize(task.scheduleProjectName || task.projectName) === normalize(defaultProject),
-    );
+    const projectTasks = tasks.filter(task => inProject(task, defaultProject));
     setEditingTask(null);
     setConflict(null);
     setEditor({
@@ -201,8 +198,7 @@ export function DesktopSchedulePage({
     }
     if (
       opened &&
-      normalize(form.projectName) !==
-        normalize(opened.scheduleProjectName || opened.projectName)
+      normalize(form.projectName) !== normalize(taskProjectName(opened))
     ) {
       return {
         ok: false,
@@ -236,9 +232,7 @@ export function DesktopSchedulePage({
     ) {
       return { ok: false, message: 'Finish date cannot be before the start date.' };
     }
-    const projectTasks = tasks.filter(task =>
-      normalize(task.scheduleProjectName || task.projectName) === normalize(form.projectName),
-    );
+    const projectTasks = tasks.filter(task => inProject(task, form.projectName));
     // A new item's cloud project is looked up by its project's name among
     // the open projects, as on the Tasks page. It had been copied from
     // another task of the project: with no task yet nothing could be added,
@@ -737,7 +731,9 @@ export function DesktopSchedulePage({
               {hierarchy.rows.map(row => {
                 if (ancestorIsCollapsed(row.item, group.tasks, collapsedIds)) return null;
                 const dependencyLabels = (row.item.dependencies || []).map(dependency => {
-                  const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId);
+                  // One in another building under the same root is not missing (set when the page grouped by root).
+                  const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId) ??
+                    tasks.find(task => task.id === dependency.predecessorItemId && sameRoot(task, row.item));
                   const label = predecessor?.wbsCode || predecessor?.taskName || 'Missing';
                   return `${label}${dependency.lagDays ? ` +${dependency.lagDays}d` : ''}`;
                 });
@@ -1997,7 +1993,7 @@ function scheduleEditorStateFor(task: DAVEWebScheduleItem): ScheduleEditorState 
   return {
     kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
     taskName: task.taskName,
-    projectName: task.scheduleProjectName || task.projectName,
+    projectName: taskProjectName(task),
     locationName: task.locationName,
     wbsCode: task.wbsCode || '',
     parentItemId: task.parentItemId || '',
@@ -2088,6 +2084,30 @@ function numberOrNull(value: string) {
   if (!value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+/**
+ * The project a task is grouped, numbered and edited under: its app project
+ * (projectName), the schedule's root (scheduleProjectName) only when it names
+ * none, as scheduleTaskProjectKey keys the merge, the delete and the shown
+ * schedule. Whole-app audit A5 pass 12 K1 (1 Oct 2026): a combined Microsoft
+ * Project master keeps its root ("2400 Compliance Project") as every row's
+ * schedule project, so the Schedule page put Harbor North's and Harbor
+ * South's tasks under one root heading, the twin Install HVAC rows side by
+ * side with nothing to tell them apart, and offered either building's phases
+ * and predecessors to the other. Each building's tasks now show under it. A
+ * CSV master's rows name the same project both ways.
+ */
+function taskProjectName(task: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>): string {
+  return task.projectName || task.scheduleProjectName || '';
+}
+
+function inProject(task: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>, projectName: string): boolean {
+  return normalize(taskProjectName(task)) === normalize(projectName);
+}
+
+function sameRoot(left: ScheduleItem, right: ScheduleItem): boolean {
+  return Boolean(normalize(left.scheduleProjectName)) && normalize(left.scheduleProjectName) === normalize(right.scheduleProjectName);
 }
 
 function uniqueText(values: readonly (string | null | undefined)[]) {
