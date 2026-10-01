@@ -19,6 +19,8 @@
 export type ECOSProjectReferenceMismatch = Readonly<{
   selectedProjectIdentifier: string;
   referencedProjectIdentifier: string;
+  /** The number is a closed (archived, not deleted) project's, and no open project's (audit A9 pass 3 L1). */
+  referencedProjectClosed: boolean;
 }>;
 
 /** More rows than this and the list may be incomplete, so the stricter check applies. */
@@ -27,34 +29,63 @@ export const ECOS_KNOWN_PROJECT_NAMES_LIMIT = 1000;
 const LEGACY_IDENTIFIER_SOURCE = String.raw`\b\d{4,6}\b`;
 const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b`;
 
+/**
+ * Audit A9 pass 3 L1 (30 Sep 2026): `closedProjectNames` are the closed
+ * (archived, not deleted) projects. They are not in the pickable list, so before
+ * this "What was the slab thickness at 2375?" was sent to 2321 when 2375 was
+ * closed. Their numbers are refused too, marked closed so the refusal can say so.
+ */
 export function findECOSProjectReferenceMismatch(
   projectName: string,
   question: string,
   knownProjectNames?: readonly string[] | null,
+  closedProjectNames?: readonly string[] | null,
 ): ECOSProjectReferenceMismatch | null {
   const knownNames = usableKnownProjectNames(knownProjectNames);
-  if (!knownNames) return legacyProjectReferenceMismatch(projectName, question);
+  const closedNames = usableKnownProjectNames(closedProjectNames) ?? [];
+  if (!knownNames) {
+    const legacy = legacyProjectReferenceMismatch(projectName, question);
+    if (!legacy) return null;
+    const closedIdentifiers = otherProjectIdentifiers(closedNames, new Set([legacy.selectedProjectIdentifier]));
+    return projectReferenceMismatch(
+      legacy.selectedProjectIdentifier,
+      legacy.referencedProjectIdentifier,
+      closedIdentifiers.has(legacy.referencedProjectIdentifier),
+    );
+  }
 
   const selectedIdentifiers = uniqueMatches(projectName, PROJECT_IDENTIFIER_SOURCE);
   if (selectedIdentifiers.length === 0) return null;
   const selected = new Set(selectedIdentifiers);
-  const otherProjectIdentifiers = new Set(
-    knownNames
+  const openIdentifiers = otherProjectIdentifiers(knownNames, selected);
+  const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
+  if (openIdentifiers.size === 0 && closedIdentifiers.size === 0) return null;
+
+  for (const identifier of ecosProjectNumberMentions(question, [...knownNames, ...closedNames])) {
+    const open = openIdentifiers.has(identifier);
+    if (!open && !closedIdentifiers.has(identifier)) continue;
+    // A year stays a year, as in the check before Q20 ("due in 2026").
+    if (/^(?:19|20)\d\d$/.test(identifier)) continue;
+    // A number both an open and a closed project use is read as the open one.
+    return projectReferenceMismatch(selectedIdentifiers[0], identifier, !open);
+  }
+  return null;
+}
+
+function otherProjectIdentifiers(projectNames: readonly string[], selected: ReadonlySet<string>): Set<string> {
+  return new Set(
+    projectNames
       .map(ecosProjectIdentifier)
       .filter((identifier): identifier is string => Boolean(identifier) && !selected.has(identifier as string)),
   );
-  if (otherProjectIdentifiers.size === 0) return null;
+}
 
-  for (const identifier of ecosProjectNumberMentions(question, knownNames)) {
-    if (!otherProjectIdentifiers.has(identifier)) continue;
-    // A year stays a year, as in the check before Q20 ("due in 2026").
-    if (/^(?:19|20)\d\d$/.test(identifier)) continue;
-    return Object.freeze({
-      selectedProjectIdentifier: selectedIdentifiers[0],
-      referencedProjectIdentifier: identifier,
-    });
-  }
-  return null;
+function projectReferenceMismatch(
+  selectedProjectIdentifier: string,
+  referencedProjectIdentifier: string,
+  referencedProjectClosed: boolean,
+): ECOSProjectReferenceMismatch {
+  return Object.freeze({ selectedProjectIdentifier, referencedProjectIdentifier, referencedProjectClosed });
 }
 
 /*
@@ -222,7 +253,7 @@ export function ecosKnownProjectNamesFromRows(
 function legacyProjectReferenceMismatch(
   projectName: string,
   question: string,
-): ECOSProjectReferenceMismatch | null {
+): Readonly<{ selectedProjectIdentifier: string; referencedProjectIdentifier: string }> | null {
   const selectedIdentifiers = uniqueMatches(projectName, LEGACY_IDENTIFIER_SOURCE);
   if (selectedIdentifiers.length === 0) return null;
   const selected = new Set(selectedIdentifiers);
@@ -231,10 +262,10 @@ function legacyProjectReferenceMismatch(
     const numericIdentifier = Number(identifier);
     return numericIdentifier < 1900 || numericIdentifier > 2099;
   });
-  return referencedProjectIdentifier ? Object.freeze({
+  return referencedProjectIdentifier ? {
     selectedProjectIdentifier: selectedIdentifiers[0],
     referencedProjectIdentifier,
-  }) : null;
+  } : null;
 }
 
 function usableKnownProjectNames(value: readonly string[] | null | undefined): string[] | null {

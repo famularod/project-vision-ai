@@ -6,6 +6,7 @@ import { ECOSProjectAnswerSheet } from '../components/ECOSProjectAnswerSheet';
 import type { DAVEAskEvidence } from '../services/DAVEAsk';
 import {
   askECOSProjectQuestion,
+  ecosClosedProjectNames,
   type ECOSProjectQuestionAnswer,
 } from '../services/ECOSProjectQuestion';
 import type { ProjectRecord } from '../services/ProjectCoverPhotoService';
@@ -28,6 +29,8 @@ function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): s
   )?.id?.trim() || null;
 }
 
+const NO_NAMES: readonly string[] = [];
+
 const alertChooseProject = () =>
   Alert.alert('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
 
@@ -35,12 +38,17 @@ export function useECOSProjectQuestionExperience({
   contextualProjectName,
   projectRecords,
   candidateProjects,
+  archivedProjectNames = NO_NAMES,
+  deletedProjectNames = NO_NAMES,
   onOpenEvidence,
   documentEvidenceVisible = false,
 }: {
   contextualProjectName: string | null;
   projectRecords: readonly ProjectRecord[];
   candidateProjects: readonly string[];
+  /** Closed projects; a deleted one is left out (audit A9 pass 3 L1). */
+  archivedProjectNames?: readonly string[];
+  deletedProjectNames?: readonly string[];
   onOpenEvidence: (projectName: string, evidence: DAVEAskEvidence) => void;
   documentEvidenceVisible?: boolean;
 }) {
@@ -65,6 +73,11 @@ export function useECOSProjectQuestionExperience({
   const knownProjectNames = useMemo(
     () => [...new Set(candidateProjects.map(name => name.trim()).filter(Boolean))],
     [candidateProjects],
+  );
+  // Closed projects are not pickable, but a question naming one is still refused (audit A9 pass 3 L1).
+  const closedProjectNames = useMemo(
+    () => ecosClosedProjectNames({ archived: archivedProjectNames, deleted: deletedProjectNames, open: knownProjectNames }),
+    [archivedProjectNames, deletedProjectNames, knownProjectNames],
   );
   const ownerKey = useNativeWorkspaceOwner();
   const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName, conversationEpoch]));
@@ -96,6 +109,7 @@ export function useECOSProjectQuestionExperience({
         projectName: selectedProjectName,
         question: cleanQuestion,
         knownProjectNames,
+        closedProjectNames,
         // The answer sheet has no project picker (audit A9 pass 3 L3).
         refusalWording: 'phone',
         ...turn.request,
@@ -112,7 +126,7 @@ export function useECOSProjectQuestionExperience({
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
         : current);
     }
-  }, [projectId, projectName, conversation, knownProjectNames]);
+  }, [projectId, projectName, conversation, knownProjectNames, closedProjectNames]);
 
   // Runs after the reset effect above, once the named project's conversation exists.
   useEffect(() => {

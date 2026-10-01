@@ -339,11 +339,14 @@ describe('Ask ECOS wrong-project guard (owner answer Q20)', () => {
   }));
 
   it.each(ECOS_PROJECT_REFERENCE_VECTORS.map(vector => [vector.name, vector] as const))('%s', (_name, vector) => {
-    expect(findECOSProjectReferenceMismatch(
+    const mismatch = findECOSProjectReferenceMismatch(
       vector.projectName,
       vector.question,
       vector.knownProjectNames,
-    )?.referencedProjectIdentifier ?? null).toBe(vector.refused);
+      vector.closedProjectNames,
+    );
+    expect(mismatch?.referencedProjectIdentifier ?? null).toBe(vector.refused);
+    if (vector.refused) expect(mismatch?.referencedProjectClosed).toBe(vector.refusedClosed ?? false);
   });
 
   it.each([

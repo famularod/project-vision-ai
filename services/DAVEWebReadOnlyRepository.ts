@@ -33,12 +33,18 @@ import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { normalizeProjectControls } from './VitruviusProjectControls';
 import type { DAVEOperationalCollectionName } from './DAVEOperationalRefresh';
 import { isGoogleDriveLinkedSource } from './GoogleDriveWebProvider';
+import { ecosClosedProjectNames } from './ECOSProjectQuestion';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
   scheduleItems: readonly DAVEWebScheduleItem[];
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
   referenceDocuments: readonly DAVEWebReferenceDocument[];
+  /**
+   * Closed (archived, not deleted) project names, kept out of `projects` but
+   * checked by Ask ECOS so a question naming one is refused (audit A9 pass 3 L1).
+   */
+  closedProjectNames?: readonly string[];
   refreshedAt: string;
 }>;
 
@@ -101,6 +107,10 @@ export async function loadDAVEWebReadOnlySnapshot(
     scheduleDocuments: referenceDocuments,
   }) as DAVEWebScheduleItem[];
   const projects = portfolioProjects(rawProjects, scheduleItems, tombstones);
+  const closedProjectNames = ecosClosedProjectNames({ // deleted rows are already out of rawProjects
+    archived: rawProjects.filter(project => project.archived).map(project => project.name),
+    open: projects.map(project => project.name),
+  });
   const projectUpdates = partitionProjectUpdatesByDeletedTask(
     rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
     tombstones,
@@ -112,6 +122,7 @@ export async function loadDAVEWebReadOnlySnapshot(
     scheduleItems: Object.freeze(scheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(referenceDocuments),
+    closedProjectNames: Object.freeze(closedProjectNames),
     refreshedAt: new Date().toISOString(),
   });
 }

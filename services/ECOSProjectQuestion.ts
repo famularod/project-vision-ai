@@ -10,7 +10,7 @@ import {
   parseECOSQuestionDiagnostics,
   type ECOSQuestionDiagnostics,
 } from './ECOSQuestionProtocol';
-import { findECOSProjectReferenceMismatch } from '../supabase/functions/_shared/ecos-project-reference';
+import { ecosProjectIdentifier, findECOSProjectReferenceMismatch } from '../supabase/functions/_shared/ecos-project-reference';
 
 export { ECOS_PROJECT_QUESTION_SCHEMA_VERSION } from './ECOSQuestionProtocol';
 // One wrong-project rule for the app and the ecos-ask-project edge function
@@ -81,29 +81,74 @@ export class ECOSProjectQuestionError extends Error {
  */
 export type ECOSProjectRefusalWording = 'phone' | 'desktop';
 
+type ECOSProjectRefusalContext = Readonly<{
+  knownProjectNames?: readonly string[] | null;
+  closedProjectNames?: readonly string[] | null;
+  refusalWording?: ECOSProjectRefusalWording;
+}>;
+
 /**
  * knownProjectNames: the names of the signed-in user's unarchived projects. With
  * them, a number is refused only when it is another project's number (and not a
  * measurement or drawing reference). Without them the stricter pre-Q20 check
- * applies unchanged.
+ * applies unchanged. closedProjectNames: closed (archived, not deleted)
+ * projects, whose numbers are refused as closed (audit A9 pass 3 L1).
  */
 export function ecosProjectReferenceMismatchMessage(
   projectName: string,
   question: string,
   knownProjectNames?: readonly string[] | null,
-  { refusalWording = 'desktop' }: { refusalWording?: ECOSProjectRefusalWording } = {},
+  { closedProjectNames, refusalWording = 'desktop' }: Omit<ECOSProjectRefusalContext, 'knownProjectNames'> = {},
 ): string | null {
-  const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames);
+  const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames, closedProjectNames);
   return mismatch
-    ? projectReferenceMismatchText(mismatch.selectedProjectIdentifier, mismatch.referencedProjectIdentifier, refusalWording)
+    ? projectReferenceMismatchText(
+      mismatch.selectedProjectIdentifier,
+      mismatch.referencedProjectIdentifier,
+      mismatch.referencedProjectClosed,
+      refusalWording,
+    )
     : null;
+}
+
+/**
+ * The closed projects Ask ECOS checks a question against: archived names that
+ * are neither deleted nor open again, without repeats (audit A9 pass 3 L1).
+ */
+export function ecosClosedProjectNames({
+  archived,
+  deleted = [],
+  open = [],
+}: {
+  archived: readonly string[];
+  deleted?: readonly string[];
+  open?: readonly string[];
+}): string[] {
+  const key = (name: string) => name.trim().toLowerCase();
+  const excluded = new Set([...deleted, ...open].map(key));
+  const seen = new Set<string>();
+  return archived.map(name => name.trim()).filter(name => {
+    const nameKey = key(name);
+    if (!nameKey || excluded.has(nameKey) || seen.has(nameKey)) return false;
+    seen.add(nameKey);
+    return true;
+  });
 }
 
 function projectReferenceMismatchText(
   selectedProjectIdentifier: string,
   referencedProjectIdentifier: string,
+  referencedProjectClosed: boolean,
   refusalWording: ECOSProjectRefusalWording,
 ) {
+  if (referencedProjectClosed) {
+    // A closed project is not offered anywhere until it is reopened, and only
+    // the phone app can reopen one (Archived Projects on the Overview tab).
+    const reopenStep = refusalWording === 'phone'
+      ? 'Reopen it under Archived Projects on the Overview tab, then ask there.'
+      : 'Reopen it in the Vitruvius iPhone or iPad app, then select it above and ask again.';
+    return `Project ${selectedProjectIdentifier} is selected, but ${referencedProjectIdentifier} is a closed project. ${reopenStep}`;
+  }
   const switchStep = refusalWording === 'phone'
     ? `Close this, open project ${referencedProjectIdentifier}, then ask again.`
     : `Select project ${referencedProjectIdentifier} above, then ask again.`;
@@ -118,6 +163,7 @@ export async function askECOSProjectQuestion({
   conversationId,
   priorTurnId,
   knownProjectNames,
+  closedProjectNames,
   refusalWording = 'desktop',
 }: ECOSConversationRequest & {
   client: SupabaseClient | null;
@@ -126,6 +172,8 @@ export async function askECOSProjectQuestion({
   question: string;
   /** Checked here only; the server reads its own project list and never receives this. */
   knownProjectNames?: readonly string[] | null;
+  /** Closed (archived, not deleted) projects; checked here only (audit A9 pass 3 L1). */
+  closedProjectNames?: readonly string[] | null;
   /** How a wrong-project refusal tells the owner to switch (audit A9 pass 3 L3). */
   refusalWording?: ECOSProjectRefusalWording;
 }): Promise<ECOSProjectQuestionAnswer> {
@@ -159,7 +207,7 @@ export async function askECOSProjectQuestion({
       'Shorten the question to 1,000 characters or fewer.',
     );
   }
-  const refusal = { knownProjectNames, refusalWording };
+  const refusal = { knownProjectNames, closedProjectNames, refusalWording };
   const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion, knownProjectNames, refusal);
   if (projectMismatchMessage) {
     throw new ECOSProjectQuestionError('project_reference_mismatch', projectMismatchMessage);
@@ -380,7 +428,7 @@ function projectQuestionErrorMessage(
   code: string,
   projectName: string,
   question: string,
-  refusal: Readonly<{ knownProjectNames?: readonly string[] | null; refusalWording: ECOSProjectRefusalWording }>,
+  refusal: ECOSProjectRefusalContext,
   body: Record<string, unknown> | null,
 ) {
   if (code.startsWith('conversation_') || code === 'prior_turn_id_invalid') {
@@ -413,7 +461,12 @@ function projectQuestionErrorMessage(
       const selectedIdentifier = requiredText(body?.selectedProjectIdentifier);
       const referencedIdentifier = requiredText(body?.referencedProjectIdentifier);
       if (/^\d{3,6}$/.test(selectedIdentifier) && /^\d{3,6}$/.test(referencedIdentifier)) {
-        return projectReferenceMismatchText(selectedIdentifier, referencedIdentifier, refusal.refusalWording);
+        return projectReferenceMismatchText(
+          selectedIdentifier,
+          referencedIdentifier,
+          referencedProjectIsClosed(referencedIdentifier, refusal),
+          refusal.refusalWording ?? 'desktop',
+        );
       }
       return ecosProjectReferenceMismatchMessage(projectName, question, refusal.knownProjectNames, refusal) || (
         refusal.refusalWording === 'phone'
@@ -445,6 +498,13 @@ function projectQuestionErrorMessage(
     return 'Could not reach Ask ECOS. Check the connection and try again.';
   }
   return 'Ask ECOS could not complete the question. Try again shortly.';
+}
+
+/** Whether a number the server refused is a closed project's here and no open one's (audit A9 pass 3 L1). */
+function referencedProjectIsClosed(identifier: string, refusal: ECOSProjectRefusalContext) {
+  const has = (names: readonly string[] | null | undefined) =>
+    (names || []).some(name => ecosProjectIdentifier(name) === identifier);
+  return has(refusal.closedProjectNames) && !has(refusal.knownProjectNames);
 }
 
 function invalidResponse() {

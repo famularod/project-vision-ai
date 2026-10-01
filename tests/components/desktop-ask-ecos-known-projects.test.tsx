@@ -59,6 +59,8 @@ const snapshot: DAVEWebReadOnlySnapshot = {
   scheduleItems: [],
   projectUpdates: [],
   referenceDocuments: [],
+  // Audit A9 pass 3 L1: closed projects ride along so their numbers are refused.
+  closedProjectNames: ['2400 Closed Warehouse'],
   refreshedAt: '2026-09-30T12:00:00.000Z',
 };
 
@@ -104,6 +106,7 @@ describe('desktop Ask ECOS project list (owner answer Q20)', () => {
     expect(mockAuth.askProjectQuestion).toHaveBeenCalledWith({
       ...input,
       knownProjectNames: ['2321 Compliance Project', '2375 Compliance Project'],
+      closedProjectNames: ['2400 Closed Warehouse'],
     });
   });
 });

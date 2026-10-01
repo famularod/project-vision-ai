@@ -23,12 +23,16 @@ const PROJECT_RECORDS = [
   { id: 'p2375', name: '2375 Compliance Project' },
 ];
 
-async function refusalFor(question: string) {
+async function refusalFor(
+  question: string,
+  lists: Partial<Parameters<typeof useECOSProjectQuestionExperience>[0]> = {},
+) {
   const { result } = renderHook(() => useECOSProjectQuestionExperience({
     contextualProjectName: '2321 Compliance Project',
     projectRecords: PROJECT_RECORDS as never,
     candidateProjects: PROJECT_RECORDS.map(project => project.name),
     onOpenEvidence: jest.fn(),
+    ...lists,
   }));
   await act(async () => { result.current.open(); });
   await act(async () => { sheet(result, 0).onMemoryReady({ transcript: question }); });
@@ -54,5 +58,32 @@ describe('audit A9 pass 3 L3: the phone refusal matches what the phone can do', 
     const result = await refusalFor('What was the slab thickness at 2375?');
     await act(async () => { sheet(result, 2).onAskAnother(); });
     expect(sheet(result, 0)).toMatchObject({ visible: true, projectName: '2321 Compliance Project' });
+  });
+});
+
+// Audit A9 pass 3 L1 (30 Sep 2026): a closed project is not pickable, so the
+// phone passes the archived (not deleted) names for the check.
+describe('audit A9 pass 3 L1: the phone refuses a closed project\'s number', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const closedLists = {
+    candidateProjects: ['2321 Compliance Project'],
+    archivedProjectNames: ['2375 Compliance Project', '2400 Deleted Job'],
+    deletedProjectNames: ['2400 Deleted Job'],
+  };
+
+  it('says 2375 is closed and where to reopen it', async () => {
+    const result = await refusalFor('What was the slab thickness at 2375?', closedLists);
+    expect(sheet(result, 2).error).toBe(
+      'Project 2321 is selected, but 2375 is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+    expect(mockClient.functions.invoke).not.toHaveBeenCalled();
+  });
+
+  it('a deleted project is not checked', async () => {
+    mockClient.auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
+    const result = await refusalFor('What is left at 2400?', closedLists);
+    // It reached the sign-in check, so the number was not refused.
+    expect(mockClient.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(sheet(result, 2).error).toBe('Your sign-in could not be verified. Sign in again, then retry.');
   });
 });

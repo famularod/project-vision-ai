@@ -12,8 +12,12 @@ export type ECOSProjectReferenceVector = Readonly<{
   question: string;
   /** undefined: the caller has no project list (the pre-Q20 check applies). */
   knownProjectNames?: readonly string[] | null;
+  /** Closed (archived, not deleted) projects (audit A9 pass 3 L1). */
+  closedProjectNames?: readonly string[] | null;
   /** The number the guard refuses, or null when the question is allowed. */
   refused: string | null;
+  /** Whether the refused number is only a closed project's; false when omitted. */
+  refusedClosed?: boolean;
 }>;
 
 const SELECTED = '2321 Compliance Project';
@@ -264,6 +268,50 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     question: 'What is overdue at 450 Harrison?',
     knownProjectNames: [...OWNER_PROJECTS, '450 Harrison'],
     refused: '450',
+  },
+  // Audit A9 pass 3 L1: a closed project is not in the pickable list, yet its
+  // number still names it.
+  {
+    name: 'refuses a closed project named by its number',
+    projectName: SELECTED,
+    question: 'What was the slab thickness at 2375?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2375 Compliance Project'],
+    refused: '2375',
+    refusedClosed: true,
+  },
+  {
+    name: 'a measurement is not a closed project either',
+    projectName: SELECTED,
+    question: 'Is 2375 psi enough for the slab on grade?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2375 Compliance Project'],
+    refused: null,
+  },
+  {
+    name: 'a number an open and a closed project share is read as the open one',
+    projectName: SELECTED,
+    question: 'What was the slab thickness at 2375?',
+    knownProjectNames: OWNER_PROJECTS,
+    closedProjectNames: ['2375 Old Phase'],
+    refused: '2375',
+    refusedClosed: false,
+  },
+  {
+    name: 'a closed project that shares the selected number is not another project',
+    projectName: SELECTED,
+    question: 'What is left at 2321?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2321 Phase 1'],
+    refused: null,
+  },
+  {
+    name: 'without a project list, a closed project is still refused and marked closed',
+    projectName: SELECTED,
+    question: 'What was the slab thickness at 2375?',
+    closedProjectNames: ['2375 Compliance Project'],
+    refused: '2375',
+    refusedClosed: true,
   },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {

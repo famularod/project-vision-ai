@@ -13432,6 +13432,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ),
     projectRecords,
     candidateProjects: reportAvailableProjectNames,
+    archivedProjectNames: archivedProjects,
+    deletedProjectNames,
     onOpenEvidence: (projectName, evidence) => {
       if (evidence.sourceType === 'document' && evidence.documentCitation) {
         void ecosDocumentEvidence.openEvidence(evidence);

@@ -132,6 +132,7 @@ type DesktopAuthContextValue = Readonly<{
     conversationId?: string;
     priorTurnId?: string;
     knownProjectNames?: readonly string[];
+    closedProjectNames?: readonly string[];
   }) => Promise<ECOSProjectQuestionAnswer>;
   analyzeDrawingPage: (input: ECOSDrawingPageAnalysisInput) => Promise<ECOSDrawingPageAnalysisResult>;
   beginOrResumeDocumentIndexJob: (input: {
@@ -849,6 +850,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     conversationId?: string;
     priorTurnId?: string;
     knownProjectNames?: readonly string[];
+    closedProjectNames?: readonly string[];
   }) => daveWebSupabaseGateway.askAuthorizedProjectQuestion(input), []);
 
   const analyzeDrawingPage = useCallback((input: ECOSDrawingPageAnalysisInput) =>

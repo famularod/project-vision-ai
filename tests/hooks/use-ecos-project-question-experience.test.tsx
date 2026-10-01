@@ -9,7 +9,11 @@ jest.mock('../../components/DAVEVoiceCaptureSheet', () => ({ DAVEVoiceCaptureShe
 jest.mock('../../components/ECOSProjectAnswerSheet', () => ({ ECOSProjectAnswerSheet: () => null }));
 jest.mock('../../services/SupabaseService', () => ({ getSupabaseClient: () => ({}) }));
 jest.mock('../../components/native-workspace-owner', () => ({ useNativeWorkspaceOwner: () => 'owner-one' }));
-jest.mock('../../services/ECOSProjectQuestion', () => ({ askECOSProjectQuestion: jest.fn() }));
+// The real helpers, only the cloud request mocked (closed projects, audit A9 pass 3 L1).
+jest.mock('../../services/ECOSProjectQuestion', () => ({
+  ...jest.requireActual('../../services/ECOSProjectQuestion'),
+  askECOSProjectQuestion: jest.fn(),
+}));
 const askMock = jest.mocked(askECOSProjectQuestion);
 const question = 'What work remains?';
 function deferred() {
