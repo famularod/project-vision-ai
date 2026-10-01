@@ -123,6 +123,7 @@ beforeEach(() => {
   mockedGateway.subscribeToAuthorizedOperationalChanges.mockResolvedValue(() => undefined);
   mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
   mockedGateway.signOut.mockResolvedValue(undefined);
+  mockedGateway.storedSignInUserId.mockReturnValue(null);
   mockedLoadSnapshot.mockResolvedValue(snapshot as never);
 });
 
@@ -228,6 +229,10 @@ test('SIGNED_OUT still clears the view, and the not-the-owner answer still signs
   await waitFor(() => expect(screen.getByLabelText('Password')).toBeTruthy());
 
   mockedLoadSnapshot.mockRejectedValue(new DAVEWebAuthorizationError());
+  // Changed 30 Sep 2026 (whole-app audit A12 pass 6 L1): a refresh is acted
+  // on only when it is for this tab's own stored sign-in (another tab's is
+  // ignored, and a signed-out tab ignores them all), so this tab holds one.
+  mockedGateway.storedSignInUserId.mockReturnValue('owner-1');
   await emit('TOKEN_REFRESHED', ownerSession);
   await waitFor(() => expect(mockedGateway.signOut).toHaveBeenCalledWith('local'));
   expect(screen.getByLabelText('Password')).toBeTruthy();

@@ -423,6 +423,17 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         clearSessionView();
         return;
       }
+      // auth-js also passes every other tab's refresh to this tab, with that
+      // tab's session. Only this tab's own sign-in is acted on: a visitor's
+      // tab refreshing had made the owner's tab say "Signed in as" the
+      // visitor and save his percent edits as confirmed by the visitor, and a
+      // signed-out tab showed "Checking…", then "Sign in is required…", and
+      // ran the automatic sign-out (whole-app audit A12 pass 6 L1, 30 Sep
+      // 2026). Another tab of the same account still reloads, as before.
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        const ownUserId = daveWebSupabaseGateway.storedSignInUserId();
+        if (!ownUserId || session.user?.id !== ownUserId) return;
+      }
       if (
         event === 'INITIAL_SESSION' ||
         event === 'TOKEN_REFRESHED' ||

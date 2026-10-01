@@ -136,6 +136,7 @@ beforeEach(() => {
   });
   mockedGateway.subscribeToAuthorizedOperationalChanges.mockResolvedValue(() => undefined);
   mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
+  mockedGateway.storedSignInUserId.mockReturnValue(null);
   mockedLoadSnapshot.mockRejectedValue(new DAVEWebAuthorizationError());
 });
 
@@ -210,6 +211,10 @@ test('the browser sign-out is retried quietly until it goes through, and the pag
 
 test('a later event for the same sign-in reads nothing and never shows "not loaded yet"', async () => {
   mockedGateway.signOut.mockRejectedValue(signOutFailed());
+  // This tab still holds the visitor's sign-in (its sign-out has not gone
+  // through), so the refresh below is this tab's own: since whole-app audit
+  // A12 pass 6 L1 (30 Sep 2026) only this tab's own refresh is acted on.
+  mockedGateway.storedSignInUserId.mockReturnValue('visitor-1');
   const screen = renderShell();
   await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
   // The connection is still dropping: a second owner check would not finish.
@@ -261,8 +266,16 @@ test('signing in again with the same account checks it again rather than reusing
   expect(mockedLoadSnapshot).toHaveBeenCalledTimes(2);
 });
 
-test('the owner signing in from another tab opens the workspace here too', async () => {
+// Changed 30 Sep 2026 (whole-app audit A12 pass 6 L1). This said the owner
+// signing in in another tab opens the workspace here too. But each tab keeps
+// its own sign-in: this tab's is still the visitor's, and every request here
+// carried it. auth-js passes the other tab's events here with the other
+// tab's session, which the page now ignores; signing in here (above) opens
+// the workspace.
+test('the owner signing in in another tab leaves this tab’s not-authorized page as it is', async () => {
   mockedGateway.signOut.mockRejectedValue(signOutFailed());
+  // The visitor's sign-out here has not gone through yet.
+  mockedGateway.storedSignInUserId.mockReturnValue('visitor-1');
   const screen = renderShell();
   await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
 
@@ -270,6 +283,6 @@ test('the owner signing in from another tab opens the workspace here too', async
   await emit('SIGNED_IN', ownerSession);
   await emit('TOKEN_REFRESHED', ownerSession);
 
-  await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull());
-  expect(screen.queryByText(NOT_AUTHORIZED)).toBeNull();
+  expectNotAuthorizedPage(screen);
+  expect(mockedLoadSnapshot).toHaveBeenCalledTimes(1);
 });
