@@ -181,7 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
-import { FieldUpdateDocumentChangeNotice } from './components/field-update-document-change-notice';
+import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -19062,7 +19062,8 @@ function UpdateHistoryCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
   const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
-  const statusLine =
+  const conflictReview = useFieldUpdateConflictReview(update.id, lifecycle); // left for Review Conflicts (A7 pass 12 M-1)
+  const statusLine = conflictReview ? null :
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
       : lifecycle === 'ready_to_send'
@@ -19081,7 +19082,7 @@ function UpdateHistoryCard({
     (documents.length > 0
       ? `${countLabel(documents.length, 'document')} added to this update.`
       : 'Project update recorded.');
-  const statusLabel = fieldUpdateLifecycleLabel(lifecycle);
+  const statusLabel = conflictReview ? FIELD_UPDATE_CONFLICT_REVIEW_LABEL : fieldUpdateLifecycleLabel(lifecycle);
 
   return (
     <TouchableOpacity
@@ -19115,9 +19116,9 @@ function UpdateHistoryCard({
           <Text style={styles.updateCardMetaDot}>•</Text>
           <Text style={styles.updateCardTime}>{relativeUpdateTimestamp(update.date)}</Text>
         </View>
-        <FieldUpdateDocumentChangeNotice updateId={update.id} />
+        <FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />
         {onRetry ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
+          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry</Text>
           </TouchableOpacity>

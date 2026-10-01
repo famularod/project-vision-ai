@@ -1,6 +1,13 @@
 import { queuedFieldUpdateDocumentPatches } from './FieldUpdateDocumentPatch';
 import { isFieldUpdatePhotoAnalysisPatch } from './FieldUpdatePhotoAnalysisPatch';
-import { getOfflineQueue, subscribeToOfflineQueue, type SyncQueueItem } from './SyncService';
+import {
+  getOfflineQueue,
+  getSyncConflicts,
+  subscribeToOfflineQueue,
+  subscribeToSyncConflicts,
+  type SyncConflict,
+  type SyncQueueItem,
+} from './SyncService';
 
 /**
  * A document change on a sent field update that has not reached the cloud
@@ -80,4 +87,56 @@ export function subscribeToQueuedDocumentChanges(listener: () => void): () => vo
 
 export function queuedDocumentChangesSnapshot(): readonly SyncQueueItem[] {
   return queueSnapshot;
+}
+
+/**
+ * A field update in conflict, waiting or failed on this phone (whole-app
+ * audit A7 pass 12 M-1). Every automatic sync (the waiting-update sync, Sync
+ * Now, Retry Sync) leaves its own copy for Settings › Review Conflicts, but
+ * its card still read "Waiting to Sync" and "Queued — will sync when you're
+ * back online", with the phone online. It now says it needs review, and
+ * where. Its Retry is still an explicit send of the phone's version: it asks
+ * first.
+ */
+export const FIELD_UPDATE_CONFLICT_REVIEW_LABEL = 'Needs Review';
+export const FIELD_UPDATE_CONFLICT_REVIEW_TEXT = 'Needs review — open Settings › Review Conflicts';
+export const FIELD_UPDATE_RETRY_OVER_CONFLICT_TITLE = 'Send your version?';
+export const FIELD_UPDATE_RETRY_OVER_CONFLICT_MESSAGE = 'This update was also changed on another device. Send your version over it?';
+
+/** Whether a conflict saved on this phone is this field update's. */
+export function fieldUpdateHasOpenConflict(conflicts: readonly SyncConflict[], updateId: string): boolean {
+  return conflicts.some(conflict => conflict.entity === 'project_update' && conflict.localId === updateId);
+}
+
+let conflictsSnapshot: readonly SyncConflict[] = [];
+let conflictWrites = 0;
+let listeningToConflicts = false;
+const conflictSnapshotListeners = new Set<() => void>();
+
+function publishConflicts(conflicts: readonly SyncConflict[]) {
+  conflictsSnapshot = conflicts;
+  conflictWrites += 1;
+  conflictSnapshotListeners.forEach(listener => listener());
+}
+
+/** For useSyncExternalStore: the saved conflicts, read and kept as the queue is (subscribeToQueuedDocumentChanges). */
+export function subscribeToFieldUpdateConflicts(listener: () => void): () => void {
+  conflictSnapshotListeners.add(listener);
+  if (!listeningToConflicts) {
+    listeningToConflicts = true;
+    subscribeToSyncConflicts(publishConflicts);
+    const writesBeforeRead = conflictWrites;
+    void getSyncConflicts()
+      .then(conflicts => {
+        if (conflictWrites === writesBeforeRead) publishConflicts(conflicts);
+      })
+      .catch(() => undefined);
+  }
+  return () => {
+    conflictSnapshotListeners.delete(listener);
+  };
+}
+
+export function fieldUpdateConflictsSnapshot(): readonly SyncConflict[] {
+  return conflictsSnapshot;
 }

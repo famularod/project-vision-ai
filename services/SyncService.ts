@@ -1394,7 +1394,7 @@ export async function reconcileSyncConflicts(): Promise<SyncConflict[]> {
     const reconciled = normalizeSyncConflicts(stored);
 
     if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
-      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
+      await writeSyncConflicts(reconciled);
     }
 
     return reconciled;
@@ -4177,8 +4177,7 @@ export async function clearResolvedConflict(conflictId: string): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const conflict = conflicts.find(item => item.id === conflictId);
-    await setStoredJson(
-      SYNC_CONFLICTS_STORAGE_KEY,
+    await writeSyncConflicts(
       conflicts.filter(item =>
         conflict
           ? item.entity !== conflict.entity || item.localId !== conflict.localId
@@ -5397,7 +5396,7 @@ async function recordConflict(conflict: SyncConflict): Promise<void> {
     const nextConflicts = conflicts.filter(item =>
       item.entity !== conflict.entity || item.localId !== conflict.localId,
     );
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+    await writeSyncConflicts([...nextConflicts, conflict]);
   });
 }
 
@@ -5411,7 +5410,33 @@ async function clearConflictsForLocalRecord(
       item.entity !== entity || item.localId !== localId,
     );
     if (nextConflicts.length !== conflicts.length) {
-      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
+      await writeSyncConflicts(nextConflicts);
+    }
+  });
+}
+
+const syncConflictListeners = new Set<(conflicts: readonly SyncConflict[]) => void>();
+
+/**
+ * Called with the saved conflicts each time this device writes them
+ * (whole-app audit A7 pass 12 M-1): a field update's card says when it waits
+ * for Review Conflicts. The unsubscribe function.
+ */
+export function subscribeToSyncConflicts(listener: (conflicts: readonly SyncConflict[]) => void): () => void {
+  syncConflictListeners.add(listener);
+  return () => {
+    syncConflictListeners.delete(listener);
+  };
+}
+
+async function writeSyncConflicts(conflicts: SyncConflict[]): Promise<void> {
+  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, conflicts);
+  const saved = normalizeSyncConflicts(conflicts);
+  syncConflictListeners.forEach(listener => {
+    try {
+      listener(saved);
+    } catch {
+      // A screen's listener never fails a conflict write.
     }
   });
 }

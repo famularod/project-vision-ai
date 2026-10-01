@@ -278,7 +278,9 @@ assert(
 const updateHistoryCard = sliceBetween(app, 'function UpdateHistoryCard', 'function UpdateOverflowMenu');
 assert(
   updateHistoryCard.includes('onRetry?: () => void') &&
-    updateHistoryCard.includes('onPress={onRetry}') &&
+    // Pin changed in A7 pass 12 M-1: the same Retry, which asks first only when
+    // the update waits for conflict review.
+    updateHistoryCard.includes('onPress={retryOverConflictConfirmed(conflictReview, onRetry)}') &&
     updateHistoryCard.includes('onPress={onOpen}'),
   'Retryable Needs Attention cards must expose an inline Retry action distinct from the card tap target.',
 );

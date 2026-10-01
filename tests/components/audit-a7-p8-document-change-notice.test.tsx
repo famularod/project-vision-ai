@@ -133,6 +133,8 @@ describe('the update card says when a document change on a sent update waits to 
     const path = jest.requireActual('path') as typeof import('path');
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     const card = app.slice(app.indexOf('function UpdateHistoryCard'), app.indexOf('function UpdateOverflowMenu'));
-    expect(card).toContain('<FieldUpdateDocumentChangeNotice updateId={update.id} />');
+    // Pin changed in A7 pass 12 M-1: the same line also says where to settle a
+    // conflict the update waits in (audit-a7-p12-conflict-review-card.test.tsx).
+    expect(card).toContain('<FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />');
   });
 });

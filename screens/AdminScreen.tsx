@@ -414,7 +414,8 @@ export function AdminScreen({
               disabled={isSyncing}
             />
           ) : null}
-          {pendingSyncCount === 0 && syncStatus?.conflicts ? (
+          {/* Whenever a conflict is saved here, pending work or not: it is the only way into conflict review (whole-app audit A7 pass 12 M-1). */}
+          {syncStatus?.conflicts || syncConflicts.length > 0 ? (
             <SecondaryButton
               label="Review Conflicts"
               icon="git-compare-outline"
@@ -643,6 +644,19 @@ export function AdminScreen({
     const isCurrentRefresh = () =>
       isActive() && statusRefreshRunRef.current === refreshRun;
     setIsCheckingConnection(true);
+    // This phone's own sync status and conflicts do not wait for the cloud
+    // check (whole-app audit A7 pass 12 M-1): read after it, they stayed
+    // unread while it ran, and when it timed out, and a conflict saved here
+    // had no Review Conflicts. Read again once its conflicts are reconciled.
+    const readLocalStatus = () => withSyncTimeout(
+      Promise.all([getSyncStatus(), getSyncConflicts()]),
+      SETTINGS_STATUS_TIMEOUT_MS,
+    ).then(([currentSyncStatus, currentConflicts]) => {
+      if (!isCurrentRefresh()) return;
+      setSyncStatus(currentSyncStatus);
+      setSyncConflicts(currentConflicts);
+    });
+    void readLocalStatus().catch(() => undefined);
 
     try {
       const [, connection, test] = await withSyncTimeout(
@@ -653,17 +667,12 @@ export function AdminScreen({
         ]),
         SETTINGS_STATUS_TIMEOUT_MS,
       );
-      const [currentSyncStatus, currentConflicts] = await withSyncTimeout(
-        Promise.all([getSyncStatus(), getSyncConflicts()]),
-        SETTINGS_STATUS_TIMEOUT_MS,
-      );
+      await readLocalStatus();
 
       if (!isCurrentRefresh()) return;
 
       setConnectionStatus(connection);
       setTestResult(test);
-      setSyncStatus(currentSyncStatus);
-      setSyncConflicts(currentConflicts);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setAdminActionSummary(
