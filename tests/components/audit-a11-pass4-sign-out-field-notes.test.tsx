@@ -52,6 +52,7 @@ import { AdminScreen } from '../../screens/AdminScreen';
 
 const OWNER = 'owner-l5';
 const TAIL = 'They stay on this phone and sync after you sign in here again with this account.';
+const REVIEW = 'Field notes marked Review needed wait for your choice in Field Notes.';
 // First, as the one thing lost for good; the rest of the warning reads as before.
 const UNSAVED = 'The field note you have not saved will be discarded.';
 
@@ -225,6 +226,64 @@ describe('Sign Out names an unsaved Project Walk memory and counts field notes n
     ));
     const message = await signOutWarning(renderSettings());
     // A11 pass 6 L1: a note marked Review needed waits for his choice, not for sign-in.
-    expect(message).toBe(`5 items are not in the cloud yet. ${TAIL} Field notes marked Review needed wait for your choice in Field Notes. Sign out anyway?`);
+    // A11 pass 7 L1: so "sync after you sign in" covers only the other 4 (it
+    // said "They stay ... and sync" of all 5).
+    expect(message).toBe(`5 items are not in the cloud yet. 4 stay on this phone and sync after you sign in here again with this account. ${REVIEW} Sign out anyway?`);
+  });
+});
+
+/**
+ * Whole-app audit A11 pass 7 L1 (30 Sep 2026): with one item the warning
+ * read "It stays on this phone and sync after you sign in", and with a field
+ * note marked Review needed it still said every item syncs after sign-in.
+ */
+describe('Sign Out says which items sync after sign-in, in plain grammar (A11 pass 7 L1)', () => {
+  beforeEach(() => {
+    mockPhone.clear();
+    jest.requireMock('../../services/SyncService').getSyncStatus.mockResolvedValue(
+      { queuedChanges: 1, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 },
+    );
+    jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    cleanup();
+    forgetFieldNoteDraft();
+    jest.restoreAllMocks();
+  });
+
+  async function warningFor(pendingLabel: string, failedDocumentCount = 0) {
+    const screen = renderSettings(OWNER, { failedDocumentCount });
+    await screen.findByText(pendingLabel);
+    await act(async () => { fireEvent.press(screen.getByText('Sign Out')); });
+    await waitFor(() => expect(Alert.alert).toHaveBeenCalledWith('Sign Out', expect.any(String), expect.any(Array)));
+    const call = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === 'Sign Out');
+    return String(call?.[1]).split('\n\n')[0];
+  }
+  const reviewNote = (id: string) => localFieldNoteRepository.save(OWNER, markFieldNoteConflict(
+    createFieldNote({ id, text: 'Fence repaired.', now: '2026-09-30T12:00:00.000Z' }),
+    'Changed on another device.',
+  ));
+
+  it('one item "stays ... and syncs"', async () => {
+    expect(await warningFor('1 item pending on this device')).toBe(
+      '1 item is not in the cloud yet. It stays on this phone and syncs after you sign in here again with this account. Sign out anyway?',
+    );
+  });
+
+  it('with a Review needed note, only the others sync after sign-in', async () => {
+    await reviewNote('note-review');
+    expect(await warningFor('1 item pending on this device')).toBe(
+      `2 items are not in the cloud yet. 1 stays on this phone and syncs after you sign in here again with this account. ${REVIEW} Sign out anyway?`,
+    );
+  });
+
+  it('when every item is a Review needed note, none is said to sync', async () => {
+    jest.requireMock('../../services/SyncService').getSyncStatus.mockResolvedValue(
+      { queuedChanges: 0, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 },
+    );
+    await reviewNote('note-review');
+    expect(await warningFor('All caught up')).toBe(
+      '1 item is not in the cloud yet: a field note marked Review needed. It stays on this phone and waits for your choice in Field Notes. Sign out anyway?',
+    );
   });
 });

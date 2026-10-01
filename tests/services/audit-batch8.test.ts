@@ -29,8 +29,14 @@ describe('the sign-out warning counts every unsynced item', () => {
     // pendingSyncCount already includes them.
     expect(admin).toContain('const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);');
     // A11 pass 6 L1: notes marked Review needed get their own sentence before "Sign out anyway?".
-    expect(admin).toContain('on this phone and sync after you sign in here again with this account.');
-    expect(admin).toContain("' Field notes marked Review needed wait for your choice in Field Notes.' : ''} Sign out anyway?");
+    // A11 pass 7 L1: the sentences moved to services/SignOutNotInCloudWarning.ts,
+    // where "syncs after you sign in" covers only the items not marked Review
+    // needed ("1 stays ... and syncs"); every combination is pinned in
+    // audit-a11-pass7-wording.test.ts.
+    const warning = read('services/SignOutNotInCloudWarning.ts');
+    expect(admin).toContain('${signOutNotInCloudSentences(notInCloudCount, fieldNotesForReview)} Sign out anyway?');
+    expect(warning).toContain("on this phone and ${one ? 'syncs' : 'sync'} after you sign in here again with this account.");
+    expect(warning).toContain('Field notes marked Review needed wait for your choice in Field Notes.');
     expect(admin).not.toContain("savedUpdates.filter(update => update.status === 'queued').length;\n    const message");
   });
 });

@@ -21,6 +21,7 @@ import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '..
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
+import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -1041,7 +1042,8 @@ export function AdminScreen({
       (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
     const message =
       notInCloudCount > 0
-        ? `${discarded}${notInCloudCount} item${notInCloudCount === 1 ? ' is' : 's are'} not in the cloud yet. ${notInCloudCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account.${fieldNotesForReview > 0 ? ' Field notes marked Review needed wait for your choice in Field Notes.' : ''} Sign out anyway?`
+        // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
+        ? `${discarded}${signOutNotInCloudSentences(notInCloudCount, fieldNotesForReview)} Sign out anyway?`
         : `${discarded}You will need to sign in again to resume cloud sync and photo intelligence.`;
 
     // Owner answer Q21 (30 Sep 2026): he chooses this device or all devices.

@@ -450,8 +450,10 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 M1: leaving while a recording is bein
     fireEvent.press(screen.getByLabelText('Cancel memory capture'));
     expect(alert).toHaveBeenCalledTimes(1);
     expect(alert.mock.calls[0][0]).toBe(STOP_PREPARING);
+    // A11 pass 7 L2: kept here only while Vitruvius stays open (it said "keep
+    // the recording here to try Continue again later").
     expect(alert.mock.calls[0][1]).toBe(
-      'It is still being turned into text. You can keep waiting, keep the recording here to try Continue again later, or discard it.',
+      'It is still being turned into text. You can keep waiting, keep the recording here while Vitruvius stays open and try Continue again later, or discard it.',
     );
     expect(lastAlertButtons(alert).map(button => [button.text, button.style])).toEqual([
       ['Keep Waiting', 'cancel'],
@@ -582,8 +584,9 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 L1: no signal while the sign-in waits
 // the recording) got out.
 describe('DAVEVoiceCaptureSheet A11 pass 5 L2: the project changes while a recording is being prepared', () => {
   const OTHER_PROJECT_ID = '99999999-2222-4333-8444-555555555555';
+  // A11 pass 7 L2: "It is kept here." now says for how long.
   const PROJECT_CHANGED =
-    'The project changed while this recording was being prepared. It is kept here. Tap Continue to try again.';
+    'The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap Continue to try again.';
   let alert: jest.SpyInstance;
   beforeEach(() => { alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined); });
   afterEach(() => { alert.mockRestore(); });

@@ -152,7 +152,8 @@ export function DAVEVoiceCaptureSheet({
     if (!visible || preparingOperationRef.current === null) return;
     preparingOperationRef.current = null;
     setIsTranscribing(false);
-    setNotice(`The project changed while this recording was being prepared. It is kept here. Tap ${continueLabel} to try again.`);
+    // A11 pass 7 L2: like "Stopped waiting", say it is kept only while Vitruvius stays open.
+    setNotice(`The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
     // Only a project change while the sheet is open does this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
@@ -384,7 +385,7 @@ export function DAVEVoiceCaptureSheet({
     if (isTranscribing) {
       Alert.alert(
         'Stop preparing this recording?',
-        `It is still being turned into text. You can keep waiting, keep the recording here to try ${continueLabel} again later, or discard it.`,
+        `It is still being turned into text. You can keep waiting, keep the recording here while Vitruvius stays open and try ${continueLabel} again later, or discard it.`,
         [
           { text: 'Keep Waiting', style: 'cancel' },
           { text: 'Keep Recording for Later', onPress: stopWaitingKeepRecording },
