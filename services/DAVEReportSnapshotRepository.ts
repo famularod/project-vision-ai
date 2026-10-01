@@ -13,6 +13,12 @@ import {
 } from './SupabaseService';
 
 const STORAGE_PREFIX = '@vitruvius/report-snapshots/v1';
+/**
+ * This install's report sender id (whole-app audit A6 pass 9 L2): random,
+ * made once and kept on this device only. Outside the account sandbox on
+ * purpose: it names the install, never the account or the owner.
+ */
+const SENDER_ID_KEY = '@vitruvius/report-sender-id/v1';
 /** How long opening Reports waits for the shared period before using this device's own. */
 const CLOUD_READ_TIMEOUT_MS = 4000;
 
@@ -121,6 +127,47 @@ export async function saveDAVEReportSnapshot(
     throw new Error('The approved report snapshot could not be verified after saving.');
   }
   if (snapshot.reportFormat) void writeShared(cloud, snapshot);
+}
+
+let senderIdCreation: Promise<string> | null = null;
+
+/** This install's report sender id, made the first time this device sends a report (A6 pass 9 L2). */
+export async function reportSenderId(storage: SnapshotStorage = AsyncStorage): Promise<string> {
+  const saved = await storage.getItem(SENDER_ID_KEY);
+  if (saved) return saved;
+  // Two sends at once make one id.
+  senderIdCreation ??= (async () => {
+    await storage.setItem(SENDER_ID_KEY, randomSenderId());
+    return (await storage.getItem(SENDER_ID_KEY)) as string;
+  })().finally(() => {
+    senderIdCreation = null;
+  });
+  return senderIdCreation;
+}
+
+/**
+ * Whether this device sent `snapshot` (whole-app audit A6 pass 9 L2), so its
+ * own send read back after a relaunch is never taken for the other device's:
+ * by the sender id the send carries, or, for a report sent before sends
+ * carried one, by this device's own saved copy of that send (only the device
+ * that sent a report saves it marked sent). An approval not yet sent, or a
+ * report saved before sends were recorded, is not a send.
+ */
+export async function reportSnapshotSentHere(
+  snapshot: DAVEReportSnapshot | null | undefined,
+  storage: SnapshotStorage = AsyncStorage,
+): Promise<boolean> {
+  if (!snapshot || typeof snapshot.deliveredAt !== 'string') return false;
+  if (snapshot.sentBy) return snapshot.sentBy === await storage.getItem(SENDER_ID_KEY);
+  if (!snapshot.reportFormat) return false;
+  const own = await loadLocalDAVEReportSnapshot(snapshot.scopeKey, snapshot.reportFormat, storage);
+  return own?.deliveredAt === snapshot.deliveredAt && own.sourceFingerprint === snapshot.sourceFingerprint;
+}
+
+function randomSenderId(): string {
+  const uuid = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.();
+  if (uuid) return uuid;
+  return Array.from({ length: 4 }, () => Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, '0')).join('');
 }
 
 async function loadLocalDAVEReportSnapshot(

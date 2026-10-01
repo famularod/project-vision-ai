@@ -68,6 +68,8 @@ import {
 import {
   loadDAVEReportPeriod,
   loadDAVEReportSnapshot,
+  reportSenderId,
+  reportSnapshotSentHere,
   saveDAVEReportSnapshot,
   type DAVEReportPeriodLoad,
   type DAVEReportSharedCheck,
@@ -555,6 +557,15 @@ export function ReportsScreen({
       setSharedPeriodCheck('unavailable');
     }
     void loadDAVEReportPeriod(reportSnapshotScopeKey, reportFormat)
+      .then(async loaded => {
+        // This device's own send, read back after a relaunch, is known as
+        // its own (whole-app audit A6 pass 9 L2), so it is never taken for
+        // the other device's.
+        if (await reportSnapshotSentHere(loaded.snapshot).catch(() => false)) {
+          rememberOwnReportSend(loaded.snapshot?.deliveredAt as string);
+        }
+        return loaded;
+      })
       .then(loaded => {
         if (cancelled) return;
         if (refresh) {
@@ -869,6 +880,21 @@ export function ReportsScreen({
   const sharedPeriodNote = snapshotScopeLoaded && !snapshotLoadFailed && sharedPeriodCheck === 'unchecked'
     ? sharedPeriodUncheckedNote(reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint))
     : '';
+  // Whole-app audit A6 pass 9 L2 (30 Sep 2026): the report on screen is the
+  // one the other device already sent. It was said only when an approval
+  // given here was held: edited on the phone without approving, sent from
+  // the iPad at 12:00, a tab switch said nothing and Approve then Copy sent
+  // it again. Said until the owner approves it again, over an earlier notice
+  // about a report that differed from it (this device's sync caught up).
+  const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
+    typeof previousReportSnapshot?.deliveredAt === 'string' &&
+    previousReportSnapshot.sourceFingerprint === reportSourceFingerprint &&
+    !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)
+    ? laterSharedReportNotice(previousReportSnapshot, reportSourceFingerprint, 'refresh', false)
+    : '';
+  const shownPeriodNotice = alreadySentNotice && !periodNotice.startsWith(ALREADY_SENT_NOTICE_START)
+    ? alreadySentNotice
+    : periodNotice;
 
   /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
   const markReportDelivered = (
@@ -895,18 +921,24 @@ export function ReportsScreen({
   };
   const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string, sentStateKey: string) => {
     if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
-    const delivered = markReportSnapshotDelivered(saved, new Date().toISOString());
+    const deliveredAt = new Date().toISOString();
     // This device's send, kept for the app session so reading it back after
     // a tab switch is never taken for the other device's; the approval it
     // sent now stands on the period that send starts (A6 pass 8 M1).
-    rememberOwnReportSend(delivered.deliveredAt as string);
-    rememberApprovedReportSent(sentStateKey, reportPeriodSentAt(saved), delivered.deliveredAt as string);
-    void saveDAVEReportSnapshot(delivered)
-      .then(() => {
-        if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
-          previousReportSnapshotRef.current = delivered;
-          setPreviousReportSnapshot(delivered);
-        }
+    rememberOwnReportSend(deliveredAt);
+    rememberApprovedReportSent(sentStateKey, reportPeriodSentAt(saved), deliveredAt);
+    // Marked with this install's sender id, so it stays known as this
+    // device's after a relaunch (A6 pass 9 L2).
+    void reportSenderId()
+      .catch(() => null)
+      .then(sentBy => {
+        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy);
+        return saveDAVEReportSnapshot(delivered).then(() => {
+          if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
+            previousReportSnapshotRef.current = delivered;
+            setPreviousReportSnapshot(delivered);
+          }
+        });
       })
       .catch(() => undefined);
   };
@@ -962,7 +994,7 @@ export function ReportsScreen({
             reportApprovalAllowed={reportApprovalAllowed}
             approvalMessage={reportApprovalMessage}
             approvalChecking={approvalChecking}
-            periodNotice={periodNotice}
+            periodNotice={shownPeriodNotice}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
             communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
@@ -1208,6 +1240,8 @@ export function BeforeYouSharePanel({
 /** When the other device's last report was read again (whole-app audit A6 pass 7). */
 type SharedPeriodMoment = 'refresh' | 'approve' | 'send';
 
+const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
+
 /** Approval waits for this device to catch up with the other device's changes (whole-app audit A6 pass 9 M2). */
 const REPORT_DEVICE_BEHIND_MESSAGE =
   "This device hasn't received your other device's latest changes yet. Use Settings › Sync Now, then review.";
@@ -1226,8 +1260,8 @@ function laterSharedReportNotice(
   const when = describeReportSendTime(reportPeriodSentAt(later) ?? '');
   if (later.deliveredAt !== null && later.sourceFingerprint === currentFingerprint) {
     return moment === 'send'
-      ? `Your other device already sent this report ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
-      : `Your other device already sent this report ${when}. Approve it only if you want to send it a second time.`;
+      ? `${ALREADY_SENT_NOTICE_START} ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
+      : `${ALREADY_SENT_NOTICE_START} ${when}. Approve it only if you want to send it a second time.`;
   }
   // The owner's edited body still counts from the earlier report, so it is
   // not said to cover what changed since (A6 pass 8 M1); the approval

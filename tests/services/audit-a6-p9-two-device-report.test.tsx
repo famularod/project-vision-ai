@@ -1,4 +1,4 @@
-// Whole-app audit A6 pass 9 M2 (30 Sep 2026), on owner answer Q16 (the phone
+// Whole-app audit A6 pass 9 (30 Sep 2026), on owner answer Q16 (the phone
 // and the iPad share "since the last report").
 //
 // M2. A device whose sync was behind sent "reopened": the iPad marked Frame
@@ -9,6 +9,12 @@
 //     "Frame walls was completed." again. A task the other device's report has
 //     newer facts for is no longer reported as changed, and approval waits for
 //     this device's sync, with the reason.
+// L2. "Already sent" was said only when an approval was held: edited on the
+//     phone without approving, sent from the iPad at 12:00, a tab switch said
+//     nothing, and Approve then Copy sent the same report again. Opening
+//     Reports on a report the other device already sent now says so, and this
+//     device's own sends (marked with a random id this install keeps) are told
+//     apart from the other device's after a relaunch too.
 
 /** Each simulated device has its own local store; one shared fake cloud stands in for report_snapshots. */
 const mockDevices = new Map<string, Map<string, string>>();
@@ -263,8 +269,11 @@ async function ipadSends(scheduleItems: ScheduleItem[], phone: View) {
   });
 }
 
+const alreadySent = (sent: DAVEReportSnapshot) =>
+  `Your other device already sent this report ${describeReportSendTime(sent.deliveredAt as string)}. Approve it only if you want to send it a second time.`;
 const DEVICE_BEHIND =
   "This device hasn't received your other device's latest changes yet. Use Settings › Sync Now, then review.";
+const SENDER_ID_KEY = '@vitruvius/report-sender-id/v1';
 
 /** The iPad's copy of the plan after it marked Frame walls complete at `at`. */
 const frameMarkedCompleteOnIpad = (at: string) => tower(0).map(item => item.id === 'frame'
@@ -288,10 +297,11 @@ describe('a device whose sync is behind does not report the other device\'s chan
     expect(behind).toContain('+0 completed; +0 open; +0 overdue.');
     expect(onCopyReport).toHaveBeenCalledTimes(2);
 
-    // Its sync lands: the hold clears, and the report is the one the iPad sent.
+    // Its sync lands: the hold clears, and the report is the one the iPad sent, said as such.
     back.rerender(reportsScreen(ipadPlan));
     await approvable();
     expect(screen.queryByText(DEVICE_BEHIND)).toBeNull();
+    expect(screen.getByText(alreadySent(midday))).toBeTruthy();
     expect(await period()).not.toContain('reopened');
   });
 
@@ -307,5 +317,88 @@ describe('a device whose sync is behind does not report the other device\'s chan
     await approvable();
     expect(screen.queryByText(DEVICE_BEHIND)).toBeNull();
     expect(await period()).toContain('Frame walls was reopened at 60% complete.');
+  });
+});
+
+describe('"already sent" is said on opening Reports, not only when an approval was held (A6 pass 9 L2)', () => {
+  it('edited on the phone without approving, the iPad sent the same report at 12:00: after a tab switch the owner is told', async () => {
+    const phone = await phoneSendsInTheMorning();
+    phone.rerender(reportsScreen(tower(1)));
+    await approvable();
+    await addOwnLine('Crane arrives Monday.');
+    const midday = await ipadSends(tower(1), phone);
+
+    await switchTabAndBack(phone, tower(1));
+    expect(screen.getByText(alreadySent(midday))).toBeTruthy();
+    expect(onCopyReport).toHaveBeenCalledTimes(2);
+    // Approving is the owner's choice to send it a second time; the notice goes with it.
+    await approveAndSend();
+    expect(onCopyReport).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText(alreadySent(midday))).toBeNull();
+  });
+
+  it('opened fresh after the iPad sent the same report: told, from the first look', async () => {
+    const phone = await phoneSendsInTheMorning();
+    const midday = await ipadSends(tower(1), phone);
+    phone.unmount();
+    open('phone', tower(1));
+    await approvable();
+    expect(screen.getByText(alreadySent(midday))).toBeTruthy();
+  });
+
+  it('this device\'s own send, read back after a relaunch, is never said to be the other device\'s', async () => {
+    const phone = await phoneSendsInTheMorning();
+    phone.rerender(reportsScreen(tower(1)));
+    await approveAndSend();
+    const own = local('phone') as DAVEReportSnapshot;
+    // The send carries this install's id, kept on this device only.
+    expect(own.sentBy).toEqual(expect.stringMatching(/^[\w-]{16,}$/));
+    expect(own.sentBy).toBe(mockDevices.get('phone')?.get(SENDER_ID_KEY));
+    expect(mockDevices.get('ipad')?.get(SENDER_ID_KEY)).toBeUndefined();
+    await waitFor(() => expect((cloudRow()?.snapshot as DAVEReportSnapshot | undefined)?.sentBy).toBe(own.sentBy), SLOW);
+    phone.unmount();
+    // A relaunch: nothing remembered in memory.
+    open('phone', tower(1));
+    await approvable();
+    expect(screen.queryByText(/^Your other device/)).toBeNull();
+  });
+
+  it('a report sent before sends carried an id: this device\'s own saved copy tells its own send from the iPad\'s', async () => {
+    const phone = await phoneSendsInTheMorning();
+    phone.rerender(reportsScreen(tower(1)));
+    await approveAndSend();
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(local('phone')?.deliveredAt), SLOW);
+    const withoutId = ({ sentBy: _sentBy, ...snapshot }: DAVEReportSnapshot) => snapshot;
+    mockDevices.get('phone')?.set(KEY, JSON.stringify(withoutId(local('phone') as DAVEReportSnapshot)));
+    const row = cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string | null };
+    mockCloud.set('tower|project_manager', { ...row, snapshot: withoutId(row.snapshot) as DAVEReportSnapshot });
+    phone.unmount();
+    const relaunched = open('phone', tower(1));
+    await approvable();
+    expect(screen.queryByText(/^Your other device/)).toBeNull();
+    relaunched.unmount();
+
+    // The iPad's send of the next report, also without an id, is the other device's.
+    const ipadSent = await keepingPhoneMemory(async () => {
+      const ipad = open('ipad', tower(2));
+      await approveAndSend();
+      const sent = local('ipad') as DAVEReportSnapshot;
+      await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(sent.deliveredAt), SLOW);
+      ipad.unmount();
+      return sent;
+    });
+    const ipadRow = cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string | null };
+    mockCloud.set('tower|project_manager', { ...ipadRow, snapshot: withoutId(ipadRow.snapshot) as DAVEReportSnapshot });
+    open('phone', tower(2));
+    await approvable();
+    expect(screen.getByText(alreadySent(ipadSent))).toBeTruthy();
+  });
+
+  it('a different report the iPad sent is not called "already sent"', async () => {
+    const phone = await phoneSendsInTheMorning();
+    await ipadSends(tower(1), phone);
+    await switchTabAndBack(phone, tower(2));
+    await approvable();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
   });
 });

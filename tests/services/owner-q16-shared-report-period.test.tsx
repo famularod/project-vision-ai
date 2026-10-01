@@ -400,8 +400,11 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
     expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
     expect(onCopyReport).toHaveBeenCalledTimes(2);
     // Each device's own copy stays under the prefix the per-account storage list covers.
+    // Whole-app audit A6 pass 9 L2 (30 Sep 2026): beside it, each device that sent keeps its install's random
+    // sender id, outside that list on purpose (it names the install, never the account); pin updated deliberately.
     for (const device of ['phone', 'ipad']) {
-      expect(Array.from(mockDevices.get(device)?.keys() ?? [])).toEqual([keyFor('project_manager')]);
+      expect(Array.from(mockDevices.get(device)?.keys() ?? []).sort())
+        .toEqual(['@vitruvius/report-sender-id/v1', keyFor('project_manager')]);
     }
     expect(keyFor('project_manager').startsWith(PREFIX)).toBe(true);
   });

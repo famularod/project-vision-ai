@@ -71,6 +71,15 @@ export type DAVEReportSnapshot = Readonly<{
    * first report is sent.
    */
   reportFormat?: DAVEReportFormat;
+  /**
+   * The install that sent this report: a random id each installed app makes
+   * once and keeps on that device (never an account or anything that
+   * identifies the owner). Whole-app audit A6 pass 9 L2 (30 Sep 2026): after
+   * a relaunch the app could not tell its own send from the other device's,
+   * and nothing said the other device had already sent the report on screen.
+   * Absent on reports sent before then, and on approvals not yet sent.
+   */
+  sentBy?: string;
 }>;
 
 /**
@@ -140,9 +149,14 @@ export function reportSnapshotToSave(
   return Object.freeze({ ...pending, supersedes: Object.freeze(superseded) });
 }
 
-/** The approved report went out. */
-export function markReportSnapshotDelivered(snapshot: DAVEReportSnapshot, deliveredAt: string): DAVEReportSnapshot {
-  return Object.freeze({ ...snapshot, deliveredAt });
+/** The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2). */
+export function markReportSnapshotDelivered(
+  snapshot: DAVEReportSnapshot,
+  deliveredAt: string,
+  sentBy?: string | null,
+): DAVEReportSnapshot {
+  const { sentBy: _earlierSender, ...approved } = snapshot;
+  return Object.freeze({ ...approved, deliveredAt, ...(sentBy ? { sentBy } : {}) });
 }
 
 /**
