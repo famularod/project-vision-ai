@@ -20,6 +20,7 @@
  * Synthetic data.
  */
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
+import { reconcileDAVEScheduleRecords, reconcileDAVEScheduleRecordsUnindexed } from '../../services/DAVEScheduleRecovery';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem, type DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -378,5 +379,81 @@ describe('A5 p17 L1: a CSV date written with a weekday comes in', () => {
     expect(result.reviewItems.flatMap(item => item.correctionFields)).not.toContain('Dates');
     const { state } = approve(EMPTY, W, rows(W, ['Pour slab,Alpha,Lot,Thu 12/31/26,Mon 1/4/27,0']));
     expect(shownNamed(state, 'Pour slab').map(item => [item.startDate, item.finishDate])).toEqual([['12/31/2026', '01/04/2027']]);
+  });
+});
+
+/**
+ * L2: reconcileDAVEScheduleRecords (approval, startup, cloud apply and every
+ * shown-task selection) compared every saved task with every other to find
+ * superseded copies: about 1.6 s at 3,300 saved tasks. Each comparison only
+ * ever matches a copy from the same file with the same task name, so the
+ * saved tasks are now indexed by those first. The result is the same as the
+ * full comparison (kept as reconcileDAVEScheduleRecordsUnindexed for this
+ * test) over a few hundred mixed rows.
+ */
+describe('A5 p17 L2: the superseded-copy check compares a task only with copies from its own file and of its own name', () => {
+  // A small deterministic generator, so a failure names the same rows every run.
+  function generator(seed: number) {
+    let state = seed;
+    return (count: number) => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return state % count;
+    };
+  }
+  const pick = <T,>(next: (count: number) => number, values: readonly T[]): T => values[next(values.length)];
+
+  function mixedRows(seed: number, count: number): ScheduleItem[] {
+    const next = generator(seed);
+    const files = ['', 'Master A.csv', 'master a.csv ', 'Master B.pdf', 'Lookahead.csv'];
+    const names = ['Pour slab', 'pour  slab', 'Pour-slab', 'Pour & seal', 'pour and seal', 'Framing', 'Roofing', ''];
+    const projects = ['', 'Alpha', 'alpha', 'Harbor North', 'Harbor South'];
+    const roots = ['', '2400 Compliance Project', 'Alpha'];
+    const areas = ['', 'Lot', 'lot ', 'Deck'];
+    const days = ['10/01/2026', '10/02/2026', '2026-10-01', ''];
+    const batches = ['', 'batch-a', 'batch-b'];
+    const times = ['', '2026-09-01T00:00:00.000Z', '2026-09-15T00:00:00.000Z', '2026-09-30T00:00:00.000Z'];
+    return Array.from({ length: count }, (_, index) => {
+      const percent = pick(next, [0, 0, 40, 100]);
+      const verified = percent === 100 && next(3) === 0;
+      return {
+        id: next(6) === 0 ? `Task-${next(count)}` : `task-${index}`,
+        projectName: pick(next, projects), scheduleProjectName: pick(next, roots), locationName: pick(next, areas),
+        taskName: pick(next, names), startDate: pick(next, days), finishDate: pick(next, days), milestone: pick(next, ['', '', 'M1']),
+        owner: '', contractor: '', priority: 'Medium', notes: '',
+        status: percent === 100 ? 'Complete' : percent > 0 ? 'In Progress' : 'Not Started', percentComplete: percent,
+        progressSource: pick(next, [null, 'project_manager', 'schedule_import', undefined]),
+        progressConfirmedAt: pick(next, times) || null,
+        completionVerification: verified ? { status: 'pm_verified', reportedAt: pick(next, times), verifiedAt: pick(next, times) } : null,
+        importedFrom: pick(next, files) || null, importBatchId: pick(next, batches) || null, sourceDocumentId: pick(next, ['', 'doc-a', 'doc-b']) || null,
+        importedAt: pick(next, times) || null, createdAt: pick(next, times), updatedAt: pick(next, times),
+      } as unknown as ScheduleItem;
+    });
+  }
+
+  it.each([1, 2, 3, 4, 5])('seed %i: 400 mixed rows give the same tasks, in the same order, as comparing every row with every other', seed => {
+    const records = mixedRows(seed, 400);
+    const indexed = reconcileDAVEScheduleRecords(records);
+    expect(indexed).toEqual(reconcileDAVEScheduleRecordsUnindexed(records));
+    // The rows really exercise the check: some copies are superseded.
+    expect(indexed.length).toBeLessThan(new Set(records.map(item => item.id.toLowerCase())).size);
+  });
+
+  it('reads each task\'s name a few times, not once per other task from its file (1,000 rows of one file)', () => {
+    let reads = 0;
+    const rows = Array.from({ length: 1000 }, (_, index) => {
+      const row = {
+        id: `row-${index}`, projectName: 'Alpha', locationName: 'Lot', startDate: '10/01/2026', finishDate: '10/02/2026', milestone: '',
+        status: 'Not Started', percentComplete: 0, importedFrom: 'Master A.csv', importBatchId: 'batch-a', sourceDocumentId: 'doc-a',
+      } as unknown as ScheduleItem;
+      const name = `Task ${index}`;
+      Object.defineProperty(row, 'taskName', { enumerable: true, get: () => { reads += 1; return name; } });
+      return row;
+    });
+    reads = 0;
+    expect(reconcileDAVEScheduleRecords(rows)).toHaveLength(1000);
+    expect(reads).toBeLessThanOrEqual(10 * rows.length);
+    reads = 0;
+    reconcileDAVEScheduleRecordsUnindexed(rows);
+    expect(reads).toBeGreaterThan(100 * rows.length);
   });
 });

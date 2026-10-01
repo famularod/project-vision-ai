@@ -42,6 +42,35 @@ export function isDAVESafeCloudScheduleRecord(value: unknown): value is Schedule
 export function reconcileDAVEScheduleRecords(
   records: readonly ScheduleItem[],
 ): ScheduleItem[] {
+  const unique = uniqueScheduleRecords(records);
+  // Whole-app audit A5 pass 17 L2 (1 Oct 2026): every saved task was compared
+  // with every other, about 1.6 s at 3,300 saved tasks, at approval, startup,
+  // cloud apply and every shown-task selection. A copy only ever supersedes
+  // one from the same file with the same task name (each check below
+  // requires both), so the tasks are indexed by those first; the result is
+  // the same.
+  const byFileAndTask = new Map<string, ScheduleItem[]>();
+  unique.forEach(record => {
+    const key = fileAndTaskKey(record);
+    const list = byFileAndTask.get(key);
+    if (list) list.push(record); else byFileAndTask.set(key, [record]);
+  });
+  return unique.filter(record => !isSuperseded(record, byFileAndTask.get(fileAndTaskKey(record)) || []));
+}
+
+/**
+ * The same result by comparing every saved task with every other, as before
+ * A5 pass 17 L2: the reference the index is tested against. Not used by the
+ * app.
+ */
+export function reconcileDAVEScheduleRecordsUnindexed(
+  records: readonly ScheduleItem[],
+): ScheduleItem[] {
+  const unique = uniqueScheduleRecords(records);
+  return unique.filter(record => !isSuperseded(record, unique));
+}
+
+function uniqueScheduleRecords(records: readonly ScheduleItem[]): ScheduleItem[] {
   const byId = new Map<string, ScheduleItem>();
   records.forEach(record => {
     const id = normalized(record.id);
@@ -51,13 +80,17 @@ export function reconcileDAVEScheduleRecords(
       byId.set(id, record);
     }
   });
+  return [...byId.values()];
+}
 
-  const unique = [...byId.values()];
-  return unique.filter(record =>
-    !isSupersededLegacyAlias(record, unique) &&
-    !isSupersededByPMRecord(record, unique) &&
-    !isSupersededAssignedLegacyDuplicate(record, unique),
-  );
+function fileAndTaskKey(record: ScheduleItem): string {
+  return `${normalized(record.importedFrom)}\n${normalizedTask(record.taskName)}`;
+}
+
+function isSuperseded(record: ScheduleItem, candidates: readonly ScheduleItem[]): boolean {
+  return isSupersededLegacyAlias(record, candidates) ||
+    isSupersededByPMRecord(record, candidates) ||
+    isSupersededAssignedLegacyDuplicate(record, candidates);
 }
 
 /**
