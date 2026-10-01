@@ -39,10 +39,51 @@ export function hasMatchingQueuedProjectUpdateRevision(
       return false;
     }
     return sameFieldUpdateSyncGeneration(
-      withoutDocumentUploadState(payload.updateData),
-      withoutDocumentUploadState(update),
+      ...withProjectIdBoundOnOneSideAside(
+        withoutDocumentUploadState(payload.updateData),
+        withoutDocumentUploadState(update),
+      ),
     );
   });
+}
+
+/**
+ * Whether a refresh keeps this device's copy of a field update over the
+ * cloud's: its exact generation is queued, or it still owes its own sync
+ * ("Waiting to Sync" or failed) and a whole copy of it is still queued
+ * (whole-app audit A4 pass 12 H1). An edit saved again while the first
+ * waited on its photos, its own queue write lost, no longer matched: the
+ * refresh put the cloud's older copy on the card as Sent, and the waiting
+ * copy sat behind its photos with nothing to send it. The queue record must
+ * still be there: a waiting status alone kept an old copy over a newer cloud
+ * record after its queue record had cleared. A document change alone, or an
+ * archive, does not keep it.
+ */
+export function refreshKeepsLocalProjectUpdate(
+  update: ProjectUpdate,
+  queue: readonly SyncQueueItem[],
+): boolean {
+  if (hasMatchingQueuedProjectUpdateRevision(update, queue)) return true;
+  if (update.status !== 'queued' && update.status !== 'failed') return false;
+  return queue.some(item => {
+    if (item.entity !== 'project_update' || item.operation === 'delete') return false;
+    const payload = item.payload as ProjectUpdateQueuePayload;
+    return payload.id === update.id && payload.archiveOnly !== true &&
+      !queuedFieldUpdateDocumentPatches(item) && isProjectUpdateRecord(payload.updateData);
+  });
+}
+
+/**
+ * The cloud project id an upload pass writes into the queued copy
+ * (prepareQueueItemProjectIdentity) is not an edit: the card never gets it,
+ * so after an edit of a Sent update waited on its photos the two no longer
+ * matched, and the refresh put the cloud's older copy on the card as Sent,
+ * with nothing left to send the edit (whole-app audit A4 pass 12 H1). The
+ * id counts only when both copies carry one; the project name still does.
+ */
+function withProjectIdBoundOnOneSideAside<T extends { projectId?: unknown }>(queued: T, local: T): [T, T] {
+  if (queued.projectId && local.projectId) return [queued, local];
+  return [{ ...queued, projectId: undefined }, { ...local, projectId: undefined }];
 }
 
 function isProjectUpdateRecord(value: unknown): value is ProjectUpdate {

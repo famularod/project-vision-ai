@@ -110,7 +110,7 @@ import {
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
-import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
+import { hasMatchingQueuedProjectUpdateRevision, refreshKeepsLocalProjectUpdate } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
@@ -286,6 +286,7 @@ function refresh(device: Device, own: Record<string, unknown> = {}) {
       documentsUploadedAfterCloudCopy, resendUpdatesListingDocument: device.resendUpdatesListingDocument,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
+      refreshKeepsLocalProjectUpdate, // the refresh keeps a card whose own copy still waits (A4 pass 12 H1)
       projectUpdateUploadedSince, mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: device.setSavedUpdates,
       // A document taken off on purpose stays off (A7 pass 6 M1).
@@ -1545,5 +1546,144 @@ describe('archiving a Sent update while a document change waits keeps the change
     const payload = (await queuedFor())!.payload as Record<string, unknown>;
     expect(payload).toMatchObject({ archiveOnly: true });
     expect(payload.documentPatches).toBeUndefined();
+  });
+});
+
+/**
+ * A4 pass 12 H1 (A7 pass 10 L-3): David sends an update, then, before the
+ * next full refresh, edits it on weak signal. The project list loads but the
+ * photo check or upload fails. The upload pass writes the cloud project id
+ * into the queued copy, which then waits on its photos; the card never had
+ * that id, so the refresh no longer matched the two, put the cloud's older
+ * copy on the card as Sent, and nothing sent the edit again.
+ */
+const CLOUD_PROJECT_ID = '72e941d8-8114-4082-a976-ae5b2b5daba9';
+const photoCheckFails = { ok: false, configured: true, stubbed: false, error: 'Network request failed' };
+const supabaseMock = () => jest.requireMock('../../services/SupabaseService') as Record<string, unknown>;
+const fileSystemMock = () => jest.requireMock('expo-file-system/legacy') as { getInfoAsync: jest.Mock };
+
+/** Sent through the waiting-update sync, as David's Send does; the card reads Sent, without the cloud project id. */
+async function sentThroughTheApp(photos: Array<{ id: string } & Record<string, unknown>>) {
+  (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl); // its photos are in the cloud
+  const first = { ...savedUpdate([], 'queued'), photos };
+  const phone = device([], [first]);
+  await queueProjectUpdateRecord(first, false);
+  await syncWaitingUpdate(phone);
+  expect(phone.saved()).toMatchObject({ status: 'sent', notes: 'Pour' });
+  expect(phone.saved()?.projectId).toBeUndefined();
+  expect(inCloud()).toMatchObject({ notes: 'Pour', projectId: CLOUD_PROJECT_ID });
+  return phone;
+}
+/** David reopens it, edits it and saves: the card and its queue record, as the App's save writes them. */
+async function editAndSave(phone: Device, change: Partial<Update>) {
+  const edited = { ...phone.saved()!, ...change, status: 'queued' };
+  phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? edited : update));
+  phone.render();
+  await queueProjectUpdateRecord(edited, false);
+  return edited;
+}
+/** Refresh, another upload pass, a relaunch: the edit stays Waiting to Sync on the card, its queued copy intact. */
+async function editSurvivesWeakSignal(phone: Device, note: string, photoIds: string[]) {
+  const stillWaiting = async () => {
+    expect(phone.saved()).toMatchObject({ notes: note, status: 'queued' });
+    expect((phone.saved()!.photos as Array<{ id: string }>).map(photo => photo.id)).toEqual(photoIds);
+    expect(A.updateNeedsAutomaticSyncRetry(phone.saved()!)).toBe(true); // the waiting-update sync retries it
+    expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(note);
+  };
+  await refresh(phone);
+  await stillWaiting();
+  await uploadPendingChanges(); // another upload pass: still waiting on the photo
+  await refresh(phone);
+  await stillWaiting();
+  resetFieldUpdateSyncMemoryForTests(); // a relaunch: nothing held in memory
+  await refresh(phone);
+  await stillWaiting();
+  expect(inCloud()).toMatchObject({ notes: 'Pour' });
+}
+
+describe('an edit of a Sent update waiting on its photos stays Waiting to Sync through a refresh (audit A4 pass 12 H1)', () => {
+  it('R6: a note-only edit whose photo re-check fails: stays waiting through a refresh, an upload pass and a relaunch, and reaches the cloud when the signal returns', async () => {
+    const photo = { id: 'photo-r6', uri: 'file:///phone/Documents/project-photos/r6.jpg', caption: '', createdAt: SENT_AT };
+    const phone = await sentThroughTheApp([photo]);
+    await editAndSave(phone, { notes: EDIT });
+
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(photoCheckFails); // weak signal: the project list loads, the photo check fails
+    await syncWaitingUpdate(phone);
+    const waiting = await queuedFor();
+    expect(waiting!.payload).toMatchObject({ projectId: CLOUD_PROJECT_ID, pendingPhotoAssetIds: ['photo-r6'] });
+    expect((waiting!.payload.updateData as Update).projectId).toBe(CLOUD_PROJECT_ID); // bound by the upload pass
+    expect(phone.saved()?.projectId).toBeUndefined();
+
+    await editSurvivesWeakSignal(phone, EDIT, ['photo-r6']);
+
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl); // the signal returns
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(await getOfflineQueue()).toEqual([]);
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: EDIT, status: 'sent' });
+  });
+
+  it('R5: a new photo whose upload fails: stays waiting through a refresh, an upload pass and a relaunch, and reaches the cloud when the signal returns', async () => {
+    const phone = await sentThroughTheApp([]);
+    const added = { id: 'photo-r5', uri: 'file:///phone/Documents/project-photos/r5.jpg', caption: '', createdAt: SENT_AT };
+    await editAndSave(phone, { notes: EDIT, photos: [added] });
+
+    const notInCloudYet = { ok: false, configured: true, stubbed: false, error: 'Object not found', status: 404 };
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(notInCloudYet);
+    fileSystemMock().getInfoAsync.mockImplementation(async (uri: string) =>
+      uri === added.uri ? { exists: true, size: 2048 } : { exists: false });
+    const upload = jest.spyOn(supabaseMock() as { uploadPhoto: (...args: unknown[]) => Promise<unknown> }, 'uploadPhoto')
+      .mockResolvedValue(photoCheckFails); // weak signal: the upload fails
+    try {
+      await syncWaitingUpdate(phone);
+      expect(upload).toHaveBeenCalled();
+      expect((await queuedFor())!.payload).toMatchObject({ projectId: CLOUD_PROJECT_ID, pendingPhotoAssetIds: ['photo-r5'] });
+
+      await editSurvivesWeakSignal(phone, EDIT, ['photo-r5']);
+
+      upload.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: { path: 'uploaded' } }); // the signal returns
+      await syncWaitingUpdate(phone);
+      expect(inCloud()).toMatchObject({ notes: EDIT });
+      expect(inCloud().photos).toEqual([expect.objectContaining({ id: 'photo-r5' })]);
+      expect(await getOfflineQueue()).toEqual([]);
+      (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+      await refresh(phone);
+      expect(phone.saved()).toMatchObject({ notes: EDIT, status: 'sent' });
+    } finally {
+      upload.mockRestore();
+      fileSystemMock().getInfoAsync.mockImplementation(async () => ({ exists: false }));
+    }
+  });
+});
+
+describe('a refresh keeps a card whose own queued copy still waits (audit A4 pass 12 H1, the deeper weakness)', () => {
+  it('a second edit whose queue write was lost while the first waits on its photo: the refresh keeps it, and the waiting-update sync sends it', async () => {
+    const photo = { id: 'photo-r7', uri: 'file:///phone/Documents/project-photos/r7.jpg', caption: '', createdAt: SENT_AT };
+    const phone = await sentThroughTheApp([photo]);
+    await editAndSave(phone, { notes: EDIT });
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(photoCheckFails);
+    await syncWaitingUpdate(phone);
+    const SECOND = 'Pour, 45 yards (edited again)';
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...update, notes: SECOND } : update));
+    phone.render(); // its queue write lost; the first edit is still queued
+
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: SECOND, status: 'queued' });
+
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: SECOND });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a Sent card with no edit of its own still takes the iPad\'s newer copy while a whole copy of it is queued', async () => {
+    const sent = savedUpdate([uploaded('permit')]);
+    putInCloud(sent);
+    const phone = device([uploaded('permit')], [sent]);
+    await queueProjectUpdateRecord({ ...sent, notes: 'an older queued copy' }, false);
+    iPadEditsNotes();
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
   });
 });

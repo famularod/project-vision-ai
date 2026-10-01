@@ -60,7 +60,7 @@ import {
 import { loadCloudUpdates } from '../../services/updateService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
-import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
+import { hasMatchingQueuedProjectUpdateRevision, refreshKeepsLocalProjectUpdate } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, withDeviceDocumentUploadState } from '../../services/FieldUpdateDocumentUploadState';
@@ -214,6 +214,7 @@ function refreshDeps(
       hydrateProjectUpdatePhotoPreviews, getOfflineQueue: async () => state.queue,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
+      refreshKeepsLocalProjectUpdate, // the refresh keeps a card whose own copy still waits (A4 pass 12 H1)
       projectUpdateUploadedSince: uploadedSince,
       mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: () => undefined,

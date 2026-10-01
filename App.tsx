@@ -352,7 +352,7 @@ import { dependencyChangesForDeletedTask, normalizeScheduleDependencies } from '
 import { normalizeProjectControls, withProjectControlsEditMerged } from './services/VitruviusProjectControls';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
-import { hasMatchingQueuedProjectUpdateRevision } from './services/ProjectUpdateQueueRevision';
+import { refreshKeepsLocalProjectUpdate } from './services/ProjectUpdateQueueRevision';
 import { scheduleItemRevisionForCloudRefresh } from './services/ScheduleItemQueueRevision';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
 import {
@@ -6323,7 +6323,7 @@ useEffect(() => {
         const localUpdatesForMerge = currentUpdates.map(localUpdate => {
           const cloudUpdate = cloudUpdateById.get(localUpdate.id);
           return cloudUpdate &&
-            !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
+            !refreshKeepsLocalProjectUpdate(localUpdate, pendingQueue) && // or one still waiting (A4 pass 12 H1)
             !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
             ? cloudCopyShownOnDevice(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current, pendingQueue, removedDocuments) // this device's upload state and waiting document changes (A7 pass 5 M1, pass 6 M1), as sent (pass 9 L1)
             : localUpdate;

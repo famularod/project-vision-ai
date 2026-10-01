@@ -70,7 +70,7 @@ import {
   mergeDAVEReferenceDocumentRecoveryRecords,
   mergeLocalUpdateWithCloudCopy,
 } from '../../services/DAVECloudRecovery';
-import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
+import { hasMatchingQueuedProjectUpdateRevision, refreshKeepsLocalProjectUpdate } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
@@ -240,6 +240,7 @@ function refresh(device: Device, rows: Array<ReturnType<typeof row>>) {
       documentsUploadedAfterCloudCopy, resendUpdatesListingDocument: device.resendUpdatesListingDocument,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
+      refreshKeepsLocalProjectUpdate, // the refresh keeps a card whose own copy still waits (A4 pass 12 H1)
       projectUpdateUploadedSince, mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones,
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: device.setSavedUpdates,
       // A7 pass 6 M1: a document taken off stays off; the iPad has taken none off itself.
