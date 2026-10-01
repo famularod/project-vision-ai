@@ -12,6 +12,17 @@
  * compared only for the same row; rows paired across a master change keep
  * the time rule (a hidden row cannot be given a note).
  *
+ * L2: Pour slab had two notes, N1 (Sep 20, said earlier) and N2 (Sep 28),
+ * and a report with N2 went out. The row's notes then came from the other
+ * device's copy, which never had N2 (the sync merge takes the newest copy's
+ * row, or Keep Cloud). N1 was the latest again, its key differed from N2's,
+ * and the next report said "Pour slab — Forms set, pour Friday." again
+ * (before 0686c08: "Pour slab was updated."). Each saved report now also
+ * keeps the latest activity's time (never its text); against a row that
+ * saved one, an activity is said only when it is newer than that time. The
+ * iPad's late note (made before the send, after the saved activity) is still
+ * said. A row saved with no time keeps 0686c08's rule.
+ *
  * The scenarios run through the real import, Set Active, delete helper,
  * Project Truth and both report formats, as in audit-r2-a6p14-report-lows.
  * Synthetic data.
@@ -37,6 +48,7 @@ import {
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import type { PIEReportDraft } from '../../services/PIEReporter';
+import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import {
   mergeApprovedScheduleImportItems,
   scheduleItemsVisibleBeforeImport,
@@ -220,5 +232,108 @@ describe('A6 p15 L1: going back to an older master does not repeat an old note a
     const framing = named(shown(backOnF), 'Framing')[0];
     expect(second.tasks.map(task => task.taskId)).toContain(framing.id);
     expect(period.sameActivityTaskIds).toContain(framing.id);
+  });
+});
+
+describe('A6 p15 L2: a latest note lost to the other device\'s copy does not bring back the older one', () => {
+  const N2_AT = '2026-09-28T16:00:00.000Z';
+  /** The iPad, offline, the afternoon the phone sends the report. */
+  const IPAD_NOTE_AT = '2026-09-28T17:00:00.000Z';
+  const SENT = '2026-09-28T18:00:00.000Z';
+  const IPAD_EDIT_AT = '2026-09-29T16:00:00.000Z';
+  const PUMP_TRUCK = '• Alpha: Pour slab — Pump truck booked for Friday.';
+  /** A report saved by 0686c08's build: activity keys, but no activity times. */
+  const withoutActivityTimes = (snapshot: DAVEReportSnapshot): DAVEReportSnapshot => ({
+    ...snapshot,
+    tasks: snapshot.tasks.map(task => {
+      const { activityAt: _at, ...older } = task as typeof task & { activityAt?: string };
+      return older;
+    }),
+  });
+
+  /**
+   * Both devices have N1 (Sep 20). On the phone David adds N2 (Sep 28 16:00) and sends a report with it at
+   * 18:00. The iPad never received N2; on Sep 29 David moves Pour slab's start there.
+   */
+  function lostNoteCase() {
+    const onF = approve({ items: [], documents: [] }, F, rows(F, [
+      'Pour slab,Alpha,Lot,10/01/2026,10/05/2026,0%',
+      'Framing,Alpha,Lot,10/10/2026,10/20/2026,0%',
+    ]));
+    const pour = named(shown(onF), 'Pour slab')[0];
+    const both = noted(onF, pour.id, noteOf('n1', 'Forms set, pour Friday.', NOTE_AT));
+    const phone = noted(both, pour.id, noteOf('n2', 'Pump truck booked for Friday.', N2_AT));
+    // The report that includes N2.
+    expect(sinceLines(phone, snapshotOf(both, FIRST_SENT), SENT)).toEqual([NOTHING_CHANGED, PUMP_TRUCK]);
+    const sent = snapshotOf(phone, SENT);
+    const ipad = edited(both, pour.id, { startDate: '10/02/2026' }, IPAD_EDIT_AT);
+    return { both, pour, phone, ipad, sent };
+  }
+  const notesOf = (state: State, id: string) => (byId(state, id).activity ?? []).map(entry => entry.message);
+
+  it('the reviewer\'s case, the sync merge: the next report reads "Pour slab was updated.", not N1 again', () => {
+    const { pour, phone, ipad, sent } = lostNoteCase();
+    const merged: State = { ...phone, items: recoverDAVEScheduleRecords({ local: phone.items, cloud: ipad.items, allowCloudOnly: true }) };
+    expect(notesOf(merged, pour.id)).toEqual(['Forms set, pour Friday.']);
+    expect(sinceLines(merged, sent)).toEqual([NOTHING_CHANGED, '• Alpha: Pour slab was updated.']);
+  });
+
+  it('Keep Cloud (the cloud\'s copy of the row replaces the phone\'s): the same', () => {
+    const { pour, phone, ipad, sent } = lostNoteCase();
+    const keptCloud: State = { ...phone, items: phone.items.map(item => item.id === pour.id ? byId(ipad, pour.id) : item) };
+    expect(notesOf(keptCloud, pour.id)).toEqual(['Forms set, pour Friday.']);
+    expect(sinceLines(keptCloud, sent)).toEqual([NOTHING_CHANGED, '• Alpha: Pour slab was updated.']);
+  });
+
+  it('a note newer than the one the earlier report saved is said, after the loss too', () => {
+    const { pour, phone, ipad, sent } = lostNoteCase();
+    const merged: State = { ...phone, items: recoverDAVEScheduleRecords({ local: phone.items, cloud: ipad.items, allowCloudOnly: true }) };
+    const later = noted(merged, pour.id, noteOf('n3', 'Pour moved to Monday.', '2026-09-30T09:00:00.000Z'));
+    expect(pourLines(sinceLines(later, sent))).toEqual(['• Alpha: Pour slab — Pour moved to Monday.']);
+  });
+
+  it('the iPad\'s late note (before the send, after the activity the report saved) is still said', () => {
+    const { both, pour } = lostNoteCase();
+    const sent = snapshotOf(both, SENT);
+    expect(sent.tasks.find(task => task.taskId === pour.id)?.activityAt).toBe(NOTE_AT);
+    const received = noted(both, pour.id, noteOf('ipad-1', 'Pump truck booked for Friday.', IPAD_NOTE_AT));
+    expect(sinceLines(received, sent)).toEqual([NOTHING_CHANGED, PUMP_TRUCK]);
+    // With a later hand edit, too.
+    expect(pourLines(sinceLines(edited(received, pour.id, { startDate: '10/02/2026' }, IPAD_EDIT_AT), sent))).toEqual([PUMP_TRUCK]);
+  });
+
+  it('a different latest activity at the same time as the saved one is not new', () => {
+    const { both, pour, sent } = lostNoteCase();
+    const sameTime = noted(both, pour.id, noteOf('n2b', 'Pump truck on standby.', N2_AT));
+    const period = compareDAVEReportSnapshots({ current: snapshotOf(sameTime, NOW), previous: sent });
+    expect(period.newActivityTaskIds).toEqual([]);
+    expect(period.sameActivityTaskIds).toContain(pour.id);
+    expect(sinceLines(sameTime, sent)).toEqual([NOTHING_CHANGED]);
+  });
+
+  it('a report saved by 0686c08 (keys, no times) keeps its rule; one saved before the keys goes by time', () => {
+    const { both, pour, phone, ipad, sent } = lostNoteCase();
+    const keysOnly = withoutActivityTimes(sent);
+    // The late note is said.
+    const received = noted(both, pour.id, noteOf('ipad-1', 'Pump truck booked for Friday.', IPAD_NOTE_AT));
+    expect(sinceLines(received, withoutActivityTimes(snapshotOf(both, SENT)))).toEqual([NOTHING_CHANGED, PUMP_TRUCK]);
+    // With no saved time there is nothing to tell an older note by: 0686c08's rule says it.
+    const merged: State = { ...phone, items: recoverDAVEScheduleRecords({ local: phone.items, cloud: ipad.items, allowCloudOnly: true }) };
+    expect(pourLines(sinceLines(merged, keysOnly))).toEqual([FORMS_SET]);
+    expect(pourLines(sinceLines(merged, withoutActivityKeys(keysOnly)))).toEqual(['• Alpha: Pour slab was updated.']);
+  });
+
+  it('the snapshot keeps the latest activity\'s time only, never its text; the version and fingerprint stay', () => {
+    const { pour, phone, sent } = lostNoteCase();
+    const saved = sent.tasks.find(task => task.taskId === pour.id)!;
+    expect(saved.activityAt).toBe(N2_AT);
+    expect(saved.activityKey).toMatch(/^task-activity\/1:[0-9a-f]{8}$/);
+    const framing = sent.tasks.find(task => task.taskName === 'Framing')!;
+    expect('activityAt' in framing).toBe(false);
+    expect(JSON.stringify(sent)).not.toContain('Pump truck');
+    expect(JSON.stringify(sent)).not.toContain('Forms set');
+    expect(sent.version).toBe('dave-report-snapshot/1.0');
+    // The fingerprint comes from Project Truth, which this does not touch.
+    expect(sent.sourceFingerprint).toBe(buildDAVEReportSourceFingerprint([truthOf(phone, SENT)]));
   });
 });

@@ -52,6 +52,15 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   activityKey?: string;
   /**
+   * When the task's latest activity was made (its time only, never its
+   * text). Whole-app audit A6 pass 15 L2 (1 Oct 2026): against a row that
+   * saved one, a different latest activity is said only when it is newer, so
+   * a latest note lost to the other device's copy does not bring back the
+   * older one. Absent for a task with no activity, on snapshots saved before
+   * then (those keep the key's rule), and ignored by builds before then.
+   */
+  activityAt?: string;
+  /**
    * When this task last changed on the device that saved the snapshot, saved
    * by A6 pass 9 M2 only (30 Sep 2026). No longer saved or read: a row's
    * update time also moves for a note or an owner change, so it could not
@@ -395,7 +404,9 @@ export type DAVEReportPeriodComparison = Readonly<{
   /**
    * Every task whose own row in the earlier report saved its latest
    * activity: that activity was there for the earlier report, so it is not
-   * said again, whatever its time (A6 pass 14 L2).
+   * said again, whatever its time (A6 pass 14 L2). Also every task whose
+   * latest activity is no newer than the one its row saved (A6 pass 15 L2:
+   * a lost latest note does not bring back the older one).
    */
   sameActivityTaskIds?: readonly string[];
   /**
@@ -438,6 +449,7 @@ export function buildDAVEReportSnapshot({
     estimatedScheduleImpactDays: finiteNumber(task.estimatedScheduleImpactDays),
     contentKey: reportTaskContentKey(truth.projectName, task),
     activityKey: reportTaskActivityKey(task),
+    ...(validDate(task.latestActivityAt) ? { activityAt: validDate(task.latestActivityAt) } : {}),
   }))).sort((left, right) =>
     normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
     normalized(left.taskName).localeCompare(normalized(right.taskName)) ||
@@ -524,7 +536,8 @@ export function compareDAVEReportSnapshots({
     // paired across a master change keeps the time rule (a hidden row cannot
     // be given a note).
     if (prior.taskId === task.taskId && typeof prior.activityKey === 'string') {
-      (prior.activityKey === task.activityKey ? sameActivityTaskIds : newActivityTaskIds).add(task.taskId);
+      const isNew = prior.activityKey !== task.activityKey && activityAfterSaved(prior, task);
+      (isNew ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
     }
     changes.push(...changesBetween(prior, task));
   }
@@ -707,6 +720,22 @@ const TASK_ACTIVITY_KEY_VERSION = 'task-activity/1';
 function reportTaskActivityKey(task: DAVEProjectTruth['schedule'][number]): string {
   const at = clean(task.latestActivityAt);
   return `${TASK_ACTIVITY_KEY_VERSION}:${contentHash(JSON.stringify([validDate(at) || at, clean(task.latestActivitySummary)]))}`;
+}
+
+/**
+ * Whether the task's latest activity is newer than the one its row saved in
+ * the earlier report (whole-app audit A6 pass 15 L2, 1 Oct 2026). Pour slab
+ * had N1 (Sep 20) and N2 (Sep 28) and a report said N2; the row's notes then
+ * came from the other device's copy, which never had N2, and the next report
+ * said N1 again as new. An older or same-time activity is not new. A row
+ * saved with no time (no activity then, or a snapshot from before this)
+ * counts as newer, so the key alone decides, as in A6 pass 14 L2.
+ */
+function activityAfterSaved(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): boolean {
+  const saved = validDate(prior.activityAt);
+  if (!saved) return true;
+  const latest = validDate(task.activityAt);
+  return Boolean(latest) && new Date(latest).getTime() > new Date(saved).getTime();
 }
 
 /** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */
