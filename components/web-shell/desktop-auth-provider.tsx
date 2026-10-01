@@ -213,6 +213,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const notOwnerRef = useRef<Readonly<{ userId: string; message: string }> | null>(null);
   const notOwnerSignOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notOwnerSignOutRunningRef = useRef(false);
+  /**
+   * Set while this tab ends its sign-in because another tab of the same
+   * account signed out (whole-app audit A1 pass 6 L1, 30 Sep 2026).
+   */
+  const endingSignInRef = useRef<object | null>(null);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -405,6 +410,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
     const unsubscribe = daveWebSupabaseGateway.subscribeToAuthStateChange((event, session) => {
       if (cancelled) return;
+      // While this tab ends its sign-in because another tab signed out,
+      // only SIGNED_OUT counts. auth-js's sign-out first refreshes an
+      // expired sign-in (a tab hidden for an hour), and that refresh had
+      // started loading the workspace: with /logout failing, no SIGNED_OUT
+      // followed and the tab showed his projects or "This account is not
+      // authorized…" instead of the sign-in page (A1 pass 6 L1).
+      if (endingSignInRef.current && event !== 'SIGNED_OUT') return;
       // auth-js also sends the start-up event without a session when the
       // refresh could not reach the server and the sign-in is kept. The
       // start-up check above decides that view; a real sign-out arrives as
@@ -456,6 +468,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithPassword = useCallback(async (email: string, password: string) => {
     forgetNotOwner();
+    // A new sign-in here: an earlier ending that settles later leaves it be.
+    endingSignInRef.current = null;
     if (mountedRef.current) {
       setPhase('signing_in');
       setMessage(null);
@@ -507,9 +521,19 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       // Another account's sign-out, or one that does not say whose, leaves
       // this tab as it is (A1 pass 5).
       if (!userId || daveWebSupabaseGateway.storedSignInUserId() !== userId) return;
-      // Nothing is shown without a confirmed owner while the sign-in ends.
+      // Nothing is shown without a confirmed owner while the sign-in ends,
+      // and, ended or not on the server, this tab then shows the sign-in
+      // page (A1 pass 6 L1); its stored sign-in is gone either way.
+      const ending = {};
+      endingSignInRef.current = ending;
       clearSessionView();
-      void daveWebSupabaseGateway.signOutThisTabToo(userId).catch(() => undefined);
+      void daveWebSupabaseGateway.signOutThisTabToo(userId)
+        .catch(() => undefined)
+        .finally(() => {
+          if (endingSignInRef.current !== ending) return;
+          endingSignInRef.current = null;
+          clearSessionView();
+        });
     };
     return () => {
       signOutChannelRef.current = null;
