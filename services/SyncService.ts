@@ -79,13 +79,15 @@ import {
   applyFieldUpdateDocumentPatches,
   fieldUpdateDocumentPatchFor,
   mergeFieldUpdateDocumentPatches,
+  queuedDocumentPatchesForUpdate,
   queuedFieldUpdateDocumentPatches,
   removedFieldUpdateDocumentKey,
   withoutDocumentUploadState,
   type FieldUpdateDocumentPatch,
   type RemovedFieldUpdateDocuments,
 } from './FieldUpdateDocumentPatch';
-import { recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
+import { loadRemovedFieldUpdateDocuments, recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
+import { withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
 
 export { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
@@ -4056,6 +4058,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       await clearConflictsForLocalRecord('project_update', conflict.localId);
       throw new Error('sync_conflict_record_deleted');
     }
+    const chosenCloudUpdate = (await withDocumentChangesSinceConflict(conflict.localId))(cloudUpdate) as TUpdate;
     await removeProjectUpdateFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
     await removeProjectUpdateFromSyncQueue(conflict.localId);
@@ -4070,7 +4073,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
         selectedAreaName: typeof cloudUpdate.selectedAreaName === 'string'
           ? cloudUpdate.selectedAreaName
           : localPayload.selectedAreaName,
-        updateData: cloudUpdate as TUpdate,
+        updateData: chosenCloudUpdate,
         // The cloud copy's photos are already in cloud storage.
         pendingPhotoAssetIds: [],
       },
@@ -4080,18 +4083,18 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId));
     if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
     await clearResolvedConflict(conflict.id);
-    return cloudUpdate as TUpdate;
+    return chosenCloudUpdate;
   }
 
-  const localUpdateData = localPayload.updateData;
-  if (localUpdateData === undefined) {
+  if (localPayload.updateData === undefined) {
     throw new Error('sync_conflict_local_copy_missing');
   }
+  const localUpdateData = (await withDocumentChangesSinceConflict(conflict.localId))(localPayload.updateData) as TUpdate;
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: `project-update-${localPayload.id}`,
     entity: 'project_update',
     operation: 'update',
-    payload: localPayload,
+    payload: { ...localPayload, updateData: localUpdateData },
     changedAt: new Date().toISOString(),
     autoUpload: false,
   });
@@ -4100,6 +4103,29 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * A copy recorded with a field update's conflict, with the document changes
+ * this device made since (whole-app audit A4 pass 10 R2H-3): a document
+ * change leaves the conflict (A4 pass 9 L1), so both recorded copies predate
+ * it. Keep Phone and Keep Cloud wrote that older copy: the cloud listed a
+ * document taken off again, or read a finished upload as failed. The copy
+ * now loses the documents this device took off, takes this device's upload
+ * state, as a refresh does, and then the document patches still queued, the
+ * newest change. Read before the resolution withdraws the queued patches.
+ */
+async function withDocumentChangesSinceConflict(updateId: string): Promise<(copy: unknown) => unknown> {
+  const [queue, removed, storedDocuments] = await Promise.all([
+    getOfflineQueue(),
+    loadRemovedFieldUpdateDocuments(),
+    AsyncStorage.getItem(PROJECT_DOCUMENTS_STORAGE_KEY).catch(() => null),
+  ]);
+  const deviceDocuments = parseStoredProjectDocuments(storedDocuments) || [];
+  const waiting = queuedDocumentPatchesForUpdate(queue, updateId) || [];
+  return copy => isRecord(copy)
+    ? applyFieldUpdateDocumentPatches(withDeviceDocumentUploadState(copy, deviceDocuments, undefined, removed), waiting)
+    : copy;
 }
 
 /**

@@ -100,6 +100,7 @@ import {
   queueProjectUpdateDocumentChange,
   queueProjectUpdateRecord,
   requeueRemovedFieldUpdateDocuments,
+  resolveProjectUpdateSyncConflict,
   runFieldUpdateCloudSync,
   uploadPendingChanges,
 } from '../../services/SyncService';
@@ -1078,5 +1079,89 @@ describe('an edit whose queue write was lost survives a document change (audit A
     expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
     expect(documentIds(inCloud())).toEqual(['survey']);
     expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+  });
+});
+
+/**
+ * A4 pass 10 R2H-3: an update in conflict keeps the conflict after a document
+ * change (A4 pass 9 L1). Keep Phone and Keep Cloud then wrote the copy
+ * recorded with the conflict, from before the change: the cloud listed the
+ * document taken off again, or read its finished upload as failed.
+ */
+const PHONE_NOTE = 'Pour, 40 yards (typed on the phone)';
+async function phoneEditInConflict(documents: () => Doc[]) {
+  const sent = savedUpdate(documents());
+  putInCloud(sent);
+  const phoneEdit = { ...sent, notes: PHONE_NOTE, status: 'queued' };
+  await queueProjectUpdateRecord(phoneEdit, false);
+  const queuedAt = Date.parse((await queuedFor())!.changedAt);
+  // The iPad's edit reaches the cloud just after the phone queued its own.
+  putInCloud({ ...sent, notes: IPAD_NOTE }, new Date(queuedAt + 1).toISOString());
+  await uploadPendingChanges();
+  const [conflict] = await getSyncConflicts();
+  expect(conflict).toMatchObject({ localId: 'u1' });
+  await new Promise(resolve => setTimeout(resolve, 5)); // the resolution's write is newer than the iPad's
+  const phone = device(documents(), [{ ...phoneEdit, status: 'failed' }]);
+  /** The App's own document list, as it persists it. */
+  const persistDocuments = () => mockStorage.set('projectPhotoUpdate.projectDocuments.v1', JSON.stringify(phone.projectDocumentsCurrentRef.current));
+  persistDocuments();
+  return { phone, conflict, persistDocuments };
+}
+
+describe('Keep Phone and Keep Cloud keep a document change made while the update was in conflict (audit A4 pass 10 R2H-3)', () => {
+  it.each([
+    ['keep_local', PHONE_NOTE],
+    ['keep_cloud', IPAD_NOTE],
+  ] as const)('a document taken off, its patch already in the cloud: %s writes the chosen note without it', async (resolution, note) => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, resolution);
+    expect(inCloud()).toMatchObject({ notes: note });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(documentIds(chosen)).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it.each(['keep_local', 'keep_cloud'] as const)('a document taken off while offline, its patch still waiting: %s writes the chosen copy without it', async resolution => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, resolution);
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(documentIds(chosen)).toEqual(['survey']);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it.each(['keep_local', 'keep_cloud'] as const)('a document upload that finished, its patch already in the cloud: %s writes it uploaded', async resolution => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed' })]);
+    await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+    await phone.settle();
+    persistDocuments();
+    await uploadPendingChanges();
+    expect(inCloud().documents![0]).toMatchObject({ status: 'uploaded' });
+
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, resolution);
+    expect(inCloud().documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
+    expect(chosen.documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
+  });
+});
+
+describe('Keep Cloud takes a finished upload still waiting to go up (audit A4 pass 10 R2H-3)', () => {
+  it('the waiting patch is the newest word on the document, over the document list the App last stored', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed' })]);
+    await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+    await phone.settle(); // offline: the patch waits; the stored list still reads failed
+
+    const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(inCloud().documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
+    expect(chosen.documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
   });
 });
