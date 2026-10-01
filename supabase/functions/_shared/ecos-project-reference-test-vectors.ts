@@ -313,6 +313,41 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '2375',
     refusedClosed: true,
   },
+  // Audit A9 pass 4 L1: an address written differently from a project's name
+  // still names it, and a number that is an address project's is never let
+  // through as a street address.
+  ...([
+    ['What is the slab thickness at 2375 N. Harbor Blvd?', '2375 Harbor Blvd'],
+    ['What is the slab thickness at 2375 North Harbor Boulevard?', '2375 Harbor Blvd'],
+    ['What is the slab thickness at 2375 Harbor Blvd?', '2375 N. Harbor Blvd'],
+    ['What is left at 2375 W 7th St?', '2375 West 7th Street'],
+    ['Which RFIs are open at unit 2375 N. Harbor Blvd?', '2375 Harbor Blvd'],
+    ['When is the delivery to 2375 Main Street?', '2375 Harbor Blvd'],
+    ['What is left at 2375 Main?', '2375 Main Street'],
+    ['deliver to 2375 main street', '2375 Main Street'],
+  ] as const).map(([question, project]) => ({
+    name: `refuses "${question}" when the other project is "${project}"`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED, project],
+    refused: '2375',
+  })),
+  {
+    name: 'refuses a closed address project written differently, marked closed',
+    projectName: SELECTED,
+    question: 'What is the slab thickness at 2375 N. Harbor Blvd?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2375 Harbor Blvd'],
+    refused: '2375',
+    refusedClosed: true,
+  },
+  {
+    name: 'never refuses the selected project\'s own address written differently',
+    projectName: '2375 Harbor Blvd',
+    question: 'What is left at 2375 N. Harbor Blvd?',
+    knownProjectNames: ['2375 Harbor Blvd', SELECTED],
+    refused: null,
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

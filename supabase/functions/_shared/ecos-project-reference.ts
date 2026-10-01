@@ -132,11 +132,29 @@ const REFERENCE_WORD_BEFORE_NUMBER = new RegExp(
 // A street address: "2375 Main Street", "2375 N. Harbor Blvd". The street name
 // is capitalized and is not an ordinary word, so "2375 by the service road"
 // and "did 2375 take place" still name project 2375.
+const STREET_WORD_SOURCE = String.raw`(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|way|court|ct|place|pl|parkway|pkwy|highway|hwy|terrace|circle|plaza)`;
 const STREET_ADDRESS_AFTER_NUMBER = new RegExp(
   String.raw`^\s+(?:(?:n|s|e|w|ne|nw|se|sw|north|south|east|west)\.?\s+)?((?:[a-z0-9][a-z0-9'.-]*\s+){1,3})` +
-    String.raw`(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|way|court|ct|place|pl|parkway|pkwy|highway|hwy|terrace|circle|plaza)\b`,
+    String.raw`${STREET_WORD_SOURCE}\b`,
   'i',
 );
+// Audit A9 pass 4 L1: a project whose name is itself an address ("2375 Harbor Blvd").
+const ADDRESS_PROJECT_NAME = new RegExp(String.raw`\b${STREET_WORD_SOURCE}\b`, 'i');
+// How a project name's next word may be written: direction words are skipped
+// and street words and directions are compared in one spelling, so "2375 N.
+// Harbor Blvd" and "2375 Harbor Boulevard" both name "2375 Harbor Blvd".
+const DIRECTION_SPELLINGS: ReadonlyMap<string, string> = new Map(Object.entries({
+  n: 'north', north: 'north', s: 'south', south: 'south', e: 'east', east: 'east', w: 'west', west: 'west',
+  ne: 'northeast', northeast: 'northeast', nw: 'northwest', northwest: 'northwest',
+  se: 'southeast', southeast: 'southeast', sw: 'southwest', southwest: 'southwest',
+}));
+const DIRECTIONS: ReadonlySet<string> = new Set(DIRECTION_SPELLINGS.values());
+const STREET_WORD_SPELLINGS: ReadonlyMap<string, string> = new Map(Object.entries({
+  st: 'street', str: 'street', street: 'street', ave: 'avenue', av: 'avenue', avenue: 'avenue',
+  blvd: 'boulevard', boulevard: 'boulevard', rd: 'road', road: 'road', dr: 'drive', drive: 'drive',
+  ln: 'lane', lane: 'lane', ct: 'court', court: 'court', pl: 'place', place: 'place',
+  pkwy: 'parkway', parkway: 'parkway', hwy: 'highway', highway: 'highway',
+}));
 const NOT_A_STREET_NAME = new Set([
   'a', 'an', 'the', 'at', 'by', 'on', 'in', 'of', 'to', 'for', 'from', 'near', 'with', 'and', 'or', 'is', 'are',
   'was', 'were', 'be', 'been', 'this', 'that', 'these', 'those', 'it', 'its', 'their', 'his', 'her', 'our', 'my',
@@ -152,9 +170,19 @@ const NOT_A_STREET_NAME = new Set([
  * RFI, submittal, keynote, suite, sheet or detail reference, and not a street
  * address. A number followed or preceded by the rest of one of `projectNames`
  * ("2375 Compliance", "2375 Main Street" when that is a project) always can.
+ *
+ * Audit A9 pass 4 L1 (30 Sep 2026): with project "2375 Harbor Blvd", "2375 N.
+ * Harbor Blvd" was read as a street address and not the project, because only
+ * the word right after the number was compared with the name. A number that
+ * belongs to a project whose name is an address is never let through as a
+ * street address, and the name is matched past direction words and street
+ * abbreviations.
  */
 export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
   const blanked = text.replace(new RegExp(NOT_A_PROJECT_NUMBER_SOURCE, 'gi'), match => ' '.repeat(match.length));
+  const addressProjectNumbers = new Set(
+    projectNames.filter(name => ADDRESS_PROJECT_NAME.test(name)).map(ecosProjectIdentifier),
+  );
   const mentions: string[] = [];
   const pattern = new RegExp(PROJECT_IDENTIFIER_SOURCE, 'g');
   for (let match = pattern.exec(blanked); match; match = pattern.exec(blanked)) {
@@ -163,7 +191,8 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
     const after = blanked.slice(match.index + number.length);
     if (
       projectNameAroundNumber(number, before, after, projectNames) ||
-      (!REFERENCE_WORD_BEFORE_NUMBER.test(before) && !streetAddressAfterNumber(after))
+      (!REFERENCE_WORD_BEFORE_NUMBER.test(before) &&
+        (addressProjectNumbers.has(number) || !streetAddressAfterNumber(after)))
     ) {
       mentions.push(number);
     }
@@ -182,13 +211,36 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
   return projectNames.some(name => {
     const index = ecosProjectIdentifier(name) === number ? name.search(new RegExp(`\\b${number}\\b`)) : -1;
     if (index < 0) return false;
-    const nextWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(index + number.length))?.[1];
+    const nextWord = nameWordKey(leadingWords(name.slice(index + number.length)));
     const previousWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, index))?.[1];
     return Boolean(
-      (nextWord && new RegExp(`^[\\s,-]+${nextWord}\\b`, 'i').test(after)) ||
+      (nextWord && /^[\s,-]/.test(after) && nameWordCandidates(leadingWords(after)).includes(nextWord)) ||
       (previousWord && new RegExp(`\\b${previousWord}[\\s#:.-]*$`, 'i').test(before)),
     );
   });
+}
+
+/** The first few words of `text`, lower-case, with one spelling for street words and directions. */
+function leadingWords(text: string): string[] {
+  return (text.match(/[a-z0-9]+/gi) || []).slice(0, 4).map(word => {
+    const lower = word.toLowerCase();
+    return DIRECTION_SPELLINGS.get(lower) ?? STREET_WORD_SPELLINGS.get(lower) ?? lower;
+  });
+}
+
+/** A project name's next word: the first word that is not a direction, or the direction when that is all there is. */
+function nameWordKey(words: readonly string[]): string | undefined {
+  return words.find(word => !isDirection(word)) ?? words[0];
+}
+
+/** The words after a number that can be a project name's next word: the leading directions and the word after them. */
+function nameWordCandidates(words: readonly string[]): string[] {
+  const firstWord = words.findIndex(word => !isDirection(word));
+  return firstWord < 0 ? [...words] : words.slice(0, firstWord + 1);
+}
+
+function isDirection(word: string) {
+  return DIRECTIONS.has(word);
 }
 
 /** The project's identifier: the first 3-6 digit number in its name, if any. */
