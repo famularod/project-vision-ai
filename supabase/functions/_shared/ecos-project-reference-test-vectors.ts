@@ -1330,6 +1330,25 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 15 L1: a name said in full beats one said in part only
+  // against the selected project; between others sharing a number, the open
+  // one is named, as before pass 14.
+  {
+    name: 'pass 15 L1: "What is left at 2375 Main St?" on 2321 names the open "2375 Main St Phase 2", not the closed "2375 Main St"',
+    projectName: SELECTED,
+    question: 'What is left at 2375 Main St?',
+    knownProjectNames: [SELECTED, '2375 Main St Phase 2'],
+    closedProjectNames: ['2375 Main St'],
+    refused: '2375',
+  },
+  {
+    name: 'pass 15 L1: on "2375 Main St Phase 2" with a closed "2375 Main St", "What is left at 2375 Main St?" is its own',
+    projectName: '2375 Main St Phase 2',
+    question: 'What is left at 2375 Main St?',
+    knownProjectNames: [SELECTED, '2375 Main St Phase 2'],
+    closedProjectNames: ['2375 Main St'],
+    refused: null,
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

@@ -71,3 +71,24 @@ describe('audit A9 pass 15 M1: an address with a compass word is that project\'s
     expect(desktop('Is 2375 B done?', [SELECTED, '2375B Annex', '2375 Main St'])).toBe(switchOnDesktop('2375B'));
   });
 });
+
+describe('audit A9 pass 15 L1: a name said in full beats one said in part only against the selected project', () => {
+  const PHASE_2 = '2375 Main St Phase 2';
+  const MAIN = '2375 Main St';
+
+  it('on 2321, with "2375 Main St Phase 2" open and "2375 Main St" closed, "What is left at 2375 Main St?" names open 2375 (was "closed project")', () => {
+    expect(phone('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(switchOnPhone('2375'));
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(switchOnDesktop('2375'));
+  });
+
+  it('Talk moves to Phase 2 again and answers there (stayed on 2321 and said "closed project")', () => {
+    expect(mentionedDAVEProject('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(PHASE_2);
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN], PHASE_2)).toBeNull();
+  });
+
+  it('against the selected project a name said in full still decides (pass 14 L2)', () => {
+    expect(desktop('Is 2375 Main St done?', [SELECTED, MAIN], ['24117 - 2375 Main St'], MAIN)).toBeNull();
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, '24117 - 450 Elm St', '450 Elm St'], [], '24117 - 450 Elm St'))
+      .toBe(switchOnDesktop('450', '24117'));
+  });
+});

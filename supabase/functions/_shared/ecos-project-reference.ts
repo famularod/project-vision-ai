@@ -151,7 +151,7 @@ export function findECOSProjectReferenceMismatch(
     // left at 450 Elm St?" on "24117 - 450 Elm St" with a closed "23088 - 450
     // Elm St"), and a name said in full beats one said in part.
     if (!letter && !spacedLetter) {
-      const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames]);
+      const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames], projectName);
       const isSelected = isSelectedFor(number);
       const others = around.filter(name => !isSelected(name));
       const other = others.length > 0 ? refusal(number, name => others.includes(name), around.some(isSelected)) : null;
@@ -494,12 +494,16 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
  * number belongs to the project whose name continues furthest around it,
  * when exactly one does; more than one is ambiguous. Audit A9 pass 14 L2:
  * among those, a name said in full beats one said in part ("Is 2375 Main St
- * done?" is "2375 Main St", not also "24117 - 2375 Main St").
+ * done?" is "2375 Main St", not also "24117 - 2375 Main St"). Audit A9 pass
+ * 15 L1: only when `selectedProjectName` is among them; between other
+ * projects it decides nothing ("What is left at 2375 Main St?" on 2321 is
+ * the open "2375 Main St Phase 2" as much as a closed "2375 Main St").
  */
 export function ecosProjectsAroundNumber(
   text: string,
   { number, start, end }: Readonly<{ number: string; start: number; end: number }>,
   projectNames: readonly string[],
+  selectedProjectName = '',
 ): string[] {
   const reach = projectNames.map(name => {
     const at = plainNumberIn(name, number);
@@ -507,8 +511,11 @@ export function ecosProjectsAroundNumber(
   });
   const furthest = Math.max(0, ...reach.map(({ count }) => count));
   if (furthest === 0) return [];
+  const tied = projectNames.filter((_, index) => reach[index].count === furthest);
+  const selected = selectedProjectName.trim().toUpperCase();
+  if (!selected || !tied.some(name => name.trim().toUpperCase() === selected)) return tied;
   const inFull = projectNames.filter((_, index) => reach[index].count === furthest && reach[index].full);
-  return inFull.length > 0 ? inFull : projectNames.filter((_, index) => reach[index].count === furthest);
+  return inFull.length > 0 ? inFull : tied;
 }
 
 /** Where `number` is a word of its own in the name ("450" in "24117 - 450 Elm St"; not "2375A" or "2375-B"). */

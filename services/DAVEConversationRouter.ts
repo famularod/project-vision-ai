@@ -204,9 +204,11 @@ function talkNamedProjects(
     .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, transcript, start, end))
     .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
   const numbers = ecosProjectNumberMentionsAt(transcript, all);
-  // The projects whose name continues furthest around each plain number (see the loop below).
+  // The projects whose name continues furthest around each plain number (see
+  // the loop below); a name said in full decides only against `selectedName`
+  // (audit A9 pass 15 L1).
   const aroundNumbers = numbers.map(mention =>
-    mention.letter || mention.spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all));
+    mention.letter || mention.spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all, selectedName));
   // "Oak Street" names one project even when another is called "Oak". Audit
   // A9 pass 14 L5: so does a name that continues further around a number in
   // the one said in full ("What is left at 450 Elm St?" is "24117-450 Elm
