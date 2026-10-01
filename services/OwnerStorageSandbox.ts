@@ -63,6 +63,32 @@ export type OwnerStorageSandbox = Readonly<{
   activeOwnerId: () => Promise<string | null>;
 }>;
 
+const ownerStorageSwitchListeners = new Set<() => void>();
+
+/**
+ * Called each time this phone's stored data is switched to another account,
+ * or a switch an interrupted launch left half done is finished: whatever a
+ * module read once from storage is now another account's, and is read again
+ * (whole-app audit A4 pass 15 L2: the saved conflicts behind the field
+ * update cards). The unsubscribe function.
+ */
+export function subscribeToOwnerStorageSwitch(listener: () => void): () => void {
+  ownerStorageSwitchListeners.add(listener);
+  return () => {
+    ownerStorageSwitchListeners.delete(listener);
+  };
+}
+
+function ownerStorageSwitched(): void {
+  ownerStorageSwitchListeners.forEach(listener => {
+    try {
+      listener();
+    } catch {
+      // A reader's listener never fails an account switch.
+    }
+  });
+}
+
 export class OwnerStorageSandboxError extends Error {
   constructor(message: string) {
     super(message);
@@ -87,6 +113,7 @@ export function createOwnerStorageSandbox({
     );
     if (!journal) return false;
     await commitPreparedTransition(storage, journal, now);
+    ownerStorageSwitched();
     return true;
   }
 
@@ -164,6 +191,7 @@ export function createOwnerStorageSandbox({
       JSON.stringify(journal),
     );
     await commitPreparedTransition(storage, journal, now);
+    ownerStorageSwitched();
 
     return Object.freeze({
       ownerId: targetOwnerId,

@@ -1,5 +1,6 @@
 import { queuedFieldUpdateDocumentPatches } from './FieldUpdateDocumentPatch';
 import { isFieldUpdatePhotoAnalysisPatch } from './FieldUpdatePhotoAnalysisPatch';
+import { subscribeToOwnerStorageSwitch } from './OwnerStorageSandbox';
 import {
   getOfflineQueue,
   getSyncConflicts,
@@ -74,16 +75,22 @@ export function subscribeToQueuedDocumentChanges(listener: () => void): () => vo
   if (!listening) {
     listening = true;
     subscribeToOfflineQueue(publishQueue);
-    const writesBeforeRead = queueWrites;
-    void getOfflineQueue()
-      .then(queue => {
-        if (queueWrites === writesBeforeRead) publishQueue(queue);
-      })
-      .catch(() => undefined);
+    readQueue();
+    // Another account's queue after a switch (whole-app audit A4 pass 15 L2).
+    subscribeToOwnerStorageSwitch(readQueue);
   }
   return () => {
     snapshotListeners.delete(listener);
   };
+}
+
+function readQueue() {
+  const writesBeforeRead = queueWrites;
+  void getOfflineQueue()
+    .then(queue => {
+      if (queueWrites === writesBeforeRead) publishQueue(queue);
+    })
+    .catch(() => undefined);
 }
 
 export function queuedDocumentChangesSnapshot(): readonly SyncQueueItem[] {
@@ -126,22 +133,33 @@ function publishConflicts(conflicts: readonly SyncConflict[]) {
   conflictSnapshotListeners.forEach(listener => listener());
 }
 
-/** For useSyncExternalStore: the saved conflicts, read and kept as the queue is (subscribeToQueuedDocumentChanges). */
+/**
+ * For useSyncExternalStore: the saved conflicts, read and kept as the queue
+ * is (subscribeToQueuedDocumentChanges), and read again when the owner
+ * storage sandbox switches accounts (whole-app audit A4 pass 15 L2): it swaps
+ * the stored conflicts in place, with no conflict write, and account B's
+ * held updates did not read "Needs Review" until a relaunch.
+ */
 export function subscribeToFieldUpdateConflicts(listener: () => void): () => void {
   conflictSnapshotListeners.add(listener);
   if (!listeningToConflicts) {
     listeningToConflicts = true;
     subscribeToSyncConflicts(publishConflicts);
-    const writesBeforeRead = conflictWrites;
-    void getSyncConflicts()
-      .then(conflicts => {
-        if (conflictWrites === writesBeforeRead) publishConflicts(conflicts);
-      })
-      .catch(() => undefined);
+    readConflicts();
+    subscribeToOwnerStorageSwitch(readConflicts);
   }
   return () => {
     conflictSnapshotListeners.delete(listener);
   };
+}
+
+function readConflicts() {
+  const writesBeforeRead = conflictWrites;
+  void getSyncConflicts()
+    .then(conflicts => {
+      if (conflictWrites === writesBeforeRead) publishConflicts(conflicts);
+    })
+    .catch(() => undefined);
 }
 
 export function fieldUpdateConflictsSnapshot(): readonly SyncConflict[] {
