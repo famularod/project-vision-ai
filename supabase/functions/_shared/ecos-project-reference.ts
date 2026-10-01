@@ -109,7 +109,23 @@ export function findECOSProjectReferenceMismatch(
   };
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
   const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
-  for (const { number, letter, spacedLetter } of mentions) {
+  // Projects shown by the selected one's number ("2375 Main St Phase 2" on
+  // "2375 Main St") count as it, as a shared number always has (Q20).
+  const shown = (name: string) => (ecosProjectDisplayIdentifier(name) ?? name.trim()).toUpperCase();
+  const isSelected = (name: string) => shown(name) === shown(projectName);
+  for (const mention of mentions) {
+    const { number, letter, spacedLetter } = mention;
+    // Audit A9 pass 13 L1: a plain number belongs to the project whose name
+    // continues around it ("Is 300 Elm done?" names 300 Elm, even on
+    // "2375-B Annex Suite 300", whose 300 it also is). When another
+    // project's name does, it names that one (with the selected one's too,
+    // it is ambiguous: when unsure, refuse).
+    if (!letter && !spacedLetter) {
+      const others = ecosProjectsAroundNumber(question, mention, [...knownNames, ...closedNames])
+        .filter(name => !isSelected(name));
+      const around = others.length > 0 ? refusal(number, name => others.includes(name)) : null;
+      if (around) return around;
+    }
     // Identifiers are compared whole and upper-cased: "2375" is not "2375A"
     // (audit A9 pass 9 L1). "2375B" names the project written "2375B"; the
     // selected one's own "2375A" names only it (pass 8 L7; glued, and since
@@ -225,7 +241,7 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * one, except a number written as a measurement, money, a date or time, a
  * phone number, or a spec section or sheet, and not even then when the
  * project's own name continues around it (see the header). With where each
- * number starts in `text` (Talk orders projects by it). `unsure`: the number was found only by splitting a
+ * number starts and ends in `text` (Talk orders projects by it). `unsure`: the number was found only by splitting a
  * comma group ("1,200" read as 200). Ask ECOS refuses it like any other; Talk
  * asks instead of moving to it (audit A9 pass 8 L2). `letter`: one letter
  * glued after the number ("2375B"), or ''. A number and letter that are a
@@ -247,10 +263,10 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
 export function ecosProjectNumberMentionsAt(
   text: string,
   projectNames: readonly string[] = [],
-): Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string; spacedLetter: string }>> {
+): Array<Readonly<{ number: string; start: number; end: number; unsure: boolean; letter: string; spacedLetter: string }>> {
   const exempt = exemptSpans(text);
   const known = new Set(projectNames.flatMap(name => projectIdentifiers(name).map(({ digits }) => digits)));
-  const mentions: Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string; spacedLetter: string }>> = [];
+  const mentions: Array<Readonly<{ number: string; start: number; end: number; unsure: boolean; letter: string; spacedLetter: string }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${MENTIONED_NUMBER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
@@ -280,11 +296,13 @@ export function ecosProjectNumberMentionsAt(
       !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames) &&
       !(letter && projectNames.some(name => hasIdentifier(name, `${number}${letter}`)))
     ) continue;
-    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, unsure: false, letter, spacedLetter });
+    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, end, unsure: false, letter, spacedLetter });
     if (match[0].includes(',') && !known.has(number)) {
       let partStart = start;
       for (const part of match[0].split(',')) {
-        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart, unsure: true, letter: '', spacedLetter: '' });
+        if (/^\d{3,6}$/.test(part)) {
+          mentions.push({ number: part, start: partStart, end: partStart + part.length, unsure: true, letter: '', spacedLetter: '' });
+        }
         partStart += part.length + 1;
       }
     }
@@ -412,19 +430,47 @@ function exemptSpans(text: string): Array<readonly [number, number]> {
  * does not hide it) or its previous name word comes before it ("Tower E-2375").
  */
 function projectNameAroundNumber(number: string, before: string, after: string, projectNames: readonly string[]) {
-  const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1]?.toLowerCase();
   return projectNames.some(name => {
     if (!hasIdentifierNumber(name, number)) return false;
     // Where the number is in the name, with a glued letter ("2375A Main"; pass 8 L7).
     const at = new RegExp(`\\b${number}\\b`).exec(name) ?? new RegExp(`\\b${number}[A-Za-z]\\b`).exec(name);
-    if (!at) return false;
-    const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(at.index + at[0].length))?.[1]?.toLowerCase();
-    const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, at.index))?.[1];
-    return Boolean(
-      (nextNameWord && nextWord === nextNameWord) ||
-      (previousNameWord && new RegExp(`\\b${previousNameWord}[\\s#:.-]*$`, 'i').test(before)),
-    );
+    return Boolean(at) && nameContinuesAt(name, at!, before, after);
   });
+}
+
+/**
+ * Audit A9 pass 13: the projects whose name continues around the plain
+ * number at text[start, end). The name has the number as a word of its own
+ * (identifier or not, so "450" in "24117 - 450 Elm St"; not "2375A" or
+ * "2375-B"), and its next name word follows the number in `text` or its
+ * previous name word comes before it: "Is 300 Elm done?" for "300 Elm",
+ * "Suite 300" for "2375 Main St Suite 300". A number belongs to the project
+ * whose name continues around it, when exactly one does.
+ */
+export function ecosProjectsAroundNumber(
+  text: string,
+  { number, start, end }: Readonly<{ number: string; start: number; end: number }>,
+  projectNames: readonly string[],
+): string[] {
+  const plain = new RegExp(String.raw`(?<![A-Za-z0-9])${number}(?![A-Za-z0-9]|-[A-Za-z](?![A-Za-z0-9]))`);
+  return projectNames.filter(name => {
+    const at = plain.exec(name);
+    return Boolean(at) && nameContinuesAt(name, at!, text.slice(0, start), text.slice(end));
+  });
+}
+
+/** Whether the name around name[at] continues in `before` or `after` (one word either side). */
+function nameContinuesAt(name: string, at: RegExpExecArray, before: string, after: string) {
+  const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1];
+  const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(at.index + at[0].length))?.[1];
+  // The last 64 characters are enough for one word and keep the match linear.
+  const previousWord = /([a-z0-9]+)[\s#:.-]*$/i.exec(before.slice(-64))?.[1];
+  const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, at.index))?.[1];
+  return sameNameWord(nextWord, nextNameWord) || sameNameWord(previousWord, previousNameWord);
+}
+
+function sameNameWord(word: string | undefined, nameWord: string | undefined) {
+  return Boolean(word && nameWord && word.toLowerCase() === nameWord.toLowerCase());
 }
 
 /**
