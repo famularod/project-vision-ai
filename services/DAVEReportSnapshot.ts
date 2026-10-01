@@ -27,6 +27,14 @@ export type DAVEReportSnapshotTask = Readonly<{
   urgency: DAVEProjectTruth['schedule'][number]['urgency'];
   approvalStatus: string | null;
   estimatedScheduleImpactDays: number | null;
+  /**
+   * When this task last changed on the device that saved the snapshot (its
+   * update time or latest activity), or null when unknown. Whole-app audit A6
+   * pass 9 M2 (30 Sep 2026): a device whose sync is behind read the other
+   * device's newer facts as changes made backwards. Absent on snapshots saved
+   * before then, which compare as they always did.
+   */
+  updatedAt?: string | null;
 }>;
 
 export type DAVEReportSnapshot = Readonly<{
@@ -273,6 +281,13 @@ export type DAVEReportPeriodComparison = Readonly<{
    * pass 9 M1).
    */
   changedTaskIds?: readonly string[];
+  /**
+   * Tasks (by their id on this device) the earlier report has a newer copy
+   * of than this device: the other device changed them and this device has
+   * not received it yet. They are not reported as changed, and the report
+   * waits for this device to catch up (A6 pass 9 M2).
+   */
+  staleTaskIds?: readonly string[];
 }>;
 
 export function buildDAVEReportSnapshot({
@@ -303,6 +318,7 @@ export function buildDAVEReportSnapshot({
     urgency: task.urgency,
     approvalStatus: clean(task.approvalStatus) || null,
     estimatedScheduleImpactDays: finiteNumber(task.estimatedScheduleImpactDays),
+    updatedAt: latestValidDate([task.updatedAt, task.latestActivityAt]),
   }))).sort((left, right) =>
     normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
     normalized(left.taskName).localeCompare(normalized(right.taskName)) ||
@@ -364,67 +380,34 @@ export function compareDAVEReportSnapshots({
   );
   const revisedPriorIds = new Set([...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
+  const staleTaskIds: string[] = [];
+  // What each task counts as now: a task this device has not caught up on
+  // counts as the earlier report had it (A6 pass 9 M2).
+  const countedTasks: DAVEReportSnapshotTask[] = [];
 
   for (const task of current.tasks) {
-    const prior = previousById.get(task.taskId) ?? revisions.get(task);
+    const sameRow = previousById.get(task.taskId);
+    const prior = sameRow ?? revisions.get(task);
     if (!prior) {
+      countedTasks.push(task);
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
       continue;
     }
-    const wasComplete = snapshotTaskIsComplete(prior);
-    const isComplete = snapshotTaskIsComplete(task);
-    const completionChanged = wasComplete !== isComplete;
-    if (!wasComplete && isComplete) {
-      changes.push(changeFor(task, 'completed', `${task.taskName} was completed.`));
-    } else if (wasComplete && !isComplete) {
-      changes.push(changeFor(task, 'reopened', `${task.taskName} was reopened at ${task.percentComplete}% complete.`));
-    } else if (prior.percentComplete !== task.percentComplete) {
-      changes.push(changeFor(
-        task,
-        'progress',
-        `${task.taskName} moved from ${prior.percentComplete}% to ${task.percentComplete}% complete.`,
-      ));
+    const taskChanges = changesBetween(prior, task);
+    // The earlier report's copy is newer than this device's, and differs:
+    // the other device changed the task and this device's sync has not
+    // brought it yet. The difference is not a change made backwards (A6
+    // pass 9 M2: "Frame walls was reopened at 40% complete." after the iPad
+    // marked it done). Only the same row: sync orders a row's copies by this
+    // time, so the device catches up; a revised row's time is when its file
+    // was read, which can be before the last edit of the row it replaced.
+    if (sameRow && taskChanges.length > 0 && changedAfter(sameRow.updatedAt, task.updatedAt)) {
+      staleTaskIds.push(task.taskId);
+      countedTasks.push(prior);
+      continue;
     }
-    // "Was completed" (or reopened) already says it; the status line took a
-    // second of the report's six lines for the same task (A6 pass 8 L1).
-    if (!completionChanged && normalized(prior.status) !== normalized(task.status)) {
-      changes.push(changeFor(task, 'status', `${task.taskName} changed from ${prior.status} to ${task.status}.`));
-    }
-    if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
-      changes.push(changeFor(
-        task,
-        'finish_date',
-        `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
-      ));
-    }
-    if (normalized(prior.owner) !== normalized(task.owner)) {
-      changes.push(changeFor(
-        task,
-        'owner',
-        `${task.taskName} owner changed from ${prior.owner || 'unassigned'} to ${task.owner || 'unassigned'}.`,
-      ));
-    }
-    if (normalized(prior.areaName) !== normalized(task.areaName)) {
-      changes.push(changeFor(
-        task,
-        'area',
-        `${task.taskName} moved from ${prior.areaName || 'unassigned area'} to ${task.areaName || 'unassigned area'}.`,
-      ));
-    }
-    if (normalized(prior.approvalStatus) !== normalized(task.approvalStatus)) {
-      changes.push(changeFor(
-        task,
-        'approval',
-        `${task.taskName} approval changed from ${prior.approvalStatus || 'not set'} to ${task.approvalStatus || 'not set'}.`,
-      ));
-    }
-    if (prior.estimatedScheduleImpactDays !== task.estimatedScheduleImpactDays) {
-      changes.push(changeFor(
-        task,
-        'schedule_impact',
-        `${task.taskName} schedule impact changed from ${days(prior.estimatedScheduleImpactDays)} to ${days(task.estimatedScheduleImpactDays)}.`,
-      ));
-    }
+    countedTasks.push(task);
+    changes.push(...taskChanges);
   }
 
   for (const task of previous.tasks) {
@@ -438,13 +421,74 @@ export function compareDAVEReportSnapshots({
     label: `Since the report approved ${formatPeriodDate(previous.capturedAt)}`,
     startedAt: previous.capturedAt,
     endedAt: current.capturedAt,
-    completeDelta: completeCount(current.tasks) - completeCount(previous.tasks),
-    openDelta: openCount(current.tasks) - openCount(previous.tasks),
-    overdueDelta: overdueCount(current.tasks) - overdueCount(previous.tasks),
+    completeDelta: completeCount(countedTasks) - completeCount(previous.tasks),
+    openDelta: openCount(countedTasks) - openCount(previous.tasks),
+    overdueDelta: overdueCount(countedTasks) - overdueCount(previous.tasks),
     changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
     changeCount: distinctChanges.length,
     changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
+    staleTaskIds: Object.freeze(staleTaskIds),
   });
+}
+
+/** What changed in one task between the earlier report and now. */
+function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): DAVEReportPeriodChange[] {
+  const changes: DAVEReportPeriodChange[] = [];
+  const wasComplete = snapshotTaskIsComplete(prior);
+  const isComplete = snapshotTaskIsComplete(task);
+  const completionChanged = wasComplete !== isComplete;
+  if (!wasComplete && isComplete) {
+    changes.push(changeFor(task, 'completed', `${task.taskName} was completed.`));
+  } else if (wasComplete && !isComplete) {
+    changes.push(changeFor(task, 'reopened', `${task.taskName} was reopened at ${task.percentComplete}% complete.`));
+  } else if (prior.percentComplete !== task.percentComplete) {
+    changes.push(changeFor(
+      task,
+      'progress',
+      `${task.taskName} moved from ${prior.percentComplete}% to ${task.percentComplete}% complete.`,
+    ));
+  }
+  // "Was completed" (or reopened) already says it; the status line took a
+  // second of the report's six lines for the same task (A6 pass 8 L1).
+  if (!completionChanged && normalized(prior.status) !== normalized(task.status)) {
+    changes.push(changeFor(task, 'status', `${task.taskName} changed from ${prior.status} to ${task.status}.`));
+  }
+  if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
+    changes.push(changeFor(
+      task,
+      'finish_date',
+      `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
+    ));
+  }
+  if (normalized(prior.owner) !== normalized(task.owner)) {
+    changes.push(changeFor(
+      task,
+      'owner',
+      `${task.taskName} owner changed from ${prior.owner || 'unassigned'} to ${task.owner || 'unassigned'}.`,
+    ));
+  }
+  if (normalized(prior.areaName) !== normalized(task.areaName)) {
+    changes.push(changeFor(
+      task,
+      'area',
+      `${task.taskName} moved from ${prior.areaName || 'unassigned area'} to ${task.areaName || 'unassigned area'}.`,
+    ));
+  }
+  if (normalized(prior.approvalStatus) !== normalized(task.approvalStatus)) {
+    changes.push(changeFor(
+      task,
+      'approval',
+      `${task.taskName} approval changed from ${prior.approvalStatus || 'not set'} to ${task.approvalStatus || 'not set'}.`,
+    ));
+  }
+  if (prior.estimatedScheduleImpactDays !== task.estimatedScheduleImpactDays) {
+    changes.push(changeFor(
+      task,
+      'schedule_impact',
+      `${task.taskName} schedule impact changed from ${days(prior.estimatedScheduleImpactDays)} to ${days(task.estimatedScheduleImpactDays)}.`,
+    ));
+  }
+  return changes;
 }
 
 export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
@@ -586,6 +630,19 @@ function finiteNumber(value: unknown) {
 function boundedPercent(value: unknown) {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+/** Whether `earlier` (the earlier report's copy) changed after `now` (this device's); unknown is never later. */
+function changedAfter(earlier: string | null | undefined, now: string | null | undefined): boolean {
+  const earlierTime = Date.parse(earlier ?? '');
+  const nowTime = Date.parse(now ?? '');
+  return Number.isFinite(earlierTime) && Number.isFinite(nowTime) && earlierTime > nowTime;
+}
+
+/** The latest of `values` that is a date, as an ISO time, or null. */
+function latestValidDate(values: readonly unknown[]): string | null {
+  const times = values.map(validDate).filter(Boolean).map(value => Date.parse(value));
+  return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
 function validDate(value: unknown) {

@@ -83,7 +83,9 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and edits must be of the "since" section on screen.
-    expect(screen).toMatch(/const reportApprovalAllowed = reportApprovalPolicy\.allowed &&\n\s+reportFactsAreCurrent &&\n\s+reportEditsPeriodIsCurrent &&\n\s+snapshotScopeLoaded;/);
+    // Whole-app audit A6 pass 9 M2 (30 Sep 2026): and this device must have the other device's latest
+    // changes to the tasks that report covers (pin updated deliberately for the new condition).
+    expect(screen).toMatch(/const reportApprovalAllowed = reportApprovalPolicy\.allowed &&\n\s+reportFactsAreCurrent &&\n\s+reportEditsPeriodIsCurrent &&\n\s+!reportDeviceBehind &&\n\s+snapshotScopeLoaded;/);
     // A6 pass 5: its own line, which a send does not clear.
     expect(screen).toMatch(/if \(snapshotLoadFailed\) \{\n(?:\s*\/\/.*\n)*\s+setSnapshotSaveError\(/);
   });

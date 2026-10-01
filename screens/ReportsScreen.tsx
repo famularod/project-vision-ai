@@ -467,20 +467,30 @@ export function ReportsScreen({
     !snapshotScopeLoaded ||
     reportEdits.baselineSentAt === undefined ||
     reportEdits.baselineSentAt === reportBaselineSentAt;
+  // Whole-app audit A6 pass 9 M2 (30 Sep 2026): the report this one counts
+  // from has newer facts for a task than this device: the other device
+  // changed it and this device's sync has not brought it yet. The phone's
+  // report read "Frame walls was reopened at 40% complete." after the iPad
+  // marked it done, and could be sent. It waits until this device catches up.
+  const reportDeviceBehind = snapshotScopeLoaded &&
+    (reportBriefing.reportingPeriod.staleTaskIds?.length ?? 0) > 0;
   // Approval waits for the owner's baseline to load (audit A6, pass 2: a tap
   // right after a project toggle approved a report built without its
   // period and replaced the stored snapshot).
   const reportApprovalAllowed = reportApprovalPolicy.allowed &&
     reportFactsAreCurrent &&
     reportEditsPeriodIsCurrent &&
+    !reportDeviceBehind &&
     snapshotScopeLoaded;
   const reportApprovalMessage = !reportFactsAreCurrent
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : !snapshotScopeLoaded
         ? 'The reporting period is still loading.'
-        : !reportEditsPeriodIsCurrent
-          ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
-          : reportApprovalPolicy.message;
+        : reportDeviceBehind
+          ? REPORT_DEVICE_BEHIND_MESSAGE
+          : !reportEditsPeriodIsCurrent
+            ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
+            : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
@@ -1197,6 +1207,10 @@ export function BeforeYouSharePanel({
 
 /** When the other device's last report was read again (whole-app audit A6 pass 7). */
 type SharedPeriodMoment = 'refresh' | 'approve' | 'send';
+
+/** Approval waits for this device to catch up with the other device's changes (whole-app audit A6 pass 9 M2). */
+const REPORT_DEVICE_BEHIND_MESSAGE =
+  "This device hasn't received your other device's latest changes yet. Use Settings › Sync Now, then review.";
 
 /**
  * What the owner is told when the other device sent a report after the one

@@ -15,6 +15,14 @@
  *     completed." and "…was reopened", owners swapped. Same-named tasks pair
  *     in finish order only when each pair also agrees on status and owner;
  *     otherwise they are said as added and removed.
+ * M2. A device whose sync was behind read the other device's newer facts as
+ *     changes made backwards: the iPad marked Frame walls complete and sent
+ *     at 12:00, and the phone, before its sync pulled that, said "-1
+ *     completed; +1 open; Tower: Frame walls was reopened at 40% complete."
+ *     Each task now keeps when it last changed in the snapshot (optional), and
+ *     a task whose copy in the earlier report is newer than this device's is
+ *     not reported as changed; the comparison names it so the screen can hold
+ *     approval. Snapshots without the time compare as before.
  */
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -251,5 +259,79 @@ describe('L1: same-named tasks whose finish order swapped are not cross-paired',
       current: at([task('b1', '2026-10-05', 'Eli', true)], NOW),
     });
     expect(comparison.changes.map(change => change.kind)).toEqual(['completed', 'finish_date', 'owner']);
+  });
+});
+
+describe('M2: a task the earlier report has newer facts for is not reported as changed backwards', () => {
+  const ipadMarkedComplete = '2026-09-30T11:30:00.000Z';
+  const morning = [
+    row('tower-v1', 'Frame walls', '2026-10-20', { updatedAt: '2026-09-29T09:00:00.000Z' }),
+    row('tower-v1', 'Pour slab', '2026-10-27', { updatedAt: '2026-09-29T09:00:00.000Z' }),
+  ];
+  const ipad = morning.map(item => item.taskName === 'Frame walls'
+    ? { ...item, percentComplete: 100, status: 'Complete', updatedAt: ipadMarkedComplete } as ScheduleItem
+    : item);
+  const ipadSent = snapshotOf(truthOf(ipad, '2026-09-30T12:00:00.000Z'), '2026-09-30T12:00:00.000Z');
+
+  it('snapshot tasks keep when each task last changed', () => {
+    expect(ipadSent.tasks.find(task => task.taskName === 'Frame walls')?.updatedAt).toBe(ipadMarkedComplete);
+  });
+
+  it('the phone, before its sync: no "-1 completed", no "reopened", and the task is named as not received', () => {
+    const comparison = compareDAVEReportSnapshots({
+      current: snapshotOf(truthOf(morning, NOW), NOW),
+      previous: ipadSent,
+    });
+    expect(comparison).toMatchObject({ completeDelta: 0, openDelta: 0, overdueDelta: 0, changes: [] });
+    expect(comparison.staleTaskIds).toEqual(['tower-v1-frame-walls']);
+    for (const lines of sinceLines(morning, ipadSent)) {
+      expect(lines[0]).toBe('• +0 completed; +0 open; +0 overdue.');
+      expect(lines.join('\n')).not.toContain('reopened');
+    }
+  });
+
+  it('after its sync: nothing changed and nothing is held', () => {
+    const comparison = compareDAVEReportSnapshots({
+      current: snapshotOf(truthOf(ipad, NOW), NOW),
+      previous: ipadSent,
+    });
+    expect(comparison.changes).toEqual([]);
+    expect(comparison.staleTaskIds ?? []).toEqual([]);
+  });
+
+  it('a newer copy with the same facts (this device\'s own change, stamped again on upload) holds nothing', () => {
+    const uploadedLater = ipad.map(item => item.taskName === 'Frame walls'
+      ? { ...item, updatedAt: '2026-09-30T11:35:00.000Z' } as ScheduleItem
+      : item);
+    const comparison = compareDAVEReportSnapshots({
+      current: snapshotOf(truthOf(ipad, NOW), NOW),
+      previous: snapshotOf(truthOf(uploadedLater, '2026-09-30T12:00:00.000Z'), '2026-09-30T12:00:00.000Z'),
+    });
+    expect(comparison.changes).toEqual([]);
+    expect(comparison.staleTaskIds ?? []).toEqual([]);
+  });
+
+  it('a reopen made on this device after the send is still reported', () => {
+    const reopened = ipad.map(item => item.taskName === 'Frame walls'
+      ? { ...item, percentComplete: 60, status: 'In Progress', updatedAt: '2026-09-30T13:00:00.000Z' } as ScheduleItem
+      : item);
+    const comparison = compareDAVEReportSnapshots({
+      current: snapshotOf(truthOf(reopened, NOW), NOW),
+      previous: ipadSent,
+    });
+    expect(comparison.completeDelta).toBe(-1);
+    expect(comparison.changes.map(change => change.summary)).toEqual(['Frame walls was reopened at 60% complete.']);
+    expect(comparison.staleTaskIds ?? []).toEqual([]);
+  });
+
+  it('an older snapshot without the time compares as before', () => {
+    const legacy = { ...ipadSent, tasks: ipadSent.tasks.map(({ updatedAt: _updatedAt, ...task }) => task) } as DAVEReportSnapshot;
+    const comparison = compareDAVEReportSnapshots({
+      current: snapshotOf(truthOf(morning, NOW), NOW),
+      previous: legacy,
+    });
+    expect(comparison.completeDelta).toBe(-1);
+    expect(comparison.changes.map(change => change.kind)).toEqual(['reopened']);
+    expect(comparison.staleTaskIds ?? []).toEqual([]);
   });
 });
