@@ -93,10 +93,10 @@ export function ScheduleImportFlow({
     return withScheduleImportRole(batch, roleReview.chosen || roleReview.role);
   }
 
-  /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3). */
+  /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3; the file's full copy shown, M1). */
   function reviewedRoleRefusal(batch: PIEScheduleImportBatch): string | null {
     if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return null;
-    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role);
+    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role, roleContext?.documents);
   }
 
   useEffect(() => {

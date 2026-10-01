@@ -38,7 +38,7 @@ const batch = (name: string, extra: Partial<PIEScheduleImportBatch> = {}): PIESc
   ...extra,
 });
 
-function renderReview(incoming: PIEScheduleImportBatch, withMaster = true) {
+function renderReview(incoming: PIEScheduleImportBatch, withMaster: boolean | ReferenceDocument[] = true) {
   const onApprove = jest.fn(async (_batch: PIEScheduleImportBatch) => undefined);
   const view = render(
     <ScheduleImportFlow
@@ -50,7 +50,8 @@ function renderReview(incoming: PIEScheduleImportBatch, withMaster = true) {
       onCancel={jest.fn()}
       incomingBatch={incoming}
       onIncomingBatchConsumed={jest.fn()}
-      roleContext={withMaster ? { documents: [master], items: masterItems } : { documents: [], items: [] }}
+      roleContext={Array.isArray(withMaster) ? { documents: withMaster, items: masterItems }
+        : withMaster ? { documents: [master], items: masterItems } : { documents: [], items: [] }}
     />,
   );
   return { ...view, onApprove };
@@ -116,6 +117,24 @@ describe('the import review asks how the schedule is used (owner answer Q22)', (
     fireEvent.press(view.getByRole('radio', { name: /^Lookahead/ }));
     await acceptAll(view);
     expect(view.onApprove.mock.calls.map(call => call[0].documents.map(item => item.scheduleRole))).toEqual([['lookahead']]);
+  });
+
+  it('while the file\'s full copy is the schedule shown, the review refuses it either way: make the master current first (A8 pass 5 M1, A5 pass 6 L1)', async () => {
+    const copy = document('old-copy', 'Alpha 3 Week Lookahead', '2026-09-15T12:00:00.000Z', { contentSha256: 'sha-alpha-lookahead' });
+    const again = batch('Alpha 3 Week Lookahead', {
+      documents: [document('new', 'Alpha 3 Week Lookahead', '2026-09-20T12:00:00.000Z', { importBatchId: 'batch-new', scheduleRole: 'lookahead', contentSha256: 'sha-alpha-lookahead' })],
+    });
+    const view = renderReview(again, [master, copy]);
+    expect(await view.findByText('Suggested: Lookahead / partial (adds to the master), because this exact file is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.')).toBeTruthy();
+    await acceptAll(view);
+    expect(view.onApprove).not.toHaveBeenCalled();
+    expect(view.getByText('This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.')).toBeTruthy();
+    view.unmount();
+    // With the master made current, it is added as a lookahead.
+    const current = renderReview(again, [{ ...master, importedAt: '2026-09-16T12:00:00.000Z' }, { ...copy, isCurrent: false }]);
+    await current.findByText('How should Vitruvius use this schedule?');
+    await acceptAll(current);
+    expect(current.onApprove.mock.calls.map(call => call[0].documents.map(item => item.scheduleRole))).toEqual([['lookahead']]);
   });
 
   it('message screenshots are never asked, and their documents get no role', async () => {

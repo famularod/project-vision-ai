@@ -12060,8 +12060,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       uri: file.uri,
       reportedSizeBytes: file.size,
     });
-    // After a delete, the next generation (audit A5); an import, not a card's own shared copy (A8 pass 3 M1); a full schedule's file again, only as a lookahead (A8 pass 5 L3).
-    const { identity: sourceIdentity, alreadyImported, asLookahead } = scheduleImportOfFile({
+    // After a delete, the next generation (audit A5); an import, not a card's own shared copy (A8 pass 3 M1); a full schedule's file again, only as a lookahead and only while it is not the schedule shown (A8 pass 5 L3, M1).
+    const { identity: sourceIdentity, alreadyImported, asLookahead, alreadyAddedMessage } = scheduleImportOfFile({
       bytes: sourcePayload.data, projects: scopedProjectRecords,
       documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
       documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current, projectNames: scopeProjects,
@@ -12069,7 +12069,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (alreadyImported) {
       Alert.alert(
         'Schedule already added',
-        'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.',
+        alreadyAddedMessage, // the master in use, picked again: make the master current first (A8 pass 5 M1)
       );
       return null;
     }

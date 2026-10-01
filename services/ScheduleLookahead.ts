@@ -449,7 +449,9 @@ function spanWords(count: number): string {
  * given, but never decides alone (whole-app audit A5 pass 5 M3: "Alpha 12
  * Week Schedule rev2" and "Schedule Update 2026-09-30 Wk 40" were suggested
  * as lookaheads). A file already saved as a full schedule, imported again,
- * comes preset as a lookahead (A8 pass 5 L3). David can change it.
+ * comes preset as a lookahead (A8 pass 5 L3). David can change it. While
+ * the file's full copy is the schedule shown, it can be neither: the master
+ * must be made current first (A8 pass 5 M1, A5 pass 6 L1).
  */
 export function suggestScheduleImportRole({
   batch,
@@ -463,7 +465,9 @@ export function suggestScheduleImportRole({
   scheduleItems: readonly ScheduleItem[];
 }>): ScheduleImportRoleSuggestion {
   const file = batch.documents.find(document => document.category === 'Schedules');
-  if (file && scheduleDocumentAddsToMaster(file)) return { role: 'lookahead', reason: SAVED_AS_FULL_SCHEDULE, only: true };
+  if (file && scheduleDocumentAddsToMaster(file)) {
+    return { role: 'lookahead', reason: scheduleFileShownAsFullSchedule(file, documents) ? SHOWN_AS_FULL_SCHEDULE : SAVED_AS_FULL_SCHEDULE, only: true };
+  }
   const projects = [...new Map([
     ...batch.items.map(item => item.scheduleProjectName || item.projectName || ''),
     ...(file?.projectNames || []),
@@ -500,20 +504,48 @@ export function suggestScheduleImportRole({
 }
 
 const SAVED_AS_FULL_SCHEDULE = 'this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead';
+const SHOWN_AS_FULL_SCHEDULE = 'this exact file is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead';
+
+function scopeOf(document: ReferenceDocument): string {
+  const names = (document.projectNames || []).map(key).filter(Boolean);
+  return [...new Set(names.length > 0 ? names : [key(document.projectName)].filter(Boolean))].sort().join('|');
+}
+
+/**
+ * Whether a saved full schedule of these same bytes and projects is the
+ * schedule shown for its projects (A8 pass 5 M1, A5 pass 6 L1): added as a
+ * lookahead now, the file would restate its own copy's tasks, not the
+ * master's.
+ */
+function scheduleFileShownAsFullSchedule(file: ReferenceDocument, documents: readonly ReferenceDocument[]): boolean {
+  const sha = typeof file.contentSha256 === 'string' ? file.contentSha256.trim() : '';
+  if (!sha) return false;
+  const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
+  return documents.some(document => document.id !== file.id && shown.has(document.id) &&
+    document.contentSha256 === sha && scopeOf(document) === scopeOf(file));
+}
 
 /**
  * Why Accept is refused, or null (whole-app audit A8 pass 5 L3, 30 Sep
  * 2026): a schedule file already saved as a full schedule, imported again,
  * comes preset as a lookahead (the way to turn a lookahead imported before
  * owner answer Q22 into one); saving it as a full schedule again would only
- * duplicate it.
+ * duplicate it. While that full copy is the schedule shown, saving it either
+ * way is refused: the master is made current first (A8 pass 5 M1, A5 pass 6
+ * L1).
  */
 export function scheduleImportRoleRefusal(
   batch: Pick<PIEScheduleImportBatch, 'documents'>,
   role: ScheduleImportRole,
+  /** The schedules saved now. */
+  documents: readonly ReferenceDocument[] = [],
 ): string | null {
-  const presetLookahead = batch.documents.some(document => document.category === 'Schedules' && scheduleDocumentAddsToMaster(document));
-  return presetLookahead && role === 'master'
+  const preset = batch.documents.find(document => document.category === 'Schedules' && scheduleDocumentAddsToMaster(document));
+  if (!preset) return null;
+  if (scheduleFileShownAsFullSchedule(preset, documents)) {
+    return 'This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.';
+  }
+  return role === 'master'
     ? 'This exact schedule is already saved as a full schedule for these projects. Choose Lookahead to add it to the master schedule, or Reject Import.'
     : null;
 }

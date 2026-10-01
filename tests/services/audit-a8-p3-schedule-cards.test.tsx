@@ -170,14 +170,23 @@ describe('"Import This Schedule" on a card that has uploaded (audit A8 pass 3 M1
     await expect(h.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.not.toBeNull();
   });
 
-  it('an actual import of the file for the same projects is still recognised: refused as a lookahead, offered as one when it is a full schedule', async () => {
+  it('an actual import of the file for the same projects is still recognised: refused as a lookahead, offered as one when it is a full schedule no longer shown', async () => {
     const first = phone([uploadCopy]);
     const batch = await first.prepareScheduleImportFromAsset(file, ['Alpha']);
     const imported = batch!.documents[0];
 
     // Pin updated (whole-app audit A8 pass 5 L3, 30 Sep 2026): the same file saved as a full schedule is
     // imported again only as a lookahead (owner answer Q22), under an import of its own, not refused.
-    const again = phone([uploadCopy, imported]);
+    // Pin updated again (A8 pass 5 M1, 30 Sep 2026): only once another master is the schedule shown. The
+    // just-imported file is the master in use: picked again it is refused, saying to make the master current first.
+    const inUse = phone([uploadCopy, imported]);
+    await expect(inUse.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
+    expect(inUse.alerts).toEqual([{
+      title: 'Schedule already added',
+      message: 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate. If this file is a lookahead, make your master schedule current first, then import it again.',
+    }]);
+    const master = scheduleDoc('Master', { importBatchId: 'batch-m', isCurrent: true, importedAt: '2026-09-25T00:00:00.000Z' });
+    const again = phone([uploadCopy, { ...imported, isCurrent: false }, master]);
     const reimport = await again.prepareScheduleImportFromAsset(file, ['Alpha']);
     expect(again.alerts).toEqual([]);
     expect(reimport?.documents[0]).toMatchObject({ scheduleRole: 'lookahead', contentSha256: SHA, projectNames: ['Alpha'] });
@@ -188,7 +197,10 @@ describe('"Import This Schedule" on a card that has uploaded (audit A8 pass 3 M1
     // Once it is saved as a lookahead too, a third import of it is refused, as before.
     const third = phone([uploadCopy, imported, reimport!.documents[0]]);
     await expect(third.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
-    expect(third.alerts.map(alert => alert.title)).toEqual(['Schedule already added']);
+    expect(third.alerts).toEqual([{
+      title: 'Schedule already added',
+      message: 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.',
+    }]);
 
     // An older import without a batch, recognised by its tasks: a full schedule, so offered as a lookahead too.
     const legacy = normalizeReferenceDocument({ ...uploadCopy, id: 'legacy-import' });

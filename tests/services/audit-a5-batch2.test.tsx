@@ -177,7 +177,8 @@ describe('importing a schedule again after deleting it', () => {
   it('is wired to the synced deletion records of schedule documents', () => {
     // Pin updated (whole-app audit A8 pass 5 L3, 30 Sep 2026): the identity now comes from scheduleImportOfFile,
     // which resolves it the same way (resolveScheduleImportSourceIdentity) with the same deletion records.
-    expect(app).toMatch(/const \{ identity: sourceIdentity, alreadyImported, asLookahead \} = scheduleImportOfFile\(\{\n\s+bytes: sourcePayload\.data, projects: scopedProjectRecords,\n\s+documentIdIsDeleted: id => deletedDAVERecordIds\(operationalSyncTombstonesRef\.current, 'reference_document'\)\.includes\(id\),/);
+    // Pin updated again (A8 pass 5 M1): it also returns what "Schedule already added" says.
+    expect(app).toMatch(/const \{ identity: sourceIdentity, alreadyImported, asLookahead, alreadyAddedMessage \} = scheduleImportOfFile\(\{\n\s+bytes: sourcePayload\.data, projects: scopedProjectRecords,\n\s+documentIdIsDeleted: id => deletedDAVERecordIds\(operationalSyncTombstonesRef\.current, 'reference_document'\)\.includes\(id\),/);
   });
 });
 

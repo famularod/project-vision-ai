@@ -14,6 +14,15 @@
  *    states: master 60%, wk39 says 70%, wk40 says 70% too (no change, so it
  *    noted no percent); deleting wk39 took the task to 60% and the delete
  *    question said it put back the earlier progress of 1 task.
+ * A8 p5 M1 Picking the master in use again (by accident, or to finish rows
+ *    an Accept Selected left) opened the review preset to Lookahead, "can
+ *    only be added again as a lookahead": the master became its own
+ *    lookahead, whose tasks always show, so a task the next master dropped
+ *    stayed and went overdue.
+ * A5 p6 L1 A lookahead imported before Q22 as a full schedule, imported again
+ *    as a lookahead before the master was made current, paired with its own
+ *    old copy; after Set Active the task showed twice when the file had no
+ *    Area column.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
@@ -23,9 +32,13 @@ import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } fr
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import {
   scheduleImportAddsToMaster,
+  scheduleImportRoleRefusal,
   scheduleItemsAfterLookaheadDeleted,
   scheduleLookaheadDeleteNote,
+  suggestScheduleImportRole,
 } from '../../services/ScheduleLookahead';
+import { resolveScheduleImportSourceIdentity } from '../../services/ScheduleImportSourceIdentity';
+import { scheduleImportOfFile } from '../../services/SharedDocumentActivation';
 import { scheduleProgressRecordedByManager } from '../../services/ScheduleProgressInvariant';
 
 jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toString(16).slice(2)}` }));
@@ -272,5 +285,84 @@ describe('A5 p6 M1: deleting an older lookahead keeps the percent a newer one st
     const below = approve({ items: byDavid(masterItems(20), 'm-pour', 40), documents: [master] }, lookahead, pourRow(lookahead, 30));
     expect(pour(below)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David' });
     expect(pour(below).lookaheadOverlay?.lookaheads[0].percentComplete).toBeNull();
+  });
+});
+
+describe('A8 p5 M1 / A5 p6 L1: a full schedule\'s file is offered again as a lookahead only while it is not the schedule shown', () => {
+  const PROJECTS = [{ id: 'alpha-id', name: 'Alpha' }];
+  const fileOf = (lines: string[]) => {
+    const bytes = new TextEncoder().encode(lines.join('\n'));
+    const identity = resolveScheduleImportSourceIdentity({ bytes, projects: PROJECTS, documentIdIsDeleted: () => false });
+    const pick = (documents: ReferenceDocument[]) => scheduleImportOfFile({
+      bytes, projects: PROJECTS, documentIdIsDeleted: () => false, documents, scheduleItems: [], projectNames: ['Alpha'],
+    });
+    return { identity, pick };
+  };
+  const ALREADY = 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.';
+  const MASTER_FIRST = ' If this file is a lookahead, make your master schedule current first, then import it again.';
+  const masterFile = fileOf([HEADER, 'Pour slab,Alpha,Lot,10/01/2026,10/03/2026,20%', 'Frame walls,Alpha,Lot,10/05/2026,10/09/2026,0%']);
+  const savedMaster = schedule(masterFile.identity.documentId, ['Alpha'], '2026-08-31T12:00:00.000Z', {
+    importBatchId: masterFile.identity.batchId, contentSha256: masterFile.identity.contentSha256,
+  });
+  const newerMaster = schedule('MASTER UPDATE 9152026', ['Alpha'], '2026-09-15T12:00:00.000Z');
+
+  it('the master in use, picked again, is refused "Schedule already added", with what to do if the file is a lookahead', () => {
+    const result = masterFile.pick([savedMaster]);
+    expect(result).toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: ALREADY + MASTER_FIRST });
+  });
+
+  it('once another master is the one shown, the same file is offered as a lookahead under an import of its own', () => {
+    for (const documents of [[{ ...savedMaster, isCurrent: false }, newerMaster], [savedMaster, newerMaster]]) {
+      const result = masterFile.pick(documents);
+      expect(result).toMatchObject({ alreadyImported: false, asLookahead: true });
+      expect(result.identity.documentId).not.toBe(savedMaster.id);
+    }
+  });
+
+  it('a file already saved as a lookahead is refused as before, with no hint', () => {
+    expect(masterFile.pick([{ ...savedMaster, scheduleRole: 'lookahead' }]))
+      .toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: ALREADY });
+  });
+
+  it('the review refuses it too when the file\'s full copy is the schedule shown by the time it is accepted', () => {
+    const again = schedule('again', ['Alpha'], APPROVED, { scheduleRole: 'lookahead', contentSha256: masterFile.identity.contentSha256 });
+    const batch = { documents: [again], items: [] as ScheduleItem[] };
+    expect(suggestScheduleImportRole({ batch, documents: [savedMaster], scheduleItems: [] })).toEqual({
+      role: 'lookahead', only: true,
+      reason: 'this exact file is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead',
+    });
+    const refusal = 'This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.';
+    expect(scheduleImportRoleRefusal(batch, 'lookahead', [savedMaster])).toBe(refusal);
+    expect(scheduleImportRoleRefusal(batch, 'master', [savedMaster])).toBe(refusal);
+    // With the master made current: as before.
+    expect(scheduleImportRoleRefusal(batch, 'lookahead', [{ ...savedMaster, isCurrent: false }, newerMaster])).toBeNull();
+    expect(scheduleImportRoleRefusal(batch, 'master', [{ ...savedMaster, isCurrent: false }, newerMaster]))
+      .toMatch(/^This exact schedule is already saved as a full schedule/);
+  });
+
+  it('a lookahead saved as a full schedule before Q22, with no Area column: refused until the master is current, then shown once', () => {
+    const LINES = ['Task,Project,Start,Finish,Owner', 'Pour slab,Alpha,09/28/2026,09/30/2026,Acme Concrete'];
+    const earlierFile = fileOf(LINES);
+    // Imported before Q22 as a full schedule: newer than the master, so it is the schedule Alpha shows.
+    const earlier = schedule(earlierFile.identity.documentId, ['Alpha'], '2026-09-15T12:00:00.000Z', {
+      importBatchId: earlierFile.identity.batchId, contentSha256: earlierFile.identity.contentSha256,
+    });
+    const saved: State = {
+      items: [...masterItems(20), ...csvRows(LINES, earlier).map(row => ({ ...row, id: `old-${row.id}` }))],
+      documents: [master, earlier],
+    };
+    expect(view(saved, /Pour/)).toEqual([`old-${earlier.id}-1 Pour slab 09/28/2026-09/30/2026 0%`]);
+    expect(earlierFile.pick(saved.documents)).toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: ALREADY + MASTER_FIRST });
+
+    // Set Active on the master; then the file is offered as a lookahead and restates the master's task.
+    const current: State = { ...saved, documents: [{ ...master, importedAt: master.importedAt }, { ...earlier, isCurrent: false }] };
+    expect(view(current, /Pour/)).toEqual(['m-pour Pour slab 10/01/2026-10/03/2026 20%']);
+    const picked = earlierFile.pick(current.documents);
+    expect(picked.asLookahead).toBe(true);
+    const again = schedule(picked.identity.documentId, ['Alpha'], APPROVED, {
+      importBatchId: picked.identity.batchId, contentSha256: picked.identity.contentSha256, scheduleRole: 'lookahead',
+    });
+    const after = approve(current, again, csvRows(LINES, again));
+    expect(view(after, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 20%']);
   });
 });

@@ -387,6 +387,17 @@ function scheduleImportsSavedForFile({
  * tasks are left as they are and the lookahead restates the tasks of the
  * master shown now, as any lookahead does. A file already saved as a
  * lookahead is refused, as before.
+ *
+ * Whole-app audit A8 pass 5 M1 / A5 pass 6 L1 (30 Sep 2026): that offer
+ * did not check whether the saved copy is the schedule in use. Picking the
+ * current master again (by accident, or to finish the rows an Accept
+ * Selected left) opened the review preset to Lookahead, and accepting made
+ * the master its own lookahead, whose tasks always show: a task the next
+ * master dropped stayed and went overdue. A pre-Q22 lookahead still shown
+ * as a full schedule paired with its own copy, and showed twice after the
+ * master was made current. The file is offered as a lookahead only while no
+ * saved full copy of it is the schedule shown for its projects; otherwise
+ * "Schedule already added" says to make the master current first.
  */
 export function scheduleImportOfFile({
   bytes,
@@ -402,21 +413,40 @@ export function scheduleImportOfFile({
   documents: readonly ReferenceDocument[];
   scheduleItems: readonly ScheduleItem[];
   projectNames: readonly string[];
-}>): { identity: ScheduleImportSourceIdentity; alreadyImported: boolean; asLookahead: boolean } {
+}>): {
+  identity: ScheduleImportSourceIdentity;
+  alreadyImported: boolean;
+  asLookahead: boolean;
+  /** What "Schedule already added" says (A8 pass 5 M1). */
+  alreadyAddedMessage: string;
+} {
   const identity = resolveScheduleImportSourceIdentity({ bytes, projects, documentIdIsDeleted });
   const saved = scheduleImportsSavedForFile({
     documents, scheduleItems, documentId: identity.documentId, contentSha256: identity.contentSha256, projectNames,
   });
-  const asLookahead = saved.length > 0 &&
+  const savedAsFullSchedule = saved.length > 0 &&
     saved.every(document => isScheduleDocument(document) && !scheduleDocumentAddsToMaster(document));
-  if (!asLookahead) return { identity, alreadyImported: saved.length > 0, asLookahead: false };
+  const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
+  const inUse = savedAsFullSchedule && saved.some(document => shown.has(document.id));
+  if (!savedAsFullSchedule || inUse) {
+    return {
+      identity,
+      alreadyImported: saved.length > 0,
+      asLookahead: false,
+      alreadyAddedMessage: inUse ? `${SCHEDULE_ALREADY_ADDED} ${SCHEDULE_MASTER_CURRENT_FIRST}` : SCHEDULE_ALREADY_ADDED,
+    };
+  }
   const savedIds = new Set(documents.map(document => document.id));
   return {
     identity: resolveScheduleImportSourceIdentity({ bytes, projects, documentIdIsDeleted: id => documentIdIsDeleted(id) || savedIds.has(id) }),
     alreadyImported: false,
     asLookahead: true,
+    alreadyAddedMessage: SCHEDULE_ALREADY_ADDED,
   };
 }
+
+const SCHEDULE_ALREADY_ADDED = 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.';
+const SCHEDULE_MASTER_CURRENT_FIRST = 'If this file is a lookahead, make your master schedule current first, then import it again.';
 
 function canonicalProjectNames(projectNames: readonly unknown[]): string {
   return [...new Set(projectNames
