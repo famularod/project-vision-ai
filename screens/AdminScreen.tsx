@@ -68,6 +68,7 @@ import {
   projectUpdateCopyIsLastInCloud,
   reconcileSyncConflicts,
   refreshFieldUpdateConflictCloudCopies,
+  refreshScheduleItemConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
@@ -905,10 +906,13 @@ export function AdminScreen({
    * Review Conflicts opens on the cloud's copies as they are now (whole-app
    * audit A4 pass 16 L3, A7 pass 14 M-1): the "Cloud:" line showed the copy
    * saved when the conflict was found, however often the iPad edited since.
+   * Tasks' copies too (A7 pass 15 L-3): it said "Cloud: 0%" after the web
+   * set a task to 50%.
    */
   function openConflictReview() {
     setConflictReviewVisible(true);
     void refreshFieldUpdateConflictCloudCopies().then(setSyncConflicts, () => undefined);
+    void refreshScheduleItemConflictCloudCopies().then(setSyncConflicts, () => undefined);
   }
 
   function confirmConflictResolution(

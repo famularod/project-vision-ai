@@ -4845,6 +4845,66 @@ function withPhoneEditsUndone(row: ScheduleItem, fields: readonly string[], befo
   return next as ScheduleItem;
 }
 
+/** Two copies of a task alike in every field but identity, stamps, earlier task ids and import memberships. */
+function sameTaskContent(left: unknown, right: unknown): boolean {
+  if (!isRecord(left) || !isRecord(right)) return false;
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].every(field =>
+    TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) || taskFieldValue(left, field) === taskFieldValue(right, field));
+}
+
+/** This phone's copies of a task in conflict: the conflict's own, and any waiting in the queue. */
+function phoneCopiesOfTaskInConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): unknown[] {
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  return [
+    (conflict.localPayload as Partial<ScheduleItemRecordPayload> | undefined)?.itemData,
+    ...queue.filter(item => item.id === queueItemId && item.operation !== 'delete')
+      .map(item => (item.payload as Partial<ScheduleItemRecordPayload>).itemData),
+  ].filter(isRecord);
+}
+
+/**
+ * A task's conflict saved again with the cloud's row when the row changed
+ * since the copy the screen showed (whole-app audit A7 pass 15 L-3, as for
+ * field updates): in any field but identity, stamps, earlier task ids and
+ * import memberships, which change with no edit of David's or which Keep
+ * Phone keeps from the row; and not when the row is one of this phone's own
+ * copies. `seen` is by default the copy saved with the conflict. True when
+ * it changed.
+ */
+async function recordTaskCloudCopyIfChanged(
+  conflict: SyncConflict,
+  row: ScheduleItem,
+  phoneCopies: readonly unknown[],
+  seen: unknown = conflict.remotePayload,
+): Promise<boolean> {
+  if (sameTaskContent(row, seen) || phoneCopies.some(copy => sameTaskContent(row, copy))) return false;
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflict.id)) return;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
+      ? { ...item, remotePayload: row, remoteChangedAt: row.updatedAt ?? item.remoteChangedAt }
+      : item));
+  });
+  return true;
+}
+
+/**
+ * The cloud's row of each task in conflict, read again when Review Conflicts
+ * opens (whole-app audit A7 pass 15 L-3, as field updates are): the "Cloud:"
+ * line showed the copy saved when the conflict was found, after the web set
+ * the task to 50%. One that cannot be read, or is gone, stays as it is. The
+ * conflicts, as saved now.
+ */
+export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConflict[]> {
+  const conflicts = (await getSyncConflicts()).filter(conflict => conflict.entity === 'schedule_item');
+  for (const conflict of conflicts) {
+    const row = await currentCloudScheduleItem(conflict.localId).catch(() => null);
+    if (!row) continue;
+    await recordTaskCloudCopyIfChanged(conflict, row, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()));
+  }
+  return getSyncConflicts();
+}
+
 /** Takes a task's waiting edits off the queue; the edits taken. */
 function withdrawScheduleItemFromSyncQueue(itemId: string): Promise<SyncQueueItem[]> {
   const queueItemId = scheduleItemQueueItemId(itemId);
@@ -4993,14 +5053,31 @@ export async function resolveScheduleItemSyncConflict(
     throw new Error('sync_conflict_local_copy_missing');
   }
 
+  // The cloud's row as it is now, before anything is sent (whole-app audit
+  // A7 pass 15 L-3, as for field updates, A4 pass 16 L3 and pass 17 L1).
+  // Keep Phone put the phone's copy over a cloud edit the screen never
+  // showed: the web's 50% was lost while Review Conflicts said "0%". When the
+  // row changed since the copy the screen showed, the conflict is saved with
+  // it and nothing is sent: David reviews it again. A cloud that cannot be
+  // read changes nothing; a task the cloud no longer has is not written
+  // back, and its conflict is closed.
+  const cloudNow = await currentCloudScheduleItem(conflict.localId);
+  if (!cloudNow) {
+    await clearScheduleItemSyncConflicts(conflict.localId);
+    throw new Error('sync_conflict_record_deleted');
+  }
+  if (await recordTaskCloudCopyIfChanged(conflict, cloudNow, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shown)) {
+    throw new Error('sync_conflict_cloud_copy_changed');
+  }
+
   // The phone's copy, still in every revision the cloud copy was re-homed
   // into (whole-app audit A5 pass 3 F6) and answering to every earlier task
   // id the cloud copy names (A8 pass 10 L2: a delete on another device wrote
-  // one); the upload adds any newer ones.
-  const remoteCopy = isRecord(conflict.remotePayload) ? conflict.remotePayload as ScheduleItem : null;
+  // one): the cloud's row as it is now, not the copy saved with the conflict
+  // (A7 pass 15 L-3). The upload adds any newer ones.
   const keptItem = withScheduleTaskEarlierIdsOf(
-    withScheduleImportMembershipOf(localItem, remoteCopy),
-    remoteCopy,
+    withScheduleImportMembershipOf(localItem, cloudNow),
+    cloudNow,
   );
   const queueItemId = scheduleItemQueueItemId(localItem.id);
   await enqueuePendingChange<ScheduleItemRecordPayload>({

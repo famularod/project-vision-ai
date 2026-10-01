@@ -1632,7 +1632,15 @@ describe('offline upload deletion barriers', () => {
       notes: '',
       updatedAt: '2026-07-26T22:48:30.000Z',
     };
+    // The sync that finds the conflict; Keep Phone's own read of the row
+    // (A7 pass 15 L-3); its upload's.
     mockListScheduleItems
+      .mockResolvedValueOnce({
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [newerCloudTask],
+      })
       .mockResolvedValueOnce({
         ok: true,
         configured: true,
@@ -1710,16 +1718,20 @@ describe('offline upload deletion barriers', () => {
 
     it('uploads the phone copy with every revision either copy names, and keeps it on the phone', async () => {
       const conflict = await conflictWithRehomedCloudCopy();
-      // Meanwhile a third revision also took the task in.
-      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+      // Meanwhile a third revision also took the task in. Keep Phone reads the
+      // task's row first, then its upload reads the list (A7 pass 15 L-3).
+      const current = cloudList([{
         ...(conflict.remotePayload as ScheduleItem),
         alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
-      }]));
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
 
+      // The phone keeps every revision the cloud's row names now (A7 pass 15
+      // L-3): it kept only those of the copy saved with the conflict, ['batch-rev-2'].
       await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
         notes: phoneTask.notes,
         status: phoneTask.status,
-        alsoImportedInBatchIds: ['batch-rev-2'],
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
       });
       expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({
         notes: phoneTask.notes,
@@ -1734,9 +1746,11 @@ describe('offline upload deletion barriers', () => {
     it('settles without a new conflict when the cloud differs only by a newer revision', async () => {
       const conflict = await conflictWithRehomedCloudCopy();
       const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
-      mockListScheduleItems.mockResolvedValueOnce(cloudList([
+      // Keep Phone's own read of the row, then its upload's (A7 pass 15 L-3).
+      const current = cloudList([
         { ...phoneCopy, alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'] },
-      ]));
+      ]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
 
       await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
         notes: phoneTask.notes,
@@ -1796,15 +1810,19 @@ describe('offline upload deletion barriers', () => {
     it('uploads the phone copy with every earlier id either copy names, and keeps them on the phone', async () => {
       const conflict = await conflictWithWebDelete();
       expect(conflict).toBeDefined();
-      // Meanwhile another delete handed it one more.
-      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+      // Meanwhile another delete handed it one more. Keep Phone reads the
+      // task's row first, then its upload reads the list (A7 pass 15 L-3).
+      const current = cloudList([{
         ...(conflict.remotePayload as ScheduleItem),
         revisedFromTaskIds: ['row-w', 'row-x', 'row-a'],
-      }]));
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
 
       const kept = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local');
       expect(kept).toMatchObject({ notes: phoneTask.notes });
-      expect([...(kept.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-x']);
+      // The phone answers to row W too (A7 pass 15 L-3): it kept only the ids
+      // of the copy saved with the conflict, ['row-a', 'row-x'].
+      expect([...(kept.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
       const uploaded = mockUpsertScheduleItem.mock.calls[mockUpsertScheduleItem.mock.calls.length - 1][0] as ScheduleItem;
       expect(uploaded).toMatchObject({ notes: phoneTask.notes, importBatchId: 'batch-n' });
       expect([...(uploaded.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
@@ -1815,7 +1833,9 @@ describe('offline upload deletion barriers', () => {
     it('settles without a new conflict when the cloud differs only by an earlier id', async () => {
       const conflict = await conflictWithWebDelete();
       const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
-      mockListScheduleItems.mockResolvedValueOnce(cloudList([{ ...phoneCopy, revisedFromTaskIds: ['row-a', 'row-x'] }]));
+      // Keep Phone's own read of the row, then its upload's (A7 pass 15 L-3).
+      const current = cloudList([{ ...phoneCopy, revisedFromTaskIds: ['row-a', 'row-x'] }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
 
       await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({ notes: phoneTask.notes });
       expect(mockUpsertScheduleItem).not.toHaveBeenCalled();

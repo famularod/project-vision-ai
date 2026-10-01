@@ -17,6 +17,15 @@
  *     that landed is undone, back to the cloud copy the screen showed; a read
  *     that fails when it is needed reports the failure and changes nothing.
  *
+ * L-3 Keep Phone on a task sent the phone's copy without reading the cloud
+ *     again, and Review Conflicts never re-read a task's cloud copy: after
+ *     the web set the task to 50%, the screen still said "Cloud: 0%", and
+ *     Keep Phone put the phone's copy over the 50%. The kept copy also took
+ *     its earlier task ids from the copy saved with the conflict. Keep Phone
+ *     now reads the row first: changed since the screen showed it, nothing is
+ *     sent and David reviews it again; unreadable, nothing changes; deleted,
+ *     the conflict closes. Review Conflicts reads tasks' rows when it opens.
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as sync-tombstone-upload-gate.test.ts does).
  */
@@ -72,6 +81,7 @@ import {
   getOfflineQueue,
   getSyncConflicts,
   queueScheduleItemRecord,
+  refreshScheduleItemConflictCloudCopies,
   resolveScheduleItemSyncConflict,
   runScheduleItemCloudSync,
   uploadPendingChanges,
@@ -289,5 +299,96 @@ describe('L-1: Keep Cloud on a task never ends with the phone edit David chose t
     expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+describe('L-3: Keep Phone on a task never overwrites a cloud edit the screen never showed (audit A7 pass 15)', () => {
+  it('the web set 50% after the conflict, and the screen still showed 0%: Keep Phone sends nothing, saves the 50% on the conflict, and asks for review again; chosen again, it goes ahead', async () => {
+    const conflict = await conflictWithWebCopy();
+    const shown = conflict.remotePayload as ScheduleItem; // "Cloud: Not Started · 0%"
+    const current = webEnters50(conflict);
+
+    // It sent the phone's copy over the 50%, and closed the conflict.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_changed');
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(current);
+    await expect(getSyncConflicts()).resolves.toEqual([{
+      ...conflict, remotePayload: current, remoteChangedAt: current.updatedAt,
+    }]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+
+    // Review Conflicts now shows the 50%; David keeps the phone's copy again.
+    const [saved] = await getSyncConflicts();
+    const kept = await resolveScheduleItemSyncConflict(saved.id, 'keep_local', { cloudCopyShown: saved.remotePayload });
+    expect(kept).toMatchObject({ notes: phoneTask.notes, percentComplete: 0 });
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: phoneTask.notes, percentComplete: 0 });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('the cloud changed only by an earlier task id or its stamp: Keep Phone sends the phone\'s copy, which answers to every earlier id the cloud has now', async () => {
+    const conflict = await conflictWithWebCopy();
+    const shown = conflict.remotePayload as ScheduleItem;
+    // Another web delete handed the task row W; the row was saved again.
+    mockCloudRows.set(phoneTask.id, {
+      ...shown, revisedFromTaskIds: ['row-w', 'row-x', 'row-a'], updatedAt: '2026-09-30T11:00:00.000Z',
+    });
+
+    const kept = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown });
+    expect(kept).toMatchObject({ notes: phoneTask.notes });
+    // It answered only to row X and row A, the ids of the copy saved with the conflict.
+    expect([...(kept.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: phoneTask.notes });
+    expect([...(mockCloudRows.get(phoneTask.id)!.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a cloud that cannot be read changes nothing', async () => {
+    const conflict = await conflictWithWebCopy();
+    mockCloudUnreadable = true;
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: conflict.remotePayload }))
+      .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a task the cloud no longer has closes the conflict, sending nothing', async () => {
+    const conflict = await conflictWithWebCopy();
+    mockCloudRows.delete(phoneTask.id);
+
+    // It wrote the phone's copy back into the cloud.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: conflict.remotePayload }))
+      .rejects.toThrow('sync_conflict_record_deleted');
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.has(phoneTask.id)).toBe(false);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  describe('Review Conflicts reads a task\'s cloud copy when it opens', () => {
+    it('saves the web\'s 50% on the conflict', async () => {
+      const conflict = await conflictWithWebCopy();
+      const current = webEnters50(conflict);
+
+      await expect(refreshScheduleItemConflictCloudCopies()).resolves.toEqual([{
+        ...conflict, remotePayload: current, remoteChangedAt: current.updatedAt,
+      }]);
+    });
+
+    it('leaves the conflict as it was when the row changed only by its stamp or an earlier id, cannot be read, or is gone', async () => {
+      const conflict = await conflictWithWebCopy();
+      const shown = conflict.remotePayload as ScheduleItem;
+      mockCloudRows.set(phoneTask.id, { ...shown, revisedFromTaskIds: ['row-w', 'row-x', 'row-a'], updatedAt: '2026-09-30T11:00:00.000Z' });
+      await expect(refreshScheduleItemConflictCloudCopies()).resolves.toEqual([conflict]);
+      mockCloudUnreadable = true;
+      await expect(refreshScheduleItemConflictCloudCopies()).resolves.toEqual([conflict]);
+      mockCloudUnreadable = false;
+      mockCloudRows.delete(phoneTask.id);
+      await expect(refreshScheduleItemConflictCloudCopies()).resolves.toEqual([conflict]);
+    });
   });
 });
