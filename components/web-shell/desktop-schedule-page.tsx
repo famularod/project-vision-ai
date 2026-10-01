@@ -14,6 +14,7 @@ import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  daveWebNewTaskProjectId,
   daveWebScheduleDateForSave,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -233,6 +234,18 @@ export function DesktopSchedulePage({
     const projectTasks = tasks.filter(task =>
       normalize(task.scheduleProjectName || task.projectName) === normalize(form.projectName),
     );
+    // A new item's cloud project is looked up by its project's name among
+    // the open projects, as on the Tasks page. It had been copied from
+    // another task of the project: with no task yet nothing could be added,
+    // and one task saved with another project's id passed that wrong id to
+    // every new item, which the phone would not upload (whole-app audit A12
+    // pass 5 M1, 30 Sep 2026). An existing item keeps its stored id.
+    let projectId = opened?.projectId?.trim() || null;
+    if (!projectId) {
+      const project = daveWebNewTaskProjectId(auth.snapshot, form.projectName);
+      if (!project.ok) return { ok: false, message: project.message };
+      projectId = project.projectId;
+    }
     // Dates as the task stores them, not as the date inputs hold them; an
     // unchanged day keeps its stored text (whole-app audit A12 pass 3 M2).
     // A box that still shows what the stored date showed keeps the stored
@@ -255,9 +268,7 @@ export function DesktopSchedulePage({
     return {
       ok: true,
       draft: {
-        projectId: opened?.projectId ??
-          projectTasks.find(task => Boolean(task.projectId))?.projectId ??
-          null,
+        projectId,
         // The item's own type: the builder saved every item as a Task, so an
         // RFI or Issue lost its type and a closed one could not be saved
         // (whole-app audit round 2 F5, 30 Sep 2026).

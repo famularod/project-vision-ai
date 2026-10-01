@@ -18,6 +18,12 @@ const mockRefreshSnapshot = jest.fn();
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({
   useDesktopAuth: () => ({
     userEmail: 'pm@example.com',
+    // A new item's cloud project id now comes from the open projects, not
+    // from another task of the project (whole-app audit A12 pass 5 M1,
+    // 30 Sep 2026), so the workspace's project list is given here.
+    snapshot: {
+      projects: [{ id: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5', name: '2321 Compliance Project' }],
+    },
     createTask: mockCreateTask,
     updateTask: mockUpdateTask,
     updateTasks: mockUpdateTasks,

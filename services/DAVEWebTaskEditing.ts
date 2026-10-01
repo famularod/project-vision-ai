@@ -72,6 +72,62 @@ export type DAVEWebTaskDraft = Readonly<{
 export const DAVE_WEB_TASK_PROJECT_FIXED_TEXT =
   'A task stays in its project. To move it, add it in the right project, then delete it here.';
 
+/** The web's project list, as the signed-in workspace holds it. */
+export type DAVEWebProjectListing = Readonly<{
+  projects: readonly Readonly<{
+    id?: string | null;
+    name: string;
+    archived?: boolean | null;
+  }>[];
+  openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
+}>;
+
+export type DAVEWebNewTaskProjectResult =
+  | Readonly<{ ok: true; projectId: string }>
+  | Readonly<{ ok: false; message: string }>;
+
+/**
+ * The cloud project id a new web task is saved with: the one open cloud
+ * project with the task's project name (whole-app audit A12 pass 5 M1,
+ * 30 Sep 2026). The Schedule Builder had copied the id of another task in
+ * the project, so a project with no tasks could not be started on the web
+ * ("Choose a current cloud project before saving this task."), and a
+ * project holding one task saved with another project's id passed that
+ * wrong id to every new item, which the phone then refused to upload
+ * ("project name and cloud identity disagree"). Names are compared as the
+ * phone's upload compares them (trimmed, any case). Not exactly one open
+ * project of that name: nothing is saved, and he is told why.
+ */
+export function daveWebNewTaskProjectId(
+  listing: DAVEWebProjectListing | null | undefined,
+  projectName: string,
+): DAVEWebNewTaskProjectResult {
+  const name = projectName.trim();
+  const key = projectIdentityKey(name);
+  // Every open row, two with one name included; the project list (one
+  // entry per name) only where the workspace has no such list.
+  const rows: DAVEWebProjectListing['projects'] =
+    listing?.openCloudProjects ?? listing?.projects ?? [];
+  const ids = new Set(
+    rows
+      .filter(row => !row.archived && projectIdentityKey(row.name) === key)
+      .map(row => row.id?.trim() || '')
+      .filter(Boolean),
+  );
+  if (ids.size === 1) return { ok: true, projectId: [...ids][0] };
+  return {
+    ok: false,
+    message: ids.size === 0
+      ? `This item was not saved: “${name}” is not one of your open projects in the cloud. Check the project on your iPhone or iPad, then try again.`
+      : `This item was not saved: more than one open project is named “${name}”, so Vitruvius cannot tell which one it belongs to. Check your projects on your iPhone or iPad.`,
+  };
+}
+
+/** As OperationalProjectIdentity compares a row's project name with its id's. */
+function projectIdentityKey(value: string | null | undefined): string {
+  return (value || '').trim().toLocaleLowerCase('en-US');
+}
+
 export class DAVEWebTaskValidationError extends Error {
   constructor(message: string) {
     super(message);

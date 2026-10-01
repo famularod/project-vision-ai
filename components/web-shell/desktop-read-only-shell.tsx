@@ -41,6 +41,7 @@ import {
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
   DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
+  daveWebNewTaskProjectId,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
@@ -1155,9 +1156,14 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
-      const selectedProjectId = editingTask?.projectId || auth.snapshot?.projects.find(project =>
-        matchesProject(project.name, draft.projectName),
-      )?.id || null;
+      // A new task's cloud project: the one open project with its name, as
+      // in the Schedule Builder (whole-app audit A12 pass 5 M1, 30 Sep 2026).
+      let selectedProjectId = editingTask?.projectId?.trim() || null;
+      if (!selectedProjectId) {
+        const project = daveWebNewTaskProjectId(auth.snapshot, draft.projectName);
+        if (!project.ok) throw new DAVEWebTaskValidationError(project.message);
+        selectedProjectId = project.projectId;
+      }
       const item = buildDAVEWebScheduleItem({
         draft: { ...draft, projectId: selectedProjectId },
         current: editingTask,

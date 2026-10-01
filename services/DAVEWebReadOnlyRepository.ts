@@ -45,6 +45,13 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
    * checked by Ask ECOS so a question naming one is refused (audit A9 pass 3 L1).
    */
   closedProjectNames?: readonly string[];
+  /**
+   * Every open (not closed, not deleted) cloud project row with its id, two
+   * rows with one name included; `projects` shows one entry per name. A new
+   * web task takes its project's id from here, and only when exactly one
+   * open project has its name (whole-app audit A12 pass 5 M1, 30 Sep 2026).
+   */
+  openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
   refreshedAt: string;
 }>;
 
@@ -117,8 +124,15 @@ export async function loadDAVEWebReadOnlySnapshot(
     update => update.updateData,
   ).active;
 
+  const openCloudProjects = rawProjects.flatMap(project => (
+    !project.archived && project.id
+      ? [Object.freeze({ id: project.id, name: project.name })]
+      : []
+  ));
+
   return Object.freeze({
     projects: Object.freeze(projects),
+    openCloudProjects: Object.freeze(openCloudProjects),
     scheduleItems: Object.freeze(scheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(referenceDocuments),
