@@ -3,9 +3,12 @@
  *
  * The native SecureStore adapter must never be bundled into web. Browser
  * sessions are deliberately scoped to the current tab through sessionStorage:
- * refreshes and same-tab navigation survive, while closing the tab removes the
- * durable session boundary. Tokens are never copied into AsyncStorage or
- * localStorage. Server-side RLS remains the authorization boundary.
+ * refreshes and same-tab navigation survive, and other tabs do not share it.
+ * Closing the tab does not end the sign-in for good: the browser's Reopen
+ * Closed Tab (and restoring a session) brings the tab back with its
+ * sessionStorage, still signed in (whole-app audit A12 pass 7). Tokens are
+ * never copied into AsyncStorage or localStorage. Server-side RLS remains
+ * the authorization boundary.
  */
 
 export const SUPABASE_AUTH_STORAGE_LABEL = 'Browser session adapter' as const;
