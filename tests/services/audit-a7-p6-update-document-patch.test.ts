@@ -5092,3 +5092,43 @@ describe('"Send your version?" keeps a document upload that finished while the q
     expect(await getOfflineQueue()).toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 23 L3 (older): the conflict is open and a newer
+ * edit is held; a late analysis turns its queue entry into a patch carrying
+ * that edit (A7 pass 14 L-2). A refresh before the patch went up ignored the
+ * edit the patch carried and put the iPad's copy on the card as Sent. After
+ * Keep Phone, Settings saw a Sent card and never sent the newer edit, which
+ * waited for good on its photo check: the cloud and the card showed the
+ * conflict's copy while "45 yards" sat unsent in the queue.
+ */
+describe('a refresh keeps the newer edit a late analysis\'s patch carries (audit A4 pass 23 L3)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('the refresh comes before Keep Phone: the card keeps the newer edit, which then reaches the cloud and the card', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    expect((await queuedFor())?.payload).toMatchObject({
+      documentPatches: [expect.objectContaining({ photoId: analyzingPhoto.id })],
+      newerEdit: expect.objectContaining({ payload: expect.objectContaining({ updateData: expect.objectContaining({ notes: NEWER }) }) }),
+    });
+    await refresh(phone); // before the patch goes up
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(phone.saved()?.status).not.toBe('sent');
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+});

@@ -7,6 +7,7 @@ type ProjectUpdateQueuePayload = {
   id?: unknown;
   updateData?: unknown;
   archiveOnly?: unknown;
+  newerEdit?: unknown;
 };
 
 /**
@@ -58,19 +59,34 @@ export function hasMatchingQueuedProjectUpdateRevision(
  * still be there: a waiting status alone kept an old copy over a newer cloud
  * record after its queue record had cleared. A document change alone, or an
  * archive, does not keep it.
+ *
+ * An edit a queued item carries (newerEdit) keeps it as a queued whole copy
+ * does (whole-app audit A4 pass 23 L3): a late analysis result turns an edit
+ * held for conflict review into a patch on the cloud's copy that carries the
+ * edit (A7 pass 14 L-2). A refresh before that patch went up put the iPad's
+ * copy on the card as Sent; after Keep Phone, Settings never sent the edit,
+ * and it waited in the queue for good on a photo check nothing ran.
  */
 export function refreshKeepsLocalProjectUpdate(
   update: ProjectUpdate,
   queue: readonly SyncQueueItem[],
 ): boolean {
-  if (hasMatchingQueuedProjectUpdateRevision(update, queue)) return true;
+  const withCarried = queue.flatMap(item => [item, ...carriedEdit(item)]);
+  if (hasMatchingQueuedProjectUpdateRevision(update, withCarried)) return true;
   if (update.status !== 'queued' && update.status !== 'failed') return false;
-  return queue.some(item => {
+  return withCarried.some(item => {
     if (item.entity !== 'project_update' || item.operation === 'delete') return false;
     const payload = item.payload as ProjectUpdateQueuePayload;
     return payload.id === update.id && payload.archiveOnly !== true &&
       !queuedFieldUpdateDocumentPatches(item) && isProjectUpdateRecord(payload.updateData);
   });
+}
+
+/** The edit a queued item carries (newerEdit), as the queue item it goes back as. */
+function carriedEdit(item: SyncQueueItem): SyncQueueItem[] {
+  if (item.entity !== 'project_update') return [];
+  const carried = (item.payload as ProjectUpdateQueuePayload).newerEdit;
+  return carried && typeof carried === 'object' ? [carried as SyncQueueItem] : [];
 }
 
 /**
