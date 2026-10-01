@@ -34,7 +34,7 @@ import {
   findProjectAreaSuggestions,
   hasSavedAreaLocation,
 } from './AreaSuggestion';
-import { gpsAccuracyFeet, isConfidentlyInsideArea } from './GpsPrecision';
+import { isConfidentlyInsideArea, isConfidentlyOutsideArea as isPlacementConfidentlyOutside } from './GpsPrecision';
 import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
 import { fixIsCurrent } from './DraftPhotoGps';
@@ -1770,13 +1770,16 @@ function matchesProject(projectName: string | null | undefined, value: string | 
   return normalizedKey(projectName) === normalizedKey(value || '');
 }
 
-/** The fix's whole error margin lies outside the area's circle. */
+/** The fix's whole error margin lies outside the area's circle; never for an unknown margin (pass 1 low, G-L1). */
 function isConfidentlyOutsideArea(
   fix: Readonly<{ latitude: number; longitude: number; accuracy: number | null }>,
   area: ProjectArea,
 ) {
-  const distance = distanceBetweenCoordinatesFeet(fix, area);
-  return distance - (gpsAccuracyFeet(fix.accuracy) ?? 0) > area.radiusFeet;
+  return isPlacementConfidentlyOutside({
+    distanceFeet: distanceBetweenCoordinatesFeet(fix, area),
+    accuracyMeters: fix.accuracy,
+    radiusFeet: area.radiusFeet,
+  });
 }
 
 function sameArea(left: string | null | undefined, right: string | null | undefined) {

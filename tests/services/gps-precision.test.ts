@@ -45,8 +45,11 @@ describe('GPS accuracy units', () => {
     // 175 ft area even at its centre. Read as feet, it used to pass.
     expect(isConfidentlyInsideArea({ distanceFeet: 0, accuracyMeters: 65, radiusFeet: 175 })).toBe(false);
     expect(isConfidentlyInsideArea({ distanceFeet: 100, accuracyMeters: 65, radiusFeet: 175 })).toBe(false);
-    // No accuracy reported: distance alone decides, as before.
-    expect(isConfidentlyInsideArea({ distanceFeet: 170, accuracyMeters: null, radiusFeet: 175 })).toBe(true);
+    // No accuracy reported: the margin is unknown, so the fix is never
+    // confidently inside (GPS review pass 1 low, G-L1; this line used to
+    // expect true, treating such a fix as exact). See
+    // tests/services/audit-r2-gps-lows.test.ts.
+    expect(isConfidentlyInsideArea({ distanceFeet: 170, accuracyMeters: null, radiusFeet: 175 })).toBe(false);
   });
 
   it('widens the clear-winner margin by the error in feet', () => {

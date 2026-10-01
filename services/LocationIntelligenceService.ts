@@ -1,6 +1,6 @@
 import { distanceBetweenCoordinatesFeet, findClosestProjectArea, hasSavedAreaLocation } from './AreaSuggestion';
 import { projectAreasForProject } from './DAVEProjectAreaScope';
-import { formatGpsAccuracy, gpsAccuracyFeet } from './GpsPrecision';
+import { formatGpsAccuracy, isConfidentlyInsideArea, isConfidentlyOutsideArea } from './GpsPrecision';
 import { namedAreaOrNull } from './DraftAreaPresentation';
 import { fixIsCurrent } from './DraftPhotoGps';
 import type {
@@ -376,7 +376,8 @@ function findMatchedArea({
 /**
  * On or off site only from a current fix, and only when its error margin
  * does not straddle the area's edge (pass 15: a stale fix read "On Site";
- * a 1-3 km fix with Precise Location off read "Off Site").
+ * a 1-3 km fix with Precise Location off read "Off Site"); never from a fix
+ * with no usable accuracy (pass 1 low, G-L1).
  */
 function projectPresenceStatus({
   fix,
@@ -386,10 +387,13 @@ function projectPresenceStatus({
   matchedArea: ProjectArea | null | undefined;
 }): ProjectPresenceStatus {
   if (!fix || !matchedArea || !hasSavedAreaLocation(matchedArea)) return 'unknown';
-  const distance = distanceBetweenCoordinatesFeet(fix, matchedArea);
-  const margin = gpsAccuracyFeet(fix.accuracy) ?? 0;
-  if (distance + margin <= matchedArea.radiusFeet) return 'on-site';
-  if (distance - margin > matchedArea.radiusFeet) return 'off-site';
+  const placement = {
+    distanceFeet: distanceBetweenCoordinatesFeet(fix, matchedArea),
+    accuracyMeters: fix.accuracy,
+    radiusFeet: matchedArea.radiusFeet,
+  };
+  if (isConfidentlyInsideArea(placement)) return 'on-site';
+  if (isConfidentlyOutsideArea(placement)) return 'off-site';
   return 'unknown';
 }
 
