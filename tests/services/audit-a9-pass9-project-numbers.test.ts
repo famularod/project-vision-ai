@@ -217,11 +217,11 @@ describe('audit A9 pass 9 L1: identifiers are compared whole, so "2375" is not "
     question => {
       expect(desktop(question, LETTERED, [], A)).toBe(switchOnDesktop('2375B', '2375A'));
       expect(desktop(question, LETTERED)).toBe(switchOnDesktop('2375B'));
-      // Talk reads it as 2375B and as a bare 2375 (2375A's own digits), so it asks which.
-      expect(talkAnswer(question, LETTERED, [], A)).toBe(
-        'This question names two projects, 2375A and 2375B. Which one do you mean? Ask again about just that project.',
-      );
-      expect(mentionedDAVEProject(question, LETTERED)).toBeNull();
+      // Audit A9 pass 10 L2: Talk reads it as 2375B only, as Ask ECOS does
+      // (it asked "which one" for 2375A and 2375B here), so it refuses in
+      // the switch wording and a question with no selection moves to 2375B.
+      expect(talkAnswer(question, LETTERED, [], A)).toBe(switchOnPhone('2375B', '2375A'));
+      expect(mentionedDAVEProject(question, LETTERED)).toBe(B);
     },
   );
 

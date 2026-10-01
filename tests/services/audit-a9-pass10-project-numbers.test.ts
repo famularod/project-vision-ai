@@ -1,6 +1,11 @@
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
 import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import {
+  ecosProjectDisplayIdentifier,
+  ecosProjectIdentifier,
+  findECOSProjectReferenceMismatch,
+} from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 10 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -81,5 +86,54 @@ describe('audit A9 pass 10 L1: a spaced letter is part of the number only as a c
     expect(desktop('What is left on 2375 A?', projects, [], A_STREET)).toBeNull();
     // Without such a project it is the lettered one.
     expect(desktop('What is left on 2375 A?', [SELECTED, PHASE])).toBe(switchOnDesktop('2375A'));
+  });
+});
+
+describe('audit A9 pass 10 L2: a hyphen-joined letter in a project name is part of its identifier', () => {
+  const MAIN = '2375 Main St';
+  const ANNEX = '2375-B Annex';
+  const PROJECTS = [SELECTED, MAIN, ANNEX];
+
+  it('"2375-B Annex" is project 2375, shown as 2375B; a spaced "2375 A Street" stays 2375', () => {
+    expect(ecosProjectIdentifier(ANNEX)).toBe('2375');
+    expect(ecosProjectDisplayIdentifier(ANNEX)).toBe('2375B');
+    expect(ecosProjectDisplayIdentifier('2375 A Street')).toBe('2375');
+    expect(ecosProjectDisplayIdentifier('Building 2375-Phase 2')).toBe('2375');
+  });
+
+  it('on 2375 Main St, "2375-B" names the Annex, in Ask ECOS and Talk', () => {
+    expect(desktop('What is left at 2375-B?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('2375B', '2375'));
+    expect(phone('What is left at 2375B?', PROJECTS, [], MAIN)).toBe(switchOnPhone('2375B', '2375'));
+    expect(talkAnswer('What is left at 2375-B?', PROJECTS, [], MAIN)).toBe(switchOnPhone('2375B', '2375'));
+    expect(mentionedDAVEProject('What is left at 2375-B?', PROJECTS)).toBe(ANNEX);
+    expect(findECOSProjectReferenceMismatch(MAIN, 'What is left at 2375-B?', [SELECTED, MAIN], [ANNEX])).toEqual({
+      selectedProjectIdentifier: '2375',
+      referencedProjectIdentifier: '2375B',
+      referencedProjectClosed: true,
+    });
+  });
+
+  it('on the Annex, a bare "2375" names 2375 Main St, in Ask ECOS and Talk', () => {
+    expect(desktop('What is left at 2375?', PROJECTS, [], ANNEX)).toBe(switchOnDesktop('2375', '2375B'));
+    expect(talkAnswer('What is left at 2375?', PROJECTS, [], ANNEX)).toBe(switchOnPhone('2375', '2375B'));
+    expect(mentionedDAVEProject('What is left at 2375?', PROJECTS)).toBe(MAIN);
+  });
+
+  it.each(['What is left at 2375-B?', 'What is left at 2375B?', 'What is left on 2375-B Annex?', 'Is 2375 B?'])(
+    'on the Annex, its own "%s" is answered, in Ask ECOS and Talk',
+    question => {
+      expect(desktop(question, PROJECTS, [], ANNEX)).toBeNull();
+      expect(talkAnswer(question, PROJECTS, [], ANNEX)).toBeNull();
+    },
+  );
+
+  it('accepted: a spaced capital with a word after it is a word (L1), so "Is 2375 B done?" on the Annex names 2375 Main St', () => {
+    expect(desktop('Is 2375 B done?', PROJECTS, [], ANNEX)).toBe(switchOnDesktop('2375', '2375B'));
+  });
+
+  it('on 2321, a bare "2375" names 2375 Main St, or the Annex when there is no plain 2375', () => {
+    expect(desktop('What is left at 2375?', PROJECTS)).toBe(switchOnDesktop('2375'));
+    expect(desktop('What is left at 2375?', [SELECTED, ANNEX])).toBe(switchOnDesktop('2375B'));
+    expect(desktop('What is left at 2375?', [SELECTED, ANNEX], [], ANNEX)).toBeNull();
   });
 });

@@ -51,14 +51,17 @@ export type ECOSProjectReferenceMismatch = Readonly<{
 export const ECOS_KNOWN_PROJECT_NAMES_LIMIT = 1000;
 
 const LEGACY_IDENTIFIER_SOURCE = String.raw`\b\d{4,6}\b`;
-const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b`;
+/** A plain 3-6 digit number in a project name, not one with a hyphen and a letter ("2375-B"). */
+const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b(?!-[A-Za-z](?![A-Za-z0-9]))`;
 /**
- * A project number with one letter glued to it ("2375A Main"). It is the
- * project's identifier only when the name has no plain 3-6 digit number: the
- * digits name the project, and the letter is kept for display and tells
- * "2375A" from "2375B" (audit A9 pass 8 L7).
+ * A project number with one letter glued to it ("2375A Main") or, since
+ * audit A9 pass 10 L2, joined by a hyphen ("2375-B Annex", read as 2375B as
+ * in a question). It is the project's identifier only when the name has no
+ * plain 3-6 digit number: the digits name the project, and the letter is
+ * kept for display and tells "2375A" from "2375B" (audit A9 pass 8 L7). A
+ * spaced letter is not read ("2375 A Street" is 2375; pass 10 L1).
  */
-const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})([A-Za-z])(?![A-Za-z0-9])`;
+const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})-?([A-Za-z])(?![A-Za-z0-9])`;
 /**
  * A number in a question: 3-6 digits, even with letters right after them
  * ("2375A", "2375B wing"), which used to hide the number (audit A9 pass 7 L5).
@@ -102,10 +105,11 @@ export function findECOSProjectReferenceMismatch(
   for (const { number, letter, spacedLetter } of mentions) {
     // Identifiers are compared whole and upper-cased: "2375" is not "2375A"
     // (audit A9 pass 9 L1). "2375B" names the project written "2375B"; the
-    // selected one's own glued "2375A" names only it (pass 8 L7). A spaced
-    // "2375 B" or "2375-B" names 2375B too, and then also reads as 2375.
+    // selected one's own "2375A" names only it (pass 8 L7; glued, and since
+    // pass 10 L2 spaced or hyphen-joined too: "2375-B" on "2375-B Annex"). A
+    // spaced "2375 B" or "2375-B" names 2375B too, and then also reads as 2375.
     const lettered = `${number}${letter || spacedLetter}`.toUpperCase();
-    if (letter && lettered === selected.lettered) continue;
+    if ((letter || spacedLetter) && lettered === selected.lettered) continue;
     if ((letter || spacedLetter) && lettered !== selected.lettered) {
       const letteredProject = refusal(lettered, name => fullIdentifier(name) === lettered);
       if (letteredProject) return letteredProject;
@@ -134,7 +138,7 @@ function selectedProjectNumbers(projectName: string, source: string): { numbers:
   const plain = uniqueMatches(projectName, source);
   if (plain.length > 0) return { numbers: plain, lettered: '', label: plain[0] };
   const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
-  if (lettered) return { numbers: [lettered[1]], lettered: lettered[0].toUpperCase(), label: lettered[0] };
+  if (lettered) return { numbers: [lettered[1]], lettered: `${lettered[1]}${lettered[2]}`.toUpperCase(), label: `${lettered[1]}${lettered[2]}` };
   return { numbers: [], lettered: '', label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
 }
 
@@ -369,10 +373,15 @@ export function ecosProjectIdentifier(projectName: string): string | null {
     new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName)?.[1] ?? null;
 }
 
-/** The identifier as the name writes it, letter included ("2375A"), for display (audit A9 pass 8 L7). */
+/**
+ * The identifier as the name writes it, letter included ("2375A"), for display
+ * (audit A9 pass 8 L7); a hyphen-joined letter is shown joined ("2375-B Annex"
+ * is 2375B, as a question's "2375-B" is; audit A9 pass 10 L2).
+ */
 export function ecosProjectDisplayIdentifier(projectName: string): string | null {
+  const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
   return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ??
-    new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName)?.[0] ?? null;
+    (lettered ? `${lettered[1]}${lettered[2]}` : null);
 }
 
 /** Whether a question has any number that either rule could treat as a project number. */

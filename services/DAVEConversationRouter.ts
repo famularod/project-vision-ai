@@ -176,7 +176,8 @@ type TalkNamedProject = {
  * Audit A9 pass 9 L1: the number is compared whole ("2375" is not "2375A"),
  * as in Ask ECOS. A bare "2375" names the project numbered just 2375; with
  * none, the `selectedName` 2375A (its own digits), or else every lettered
- * 2375. "2375 B" names 2375B as well as 2375.
+ * 2375. "2375 B" names 2375B as well as 2375, and since audit A9 pass 10 L2
+ * only 2375B when there is such a project ("2375-B Annex" is 2375B).
  */
 function talkNamedProjects(
   transcript: string,
@@ -225,8 +226,11 @@ function talkNamedProjects(
       : plain.length > 0 ? plain
       : ecosProjectIdentifier(selectedName) === number ? [selectedName]
       : all.filter(name => ecosProjectIdentifier(name) === number);
+    // Audit A9 pass 10 L2: a spaced or hyphen-joined letter that is a
+    // project's identifier names only it, like a glued one ("2375-B" on
+    // "2375-B Annex" is its own, not also 2375 Main St), as in Ask ECOS.
     const spaced = spacedLetter ? withKey(number + spacedLetter) : [];
-    for (const name of [...withNumber, ...spaced]) add(name, start, false, unsure);
+    for (const name of spaced.length > 0 ? spaced : withNumber) add(name, start, false, unsure);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
 }

@@ -904,6 +904,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 10 L2: a hyphen-joined letter in a project name is part of
+  // its identifier ("2375-B Annex" is 2375B), as in a question.
+  ...([
+    ['What is left at 2375-B?', '2375 Main St', [SELECTED, '2375 Main St', '2375-B Annex'], '2375B', '2375'],
+    ['What is left at 2375?', '2375-B Annex', [SELECTED, '2375 Main St', '2375-B Annex'], '2375', '2375B'],
+    ['What is left at 2375-B?', '2375-B Annex', [SELECTED, '2375 Main St', '2375-B Annex'], null, undefined],
+    ['What is left at 2375?', SELECTED, [SELECTED, '2375-B Annex'], '2375B', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 10 L2: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   {
     name: 'pass 8 L7: a closed lettered project is refused with its letter, marked closed',
     projectName: SELECTED,
