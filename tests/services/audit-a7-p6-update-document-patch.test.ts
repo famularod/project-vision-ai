@@ -3417,3 +3417,72 @@ describe('after Keep Phone, a newer edit with photos saved during the conflict r
     expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
   });
 });
+
+/**
+ * A4 pass 16 L1 (older): a Keep Phone whose save failed, with no newer edit
+ * waiting, left its kept copy in the queue, still marked as David's choice
+ * over the conflict (only a newer edit was put back). Settings said "Neither
+ * copy was changed. Check the cloud connection and try again.", but once the
+ * signal returned the kept copy went up by itself and the conflict was
+ * cleared. The queue is now put back as it was before the choice: the kept
+ * copy is dropped, and whatever waited for the update (a document change, a
+ * newer edit) is queued again, unmarked, as a failed Keep Cloud does.
+ */
+describe('a failed Keep Phone leaves neither copy changed (audit A4 pass 16 L1)', () => {
+  const offline = { ok: false, configured: true, stubbed: false, error: 'Network request failed' };
+  /** Keep Phone in Settings with the signal gone: its save fails. The alerts Settings shows. */
+  async function keepPhoneFails(phone: Device, conflict: { id: string }) {
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    try {
+      (saveProjectUpdate as jest.Mock).mockResolvedValue(offline);
+      return await chooseInSettingsExpectingFailure(phone, conflict, 'keep_local');
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+  }
+
+  it('nothing else waiting: once reconnected, the kept copy does not go up by itself, and the conflict stays for review', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const [conflict] = await getSyncConflicts();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(await keepPhoneFails(phone, conflict)).toEqual(['Conflict not resolved']);
+    expect(await getOfflineQueue()).toEqual([]);
+
+    await uploadPendingChanges(); // reconnected: the automatic retry
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ id: conflict.id, localId: 'u1' })]);
+    // Keep Phone chosen again still sends it.
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('a document taken off while in conflict: it is queued again as it was, goes onto the cloud\'s copy, and settles nothing', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    const waiting = await queuedFor();
+    expect(waiting!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    expect(await keepPhoneFails(phone, conflict)).toEqual(['Conflict not resolved']);
+    expect(await queuedFor()).toEqual(waiting);
+
+    await uploadPendingChanges(); // reconnected
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+
+  it('control: a newer edit made during the conflict is still put back, unmarked, and waits for review', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 45 yards (saved on the phone during the conflict)' });
+    expect(await keepPhoneFails(phone, (await getSyncConflicts())[0])).toEqual(['Conflict not resolved']);
+    const queued = (await queuedFor())!;
+    expect(queued.payload.overConflict).toBeUndefined();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+});

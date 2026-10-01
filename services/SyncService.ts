@@ -4443,7 +4443,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   const { newerEdit: _carried, ...conflictPayload } = localPayload;
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
-  const { written, newerEdit } = await mutateOfflineQueue(queue => {
+  const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId);
     const newer = newerPhoneEditForFieldUpdateConflict(conflict, queue, localUpdateData);
     const kept: SyncQueueItem = {
@@ -4452,11 +4452,18 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
     };
     const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
-    return { nextQueue, result: { written: kept, newerEdit: newer }, persist: nextQueue !== queue };
+    return { nextQueue, result: { written: kept, newerEdit: newer, before: existing ?? null }, persist: nextQueue !== queue };
   });
   const exact = await uploadExactQueueItem(queueItemId, written);
   if (!exact.landed) {
-    if (newerEdit) await putBackNewerQueuedPhoneEdit(newerEdit, written);
+    // The queue as it was before the choice (whole-app audit A4 pass 16 L1):
+    // with no newer edit, the kept copy stayed queued, marked as David's
+    // choice, and went up by itself once the signal returned, clearing the
+    // conflict, while Settings said "Neither copy was changed". What waited
+    // for the update (a document change, a newer edit) goes back unmarked; an
+    // earlier kept copy of this choice gives way to the edit it carries.
+    const earlierChoice = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
+    await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written);
     throw new Error(exact.error || 'sync_conflict_save_failed');
   }
 
@@ -4493,14 +4500,19 @@ function isNewerQueuedPhoneEdit(item: SyncQueueItem, conflictCopy: unknown): boo
     !sameProjectUpdateContent(payload.updateData, conflictCopy as ProjectUpdate, { retryStampsAside: true });
 }
 
-/** The newer edit back in place of the kept copy Keep Phone queued, unless something newer was queued meanwhile. */
-async function putBackNewerQueuedPhoneEdit(newerEdit: SyncQueueItem, written: SyncQueueItem): Promise<void> {
+/**
+ * What waited for the update back in place of the kept copy Keep Phone
+ * queued (none: the kept copy is dropped), never marked as a choice over the
+ * conflict, unless something newer was queued meanwhile (A4 pass 16 L1).
+ */
+async function putBackPhoneWorkAfterFailedKeepPhone(before: SyncQueueItem | null, written: SyncQueueItem): Promise<void> {
   await mutateOfflineQueue(queue => {
-    const current = queue.find(item => item.id === newerEdit.id);
-    if (current && !sameStagedProjectUpdateRecord(current, written)) {
+    const current = queue.find(item => item.id === written.id);
+    if (current ? !sameStagedProjectUpdateRecord(current, written) : !before) {
       return { nextQueue: queue, result: undefined, persist: false };
     }
-    return { nextQueue: [...queue.filter(item => item.id !== newerEdit.id), newerEdit], result: undefined };
+    const others = queue.filter(item => item.id !== written.id);
+    return { nextQueue: before ? [...others, withoutChoiceOverConflict(before)] : others, result: undefined };
   });
 }
 
