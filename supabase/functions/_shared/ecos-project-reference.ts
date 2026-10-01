@@ -236,8 +236,10 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * "2375 B 2nd floor"), or '' (audit A9 pass 9 L1). Audit A9 pass 10 L1: a
  * lower-case letter is a word ("Is 2375 a priority?"), and a spaced capital
  * that continues the name of a project numbered just this ("2375 A?" for
- * "2375 A Street") is that project's, so neither is one; a hyphen letter
- * always is one (audit A9 pass 11 F2). Audit A9 pass 11 F1: a
+ * "2375 A Street") is that project's, so neither is one (with a word
+ * after the capital, only when that word continues the name too: "2375 A
+ * Phase" is not "2375 A Street"; pass 12 L3); a hyphen letter always is one
+ * (audit A9 pass 11 F2). Audit A9 pass 11 F1: a
  * capital with a word after it is one only when the number and it are a
  * known project's identifier ("Is 2375 B done?" with "2375B Annex"; else
  * "Is 2375 A priority?" is a word).
@@ -265,9 +267,12 @@ export function ecosProjectNumberMentionsAt(
       (capitalBeforeWord && projectNames.some(name => hasIdentifier(name, `${number}${capitalBeforeWord}`)) ? capitalBeforeWord : '');
     // Audit A9 pass 10 L1: not a spaced capital that continues the name of a
     // project numbered just this ("2375 A?" for "2375 A Street"). A hyphen
-    // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2).
+    // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2). Audit
+    // A9 pass 12 L3: with a word after the capital, the name must continue
+    // with that word too ("2375 A Phase 2" does not continue "2375 A Street").
     const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
-      hasIdentifier(name, number) && projectNameAroundNumber(number, '', text.slice(end), [name]))
+      hasIdentifier(name, number) && projectNameAroundNumber(number, '', text.slice(end), [name]) &&
+      (!capitalBeforeWord || wordsAfterNumber(name, number)[1] === wordsAfterNumber(text.slice(end))[1]))
       ? capital
       : '');
     if (
@@ -420,6 +425,18 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
       (previousNameWord && new RegExp(`\\b${previousNameWord}[\\s#:.-]*$`, 'i').test(before)),
     );
   });
+}
+
+/**
+ * The words after `number` in a project name (or, without `number`, in
+ * `text`), lower-cased: ["a", "street"] for "2375 A Street" (audit A9 pass
+ * 12 L3).
+ */
+function wordsAfterNumber(text: string, number?: string): string[] {
+  const at = number ? new RegExp(`\\b${number}\\b`).exec(text) : null;
+  if (number && !at) return [];
+  const rest = at ? text.slice(at.index + at[0].length) : text;
+  return (rest.match(/[a-z0-9]+/gi) ?? []).map(word => word.toLowerCase());
 }
 
 function projectReferenceMismatch(

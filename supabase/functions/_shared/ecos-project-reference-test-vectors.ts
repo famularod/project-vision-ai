@@ -1088,6 +1088,22 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedClosed: true,
     refusedSelected: '2375',
   },
+  // Audit A9 pass 12 L3: a spaced capital with a word after it continues a
+  // plain project's name only when that word continues it too.
+  ...([
+    ['Is 2375 A Phase 2 done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', '2375'],
+    ['Is 2375 A Phase 2 done?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', undefined],
+    ['Is 2375 A Phase 2 done?', '2375A Phase 2', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+    ['Is 2375 A Street done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+    ['What is left on 2375 A?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 12 L3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

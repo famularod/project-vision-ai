@@ -125,3 +125,33 @@ describe('audit A9 pass 12 L2: another number in the selected name is its own on
     expect(desktop('What is left at 3000?', undefined, undefined, '2375 Main St Suite 3000')).toBeNull();
   });
 });
+
+describe('audit A9 pass 12 L3: a spaced capital continues a plain project\'s name only when the word after it does too', () => {
+  const A_STREET = '2375 A Street';
+  const PHASE = '2375A Phase 2';
+  const PROJECTS = [SELECTED, A_STREET, PHASE];
+
+  it('"Is 2375 A Phase 2 done?" on 2375 A Street names 2375A Phase 2, in Ask ECOS and Talk (was answered)', () => {
+    expect(desktop('Is 2375 A Phase 2 done?', PROJECTS, [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
+    expect(phone('Is 2375 A Phase 2 done?', PROJECTS, [], A_STREET)).toBe(switchOnPhone('2375A', '2375'));
+    expect(talkAnswer('Is 2375 A Phase 2 done?', PROJECTS, [], A_STREET)).toBe(switchOnPhone('2375A', '2375'));
+  });
+
+  it('on 2321 it names 2375A Phase 2, and Talk moves there (was 2375 A Street)', () => {
+    expect(desktop('Is 2375 A Phase 2 done?', PROJECTS)).toBe(switchOnDesktop('2375A'));
+    expect(mentionedDAVEProject('Is 2375 A Phase 2 done?', PROJECTS)).toBe(PHASE);
+  });
+
+  it('on 2375A Phase 2 it is its own', () => {
+    expect(desktop('Is 2375 A Phase 2 done?', PROJECTS, [], PHASE)).toBeNull();
+    expect(talkAnswer('Is 2375 A Phase 2 done?', PROJECTS, [], PHASE)).toBeNull();
+  });
+
+  it('the plain project\'s own name, and a capital standing alone, are still 2375 A Street\'s', () => {
+    expect(desktop('Is 2375 A Street done?', PROJECTS, [], A_STREET)).toBeNull();
+    expect(talkAnswer('Is 2375 A Street done?', PROJECTS, [], A_STREET)).toBeNull();
+    expect(desktop('What is left on 2375 A Street?', PROJECTS)).toBe(switchOnDesktop('2375'));
+    expect(desktop('What is left on 2375 A?', PROJECTS)).toBe(switchOnDesktop('2375'));
+    expect(mentionedDAVEProject('What is left on 2375 A Street?', PROJECTS)).toBe(A_STREET);
+  });
+});
