@@ -88,13 +88,27 @@ export function checkScheduleTaskProject(
 /**
  * What a task save says when the cloud has not taken the task yet. A task
  * whose project is not open in the cloud is not retried into the cloud by
- * waiting, so it is not described as "still retrying".
+ * waiting, so it is not described as "still retrying". Unless this phone's
+ * own create or reopen of that project is still queued: tasks are sent ahead
+ * of project changes, and the task uploads right after it (whole-app audit
+ * A3 pass 7 L1).
  */
 export function scheduleTaskSaveNotice(
-  input: Readonly<{ projectName?: string | null; errors?: readonly string[] | null }>,
+  input: Readonly<{
+    projectName?: string | null;
+    errors?: readonly string[] | null;
+    /** From runScheduleItemCloudSync: the project's create or reopen still waits on this phone. */
+    projectStillUploading?: boolean | null;
+  }>,
 ): Readonly<{ title: string; message: string }> {
   const kind = operationalProjectIdentityFailureKind((input.errors || []).join(' '));
   const projectName = input.projectName?.trim();
+  if (kind === 'not_open' && input.projectStillUploading) {
+    return {
+      title: 'Task saved on this device',
+      message: `${projectName ? `“${projectName}”` : 'This task’s project'} is still on its way to the cloud. The task uploads right after it.`,
+    };
+  }
   if (kind === 'not_open') {
     return {
       title: 'Task saved on this device only',

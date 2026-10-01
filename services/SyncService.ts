@@ -184,6 +184,12 @@ export type SyncUploadResult = {
    * again. They are shown but ask for no retry (whole-app audit A8 pass 1 F3).
    */
   heldErrorCount?: number;
+  /**
+   * A task save only: this phone's own create or reopen of the task's project
+   * is still queued, so a cloud answer that the project is not open clears
+   * once that change uploads (whole-app audit A3 pass 7 L1).
+   */
+  projectStillUploading?: boolean;
 };
 
 export type SyncItemOutcome =
@@ -1710,7 +1716,33 @@ export async function runScheduleItemCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
+    ...(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName)
+      ? { projectStillUploading: true }
+      : {}),
   };
+}
+
+/**
+ * Whether this phone's own create or reopen of the named project is still
+ * queued. Tasks are sent ahead of project changes, so until it lands the
+ * cloud answers that the task's project is not open (whole-app audit A3
+ * pass 7 L1). The queue keys both by name: a create by its name, a reopen by
+ * the name it had. A close, or another account's change, does not count.
+ */
+function projectOpeningStillQueued(
+  queue: readonly SyncQueueItem[],
+  projectName: string | null | undefined,
+): boolean {
+  const key = normalizedProjectArchiveName(projectName);
+  if (!key) return false;
+  const owner = currentCloudOwner();
+  return queue.some(candidate => {
+    if (candidate.entity !== 'project' || heldForAnotherOwner(candidate.ownerId, owner)) return false;
+    const payload = (candidate.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+    if (candidate.operation === 'create') return normalizedProjectArchiveName(payload.name) === key;
+    return candidate.operation === 'update' && payload.archived === false &&
+      normalizedProjectArchiveName(payload.previousName) === key;
+  });
 }
 
 export async function queueReferenceDocumentRecord(

@@ -11743,7 +11743,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_pending');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors }); // not "still retrying" when its project is not open (audit A3 pass 6 M1)
+        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors, projectStillUploading: result.projectStillUploading }); // not "still retrying" when its project is not open, nor "device only" while it is on its way (audit A3 pass 6 M1, pass 7 L1)
         Alert.alert(notice.title, notice.message);
       }
       return false;
