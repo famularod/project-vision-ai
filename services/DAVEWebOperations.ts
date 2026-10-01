@@ -32,6 +32,7 @@ import {
 } from './DAVECompletionVerification';
 import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
 import { scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
@@ -689,13 +690,21 @@ export function formatDAVEWebReport(
   return lines.join('\n');
 }
 
+/**
+ * Whole-app audit A5 pass 12 K1 (1 Oct 2026): a task is a duplicate of
+ * another only in the same app project. Keyed by the Microsoft Project root a
+ * combined master keeps on every row ("2400 Compliance Project"), Harbor
+ * North's and Harbor South's Install HVAC on the same dates read as one task
+ * twice, and Data health reported a conflict for every such twin. Keyed now
+ * by the app project, as the merge and the shown schedule key a task
+ * (scheduleTaskProjectKey).
+ */
 export function buildDAVEWebTruthDiagnostics(
   snapshot: DAVEWebReadOnlySnapshot,
 ): DAVEWebTruthDiagnostics {
   const groups = new Map<string, string[]>();
   snapshot.scheduleItems.forEach(item => {
-    const key = [item.scheduleProjectName || item.projectName, item.locationName, item.taskName, item.finishDate]
-      .map(normalized)
+    const key = [scheduleTaskProjectKey(item), ...[item.locationName, item.taskName, item.finishDate].map(normalized)]
       .join('|');
     const ids = groups.get(key) || [];
     ids.push(item.id);

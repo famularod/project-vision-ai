@@ -31,7 +31,8 @@ import type { ReferenceDocument, ScheduleItem } from '../../types';
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
 jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toString(16).slice(2)}` }));
 
-import { prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
+import { buildDAVEWebTruthDiagnostics, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
+import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { suggestScheduleImportRole } from '../../services/ScheduleLookahead';
 
@@ -194,5 +195,42 @@ describe('A5 p12 K1: the import review measures a Microsoft Project master by it
     expect(suggestScheduleImportRole({
       batch: { documents: [{ ...pdf.document, isCurrent: false }], items: pdf.items }, documents: [rootMaster], scheduleItems: rows,
     })).toEqual({ role: 'lookahead', reason: 'its dates cover 12 days and the master for 2400 Compliance Project covers 16 weeks' });
+  });
+});
+
+describe('A5 p12 K1: the web\'s Data health tells one building\'s task from its twin under the same root', () => {
+  const snapshot = (scheduleItems: ScheduleItem[], documents: ReferenceDocument[]) => ({
+    projects: HARBOR.map(name => ({ id: name, name, status: 'Active', archived: false, isFavorite: false, createdAt: null, updatedAt: null, ownerId: null, data: null })),
+    scheduleItems, projectUpdates: [], referenceDocuments: documents, refreshedAt: '2026-09-28T12:00:00.000Z',
+  }) as unknown as DAVEWebReadOnlySnapshot;
+  const C = webUpload('MASTER C', HARBOR, '2026-09-15T12:00:00.000Z', { rows: combinedRows });
+
+  it('the two buildings\' Install HVAC (and every twin) are no duplicate', () => {
+    const health = buildDAVEWebTruthDiagnostics(snapshot(C.items, [C.document]));
+    expect(health.duplicateTaskGroups).toEqual([]);
+    expect(health.conflicts).toEqual([]);
+  });
+
+  it('a real duplicate in one building is still one to review', () => {
+    const northHvac = C.items.find(item => item.projectName === 'Harbor North' && item.taskName === 'INSTALL HVAC')!;
+    const health = buildDAVEWebTruthDiagnostics(snapshot([...C.items, { ...northHvac, id: 'north-hvac-copy' }], [C.document]));
+    expect(health.duplicateTaskGroups.map(group => group.taskIds)).toEqual([[northHvac.id, 'north-hvac-copy']]);
+    expect(health.conflicts).toEqual(['1 duplicate task occurrence group need review.']);
+  });
+
+  it('a single-building Microsoft Project master behaves as before: none, and a copy is one', () => {
+    const N1 = webUpload('MASTER N1', NORTH, '2026-09-15T12:00:00.000Z', { rows: northRows });
+    expect(buildDAVEWebTruthDiagnostics(snapshot(N1.items, [N1.document])).conflicts).toEqual([]);
+    expect(buildDAVEWebTruthDiagnostics(snapshot([...N1.items, { ...N1.items[1], id: 'copy' }], [N1.document])).duplicateTaskGroups
+      .map(group => group.taskIds)).toEqual([[N1.items[1].id, 'copy']]);
+  });
+
+  it('a CSV master behaves as before: twins in two projects are none, a copy in one is one', () => {
+    const csv = webUpload('MASTER CSV', HARBOR, '2026-09-15T12:00:00.000Z', {
+      csv: ['Task,Project,Area,Start,Finish', 'Install HVAC,Harbor North,,10/05/2026,10/07/2026', 'Install HVAC,Harbor South,,10/05/2026,10/07/2026'],
+    });
+    expect(buildDAVEWebTruthDiagnostics(snapshot(csv.items, [csv.document])).conflicts).toEqual([]);
+    expect(buildDAVEWebTruthDiagnostics(snapshot([...csv.items, { ...csv.items[0], id: 'copy' }], [csv.document])).duplicateTaskGroups)
+      .toHaveLength(1);
   });
 });
