@@ -10,6 +10,10 @@
  *    a new master repeating 20% took the task to 20%, and deleting the
  *    lookahead gave back 40% still marked "Schedule update", so summaries
  *    called it the schedule's and a later master at 25% lowered it.
+ * A5 p6 M1 Deleting an older lookahead lowered progress a newer one still
+ *    states: master 60%, wk39 says 70%, wk40 says 70% too (no change, so it
+ *    noted no percent); deleting wk39 took the task to 60% and the delete
+ *    question said it put back the earlier progress of 1 task.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
@@ -233,5 +237,40 @@ describe('A5 p6 M2 / A10 p4 M1: the lookahead notes whether the progress before 
     // Its percent was the file's: a master repeating 40% is a repeat, and deleting it gives back 40% marked as today.
     expect(pour(approve(legacy, master2, masterRows(master2, 40)))).toMatchObject({ percentComplete: 60 });
     expect(pour(deleteLookahead(legacy, lookahead))).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'Schedule update', progressConfirmedAt: DELETED_AT });
+  });
+});
+
+describe('A5 p6 M1: deleting an older lookahead keeps the percent a newer one still states', () => {
+  const wk39 = schedule('Alpha lookahead wk39', ['Alpha'], '2026-09-21T12:00:00.000Z', { scheduleRole: 'lookahead' });
+  const wk40 = schedule('Alpha lookahead wk40', ['Alpha'], '2026-09-28T12:00:00.000Z', { scheduleRole: 'lookahead' });
+  const both = () => approve(approve({ items: masterItems(60), documents: [master] }, wk39, pourRow(wk39, 70)), wk40, pourRow(wk40, 70));
+
+  it('master 60%; wk39 and wk40 both say 70%: each notes the 70% it states', () => {
+    expect(view(both(), /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 70%']);
+    expect(pour(both()).lookaheadOverlay?.lookaheads.map(entry => [entry.batchId, entry.percentComplete]))
+      .toEqual([[wk39.importBatchId, 70], [wk40.importBatchId, 70]]);
+  });
+
+  it('deleting wk39 keeps 70% and the question does not claim a change; deleting wk40 then gives back the master\'s dates and 60%', () => {
+    const withoutWk39 = deleteLookahead(both(), wk39);
+    expect(withoutWk39.note).toBe('');
+    expect(view(withoutWk39, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 70%']);
+    const neither = deleteLookahead(withoutWk39, wk40);
+    expect(neither.note).toBe(' Delete PDF + Items also puts back the earlier dates and progress of 1 task this lookahead changed.');
+    expect(view(neither, /Pour/)).toEqual(['m-pour Pour slab 10/01/2026-10/03/2026 60%']);
+  });
+
+  it('David\'s 40% and a lookahead that states 40% too: it notes 40%, and its delete gives back only the dates', () => {
+    const state = approve({ items: byDavid(masterItems(20), 'm-pour', 40), documents: [master] }, lookahead, pourRow(lookahead, 40));
+    expect(pour(state).lookaheadOverlay?.lookaheads[0].percentComplete).toBe(40);
+    const after = deleteLookahead(state, lookahead);
+    expect(after.note).toBe(' Delete PDF + Items also puts back the earlier dates of 1 task this lookahead changed.');
+    expect(pour(after)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DAVID_AT });
+  });
+
+  it('a row it states but the task does not end at notes no percent: below David\'s, or with no % column', () => {
+    const below = approve({ items: byDavid(masterItems(20), 'm-pour', 40), documents: [master] }, lookahead, pourRow(lookahead, 30));
+    expect(pour(below)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David' });
+    expect(pour(below).lookaheadOverlay?.lookaheads[0].percentComplete).toBeNull();
   });
 });

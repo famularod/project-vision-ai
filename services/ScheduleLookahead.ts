@@ -291,6 +291,7 @@ function tasksAfterLookaheadDeleted(
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
+    // A later lookahead that states the same percent still gives it (A5 pass 6 M1): the task keeps it.
     const given = percentGiven(entries[index], index === entries.length - 1, item);
     const laterGave = entries.slice(index + 1).some((entry, offset) =>
       percentGiven(entry, index + 1 + offset === entries.length - 1, item) !== null);

@@ -81,6 +81,12 @@ import {
  * file's percent below the manager's own percent its note shows
  * (scheduleFileProgressAboveManagers), and a master row the manager's
  * percent stood over is a repeat (ScheduleLookahead).
+ *
+ * Whole-app audit A5 pass 6 M1 (30 Sep 2026): a lookahead stating the
+ * percent the task already had noted none, so deleting an older lookahead
+ * that said the same lowered a percent the newer one still stated. A
+ * lookahead now notes the percent its row states whenever the task ends at
+ * it.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -380,8 +386,11 @@ export function mergeApprovedScheduleImportItems({
       const batchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
       if (batchId && scheduleItemImportBatchIds(target).map(key).includes(key(batchId))) return;
       const fileProgress = scheduleFileProgressAboveManagers(target, fileProgressFor(target, importedItem, approvedAt), approvedAt);
-      // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1).
-      const givenPercent = fileProgress ? Math.min(100, Math.max(0, Number(importedItem.percentComplete) || 0)) : null;
+      // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1):
+      // the percent its row states whenever the task ends at it, unchanged too, so deleting an older lookahead
+      // that said the same leaves it (A5 pass 6 M1).
+      const endsAt = percentOf({ ...target, ...(fileProgress || {}) } as ScheduleItem);
+      const givenPercent = scheduleRowStatesPercent(importedItem) && percentOf(importedItem) === endsAt ? endsAt : null;
       next = next.map(item => item.id === target.id
         ? { ...scheduleTaskRestatedByLookahead(item, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
         : item);
