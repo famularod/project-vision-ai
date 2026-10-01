@@ -172,10 +172,8 @@ export function scheduleItemsFromRemoteExtractorPayload(
     if (!taskName) return [];
     const status = scheduleStatus(row.status);
     const reportedPercent = schedulePercent(row.percentComplete);
-    const progress = reconcileScheduleProgress(
-      status,
-      reportedPercent ?? (status === 'Complete' ? 100 : 0),
-    );
+    // No number is no number: the progress rule reads In Progress 1%, Complete 100% (A5 pass 10 L1).
+    const progress = reconcileScheduleProgress(status, reportedPercent);
     const projectName = text(row.projectName) || fallbackProject;
     return [{
       id: `remote-schedule-${Crypto.randomUUID()}`,

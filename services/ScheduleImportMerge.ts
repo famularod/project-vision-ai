@@ -145,10 +145,12 @@ function percentOf(item: ScheduleItem): number {
  */
 function fileProgressFor(
   saved: ScheduleItem,
-  file: ScheduleItem,
+  stated: ScheduleItem,
   approvedAt: string,
 ): Partial<ScheduleItem> | null {
-  if (!scheduleRowStatesPercent(file)) return null;
+  const startedByStatus = statusStartsTask(saved, stated);
+  if (!scheduleRowStatesPercent(stated) && !startedByStatus) return null;
+  const file = startedByStatus ? { ...stated, percentComplete: 1, status: 'In Progress' as const } : stated;
   const owned = Boolean(key(saved.importBatchId) || key(saved.sourceDocumentId));
   const managers = scheduleProgressIsManagers(saved) || (!owned && !saved.progressSource);
   const change = percentOf(file) - percentOf(saved);
@@ -166,6 +168,19 @@ function fileProgressFor(
 
 function key(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
+}
+
+/**
+ * Whole-app audit A5 pass 10 L1 (30 Sep 2026): a task saved at Not Started
+ * 0% stayed Not Started when a newer master or lookahead row said "In
+ * Progress" with no percent, since a row stating no percent never changes a
+ * saved task's progress (A5 pass 5 H1). Over Not Started 0% such a row now
+ * starts the task at 1%, as the progress rule reads it: upward only, never
+ * lowering a percent and never over a percent stated.
+ */
+function statusStartsTask(saved: ScheduleItem, row: ScheduleItem): boolean {
+  return !scheduleRowStatesPercent(row) && key(row.status) === 'in progress' &&
+    percentOf(saved) === 0 && key(saved.status) === 'not started';
 }
 
 /**
@@ -439,7 +454,9 @@ export function mergeApprovedScheduleImportItems({
       // the percent its row states whenever the task ends at it, unchanged too, so deleting an older lookahead
       // that said the same leaves it (A5 pass 6 M1).
       const endsAt = percentOf({ ...target, ...(fileProgress || {}) } as ScheduleItem);
-      const givenPercent = scheduleRowStatesPercent(importedItem) && percentOf(importedItem) === endsAt ? endsAt : null;
+      const givenPercent = scheduleRowStatesPercent(importedItem)
+        ? (percentOf(importedItem) === endsAt ? endsAt : null)
+        : (fileProgress && statusStartsTask(target, importedItem) && endsAt === 1 ? 1 : null); // the 1% "In Progress" gave (A5 pass 10 L1)
       next = next.map(item => item.id === target.id
         ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
         : item);
@@ -529,6 +546,12 @@ export function mergeApprovedScheduleImportItems({
         completionVerification: paired.completionVerification ?? null,
       }));
       carriedProgressIds.push(importedItem.id);
+      return;
+    }
+    if (paired && statusStartsTask(paired, importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
+      // "In Progress" with no percent over Not Started 0%: the task on its new dates starts at 1% (A5 pass 10 L1).
+      additions.push(revision({ ...importedItem, percentComplete: 1, status: 'In Progress' }));
+      fileProgressIds.push(importedItem.id);
       return;
     }
     if (paired && !scheduleRowStatesPercent(importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {

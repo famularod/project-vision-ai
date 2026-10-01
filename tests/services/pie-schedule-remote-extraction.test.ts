@@ -85,11 +85,14 @@ describe('PIE schedule remote extraction', () => {
       extractedAt: '2026-07-21T17:00:00.000Z',
     });
 
+    // Pin changed deliberately (whole-app audit A5 pass 10 L1, 30 Sep 2026): a malformed or out-of-range
+    // percent is still rejected (no number), and the progress rule then reads the status, as the CSV
+    // reading does since A5 pass 9 L5: "In Progress" with no number is In Progress 1%, not Not Started 0%.
     expect(result.items.map(item => [item.status, item.percentComplete])).toEqual([
       ['In Progress', 35],
       ['In Progress', 12],
-      ['Not Started', 0],
-      ['Not Started', 0],
+      ['In Progress', 1],
+      ['In Progress', 1],
     ]);
   });
 
