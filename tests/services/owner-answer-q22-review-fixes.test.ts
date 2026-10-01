@@ -27,6 +27,7 @@ import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } fr
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import {
   scheduleImportAddsToMaster,
+  scheduleImportRoleRefusal,
   scheduleItemsAfterLookaheadDeleted,
   scheduleLookaheadDeleteNote,
   suggestScheduleImportRole,
@@ -381,5 +382,39 @@ describe('A12 M2: schedule dates compare by calendar day', () => {
       'Pour slab,Alpha,Lot,10/01/2026,10/03/2026,60%',
     ].join('\n'), master2));
     expect(view(repeated.items, repeated.documents, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 60%']);
+  });
+});
+
+describe('A8 pass 5 L3: a lookahead imported before Q22 as a full schedule becomes one by importing it again', () => {
+  it('the review is preset to Lookahead and refuses Full schedule; approved, it restates the master\'s tasks in place', () => {
+    // Imported before this build: a full schedule, which replaced the master; David has made the master current again.
+    const earlier = schedule('Alpha 3 Week Lookahead', ['Alpha'], '2026-09-15T12:00:00.000Z', { isCurrent: false, scheduleRole: undefined });
+    const earlierCopies = [
+      task('old-pour', 'Alpha', 'Pour slab', earlier, '09/28/2026', '09/30/2026', { percentComplete: 60, status: 'In Progress' }),
+      task('old-rebar', 'Alpha', 'Rebar inspection', earlier, '09/25/2026', '09/25/2026'),
+    ];
+    const saved = { items: [...masterItems(), ...earlierCopies], documents: [master, earlier] };
+    // Imported again (a new import of its own, preset as a lookahead by scheduleImportOfFile).
+    const again = schedule('Alpha 3 Week Lookahead', ['Alpha'], APPROVED, { id: 'again', importBatchId: 'batch-again', scheduleRole: 'lookahead' });
+    const batch = { documents: [again], items: csvRows(CONTRACTOR_LOOKAHEAD, again) };
+    expect(suggestScheduleImportRole({ batch, documents: saved.documents, scheduleItems: saved.items })).toEqual({
+      role: 'lookahead', only: true,
+      reason: 'this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead',
+    });
+    expect(scheduleImportRoleRefusal(batch, 'master')).toMatch(/^This exact schedule is already saved as a full schedule/);
+    expect(scheduleImportRoleRefusal(batch, 'lookahead')).toBeNull();
+    expect(scheduleImportRoleRefusal({ documents: [{ ...again, scheduleRole: undefined }] }, 'master')).toBeNull();
+
+    const { items, documents, merged } = approve(saved.items, saved.documents, again, batch.items);
+    // The master's task is restated in place; the earlier import's copy of it stays hidden with that import.
+    expect(merged.overlaidIds).toContain('m-pour');
+    expect(merged.overlaidIds).not.toContain('old-pour');
+    expect(view(items, documents).map(line => line.replace(/^\S+ /, '')).sort()).toEqual([
+      'Beta sitework 10/01/2026-10/30/2026 0%',
+      'Pour slab 09/28/2026-09/30/2026 60%',
+      'Rebar inspection 09/25/2026-09/25/2026 0%',
+      'Roofing 12/01/2026-12/15/2026 30%',
+    ]);
+    expect(view(items, documents, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 60%']);
   });
 });

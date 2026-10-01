@@ -16,6 +16,11 @@ import {
 } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { parseOwnedLocalFileManifest } from './OwnedLocalFileRepository';
+import {
+  resolveScheduleImportSourceIdentity,
+  type ScheduleImportScopeProject,
+  type ScheduleImportSourceIdentity,
+} from './ScheduleImportSourceIdentity';
 
 export { loadECOSScheduleRetirementScope, type ScheduleRetirementScope };
 
@@ -339,27 +344,78 @@ export function phoneScheduleCardIsCurrent(
  * uploaded, and the same file from the Schedule screen, with "Schedule
  * already added" (whole-app audit A8 pass 3 M1).
  */
-export function scheduleImportAlreadyAdded({
-  documents,
-  scheduleItems,
-  documentId,
-  contentSha256,
-  projectNames,
-}: Readonly<{
+export function scheduleImportAlreadyAdded(input: ScheduleImportSavedForFileInput): boolean {
+  return scheduleImportsSavedForFile(input).length > 0;
+}
+
+type ScheduleImportSavedForFileInput = Readonly<{
   documents: readonly ReferenceDocument[];
   scheduleItems: readonly ScheduleItem[];
   /** The import's own record id; the same id is the same import. */
   documentId: string;
   contentSha256: string;
   projectNames: readonly string[];
-}>): boolean {
+}>;
+
+function scheduleImportsSavedForFile({
+  documents,
+  scheduleItems,
+  documentId,
+  contentSha256,
+  projectNames,
+}: ScheduleImportSavedForFileInput): ReferenceDocument[] {
   const scope = canonicalProjectNames(projectNames);
-  return documents.some(document => document.id === documentId || (
+  return documents.filter(document => document.id === documentId || (
     isScheduleDocument(document) &&
     document.contentSha256 === contentSha256 &&
     canonicalProjectNames(document.projectNames || []) === scope &&
     (Boolean(cloudKey(document.importBatchId)) || scheduleItems.some(item => scheduleContainsItem(document, item)))
   ));
+}
+
+/**
+ * Importing schedule bytes into a project scope: its identity, and whether
+ * the import is refused as already added (scheduleImportAlreadyAdded).
+ *
+ * Whole-app audit A8 pass 5 L3 (30 Sep 2026): a lookahead imported before
+ * owner answer Q22 is saved as a full schedule, and the way to make it one
+ * (import the same file again, choose Lookahead) was refused "Schedule
+ * already added". A file saved only as a full schedule may now be imported
+ * again as a lookahead (asLookahead: the review comes preset, and saving it
+ * as a full schedule again is refused there, ScheduleLookahead). It is a new
+ * import of its own, the next free identity, so the saved schedule and its
+ * tasks are left as they are and the lookahead restates the tasks of the
+ * master shown now, as any lookahead does. A file already saved as a
+ * lookahead is refused, as before.
+ */
+export function scheduleImportOfFile({
+  bytes,
+  projects,
+  documentIdIsDeleted,
+  documents,
+  scheduleItems,
+  projectNames,
+}: Readonly<{
+  bytes: ArrayBuffer | Uint8Array;
+  projects: readonly ScheduleImportScopeProject[];
+  documentIdIsDeleted: (documentId: string) => boolean;
+  documents: readonly ReferenceDocument[];
+  scheduleItems: readonly ScheduleItem[];
+  projectNames: readonly string[];
+}>): { identity: ScheduleImportSourceIdentity; alreadyImported: boolean; asLookahead: boolean } {
+  const identity = resolveScheduleImportSourceIdentity({ bytes, projects, documentIdIsDeleted });
+  const saved = scheduleImportsSavedForFile({
+    documents, scheduleItems, documentId: identity.documentId, contentSha256: identity.contentSha256, projectNames,
+  });
+  const asLookahead = saved.length > 0 &&
+    saved.every(document => isScheduleDocument(document) && !scheduleDocumentAddsToMaster(document));
+  if (!asLookahead) return { identity, alreadyImported: saved.length > 0, asLookahead: false };
+  const savedIds = new Set(documents.map(document => document.id));
+  return {
+    identity: resolveScheduleImportSourceIdentity({ bytes, projects, documentIdIsDeleted: id => documentIdIsDeleted(id) || savedIds.has(id) }),
+    alreadyImported: false,
+    asLookahead: true,
+  };
 }
 
 function canonicalProjectNames(projectNames: readonly unknown[]): string {

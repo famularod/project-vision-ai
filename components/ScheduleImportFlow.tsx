@@ -20,6 +20,7 @@ import {
 import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
 import {
   scheduleImportAsksRole,
+  scheduleImportRoleRefusal,
   suggestScheduleImportRole,
   withScheduleImportRole,
   type ScheduleImportRole,
@@ -90,6 +91,12 @@ export function ScheduleImportFlow({
   function withReviewedRole(batch: PIEScheduleImportBatch): PIEScheduleImportBatch {
     if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return batch;
     return withScheduleImportRole(batch, roleReview.chosen || roleReview.role);
+  }
+
+  /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3). */
+  function reviewedRoleRefusal(batch: PIEScheduleImportBatch): string | null {
+    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return null;
+    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role);
   }
 
   useEffect(() => {
@@ -172,6 +179,8 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
+    const refusal = reviewedRoleRefusal(batchToReview);
+    if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
     setSaveBusy(true);
@@ -204,6 +213,8 @@ export function ScheduleImportFlow({
     ) return;
 
     const batchToSave = pendingBatch;
+    const refusal = reviewedRoleRefusal(batchToSave);
+    if (refusal) return setSaveError(refusal);
     setSaveError(null);
     setSaveBusy(true);
     try {
@@ -517,7 +528,7 @@ function ScheduleRoleReview({
         </TouchableOpacity>
       ))}
       <Text style={styles.bulkSaveText}>
-        {`Suggested: ${suggested?.title || ''}, because ${review.reason}. You can change this before saving.`}
+        {`Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
       </Text>
     </View>
   );

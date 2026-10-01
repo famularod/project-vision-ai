@@ -117,10 +117,7 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
-import {
-  bindStableScheduleImportItemIds,
-  resolveScheduleImportSourceIdentity,
-} from './services/ScheduleImportSourceIdentity';
+import { bindStableScheduleImportItemIds } from './services/ScheduleImportSourceIdentity';
 import {
   ScheduleImportReviewError,
   scheduleImportApprovalBlocker,
@@ -316,7 +313,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportAlreadyAdded, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -12067,14 +12064,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       uri: file.uri,
       reportedSizeBytes: file.size,
     });
-    const sourceIdentity = resolveScheduleImportSourceIdentity({ // after a delete, the next generation (audit A5)
-      bytes: sourcePayload.data,
-      projects: scopedProjectRecords,
+    // After a delete, the next generation (audit A5); an import, not a card's own shared copy (A8 pass 3 M1); a full schedule's file again, only as a lookahead (A8 pass 5 L3).
+    const { identity: sourceIdentity, alreadyImported, asLookahead } = scheduleImportOfFile({
+      bytes: sourcePayload.data, projects: scopedProjectRecords,
       documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
-    });
-    const alreadyImported = scheduleImportAlreadyAdded({ // an import, not a card's own shared copy (whole-app audit A8 pass 3 M1)
-      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current,
-      documentId: sourceIdentity.documentId, contentSha256: sourceIdentity.contentSha256, projectNames: scopeProjects,
+      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current, projectNames: scopeProjects,
     });
     if (alreadyImported) {
       Alert.alert(
@@ -12109,7 +12103,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectNames: scopeProjects,
       importBatchId: sourceIdentity.batchId,
       sizeBytes: sourcePayload.sizeBytes,
-      contentSha256: sourceIdentity.contentSha256,
+      contentSha256: sourceIdentity.contentSha256, ...(asLookahead ? { scheduleRole: 'lookahead' as const } : {}),
     });
     const validateAndBindItems = (
       sourceItems: ScheduleItem[],

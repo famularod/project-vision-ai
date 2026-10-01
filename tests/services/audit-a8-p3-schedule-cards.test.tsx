@@ -28,6 +28,7 @@ import { ProjectDocumentCard, type ProjectDocumentCardDocument } from '../../com
 import {
   phoneScheduleCardIsCurrent,
   scheduleImportAlreadyAdded,
+  scheduleImportOfFile,
 } from '../../services/SharedDocumentActivation';
 import { buildSharedReferenceDocument } from '../../services/ProjectDocumentLifecycle';
 import { normalizeReferenceDocument } from '../../services/ReferenceDocumentRepository';
@@ -121,6 +122,8 @@ function phone(documents: ReferenceDocument[], items: ScheduleItem[] = []) {
     prepareExpoFileUploadPayload: async () => ({ data: BYTES, sizeBytes: BYTES.length }),
     resolveScheduleImportSourceIdentity, deletedDAVERecordIds, operationalSyncTombstonesRef: { current: [] },
     scheduleImportAlreadyAdded,
+    // Whole-app audit A8 pass 5 L3 (landed after this test): the identity and the saved import of the file, in one.
+    scheduleImportOfFile,
     ensureReferenceDocumentsDirectory: async () => 'file:///reference-documents/',
     sanitizeFilename: (name: string) => name,
     FileSystem: { deleteAsync: async () => undefined, copyAsync: async () => undefined, readAsStringAsync: async () => CSV },
@@ -167,25 +170,38 @@ describe('"Import This Schedule" on a card that has uploaded (audit A8 pass 3 M1
     await expect(h.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.not.toBeNull();
   });
 
-  it('an actual import of the file for the same projects is still refused, as before', async () => {
+  it('an actual import of the file for the same projects is still recognised: refused as a lookahead, offered as one when it is a full schedule', async () => {
     const first = phone([uploadCopy]);
     const batch = await first.prepareScheduleImportFromAsset(file, ['Alpha']);
     const imported = batch!.documents[0];
 
+    // Pin updated (whole-app audit A8 pass 5 L3, 30 Sep 2026): the same file saved as a full schedule is
+    // imported again only as a lookahead (owner answer Q22), under an import of its own, not refused.
     const again = phone([uploadCopy, imported]);
-    await expect(again.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
-    expect(again.alerts.map(alert => alert.title)).toEqual(['Schedule already added']);
+    const reimport = await again.prepareScheduleImportFromAsset(file, ['Alpha']);
+    expect(again.alerts).toEqual([]);
+    expect(reimport?.documents[0]).toMatchObject({ scheduleRole: 'lookahead', contentSha256: SHA, projectNames: ['Alpha'] });
+    expect(reimport?.documents[0].id).not.toBe(imported.id);
+    expect(reimport?.id).not.toBe(batch?.id);
+    expect(reimport?.items.every(item => item.importBatchId === reimport.id && item.sourceDocumentId === reimport.documents[0].id)).toBe(true);
+    expect(reimport?.items.some(item => batch?.items.some(firstItem => firstItem.id === item.id))).toBe(false);
+    // Once it is saved as a lookahead too, a third import of it is refused, as before.
+    const third = phone([uploadCopy, imported, reimport!.documents[0]]);
+    await expect(third.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
+    expect(third.alerts.map(alert => alert.title)).toEqual(['Schedule already added']);
 
-    // An older import without a batch, recognised by its tasks.
+    // An older import without a batch, recognised by its tasks: a full schedule, so offered as a lookahead too.
     const legacy = normalizeReferenceDocument({ ...uploadCopy, id: 'legacy-import' });
     const task = { id: 't1', projectName: 'Alpha', taskName: 'Pour', sourceDocumentId: 'legacy-import' } as ScheduleItem;
     const legacyPhone = phone([legacy], [task]);
-    await expect(legacyPhone.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
-    expect(legacyPhone.alerts.map(alert => alert.title)).toEqual(['Schedule already added']);
+    await expect(legacyPhone.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toMatchObject({ documents: [{ scheduleRole: 'lookahead' }] });
+    expect(legacyPhone.alerts).toEqual([]);
 
-    // Another project's import of the same file is not this one.
+    // Another project's import of the same file is not this one: a plain import, no role preset.
     const beta = phone([{ ...imported, id: 'beta-import', projectNames: ['Beta'], projectName: 'Beta' }]);
-    await expect(beta.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.not.toBeNull();
+    const betaBatch = await beta.prepareScheduleImportFromAsset(file, ['Alpha']);
+    expect(betaBatch?.documents[0]).not.toHaveProperty('scheduleRole');
+    expect(betaBatch?.documents[0].id).toBe(imported.id);
   });
 
   it('the rule', () => {

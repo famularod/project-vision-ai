@@ -101,6 +101,23 @@ describe('the import review asks how the schedule is used (owner answer Q22)', (
     expect(app).toContain("roleContext={{ documents: scheduleDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}");
   });
 
+  it('a file already saved as a full schedule, imported again, is offered as a lookahead only (whole-app audit A8 pass 5 L3)', async () => {
+    const again = batch('Alpha 3 Week Lookahead', {
+      documents: [document('new', 'Alpha 3 Week Lookahead', '2026-09-20T12:00:00.000Z', { importBatchId: 'batch-new', scheduleRole: 'lookahead' })],
+    });
+    const view = renderReview(again);
+    expect(await view.findByText('Suggested: Lookahead / partial (adds to the master), because this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead.')).toBeTruthy();
+    expect(view.getByRole('radio', { name: /^Lookahead/ }).props.accessibilityState).toMatchObject({ checked: true });
+    // Saving it as a full schedule again would only duplicate it: refused, with what to do instead.
+    fireEvent.press(view.getByRole('radio', { name: /^Full schedule/ }));
+    await acceptAll(view);
+    expect(view.onApprove).not.toHaveBeenCalled();
+    expect(view.getByText('This exact schedule is already saved as a full schedule for these projects. Choose Lookahead to add it to the master schedule, or Reject Import.')).toBeTruthy();
+    fireEvent.press(view.getByRole('radio', { name: /^Lookahead/ }));
+    await acceptAll(view);
+    expect(view.onApprove.mock.calls.map(call => call[0].documents.map(item => item.scheduleRole))).toEqual([['lookahead']]);
+  });
+
   it('message screenshots are never asked, and their documents get no role', async () => {
     const view = renderReview(batch('Schedule message', {
       kind: 'message_screenshots',

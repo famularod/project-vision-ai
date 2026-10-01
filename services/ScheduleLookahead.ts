@@ -288,6 +288,8 @@ export type ScheduleImportRoleSuggestion = Readonly<{
   role: ScheduleImportRole;
   /** Plain words: "Suggested: … because …". */
   reason: string;
+  /** The only role that saves (a full schedule's file imported again, A8 pass 5 L3). */
+  only?: true;
 }>;
 
 const DAY_MS = 86_400_000;
@@ -340,7 +342,8 @@ function spanWords(count: number): string {
  * twice as long. A name that says so ("3 Week Lookahead") is the reason
  * given, but never decides alone (whole-app audit A5 pass 5 M3: "Alpha 12
  * Week Schedule rev2" and "Schedule Update 2026-09-30 Wk 40" were suggested
- * as lookaheads). David can change it.
+ * as lookaheads). A file already saved as a full schedule, imported again,
+ * comes preset as a lookahead (A8 pass 5 L3). David can change it.
  */
 export function suggestScheduleImportRole({
   batch,
@@ -354,6 +357,7 @@ export function suggestScheduleImportRole({
   scheduleItems: readonly ScheduleItem[];
 }>): ScheduleImportRoleSuggestion {
   const file = batch.documents.find(document => document.category === 'Schedules');
+  if (file && scheduleDocumentAddsToMaster(file)) return { role: 'lookahead', reason: SAVED_AS_FULL_SCHEDULE, only: true };
   const projects = [...new Map([
     ...batch.items.map(item => item.scheduleProjectName || item.projectName || ''),
     ...(file?.projectNames || []),
@@ -387,4 +391,23 @@ export function suggestScheduleImportRole({
   return fileDays <= LOOKAHEAD_MAX_DAYS && longest.days >= fileDays * 2
     ? { role: 'lookahead', reason: named ? `its name says “${named.trim()}”` : words }
     : { role: 'master', reason: words };
+}
+
+const SAVED_AS_FULL_SCHEDULE = 'this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead';
+
+/**
+ * Why Accept is refused, or null (whole-app audit A8 pass 5 L3, 30 Sep
+ * 2026): a schedule file already saved as a full schedule, imported again,
+ * comes preset as a lookahead (the way to turn a lookahead imported before
+ * owner answer Q22 into one); saving it as a full schedule again would only
+ * duplicate it.
+ */
+export function scheduleImportRoleRefusal(
+  batch: Pick<PIEScheduleImportBatch, 'documents'>,
+  role: ScheduleImportRole,
+): string | null {
+  const presetLookahead = batch.documents.some(document => document.category === 'Schedules' && scheduleDocumentAddsToMaster(document));
+  return presetLookahead && role === 'master'
+    ? 'This exact schedule is already saved as a full schedule for these projects. Choose Lookahead to add it to the master schedule, or Reject Import.'
+    : null;
 }
