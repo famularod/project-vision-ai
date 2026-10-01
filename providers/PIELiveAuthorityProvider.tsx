@@ -947,6 +947,7 @@ function providerRuntimeContext(input: PIELiveAuthorityInput): PIERuntimeContext
     reportType: input.reportType,
     updates: Array.isArray(input.updates) ? input.updates : [],
     scheduleItems: Array.isArray(input.scheduleItems) ? input.scheduleItems : [],
+    knownScheduleItems: Array.isArray(input.knownScheduleItems) ? input.knownScheduleItems : undefined, // the name fallback's own-schedule check (A10 pass 7 L2)
     currentUpdate: draftWithContent(input.currentUpdate),
     projectAreas: Array.isArray(input.projectAreas) ? input.projectAreas : [],
     contacts: input.contacts,

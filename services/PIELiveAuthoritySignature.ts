@@ -1,7 +1,8 @@
 import type { PIELiveAuthorityInput } from '../providers/PIELiveAuthorityProvider';
 
 // 2.5: the project-local as-of day is part of the evidence signature (audit round 2 L3).
-export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.5';
+// 2.6: every saved task, which the runtime's reconciliation now reads (whole-app audit A10 pass 7 L2).
+export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.6';
 
 /**
  * Large evidence collections are immutable React state values. Cache their
@@ -27,6 +28,7 @@ export function authorityInputSignature(input: PIELiveAuthorityInput) {
       input.projectTruthPersistencePolicy || 'persist_project',
     updates: cachedStableStringify(input.updates),
     scheduleItems: cachedStableStringify(input.scheduleItems),
+    knownScheduleItems: cachedStableStringify(input.knownScheduleItems || []),
     currentUpdate: input.currentUpdate || null,
     projectAreas: cachedStableStringify(input.projectAreas || []),
     contacts: cachedStableStringify(input.contacts || EMPTY_CONTACTS),

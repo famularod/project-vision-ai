@@ -25,7 +25,10 @@ const {
 // 2.4 -> 2.5 (audit round 2 L3, 30 Sep 2026): the project-local as-of day
 // joined the evidence signature so the Home schedule line rolls over at
 // midnight; it is not part of the scope signature.
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.5');
+// 2.5 -> 2.6 (whole-app audit A10 pass 7 L2, 30 Sep 2026): every saved task
+// (knownScheduleItems) joined the evidence signature, since the runtime's
+// reconciliation now reads it; it is not part of the scope signature.
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.6');
 
 function input() {
   return {

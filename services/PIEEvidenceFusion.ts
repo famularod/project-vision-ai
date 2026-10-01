@@ -346,6 +346,8 @@ export type BuildFusedEvidenceParams = {
   currentUpdate?: ProjectUpdate | null;
   photoProgressEvidence?: PIEPhotoProgressEvidence[];
   scheduleItems?: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2, pass 7 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectAreas?: ProjectArea[];
   referenceDocuments?: ReferenceDocument[];
   reportHistory?: ProjectReportHistoryMetadata[];
@@ -379,6 +381,7 @@ export function buildFusedEvidence({
   currentUpdate = null,
   photoProgressEvidence = [],
   scheduleItems = [],
+  knownScheduleItems = [],
   projectAreas = [],
   referenceDocuments = [],
   reportHistory = [],
@@ -406,6 +409,7 @@ export function buildFusedEvidence({
   });
   const scheduleReconciliation = buildPIEScheduleReconciliation({
     scheduleItems,
+    knownScheduleItems, // as the phone's and the web's summaries take them (A10 pass 7 L2)
     updates: currentUpdate && !updates.some(update => update.id === currentUpdate.id)
       ? [currentUpdate, ...updates]
       : updates,

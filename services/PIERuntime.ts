@@ -135,6 +135,14 @@ export type PIERuntimeSurface =
 export type PIERuntimeContext = PIEConversationContext & {
   surface?: PIERuntimeSurface;
   reportType?: PIEReportType;
+  /**
+   * Every saved task, hidden ones included, for the evidence fusion's
+   * reconciliation: the name fallback checks the update's own schedule, as
+   * the phone's and the web's summaries do (whole-app audit A10 pass 6 L2;
+   * pass 7 L2 brought it to the runtime, so Project Truth's risks and a
+   * generated report no longer warn about the wrong same-named task).
+   */
+  knownScheduleItems?: PIEConversationContext['scheduleItems'];
 };
 
 export type PIERuntimeSource =
@@ -1240,6 +1248,7 @@ function buildEvidenceFusionOutputsFromState(
     currentUpdate: context.currentUpdate,
     photoProgressEvidence: photoProgressOutputs.photoProgress.acceptedEvidence,
     scheduleItems: context.scheduleItems,
+    knownScheduleItems: context.knownScheduleItems,
     projectAreas: context.projectAreas,
     referenceDocuments: context.referenceDocuments,
     reportHistory: context.reportHistory,
