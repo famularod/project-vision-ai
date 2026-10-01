@@ -88,6 +88,21 @@ export function withoutPhotoAnalysis(update: unknown): unknown {
   return rest;
 }
 
+/**
+ * Whether the update holds a result for the patch's photo that finished
+ * later than the patch's (whole-app audit A4 pass 23 L2): by the results'
+ * own times; a photo still analysing has none.
+ */
+export function photoAnalysisFinishedAfterPatch(update: object, patch: FieldUpdatePhotoAnalysisPatch): boolean {
+  const finishedAt = (analysis: unknown) => {
+    const { status, updatedAt } = (analysis && typeof analysis === 'object' ? analysis : {}) as { status?: unknown; updatedAt?: unknown };
+    return typeof status === 'string' && status !== 'analyzing'
+      ? Date.parse(typeof updatedAt === 'string' ? updatedAt : '') || 0 : null;
+  };
+  const held = finishedAt((update as UpdateWithPhotos).photos?.find(photo => photo?.id === patch.photoId)?.photoIntelligence);
+  return held !== null && held > (finishedAt(patch.photoIntelligence) ?? 0);
+}
+
 /** A later result for the same photo: its own, with what the earlier one cleared. */
 export function mergeFieldUpdatePhotoAnalysisPatches(
   earlier: FieldUpdatePhotoAnalysisPatch,

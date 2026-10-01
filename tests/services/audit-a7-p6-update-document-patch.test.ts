@@ -5164,3 +5164,77 @@ describe('a refresh keeps the newer edit a late analysis\'s patch carries (audit
     expect(await getOfflineQueue()).toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 23 L2 (older, from A4 pass 14 #3; no conflict
+ * needed): a failed analysis result (r1) went up as a patch; David edited
+ * the update, and the edit waited; he tapped "Retry analysis", and the new
+ * result (r2) went into the waiting edit. When the edit went up, this
+ * phone's own patches were put on it again (A4 pass 14 #3), r1 over r2: the
+ * cloud and the iPad got r1, the card showed r2 until the next refresh, then
+ * r1 everywhere. Keep Cloud's copy ended the same way.
+ */
+describe('this phone\'s earlier analysis patch is not put back over a newer result (audit A4 pass 23 L2)', () => {
+  const NEWER = 'Pour, 45 yards (saved while the analysis was retried)';
+  const failedAnalysis = () => ({ status: 'analysis_failed_retry', updatedAt: new Date().toISOString(),
+    title: 'Visual comparison unavailable', summary: 'Photo comparison could not be completed.' });
+  /** The first result, failed, goes up as a patch on the cloud's copy. */
+  async function failedResultGoesUp(phone: Device) {
+    const r1 = failedAnalysis();
+    lateAnalysisFinishes(phone, r1);
+    await phone.settle();
+    await uploadPendingChanges();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(r1);
+    return r1;
+  }
+  /** "Retry analysis": the photo reads Analyzing, then the new result lands. */
+  async function retryAnalysis(phone: Device) {
+    lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() });
+    await phone.settle();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const r2 = finishedAnalysis();
+    lateAnalysisFinishes(phone, r2);
+    await phone.settle();
+    return r2;
+  }
+
+  it('no conflict: the waiting edit goes up with r2, and the cloud and the card keep r2 after a refresh', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await failedResultGoesUp(phone);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    await uploadPendingChanges(); // the edit waits on its photo check
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+    const r2 = await retryAnalysis(phone);
+    expect(firstPhotoAnalysis((await queuedFor())!.payload.updateData as Update)).toEqual(r2);
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(r2);
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(r2);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('Keep Cloud: r1 went onto the iPad\'s copy during the conflict, r2 into David\'s held edit; the cloud and the card keep r2', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    await failedResultGoesUp(phone); // onto the iPad's copy (A4 pass 14 #4)
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER }); // held for review
+    const r2 = await retryAnalysis(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(r2);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(r2);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(r2);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+});

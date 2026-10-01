@@ -93,6 +93,7 @@ import {
   applyFieldUpdatePhotoAnalysisPatch,
   fieldUpdatePhotoAnalysisPatchFor,
   isFieldUpdatePhotoAnalysisPatch,
+  photoAnalysisFinishedAfterPatch,
   withoutPhotoAnalysis,
   type FieldUpdatePhotoAnalysisPatch,
 } from './FieldUpdatePhotoAnalysisPatch';
@@ -6165,7 +6166,8 @@ async function uploadProjectUpdateQueueItem(
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
     updateData: ownPatchesSinceEdit
-      ? applyFieldUpdateDocumentPatches(payload.updateData as object, ownPatchesSinceEdit.patches) as unknown
+      ? applyFieldUpdateDocumentPatches(payload.updateData as object,
+        ownPatchesUnderEdit(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
       : payload.updateData,
     // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
     // copy and a confirmed Retry's are stamped now, after the patches, and
@@ -6239,6 +6241,17 @@ function ownProjectUpdatePatchesSince(
   const landed = projectUpdatePatchesLanded.get(updateId);
   return landed && cloud.updatedAt && sameCloudTime(landed.at, cloud.updatedAt) &&
     projectUpdatePayloadsMatch(landed.copy, cloud.updateData) && !isRemoteNewer(landed.onto, changedAt) ? landed : null;
+}
+
+/**
+ * This device's own patches put on an edit as it goes up (A4 pass 14 #3),
+ * but an analysis result the edit holds a later one for (whole-app audit A4
+ * pass 23 L2): a failed result went up as a patch, the edit took a retried
+ * one while it waited, and the earlier result went up over it. Document
+ * patches all go, as before.
+ */
+function ownPatchesUnderEdit(edit: object, patches: readonly FieldUpdateDocumentPatch[]): FieldUpdateDocumentPatch[] {
+  return patches.filter(patch => !isFieldUpdatePhotoAnalysisPatch(patch) || !photoAnalysisFinishedAfterPatch(edit, patch));
 }
 
 function sameCloudTime(left: string, right: string): boolean {
