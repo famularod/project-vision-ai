@@ -4,7 +4,9 @@ import {
   buildScheduleTaskAccounting,
   scheduleTaskDurationWeight,
 } from './dave-project-schedule-rollup';
+import type { ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
@@ -161,6 +163,7 @@ export function buildDAVEReportBriefing({
   selectedProjectNames,
   previousSnapshot,
   waitingForOtherDevice = false,
+  scheduleItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
@@ -171,6 +174,14 @@ export function buildDAVEReportBriefing({
    * until it has them (whole-app audit A6 pass 10 M1, M2).
    */
   waitingForOtherDevice?: boolean;
+  /**
+   * The saved tasks the truths were made from, read only for when each
+   * task's progress was confirmed (whole-app audit A6 pass 14 L4): Project
+   * Truth keeps no such time, and a field added there would move the
+   * report's fingerprint. Without them, Completed Work's dates read as
+   * before.
+   */
+  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[];
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -241,10 +252,11 @@ export function buildDAVEReportBriefing({
   const recentChangeCount = allRecentChanges.length +
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
+  const lastUpdatedAt = completedTaskLastUpdatedAt(scheduleItems);
   const completedWork = unique(truths.flatMap(truth => truth.schedule
     .filter(scheduleProgressIsComplete)
-    .sort((left, right) => reportCompletedTaskRank(left) - reportCompletedTaskRank(right))
-    .map(task => reportCompletedTaskFact(truth.projectName, task, truths.length > 1))),
+    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
+    .map(task => reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt))),
   ).slice(0, 12);
   const currentWork = unique(truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
@@ -393,24 +405,46 @@ function reportTaskFact(
   return `${prefix}${task.taskName}${area}: ${parts.join('; ')}.`;
 }
 
+type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) => string | null;
+
+/**
+ * When a completed task was last updated, as Completed Work says it and
+ * orders by it (whole-app audit A6 pass 14 L4, 1 Oct 2026): its latest
+ * activity or its progress confirmation, whichever is later; the row's
+ * update time only when it has neither. "Delete PDF + Items" stamps the
+ * tasks it writes removed ids onto (rows sync by that time), and a completed
+ * one read "Last updated Sep 29, 2026." instead of "Sep 26" with nothing
+ * changed, and moved to the top of the list (the executive report shows the
+ * first 6). The confirmation is when the manager judged the percent
+ * (scheduleProgressJudgedAt), read from the saved tasks; with none given,
+ * the activity or the update time, whichever is later, as before.
+ */
+function completedTaskLastUpdatedAt(
+  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[] | undefined,
+): CompletedTaskLastUpdatedAt {
+  if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, scheduleProgressJudgedAt(item)]));
+  return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
+}
+
 function reportCompletedTaskFact(
   projectName: string,
   task: DAVEProjectTruth['schedule'][number],
   includeProject: boolean,
+  lastUpdatedAt: CompletedTaskLastUpdatedAt,
 ) {
   const prefix = includeProject ? `${projectName} — ` : '';
   const area = task.areaName ? ` (${task.areaName})` : '';
-  const latestChange = latestDate([task.latestActivityAt, task.updatedAt]);
+  const latestChange = lastUpdatedAt(task);
   const lastUpdated = latestChange
     ? ` Last updated ${formatReportDate(latestChange)}.`
     : '';
   return `${prefix}${task.taskName}${area}: Complete; 100% complete.${lastUpdated}`;
 }
 
-function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number]) {
+function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number], lastUpdatedAt: CompletedTaskLastUpdatedAt) {
   const timestamp = dateValue(latestDate([
-    task.latestActivityAt,
-    task.updatedAt,
+    lastUpdatedAt(task),
     task.finishDate,
   ]));
   return timestamp === null ? Number.MAX_SAFE_INTEGER : -timestamp;

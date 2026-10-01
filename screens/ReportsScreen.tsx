@@ -415,11 +415,14 @@ export function ReportsScreen({
       ? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)
       : null,
     waitingForOtherDevice: reportDeviceBehind,
+    // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
+    scheduleItems,
   }), [
     previousReportSnapshot,
     reportDeviceBehind,
     reportSourceFingerprint,
     reportTruths,
+    scheduleItems,
     selectedProjectNames,
     snapshotScopeLoaded,
   ]);

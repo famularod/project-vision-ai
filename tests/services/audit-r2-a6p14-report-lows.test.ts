@@ -19,6 +19,15 @@
  * the task shown that answers to the removed row (M's Framing); it is
  * dropped only when no task shown does, never doubled, never onto itself.
  *
+ * L4: Completed Work's "Last updated" date came from the row's update time,
+ * so a completed task the delete stamped moved from "Last updated Sep 26,
+ * 2026." to "Sep 29" with nothing changed, and to the top of the list (the
+ * executive report shows the first 6). It now comes from the task's latest
+ * activity or its progress confirmation, whichever is later, and from the
+ * row's update time only when it has neither. Project Truth keeps no
+ * confirmation time (and gains none: that would move the fingerprint), so the
+ * report reads it from the saved tasks it is given.
+ *
  * The scenarios run through the real import, delete helper, Project Truth and
  * report text, as in audit-r2-a6p13-updated-line-by-content, and the phone's
  * own dropDeletedPredecessors and its call in "Delete PDF + Items", compiled
@@ -415,3 +424,90 @@ describe('A6 p14 L1: after "Delete PDF + Items", a hand link to a removed row mo
 });
 
 const pourOrRoofing = (lines: readonly string[]) => lines.filter(line => line.includes('Roofing') || line.includes('Pour slab'));
+
+describe('A6 p14 L4: Completed Work\'s "Last updated" date does not move on the delete\'s stamp', () => {
+  const POUR_DONE_AT = '2026-09-26T15:00:00.000Z';
+  const CURB_DONE_AT = '2026-09-27T15:00:00.000Z';
+  /** David marks a task complete by hand (App.tsx updateScheduleItem: the manager's progress, confirmed now). */
+  const completed = (state: State, id: string, at: string) => edited(state, id, {
+    status: 'Complete', percentComplete: 100, progressSource: 'project_manager', progressConfirmedAt: at, progressConfirmedBy: 'David',
+  }, at);
+  /**
+   * Finished work: master F, then master M moves Pour slab (its row saved before the import kept earlier ids,
+   * so the delete writes F's id onto it and stamps it); Curb is on both. David completes Pour slab on Sep 26
+   * and Curb on Sep 27; the list is newest first.
+   */
+  function completedCase() {
+    const withF = approve({ items: [], documents: [] }, F, rows(F, ['Pour slab,Alpha,Lot,09/01/2026,09/05/2026,0%', 'Curb,Alpha,Lot,09/02/2026,09/06/2026,0%']));
+    const withM = approve(withF, M, rows(M, ['Pour slab,Alpha,Lot,09/02/2026,09/06/2026,0%', 'Curb,Alpha,Lot,09/02/2026,09/06/2026,0%']));
+    const before = { ...withM, items: withM.items.map(({ revisedFromTaskIds: _earlier, ...item }) => item as ScheduleItem) } as State;
+    const pour = named(shown(before), 'Pour slab')[0];
+    const curb = named(shown(before), 'Curb')[0];
+    expect(pour.importBatchId).toBe(M.importBatchId);
+    const done = completed(completed(before, pour.id, POUR_DONE_AT), curb.id, CURB_DONE_AT);
+    return { done, pour, curb, sent: snapshotOf(done, REPORT_SENT) };
+  }
+  /** The written report's Completed Work lines in both formats (the executive one shows the first 6). */
+  function completedLines(state: State, previous: DAVEReportSnapshot | null, { withSavedTasks = true } = {}) {
+    const briefing = buildDAVEReportBriefing({
+      truths: [truthOf(state, NOW)], selectedProjectNames: ['Alpha'], previousSnapshot: previous, ...(withSavedTasks ? { scheduleItems: state.items } : {}),
+    });
+    const [pm, executive] = (['project_manager', 'executive'] as const).map(format => {
+      const body = enhanceDAVEReportDraft(draft, briefing, format).body;
+      const start = body.indexOf('COMPLETED WORK');
+      return body.slice(start).split('\n').slice(1).filter(line => line.startsWith('• ')).filter(line => /Complete; 100% complete\./.test(line));
+    });
+    expect(executive).toEqual(pm);
+    expect(briefing.completedWork.map(line => `• ${line}`)).toEqual(pm);
+    return pm;
+  }
+  const AS_SENT = [
+    '• Curb (Lot): Complete; 100% complete. Last updated Sep 27, 2026.',
+    '• Pour slab (Lot): Complete; 100% complete. Last updated Sep 26, 2026.',
+  ];
+
+  it('the reviewer\'s case: a completed task the delete stamps keeps its date and its place', () => {
+    const { done, pour, sent } = completedCase();
+    expect(completedLines(done, null)).toEqual(AS_SENT);
+    const deleted = deleteWithItems(done, F);
+    expect(byId(deleted, pour.id).updatedAt).toBe(DELETED_AT);
+    expect(completedLines(deleted, sent)).toEqual(AS_SENT);
+  });
+
+  it('a later activity or a later confirmation still moves it', () => {
+    const { done, pour, sent } = completedCase();
+    const deleted = deleteWithItems(done, F);
+    const noted = edited(deleted, pour.id, note('n1', 'Punch walk done.', '2026-09-30T09:00:00.000Z'), '2026-09-30T09:00:00.000Z');
+    expect(completedLines(noted, sent)[0]).toBe('• Pour slab (Lot): Complete; 100% complete. Last updated Sep 30, 2026.');
+    const reconfirmed = completed(edited(deleted, pour.id, { status: 'In Progress', percentComplete: 90 }), pour.id, '2026-09-30T10:00:00.000Z');
+    expect(completedLines(reconfirmed, sent)[0]).toBe('• Pour slab (Lot): Complete; 100% complete. Last updated Sep 30, 2026.');
+  });
+
+  it('a task with neither an activity nor a confirmation: the row\'s update time, as before (a master completing it in place)', () => {
+    const withF = approve({ items: [], documents: [] }, F, rows(F, ['Framing,Alpha,Lot,09/01/2026,09/10/2026,30%']));
+    const withM = approve(withF, M, rows(M, ['Framing,Alpha,Lot,09/01/2026,09/10/2026,100%']));
+    const framing = named(shown(withM), 'Framing')[0];
+    expect(framing.progressConfirmedAt ?? null).toBeNull();
+    expect(framing.updatedAt).toBe(M.importedAt);
+    expect(completedLines(withM, null)).toEqual(['• Framing (Lot): Complete; 100% complete. Last updated Sep 26, 2026.']);
+  });
+
+  it('a report given no saved tasks reads as before', () => {
+    const { done, sent } = completedCase();
+    const deleted = deleteWithItems(done, F);
+    expect(completedLines(deleted, sent, { withSavedTasks: false })).toEqual([
+      '• Pour slab (Lot): Complete; 100% complete. Last updated Sep 29, 2026.',
+      '• Curb (Lot): Complete; 100% complete. Last updated Sep 27, 2026.',
+    ]);
+  });
+
+  it('the phone\'s Reports screen and the web report pass the saved tasks; Project Truth and the fingerprint are untouched', () => {
+    const reports = fs.readFileSync(path.resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
+    expect(reports).toMatch(/buildDAVEReportBriefing\(\{\n\s+truths: reportTruths,[\s\S]{0,600}?\n\s+scheduleItems,\n\s+\}\), \[/);
+    const web = fs.readFileSync(path.resolve(__dirname, '../../services/DAVEWebOperations.ts'), 'utf8');
+    expect(web).toMatch(/return buildDAVEReportBriefing\(\{\n\s+truths,\n\s+selectedProjectNames: [^\n]+\n[^\n]*\n\s+scheduleItems: snapshot\.knownScheduleItems \?\? snapshot\.scheduleItems,/);
+    const { done } = completedCase();
+    const truth = truthOf(done, NOW);
+    expect(Object.keys(truth.schedule[0]).filter(key => /confirm/i.test(key))).toEqual([]);
+  });
+});

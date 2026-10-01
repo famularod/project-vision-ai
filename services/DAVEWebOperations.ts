@@ -444,6 +444,8 @@ export function buildDAVEWebReportDraft(
   return buildDAVEReportBriefing({
     truths,
     selectedProjectNames: truths.map(truth => truth.projectName),
+    // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
+    scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
 }
 
