@@ -347,7 +347,7 @@ import {
   salvageStartupContactBook,
 } from './services/StartupRecordValidation';
 import { dependencyChangesForDeletedTask, normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
-import { normalizeProjectControls } from './services/VitruviusProjectControls';
+import { normalizeProjectControls, withProjectControlsEditMerged } from './services/VitruviusProjectControls';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { hasMatchingQueuedProjectUpdateRevision } from './services/ProjectUpdateQueueRevision';
@@ -11802,11 +11802,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function updateScheduleItem(
     itemId: string,
-    next: Partial<ScheduleItem>,
+    edit: Partial<ScheduleItem>,
     workflowRequest?: ProjectItemWorkflowMutationRequest,
   ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
+    const next = withProjectControlsEditMerged(current, edit); // newer controls kept (audit A2 p4 L1)
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
