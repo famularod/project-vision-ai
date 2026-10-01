@@ -14,6 +14,10 @@ import {
   type DAVETaskUpdateCommand,
 } from './DAVETaskConversation';
 import type { DAVEVoiceUnderstandingResponse } from './DAVEVoiceUnderstanding';
+import {
+  ecosProjectIdentifier,
+  ecosProjectNumberMentions,
+} from '../supabase/functions/_shared/ecos-project-reference';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -113,13 +117,12 @@ export function mentionedDAVEProject(
   });
   if (exact) return exact;
 
-  const numbers = normalize(transcript
-    .replace(DATE_PATTERN, ' ')
-    .replace(/\$\s?\d[\d,]*(?:\.\d+)?/g, ' ')
-    .replace(QUANTITY_PATTERN, ' '));
+  // Audit A9 pass 3 L2: the same number rule as Ask ECOS, so a phone number,
+  // "RFI 2375", "unit 2375" or "2375 Main Street" does not move the note either.
+  const numbers = new Set(ecosProjectNumberMentions(transcript, projectNames));
   const numberMatches = projectNames.filter(project => {
-    const number = project.match(/\b\d{3,6}\b/)?.[0];
-    return Boolean(number && new RegExp(`\\b${number}\\b`).test(numbers));
+    const number = ecosProjectIdentifier(project);
+    return Boolean(number && numbers.has(number));
   });
   return numberMatches.length === 1 ? numberMatches[0] : null;
 }
@@ -169,17 +172,6 @@ export function buildDAVETalkMemoryDraft({
     fields,
   });
 }
-
-const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
-const DATE_PATTERN = new RegExp([
-  '\\b\\d{1,4}[/.-]\\d{1,2}[/.-]\\d{1,4}\\b',
-  `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
-  `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+\\d{4}\\b`,
-].join('|'), 'gi');
-const QUANTITY_PATTERN = new RegExp(
-  '\\b\\d[\\d,]*(?:\\.\\d+)?\\s*(?:%|(?:percent|feet|foot|ft|lf|inches|inch|yards?|yds?|sf|sq|square|cubic|cy|meters?|metres?|mm|cm|lbs?|pounds?|tons?|gallons?|gal|psi|amps?|volts?|kw|kva|watts?|dollars?|pieces|pcs)\\b)',
-  'gi',
-);
 
 function classifyDAVEConversation(transcript: string):
   | { intent: 'navigate'; text: string; target: DAVEConversationNavigationTarget }
