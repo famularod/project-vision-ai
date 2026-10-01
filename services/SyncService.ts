@@ -2749,19 +2749,18 @@ async function writeStagedProjectUpdateRecord(
 }
 
 /**
- * The copy a sync attempt stages, with a result the queued copy holds that
- * stands over the copy's own (photoAnalysisResultStands; whole-app audit A4
- * pass 26 L2): Keep Phone put the iPad's newer, Confirmed result into the
- * newer edit it queued, and the waiting-update sync then sent the card's
- * failed one over it. A photo the card is analysing again keeps its own.
+ * The copy a sync attempt stages, with a result the queued copy, or the copy
+ * this device last put in the cloud, holds that stands over the copy's own
+ * (photoAnalysisResultStands; whole-app audit A4 pass 26 L2, pass 28 L1), as
+ * the archive is kept: Keep Phone put the iPad's newer, Confirmed result into
+ * the newer edit it queued, and the waiting-update sync then sent the card's
+ * failed one over it; after a send of that edit failed partway, Sync Now did.
+ * A photo the card is analysing again goes up with the standing result, not
+ * "analyzing": over the iPad's Confirmed result, a failed re-run then went on
+ * too. The card keeps showing "Analyzing" (withAnalysisResultsLastInCloud).
  */
 function withQueuedAnalysisResults(copy: ProjectUpdate, queuedCopy: unknown): ProjectUpdate {
-  if (!isRecord(queuedCopy) || !Array.isArray(queuedCopy.photos)) return copy;
-  const analysing = new Set((copy.photos || [])
-    .filter(photo => (photo.photoIntelligence as { status?: unknown } | undefined)?.status === 'analyzing')
-    .map(photo => photo.id));
-  const finished = { ...queuedCopy, photos: (queuedCopy.photos as unknown[]).filter(photo => !isRecord(photo) || !analysing.has(photo.id as string)) };
-  return withPhoneAnalysisResults(copy, [finished]) as ProjectUpdate;
+  return withPhoneAnalysisResults(copy, [queuedCopy, projectUpdateLastVersionInCloud.get(copy.id)]) as ProjectUpdate;
 }
 
 /**
@@ -6357,7 +6356,13 @@ function withSentCopysStandingParts(update: ProjectUpdate, sent: ProjectUpdate |
  */
 export function withAnalysisResultsLastInCloud<TUpdate extends ProjectUpdate>(update: TUpdate): TUpdate {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
-  return sent ? withPhoneAnalysisResults(update, [sent]) as TUpdate : update;
+  if (!isRecord(sent) || !Array.isArray(sent.photos)) return update;
+  // A photo the card is analysing again keeps "Analyzing" (A7 pass 24 L-1): its run lands on the card.
+  const analysing = new Set((update.photos || [])
+    .filter(photo => (photo.photoIntelligence as { status?: unknown } | undefined)?.status === 'analyzing')
+    .map(photo => photo.id));
+  const others = { ...sent, photos: (sent.photos as unknown[]).filter(photo => !isRecord(photo) || !analysing.has(photo.id as string)) };
+  return withPhoneAnalysisResults(update, [others]) as TUpdate;
 }
 
 /**

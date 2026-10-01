@@ -5497,13 +5497,16 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(firstPhotoAnalysis(withPhoneAnalysisResults(cloud, [withResult(failedLater), withResult(finished)]) as Update)).toEqual(finished);
   });
 
-  it('a sync attempt while the card analyses a photo again keeps "Analyzing", not the queued copy\'s failed result', async () => {
+  // Pin changed deliberately (A4 pass 28 L2, A7 pass 24 L-1): a photo the card is analysing again goes up with the
+  // standing result, never "analyzing" over it (a failed re-run then went over the iPad's Confirmed result); the
+  // card keeps showing "Analyzing" (withAnalysisResultsLastInCloud).
+  it('a sync attempt while the card analyses a photo again sends the queued copy\'s result, not "analyzing"', async () => {
     (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl); // its photos are in the cloud
-    const failed = { ...savedUpdate([], 'queued'), photos: [{ ...analyzingPhoto, photoIntelligence: failedAnalysis() }] };
-    await queueProjectUpdateRecord(failed, false);
-    const retrying = { ...failed, photos: [{ ...analyzingPhoto, photoIntelligence: { status: 'analyzing', updatedAt: new Date().toISOString() } }] };
+    const finished = { ...savedUpdate([], 'queued'), photos: [{ ...analyzingPhoto, photoIntelligence: confirmed(finishedAnalysis()) }] };
+    await queueProjectUpdateRecord(finished, false);
+    const retrying = { ...finished, photos: [{ ...analyzingPhoto, photoIntelligence: { status: 'analyzing', updatedAt: new Date().toISOString() } }] };
     await stageProjectUpdateForSync(retrying as never);
-    expect(firstPhotoAnalysis((await queuedFor())!.payload.updateData as Update)).toMatchObject({ status: 'analyzing' });
+    expect(firstPhotoAnalysis((await queuedFor())!.payload.updateData as Update)).toMatchObject({ status: 'analysis_complete', userReview: 'confirmed' });
   });
 
   it('the phone\'s analysis finished offline and the iPad\'s Retry failed later: the phone\'s finished result reaches the cloud and the card', async () => {
@@ -5630,6 +5633,66 @@ describe('which result stands: finished over failed, then the later, then the la
     await settings.settled();
     expect(settings.onRetryUpdateSync).not.toHaveBeenCalled();
     expect(inCloud()).toMatchObject({ notes: LATER_IPAD_NOTE });
+  });
+
+  /** The next record write fails after the photos went up (weak signal). */
+  const nextRecordSaveFails = () => (saveProjectUpdate as jest.Mock).mockImplementationOnce(async () => ({
+    ok: false, configured: true, stubbed: false, error: 'Network request failed' }));
+
+  it('Keep Phone with a newer edit, Settings\' send of it fails partway, then Sync Now: the iPad\'s Confirmed result stays (A4 pass 28 L1)', async () => {
+    const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_SECOND_NOTE);
+    await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_local', IPAD_SECOND_NOTE);
+    const settings = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', settings.onRetryUpdateSync,
+      async () => { nextRecordSaveFails(); }); // Settings' send of the newer edit
+    await settings.settled();
+    expect(settings.onRetryUpdateSync).toHaveBeenCalled();
+    await pressSyncNow(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+  });
+
+  it('"Send your version?" fails partway, then Sync Now: the iPad\'s Confirmed result stays (A4 pass 28 L1)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    nextRecordSaveFails();
+    await appRetryQueuedUpdate(phone)(phone.saved()!, { overConflict: true });
+    phone.render();
+    await pressSyncNow(phone);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+  });
+
+  it('"Send your version?" while the card analyses the photo again: the cloud gets the iPad\'s result, the card keeps "Analyzing" (A7 pass 24 L-1)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() }); // Retry on the photo
+    await phone.settle();
+    await appRetryQueuedUpdate(phone)(phone.saved()!, { overConflict: true });
+    phone.render();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ status: 'analyzing' });
   });
 
   it('"Send your version?": the phone\'s note goes over the iPad\'s, with the iPad\'s Confirmed result (A4 pass 27 L3)', async () => {
