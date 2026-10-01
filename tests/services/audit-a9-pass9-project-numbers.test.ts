@@ -209,7 +209,10 @@ describe('audit A9 pass 9 L1: identifiers are compared whole, so "2375" is not "
     expect(desktop('What is left at 2375A?', WITH_MAIN, [], MAIN)).toBe(switchOnDesktop('2375A', '2375'));
   });
 
-  it.each(['What is left at 2375 B?', 'What is left at 2375-B?', 'What is left at 2375 b?'])(
+  // Audit A9 pass 10 L1: a lower-case spaced "2375 b" is a bare 2375 now (a
+  // spaced letter is the number's only as a capital standing alone), so it
+  // left this list; see audit-a9-pass10-project-numbers.test.ts.
+  it.each(['What is left at 2375 B?', 'What is left at 2375-B?'])(
     '"%s" names 2375B when it is another project',
     question => {
       expect(desktop(question, LETTERED, [], A)).toBe(switchOnDesktop('2375B', '2375A'));
@@ -241,7 +244,10 @@ describe('audit A9 pass 9 L1: identifiers are compared whole, so "2375" is not "
 
   it('a note about "2375" on 2375A, with no project plain 2375, stays pre-confirmed on 2375A', () => {
     expect(noteDraft('Crew at 2375 left early.', A, LETTERED).recommendedProject.confirmed).toBe(true);
-    expect(noteDraft('Crew at 2375 B left early.', A, LETTERED).recommendedProject.confirmed).toBe(false);
+    expect(noteDraft('Crew at 2375-B left early.', A, LETTERED).recommendedProject.confirmed).toBe(false);
+    // Audit A9 pass 10 L1 (accepted): a spaced capital with a word after it
+    // is a word ("2375 A priority"), so "2375 B left" is 2375A's own 2375.
+    expect(noteDraft('Crew at 2375 B left early.', A, LETTERED).recommendedProject.confirmed).toBe(true);
   });
 
   it('"Mark 2375 framing complete" on 2375A offers 2375 Main St\'s task', async () => {
@@ -369,8 +375,9 @@ describe('audit A9 pass 9 L5: a glued "A" after a project\'s number is never amp
     expect(desktop('Is 2375A done?', [SELECTED, A_STREET, PHASE], [], PHASE)).toBeNull();
     expect(desktop('Is 2375A done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
     expect(desktop('Is 2375 done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBeNull();
-    // Accepted: "2375 A" reads as 2375A too, so it is refused on 2375 A Street while 2375A Phase 2 exists.
-    expect(desktop('Is 2375 A Street done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
+    // Audit A9 pass 10 L1: "2375 A Street" is that project's own name, no
+    // longer read as 2375A, so it is answered on 2375 A Street (was refused).
+    expect(desktop('Is 2375 A Street done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBeNull();
   });
 
   it('amps after a project\'s number are written as a word; "200A" names the project (accepted)', () => {

@@ -170,7 +170,12 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * glued after the number ("2375B"), or ''. A number and letter that are a
  * project's identifier ("2375V" for "2375V Main") are never read as volts or
  * another exemption (audit A9 pass 8 L7). `spacedLetter`: else one letter
- * after a space or hyphen ("2375 B", "2375-B"), or '' (audit A9 pass 9 L1).
+ * after a hyphen ("2375-B"), or one capital after a space standing alone
+ * (the end, punctuation or a space and a non-letter after it: "2375 B?",
+ * "2375 B 2nd floor"), or '' (audit A9 pass 9 L1). Audit A9 pass 10 L1: a
+ * lower-case or followed letter is a word ("Is 2375 a priority?", "2375 A
+ * Street"), and a letter that continues the name of a project numbered just
+ * this ("2375 A?" for "2375 A Street") is that project's, so neither is one.
  */
 export function ecosProjectNumberMentionsAt(
   text: string,
@@ -184,9 +189,16 @@ export function ecosProjectNumberMentionsAt(
     const number = match[0].replace(/,/g, '');
     const start = match.index;
     const end = start + match[0].length;
-    const [, letter = '', spacedLetter = ''] = match[0].includes(',')
+    const [, letter = '', hyphenLetter = '', spacedCapital = ''] = match[0].includes(',')
       ? []
-      : /^(?:([A-Za-z])|[ -]([A-Za-z]))(?![A-Za-z0-9])/.exec(text.slice(end)) ?? [];
+      : /^(?:([A-Za-z])(?![A-Za-z0-9])|-([A-Za-z])(?![A-Za-z0-9])| ([A-Z])(?=$|[^A-Za-z0-9\s]|\s+(?:[^A-Za-z\s]|$)))/
+        .exec(text.slice(end)) ?? [];
+    // Audit A9 pass 10 L1: not a letter that continues the name of a project
+    // numbered just this ("2375 A?" for "2375 A Street").
+    const spacedLetter = (hyphenLetter || spacedCapital) && !projectNames.some(name =>
+      fullIdentifier(name) === number && projectNameAroundNumber(number, '', text.slice(end), [name]))
+      ? hyphenLetter || spacedCapital
+      : '';
     if (
       exempt.some(([from, to]) => from <= start && end <= to) &&
       !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames) &&

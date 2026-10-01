@@ -887,6 +887,23 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 10 L1: a spaced letter is the number's only as a capital
+  // standing alone ("2375 A?") or after a hyphen, and never when it continues
+  // the name of a project numbered just that ("2375 A Street").
+  ...([
+    ['Is 2375 a priority this week?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], null, undefined],
+    ['Is 2375 A priority this week?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], null, undefined],
+    ['What is left at 2375 A?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], '2375A', '2375'],
+    ['What is left on 2375 A Street?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
+    ['What is left on 2375 A?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 10 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   {
     name: 'pass 8 L7: a closed lettered project is refused with its letter, marked closed',
     projectName: SELECTED,
