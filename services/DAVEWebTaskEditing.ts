@@ -18,6 +18,7 @@ import {
   validateProjectItemWorkflowEdit,
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { parsePlainDate } from './ProjectDateTime';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -289,6 +290,15 @@ export function mergeDAVEWebConflictDraft({
     opened: string | null | undefined,
     theirs: string | null | undefined,
   ) => (mine.trim() === (opened ?? '').trim() ? theirs ?? '' : mine);
+  // A date is left alone when it is the same calendar day as the version he
+  // opened: the builder's inputs hold 2026-10-05 for a stored 10/05/2026, and
+  // comparing them as text put back the dates the phone had just moved, a
+  // lookahead's included (whole-app audit A12 pass 3 M1, 30 Sep 2026).
+  const date = (
+    mine: string,
+    opened: string | null | undefined,
+    theirs: string | null | undefined,
+  ) => (daveWebScheduleDatesMatch(mine, opened) ? theirs ?? '' : mine);
   const minePercent = boundedPercent(draft.percentComplete);
   const openedProject = base.scheduleProjectName || base.projectName;
   const latestProject = latest.scheduleProjectName || latest.projectName;
@@ -305,6 +315,10 @@ export function mergeDAVEWebConflictDraft({
       ? undefined
       : mine
   );
+  const planningDate = (
+    mine: string | undefined,
+    opened: string | null | undefined,
+  ) => (mine === undefined || daveWebScheduleDatesMatch(mine, opened) ? undefined : mine);
   const planningFlag = (mine: boolean | undefined, opened: boolean | undefined) => (
     mine === undefined || (mine === true) === (opened === true) ? undefined : mine
   );
@@ -322,8 +336,8 @@ export function mergeDAVEWebConflictDraft({
       ? latestProject
       : draft.projectName,
     locationName: text(draft.locationName, base.locationName, latest.locationName),
-    startDate: text(draft.startDate, base.startDate, latest.startDate),
-    finishDate: text(draft.finishDate, base.finishDate, latest.finishDate),
+    startDate: date(draft.startDate, base.startDate, latest.startDate),
+    finishDate: date(draft.finishDate, base.finishDate, latest.finishDate),
     milestone: text(draft.milestone, base.milestone, latest.milestone),
     owner: text(draft.owner, base.owner, latest.owner),
     contractor: text(draft.contractor, base.contractor, latest.contractor),
@@ -343,8 +357,8 @@ export function mergeDAVEWebConflictDraft({
     dependencies: dependenciesChanged ? draft.dependencies : undefined,
     isSummary: planningFlag(draft.isSummary, base.isSummary),
     isMilestone: planningFlag(draft.isMilestone, base.isMilestone),
-    baselineStartDate: planningText(draft.baselineStartDate, base.baselineStartDate),
-    baselineFinishDate: planningText(draft.baselineFinishDate, base.baselineFinishDate),
+    baselineStartDate: planningDate(draft.baselineStartDate, base.baselineStartDate),
+    baselineFinishDate: planningDate(draft.baselineFinishDate, base.baselineFinishDate),
     projectControls: draft.projectControls === undefined
       ? undefined
       : mergeConflictProjectControls({
@@ -355,6 +369,58 @@ export function mergeDAVEWebConflictDraft({
           actor,
         }),
   };
+}
+
+/**
+ * Whether two schedule dates are the same calendar day, however each is
+ * written (2026-10-05, 10/05/2026, 10/5/2026, Oct 5, 2026). Two empty dates
+ * match; an empty and a set date do not. Text that is not a date matches
+ * only itself.
+ */
+export function daveWebScheduleDatesMatch(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const leftText = (left ?? '').trim();
+  const rightText = (right ?? '').trim();
+  if (leftText === rightText) return true;
+  const leftDay = scheduleCalendarDay(leftText);
+  return leftDay !== null && leftDay === scheduleCalendarDay(rightText);
+}
+
+/**
+ * A date from the builder's date input (2026-10-05) as the task stores it
+ * (whole-app audit A12 pass 3 M2, 30 Sep 2026). Every builder save had
+ * rewritten dates as 2026-10-05 while schedule files and the phone use
+ * 10/05/2026. The same day as `stored` keeps its exact stored text, so a
+ * save that changed nothing changes nothing for other readers; a changed day
+ * is written in the format the task already uses (`stored`, else the first
+ * of `formatFrom` that is a date): 2026-10-05 for a task stored that way,
+ * otherwise the app's MM/DD/YYYY, which is also what a new item gets.
+ */
+export function daveWebScheduleDateForSave(
+  value: string,
+  stored: string | null | undefined,
+  formatFrom: readonly (string | null | undefined)[] = [],
+): string {
+  const text = value.trim();
+  if (!text) return '';
+  const storedText = (stored ?? '').trim();
+  if (storedText && daveWebScheduleDatesMatch(text, storedText)) return storedText;
+  const day = scheduleCalendarDay(text);
+  if (!day) return text;
+  const reference = [storedText, ...formatFrom.map(candidate => (candidate ?? '').trim())]
+    .find(candidate => scheduleCalendarDay(candidate) !== null);
+  if (reference && /^\d{4}-\d{2}-\d{2}/.test(reference)) return day;
+  const [year, month, dayOfMonth] = day.split('-');
+  return `${month}/${dayOfMonth}/${year}`;
+}
+
+/** The calendar day a schedule date names, as YYYY-MM-DD, or null. */
+function scheduleCalendarDay(value: string): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  return parsePlainDate(text) ?? text.match(/^(\d{4}-\d{2}-\d{2})T/)?.[1] ?? null;
 }
 
 function mergeConflictProjectControls({

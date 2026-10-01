@@ -14,6 +14,7 @@ import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  daveWebScheduleDateForSave,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
@@ -45,6 +46,7 @@ import {
   scheduleParentOptions,
   schedulePredecessorOptions,
 } from '../../services/VitruviusScheduleWorkspace';
+import { parsePlainDate } from '../../services/ProjectDateTime';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
 import { useDesktopAuth } from './desktop-auth-provider';
@@ -231,6 +233,10 @@ export function DesktopSchedulePage({
     const projectTasks = tasks.filter(task =>
       normalize(task.scheduleProjectName || task.projectName) === normalize(form.projectName),
     );
+    // Dates as the task stores them, not as the date inputs hold them; an
+    // unchanged day keeps its stored text (whole-app audit A12 pass 3 M2).
+    const storedDate = (value: string, stored: string | null | undefined) =>
+      daveWebScheduleDateForSave(value, stored, scheduleDatesOf(opened));
     return {
       ok: true,
       draft: {
@@ -244,8 +250,8 @@ export function DesktopSchedulePage({
         taskName: form.taskName,
         projectName: form.projectName,
         locationName: form.locationName,
-        startDate: form.kind === 'phase' ? '' : startDate,
-        finishDate: form.kind === 'phase' ? '' : finishDate,
+        startDate: form.kind === 'phase' ? '' : storedDate(startDate, opened?.startDate),
+        finishDate: form.kind === 'phase' ? '' : storedDate(finishDate, opened?.finishDate),
         milestone: scheduleBuilderMilestoneText(form, opened),
         owner: form.owner,
         contractor: form.contractor,
@@ -265,10 +271,11 @@ export function DesktopSchedulePage({
           : planningDependenciesFromIds(form.predecessorItemIds, form.lagDays),
         isSummary: form.kind === 'phase',
         isMilestone: form.kind === 'milestone',
-        baselineStartDate: form.baselineStartDate,
-        baselineFinishDate: form.kind === 'milestone'
-          ? form.baselineStartDate
-          : form.baselineFinishDate,
+        baselineStartDate: storedDate(form.baselineStartDate, opened?.baselineStartDate),
+        baselineFinishDate: storedDate(
+          form.kind === 'milestone' ? form.baselineStartDate : form.baselineFinishDate,
+          opened?.baselineFinishDate,
+        ),
         projectControls: opened?.projectControls ?? null,
       },
     };
@@ -460,8 +467,7 @@ export function DesktopSchedulePage({
     try {
       await auth.updateTask({
         ...current,
-        startDate: calculated.startDate,
-        finishDate: calculated.finishDate,
+        ...calculatedDatesAsStored(current, calculated),
         durationDays: calculated.durationDays,
         updatedAt: new Date().toISOString(),
       });
@@ -503,8 +509,7 @@ export function DesktopSchedulePage({
       if (!calculated || !changedIds.has(current.id)) return [];
       return [{
         ...current,
-        startDate: calculated.startDate,
-        finishDate: calculated.finishDate,
+        ...calculatedDatesAsStored(current, calculated),
         durationDays: calculated.durationDays,
         updatedAt: new Date().toISOString(),
       }];
@@ -1995,12 +2000,39 @@ function scheduleBuilderMilestoneText(
     : existing;
 }
 
+/** The dates a task already has, which set the format its saved dates take. */
+function scheduleDatesOf(task: ScheduleItem | null): string[] {
+  return task
+    ? [task.startDate, task.finishDate, task.baselineStartDate || '', task.baselineFinishDate || '']
+    : [];
+}
+
+/** Calculated dates (2026-10-12) written as the task stores dates (A12 pass 3 M2). */
+function calculatedDatesAsStored(
+  current: ScheduleItem,
+  calculated: Pick<ScheduleItem, 'startDate' | 'finishDate'>,
+) {
+  return {
+    startDate: daveWebScheduleDateForSave(calculated.startDate, current.startDate, scheduleDatesOf(current)),
+    finishDate: daveWebScheduleDateForSave(calculated.finishDate, current.finishDate, scheduleDatesOf(current)),
+  };
+}
+
+/**
+ * The date input's 2026-10-05 for a stored date. 10/05/2026 and Oct 5, 2026
+ * are read as calendar days: through toISOString they became the day before
+ * in any time zone east of UTC.
+ */
 function dateInputValue(value: string) {
   if (!value) return '';
   const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
   if (direct) return direct;
+  const calendarDay = parsePlainDate(value);
+  if (calendarDay) return calendarDay;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function shortDate(value: string) {
