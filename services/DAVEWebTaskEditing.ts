@@ -18,7 +18,7 @@ import {
   validateProjectItemWorkflowEdit,
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
-import { parsePlainDate } from './ProjectDateTime';
+import { scheduleCalendarDay } from './ScheduleCalendarDay';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -394,9 +394,11 @@ export function mergeDAVEWebConflictDraft({
 
 /**
  * Whether two schedule dates are the same calendar day, however each is
- * written (2026-10-05, 10/05/2026, 10/5/2026, Oct 5, 2026). Two empty dates
- * match; an empty and a set date do not. Text that is not a date matches
- * only itself.
+ * written (2026-10-05, 10/05/2026, 10/5/2026, Oct 5, 2026, and since A12
+ * pass 4 L1 also 2026-10-05 08:00, 10/5/2026 8:00 AM, Mon 10/5/26,
+ * 2026-10-5: every form the builder's date box shows as a day). Two empty
+ * dates match; an empty and a set date do not. Text that is not a date
+ * matches only itself.
  */
 export function daveWebScheduleDatesMatch(
   left: string | null | undefined,
@@ -432,16 +434,9 @@ export function daveWebScheduleDateForSave(
   if (!day) return text;
   const reference = [storedText, ...formatFrom.map(candidate => (candidate ?? '').trim())]
     .find(candidate => scheduleCalendarDay(candidate) !== null);
-  if (reference && /^\d{4}-\d{2}-\d{2}/.test(reference)) return day;
+  if (reference && /^\d{4}-\d{1,2}-\d{1,2}/.test(reference)) return day;
   const [year, month, dayOfMonth] = day.split('-');
   return `${month}/${dayOfMonth}/${year}`;
-}
-
-/** The calendar day a schedule date names, as YYYY-MM-DD, or null. */
-function scheduleCalendarDay(value: string): string | null {
-  const text = value.trim();
-  if (!text) return null;
-  return parsePlainDate(text) ?? text.match(/^(\d{4}-\d{2}-\d{2})T/)?.[1] ?? null;
 }
 
 function mergeConflictProjectControls({

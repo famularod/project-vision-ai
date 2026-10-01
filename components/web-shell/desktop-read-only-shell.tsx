@@ -58,6 +58,7 @@ import {
   scheduleDocumentIsScheduleLike,
 } from '../../services/PIEScheduleReconciliation';
 import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
+import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -6982,12 +6983,15 @@ function formatDate(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
+/**
+ * The date box's 2026-10-05 for a stored date, read as the calendar day it
+ * names, as in the Schedule Builder (whole-app audit A12 pass 4 L2, 30 Sep
+ * 2026). Through toISOString, 10/05/2026 showed as 4 Oct anywhere east of
+ * UTC; the browser's parser also read "Week 41" as 1 Jan 2041. Text that
+ * names no day shows an empty box; the task keeps it unless he picks a date.
+ */
 function dateInputValue(value: string | null | undefined): string {
-  if (!value) return '';
-  const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-  if (direct) return direct;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  return scheduleCalendarDay(value) ?? '';
 }
 
 async function fingerprintBytes(bytes: ArrayBuffer): Promise<string> {

@@ -46,7 +46,7 @@ import {
   scheduleParentOptions,
   schedulePredecessorOptions,
 } from '../../services/VitruviusScheduleWorkspace';
-import { parsePlainDate } from '../../services/ProjectDateTime';
+import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
 import { useDesktopAuth } from './desktop-auth-provider';
@@ -235,8 +235,17 @@ export function DesktopSchedulePage({
     );
     // Dates as the task stores them, not as the date inputs hold them; an
     // unchanged day keeps its stored text (whole-app audit A12 pass 3 M2).
+    // A box that still shows what the stored date showed keeps the stored
+    // text exactly, "TBD" and other text that shows an empty box included
+    // (whole-app audit A12 pass 4 L1, 30 Sep 2026).
     const storedDate = (value: string, stored: string | null | undefined) =>
-      daveWebScheduleDateForSave(value, stored, scheduleDatesOf(opened));
+      opened && value.trim() === dateInputValue(stored)
+        ? stored ?? ''
+        : daveWebScheduleDateForSave(value, stored, scheduleDatesOf(opened));
+    // A phase's dates are not in the builder's form, so it never writes
+    // them: they had been saved blank, and Apply My Changes on a phase
+    // blanked the phone's newer phase dates (A12 pass 4 L1).
+    const phaseDate = (stored: string | null | undefined) => stored ?? '';
     return {
       ok: true,
       draft: {
@@ -250,8 +259,12 @@ export function DesktopSchedulePage({
         taskName: form.taskName,
         projectName: form.projectName,
         locationName: form.locationName,
-        startDate: form.kind === 'phase' ? '' : storedDate(startDate, opened?.startDate),
-        finishDate: form.kind === 'phase' ? '' : storedDate(finishDate, opened?.finishDate),
+        startDate: form.kind === 'phase'
+          ? phaseDate(opened?.startDate)
+          : storedDate(startDate, opened?.startDate),
+        finishDate: form.kind === 'phase'
+          ? phaseDate(opened?.finishDate)
+          : storedDate(finishDate, opened?.finishDate),
         milestone: scheduleBuilderMilestoneText(form, opened),
         owner: form.owner,
         contractor: form.contractor,
@@ -2021,18 +2034,14 @@ function calculatedDatesAsStored(
 /**
  * The date input's 2026-10-05 for a stored date. 10/05/2026 and Oct 5, 2026
  * are read as calendar days: through toISOString they became the day before
- * in any time zone east of UTC.
+ * in any time zone east of UTC. The same reading as the same-day check
+ * (whole-app audit A12 pass 4 L1, 30 Sep 2026): the browser's own parser
+ * showed days the check did not recognise, so a save rewrote them, and it
+ * reads "Week 41" as 1 Jan 2041. Text that names no day ("TBD") shows an
+ * empty box and is kept as stored unless he picks a date.
  */
-function dateInputValue(value: string) {
-  if (!value) return '';
-  const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-  if (direct) return direct;
-  const calendarDay = parsePlainDate(value);
-  if (calendarDay) return calendarDay;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? ''
-    : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+function dateInputValue(value: string | null | undefined) {
+  return scheduleCalendarDay(value) ?? '';
 }
 
 function shortDate(value: string) {
