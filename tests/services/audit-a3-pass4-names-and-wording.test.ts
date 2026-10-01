@@ -68,10 +68,12 @@ describe('wording says what the app does (audit A3 pass 4, 3)', () => {
 
   // Pin updated in audit A3 pass 5 (L3): the picker always has one address
   // selected and has no "none" choice, so "(optional)" became "kept with the
-  // update" (owner answer Q18: the app never sends to contacts).
-  it('labels a contact\'s email and phone as kept with the update: the app never sends to contacts (owner answer Q18)', () => {
-    expect(app).toContain('<Text style={styles.label}>Email kept with the update</Text>');
-    expect(app).toContain('<Text style={styles.label}>Phone kept with the update</Text>');
+  // update" (owner answer Q18: the app never sends to contacts). Updated
+  // again in pass 6 (L1): an update keeps only the contact's id, and the
+  // chip changes the contact itself, so it says "saved on this contact".
+  it('labels a contact\'s email and phone as saved on the contact: the app never sends to contacts (owner answer Q18)', () => {
+    expect(app).toContain('<Text style={styles.label}>Email saved on this contact</Text>');
+    expect(app).toContain('<Text style={styles.label}>Phone saved on this contact</Text>');
     expect(app).not.toContain('Email to use');
     expect(app).not.toContain('Phone to use for text');
   });

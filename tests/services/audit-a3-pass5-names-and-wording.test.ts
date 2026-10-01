@@ -58,9 +58,11 @@ describe('the delete wording says the name is retired (L2)', () => {
 });
 
 describe('a contact\'s email and phone say what the picker keeps (L3, owner answer Q18)', () => {
-  it('labels the always-selected chip as kept with the update, not optional', () => {
-    expect(app).toContain('<Text style={styles.label}>Email kept with the update</Text>');
-    expect(app).toContain('<Text style={styles.label}>Phone kept with the update</Text>');
+  // Pin updated in audit A3 pass 6 (L1): "kept with the update" was not true,
+  // an update keeps only the contact's id; the chip changes the contact.
+  it('labels the always-selected chip as saved on the contact, not optional', () => {
+    expect(app).toContain('<Text style={styles.label}>Email saved on this contact</Text>');
+    expect(app).toContain('<Text style={styles.label}>Phone saved on this contact</Text>');
     expect(app).not.toContain('Email (optional)');
     expect(app).not.toContain('Phone (optional)');
   });

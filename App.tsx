@@ -18558,7 +18558,7 @@ function RecipientRow({
 
       {emails.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Email kept with the update</Text>
+          <Text style={styles.label}>Email saved on this contact</Text>
 
           <View style={styles.choiceChipWrap}>
             {emails.map(email => {
@@ -18596,7 +18596,7 @@ function RecipientRow({
 
       {phones.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Phone kept with the update</Text>
+          <Text style={styles.label}>Phone saved on this contact</Text>
 
           <View style={styles.choiceChipWrap}>
             {phones.map(phone => {
