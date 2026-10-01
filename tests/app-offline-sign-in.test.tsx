@@ -25,8 +25,14 @@ let mockDuringSecureDelete: ((key: string) => Promise<void>) | null = null;
 let mockSettingsProps: Record<string, unknown> | null = null;
 /** Keychain reads fail (the phone is locked), as in audit A2 pass 2 L1. */
 let mockFailingSecureReads = false;
-/** How long each of the next Keychain reads takes, in order: a slow Keychain at launch (A1 pass 5 L1). */
-const mockSecureReadDelays: number[] = [];
+/**
+ * A slow Keychain at launch (A1 pass 5 L1): how long each of the next reads
+ * of one sign-in's entries (those whose key starts with `keyPrefix`) takes,
+ * in order. Scoped to that sign-in: a sign-in library left running by an
+ * earlier test reads its own entries, and used to take these delays in a
+ * whole-file run, so the launch under test was not slow at all.
+ */
+const mockSlowSecureReads = { keyPrefix: '', delaysMs: [] as number[] };
 /** A voice recording on this phone (A11 pass 4 L1); null leaves the real module. */
 let mockVoiceRecordingInfo: { exists: boolean; size: number } | null = null;
 jest.mock('expo-file-system/legacy', () => {
@@ -42,7 +48,9 @@ jest.mock('expo-file-system/legacy', () => {
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
   getItemAsync: jest.fn(async (key: string) => {
-    const delayMs = mockSecureReadDelays.shift();
+    const delayMs = mockSlowSecureReads.keyPrefix && key.startsWith(mockSlowSecureReads.keyPrefix)
+      ? mockSlowSecureReads.delaysMs.shift()
+      : undefined;
     if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
     if (mockFailingSecureReads) throw new Error('User interaction is not allowed.');
     return mockSecure.get(key) ?? null;
@@ -196,8 +204,12 @@ let projectRef = '';
 let client: { auth: { stopAutoRefresh: () => Promise<void> } } | null = null;
 const tokenKey = () => `sb-${projectRef}-auth-token`;
 
-/** A fresh app process: new module registry, same phone storage. */
-function launch() {
+/**
+ * A fresh app process: new module registry, same phone storage.
+ * `beforeRender` gets this process's SupabaseService before the app starts
+ * its startup lookup (A1 pass 5 L1 watches that lookup).
+ */
+function launch(beforeRender?: (service: typeof import('../services/SupabaseService')) => void) {
   jest.resetModules();
   const React = require('react');
   // The pure entry: the default one registers hooks, not allowed in a test.
@@ -205,6 +217,7 @@ function launch() {
   const { NativeRoot } = require('../entry');
   const service = require('../services/SupabaseService');
   client = service.getSupabaseClient();
+  beforeRender?.(service);
   const screen = rtl.render(React.createElement(NativeRoot));
   return { screen, rtl, service };
 }
@@ -245,7 +258,8 @@ beforeEach(() => {
   mockDuringSecureDelete = null;
   mockSettingsProps = null;
   mockFailingSecureReads = false;
-  mockSecureReadDelays.length = 0;
+  mockSlowSecureReads.keyPrefix = '';
+  mockSlowSecureReads.delaysMs = [];
   mockVoiceRecordingInfo = null;
   network.mode = 'offline';
   network.calls = [];
@@ -1704,22 +1718,50 @@ describe('A1 pass 5 review', () => {
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 2 * 24 * HOUR * 1000);
     return { seenAtMs, clock };
   }
+  /**
+   * The next launch's saved sign-in reads are slow: its first two Keychain
+   * reads (the saved session's entries) take 1.5 s each, so auth-js starts
+   * after the startup lookup has given up (1.5 s). The sign-in moves to a
+   * new project's key first, so the sign-in library of an earlier launch,
+   * still running, cannot take the delays (it reads only its own key).
+   */
+  function slowKeychainAtNextLaunch() {
+    const oldKey = tokenKey();
+    projectRef = `${projectRef}-slow-keychain`;
+    process.env.EXPO_PUBLIC_SUPABASE_URL = `https://${projectRef}.supabase.co`;
+    for (const [key, value] of [...mockSecure]) {
+      if (!key.startsWith(oldKey)) continue;
+      mockSecure.delete(key);
+      mockSecure.set(`${tokenKey()}${key.slice(oldKey.length)}`, value);
+    }
+    mockSlowSecureReads.keyPrefix = tokenKey();
+    mockSlowSecureReads.delaysMs = [1_500, 1_500];
+  }
+  /** Launches with the startup lookup watched: its answers, in order. */
+  function launchWatchingLookup() {
+    let lookups: jest.SpyInstance | null = null;
+    const launched = launch(service => { lookups = jest.spyOn(service, 'getCurrentSessionUser'); });
+    return { ...launched, lookupResults: () => Promise.all((lookups?.mock.results ?? []).map(result => result.value)) };
+  }
 
   test('L1 a slow Keychain at launch, the clock set back into the saved token\'s last hour, no signal: the clock lockout, not a full sign-in', async () => {
     const { seenAtMs, clock } = await openedOfflineThenClockSetBack();
     try {
+      // The startup lookup gives up (1.5 s) and the failed-lookup path decides.
+      slowKeychainAtNextLaunch();
       const from = network.calls.length;
-      // The saved sign-in's first two Keychain reads take a second each, so
-      // the startup lookup gives up (1.5 s) and the failed-lookup path decides.
-      mockSecureReadDelays.push(1_000, 1_000);
-      const second = launch();
+      const second = launchWatchingLookup();
       await second.rtl.waitFor(() => expect(
         second.screen.queryByText(LOCKOUT) ?? second.screen.queryByText('WORKSPACE OPEN owner-a'),
       ).toBeTruthy(), OPEN);
+      // The path under test, in any test order: the lookup really gave up.
+      // (The whole-file run used to take the lookup's own success path,
+      // where the clock was already checked, so the test proved nothing.)
+      expect(await second.lookupResults()).toEqual([expect.objectContaining({ ok: false, code: 'auth_loading' })]);
+      expect(mockSlowSecureReads.delaysMs).toEqual([]);
       // Before: "WORKSPACE OPEN owner-a", fully signed in, no pending marker, nothing sent.
       expect(second.screen.queryByText('WORKSPACE OPEN owner-a')).toBeNull();
       expect(second.screen.getByText(clockMessage(seenAtMs))).toBeTruthy();
-      expect(mockSecureReadDelays).toEqual([]);
       await second.rtl.act(async () => { await pause(300); });
       expect(mockWorkspaceMounts).toEqual([]);
       // The server's time was asked for (a real refresh), and there was no signal.
@@ -1737,11 +1779,12 @@ describe('A1 pass 5 review', () => {
     await saveSignIn('owner-a', 0.5);
     await phoneWorkspaceOf('owner-a');
     mockAsync.set(TIME_SEEN('owner-a'), String(Date.now() - HOUR * 1000));
-    mockSecureReadDelays.push(1_000, 1_000);
-    const { screen, rtl } = launch();
+    slowKeychainAtNextLaunch();
+    const { screen, rtl, lookupResults } = launchWatchingLookup();
     await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+    expect(await lookupResults()).toEqual([expect.objectContaining({ ok: false, code: 'auth_loading' })]);
+    expect(mockSlowSecureReads.delaysMs).toEqual([]);
     expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
-    expect(mockSecureReadDelays).toEqual([]);
     expect(network.calls.filter(call => call.startsWith('POST /auth/v1/token'))).toEqual([]);
     screen.unmount();
   });
