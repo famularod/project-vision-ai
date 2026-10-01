@@ -126,6 +126,25 @@ describe('kept field note and slow phone storage (A2 pass 5 L2)', () => {
     reopened.unmount();
   });
 
+  // A2 pass 6 L1: leaving Field Notes and coming back before the phone
+  // answered, then tapping Type field note, lost the kept note for good.
+  it('leaving and coming back before the phone answers still brings the kept note back', async () => {
+    await keepNoteFromLastLaunch('owner-a');
+
+    const answer = slowPhone();
+    const app = launch();
+    const first = app.rtl.render(app.notes('owner-a'));
+    await app.rtl.act(settle);
+    first.unmount();
+    const screen = app.rtl.render(app.notes('owner-a'));
+    await app.rtl.act(settle);
+    app.rtl.fireEvent.press(screen.getByRole('button', { name: 'Type field note' }));
+    await app.rtl.act(async () => { answer(); await settle(); await settle(); });
+    expect(screen.getByLabelText('Field note').props.value).toBe(KEPT);
+    expect(keptValues()).toEqual([KEPT]);
+    screen.unmount();
+  });
+
   it('words typed before the phone answers win, and are kept once it does', async () => {
     await keepNoteFromLastLaunch('owner-a');
 

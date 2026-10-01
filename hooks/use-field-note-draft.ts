@@ -81,13 +81,16 @@ export function useFieldNoteDraft(
       slot = null;
       notify();
     }
-    let current = true;
     if (keptFor && (!slot || !phoneAnswered.has(keptFor))) {
       void readKeptDraft('field-note', keptFor).then(kept => {
         phoneAnswered.add(keptFor);
         const draft = keptFieldNoteDraft(kept?.value);
-        // The kept note comes back unless something is written on screen.
-        if (current && kept && draft && (!slot || (slot.key === key && !hasWrittenContent(slot.draft)))) {
+        // The kept note comes back unless something is written on screen,
+        // from whichever visit's read answers first: leaving Field Notes and
+        // coming back before a slow phone answered lost it (whole-app audit
+        // A2 pass 6 L1). A read overtaken by a sign-out or account change
+        // answers nothing (KeptDraftStore), so it never crosses accounts.
+        if (kept && draft && (!slot || (slot.key === key && !hasWrittenContent(slot.draft)))) {
           slot = { key, draft: { ...draft, captureOpen: true }, keptFor, keptAt: kept.keptAt };
           notify();
         } else if (slot?.keptFor === keptFor) {
@@ -98,7 +101,6 @@ export function useFieldNoteDraft(
     // Leaving with nothing written starts the next visit fresh, so a saved
     // note's project no longer sticks to every later note (audit A4 pass 6).
     return () => {
-      current = false;
       if (slot?.key === key && !hasWrittenContent(slot.draft)) {
         slot = null;
         notify();
