@@ -15,7 +15,9 @@
  * back keeps that rank: a file's percent comes back as project_manager,
  * confirmed by "Schedule update" at the delete (the summaries still read it as
  * the file's), and one entered by hand with no source as David's (as the
- * import and the summaries count it), dated when it was stated. Synthetic data.
+ * import and the summaries count it), dated when it was stated. Since A5 pass
+ * 12 K2 (1 Oct 2026) "at the delete" is 1 ms after the later of the task's
+ * own confirmation (the Undo's) and the noted one. Synthetic data.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { daveScheduleItemsNeedingCloudUpload, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
@@ -38,6 +40,9 @@ const CREATED_AT = '2026-08-01T00:00:00.000Z';
 const TALK_AT = '2026-09-26T15:00:00.000Z';
 const UNDO_AT = '2026-09-26T15:00:05.000Z';
 const DELETED_AT = '2026-09-27T09:00:00.000Z';
+// Confirmed 1 ms after the Undo's 60% (or 50%), no longer at the delete (A5 pass 12 K2: a delete-time
+// stamp outranked a later entry on another device); still newer than the Undo's copy.
+const GIVEN_BACK_AT = '2026-09-26T15:00:05.001Z';
 const schedule = (id: string, importedAt: string, extra: Partial<ReferenceDocument> = {}) => ({
   id, name: id, originalFileName: `${id}.csv`, uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt,
   projectId: null, projectName: 'Alpha', projectNames: ['Alpha'], importBatchId: `batch-${id}`, cloudUpdatedAt: `rev-${id}`, updatedAt: importedAt, ...extra,
@@ -97,7 +102,7 @@ function syncsBothWays(givenBack: ScheduleItem, stale: ScheduleItem, percent: nu
 }
 
 describe('A5 p9 L3: deleting a lookahead after Talk\'s Undo gives the percent back with the rank the Undo left', () => {
-  it('an imported task: the master\'s 20% comes back as project_manager, confirmed by "Schedule update" at the delete, and wins the sync', () => {
+  it('an imported task: the master\'s 20% comes back as project_manager, confirmed by "Schedule update" (just after the Undo), and wins the sync', () => {
     const raised = approve(approve({ items: [], documents: [] }, master, rows(master, ['Pour slab,Alpha,Lot,10/01/2026,10/03/2026,20%'])),
       lookahead, rows(lookahead, ['Pour slab,Alpha,Lot,10/01/2026,10/03/2026,60%']));
     const taskId = raised.items.find(item => item.taskName === 'Pour slab')!.id;
@@ -107,7 +112,7 @@ describe('A5 p9 L3: deleting a lookahead after Talk\'s Undo gives the percent ba
     expect(givenBack).toMatchObject({ percentComplete: 20 });
     syncsBothWays(givenBack, undone.stale, 20);
     expect(givenBack).toMatchObject({
-      progressSource: 'project_manager', progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, progressConfirmedAt: DELETED_AT,
+      progressSource: 'project_manager', progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, progressConfirmedAt: GIVEN_BACK_AT, // A5 pass 12 K2
     });
     // Still the file's percent for the summaries.
     expect(scheduleProgressRecordedByManager(givenBack)).toBe(false);
@@ -126,7 +131,7 @@ describe('A5 p9 L3: deleting a lookahead after Talk\'s Undo gives the percent ba
     const givenBack = deleteLookahead(undone).items.find(item => item.id === 'hand')!;
     expect(givenBack).toMatchObject({ percentComplete: 40 });
     syncsBothWays(givenBack, undone.stale, 40);
-    expect(givenBack).toMatchObject({ progressSource: 'project_manager', progressConfirmedAt: DELETED_AT });
+    expect(givenBack).toMatchObject({ progressSource: 'project_manager', progressConfirmedAt: GIVEN_BACK_AT }); // A5 pass 12 K2
     expect(givenBack.progressConfirmedBy).not.toBe(SCHEDULE_UPDATE_PROGRESS_CONFIRMER);
     expect(scheduleHasAuthoritativeProgressJudgment(givenBack)).toBe(true);
     expect(scheduleProgressJudgedAt(givenBack)).toBe(CREATED_AT);

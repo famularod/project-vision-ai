@@ -60,6 +60,10 @@ const APPROVED = '2026-09-20T12:00:00.000Z';
 const DAVID_AT = '2026-09-10T15:00:00.000Z';
 const CORRECTED_AT = '2026-09-22T08:00:00.000Z';
 const DELETED_AT = '2026-09-25T00:00:00.000Z';
+// Since A5 pass 12 K2 (1 Oct 2026) a percent given back is confirmed 1 ms after the later of the task's own
+// confirmation (the lookahead's approval, 20 Sep) and the noted one, no longer at the delete: a delete-time
+// stamp outranked a later entry on another device. Still newer than every older copy of the task.
+const GIVEN_BACK_AT = '2026-09-20T12:00:00.001Z';
 const master = schedule('MASTER UPDATE 8312026', ['Alpha', 'Beta'], '2026-08-31T12:00:00.000Z');
 const master2 = schedule('MASTER UPDATE 9302026', ['Alpha', 'Beta'], '2026-09-30T12:00:00.000Z');
 const master3 = schedule('MASTER UPDATE 10052026', ['Alpha', 'Beta'], '2026-10-05T12:00:00.000Z');
@@ -199,8 +203,8 @@ describe('A10 p5 L1: David\'s percent given back keeps the time he judged it', (
 
   it('Delete PDF + Items: a field report of 22 Sep after his 10 Sep 40% still raises the warning; the record is dated 10 Sep', () => {
     const after = deleteLookahead(davidThenLookahead(), lookahead);
-    // Confirmed at the delete so every device takes it back (sync); judged when David judged it.
-    expect(pour(after)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT });
+    // Confirmed again (just after the lookahead's, A5 pass 12 K2) so every device takes it back (sync); judged when David judged it.
+    expect(pour(after)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: GIVEN_BACK_AT });
     expect(scheduleProgressJudgedAt(pour(after))).toBe(DAVID_AT);
     expect(notReflected(after, fieldReport('2026-09-22T09:00:00.000Z'))).toHaveLength(1);
     // A report older than his judgment is still overridden by it.
@@ -233,7 +237,7 @@ describe('A10 p5 L1: David\'s percent given back keeps the time he judged it', (
     // That device then edits the task's notes, so its row is the newer one; the progress is the delete's.
     const noted = { ...pour(before), notes: 'Pump truck booked.', updatedAt: '2026-09-26T08:00:00.000Z' };
     const [merged] = recoverDAVEScheduleRecords({ local: [noted], cloud: [pour(after)], allowCloudOnly: true });
-    expect(merged).toMatchObject({ notes: 'Pump truck booked.', percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT });
+    expect(merged).toMatchObject({ notes: 'Pump truck booked.', percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: GIVEN_BACK_AT }); // A5 pass 12 K2
     expect(scheduleProgressJudgedAt(merged)).toBe(DAVID_AT);
   });
 

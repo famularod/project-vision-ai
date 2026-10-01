@@ -33,6 +33,15 @@ jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toStri
 const DAVID_40_AT = '2026-09-10T15:00:00.000Z';
 const DAVID_70_AT = '2026-09-27T15:00:00.000Z';
 const DELETED_AT = '2026-09-28T00:00:00.000Z';
+/**
+ * The give-back as a build before A5 pass 12 K2 (1 Oct 2026) stamped it: confirmed at the delete (28 Sep),
+ * after David's 70% (27 Sep). Since K2 it is confirmed 1 ms after the lookahead's approval (20 Sep), older than
+ * the 70% (audit-r2-a5p12-lookahead-give-back-stale-device.test.ts). Rows given back before K2 are still in the
+ * cloud, and this test's scenario is theirs, so it keeps their stamp.
+ */
+const asGivenBackBeforeK2 = (item: ScheduleItem): ScheduleItem => item.progressJudgment
+  ? { ...item, progressConfirmedAt: DELETED_AT, progressJudgment: { ...item.progressJudgment, givenBackAt: DELETED_AT } }
+  : item;
 const schedule = (id: string, importedAt: string, extra: Partial<ReferenceDocument> = {}) => ({
   id, name: id, originalFileName: `${id}.csv`, uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt,
   projectId: null, projectName: 'Alpha', projectNames: ['Alpha'], importBatchId: `batch-${id}`, ...extra,
@@ -95,7 +104,7 @@ describe('A5 p10 M1: after deleting a lookahead, Set Active keeps David\'s newer
     const items = state.items.filter(item => !removed.includes(item));
     const documents = state.documents.filter(saved => saved.id !== lookahead.id);
     const changed = new Map(scheduleItemsAfterScheduleDeleted({ items, removed, document: lookahead, documents, updatedAt: DELETED_AT })
-      .map(item => [item.id, item]));
+      .map(item => [item.id, asGivenBackBeforeK2(item)]));
     return { items: items.map(item => changed.get(item.id) || item), documents };
   }
 

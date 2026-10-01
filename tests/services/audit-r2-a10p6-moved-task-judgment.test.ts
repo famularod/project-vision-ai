@@ -35,6 +35,10 @@ const master2 = schedule('MASTER 0926', '2026-09-26T12:00:00.000Z');
 
 const DAVID_AT = '2026-09-10T15:00:00.000Z';
 const DELETED_AT = '2026-09-25T00:00:00.000Z';
+// Since A5 pass 12 K2 (1 Oct 2026) a percent given back is confirmed 1 ms after the later of the task's own
+// confirmation (the lookahead's approval, 20 Sep) and the noted one, no longer at the delete: a delete-time
+// stamp outranked a later entry on another device. Still newer than every older copy of the task.
+const GIVEN_BACK_AT = '2026-09-20T12:00:00.001Z';
 
 function csvRows(header: string, lines: string[], source: ReferenceDocument): ScheduleItem[] {
   return (normalizeScheduleImport({
@@ -95,7 +99,7 @@ const notReflected = (state: State, update: ProjectUpdate) => buildPIEScheduleRe
 describe('A10 p6 L1 / A5 p8 L2: a master that moves a task keeps the time David judged a percent given back', () => {
   it('before the move: his 40% is back, judged 10 Sep, and the 22 Sep field report warns', () => {
     const state = givenBack();
-    expect(pour(state)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT });
+    expect(pour(state)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: GIVEN_BACK_AT }); // A5 pass 12 K2
     expect(scheduleProgressJudgedAt(pour(state))).toBe(DAVID_AT);
     expect(notReflected(state, fieldReport(pour(state).id))).toHaveLength(1);
   });

@@ -65,6 +65,10 @@ const statusOf = (percent: number) => percent >= 100 ? 'Complete' : percent > 0 
 const APPROVED = '2026-09-20T12:00:00.000Z';
 const DAVID_AT = '2026-09-10T15:00:00.000Z';
 const DELETED_AT = '2026-09-25T00:00:00.000Z';
+// Since A5 pass 12 K2 (1 Oct 2026) a percent given back is confirmed 1 ms after the later of the task's own
+// confirmation (the lookahead's approval, 20 Sep) and the noted one, no longer at the delete: a delete-time
+// stamp outranked a later entry on another device. Still newer than every older copy of the task.
+const GIVEN_BACK_AT = '2026-09-20T12:00:00.001Z';
 const master = schedule('MASTER UPDATE 8312026', ['Alpha', 'Beta'], '2026-08-31T12:00:00.000Z');
 const master2 = schedule('MASTER UPDATE 9302026', ['Alpha', 'Beta'], '2026-09-30T12:00:00.000Z');
 const lookahead = schedule('Alpha 3 Week Lookahead', ['Alpha'], APPROVED, { scheduleRole: 'lookahead' });
@@ -207,9 +211,9 @@ describe('A5 p6 M2 / A10 p4 M1: the lookahead notes whether the progress before 
     const after = deleteLookahead(state, lookahead);
     expect(after.note).toBe(' Delete PDF + Items also puts back the earlier dates and progress of 1 task this lookahead changed.');
     expect(view(after, /Pour/)).toEqual(['m-pour Pour slab 10/01/2026-10/03/2026 40%']);
-    // Confirmed at the delete, so every device takes it back (DAVEScheduleRecovery keeps the newer confirmation).
+    // Confirmed again (just after the lookahead's, A5 pass 12 K2), so every device takes it back (DAVEScheduleRecovery keeps the newer confirmation).
     expect(pour(after)).toMatchObject({
-      status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT,
+      status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: GIVEN_BACK_AT,
     });
     expect(pour(after)).not.toHaveProperty('lookaheadOverlay');
     expect(scheduleProgressRecordedByManager(pour(after))).toBe(true);
@@ -254,9 +258,10 @@ describe('A5 p6 M2 / A10 p4 M1: the lookahead notes whether the progress before 
         },
       } : item),
     };
-    // Its percent was the file's: a master repeating 40% is a repeat, and deleting it gives back 40% marked as today.
+    // Its percent was the file's: a master repeating 40% is a repeat, and deleting it gives back 40% confirmed again
+    // (since A5 pass 12 K2 just after the task's own confirmation, no longer at the delete).
     expect(pour(approve(legacy, master2, masterRows(master2, 40)))).toMatchObject({ percentComplete: 60 });
-    expect(pour(deleteLookahead(legacy, lookahead))).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'Schedule update', progressConfirmedAt: DELETED_AT });
+    expect(pour(deleteLookahead(legacy, lookahead))).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'Schedule update', progressConfirmedAt: GIVEN_BACK_AT });
   });
 });
 

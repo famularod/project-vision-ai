@@ -408,10 +408,12 @@ function tasksAfterLookaheadDeleted(
     // The noted percent comes back with the status noted with it (A5 pass 7 L3).
     const progress = !percentBack ? null
       : toNoted ? notedProgress(overlay, item) : reconcileScheduleProgress(item.status, backPercent);
-    // Given back with who stated it: the manager's percent reads as the manager's again. Confirmed at the
-    // delete over a percent that carries a confirmation time, so no device's copy takes it back (A5 pass 8 L1).
-    const provenance = (toNoted && notedProvenance(overlay, updatedAt, item)) ||
-      (item.progressSource === 'project_manager' || item.progressConfirmedAt ? { progressConfirmedAt: updatedAt } : {});
+    // Given back with who stated it: the manager's percent reads as the manager's again. Confirmed over a
+    // percent that carries a confirmation time, so no older copy of the task takes it back (A5 pass 8 L1),
+    // just after it, never at the delete (A5 pass 12 K2, givenBackConfirmedAt).
+    const confirmedAt = givenBackConfirmedAt(item, toNoted ? overlay.masterProgressConfirmedAt : null, updatedAt);
+    const provenance = (toNoted && notedProvenance(overlay, confirmedAt, item)) ||
+      (item.progressSource === 'project_manager' || item.progressConfirmedAt ? { progressConfirmedAt: confirmedAt } : {});
     return [{
       datesBack,
       percentBack,
@@ -423,6 +425,25 @@ function tasksAfterLookaheadDeleted(
       }, { ...overlay, lookaheads: remaining }),
     }];
   });
+}
+
+/**
+ * When a percent a lookahead's delete gives back is confirmed (whole-app
+ * audit A5 pass 12 K2, 1 Oct 2026). It was confirmed at the delete, and sync
+ * orders David's percents by that confirmation: Master 20%, David 40% (10
+ * Sep), a lookahead 60% noting his 40% (20 Sep); David entered 50% on the
+ * web (25 Sep); a phone not synced since the lookahead deleted it (30 Sep),
+ * and its 40%, stamped the 30th, won the upload's merge over his 50%. It is
+ * now confirmed 1 ms after the later of the task's own confirmation and the
+ * noted one, as Set Active's carry and the Delete PDF + Items hand-over are
+ * (A5 pass 12 L): newer than every older copy of the task, never than a later
+ * entry made elsewhere. When the percent was judged is kept
+ * (progressJudgment). A task and a note with no confirmation time at all (a
+ * record from before either was kept) are confirmed at the delete, as before.
+ */
+function givenBackConfirmedAt(task: ScheduleItem, noted: string | null | undefined, deletedAt: string): string {
+  const latest = Math.max(timeOf(task.progressConfirmedAt), timeOf(noted));
+  return latest > 0 ? new Date(latest + 1).toISOString() : deletedAt;
 }
 
 /**

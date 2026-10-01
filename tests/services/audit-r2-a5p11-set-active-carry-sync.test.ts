@@ -41,6 +41,15 @@ jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toStri
 const DAVID_40_AT = '2026-09-10T15:00:00.000Z';
 const DAVID_70_AT = '2026-09-27T15:00:00.000Z';
 const DELETED_AT = '2026-09-28T00:00:00.000Z';
+/**
+ * The give-back as a build before A5 pass 12 K2 (1 Oct 2026) stamped it: confirmed at the delete (28 Sep),
+ * after David's 70% (27 Sep). Since K2 it is confirmed 1 ms after the lookahead's approval (20 Sep), older than
+ * the 70% (audit-r2-a5p12-lookahead-give-back-stale-device.test.ts). Rows given back before K2 are still in the
+ * cloud, and this test's scenario is theirs, so it keeps their stamp.
+ */
+const asGivenBackBeforeK2 = (item: ScheduleItem): ScheduleItem => item.progressJudgment
+  ? { ...item, progressConfirmedAt: DELETED_AT, progressJudgment: { ...item.progressJudgment, givenBackAt: DELETED_AT } }
+  : item;
 const SET_ACTIVE_AT = '2026-09-29T09:00:00.000Z';
 /** The carry's confirmation: 1 ms after A's row's own, given back at the delete (A5 pass 12 L; was SET_ACTIVE_AT). */
 const CARRIED_AT = '2026-09-28T00:00:00.001Z';
@@ -106,7 +115,7 @@ describe('A5 p11 L-1: the percent Set Active carries survives the next sync', ()
     const items = state.items.filter(item => !removed.includes(item));
     const documents = state.documents.filter(saved => saved.id !== lookahead.id);
     const changed = new Map(scheduleItemsAfterScheduleDeleted({ items, removed, document: lookahead, documents, updatedAt: DELETED_AT })
-      .map(item => [item.id, item]));
+      .map(item => [item.id, asGivenBackBeforeK2(item)]));
     return { items: items.map(item => changed.get(item.id) || item), documents };
   }
   /** Every device synced the delete: the cloud holds A's row at 40%, confirmed 28 Sep. */

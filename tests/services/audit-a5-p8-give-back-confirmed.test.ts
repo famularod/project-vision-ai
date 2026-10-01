@@ -15,6 +15,9 @@
  * no import owns, with no source, included), the way his own percent is
  * given back: it keeps the time it was judged by (progressJudgment), so the
  * record keeps its date; a file's percent keeps the time it carried.
+ * Since A5 pass 12 K2 (1 Oct 2026) "at the delete" is 1 ms after the later of
+ * the task's own confirmation and the noted one: still newer than every older
+ * copy of the task, never than a later entry made on another device.
  * Synthetic data.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
@@ -31,6 +34,9 @@ jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toStri
 
 const CREATED_AT = '2026-08-01T00:00:00.000Z';
 const DELETED_AT = '2026-09-25T00:00:00.000Z';
+// Confirmed 1 ms after the lookahead's 50% (confirmed at its approval, 20 Sep), no longer at the delete
+// (A5 pass 12 K2: a delete-time stamp outranked a later entry on another device); still newer than the 50%.
+const GIVEN_BACK_AT = '2026-09-20T12:00:00.001Z';
 const schedule = (id: string, importedAt: string, extra: Partial<ReferenceDocument> = {}) => ({
   id, name: id, originalFileName: `${id}.csv`, uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt,
   projectId: null, projectName: 'Alpha', projectNames: ['Alpha'], importBatchId: `batch-${id}`, cloudUpdatedAt: `rev-${id}`, updatedAt: importedAt, ...extra,
@@ -80,10 +86,10 @@ describe('A5 p8 L1: a percent given back is confirmed at the delete, so no devic
     });
   });
 
-  it('a task entered by hand: his 40% comes back confirmed at the delete, still his, dated as before', () => {
+  it('a task entered by hand: his 40% comes back confirmed (just after the lookahead\'s), still his, dated as before', () => {
     const after = deleteLookahead(raised);
     const task = punch(after);
-    expect(task).toMatchObject({ percentComplete: 40, status: 'In Progress', progressConfirmedAt: DELETED_AT });
+    expect(task).toMatchObject({ percentComplete: 40, status: 'In Progress', progressConfirmedAt: GIVEN_BACK_AT }); // A5 pass 12 K2
     expect(task.progressSource ?? null).toBeNull();
     expect(scheduleHasAuthoritativeProgressJudgment(task)).toBe(true);
     expect(scheduleProgressJudgedAt(task)).toBe(CREATED_AT);
@@ -104,7 +110,7 @@ describe('A5 p8 L1: a percent given back is confirmed at the delete, so no devic
     expect(daveScheduleItemsNeedingCloudUpload({ local: [stale], cloud: [givenBack] })).toEqual([]);
   });
 
-  it('a file\'s percent with its own confirmation time, raised by a lookahead, comes back confirmed at the delete too', () => {
+  it('a file\'s percent with its own confirmation time, raised by a lookahead, comes back confirmed (just after the lookahead\'s) too', () => {
     // A master set the hand-entered task to 30% (the schedule's, confirmed at its approval); the lookahead raises it to 50%.
     const fileSet = approve({ items: [{ ...handEntered, status: 'Not Started', percentComplete: 0 }], documents: [] }, master,
       rows(master, ['Punch list,Alpha,Lot,11/01/2026,11/05/2026,30%']));
@@ -112,7 +118,7 @@ describe('A5 p8 L1: a percent given back is confirmed at the delete, so no devic
     const up = approve(fileSet, lookahead, rows(lookahead, ['Punch list,Alpha,Lot,11/01/2026,11/05/2026,50%']));
     const stale = punch(up);
     const givenBack = punch(deleteLookahead(up));
-    expect(givenBack).toMatchObject({ percentComplete: 30, progressSource: 'schedule_import', progressConfirmedAt: DELETED_AT });
+    expect(givenBack).toMatchObject({ percentComplete: 30, progressSource: 'schedule_import', progressConfirmedAt: GIVEN_BACK_AT }); // A5 pass 12 K2
     expect(scheduleProgressJudgedAt(givenBack)).toBe(master.importedAt); // still dated when the master stated it
     expect(recoverDAVEScheduleRecords({ local: [givenBack], cloud: [stale], allowCloudOnly: true })[0]).toMatchObject({ percentComplete: 30 });
   });
