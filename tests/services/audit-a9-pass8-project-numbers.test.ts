@@ -12,6 +12,7 @@ import {
 import { findDAVETaskCandidates } from '../../services/DAVETaskConversation';
 import { buildProjectIntelligence } from '../../services/DAVEIntelligence';
 import { createTalkSession } from '../../hooks/use-talk-session';
+import { ecosProjectNumberExemptSpans } from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 8 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -235,5 +236,41 @@ describe('audit A9 pass 8 L2: a number found only by splitting a comma group is 
     expect(h.projectNames).toEqual([SELECTED]);
     expect(h.drafts).toHaveLength(1);
     expect(h.drafts[0].recommendedProject).toMatchObject({ value: SELECTED, confirmed: false });
+  });
+});
+
+describe('audit A9 pass 8 L4: a 3-4 digit time with am or pm is a clock time', () => {
+  const BAY = '730 Bay';
+  const PINE = '1130 Pine';
+
+  it.each([
+    ['Will the crew arrive at 730am?', BAY],
+    ['Will the crew arrive at 730 am?', BAY],
+    ['Will the crew arrive at 730AM?', BAY],
+    ['Will the crew arrive at 730 a.m.?', BAY],
+    ['Is the pour at 0730am?', '0730 Night Works'],
+    ['Is the walkthrough at 1130 pm?', PINE],
+    ['Is the walkthrough at 1130pm?', PINE],
+  ])('"%s" is allowed with "%s" open or closed', (question, project) => {
+    expectAllowed(question, [SELECTED, project]);
+    expectAllowed(question, [SELECTED], [project]);
+  });
+
+  it.each([
+    // Not a valid time: hours 1-12 and minutes 00-59 only.
+    ['Is the crew at 2375am?', OTHER, '2375'],
+    ['Is the crew at 2375 am?', OTHER, '2375'],
+    ['Is the crew at 1330pm?', '1330 Elm', '1330'],
+    ['Is the crew at 760am?', '760 Oak', '760'],
+    // No am or pm: still the project.
+    ['Will the crew arrive at 730?', BAY, '730'],
+  ])('"%s" is refused', (question, project, number) => {
+    expectRefusedOpen(question, [SELECTED, project], number, project);
+  });
+
+  it('"7:30am" and "7:30 am" are clock times too', () => {
+    expect(ecosProjectNumberExemptSpans('arrive at 7:30am')).toContainEqual([10, 16]);
+    expect(ecosProjectNumberExemptSpans('arrive at 7:30 am')).toContainEqual([10, 17]);
+    expect(ecosProjectNumberExemptSpans('arrive at 11:30 p.m.')).toContainEqual([10, 20]);
   });
 });

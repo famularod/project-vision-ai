@@ -779,6 +779,23 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED, '200 Oak Street'],
     refused: '200',
   },
+  // Audit A9 pass 8 L4: 3-4 digits with am or pm are a clock time when they
+  // read as one (hours 1-12, minutes 00-59).
+  ...([
+    ['Will the crew arrive at 730am?', '730 Bay', null],
+    ['Will the crew arrive at 730 am?', '730 Bay', null],
+    ['Is the walkthrough at 1130 pm?', '1130 Pine', null],
+    ['Is the pour at 0730am?', '0730 Night Works', null],
+    ['Is the crew at 2375am?', '2375 Compliance Project', '2375'],
+    ['Is the crew at 1330pm?', '1330 Elm', '1330'],
+    ['Will the crew arrive at 730?', '730 Bay', '730'],
+  ] as const).map(([question, project, refused]) => ({
+    name: `pass 8 L4: "${question}" when "${project}" is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED, project],
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
