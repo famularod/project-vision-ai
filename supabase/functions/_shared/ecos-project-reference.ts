@@ -26,8 +26,8 @@
  *      ' or " is not a measurement; audit A9 pass 8);
  *   2. money: "$2,375", "USD 2375", "2375 dollars";
  *   3. part of a full date or a clock time: "10/05/2026", "2026-10-05",
- *      "Oct 5, 2026", "5 Oct 2026", "0730 hrs", "730am" (a bare year is not
- *      exempt);
+ *      "Oct 5, 2026", "5 Oct 2026", "7:30am", "0730 hrs" (a bare year, and
+ *      since audit A9 pass 9 L2 "730am", are not exempt);
  *   4. a phone number: "555-2375", "(415) 555-2375", "415.555.2375";
  *   5. a spec section or sheet written as such: "03 30 00", "033000", "A-201".
  * Even then, the project's own next (or previous) name word next to the
@@ -286,16 +286,15 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    "Oct 5, 2026", "5th October 2026", "7:30", "7:30am", "0730 hrs". A bare
   //    year ("due in 2026") is not exempt, and a four-digit year is 19xx or
   //    20xx ("Sept 30 2375", "9/30/2375" name 2375; audit A9 pass 6 L3).
-  //    Audit A9 pass 8 L4: 3-4 digits with am or pm, glued or spaced, are a
-  //    time when they read as one (hours 1-12, minutes 00-59): "730am",
-  //    "730 a.m.", "1130 pm"; "2375am" and "1330pm" still name the project.
+  //    Audit A9 pass 9 L2: a time without a colon ("730am", "1130 pm"; pass 8
+  //    L4) is no longer exempt, since "Who is the 1130 PM?" means project
+  //    manager. "arrive at 730am" now names project 730 (write "7:30am").
   new RegExp([
     String.raw`\b\d{1,2}[/.-]\d{1,2}[/.-](?:${YEAR}|\d{2})\b`,
     String.raw`\b${YEAR}[/.-]\d{1,2}[/.-]\d{1,2}\b`,
     `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+${YEAR}\\b`,
     `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+${YEAR}\\b`,
     String.raw`\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?${AM_PM}|\b)`,
-    String.raw`\b(?:0?[1-9]|1[0-2])[0-5]\d\s?${AM_PM}`,
     String.raw`\b(?:[01]\d|2[0-3])[0-5]\d\s?(?:hrs?|hours)\b`,
   ].join('|'), 'gi'),
   // 4. Phone numbers: "555-2375", "415-555-2375", "(415) 555-2375", "415.555.2375".

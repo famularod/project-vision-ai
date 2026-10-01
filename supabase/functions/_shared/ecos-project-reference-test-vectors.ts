@@ -799,18 +799,23 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED, '200 Oak Street'],
     refused: '200',
   },
-  // Audit A9 pass 8 L4: 3-4 digits with am or pm are a clock time when they
-  // read as one (hours 1-12, minutes 00-59).
+  // Audit A9 pass 8 L4 made 3-4 digits with am or pm a clock time. Audit A9
+  // pass 9 L2 removed that exemption ("Who is the 1130 PM?" means project
+  // manager), so the first four vectors, which expected null, now expect the
+  // project: an accepted policy refusal. A time with a colon is still exempt.
   ...([
-    ['Will the crew arrive at 730am?', '730 Bay', null],
-    ['Will the crew arrive at 730 am?', '730 Bay', null],
-    ['Is the walkthrough at 1130 pm?', '1130 Pine', null],
-    ['Is the pour at 0730am?', '0730 Night Works', null],
+    ['Will the crew arrive at 730am?', '730 Bay', '730'],
+    ['Will the crew arrive at 730 am?', '730 Bay', '730'],
+    ['Is the walkthrough at 1130 pm?', '1130 Pine', '1130'],
+    ['Is the pour at 0730am?', '0730 Night Works', '0730'],
     ['Is the crew at 2375am?', '2375 Compliance Project', '2375'],
     ['Is the crew at 1330pm?', '1330 Elm', '1330'],
     ['Will the crew arrive at 730?', '730 Bay', '730'],
+    ['Who is the 1130 PM?', '1130 Pine', '1130'],
+    ['Will the crew arrive at 7:30am?', '730 Bay', null],
+    ['Is the pour at 0730 hrs?', '0730 Night Works', null],
   ] as const).map(([question, project, refused]) => ({
-    name: `pass 8 L4: "${question}" when "${project}" is another project`,
+    name: `pass 8 L4 / pass 9 L2: "${question}" when "${project}" is another project`,
     projectName: SELECTED,
     question,
     knownProjectNames: [SELECTED, project],

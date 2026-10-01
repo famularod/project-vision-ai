@@ -257,3 +257,30 @@ describe('audit A9 pass 9 L1: identifiers are compared whole, so "2375" is not "
     expect(h.taskActions[0].candidates.map(task => task.id)).toEqual(['task-main']);
   });
 });
+
+describe('audit A9 pass 9 L2: "PM" after a number is not read as a clock time', () => {
+  it.each([
+    ['Who is the 1130 PM?', '1130 Pine', '1130'],
+    ['Is the 730 PM on site today?', '730 Bay', '730'],
+    ['Is the 730 pm on site today?', '730 Bay', '730'],
+    // Accepted policy refusals: a colon-less time is a project number too.
+    ['Will the crew arrive at 730am?', '730 Bay', '730'],
+    ['Is the walkthrough at 1130 p.m.?', '1130 Pine', '1130'],
+  ])('"%s" is refused when "%s" is another project', (question, project, number) => {
+    expect(desktop(question, [SELECTED, project])).toBe(switchOnDesktop(number));
+    expect(mentionedDAVEProject(question, [SELECTED, project])).toBe(project);
+    expect(phone(question, [SELECTED], [project])).toBe(
+      `Project 2321 is selected, but ${number} is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.`,
+    );
+  });
+
+  it.each([
+    ['Will the crew arrive at 7:30am?', '730 Bay'],
+    ['Will the crew arrive at 7:30 pm?', '730 Bay'],
+    ['Is the walkthrough at 11:30 p.m.?', '1130 Pine'],
+    ['Is the pour at 0730 hrs?', '0730 Night Works'],
+  ])('"%s" is still a clock time with "%s" another project', (question, project) => {
+    expect(desktop(question, [SELECTED, project])).toBeNull();
+    expect(mentionedDAVEProject(question, [SELECTED, project])).toBeNull();
+  });
+});

@@ -247,17 +247,19 @@ describe('audit A9 pass 8 L4: a 3-4 digit time with am or pm is a clock time', (
   const BAY = '730 Bay';
   const PINE = '1130 Pine';
 
+  // Audit A9 pass 9 L2 removed the colon-less time exemption ("Who is the 1130
+  // PM?" means project manager). These were allowed; they now name the
+  // project, an accepted policy refusal. "7:30am" (below) is still a time.
   it.each([
-    ['Will the crew arrive at 730am?', BAY],
-    ['Will the crew arrive at 730 am?', BAY],
-    ['Will the crew arrive at 730AM?', BAY],
-    ['Will the crew arrive at 730 a.m.?', BAY],
-    ['Is the pour at 0730am?', '0730 Night Works'],
-    ['Is the walkthrough at 1130 pm?', PINE],
-    ['Is the walkthrough at 1130pm?', PINE],
-  ])('"%s" is allowed with "%s" open or closed', (question, project) => {
-    expectAllowed(question, [SELECTED, project]);
-    expectAllowed(question, [SELECTED], [project]);
+    ['Will the crew arrive at 730am?', BAY, '730'],
+    ['Will the crew arrive at 730 am?', BAY, '730'],
+    ['Will the crew arrive at 730AM?', BAY, '730'],
+    ['Will the crew arrive at 730 a.m.?', BAY, '730'],
+    ['Is the pour at 0730am?', '0730 Night Works', '0730'],
+    ['Is the walkthrough at 1130 pm?', PINE, '1130'],
+    ['Is the walkthrough at 1130pm?', PINE, '1130'],
+  ])('"%s" names "%s" since pass 9 L2', (question, project, number) => {
+    expectRefusedOpen(question, [SELECTED, project], number, project);
   });
 
   it.each([
