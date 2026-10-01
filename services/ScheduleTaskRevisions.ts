@@ -247,6 +247,11 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * nowhere, though that row names which of F's rows it was (its earlier ids):
  * its updates became history. A removed row's id now goes first onto the
  * task shown it answers to, in its project (the newest, if two are shown).
+ *
+ * Whole-app audit A8 pass 9 L3 (30 Sep 2026): each removed row was compared
+ * with every task shown and every saved task, about 2 s in Node at 1,500
+ * removed of 3,300 saved, while the delete tap waited. The tasks are indexed
+ * by name and project once per delete.
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
@@ -257,8 +262,12 @@ export function scheduleTasksAnsweringToRemovedTasks(
   schedules: readonly Pick<ReferenceDocument, 'importBatchId' | 'importedAt'>[] = [],
 ): ScheduleItem[] {
   const answered = new Set(shown.flatMap(item => [idOf(item.id), ...scheduleTaskEarlierIds(item)]));
-  const leftOutBetween = scheduleLeftTaskOut([...kept, ...removed], schedules);
+  const saved = [...kept, ...removed];
+  const leftOutBetween = scheduleLeftTaskOut(saved, schedules);
   const shownById = new Map(shown.map(item => [idOf(item.id), item]));
+  // By name and project, built once (A8 pass 9 L3: every removed row was compared with every task).
+  const shownNamed = indexByNameAndProject(shown);
+  const savedNamed = indexByNameAndProject(saved);
   const added = new Map<ScheduleItem, string[]>();
   const add = (item: ScheduleItem, id: string) => added.set(item, [...(added.get(item) || []), id]);
   removed.forEach(gone => {
@@ -272,11 +281,11 @@ export function scheduleTasksAnsweringToRemovedTasks(
       return;
     }
     const inSchedule = sameSchedule(gone);
-    const matches = shown.filter(item => sameRemovedTask(item, gone));
+    const matches = (shownNamed.get(nameAndProject(gone)) || []).filter(item => sameRemovedTask(item, gone));
     if (matches.length !== 1 || inSchedule(matches[0])) return;
     // A master's task, where its import would have paired the removed one (A8 pass 9 L1).
     if (scheduleItemImportBatchIds(matches[0]).length === 0 || leftOutBetween(gone, matches[0])) return;
-    const ownRows = new Set([...kept, ...removed].filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
+    const ownRows = new Set((savedNamed.get(nameAndProject(gone)) || []).filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
     if (ownRows.size !== 1) return;
     add(matches[0], goneId);
   });
@@ -284,6 +293,20 @@ export function scheduleTasksAnsweringToRemovedTasks(
     ...item,
     revisedFromTaskIds: scheduleTaskEarlierIds({ id: item.id, revisedFromTaskIds: [...ids, ...scheduleTaskEarlierIds(item)] }),
   }));
+}
+
+function nameAndProject(item: ScheduleItem): string {
+  return `${nameKey(item.taskName)}\n${scheduleTaskProjectKey(item)}`;
+}
+
+function indexByNameAndProject(items: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
+  const index = new Map<string, ScheduleItem[]>();
+  items.forEach(item => {
+    const entry = nameAndProject(item);
+    const list = index.get(entry);
+    if (list) list.push(item); else index.set(entry, [item]);
+  });
+  return index;
 }
 
 function batchKey(value: unknown): string {
