@@ -42,6 +42,18 @@ const transportCompiled = ts.transpileModule(fs.readFileSync(transportSourcePath
 const transportModule = { exports: {} };
 new Function('module', 'exports', transportCompiled)(transportModule, transportModule.exports);
 
+// Shared document details are read with the phone normalizer's own name and
+// category rules (audit A7 pass 7 L1, 30 Sep 2026).
+const sharedFieldsSourcePath = path.join(root, 'services/ReferenceDocumentSharedFields.ts');
+const sharedFieldsCompiled = ts.transpileModule(fs.readFileSync(sharedFieldsSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const sharedFieldsModule = { exports: {} };
+new Function('module', 'exports', sharedFieldsCompiled)(sharedFieldsModule, sharedFieldsModule.exports);
+
 const sourcePath = path.join(root, 'services/DAVECloudRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   compilerOptions: {
@@ -53,6 +65,7 @@ const moduleUnderTest = { exports: {} };
 const localRequire = specifier => {
   if (specifier === './DAVEProjectUpdateCloudReceipt') return receiptModule.exports;
   if (specifier === './ProjectPhotoTransport') return transportModule.exports;
+  if (specifier === './ReferenceDocumentSharedFields') return sharedFieldsModule.exports;
   return require(specifier);
 };
 new Function('module', 'exports', 'require', compiled)(
