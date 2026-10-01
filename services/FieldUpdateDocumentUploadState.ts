@@ -90,8 +90,12 @@ export function withoutFieldUpdateDocument<TUpdate extends object>(
  * documents that the other devices have to see, with the change made. Each
  * one lists the document and has been sent, or is waiting to be: a draft is
  * only on this device and goes up whole when it is sent. An archived one is
- * left as it is: its queue record may be the archive itself. A sent update
- * waits to sync again, as one does after a late photo-analysis result.
+ * left as it is: its queue record may be the archive itself.
+ *
+ * A sent update stays sent (whole-app audit A7 pass 7 M1): the change goes
+ * up as a patch through the pending-changes upload. Read as "Waiting to
+ * Sync", it went back to the waiting-update sync, which, once the patch had
+ * landed, sent this device's whole older copy over the iPad's newer note.
  */
 export function fieldUpdatesToResendForDocument<
   TUpdate extends Readonly<{ id: string; status?: PersistedFieldUpdateStatus; isArchived?: boolean }>,
@@ -105,10 +109,7 @@ export function fieldUpdatesToResendForDocument<
       (update.status === 'sent' || update.status === 'queued' || update.status === 'failed') &&
       !update.isArchived &&
       Boolean((update as UpdateWithDocuments).documents?.some(document => document.id === documentId)))
-    .map(update => ({
-      ...change(update),
-      status: update.status === 'sent' ? 'queued' : update.status,
-    }));
+    .map(update => change(update));
 }
 
 /**

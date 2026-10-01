@@ -195,22 +195,28 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         hydrateProjectUpdatePhotoPreviews({ ...cloudUpdate, photos }),
         loadRemovedFieldUpdateDocuments(),
       ]);
+      // The queue too: an edit saved during the previews replaced a waiting
+      // document patch, and the patch read before them put the cloud copy
+      // over that edit (whole-app audit A4 pass 9 L3).
+      const latestQueue = await options.getPendingQueue();
       if (!options.isActive()) return true;
       // Re-read after the awaits: a save or another event may have landed.
       // The photo paths come from that read too, or a restore committed
       // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
+      const freshLocal = fresh.updates.find(update => update.id === cloudUpdate.id);
+      if (freshLocal && hasMatchingQueuedProjectUpdateRevision(freshLocal, latestQueue)) return true;
       const deviceCopy = withLatestLocalPhotoTransport(
         previewReady,
         localUpdate,
-        fresh.updates.find(update => update.id === previewReady.id),
+        freshLocal,
         options.localPhotoUri,
       );
       // The row as a receipt; as the copy shown, with the document changes
       // still waiting to go up (whole-app audit A7 pass 6 M1).
       const receipt = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.());
-      const cloudCopy = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.(), pendingQueue, removedDocuments);
-      const onlyDocumentChangesWait = Boolean(queuedDocumentPatchesForUpdate(pendingQueue, previewReady.id));
+      const cloudCopy = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.(), latestQueue, removedDocuments);
+      const onlyDocumentChangesWait = Boolean(queuedDocumentPatchesForUpdate(latestQueue, previewReady.id));
       let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {
         deletedUpdates = options.upsertDeletedUpdate(

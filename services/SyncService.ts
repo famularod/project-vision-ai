@@ -81,10 +81,12 @@ import {
   mergeFieldUpdateDocumentPatches,
   queuedFieldUpdateDocumentPatches,
   removedFieldUpdateDocumentKey,
+  withoutDocumentUploadState,
   type FieldUpdateDocumentPatch,
   type RemovedFieldUpdateDocuments,
 } from './FieldUpdateDocumentPatch';
 import { recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
+import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
 
 export { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
 import {
@@ -2330,15 +2332,19 @@ export async function queueProjectUpdateRecord<TUpdate extends {
  * with the change made, sent whole only when the cloud has no copy. Added to
  * this device's own edit when one is waiting. A document taken off is kept in
  * this device's journal: an older copy sent later by the iPad does not put it
- * back.
+ * back. The whole copy of an update not yet sent waits for its photos, as its
+ * own sync does (A4 pass 9 L2): it went up listing photos nothing uploaded.
  */
 export async function queueProjectUpdateDocumentChange<TUpdate extends {
   id: string;
   projectId?: string | null;
   projectName?: string;
   selectedAreaName?: string | null;
+  status?: string;
+  photos?: ReadonlyArray<{ id: string }>;
   documents?: ReadonlyArray<{ id: string }> | null;
 }>(update: TUpdate, documentId: string): Promise<void> {
+  projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const patch = fieldUpdateDocumentPatchFor(update, documentId);
   if (patch.remove) await recordRemovedFieldUpdateDocument(update.id, documentId).catch(() => undefined);
@@ -2358,7 +2364,9 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
           id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
           payload: {
             id: update.id, projectId: update.projectId, projectName: update.projectName, selectedAreaName: update.selectedAreaName,
-            updateData: update, pendingPhotoAssetIds: [], documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
+            updateData: update, documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
+            pendingPhotoAssetIds: update.status === 'sent' ? []
+              : waitingPatches ? existingPayload?.pendingPhotoAssetIds || [] : uniquePhotoAssetIds((update.photos || []).map(photo => photo.id)),
           },
           ...(ownerId ? { ownerId } : {}),
         };
@@ -2441,18 +2449,11 @@ async function persistProjectUpdateRecord<TUpdate extends {
   update: TUpdate,
   autoUpload: boolean,
   pendingPhotoAssetIds: readonly string[],
-  keepDocumentPatch = false,
 ) {
+  projectUpdateLastVersionInCloud.delete(update.id); // a new version to send (A7 pass 7 M1)
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
-    // A waiting document patch stays one; its photos are this attempt's, for
-    // the whole-copy fallback (whole-app audit A7 pass 6 M1).
-    keepExisting: keepDocumentPatch
-      ? existing => queuedFieldUpdateDocumentPatches(existing)
-        ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pendingPhotos } }
-        : null
-      : undefined,
     id: projectUpdateQueueItemId(update.id),
     entity: 'project_update',
     operation: 'update',
@@ -2471,6 +2472,75 @@ async function persistProjectUpdateRecord<TUpdate extends {
 
 function projectUpdateQueueItemId(updateId: string) {
   return `project-update-${updateId}`;
+}
+
+/**
+ * A sync attempt's own write of the update's queue record (whole-app audit
+ * A7 pass 7 M1). A sync attempt is not an edit:
+ * - a waiting document patch stays a patch on the cloud's copy; its photos
+ *   are this attempt's, for the whole-copy fallback (A7 pass 6 M1);
+ * - with nothing queued, and this copy (its documents' upload state aside)
+ *   the one this device last put in the cloud (`lastVersionInCloud`),
+ *   nothing is written. Once a document patch had landed, the attempt sent
+ *   this device's whole, older copy again, stamped now, over the iPad's
+ *   newer note;
+ * - the attempt's second write (`replacing`, what its first write left)
+ *   replaces only that record. One uploaded meanwhile is not queued again,
+ *   whole; a newer record written meanwhile (a late photo-analysis result)
+ *   stays.
+ * The item left in the queue; null when nothing was written.
+ */
+async function writeStagedProjectUpdateRecord(
+  update: ProjectUpdate,
+  pendingPhotoAssetIds: readonly string[],
+  { lastVersionInCloud = false, replacing }: { lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null },
+): Promise<SyncQueueItem | null> {
+  if (await hasProjectUpdateDeletionIntent(update.id)) return null;
+  const id = projectUpdateQueueItemId(update.id);
+  const pending = uniquePhotoAssetIds(pendingPhotoAssetIds);
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  return mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === id);
+    const unchanged = { nextQueue: queue, result: null, persist: false };
+    if (existing?.operation === 'delete') return unchanged;
+    if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
+    if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(update)) return unchanged;
+    const patch = Boolean(queuedFieldUpdateDocumentPatches(existing));
+    const next: SyncQueueItem = existing && patch
+      ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
+      : {
+          id, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          payload: {
+            id: update.id, projectId: update.projectId, projectName: update.projectName,
+            selectedAreaName: update.selectedAreaName, updateData: update, pendingPhotoAssetIds: pending,
+          },
+          ...(ownerId ? { ownerId } : {}),
+        };
+    if (!patch) projectUpdateLastVersionInCloud.delete(update.id);
+    return {
+      nextQueue: patch ? queue.map(item => item === existing ? next : item) : [...queue.filter(item => item.id !== id), next],
+      result: next,
+    };
+  });
+}
+
+/**
+ * The record a sync attempt wrote, still: retry stamps aside, and whether or
+ * not an upload pass has since bound its project id
+ * (prepareQueueItemProjectIdentity), as one that found it waiting for its
+ * photos does. Otherwise that record kept waiting for photos the attempt had
+ * just checked.
+ */
+function sameStagedProjectUpdateRecord(current: SyncQueueItem, written: SyncQueueItem): boolean {
+  const unbound = (item: SyncQueueItem): SyncQueueItem => {
+    const { projectId: _projectId, projectName: _projectName, updateData, ...rest } = item.payload as ProjectUpdateRecordPayload;
+    return {
+      ...item,
+      payload: { ...rest, updateData: updateData && typeof updateData === 'object' ? { ...updateData, projectId: undefined } : updateData },
+    };
+  };
+  return sameQueueRevision(unbound(current), unbound(written));
 }
 
 export async function removeProjectUpdateFromSyncQueue(updateId: string): Promise<number> {
@@ -2564,10 +2634,16 @@ export async function stageProjectUpdateForSync(
 ): Promise<StagedProjectUpdateSync> {
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
   const owner = currentCloudOwner();
-  // A sync attempt is not an edit: waiting document changes stay a patch on
-  // the cloud's copy, not this copy stamped anew (whole-app audit A7 pass 6 M1).
-  await persistProjectUpdateRecord(cloudRecoverableUpdate, false, cloudRecoverableUpdate.photos.map(photo => photo.id), true);
-  const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate, owner);
+  // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
+  // see writeStagedProjectUpdateRecord. An update in conflict keeps its own
+  // copy for review, and is sent whole when retried.
+  const conflicted = (await getSyncConflicts()).some(conflict =>
+    conflict.entity === 'project_update' && conflict.localId === update.id);
+  const staged = await writeStagedProjectUpdateRecord(
+    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id), { lastVersionInCloud: !conflicted });
+  const nothingToSend = !staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate);
+  const photoAttempt = await uploadUpdatePhotosForSync(
+    nothingToSend ? { ...cloudRecoverableUpdate, photos: [] } : cloudRecoverableUpdate, owner);
   // A photo found under a legacy project path keeps that path, so the cloud
   // record (and the desktop) point at the file that exists.
   const recordToPersist = Object.keys(photoAttempt.relocatedPhotoPaths).length === 0
@@ -2579,13 +2655,8 @@ export async function stageProjectUpdateForSync(
         : photo),
     };
   // Not into the next account's storage (whole-app audit A1 H2/M3).
-  if (cloudOwnerUnchanged(owner)) {
-    await persistProjectUpdateRecord(
-      recordToPersist,
-      false,
-      photoAttempt.failedPhotoIds,
-      true,
-    );
+  if (cloudOwnerUnchanged(owner) && staged) {
+    await writeStagedProjectUpdateRecord(recordToPersist, photoAttempt.failedPhotoIds, { replacing: staged });
   }
 
   return {
@@ -2646,7 +2717,10 @@ export async function runFieldUpdateCloudSync(
   const currentConflict = conflicts.find(
     conflict => conflict.entity === 'project_update' && conflict.localId === update.id,
   );
-  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId];
+  // Its record sent by another upload pass meanwhile, or nothing to send
+  // again: this device's last version is in the cloud (A7 pass 7 M1).
+  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId] ||
+    (!remainingItem && !currentConflict && projectUpdateVersionIsInCloud(update) ? 'uploaded' : undefined);
   const itemSucceeded =
     itemOutcome === 'uploaded' && !remainingItem && !currentConflict;
   const itemErrors = remainingItem?.lastError
@@ -2972,7 +3046,10 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     const nextQueue = currentQueue.flatMap(item => {
       const attempted = attemptedItemsById.get(item.id);
       if (!attempted || !sameQueueRevision(item, attempted)) return [item];
-      if (resolvedIds.has(item.id)) return [];
+      if (resolvedIds.has(item.id)) {
+        if (itemOutcomes[item.id] === 'uploaded') noteProjectUpdateVersionInCloud(item);
+        return [];
+      }
       return [retriedItemsById.get(item.id) ?? item];
     });
     return { nextQueue, result: nextQueue };
@@ -4769,8 +4846,9 @@ async function uploadProjectUpdateQueueItem(
   const patchedCloudCopy = cloudCopy?.updateData
     ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, documentPatches || [])
     : null;
+  // A document change settles no conflict: the phone's own edit waits for
+  // review, with its Keep Phone choice (whole-app audit A4 pass 9 L1).
   if (cloudCopy && patchedCloudCopy === cloudCopy.updateData) {
-    await clearConflictsForLocalRecord('project_update', payload.id);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
@@ -4825,7 +4903,7 @@ async function uploadProjectUpdateQueueItem(
   if (result.ok && !result.stubbed) {
     // A retry after a conflict put the phone's copy in the cloud: that
     // conflict is settled, as when the cloud already matched (audit A4 pass 5).
-    await clearConflictsForLocalRecord('project_update', payload.id);
+    if (!documentPatches) await clearConflictsForLocalRecord('project_update', payload.id);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
@@ -4844,6 +4922,31 @@ async function uploadProjectUpdateQueueItem(
  * listing. Held in memory: a relaunch starts a fresh refresh.
  */
 const projectUpdateUploadedAt = new Map<string, number>();
+
+/**
+ * For each field update, the copy this device last put in the cloud, whole
+ * or with a document patch, while nothing newer was queued for it (whole-app
+ * audit A7 pass 7 M1). A sync attempt that finds nothing queued for an update
+ * still this copy, the document upload state aside, has nothing to send
+ * again (writeStagedProjectUpdateRecord). Held in memory: after a relaunch a
+ * sync attempt queues the whole copy, as before.
+ */
+const projectUpdateLastVersionInCloud = new Map<string, ProjectUpdate>();
+
+function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (item.entity !== 'project_update' || item.operation === 'delete' || payload.archiveOnly || !payload.id) return;
+  if (payload.updateData && typeof payload.updateData === 'object') {
+    projectUpdateLastVersionInCloud.set(payload.id, payload.updateData as ProjectUpdate);
+  }
+}
+
+function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  // The project id is the one the upload resolved, not an edit.
+  const content = (copy: ProjectUpdate) => ({ ...withoutDocumentUploadState(copy), projectId: undefined }) as never;
+  return Boolean(sent) && sameFieldUpdateSyncGeneration(content(sent as ProjectUpdate), content(update));
+}
 
 function recordProjectUpdateUpload(updateId: string) {
   projectUpdateUploadedAt.set(updateId, Date.now());

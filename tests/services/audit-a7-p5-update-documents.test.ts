@@ -269,6 +269,7 @@ function device(documents: Doc[], saved: Update[], options: {
   const savedUpdatesRef = { current: savedState };
   const alerts: Array<{ title: string; message?: string; buttons: Array<{ text: string; onPress?: () => void }> }> = [];
   const requestQueuedUpdateSync = jest.fn();
+  const requestPendingChangesUpload = jest.fn(); // a sent update's patch goes up through the queue upload (A7 pass 7 M1)
   const setSavedUpdates = (next: Update[] | ((prev: Update[]) => Update[])) => {
     savedState = typeof next === 'function' ? next(savedState) : next;
   };
@@ -303,7 +304,7 @@ function device(documents: Doc[], saved: Update[], options: {
     removeReferenceDocumentEverywhere: async () => undefined,
     // A change the other devices must see goes up with its update (A7 pass 5 M1), as a patch (pass 6 M1).
     queueProjectUpdateRecord, queueProjectUpdateDocumentChange, requestQueuedUpdateSync, fieldUpdatesToResendForDocument,
-    withoutFieldUpdateDocument, withDeviceDocumentUploadState,
+    withoutFieldUpdateDocument, withDeviceDocumentUploadState, requestPendingChangesUpload,
   };
   const names = ['updateDocumentEverywhere', 'retryProjectDocumentUpload', 'deleteProjectDocument', 'resendUpdatesListingDocument'];
   const fns = evaluate<{
@@ -324,7 +325,7 @@ function device(documents: Doc[], saved: Update[], options: {
     await settle();
   };
   return {
-    ...fns, render, settle, press, alerts, requestQueuedUpdateSync, setSavedUpdates,
+    ...fns, render, settle, press, alerts, requestQueuedUpdateSync, requestPendingChangesUpload, setSavedUpdates,
     projectDocumentsCurrentRef, savedUpdatesRef, isPhone,
     saved: (id = 'u1') => savedState.find(update => update.id === id),
   };
@@ -357,11 +358,14 @@ describe('a document taken off a sent field update stays off (audit A7 pass 5 M1
     await phone.press(choice);
     expect(documentIds(phone.saved())).toEqual(['survey']);
 
-    // The shared update goes up again without it, and waits to sync.
+    // The shared update goes up again without it. Pin changed in A7 pass 7
+    // M1: it stays "sent" and only the patch goes up, through the queue
+    // upload; "Waiting to Sync" sent the phone's whole older copy again.
     const queued = await queuedUpdate('u1');
     expect(queued && documentIds(queued.updateData)).toEqual(['survey']);
-    expect(phone.saved()?.status).toBe('queued');
-    expect(phone.requestQueuedUpdateSync).toHaveBeenCalled();
+    expect(phone.saved()?.status).toBe('sent');
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledWith('field_update_document_change');
+    expect(phone.requestQueuedUpdateSync).not.toHaveBeenCalled();
 
     // A refresh before that upload lands still lists it in the cloud copy.
     await refresh(phone, rows);
@@ -436,8 +440,9 @@ describe('a document uploaded after its update was sent reads uploaded (audit A7
     const phone = device([permit], [sent]);
     await phone.retryProjectDocumentUpload('permit');
     await phone.settle();
-    expect(phone.saved()?.status).toBe('queued');
-    expect(phone.requestQueuedUpdateSync).toHaveBeenCalledTimes(1);
+    // Pin changed in A7 pass 7 M1: the update stays "sent"; its patch goes up through the queue upload.
+    expect(phone.saved()?.status).toBe('sent');
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledTimes(1);
     expect((await queuedUpdate('u1'))?.updateData.documents?.[0].status).toBe('uploaded');
 
     const iPad = device([], [{ ...sent }]);
@@ -494,12 +499,13 @@ describe('an update sent before this fix is repaired once (audit A7 pass 5 M1 b)
     await refresh(phone, rows);
     await phone.settle();
     expect(phone.saved()!.documents![0].status).toBe('uploaded');
-    expect(phone.saved()!.status).toBe('queued');
+    // Pin changed in A7 pass 7 M1: still "sent"; the patch goes up through the queue upload.
+    expect(phone.saved()!.status).toBe('sent');
     expect((await queuedUpdate('u1'))?.updateData.documents?.[0].status).toBe('uploaded');
-    expect(phone.requestQueuedUpdateSync).toHaveBeenCalledTimes(1);
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 3; i += 1) await refresh(phone, rows); // still waiting to upload: nothing more is sent
     await phone.settle();
-    expect(phone.requestQueuedUpdateSync).toHaveBeenCalledTimes(1);
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledTimes(1);
 
     const iPad = device([], [{ ...stale }]);
     await refresh(iPad, await rowsAfterUpload(rows));
@@ -550,8 +556,9 @@ describe('the upload-state rules (FieldUpdateDocumentUploadState)', () => {
     const updates = [listing('sent'), listing('queued'), listing('failed'), listing('draft'), listing('ready_to_send'),
       { ...listing('sent'), id: 'u-archived', isArchived: true }, { ...savedUpdate([], 'sent', 'u-other') } as never];
     const resent = fieldUpdatesToResendForDocument(updates, 'permit', update => withoutFieldUpdateDocument(update, 'permit'));
+    // Pin changed in A7 pass 7 M1: a sent update stays "sent" (its patch goes up alone).
     expect(resent.map(update => [update.id, update.status, update.documents?.length])).toEqual([
-      ['u-sent', 'queued', 0], ['u-queued', 'queued', 0], ['u-failed', 'failed', 0],
+      ['u-sent', 'sent', 0], ['u-queued', 'queued', 0], ['u-failed', 'failed', 0],
     ]);
   });
 });

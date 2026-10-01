@@ -240,16 +240,19 @@ includes(sync, 'export async function runFieldUpdateCloudSync', 'shared sync ser
 includes(sync, '? uploadLocalPhotoWithDiagnostics(update, photo)', 'shared sync must await photo upload work with diagnostics');
 includes(sync, 'mapWithBoundedConcurrency(', 'shared sync must bound concurrent photo upload work');
 // Whole-app audit A7 pass 6 M1 (30 Sep 2026): staging writes the record
-// through persistProjectUpdateRecord so a queued document patch is kept (a
-// sync attempt is not an edit); the record is still queued before photo work.
-const stagedRecordWrite = 'await persistProjectUpdateRecord(cloudRecoverableUpdate, false, cloudRecoverableUpdate.photos.map(photo => photo.id), true)';
+// so a queued document patch is kept (a sync attempt is not an edit); the
+// record is still queued before photo work. Pass 7 M1: through its own
+// writer, which re-sends no copy already in the cloud and whose second write
+// replaces only the first one's record.
+const stagedRecordWrite = 'const staged = await writeStagedProjectUpdateRecord(\n    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id)';
 includes(sync, stagedRecordWrite, 'shared sync must stage cloud-recoverable update metadata in the durable queue');
 // The photo work now carries the account the staging began under (audit A1 M3).
 assert(
   sync.indexOf(stagedRecordWrite) <
-    sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate, owner)'),
+    sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync('),
   'shared sync must persist update metadata before potentially slow photo work',
 );
+includes(sync, '{ replacing: staged }', 'the staging pass\'s second write must replace only its own queue record');
 includes(sync, 'let aggregateResult = await uploadPendingChanges()', 'shared sync must attempt database insert/update work');
 includes(sync, 'requestPendingChangesUpload(', 'durable queue uploads must use the guarded background entry point');
 assert(!sync.includes('void uploadPendingChanges();'), 'queue upload must not create a floating rejecting promise');

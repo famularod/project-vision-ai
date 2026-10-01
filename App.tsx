@@ -6918,7 +6918,9 @@ useEffect(() => {
     const resent = new Map(fieldUpdatesToResendForDocument(savedUpdatesRef.current, documentId, change).map(update => [update.id, update]));
     savedUpdatesRef.current = savedUpdatesRef.current.map(update => resent.get(update.id) || change(update));
     setSavedUpdates(prev => prev.map(update => resent.get(update.id) || change(update)));
-    resent.forEach(update => void queueProjectUpdateDocumentChange(update, documentId).catch(() => undefined).finally(requestQueuedUpdateSync)); // a patch on the cloud's copy, not this older copy (A7 pass 6 M1)
+    // A patch on the cloud's copy, not this older copy (A7 pass 6 M1); a sent update stays sent and only the patch goes up (A7 pass 7 M1).
+    resent.forEach(update => void queueProjectUpdateDocumentChange(update, documentId).catch(() => undefined)
+      .finally(() => update.status === 'sent' ? requestPendingChangesUpload('field_update_document_change') : requestQueuedUpdateSync()));
   }
 
   async function persistProjectDocumentsImmediately(
@@ -9648,10 +9650,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // record carries this revision, a realtime echo or a refresh would replace
     // the phone's copy with the older cloud row and lose the result (review
     // pass 6).
-    // Known limit (review pass 7): a result that lands while a pass is staging
-    // this same update can still be overwritten by that pass's older copy; the
-    // queue keeps the last write. Fixing it needs a monotonic local revision in
-    // queue writes (see handoff), a sync-protocol change.
+    // A pass already checking this update's photos no longer writes its older
+    // copy over this record (whole-app audit A7 pass 7 M1). A pass that read
+    // the update before the result and has not written it yet still may; the
+    // rerun asked for here then stages the result again (review pass 7).
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
     const withResult = saved ? applyToUpdate(saved) : null;
     if (
