@@ -184,9 +184,10 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * after a hyphen ("2375-B"), or one capital after a space standing alone
  * (the end, punctuation or a space and a non-letter after it: "2375 B?",
  * "2375 B 2nd floor"), or '' (audit A9 pass 9 L1). Audit A9 pass 10 L1: a
- * lower-case letter is a word ("Is 2375 a priority?"), and a letter that
- * continues the name of a project numbered just this ("2375 A?" for "2375 A
- * Street") is that project's, so neither is one. Audit A9 pass 11 F1: a
+ * lower-case letter is a word ("Is 2375 a priority?"), and a spaced capital
+ * that continues the name of a project numbered just this ("2375 A?" for
+ * "2375 A Street") is that project's, so neither is one; a hyphen letter
+ * always is one (audit A9 pass 11 F2). Audit A9 pass 11 F1: a
  * capital with a word after it is one only when the number and it are a
  * known project's identifier ("Is 2375 B done?" with "2375B Annex"; else
  * "Is 2375 A priority?" is a word).
@@ -212,12 +213,13 @@ export function ecosProjectNumberMentionsAt(
     // identifier (open or closed), as a capital standing alone always is.
     const capital = spacedCapital ||
       (capitalBeforeWord && projectNames.some(name => fullIdentifier(name) === `${number}${capitalBeforeWord}`) ? capitalBeforeWord : '');
-    // Audit A9 pass 10 L1: not a letter that continues the name of a project
-    // numbered just this ("2375 A?" for "2375 A Street").
-    const spacedLetter = (hyphenLetter || capital) && !projectNames.some(name =>
+    // Audit A9 pass 10 L1: not a spaced capital that continues the name of a
+    // project numbered just this ("2375 A?" for "2375 A Street"). A hyphen
+    // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2).
+    const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
       fullIdentifier(name) === number && projectNameAroundNumber(number, '', text.slice(end), [name]))
-      ? hyphenLetter || capital
-      : '';
+      ? capital
+      : '');
     if (
       exempt.some(([from, to]) => from <= start && end <= to) &&
       !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames) &&

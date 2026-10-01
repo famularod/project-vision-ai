@@ -925,6 +925,20 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 11 F2: a hyphen letter always counts, even when it
+  // continues a plain project's name ("2375-A" with "2375 A Street").
+  ...([
+    ['Is 2375-A done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', '2375'],
+    ['Is 2375-A done?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', undefined],
+    ['Is 2375-A done?', '2375A Phase 2', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 11 F2: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   {
     name: 'pass 11 F1: a closed lettered project named by a spaced capital before a word is refused as closed',
     projectName: '2375 Main St',
