@@ -1,15 +1,16 @@
 /**
  * Audit round 2, A5 pass 20 (1 Oct 2026): two Low findings in the schedule
- * merge (ScheduleLookahead, ScheduleImportMerge) and one in the report text
- * (DAVEReportIntelligence).
+ * merge (ScheduleLookahead, ScheduleImportMerge), one in the report text
+ * (DAVEReportIntelligence), and A7 pass 24 L-3 in Full Sync's merge
+ * (DAVEScheduleRecovery).
  *
  * Owner answer Q22: a lookahead adds to the master, and file progress never
  * goes below what David entered. A newer master's dates replace older
  * lookahead dates; a lookahead newer than the master restates the task.
  *
  * Real CSV normalizer, the phone's merge, Set Active, Delete PDF + Items and
- * shown-task pick, the web's upload plan and Make Current carry, and the
- * Reports screen's briefing. Synthetic data.
+ * shown-task pick, the web's upload plan and Make Current carry, Full Sync's
+ * merge, and the Reports screen's briefing. Synthetic data.
  */
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -20,6 +21,7 @@ import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import { reportBaselineSnapshot } from '../../services/DAVEReportSnapshot';
+import { daveScheduleItemsNeedingCloudUpload, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -349,5 +351,77 @@ describe('A6 p20 L1: Current Work counts two different tasks on one line', () =>
     const briefing = briefingOf([truth, truth], shown(state));
     expect(briefing.currentWork.filter(line => line.includes('Pour slab'))).toHaveLength(1);
     expect(briefing.currentWork.join('\n')).not.toContain('tasks)');
+  });
+});
+
+/**
+ * A7 pass 24 L-3 (older, Low): master G lists Framing on lookahead L2's dates,
+ * so it restates the task in place: its note takes G's dates and marks L1 and
+ * L2 replaced, and updatedAt stays. Full Sync on a device still holding the
+ * copy from before G tied on updatedAt, kept that copy's note and wrote it to
+ * the cloud: no marks, F's dates. Deleting L2 and L1 then showed F's
+ * 10/16-10/26 again instead of G's 10/18-10/28.
+ */
+describe('A7 p24 L-3: Full Sync keeps the marks a master left on the lookahead note', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const L2 = doc('LOOKAHEAD L2', '2026-09-11T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const SURVEY = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,';
+  let beforeG = approve(EMPTY, F, ['Framing,Alpha,Lot,10/16/2026,10/26/2026,', SURVEY]);
+  beforeG = approve(beforeG, L1, ['Framing,Alpha,Lot,10/17/2026,10/27/2026,'], true);
+  beforeG = approve(beforeG, L2, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+  const afterG = approve(beforeG, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,', SURVEY]);
+  const framingId = named(afterG, 'Framing')[0].id;
+  const stale = beforeG.items.find(item => item.id === framingId)!;
+  const cloud = afterG.items.find(item => item.id === framingId)!;
+  /** The device that did not approve G runs Full Sync: the merge, then what it writes back. */
+  const fullSync = () => {
+    const merged = recoverDAVEScheduleRecords({ local: beforeG.items, cloud: afterG.items, allowCloudOnly: true });
+    const uploaded = daveScheduleItemsNeedingCloudUpload({ local: merged, cloud: afterG.items });
+    const cloudAfter = afterG.items.map(item => uploaded.find(upload => upload.id === item.id) || item);
+    return { merged, cloudAfter };
+  };
+  const deleteBoth = (items: ScheduleItem[]) => {
+    const state: State = { items, documents: afterG.documents };
+    const one = deleteWithItems(state, L2, '2026-09-15T10:00:00.000Z');
+    return { afterL2: copies(one, 'Framing'), afterBoth: copies(deleteWithItems(one, L1, '2026-09-16T10:00:00.000Z'), 'Framing') };
+  };
+
+  it('G restated the task in place and left updatedAt alone (the tie)', () => {
+    expect(cloud.updatedAt).toBe(stale.updatedAt);
+    expect(cloud.lookaheadOverlay).toMatchObject({ masterStartDate: '10/18/2026', masterFinishDate: '10/28/2026' });
+    expect(stale.lookaheadOverlay).toMatchObject({ masterStartDate: '10/16/2026', masterFinishDate: '10/26/2026' });
+  });
+
+  it('the merge keeps G\'s note, and the delete of L2 then L1 stays on G\'s dates', () => {
+    const { merged, cloudAfter } = fullSync();
+    const task = merged.find(item => item.id === framingId)!;
+    expect(task.lookaheadOverlay).toMatchObject({ masterStartDate: '10/18/2026', masterFinishDate: '10/28/2026' });
+    expect(task.lookaheadOverlay!.lookaheads.map(entry => entry.datesReplacedByMaster)).toEqual(['batch-MASTER G', 'batch-MASTER G']);
+    expect(cloudAfter.find(item => item.id === framingId)!.lookaheadOverlay).toEqual(cloud.lookaheadOverlay);
+    expect(deleteBoth(merged)).toEqual({ afterL2: [['10/18/2026', '10/28/2026', 0]], afterBoth: [['10/18/2026', '10/28/2026', 0]] });
+    expect(deleteBoth(cloudAfter)).toEqual({ afterL2: [['10/18/2026', '10/28/2026', 0]], afterBoth: [['10/18/2026', '10/28/2026', 0]] });
+  });
+
+  it('either way round: the device that approved G keeps its note', () => {
+    const merged = recoverDAVEScheduleRecords({ local: afterG.items, cloud: beforeG.items, allowCloudOnly: true });
+    expect(merged.find(item => item.id === framingId)!.lookaheadOverlay).toEqual(cloud.lookaheadOverlay);
+  });
+
+  it('unchanged: a copy whose note no master marked merges as before', () => {
+    const noted = { ...stale, notes: 'Crew booked', updatedAt: '2026-09-12T09:00:00.000Z' } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [noted], cloud: [stale], allowCloudOnly: true });
+    expect(merged).toMatchObject({ notes: 'Crew booked', lookaheadOverlay: stale.lookaheadOverlay });
+  });
+
+  it('a lookahead approved again since on new dates takes no old mark; the earlier one keeps G\'s', () => {
+    const again = {
+      ...stale,
+      lookaheadOverlay: { ...stale.lookaheadOverlay!, lookaheads: stale.lookaheadOverlay!.lookaheads.map(entry => entry.batchId === 'batch-LOOKAHEAD L2' ? { ...entry, startDate: '10/19/2026', finishDate: '10/29/2026' } : entry) },
+      startDate: '10/19/2026', finishDate: '10/29/2026', updatedAt: '2026-09-15T09:00:00.000Z',
+    } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [again], cloud: [cloud], allowCloudOnly: true });
+    expect(merged.lookaheadOverlay!.lookaheads.map(entry => entry.datesReplacedByMaster)).toEqual(['batch-MASTER G', undefined]);
   });
 });

@@ -194,8 +194,11 @@ function mergeScheduleRevisions(
   const revisedFromTaskIds = scheduleTaskEarlierIdsOfBoth(base, base === local ? cloud : local);
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   const { progressJudgment: _baseJudgment, ...baseRecord } = base;
+  // What a master said under a lookahead, from the copy that has it (A7 pass 24 L-3).
+  const lookaheadOverlay = lookaheadNoteOfBoth(base, base === local ? cloud : local);
   return {
     ...baseRecord,
+    ...(lookaheadOverlay !== base.lookaheadOverlay ? { lookaheadOverlay } : {}),
     notes: noteSource.notes,
     status: progressSource.status,
     percentComplete: progressSource.percentComplete,
@@ -209,6 +212,40 @@ function mergeScheduleRevisions(
     ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),
     ...(alsoImportedSourceRow ? { alsoImportedSourceRow } : {}),
     ...(revisedFromTaskIds.length > 0 ? { revisedFromTaskIds } : {}),
+  };
+}
+
+/**
+ * Whole-app audit A7 pass 24 L-3 (1 Oct 2026): a master that lists a task on
+ * the dates a lookahead gave it restates the task in place: its lookahead
+ * note takes the master's dates and marks the earlier lookaheads' dates
+ * replaced (A6 pass 19 M1, A5 pass 20 P1), and updatedAt stays, as for the
+ * imports it joins (alsoImportedInBatchIds). Full Sync on a device still
+ * holding the copy from before the master tied, kept that copy's note and
+ * wrote it to the cloud: no marks and the old master's dates, so deleting
+ * the lookaheads showed the replaced dates again. Of two copies of a note,
+ * the base copy's stands, with the marks the other copy has on the same
+ * lookaheads (same dates); when the other copy alone has seen a master (it
+ * has marks the base lacks, and lacks none the base has), it also gives what
+ * that master says (the master's dates, percent and who stated it). The same
+ * note when the other copy adds nothing.
+ */
+function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleItem['lookaheadOverlay'] {
+  const own = base.lookaheadOverlay;
+  const theirs = other.lookaheadOverlay;
+  if (!own || !theirs || !Array.isArray(own.lookaheads) || !Array.isArray(theirs.lookaheads)) return own;
+  const entryKey = (entry: { batchId: string; startDate: string; finishDate: string }) =>
+    `${normalized(entry.batchId)}\n${text(entry.startDate)}\n${text(entry.finishDate)}`;
+  const marked = new Map(theirs.lookaheads.filter(entry => entry.datesReplacedByMaster).map(entry => [entryKey(entry), entry.datesReplacedByMaster!]));
+  const gained = own.lookaheads.filter(entry => !entry.datesReplacedByMaster && marked.has(entryKey(entry)));
+  if (gained.length === 0) return own;
+  const theirKeys = new Set(theirs.lookaheads.map(entryKey));
+  const behind = own.lookaheads.some(entry => entry.datesReplacedByMaster && theirKeys.has(entryKey(entry)) && !marked.has(entryKey(entry)));
+  const { lookaheads: _theirs, ...theirMaster } = theirs;
+  return {
+    ...own,
+    ...(behind ? {} : theirMaster),
+    lookaheads: own.lookaheads.map(entry => gained.includes(entry) ? { ...entry, datesReplacedByMaster: marked.get(entryKey(entry)) } : entry),
   };
 }
 
