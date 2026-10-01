@@ -1441,6 +1441,28 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '450 (24117 - 450 A Street)',
     refusedClosed: true,
   },
+  // Audit A9 pass 16 L2: a spaced capital is the letter of another project
+  // numbered with it ("400N Tower"), even where it continues the selected
+  // project's address ("24117 - 400 N Main St"); on 400N Tower the address
+  // still names the N Main job, and with no 400N project the compass reading
+  // stays.
+  ...([
+    ['What is left at 400 N?', '24117 - 400 N Main St', [SELECTED, '24117 - 400 N Main St', '400N Tower'], '400N', '24117'],
+    ['What is left at 400 N?', SELECTED, [SELECTED, '24117 - 400 N Main St', '400N Tower'], '400N', undefined],
+    ['Is 400 N. Main St done?', '24117 - 400 N Main St', [SELECTED, '24117 - 400 N Main St', '400N Tower'], '400N', '24117'],
+    ['What is left at 400 N?', '24117 - 400 N Main St', [SELECTED, '24117 - 400 N Main St'], null, undefined],
+    ['Is 400 N. Main done?', SELECTED, [SELECTED, '24117 - 400 N Main St'], '400 (24117 - 400 N Main St)', undefined],
+    ['What is left on 2375 A?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+    ['What is left at 400 N Main St?', '400N Tower', [SELECTED, '24117 - 400 N Main St', '400N Tower'], '400 (24117 - 400 N Main St)', '400N'],
+    ['What is left at 400 N?', '400N Tower', [SELECTED, '24117 - 400 N Main St', '400N Tower'], '400 (24117 - 400 N Main St)', '400N'],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 16 L2: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

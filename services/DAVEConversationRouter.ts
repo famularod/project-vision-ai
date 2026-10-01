@@ -203,7 +203,10 @@ function talkNamedProjects(
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
     .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, transcript, start, end))
     .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
-  const numbers = ecosProjectNumberMentionsAt(transcript, all);
+  // Audit A9 pass 16 L2: with the selected project, so a spaced capital it is
+  // numbered with ("400 N" on "400N Tower") still reads as another job's
+  // address ("24117 - 400 N Main St"), as in Ask ECOS.
+  const numbers = ecosProjectNumberMentionsAt(transcript, all, selectedName);
   // The projects whose name continues furthest around each plain number (see
   // the loop below); a name said in full decides only against `selectedName`
   // (audit A9 pass 15 L1).

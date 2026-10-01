@@ -127,7 +127,7 @@ export function findECOSProjectReferenceMismatch(
     return projectReferenceMismatch(selected, numberLabel(names, fallbackLabel), open.length === 0, namedProjects);
   };
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
-  const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
+  const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames], projectName);
   // Projects shown by the selected one's number ("2375 Main St Phase 2" on
   // "2375 Main St") count as it, as a shared number always has (Q20). Audit
   // A9 pass 14 L3: only for that number; another number in such a name is
@@ -307,8 +307,9 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * lower-case letter is a word ("Is 2375 a priority?"), and a spaced capital
  * that continues the name of a project numbered just this ("2375 A?" for
  * "2375 A Street"; since audit A9 pass 15 M1 of any project with the number
- * as a word: "400 N. Main" for "24117 - 400 N Main St") is that project's,
- * so neither is one (with a word
+ * as a word: "400 N. Main" for "24117 - 400 N Main St", and since pass 16 L2
+ * only when no project but `selectedProjectName` is numbered with the
+ * letter, "400N Tower") is that project's, so neither is one (with a word
  * after the capital, only when that word continues the name too: "2375 A
  * Phase" is not "2375 A Street"; pass 12 L3); a hyphen letter always is one
  * (audit A9 pass 11 F2). Audit A9 pass 11 F1: a
@@ -319,6 +320,7 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
 export function ecosProjectNumberMentionsAt(
   text: string,
   projectNames: readonly string[] = [],
+  selectedProjectName = '',
 ): Array<Readonly<{ number: string; start: number; end: number; unsure: boolean; letter: string; spacedLetter: string }>> {
   const exempt = exemptSpans(text);
   const known = new Set(projectNames.flatMap(name => projectIdentifiers(name).map(({ digits }) => digits)));
@@ -344,8 +346,16 @@ export function ecosProjectNumberMentionsAt(
     // with that word too ("2375 A Phase 2" does not continue "2375 A Street";
     // "2375 A St." does, pass 13 L2). Audit A9 pass 15 M1: any project
     // whose name has the number as a word of its own, not only one numbered
-    // just this ("400 N. Main" continues "24117 - 400 N Main St").
+    // just this ("400 N. Main" continues "24117 - 400 N Main St"). Audit A9
+    // pass 16 L2: such a name (not numbered just this) yields to another
+    // project numbered with the letter ("What is left at 400 N?" names "400N
+    // Tower", even on "24117 - 400 N Main St"), but not on that project
+    // itself, where the address still names the other job (when unsure,
+    // refuse either way).
+    const letteredProject = Boolean(capital) && !hasIdentifier(selectedProjectName, `${number}${capital}`) &&
+      projectNames.some(name => hasIdentifier(name, `${number}${capital}`));
     const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
+      (!letteredProject || hasIdentifier(name, number)) &&
       nameContinuesAfterPlainNumber(name, number, text.slice(end)) &&
       (!capitalBeforeWord || sameNameWord(wordsAfterNumber(text.slice(end))[1], wordsAfterNumber(name, number)[1])))
       ? capital

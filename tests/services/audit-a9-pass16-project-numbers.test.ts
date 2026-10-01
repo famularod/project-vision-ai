@@ -107,3 +107,54 @@ describe('audit A9 pass 16 L1: a lower-case "a" continues an "A Street" name whe
     }
   });
 });
+
+describe('audit A9 pass 16 L2: a spaced capital is another project\'s letter when a project is numbered with it', () => {
+  const MAIN = '24117 - 400 N Main St';
+  const TOWER = '400N Tower';
+  const PROJECTS = [SELECTED, MAIN, TOWER];
+
+  it('on 24117 - 400 N Main St, "What is left at 400 N?" names 400N Tower in Ask ECOS and Talk (was answered)', () => {
+    expect(phone('What is left at 400 N?', PROJECTS, [], MAIN)).toBe(switchOnPhone('400N', '24117'));
+    expect(desktop('What is left at 400 N?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('400N', '24117'));
+    expect(talkAnswer('What is left at 400 N?', PROJECTS, [], MAIN)).toBe(switchOnPhone('400N', '24117'));
+  });
+
+  it('on 2321 it names 400N, and Talk moves to 400N Tower (was 24117 - 400 N Main St)', () => {
+    expect(desktop('What is left at 400 N?', PROJECTS)).toBe(switchOnDesktop('400N'));
+    expect(mentionedDAVEProject('What is left at 400 N?', PROJECTS)).toBe(TOWER);
+  });
+
+  it('a closed 400N Tower is named too', () => {
+    expect(phone('What is left at 400 N?', [SELECTED, MAIN], [TOWER], MAIN)).toBe(
+      'Project 24117 is selected, but 400N is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+  });
+
+  it('when unsure, refuse: with 400N Tower open, the address "400 N. Main St" is read as 400N too, as before pass 15 M1', () => {
+    expect(desktop('Is 400 N. Main St done?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('400N', '24117'));
+    expect(desktop('Is 400 N Main St done?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('400N', '24117'));
+    expect(mentionedDAVEProject('Is 400 N. Main done?', PROJECTS)).toBe(TOWER);
+  });
+
+  it('on 400N Tower, an address that continues the N Main job still names it (when unsure, refuse; unchanged)', () => {
+    const label = '400 (24117 - 400 N Main St)';
+    for (const question of ['What is left at 400 N Main St?', 'Is 400 N. Main done?', 'What is left at 400 N?']) {
+      expect(desktop(question, PROJECTS, [], TOWER)).toBe(switchOnDesktop(label, '400N'));
+      expect(talkAnswer(question, PROJECTS, [], TOWER)).toBe(switchOnPhone(label, '400N'));
+      // also with another 400N project, closed
+      expect(desktop(question, PROJECTS, ['400N Old Tower'], TOWER)).toBe(switchOnDesktop(label, '400N'));
+    }
+    // Talk reads the capital as Ask does there, so it does not list 400N Tower itself as another project
+    expect(talkAnswer('Is 24117 - 400 N Main St done?', PROJECTS, [], TOWER)).toBe(switchOnPhone('24117', '400N'));
+  });
+
+  it('with no 400N project, the compass reading stays (pass 15 M1)', () => {
+    expect(desktop('Is 400 N. Main done?', [SELECTED, MAIN])).toBe(switchOnDesktop('400 (24117 - 400 N Main St)'));
+    expect(mentionedDAVEProject('Is 400 N. Main done?', [SELECTED, MAIN])).toBe(MAIN);
+    expect(desktop('What is left at 400 N?', [SELECTED, MAIN], [], MAIN)).toBeNull();
+  });
+
+  it('a project numbered just the number keeps its own capital (pass 10 L1): "2375 A?" on 2375 A Street with 2375A Phase 2', () => {
+    expect(desktop('What is left on 2375 A?', [SELECTED, '2375 A Street', '2375A Phase 2'], [], '2375 A Street')).toBeNull();
+  });
+});
