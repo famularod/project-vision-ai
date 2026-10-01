@@ -60,10 +60,6 @@ jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: () => mockAnswer([]),
   upsertDAVESyncTombstones: (tombstones: unknown[]) => mockAnswer(tombstones),
   listScheduleItems: () => mockAnswer([]),
-  // A new task's row, read by its id when the list does not have it (whole-app
-  // audit A7 pass 17 L-4: every upload whose row the list missed reads it,
-  // a whole copy too): the cloud has none, so the phone's copy is written.
-  getScheduleItem: () => mockAnswer(null),
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: () => mockAnswer([]),
   listDAVEStorageCleanupIntents: () => mockAnswer([]),

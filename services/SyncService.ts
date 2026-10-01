@@ -5501,10 +5501,7 @@ async function uploadQueueItem(
     // no row the phone's whole copy went up: a notes-only edit put 0% over
     // the web's 50%. The row is read by its id first; a read that fails
     // leaves the edit queued, and no row means the task really has none.
-    // A whole copy too (A7 pass 17 L-4): written as it was, with no merge
-    // and no conflict, it put 0% over the web's 50%. The whole-copy rules
-    // below then decide, as when the list has the row.
-    if (!remote) {
+    if (!remote && changedFields) {
       let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
       try {
         row = await getScheduleItem(payload.id);
