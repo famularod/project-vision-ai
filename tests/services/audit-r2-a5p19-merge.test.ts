@@ -271,3 +271,47 @@ describe('A5 p19 L3: rows on a different saved twin\'s exact days pair by days b
     ]);
   });
 });
+
+/**
+ * L4 (caused by 7663b54): Microsoft Project's QUALITY INSPECTION twins.
+ * Master G moves only the second; master H slips the first past the second.
+ * The unchanged first twin kept F's import and row number, so the twins were
+ * not all numbered by one file, the pairing fell back to date order, and
+ * David's progress swapped between them.
+ */
+describe('A5 p19 L4: Microsoft Project row order survives a revision that moved one twin', () => {
+  const QI = 'QUALITY INSPECTION';
+  const onF = approve(EMPTY, F, msp(F, [[QI, 'Mon 10/5/26'], [QI, 'Mon 10/12/26']]));
+  const [first, second] = [...shownNamed(onF, QI)].sort((left, right) => left.startDate.localeCompare(right.startDate));
+  const recorded = record(record(onF, first.id, 80, '2026-09-22T15:00:00.000Z'), second.id, 20, '2026-09-22T15:00:00.000Z');
+  const onG = approve(recorded, G, msp(G, [[QI, 'Mon 10/5/26'], [QI, 'Wed 10/14/26']]));
+
+  it('phone: H slips the first past the second: each keeps its own percent and reports', () => {
+    expect(copies(onG, QI).map(([, start, , percent]) => [start, percent])).toEqual([['10/05/2026', 80], ['10/14/2026', 20]]);
+    const state = approve(onG, H, msp(H, [[QI, 'Mon 10/19/26'], [QI, 'Wed 10/14/26']]));
+    expect(copies(state, QI).map(([, start, , percent]) => [start, percent])).toEqual([['10/14/2026', 20], ['10/19/2026', 80]]);
+    expect(shownNamed(state, QI).find(item => item.startDate === '10/19/2026')!.revisedFromTaskIds).toEqual([first.id]);
+  });
+
+  it('web: H uploaded on the web and made current pairs the same way; a web edit of the unchanged twin keeps its row in G', () => {
+    const unchanged = onG.items.find(item => item.id === first.id)!;
+    expect(unchanged.alsoImportedSourceRow).toEqual({ importBatchId: G.importBatchId, sourceRowNumber: expect.any(Number) });
+    const edited = buildDAVEWebScheduleItem({
+      id: first.id, now: '2026-09-27T09:00:00.000Z', actor: 'David', current: { ...unchanged, cloudUpdatedAt: 'rev-1' },
+      draft: {
+        itemType: 'Task', taskName: QI, projectName: 'Alpha', projectId: 'alpha', locationName: unchanged.locationName,
+        startDate: unchanged.startDate, finishDate: unchanged.finishDate, milestone: unchanged.milestone, owner: 'Inspector A', contractor: '',
+        percentComplete: '80', priority: unchanged.priority, status: unchanged.status, notes: '', nextAction: '', activityMessage: '',
+      },
+    });
+    expect(edited.alsoImportedSourceRow).toEqual(unchanged.alsoImportedSourceRow);
+    const webEdited: State = { ...onG, items: onG.items.map(item => item.id === first.id ? edited as ScheduleItem : item) };
+    const webShown = shown(webEdited).map(item => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null }));
+    const hRows = msp(H, [[QI, 'Mon 10/19/26'], [QI, 'Wed 10/14/26']]);
+    const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown }, importedScheduleItems: hRows });
+    const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
+    const uploaded: State = { items: [...plan.additions, ...webEdited.items.map(item => revised.get(item.id) || item)], documents: [...webEdited.documents, { ...H, isCurrent: false }] };
+    const after = makeCurrent(uploaded, H, '2026-09-30T12:00:00.000Z');
+    expect(copies(after, QI).map(([, start, , percent]) => [start, percent])).toEqual([['10/14/2026', 20], ['10/19/2026', 80]]);
+  });
+});

@@ -839,6 +839,14 @@ export type ScheduleItem = {
    */
   alsoImportedInBatchIds?: string[] | null;
   /**
+   * The row number the latest of those imports gives the task, when its file
+   * numbers rows (Microsoft Project), so twins keep that file's order after a
+   * revision moved one of them (whole-app audit A5 pass 19 L4, 1 Oct 2026).
+   * sourceRowNumber stays the task's own import's. Kept in the task's JSON
+   * record. Missing on a row saved before.
+   */
+  alsoImportedSourceRow?: { importBatchId: string; sourceRowNumber: number } | null;
+  /**
    * The lookaheads that restated this task in place (owner answer Q22), and
    * what it said before the first of them, so deleting a lookahead gives the
    * task back its master schedule dates.

@@ -330,6 +330,8 @@ export function buildDAVEWebScheduleItem({
     importBatchId: current?.importBatchId ?? null,
     // Kept on a web edit, as the phone keeps it (whole-app audit A5 pass 2).
     ...(current?.alsoImportedInBatchIds?.length ? { alsoImportedInBatchIds: current.alsoImportedInBatchIds } : {}),
+    // The row its latest import gives it, for twins' file order (A5 pass 19 L4).
+    ...(current?.alsoImportedSourceRow ? { alsoImportedSourceRow: current.alsoImportedSourceRow } : {}),
     // What the task said before a lookahead restated it (owner answer Q22).
     ...(current?.lookaheadOverlay ? { lookaheadOverlay: current.lookaheadOverlay } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)

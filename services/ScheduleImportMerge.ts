@@ -304,9 +304,18 @@ function rowNumberOf(item: ScheduleItem): number {
  * files, never the numbers themselves (A5 pass 3 F3: never by ID).
  */
 function inMicrosoftProjectOrder(items: readonly ScheduleItem[]): ScheduleItem[] | null {
-  const file = (item: ScheduleItem) => key(item.importBatchId) || key(item.sourceDocumentId);
-  if (!items.every(item => Number.isFinite(item.sourceRowNumber) && file(item) && file(item) === file(items[0]))) return null;
-  return [...items].sort((left, right) => rowNumberOf(left) - rowNumberOf(right));
+  // Whole-app audit A5 pass 19 L4 (1 Oct 2026): a twin a revision found unchanged kept only its first file's
+  // row number, so after G moved the other twin no one file numbered both, the twins paired by date, and H
+  // slipping the first past the second swapped David's progress. A twin also carries the row number its
+  // latest import gave it (alsoImportedSourceRow); the twins pair in the order of a file that numbers them all.
+  const rowsOf = (item: ScheduleItem) => [
+    { file: key(item.alsoImportedSourceRow?.importBatchId), row: item.alsoImportedSourceRow?.sourceRowNumber },
+    { file: key(item.importBatchId) || key(item.sourceDocumentId), row: item.sourceRowNumber },
+  ].filter((entry): entry is { file: string; row: number } => Boolean(entry.file) && Number.isFinite(entry.row));
+  const file = rowsOf(items[0]).map(entry => entry.file).find(candidate => items.every(item => rowsOf(item).some(entry => entry.file === candidate)));
+  if (!file) return null;
+  const rowIn = (item: ScheduleItem) => rowsOf(item).find(entry => entry.file === file)!.row;
+  return [...items].sort((left, right) => rowIn(left) - rowIn(right));
 }
 
 /**
@@ -891,6 +900,10 @@ export function mergeApprovedScheduleImportItems({
               ...(rehome ? {
                 locationName: key(restated.locationName) ? restated.locationName : importedItem.locationName,
                 alsoImportedInBatchIds: [...(restated.alsoImportedInBatchIds || []), newBatchId],
+                // Its row in this file, for the twins' file order (A5 pass 19 L4).
+                ...(Number.isFinite(importedItem.sourceRowNumber)
+                  ? { alsoImportedSourceRow: { importBatchId: newBatchId, sourceRowNumber: Number(importedItem.sourceRowNumber) } }
+                  : {}),
               } : {}),
             }
           : item);
