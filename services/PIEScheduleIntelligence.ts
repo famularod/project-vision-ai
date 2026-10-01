@@ -680,7 +680,39 @@ function percentStated(value: string, status: ScheduleStatus) {
   return /\d/.test(value) || status === 'Complete';
 }
 
-function normalizePercent(value: string, status: ScheduleStatus) {
+const PLAIN_NUMBER = /^(\d*\.\d+|\d+\.?)$/;
+
+/** A plain number from 0 to 1 (no % sign), or null. */
+function fractionValue(value: string): number | null {
+  const text = value.trim();
+  if (!PLAIN_NUMBER.test(text)) return null;
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
+}
+
+/** A plain number with a decimal point strictly between 0 and 1: "0.4", ".25". */
+function strictFraction(value: string): boolean {
+  const number = fractionValue(value);
+  return number !== null && number > 0 && number < 1 && value.includes('.');
+}
+
+/**
+ * Whether a percent column is written as fractions of 1 (whole-app audit A5
+ * pass 6 L2, 30 Sep 2026): a spreadsheet's percent cell exports as 0.4, and
+ * read as a stated 0%. A column reads as fractions when it has a fraction
+ * strictly between 0 and 1 ("0.4") and every number in it is a plain one
+ * from 0 to 1; then 1, 1.0 and 0 are 100% and 0%. Elsewhere a 0–1 decimal is
+ * still a fraction (0.4 is 40%), and 1 or 1.0 stays 1%, as before. A cell
+ * with a % sign is a percent.
+ */
+function percentColumnReadsAsFractions(values: readonly string[]): boolean {
+  const numbers = values.filter(value => /\d/.test(value));
+  return numbers.some(strictFraction) && numbers.every(value => fractionValue(value) !== null);
+}
+
+function normalizePercent(value: string, status: ScheduleStatus, fractions = false) {
+  const fraction = fractionValue(value);
+  if (fraction !== null && (fractions || strictFraction(value))) return clamp(Math.round(fraction * 100), 0, 100);
   const match = value.match(/(\d{1,3})\s*%?/);
 
   if (match) return clamp(Number(match[1]), 0, 100);
@@ -1117,9 +1149,12 @@ export function normalizeMicrosoftProjectPdfRows({
   }
 
   const importedAt = now.toISOString();
-  const rows = lines.slice(1).map((line, index) => {
-    const cells = line.split('\t').map(value => value.trim());
-    const percentCell = cell(cells, header, ['percent complete', '% complete'], 6);
+  const lineCells = lines.slice(1).map(line => line.split('\t').map(value => value.trim()));
+  const percentNames = ['percent complete', '% complete'];
+  // A percent column written as fractions of 1 (A5 pass 6 L2).
+  const percentFractions = percentColumnReadsAsFractions(lineCells.map(cells => cell(cells, header, percentNames, 6)));
+  const rows = lineCells.map((cells, index) => {
+    const percentCell = cell(cells, header, percentNames, 6);
     return {
       activityId: cell(cells, header, ['id', 'activity id'], 0),
       sourceWbsCode: cell(cells, header, ['wbs', 'wbs code', 'outline number'], -1),
@@ -1129,7 +1164,7 @@ export function normalizeMicrosoftProjectPdfRows({
       duration: parseDuration(cell(cells, header, ['duration'], 3)),
       startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
       finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
-      percentComplete: normalizePercent(percentCell, 'Not Started'),
+      percentComplete: normalizePercent(percentCell, 'Not Started', percentFractions),
       percentStated: percentStated(percentCell, 'Not Started'),
       notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
     };
@@ -1383,6 +1418,9 @@ export function normalizeScheduleImport({
     });
   }
 
+  const percentNames = ['percent complete', '% complete', 'progress'];
+  // A percent column written as fractions of 1 (A5 pass 6 L2).
+  const percentFractions = percentColumnReadsAsFractions(dataRecords.map(record => cell(record.cells, headers, percentNames, 11)));
   const normalizedTaskCandidates = dataRecords
     .map(record => {
       const { cells } = record;
@@ -1404,8 +1442,8 @@ export function normalizeScheduleImport({
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
       const milestone = cell(cells, headers, ['milestone'], 5);
-      const percentCell = cell(cells, headers, ['percent complete', '% complete', 'progress'], 11);
-      const parsedPercent = normalizePercent(percentCell, parsedStatus);
+      const percentCell = cell(cells, headers, percentNames, 11);
+      const parsedPercent = normalizePercent(percentCell, parsedStatus, percentFractions);
       const progress = reconcileScheduleProgress(parsedStatus, parsedPercent);
       const { status, percentComplete } = progress;
       const floatValue = parseDuration(

@@ -23,10 +23,12 @@
  *    as a lookahead before the master was made current, paired with its own
  *    old copy; after Set Active the task showed twice when the file had no
  *    Area column.
+ * A5 p6 L2 A CSV percent written as a fraction ("0.4", as a spreadsheet's
+ *    percent cell exports) was read as a stated 0%.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
-import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
@@ -364,5 +366,43 @@ describe('A8 p5 M1 / A5 p6 L1: a full schedule\'s file is offered again as a loo
     });
     const after = approve(current, again, csvRows(LINES, again));
     expect(view(after, /Pour/)).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 20%']);
+  });
+});
+
+describe('A5 p6 L2: a percent written as a fraction reads as that share of 100', () => {
+  const percents = (lines: string[]) => csvRows([HEADER, ...lines.map((value, index) => `Task ${index + 1},Alpha,Lot,10/01/2026,10/03/2026,${value}`)], lookahead)
+    .map(row => [row.percentComplete, row.status, row.percentCompleteStated]);
+
+  it('a column of fractions: 0.4 is 40%, 1 and 1.0 are 100%, 0 is 0%', () => {
+    expect(percents(['0.4', '.25', '1.0', '1', '0', '0.00'])).toEqual([
+      [40, 'In Progress', undefined], [25, 'In Progress', undefined], [100, 'Complete', undefined],
+      [100, 'Complete', undefined], [0, 'Not Started', undefined], [0, 'Not Started', undefined],
+    ]);
+  });
+
+  it('a column of whole percents keeps today\'s reading: 1 and 1.0 are 1%; a 0–1 decimal alone is still a fraction', () => {
+    expect(percents(['1.0', '1', '45', '0.4', '50%', '0.5%', ''])).toEqual([
+      [1, 'In Progress', undefined], [1, 'In Progress', undefined], [45, 'In Progress', undefined],
+      [40, 'In Progress', undefined], [50, 'In Progress', undefined], [0, 'Not Started', undefined], [0, 'Not Started', false],
+    ]);
+  });
+
+  it('Microsoft Project rows read the same way', () => {
+    const rows = normalizeMicrosoftProjectPdfRows({
+      contents: [
+        'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete',
+        '1\tAlpha\t0\t60 days\t09/01/2026\t12/15/2026\t0.5',
+        '2\tPour slab\t1\t3 days\t10/01/2026\t10/03/2026\t0.4',
+        '3\tRoofing\t1\t10 days\t12/01/2026\t12/15/2026\t1.00',
+      ].join('\n'),
+      sourceName: 'Alpha.pdf', projects: ['Alpha'], now: new Date(APPROVED),
+    });
+    expect(rows.map(row => [row.taskName, row.percentComplete])).toEqual([['Pour slab', 40], ['Roofing', 100]]);
+  });
+
+  it('through the merge: a lookahead stating 0.4 takes the master\'s 20% to 40%, not to 0% Not Started', () => {
+    const state = approve({ items: masterItems(20), documents: [master] }, lookahead,
+      csvRows([HEADER, 'Pour slab,Alpha,Lot,09/28/2026,09/30/2026,0.4'], lookahead));
+    expect(pour(state)).toMatchObject({ percentComplete: 40, status: 'In Progress' });
   });
 });
