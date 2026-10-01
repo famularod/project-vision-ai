@@ -230,6 +230,7 @@ import { useCommittedText } from './hooks/use-committed-text';
 import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
+import { scheduleProgressRestored, scheduleProgressUndoPoint } from './services/ScheduleProgressSource';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -11803,6 +11804,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     itemId: string,
     edit: Partial<ScheduleItem>,
     workflowRequest?: ProjectItemWorkflowMutationRequest,
+    restoresProgress = false, // Talk's Undo gives back who stated the progress; never marked the manager's (A10 pass 5 L3)
   ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
@@ -11830,7 +11832,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ...next,
         ...(progress || {}),
         updatedAt: now,
-        ...(progressChanged ? {
+        ...(progressChanged && !restoresProgress ? {
           progressSource: 'project_manager' as const,
           progressConfirmedAt: now,
           progressConfirmedBy: displayName.trim() || 'Project manager',
@@ -13394,10 +13396,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (!talkTaskAction?.selectedTaskId) return;
     const task = talkTaskAction.candidates.find(item => item.id === talkTaskAction.selectedTaskId);
     if (!task) return;
-    const previous = {
-      status: task.status as ScheduleStatus,
-      percentComplete: task.percentComplete,
-    };
+    const previous = scheduleProgressUndoPoint(scheduleItemsCurrentRef.current.find(item => item.id === task.id) ?? task as unknown as ScheduleItem); // with who stated it, given back by Undo (A10 pass 5 L3)
     const changes = talkTaskAction.command.changes as Partial<ScheduleItem>;
     updateScheduleItem(task.id, changes);
     const successMessage = `${task.taskName}: ${talkTaskAction.command.changeSummary}.`;
@@ -13406,7 +13405,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       {
         text: 'Undo',
         style: 'cancel',
-        onPress: () => updateScheduleItem(task.id, previous),
+        onPress: () => updateScheduleItem(task.id, scheduleProgressRestored(previous, new Date().toISOString()), undefined, true),
       },
       { text: 'Done' },
     ]);

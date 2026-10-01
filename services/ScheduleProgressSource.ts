@@ -48,3 +48,64 @@ export function scheduleProgressJudgedAt(
     ? judgment.judgedAt
     : confirmedAt;
 }
+
+/**
+ * A task's progress and who stated it, noted before Talk changes it (whole-app
+ * audit A10 pass 5 L3, 30 Sep 2026).
+ */
+export type ScheduleProgressUndoPoint = Readonly<Pick<ScheduleItem,
+  | 'status'
+  | 'percentComplete'
+  | 'progressSource'
+  | 'progressConfirmedBy'
+  | 'progressConfirmedAt'
+  | 'progressJudgment'
+  | 'completionVerification'
+  | 'lookaheadOverlay'
+>>;
+
+/**
+ * Whole-app audit A10 pass 5 L3 (30 Sep 2026): Talk's Undo put back only the
+ * status and percent, through the task update that marks every progress
+ * change as the manager's, so the file's 30% came back as "project manager
+ * judgment" and a later master could no longer lower it. Talk notes this
+ * before its change, and Undo gives it back (scheduleProgressRestored).
+ */
+export function scheduleProgressUndoPoint(task: ScheduleItem): ScheduleProgressUndoPoint {
+  return {
+    status: task.status,
+    percentComplete: task.percentComplete,
+    progressSource: task.progressSource ?? null,
+    progressConfirmedBy: task.progressConfirmedBy ?? null,
+    progressConfirmedAt: task.progressConfirmedAt ?? null,
+    progressJudgment: task.progressJudgment ?? undefined,
+    completionVerification: task.completionVerification ?? null,
+    lookaheadOverlay: task.lookaheadOverlay ?? undefined,
+  };
+}
+
+/**
+ * What Undo puts back (A10 pass 5 L3), as deleting a lookahead gives back
+ * the percent before it (ScheduleLookahead): the percent, status, who stated
+ * it, the completion record and the lookahead note. A manager-ranked percent
+ * is confirmed again at the Undo, so every device takes it back
+ * (DAVEScheduleRecovery keeps the newer confirmation), and the manager's own
+ * keeps when the manager judged it (progressJudgment, A10 pass 5 L1); a
+ * file's keeps its own time. Never marked as the manager's by the Undo.
+ */
+export function scheduleProgressRestored(point: ScheduleProgressUndoPoint, at: string): Partial<ScheduleItem> {
+  const managerRanked = point.progressSource === 'project_manager';
+  const judgedAt = managerRanked && point.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER
+    ? scheduleProgressJudgedAt(point)
+    : null;
+  return {
+    status: point.status,
+    percentComplete: point.percentComplete,
+    progressSource: point.progressSource ?? null,
+    progressConfirmedBy: point.progressConfirmedBy ?? null,
+    progressConfirmedAt: managerRanked ? at : point.progressConfirmedAt ?? null,
+    progressJudgment: judgedAt && judgedAt !== at ? { judgedAt, givenBackAt: at } : undefined,
+    completionVerification: point.completionVerification ?? null,
+    lookaheadOverlay: point.lookaheadOverlay ?? undefined,
+  };
+}
