@@ -518,17 +518,23 @@ export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
  * audit A6 pass 8 M2, 30 Sep 2026), paired as the schedule import pairs a
  * revised row with the saved task (ScheduleImportMerge pairTaskRevisions):
  * by project, task name and area, where a task the previous report had with
- * no area matches any area. Same-named tasks pair in finish-date order, and
- * only when there are as many of them before as now and no earlier task
- * could be either of two; otherwise they stay added and removed.
+ * no area matches any area. Same-named tasks pair only when there are as
+ * many of them before as now and no earlier task could be either of two;
+ * otherwise they stay added and removed.
  *
  * Whole-app audit A6 pass 9 L1 (30 Sep 2026): finish order alone is not
  * enough. Two inspections whose finish order the revision swapped were
  * cross-paired: "+0 completed" yet "Inspection was completed." and "…was
  * reopened", owners swapped. The import pairs them in file order and keeps no
- * record of it on the new row, so same-named tasks pair in finish order only
- * when each pair also has the same status, completion and owner; otherwise
- * which is which cannot be told and they stay added and removed.
+ * record of it on the new row.
+ *
+ * Whole-app audit A6 pass 10 L1 (30 Sep 2026): pass 9 then paired them only
+ * when every pair in finish order had the same status, completion and owner,
+ * so Dana's and Eli's inspections, both moved and Dana's completed, read as
+ * two added and two removed and the completion was never named. Same-named
+ * tasks now pair the way with the fewest status, completion and owner
+ * differences (`pairByStanding`); only a tie between ways that would say
+ * different things leaves them added and removed.
  */
 function pairRevisedTasks(
   previous: readonly DAVEReportSnapshotTask[],
@@ -550,19 +556,74 @@ function pairRevisedTasks(
   candidates
     .filter(({ rows, earlier }) => rows.length === earlier.length && earlier.every(task => groupCount.get(task) === 1))
     .forEach(({ rows, earlier }) => {
-      const earlierInOrder = inFinishOrder(earlier);
-      const rowsInOrder = inFinishOrder(rows);
-      if (rows.length > 1 && !rowsInOrder.every((task, index) => sameStanding(earlierInOrder[index], task))) return;
-      rowsInOrder.forEach((task, index) => pairs.set(task, earlierInOrder[index]));
+      const order = pairByStanding(inFinishOrder(earlier), inFinishOrder(rows));
+      order?.forEach(([prior, task]) => pairs.set(task, prior));
     });
   return pairs;
 }
 
-/** The same status, completion and owner: what tells same-named tasks apart (A6 pass 9 L1). */
-function sameStanding(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): boolean {
-  return normalized(earlier.status) === normalized(now.status) &&
-    snapshotTaskIsComplete(earlier) === snapshotTaskIsComplete(now) &&
-    normalized(earlier.owner) === normalized(now.owner);
+/** Above this many same-named tasks the ways to pair them are not tried; they pair only when finish order agrees. */
+const MOST_SAME_NAMED_TO_PAIR = 6;
+
+/**
+ * How same-named tasks pair (A6 pass 10 L1): the way with the fewest status,
+ * completion and owner differences. Several ways tie when the tasks cannot be
+ * told apart; when every tied way says the same about status, completion and
+ * owner (two of Dana's inspections, one completed), finish order picks one,
+ * and otherwise (both reassigned, to whom unknown) none: null. Both lists are
+ * in finish order and the same length.
+ */
+function pairByStanding(
+  earlier: readonly DAVEReportSnapshotTask[],
+  now: readonly DAVEReportSnapshotTask[],
+): [DAVEReportSnapshotTask, DAVEReportSnapshotTask][] | null {
+  const inOrder = now.map((task, index) => [earlier[index], task] as [DAVEReportSnapshotTask, DAVEReportSnapshotTask]);
+  if (now.length === 1) return inOrder;
+  if (now.length > MOST_SAME_NAMED_TO_PAIR) {
+    return inOrder.every(([prior, task]) => standingDifferences(prior, task) === 0) ? inOrder : null;
+  }
+  let best: { pairs: [DAVEReportSnapshotTask, DAVEReportSnapshotTask][]; cost: number; said: string } | null = null;
+  let tiedSayingOtherwise = false;
+  // Finish order first, so it is the one kept among ways that say the same.
+  for (const order of orderings(now.length)) {
+    const pairs = order.map((nowIndex, index) => [earlier[index], now[nowIndex]] as [DAVEReportSnapshotTask, DAVEReportSnapshotTask]);
+    const cost = pairs.reduce((total, [prior, task]) => total + standingDifferences(prior, task), 0);
+    if (best && cost > best.cost) continue;
+    const said = pairs.map(([prior, task]) => standingChange(prior, task)).sort().join('\n');
+    if (!best || cost < best.cost) {
+      best = { pairs, cost, said };
+      tiedSayingOtherwise = false;
+    } else if (said !== best.said) {
+      tiedSayingOtherwise = true;
+    }
+  }
+  return best && !tiedSayingOtherwise ? best.pairs : null;
+}
+
+/** How many of status, completion and owner differ: what tells same-named tasks apart (A6 pass 9 L1). */
+function standingDifferences(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): number {
+  return Number(normalized(earlier.status) !== normalized(now.status)) +
+    Number(snapshotTaskIsComplete(earlier) !== snapshotTaskIsComplete(now)) +
+    Number(normalized(earlier.owner) !== normalized(now.owner));
+}
+
+/** What a pairing says about one task's status, completion and owner. */
+function standingChange(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): string {
+  return JSON.stringify([
+    normalized(earlier.status), snapshotTaskIsComplete(earlier), normalized(earlier.owner),
+    normalized(now.status), snapshotTaskIsComplete(now), normalized(now.owner),
+  ]);
+}
+
+/** Every order of 0…count-1, the identity first. */
+function orderings(count: number): number[][] {
+  if (count <= 1) return [Array.from({ length: count }, (_, index) => index)];
+  return orderings(count - 1).flatMap(order =>
+    Array.from({ length: count }, (_, at) => [...order.slice(0, at), count - 1, ...order.slice(at)]))
+    .sort((left, right) => {
+      const differs = left.findIndex((value, index) => value !== right[index]);
+      return differs < 0 ? 0 : left[differs] - right[differs];
+    });
 }
 
 function sameRevisedTask(earlier: DAVEReportSnapshotTask, now: DAVEReportSnapshotTask): boolean {

@@ -216,7 +216,14 @@ describe('L1: same-named tasks whose finish order swapped are not cross-paired',
     expect(kinds).not.toContain('completed');
     expect(kinds).not.toContain('reopened');
     expect(kinds).not.toContain('owner');
-    expect([...kinds].sort()).toEqual(['added', 'added', 'removed', 'removed']);
+    // Pinned on purpose, changed by A6 pass 10 L1: this pair used to be said
+    // as two added and two removed; the owners now tell them apart (the only
+    // way with no status, completion or owner difference), so each reads as
+    // its own finish change.
+    expect(comparison.changes.map(change => change.summary)).toEqual([
+      'Inspection finish changed from 2026-10-01 to 2026-11-05.',
+      'Inspection finish changed from 2026-11-01 to 2026-10-05.',
+    ]);
   });
 
   it('the same through the real import merge, in both report formats', () => {
