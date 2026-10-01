@@ -356,6 +356,7 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     'Any open items 2375?',
     'Open RFIs 2375?',
     'Copy submittal 14 to 2375?',
+    'Copy submittals 14 and 15 to 2375?',
     'Compare level 2 to 2375',
     'Did RFI 12 and 2375 close?',
     'Was permit 2375 issued?',
