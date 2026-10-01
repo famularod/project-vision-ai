@@ -4413,3 +4413,40 @@ describe('a document upload finishing during Keep Cloud does not send the discar
     expect(await getSyncConflicts()).toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 20 M1 (caused by 5576863): "Send your version?"
+ * sent the card as it was at Send. A refresh or the iPad's echo that landed
+ * while the question was up had put the iPad's copy on the card (A4 pass 12
+ * L3), so Send sent the iPad's copy over the conflict: the conflict closed
+ * and David's edit was gone everywhere. Over a conflict, a card that no
+ * longer owes its own sync is not David's version: the one he chose goes up.
+ */
+describe('"Send your version?" sends David\'s version after a refresh put the iPad\'s copy on the card (audit A4 pass 20 M1)', () => {
+  it.each(['a refresh', 'the iPad saving again'])('%s while the question is up', async (what) => {
+    const phone = await sentThroughTheApp([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    const cardWhenAsked = phone.saved()!; // the render the question opened on
+    if (what === 'the iPad saving again') {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await iPadEditsNow('Pour moved to Wednesday (typed on the iPad)');
+    }
+    await refresh(phone);
+    phone.render();
+    expect(phone.saved()?.notes).not.toBe(RETRY_SYNC_OFFLINE_EDIT); // the cloud's copy is on the card
+    await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true });
+    phone.render();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+});

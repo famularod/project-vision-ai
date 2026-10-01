@@ -8006,10 +8006,14 @@ useEffect(() => {
   // The App's card as it is now (whole-app audit A4 pass 19 L1), not the copy
   // a screen read earlier: that wrote over a photo analysis landed since. Only
   // the archive Settings puts on after Keep Phone kept one comes from `given`.
+  // Over a conflict, a card that no longer owes its own sync is the cloud's
+  // copy a refresh or echo put there, not David's version (A4 pass 20 M1).
   async function retryQueuedUpdate(given: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
     const current = savedUpdatesRef.current.find(item => item.id === given.id);
-    const update: ProjectUpdate = !current ? given : given.isArchived && !current.isArchived
-      ? { ...current, isArchived: true, archivedAt: given.archivedAt ?? null } : current;
+    const base = !current || (sync.overConflict && current.status !== 'queued' && current.status !== 'failed') ? given : current;
+    const archived = [given, current].find(copy => copy?.isArchived); // nothing un-archives an update
+    const update: ProjectUpdate = archived && !base.isArchived
+      ? { ...base, isArchived: true, archivedAt: archived.archivedAt ?? null } : base;
     const now = new Date().toISOString();
     const retryUpdate: ProjectUpdate = {
       ...update,
