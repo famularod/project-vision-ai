@@ -10,6 +10,7 @@ import {
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import {
+  scheduleFileProgressAboveManagers,
   scheduleRowRepeatsMasterBeforeLookahead,
   scheduleTaskMasterRestated,
   scheduleTaskRestatedByLookahead,
@@ -73,6 +74,13 @@ import {
  * the master's rows name one, pairs with the one same-named task of its
  * project, never with either of two (M1). Dates compare by calendar day, so
  * 2026-10-05 (web) and 10/05/2026 (files) are the same day (A12 M2).
+ *
+ * Whole-app audit A5 pass 6 M2 / A10 pass 4 M1 (30 Sep 2026): master 20%,
+ * David 40% by hand, a lookahead 60%; the next master repeating 20% took the
+ * task to 20%, below David's. A task a lookahead restated now takes no
+ * file's percent below the manager's own percent its note shows
+ * (scheduleFileProgressAboveManagers), and a master row the manager's
+ * percent stood over is a repeat (ScheduleLookahead).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -371,7 +379,7 @@ export function mergeApprovedScheduleImportItems({
       claimed.add(target.id);
       const batchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
       if (batchId && scheduleItemImportBatchIds(target).map(key).includes(key(batchId))) return;
-      const fileProgress = fileProgressFor(target, importedItem, approvedAt);
+      const fileProgress = scheduleFileProgressAboveManagers(target, fileProgressFor(target, importedItem, approvedAt), approvedAt);
       // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1).
       const givenPercent = fileProgress ? Math.min(100, Math.max(0, Number(importedItem.percentComplete) || 0)) : null;
       next = next.map(item => item.id === target.id
@@ -396,8 +404,9 @@ export function mergeApprovedScheduleImportItems({
       // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
       if (newBatchId && batches.includes(key(newBatchId))) return;
       const rehome = owned && Boolean(newBatchId);
-      const fileProgress = repeated.percent ? null : fileProgressFor(duplicate, importedItem, approvedAt);
-      const restated = scheduleTaskMasterRestated(duplicate, importedItem);
+      const fileProgress = repeated.percent ? null
+        : scheduleFileProgressAboveManagers(duplicate, fileProgressFor(duplicate, importedItem, approvedAt), approvedAt);
+      const restated = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
       if (rehome || fileProgress || restated !== duplicate) {
         next = next.map(item => item.id === duplicate.id
           ? {
@@ -427,10 +436,18 @@ export function mergeApprovedScheduleImportItems({
         contractor: kept(importedItem.contractor, paired.contractor),
         notes: kept(importedItem.notes, paired.notes),
       };
-      // The manager's progress, unless the file's is higher or the saved progress was a file's (A5 pass 4 #1).
-      if (fileProgressFor(paired, importedItem, approvedAt)) {
+      // The manager's progress, unless the file's is higher or the saved progress was a file's (A5 pass 4 #1),
+      // never below the manager's own percent a lookahead's note shows (A5 pass 6 M2).
+      const fileProgress = fileProgressFor(paired, importedItem, approvedAt);
+      const floored = scheduleFileProgressAboveManagers(paired, fileProgress, approvedAt);
+      if (fileProgress && floored === fileProgress) {
         additions.push(filled);
         fileProgressIds.push(importedItem.id);
+        return;
+      }
+      if (floored) {
+        additions.push({ ...filled, ...floored, completionVerification: paired.completionVerification ?? null });
+        carriedProgressIds.push(importedItem.id);
         return;
       }
       additions.push({

@@ -728,6 +728,22 @@ export type ScheduleLookaheadOverlay = {
   masterFinishDate: string;
   masterPercentComplete: number;
   /**
+   * Who stated masterPercentComplete (whole-app audit A5 pass 6 M2, 30 Sep
+   * 2026): the task's progress source and confirmer, and when, before the
+   * first lookahead; put back with the percent when deleting the lookaheads
+   * gives it back. Missing on a task restated before.
+   */
+  masterProgressSource?: 'project_manager' | 'schedule_import' | null;
+  masterProgressConfirmedBy?: string | null;
+  masterProgressConfirmedAt?: string | null;
+  /**
+   * The percent the master schedule file itself last stated for the task,
+   * which the manager's own percent may stand over (A5 pass 6 M2): null when
+   * no master file has stated one since the manager's. Missing on a task
+   * restated before, whose masterPercentComplete was the file's.
+   */
+  masterFilePercentComplete?: number | null;
+  /**
    * Each lookahead import that restated the task, oldest first, with the
    * dates it gave and the percent it gave (null: it left progress alone;
    * missing: approved before 30 Sep 2026 audit A5 pass 5 H1, not noted).
