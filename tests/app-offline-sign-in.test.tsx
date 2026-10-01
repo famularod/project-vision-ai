@@ -135,16 +135,19 @@ jest.mock('../App', () => {
 // 'hang': requests get no answer until released (a captive portal).
 // 'token503': signal, and the auth server's health answers, but its token
 // endpoint answers 503 (an auth-server outage, A1 pass 4 L2).
-type Mode = 'offline' | 'reject' | 'online' | 'hang' | 'token503';
+// 'tokenHang': signal, and the health check answers, but a sign-in refresh
+// gets no answer until released (A1 pass 5 L2).
+type Mode = 'offline' | 'reject' | 'online' | 'hang' | 'token503' | 'tokenHang';
 const network = {
   mode: 'offline' as Mode,
   calls: [] as string[],
-  hung: [] as (() => void)[],
+  /** Each releases one unanswered request: as the mode then says, or failing ('fail'). */
+  hung: [] as ((outcome?: 'fail') => void)[],
   /** The server's clock, when a test sets the phone's clock wrong (A1 pass 4 L3); else the phone's. */
   serverClock: null as (() => number) | null,
 };
-function releaseHungRequests() {
-  network.hung.splice(0).forEach(release => release());
+function releaseHungRequests(outcome?: 'fail') {
+  network.hung.splice(0).forEach(release => release(outcome));
 }
 const HOUR = 3600;
 const userFor = (id: string) => ({
@@ -157,7 +160,11 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 (global as { fetch?: unknown }).fetch = jest.fn(async (input: unknown, init?: { method?: string; body?: string }) => {
   const url = new URL(String(typeof input === 'string' ? input : (input as { url: string }).url));
   network.calls.push(`${init?.method || 'GET'} ${url.pathname}${url.search}`);
-  if (network.mode === 'hang') await new Promise<void>(resolve => { network.hung.push(resolve); });
+  if (network.mode === 'hang' || (network.mode === 'tokenHang' && url.pathname === '/auth/v1/token')) {
+    const released = await new Promise<'fail' | undefined>(resolve => { network.hung.push(resolve); });
+    // The request that was out ends without an answer (A1 pass 5 L2).
+    if (released === 'fail') throw new TypeError('Network request failed');
+  }
   if (network.mode === 'offline') throw new TypeError('Network request failed');
   // The auth server's health check: the signal check of A1 pass 3 L1.
   if (url.pathname === '/auth/v1/health') return json(200, { name: 'GoTrue' });
@@ -1650,6 +1657,10 @@ describe('A1 pass 4 review', () => {
  * opened the workspace fully signed in with the clock set back into the
  * saved token's last hour: the failed-lookup path took the sign-in as valid
  * without the clock check.
+ * L2: a refresh the "signal is back" wait sent, out while David was in
+ * another app and failing on his return, ended Sign Out of All Devices with
+ * "needs signal" although there was signal: auth-js had used its 30 s of
+ * retries by the wall clock while he was away.
  */
 describe('A1 pass 5 review', () => {
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1666,6 +1677,12 @@ describe('A1 pass 5 review', () => {
       idle = mockSleepingRetries.size === 0 ? idle + 1 : 0;
     }
     expect(mockSleepingRetries.size).toBe(0);
+  }
+  function appStateListeners(): ((state: string) => void)[] {
+    const { AppState } = require('react-native');
+    return (AppState.addEventListener as jest.Mock).mock.calls
+      .filter(([type]) => type === 'change')
+      .map(([, listener]) => listener as (state: string) => void);
   }
   /** As in pass 4: opened offline (the time seen is kept), then the clock set back two days into the token's last hour. */
   async function openedOfflineThenClockSetBack() {
@@ -1722,5 +1739,104 @@ describe('A1 pass 5 review', () => {
     expect(mockSecureReadDelays).toEqual([]);
     expect(network.calls.filter(call => call.startsWith('POST /auth/v1/token'))).toEqual([]);
     screen.unmount();
+  });
+
+  test('L2 Sign Out of All Devices, the refresh it sent still out when he leaves for two minutes, failing on return with signal: asked again, every device signed out', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    const clock = jest.spyOn(Date, 'now');
+    const titles = () => alerts.shown.map(alert => alert.title);
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      // auth-js's minute of answering from that failure is over. There is
+      // signal, but the refresh request now sent goes unanswered for a while.
+      clock.mockImplementation(() => realNow() + 61_000);
+      network.mode = 'tokenHang';
+      const from = network.calls.length;
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(titles()).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(authCalls(from)).toEqual([HEALTH, REFRESH]), OPEN);
+      await rtl.waitFor(() => expect(network.hung.length).toBe(1), OPEN);
+
+      // Another app for two minutes, the request still out (iOS suspends this one).
+      clock.mockImplementation(() => realNow() + 61_000 + 2 * 60_000);
+      await rtl.act(async () => {
+        appStateListeners().forEach(listener => listener('background'));
+        await pause(2_500);
+      });
+      expect(titles()).toEqual(['Sign Out']);
+
+      // Back, with signal: the request that was out fails. auth-js does not
+      // retry it (its 30 s went by on the wall clock while he was away).
+      network.mode = 'online';
+      await rtl.act(async () => {
+        releaseHungRequests('fail');
+        appStateListeners().forEach(listener => listener('active'));
+        await pause(1_500);
+      });
+      // Before: "Other devices not signed out — Signing out your other
+      // devices needs signal…", with signal there, after seconds in the app.
+      expect(titles()).toEqual(['Sign Out']);
+      // Signal is checked again; auth-js answers from that failure for its minute.
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH, HEALTH]);
+
+      clock.mockImplementation(() => realNow() + 61_000 + 2 * 60_000 + 61_000);
+      await rtl.waitFor(() => expect(titles()).toEqual(['Sign Out', 'Signed out of all devices']), { timeout: 15_000 });
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH, HEALTH, REFRESH, 'POST /auth/v1/logout?scope=global']);
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    } finally {
+      clock.mockRestore();
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L2 the same with no signal on return: nothing is signed out, and it says so (owner answer Q21)', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    const clock = jest.spyOn(Date, 'now');
+    const titles = () => alerts.shown.map(alert => alert.title);
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      clock.mockImplementation(() => realNow() + 61_000);
+      network.mode = 'tokenHang';
+      const from = network.calls.length;
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(titles()).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(network.hung.length).toBe(1), OPEN);
+      clock.mockImplementation(() => realNow() + 61_000 + 2 * 60_000);
+      await rtl.act(async () => {
+        appStateListeners().forEach(listener => listener('background'));
+        await pause(500);
+      });
+
+      network.mode = 'offline';
+      await rtl.act(async () => {
+        releaseHungRequests('fail');
+        appStateListeners().forEach(listener => listener('active'));
+        await pause(50);
+      });
+      await rtl.waitFor(() => expect(titles()).toEqual(['Sign Out', 'Other devices not signed out']), OPEN);
+      expect(alerts.shown[1].message).toMatch(/^Signing out your other devices needs signal/);
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH, HEALTH]);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy();
+    } finally {
+      clock.mockRestore();
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
   });
 });

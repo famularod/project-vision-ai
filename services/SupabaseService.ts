@@ -414,6 +414,13 @@ const SENT_REFRESH_GRACE_MS = 5_000;
  * Unknown at launch counts as the foreground.
  */
 let appInForeground = !['background', 'inactive'].includes(String(AppState.currentState));
+/**
+ * Whole-app audit A1 pass 5 L2: how many times the app has left the
+ * foreground. A refresh request out while it did can fail on return for that
+ * alone: auth-js does not retry it, its 30 seconds of retries having passed
+ * on the wall clock meanwhile. That failure is no evidence of no signal.
+ */
+let appLeftForegroundCount = 0;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -740,6 +747,9 @@ function savedSignInServerRefreshOutcome(client: SupabaseClient): Promise<SavedS
  * answer, the wait (SIGNAL_BACK_REFRESH_WAIT_MS of foreground time, A1 pass 4
  * L1) ran out, or nobody waits. In the background it pauses: on return the
  * sign-in is asked again, and a refresh that finished meanwhile is the answer.
+ * A request sent that got no answer while the app was away is not taken for
+ * no signal: signal is checked again, and with it the sign-in is asked again
+ * (A1 pass 5 L2).
  */
 async function savedSignInRefreshWithSignal(
   client: SupabaseClient,
@@ -749,6 +759,7 @@ async function savedSignInRefreshWithSignal(
   const wait: ForegroundWait = { foregroundMs: 0, stillWanted };
   for (;;) {
     const sentBefore = signInRefreshRequestsSent;
+    const leftForegroundBefore = appLeftForegroundCount;
     // A 5xx ends the wait at once: no "Signal is back" past it (A1 pass 4 L2).
     const asked = untilServerNotAnswering(ask());
     let outcome = await beforeForegroundWaitOver(asked, wait);
@@ -757,7 +768,17 @@ async function savedSignInRefreshWithSignal(
       outcome = await beforeDeadline(asked, Date.now() + SENT_REFRESH_GRACE_MS, null);
     }
     if (!outcome) return UNANSWERED_REFRESH;
-    if (outcome.status !== 'network_unavailable' || signInRefreshRequestsSent > sentBefore) return outcome;
+    if (outcome.status !== 'network_unavailable') return outcome;
+    if (signInRefreshRequestsSent > sentBefore) {
+      // A1 pass 5 L2: the app left the foreground while the request was out.
+      // With signal, the sign-in is asked again, and the wait starts over:
+      // auth-js's minute after that failure, then its retries, come again.
+      if (appLeftForegroundCount === leftForegroundBefore || !(await signalCheckedInForeground(wait))) {
+        return outcome;
+      }
+      wait.foregroundMs = 0;
+      continue;
+    }
     // Nothing was sent: auth-js answered from its last failure. Wait out its
     // cooldown, or until a refresh of its own (its timer) goes out; in the
     // background, until the app is back.
@@ -770,6 +791,18 @@ async function savedSignInRefreshWithSignal(
         signInRefreshRequestsSent === sentBefore)
     );
   }
+}
+
+/**
+ * Whether there is signal, asked once the app is in the foreground (nothing
+ * is asked in the background); false once nobody waits (A1 pass 5 L2).
+ */
+async function signalCheckedInForeground(wait: ForegroundWait): Promise<boolean> {
+  while (!appInForeground) {
+    if (!wait.stillWanted()) return false;
+    await foregroundPoll(wait);
+  }
+  return wait.stillWanted() && (await authServerReachable()) && wait.stillWanted();
 }
 
 /** `work`'s answer, or 'server_unavailable' at the next 5xx a refresh request gets (A1 pass 4 L2). */
@@ -3534,6 +3567,7 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
   }
 
   AppState.addEventListener('change', state => {
+    if (appInForeground && state !== 'active') appLeftForegroundCount += 1;
     appInForeground = state === 'active';
     if (state === 'active') {
       client.auth.startAutoRefresh();
