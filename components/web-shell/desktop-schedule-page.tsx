@@ -15,6 +15,7 @@ import {
   createDAVEWebTaskId,
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
   daveWebNewTaskProjectId,
+  daveWebPercentFromBox,
   daveWebScheduleDateForSave,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -143,7 +144,10 @@ export function DesktopSchedulePage({
         ),
         isMilestone: editor.kind === 'milestone',
         status: editor.status,
-        percentComplete: numberOrZero(editor.percentComplete),
+        // A blank box keeps the stored percent, as Save does (A12 pass 5 L1).
+        percentComplete: editor.percentComplete.trim()
+          ? numberOrZero(editor.percentComplete)
+          : editingTask.percentComplete,
       },
     });
   }, [editingTask, editor, tasks]);
@@ -205,10 +209,11 @@ export function DesktopSchedulePage({
         message: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
       };
     }
-    const percentComplete = Number(form.percentComplete);
-    if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-      return { ok: false, message: 'Percent complete must be from 0 to 100.' };
-    }
+    // An emptied box keeps the percent the item was opened with, and so its
+    // source; it had saved 0% as his judgment (whole-app audit A12 pass 5 L1).
+    const percent = daveWebPercentFromBox(form.percentComplete, opened?.percentComplete);
+    if (!percent.ok) return percent;
+    const percentComplete = percent.percentComplete;
     const startDate = form.startDate.trim();
     const finishDate = form.kind === 'milestone'
       ? startDate

@@ -128,6 +128,37 @@ function projectIdentityKey(value: string | null | undefined): string {
   return (value || '').trim().toLocaleLowerCase('en-US');
 }
 
+/** Why a web form's Percent complete box cannot be saved. */
+export const DAVE_WEB_PERCENT_RANGE_TEXT = 'Enter a percent from 0 to 100.';
+
+/**
+ * The percent a web form's Percent complete box saves (whole-app audit A12
+ * pass 5 L1, 30 Sep 2026). An emptied box had saved 0% (Number('') is 0)
+ * marked as the project manager's judgment. A blank box now leaves the
+ * percent as it was: `stored` (the version the form was opened on), so its
+ * source and confirmer are kept too; a new item's form starts at 0. Only a
+ * typed number from 0 to 100 changes it ("40" or "40%"); anything else is
+ * refused.
+ */
+export function daveWebPercentFromBox(
+  value: string,
+  stored: number | null | undefined,
+): Readonly<{ ok: true; percentComplete: number }> | Readonly<{ ok: false; message: string }> {
+  const text = value.trim();
+  if (!text) {
+    return {
+      ok: true,
+      percentComplete: typeof stored === 'number' && Number.isFinite(stored) ? stored : 0,
+    };
+  }
+  const match = /^(\d+(?:\.\d+)?)\s*%?$/.exec(text);
+  const percentComplete = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
+    return { ok: false, message: DAVE_WEB_PERCENT_RANGE_TEXT };
+  }
+  return { ok: true, percentComplete };
+}
+
 export class DAVEWebTaskValidationError extends Error {
   constructor(message: string) {
     super(message);

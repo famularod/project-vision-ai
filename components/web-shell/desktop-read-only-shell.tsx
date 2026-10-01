@@ -42,6 +42,7 @@ import {
   DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
   daveWebNewTaskProjectId,
+  daveWebPercentFromBox,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
@@ -2040,18 +2041,19 @@ function taskEditorDraftForSave(
   task: DAVEWebScheduleItem | null,
   workflowAction?: 'close' | 'reopen',
 ): Readonly<{ ok: true; draft: DAVEWebTaskDraft }> | Readonly<{ ok: false; message: string }> {
+  // An emptied box keeps the percent the task was opened with, and so its
+  // source; it had saved 0% as his judgment (whole-app audit A12 pass 5 L1).
+  const percent = daveWebPercentFromBox(form.percentComplete, task?.percentComplete);
+  if (!percent.ok) return percent;
+  const percentComplete = percent.percentComplete;
   if (workflowAction) {
     return {
       ok: true,
-      draft: { ...form, percentComplete: Number(form.percentComplete), workflowAction },
+      draft: { ...form, percentComplete, workflowAction },
     };
   }
   const structuredWorkflow = form.itemType !== 'Task';
   const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
-  const percentComplete = Number(form.percentComplete);
-  if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-    return { ok: false, message: 'Percent complete must be a number from 0 to 100.' };
-  }
   if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
     return {
       ok: false,
@@ -2121,9 +2123,9 @@ function TaskEditor({
   const structuredStatusOptions: readonly ScheduleStatus[] = workflowClosed
     ? ['Complete']
     : ['Not Started', 'In Progress', 'Waiting'];
-  const parsedPercentComplete = Number(draft.percentComplete);
+  const percentFromBox = daveWebPercentFromBox(draft.percentComplete, task?.percentComplete);
   const derivedTaskStatus = automaticTaskStatus(
-    Number.isFinite(parsedPercentComplete) ? parsedPercentComplete : 0,
+    percentFromBox.ok ? percentFromBox.percentComplete : 0,
   );
   const taskStatusOptions = Array.from(new Set<ScheduleStatus>([
     derivedTaskStatus,
@@ -2138,7 +2140,16 @@ function TaskEditor({
     const normalizedValue = value.replace(/[^0-9]/g, '').slice(0, 3);
     setDraft(previous => {
       if (!normalizedValue) {
-        return { ...previous, percentComplete: '' };
+        // Blank keeps the stored percent (A12 pass 5 L1); the status shown
+        // follows it, as the save will.
+        const storedPercent = task?.percentComplete ?? 0;
+        return {
+          ...previous,
+          percentComplete: '',
+          status: previous.status === 'Waiting' && storedPercent < 100
+            ? 'Waiting'
+            : automaticTaskStatus(storedPercent),
+        };
       }
       const percentComplete = Number(normalizedValue);
       if (!Number.isFinite(percentComplete)) {
