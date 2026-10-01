@@ -205,7 +205,7 @@ describe('a revised schedule with an inserted task keeps the manager’s progres
   });
 });
 
-describe('same-named tasks pair in file order and never by ID', () => {
+describe('same-named tasks pair by their days, then the one left (A5 pass 17 M2), and never by ID', () => {
   const QI = (start: string): Row => ['Quality inspection', 1, start, start];
   const V1_QI: Row[] = [
     ['ALPHA TOWER', 0, '8/3/26', '9/25/26'],
@@ -220,13 +220,28 @@ describe('same-named tasks pair in file order and never by ID', () => {
   const moved = (rows: readonly Row[]) => rows.map(row => row[0] === 'Quality inspection'
     ? QI(row[2] === '8/10/26' ? '8/12/26' : '8/26/26') : row);
 
-  it('two inspections moved by a revision with an inserted row each keep their own progress', () => {
+  // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): this asserted that two inspections
+  // the revision both moved took their own progress by file order. Same-named tasks now pair by their
+  // calendar days first and, of the rest, only the one left with the one left: by order alone a CSV sorted
+  // by start date gave one twin's progress to the other. With both moved, neither pairs; each comes in as
+  // the file has it, and David's percents stay on the hidden rows rather than risk landing on the other.
+  it('two inspections both moved by a revision with an inserted row pair with neither', () => {
     // Saved order is not file order; the pairing reads the file rows.
     const stored = { ...v1, items: [...v1.items].reverse() };
     const { merged, state } = approve(stored, prepare(moved(withInsert(V1_QI, 'Pour footings', ['Strip forms', 1, '8/8/26', '8/8/26'])), 'v2', '2026-08-15T12:00:00.000Z'));
-    expect(merged.carriedProgressIds).toHaveLength(2);
+    expect(merged.carriedProgressIds).toEqual([]);
+    expect([shown(state, 'Quality inspection', 0), shown(state, 'Quality inspection', 1)].map(item => [item.finishDate, item.percentComplete]))
+      .toEqual([['08/12/2026', 0], ['08/26/2026', 0]]);
+  });
+
+  it('one of two inspections moved by a revision with an inserted row: each keeps its own progress', () => {
+    const stored = { ...v1, items: [...v1.items].reverse() };
+    const oneMoved = withInsert(V1_QI, 'Pour footings', ['Strip forms', 1, '8/8/26', '8/8/26'])
+      .map(row => row[0] === 'Quality inspection' && row[2] === '8/24/26' ? QI('8/26/26') : row);
+    const { merged, state } = approve(stored, prepare(oneMoved, 'v2', '2026-08-15T12:00:00.000Z'));
+    expect(merged.carriedProgressIds).toHaveLength(1);
     expect(progressOf(shown(state, 'Quality inspection', 0))).toEqual([100, 'project_manager', 'Inspector A']);
-    expect(shown(state, 'Quality inspection', 0).finishDate).toBe('08/12/2026');
+    expect(shown(state, 'Quality inspection', 0).finishDate).toBe('08/10/2026');
     expect(progressOf(shown(state, 'Quality inspection', 1))).toEqual([25, 'project_manager', 'Inspector B']);
     expect(shown(state, 'Quality inspection', 1).finishDate).toBe('08/26/2026');
   });
@@ -260,11 +275,18 @@ describe('Drywall on Level 1 and Level 2 never swap progress', () => {
   unmapped = manage(unmapped, 'Drywall', { percentComplete: 90 }, 0);
   unmapped = manage(unmapped, 'Drywall', { percentComplete: 10 }, 1);
 
-  it('with no area on either, each keeps its own through an insert', () => {
+  // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): this asserted both Drywall rows,
+  // each with a new finish, took their own progress by file order. With both moved, neither pairs now (see
+  // the inspections above); one moved keeps its own, the other pairing on its same days.
+  it('with no area on either: both moved pair with neither; one moved keeps its own through an insert', () => {
     expect(visible(unmapped).filter(item => item.taskName === 'Drywall').map(item => item.locationName)).toEqual(['', '']);
     const { state } = approve(unmapped, prepare(revised(V1_LEVELS), 'v2', '2026-08-15T12:00:00.000Z'));
     expect([shown(state, 'Drywall', 0), shown(state, 'Drywall', 1)].map(item => [item.finishDate, item.percentComplete]))
-      .toEqual([['08/17/2026', 90], ['08/26/2026', 10]]);
+      .toEqual([['08/17/2026', 0], ['08/26/2026', 0]]);
+    const level2Moved = revised(V1_LEVELS).map(row => row[0] === 'Drywall' && row[2] === '8/10/26' ? ['Drywall', 2, '8/10/26', '8/14/26'] as Row : row);
+    const one = approve(unmapped, prepare(level2Moved, 'v2', '2026-08-15T12:00:00.000Z')).state;
+    expect([shown(one, 'Drywall', 0), shown(one, 'Drywall', 1)].map(item => [item.finishDate, item.percentComplete]))
+      .toEqual([['08/14/2026', 90], ['08/26/2026', 10]]);
   });
 
   it('saved with no area, then revised with both areas known: unchanged rows re-home to their own; moved ones carry nothing', () => {

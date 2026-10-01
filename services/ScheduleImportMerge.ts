@@ -2,7 +2,7 @@ import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
-import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
@@ -117,6 +117,12 @@ import {
  * restated in place on the master's dates, as a task on the same dates and
  * a lookahead's task are: its id, progress (only raised by a file, Q22), who
  * judged it and when, owner and notes stay, and it keeps no import.
+ *
+ * Whole-app audit A5 pass 17 M2 (1 Oct 2026): two same-named tasks in one
+ * area paired by row order alone, so a master that dropped phase 1 gave
+ * David's 80% to the unchanged phase 2. They now pair by calendar days
+ * first, then only the one left with the one left (pairSameNamedTasks);
+ * otherwise neither, for the import, Set Active's and Make Current's carry.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -250,14 +256,59 @@ function inFileOrder(items: readonly ScheduleItem[]): ScheduleItem[] {
     .map(({ item }) => item);
 }
 
+/** A row's start and finish as calendar days (2026-10-05 and 10/05/2026 are one day). */
+function calendarDays(item: Pick<ScheduleItem, 'startDate' | 'finishDate'>): string {
+  return `${scheduleCalendarDayKey(item.startDate)}\n${scheduleCalendarDayKey(item.finishDate)}`;
+}
+
+/**
+ * Same-named rows paired with their saved twins (one project and area), by
+ * calendar days first (whole-app audit A5 pass 17 M2, 1 Oct 2026). Rows had
+ * paired purely in file order, so a revised master that dropped phase 1 of
+ * two Pour slabs paired the unchanged phase 2 with phase 1 (David's 80% went
+ * to phase 2, and phase 2's report to phase 3); a CSV sorted by start date
+ * where phase 1 slipped past phase 2 did the same, as did a lookahead with
+ * one twin rolled off. Now a row pairs first with a saved twin on the same
+ * days (the days it shows, then, for a twin a lookahead restated, the
+ * master's days its note keeps), in file order where several share the
+ * days and only when as many rows as twins share them; then the one row
+ * left with the one twin left. Otherwise none pair: a new row rather than
+ * David's progress on another task.
+ */
+function pairSameNamedTasks(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
+  const pairs = new Map<ScheduleItem, ScheduleItem>();
+  let rowsLeft = inFileOrder(rows);
+  let savedLeft = inFileOrder(saved);
+  const pairOnDays = (daysOf: (item: ScheduleItem) => string | null) => {
+    const twinsOn = new Map<string, ScheduleItem[]>();
+    savedLeft.forEach(item => {
+      const days = daysOf(item);
+      if (days !== null) twinsOn.set(days, [...(twinsOn.get(days) || []), item]);
+    });
+    twinsOn.forEach((twins, days) => {
+      const same = rowsLeft.filter(row => calendarDays(row) === days);
+      if (same.length === twins.length) same.forEach((row, index) => pairs.set(row, twins[index]));
+    });
+    const taken = new Set(pairs.values());
+    rowsLeft = rowsLeft.filter(row => !pairs.has(row));
+    savedLeft = savedLeft.filter(item => !taken.has(item));
+  };
+  pairOnDays(calendarDays);
+  pairOnDays(item => item.lookaheadOverlay
+    ? calendarDays({ startDate: item.lookaheadOverlay.masterStartDate, finishDate: item.lookaheadOverlay.masterFinishDate })
+    : null);
+  if (rowsLeft.length === 1 && savedLeft.length === 1) pairs.set(rowsLeft[0], savedLeft[0]);
+  return pairs;
+}
+
 /**
  * The saved task each imported row revises (whole-app audit A5 pass 3 F3,
  * 30 Sep 2026): among the tasks the manager sees and those this import
- * already saved, by name, project and area. Same-named rows pair in file
- * order, and only when the file and the saved schedule have as many of them
- * and no saved row could be either of two tasks (an empty saved area
- * matches every area); never by ID. A lookahead row with no area or parent
- * project pairs loosely, with a single task only (A5 pass 5 M1).
+ * already saved, by name, project and area; same-named rows by their days,
+ * then the one left (pairSameNamedTasks, A5 pass 17 M2), and only where no
+ * saved row could be either of two tasks (an empty saved area matches every
+ * area); never by ID. A lookahead row with no area or parent project pairs
+ * loosely, with a single task only (A5 pass 5 M1).
  */
 function pairTaskRevisions(
   existing: readonly ScheduleItem[],
@@ -281,12 +332,9 @@ function pairTaskRevisions(
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   candidates
-    .filter(({ rows, saved, vague }) => rows.length === saved.length && (!vague || saved.length === 1) &&
+    .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
       saved.every(item => groupCount.get(item.id) === 1))
-    .forEach(({ rows, saved }) => {
-      const savedInOrder = inFileOrder(saved);
-      inFileOrder(rows).forEach((row, index) => pairs.set(row, savedInOrder[index]));
-    });
+    .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved).forEach((item, row) => pairs.set(row, item)));
   return pairs;
 }
 

@@ -22,7 +22,7 @@
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem, type DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
-import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
   mergeApprovedScheduleImportItems,
@@ -216,5 +216,128 @@ describe('A5 p17 M1 on the web: the upload plan and Make Current show David\'s t
   it('after Make Current, Pour slab shows once at David\'s 40%', () => {
     expect(shownNamed(afterMakeCurrent, 'Pour slab')).toEqual([expect.objectContaining({ id: 'web-hand-pour', percentComplete: 40 })]);
     expect(shown(afterMakeCurrent).map(item => item.taskName).sort()).toEqual(['Framing', 'Pour slab']);
+  });
+});
+
+/**
+ * M2 (older, from edf52a1): two tasks with the same name in one area were
+ * matched purely by row order, even when a twin sat on the same calendar
+ * days. Now, within each same-named group (project and area), a row first
+ * pairs with a saved twin on the same calendar days (start and finish; for a
+ * twin a lookahead restated, also the master's days its note keeps); the
+ * rest pair by order only when exactly one is left on each side; otherwise
+ * they are left unpaired (new rows) rather than move David's progress to
+ * another task. The import, Set Active's and Make Current's carry share it.
+ */
+describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => {
+  const PHASE_1 = 'Pour slab,Alpha,Lot,10/01/2026,10/03/2026,';
+  const PHASE_2 = 'Pour slab,Alpha,Lot,10/08/2026,10/10/2026,';
+  const PHASE_3 = 'Pour slab,Alpha,Lot,10/15/2026,10/17/2026,';
+  const FRAMING = 'Framing,Alpha,Lot,10/20/2026,10/24/2026,';
+  const F = schedule('MASTER F', '2026-09-20T12:00:00.000Z');
+  const G = schedule('MASTER G', '2026-09-26T12:00:00.000Z');
+  const L = { ...schedule('LOOKAHEAD L', '2026-09-28T12:00:00.000Z'), scheduleRole: 'lookahead' } as ReferenceDocument;
+  // Master F has two Pour slabs in Lot; David sets phase 1 to 80%.
+  const onF = record(approve(EMPTY, F, rows(F, [PHASE_1, PHASE_2, FRAMING])).state, 'MASTER F-1', 80, '2026-09-22T15:00:00.000Z');
+  const pours = (state: State) => shownNamed(state, 'Pour slab')
+    .map(item => [item.id, item.startDate, item.percentComplete, item.revisedFromTaskIds ?? []] as const)
+    .sort((left, right) => left[1].localeCompare(right[1]));
+  const link = (state: State, id: string) => scheduleTaskLinks(shown(state), state.items)(report(id))?.item.id ?? null;
+
+  it('A: a revised master drops phase 1, keeps phase 2 on its dates and adds phase 3: phase 2 stays itself', () => {
+    const { state } = approve(onF, G, rows(G, [PHASE_2, PHASE_3, FRAMING]));
+    expect(pours(state)).toEqual([
+      // Phase 2 is F's own row, now in G too, at its own 0%.
+      ['MASTER F-2', '10/08/2026', 0, []],
+      // The one row left pairs with the one twin left (phase 1), as a single task's move would.
+      ['MASTER G-2', '10/15/2026', 80, ['MASTER F-1']],
+    ]);
+    // A report on phase 2 stays on phase 2; one on phase 1 follows the row that replaced it.
+    expect(link(state, 'MASTER F-2')).toBe('MASTER F-2');
+    expect(link(state, 'MASTER F-1')).toBe('MASTER G-2');
+  });
+
+  it('B: a CSV sorted by start date where phase 1 slips past phase 2: phase 2 keeps its 0%, phase 1 keeps David\'s 80%', () => {
+    const { state } = approve(onF, G, rows(G, [PHASE_2, 'Pour slab,Alpha,Lot,10/15/2026,10/17/2026,', FRAMING]));
+    expect(pours(state)).toEqual([
+      ['MASTER F-2', '10/08/2026', 0, []],
+      ['MASTER G-2', '10/15/2026', 80, ['MASTER F-1']],
+    ]);
+  });
+
+  it('C: a lookahead with phase 1 rolled off and one new: phase 1\'s 80% never moves onto phase 2\'s dates', () => {
+    const overlay = mergeApprovedScheduleImportItems({
+      existing: onF.items, imported: rows(L, [PHASE_2, PHASE_3]), completionMatch: () => null, mergeCompletion: item => item,
+      isCurrent: scheduleItemsVisibleBeforeImport(onF.items, [...onF.documents, L], L.importBatchId || ''), approvedAt: L.importedAt, overlay: true,
+    });
+    const state: State = { items: [...overlay.additions, ...overlay.next], documents: [...onF.documents, L] };
+    // Phase 2's own row restates phase 2 (its dates and 0% unchanged).
+    expect(state.items.find(item => item.id === 'MASTER F-2')).toMatchObject({ startDate: '10/08/2026', percentComplete: 0 });
+    expect(shownNamed(state, 'Pour slab').filter(item => item.startDate === '10/08/2026').map(item => item.percentComplete)).toEqual([0]);
+    // The one row left pairs with the one twin left by the rule (phase 1, on the row's dates).
+    expect(pours(state)).toEqual([
+      ['MASTER F-2', '10/08/2026', 0, []],
+      ['MASTER F-1', '10/15/2026', 80, []],
+    ]);
+  });
+
+  it('twins on the same days in both files pair in file order (Microsoft Project\'s same-day QUALITY INSPECTION rows)', () => {
+    // A row inserted above renumbers every ID and WBS, so only the pairing keeps them (guards the existing behaviour).
+    const msp = (source: ReferenceDocument, lines: (readonly [string, string])[]) => (normalizeMicrosoftProjectPdfRows({
+      contents: ['ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete\tWBS', '1\tALPHA\t0\t20 days\tThu 10/1/26\tFri 10/30/26\t0%\t1',
+        ...lines.map(([name, day], index) => [index + 2, name, 1, '1 day', day, day, '0%', `1.${index + 1}`].join('\t'))].join('\n'),
+      sourceName: `${source.id}.pdf`, projects: ['Alpha'], now: new Date(source.importedAt),
+    }) as ScheduleItem[]).map((item, index) => ({ ...item, id: `${source.id}-${index + 1}`, importBatchId: source.importBatchId, sourceDocumentId: source.id }));
+    const QI = ['QUALITY INSPECTION', 'Mon 10/5/26'] as const;
+    // David records on both (a 0% twin of a recorded one reads as its superseded copy, DAVEScheduleRecovery).
+    const onFQ = approve(EMPTY, F, msp(F, [QI, QI, ['FRAMING', 'Fri 10/9/26']])).state;
+    const twins = record(record(onFQ, 'MASTER F-1', 20, '2026-09-22T15:00:00.000Z'), 'MASTER F-2', 50, '2026-09-22T15:00:00.000Z');
+    const { merged, state } = approve(twins, G, msp(G, [['FRAMING', 'Fri 10/9/26'], QI, QI]));
+    expect(merged.rehomedIds).toEqual(['MASTER F-3', 'MASTER F-1', 'MASTER F-2']);
+    expect(shownNamed(state, 'QUALITY INSPECTION').map(item => [item.id, item.percentComplete])).toEqual([['MASTER F-1', 20], ['MASTER F-2', 50]]);
+  });
+
+  it('both twins moved: neither pairs, so neither takes the other\'s progress', () => {
+    const { merged, state } = approve(onF, G, rows(G, ['Pour slab,Alpha,Lot,10/02/2026,10/04/2026,', 'Pour slab,Alpha,Lot,10/09/2026,10/11/2026,', FRAMING]));
+    expect(merged.carriedProgressIds).toEqual([]);
+    expect(pours(state)).toEqual([['MASTER G-1', '10/02/2026', 0, []], ['MASTER G-2', '10/09/2026', 0, []]]);
+  });
+
+  it('twins each restated by a lookahead: a master repeating what it said before pairs each on the days its note keeps', () => {
+    const lookahead = (id: string, importedAt: string) => ({ ...schedule(id, importedAt), scheduleRole: 'lookahead' }) as ReferenceDocument;
+    const approveLookahead = (state: State, source: ReferenceDocument, lines: string[]): State => {
+      const merged = mergeApprovedScheduleImportItems({
+        existing: state.items, imported: rows(source, lines), completionMatch: () => null, mergeCompletion: item => item,
+        isCurrent: scheduleItemsVisibleBeforeImport(state.items, [...state.documents, source], source.importBatchId || ''),
+        approvedAt: source.importedAt, overlay: true,
+      });
+      return { items: [...merged.additions, ...merged.next], documents: [...state.documents, source] };
+    };
+    // L1 moves phase 1 only; L2 moves phase 2 only (each the one left on each side).
+    const L1 = lookahead('LOOKAHEAD L1', '2026-09-21T12:00:00.000Z');
+    const L2 = lookahead('LOOKAHEAD L2', '2026-09-22T12:00:00.000Z');
+    const onL1 = approveLookahead(onF, L1, ['Pour slab,Alpha,Lot,10/04/2026,10/06/2026,', PHASE_2]);
+    const onL2 = approveLookahead(onL1, L2, ['Pour slab,Alpha,Lot,10/04/2026,10/06/2026,', 'Pour slab,Alpha,Lot,10/11/2026,10/13/2026,']);
+    expect(pours(onL2)).toEqual([['MASTER F-1', '10/04/2026', 80, []], ['MASTER F-2', '10/11/2026', 0, []]]);
+    // G repeats F: neither row is on a twin's shown days, both are on the master days the twins' notes keep.
+    const { merged, state } = approve(onL2, G, rows(G, [PHASE_1, PHASE_2, FRAMING]));
+    expect(merged.additions.filter(item => item.taskName === 'Pour slab')).toEqual([]);
+    expect(pours(state)).toEqual([['MASTER F-1', '10/04/2026', 80, []], ['MASTER F-2', '10/11/2026', 0, []]]);
+  });
+
+  it('Set Active and Make Current carry: progress on G\'s rows goes back to the twin on the same days, not the one in that row\'s place', () => {
+    // G (sorted by start date) came in while nothing was shown to pair with: fresh rows. David records on them.
+    const gRows = rows(G, [PHASE_2, 'Pour slab,Alpha,Lot,10/15/2026,10/17/2026,', FRAMING]);
+    const fRows = rows(F, [PHASE_1, PHASE_2, FRAMING]);
+    const recorded = (item: ScheduleItem, percentComplete: number): ScheduleItem => ({
+      ...item, percentComplete, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-27T09:00:00.000Z',
+      progressConfirmedBy: 'David',
+    });
+    const before = [recorded(gRows[0], 50), recorded(gRows[1], 90), gRows[2]];
+    const carried = scheduleProgressCarriedToShownTasks({ before, after: fRows, now: '2026-09-28T00:00:00.000Z' });
+    expect(carried.map(item => [item.id, item.startDate, item.percentComplete])).toEqual([
+      ['MASTER F-1', '10/01/2026', 90],
+      ['MASTER F-2', '10/08/2026', 50],
+    ]);
   });
 });

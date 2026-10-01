@@ -143,10 +143,13 @@ describe('L1 through the real import merge: a revised task is the task the impor
       row('tower-v2', 'tower-v2-inspection-1', '2026-10-08', 55, 1),
       row('tower-v2', 'tower-v2-inspection-2', '2026-12-08', 50, 2),
     ]);
-    // The premise: the import recorded which saved task each revised row replaces.
+    // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): the import recorded which saved
+    // task each revised row replaces by file order. Same-named tasks now pair by their calendar days, then
+    // only the one left with the one left; with both moved it pairs neither, so the rows list no earlier
+    // ids and the report pairs them by its own rule, which gives the same four true lines.
     expect(shown.map(item => [item.id, scheduleTaskEarlierIds(item)])).toEqual([
-      ['tower-v2-inspection-1', ['tower-v1-inspection-1']],
-      ['tower-v2-inspection-2', ['tower-v1-inspection-2']],
+      ['tower-v2-inspection-1', []],
+      ['tower-v2-inspection-2', []],
     ]);
     for (const format of ['project_manager', 'executive'] as const) {
       const { text } = since(v1, shown, format);
@@ -158,6 +161,10 @@ describe('L1 through the real import merge: a revised task is the task the impor
     }
   });
 
+  // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): both rows were moved, which the
+  // import now pairs with neither (see above). Row 2 stays on its dates here, so the import pairs it on its
+  // days and row 1 as the one left: row 1 is revised (it carries the id it replaced), row 2 is the saved
+  // task itself (never revised, it carries none).
   it('the snapshot\'s tasks carry the ids the import recorded; a task never revised carries none', () => {
     const v1 = [
       row('tower-v1', 'tower-v1-inspection-1', '2026-10-01', 40, 1),
@@ -165,12 +172,12 @@ describe('L1 through the real import merge: a revised task is the task the impor
     ];
     const shown = revise(v1, [
       row('tower-v2', 'tower-v2-inspection-1', '2026-10-08', 55, 1),
-      row('tower-v2', 'tower-v2-inspection-2', '2026-12-08', 50, 2),
+      row('tower-v2', 'tower-v2-inspection-2', '2026-12-01', 50, 2),
     ]);
     const now = snapshotOf(truthOf(shown, NOW), NOW);
-    expect(now.tasks.map(item => [item.taskId, item.earlierTaskIds])).toEqual([
+    expect(now.tasks.map(item => [item.taskId, item.earlierTaskIds]).sort()).toEqual([
+      ['tower-v1-inspection-2', undefined],
       ['tower-v2-inspection-1', ['tower-v1-inspection-1']],
-      ['tower-v2-inspection-2', ['tower-v1-inspection-2']],
     ]);
     const before = snapshotOf(truthOf(v1, REPORT_SENT), REPORT_SENT);
     expect(before.tasks.every(item => !('earlierTaskIds' in item))).toBe(true);
@@ -192,7 +199,10 @@ describe('L1 through the real import merge: a revised task is the task the impor
     const completed = briefing.reportingPeriod.changes.filter(change => change.kind === 'completed');
     expect(completed).toHaveLength(1);
     const completedRow = shown.find(item => item.id === completed[0].taskId) as ScheduleItem;
-    expect(scheduleTaskEarlierIds(completedRow)).toEqual(['tower-v1-inspection-1']);
+    // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): both rows moved, so the import
+    // pairs neither and the row lists no earlier id (it listed A's); the report still names A as completed.
+    expect(completedRow.id).toBe('tower-v2-inspection-1');
+    expect(scheduleTaskEarlierIds(completedRow)).toEqual([]);
     expect(text).toContain('Tower: Inspection was completed.');
     expect(text).toContain('Tower: Inspection finish changed from 2026-10-01 to 2026-10-02.');
     expect(text).toContain('Tower: Inspection moved from 10% to 50% complete.');
@@ -200,9 +210,12 @@ describe('L1 through the real import merge: a revised task is the task the impor
     expect(text).not.toMatch(/was added|was removed/);
   });
 
-  it('the file swapped two same-named tasks\' finish order: the report still names them as the import paired them', () => {
+  // Pin changed deliberately (whole-app audit A5 pass 17 M2, 1 Oct 2026): this asserted the import paired
+  // row 1 with row 1 by file order, and the report followed it. By order alone, a CSV sorted by start date
+  // gave one twin's progress to the other; with both moved, the import now pairs neither, so the rows list
+  // no earlier ids and the report pairs them by its own rule (how little each finish moved).
+  it('the file swapped two same-named tasks\' finish order: the import pairs neither, and the report pairs them by its own rule', () => {
     // Row 1 (A) slipped from Oct 1 to Oct 25; row 2 (B) was pulled in from Oct 20 to Oct 5.
-    // By finish dates alone A would pair with Oct 5; the import paired row 1 with row 1.
     const v1 = [
       row('tower-v1', 'tower-v1-inspection-1', '2026-10-01', 20, 1),
       row('tower-v1', 'tower-v1-inspection-2', '2026-10-20', 20, 2),
@@ -212,14 +225,14 @@ describe('L1 through the real import merge: a revised task is the task the impor
       row('tower-v2', 'tower-v2-inspection-2', '2026-10-05', 20, 2),
     ]);
     expect(shown.map(item => [item.id, scheduleTaskEarlierIds(item)])).toEqual([
-      ['tower-v2-inspection-1', ['tower-v1-inspection-1']],
-      ['tower-v2-inspection-2', ['tower-v1-inspection-2']],
+      ['tower-v2-inspection-1', []],
+      ['tower-v2-inspection-2', []],
     ]);
     for (const format of ['project_manager', 'executive'] as const) {
       const { text } = since(v1, shown, format);
       expect(text.split('\n').filter(line => line.startsWith('• Tower: ')).sort()).toEqual([
-        '• Tower: Inspection finish changed from 2026-10-01 to 2026-10-25.',
-        '• Tower: Inspection finish changed from 2026-10-20 to 2026-10-05.',
+        '• Tower: Inspection finish changed from 2026-10-01 to 2026-10-05.',
+        '• Tower: Inspection finish changed from 2026-10-20 to 2026-10-25.',
       ]);
     }
   });
@@ -231,8 +244,10 @@ describe('L1 through the real import merge: a revised task is the task the impor
     ];
     const shown = revise(v1, [
       row('tower-v2', 'tower-v2-inspection-1', '2026-10-08', 55, 1),
-      row('tower-v2', 'tower-v2-inspection-2', '2026-12-08', 50, 2),
+      row('tower-v2', 'tower-v2-inspection-2', '2026-12-01', 50, 2),
     ]);
+    // Row 2 kept on its dates, so row 1 is paired and lists an id (A5 pass 17 M2: both moved, neither is).
+    expect(shown.some(item => scheduleTaskEarlierIds(item).length > 0)).toBe(true);
     const withoutIds = shown.map(({ revisedFromTaskIds: _ids, ...item }) => item as ScheduleItem);
     expect(buildDAVEReportSourceFingerprint([truthOf(shown, NOW)]))
       .toBe(buildDAVEReportSourceFingerprint([truthOf(withoutIds, NOW)]));
