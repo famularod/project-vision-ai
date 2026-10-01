@@ -407,7 +407,7 @@ export type StagedProjectUpdateSync = {
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
   pendingPhotoAssetIds: string[];
-  /** Left for review: in conflict, and this attempt automatic (whole-app audit A4 pass 13 M1). Nothing was written or sent. */
+  /** Left for review: in conflict, and this attempt automatic or Sync Now's (whole-app audit A4 pass 13 M1, G2). Nothing was written or sent. */
   heldForConflictReview?: boolean;
 };
 
@@ -2789,9 +2789,9 @@ export async function stageProjectUpdateForSync(
   // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
   // see writeStagedProjectUpdateRecord. An update in conflict keeps its own
   // copy for review, and is sent whole when retried. The waiting-update sync
-  // (`automatic`) leaves it for Keep Phone, Keep Cloud or Retry (A4 pass 13
-  // M1): it sent it whole, over the iPad's newer edit, and the conflict was
-  // gone, an automatic Keep Phone.
+  // and Sync Now (`automatic`: not a choice made for this update) leave it for
+  // Keep Phone, Keep Cloud or Retry (A4 pass 13 M1, G2): they sent it whole,
+  // over the iPad's newer edit, and the conflict was gone, a silent Keep Phone.
   const conflicted = (await getSyncConflicts()).some(conflict =>
     conflict.entity === 'project_update' && conflict.localId === update.id);
   const heldForConflictReview = conflicted && automatic;
@@ -3820,18 +3820,25 @@ export async function synchronizeLocalData(
   }
 
   for (const update of syncableUpdates) {
-    const staged = await stageProjectUpdateForSync(update);
+    // Sync Now is not a choice between two copies either (whole-app audit A4
+    // pass 13 G2): it sent an update in conflict whole, stamped now, over the
+    // iPad's newer edit, a silent Keep Phone. Left for Keep Phone or Keep
+    // Cloud, as the waiting-update sync leaves it; its saved conflict is in
+    // `conflicts`, which Settings reads as needing review.
+    const staged = await stageProjectUpdateForSync(update, { automatic: true });
     details.photosUploaded += staged.uploadedPhotoCount;
     missingPhotos.push(...staged.missingPhotos);
     errors.push(...staged.workAttempt.errors.map(error =>
       `Field update for “${update.projectName || 'Unassigned Project'}”: ${error}`,
     ));
-    progress(`Update staged: ${update.projectName}`);
+    progress(`${staged.heldForConflictReview ? 'Update left for review' : 'Update staged'}: ${update.projectName}`);
 
     const missingPhotoIds = new Set(staged.missingPhotos.map(photo => photo.photoId));
     update.photos.forEach(photo => {
       progress(
-        missingPhotoIds.has(photo.id)
+        staged.heldForConflictReview
+          ? 'Photo left for review'
+          : missingPhotoIds.has(photo.id)
           ? 'Photo skipped: unavailable'
           : 'Photo synced',
       );

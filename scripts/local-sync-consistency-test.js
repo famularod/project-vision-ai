@@ -282,7 +282,9 @@ includes(sync, 'cloudPhotoLookupConfirmedMissing', 'automatic repair must requir
 includes(sync, 'projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)', 'equivalent remote updates must not create false conflicts');
 includes(sync, "id: `project-update-${localPayload.id}`", 'keeping the phone copy must resolve through the durable queue');
 includes(sync, "resolution: 'keep_local' | 'keep_cloud'", 'genuine conflicts must require an explicit resolution choice');
-includes(sync, 'const staged = await stageProjectUpdateForSync(update)', 'field send and Settings reconciliation must share update staging');
+// Pin changed in A4 pass 13 G2: Settings Sync Now stages as the waiting-update
+// sync does, so an update in conflict is left for Keep Phone or Keep Cloud.
+includes(sync, 'const staged = await stageProjectUpdateForSync(update, { automatic: true })', 'field send and Settings reconciliation must share update staging');
 assert(!app.includes('async function runFieldUpdateCloudSync'), 'App must not own a second field-update sync engine');
 assert(!app.includes('void stageProjectUpdateForSync(saved)'), 'draft saves must not leave newly staged updates waiting without a background flush');
 includes(sync, 'details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0', 'Settings sync must report uploads from the durable queue');

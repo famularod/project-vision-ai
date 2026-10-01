@@ -94,6 +94,7 @@ import { fieldUpdateDocumentChangeWaiting } from '../../services/FieldUpdateDocu
 import {
   getOfflineQueue,
   getSyncConflicts,
+  getSyncStatus,
   hydrateProjectUpdatePhotoPreviews,
   cloudPhotoPreviewIsFresh,
   projectUpdateUploadedSince,
@@ -106,6 +107,7 @@ import {
   resetFieldUpdateSyncMemoryForTests,
   resolveProjectUpdateSyncConflict,
   runFieldUpdateCloudSync,
+  synchronizeLocalData,
   uploadPendingChanges,
 } from '../../services/SyncService';
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
@@ -2356,5 +2358,96 @@ describe('a late photo analysis result does not go over a newer iPad edit (audit
     expect((inCloud().photos as Array<{ photoIntelligence: { status: string } }>).map(photo => photo.photoIntelligence.status))
       .toEqual(['analysis_complete', 'analysis_complete']);
     expect(await getOfflineQueue()).toEqual([]);
+  });
+});
+
+/**
+ * A4 pass 13 G2: Settings › Sync Now sent every local copy that differs from
+ * the cloud's, an update in conflict too, whole and stamped now: a silent Keep
+ * Phone. The iPad's newer note was gone and the conflict with it. Sync Now
+ * now leaves an update in conflict for Keep Phone or Keep Cloud, as the
+ * waiting-update sync does, and its message counts it as needing review.
+ */
+describe('Sync Now leaves an update in conflict for review (audit A4 pass 13 G2)', () => {
+  const OFFLINE_EDIT = 'Pour, 40 yards (typed on the phone with no signal)';
+  const answers = <T>(data: T) => async () => ({ ok: true, configured: true, stubbed: false, data });
+
+  /** AdminScreen's own Sync Now (handleFullSyncNow), with the real full sync; the message it shows. */
+  async function pressSyncNow(phone: Device): Promise<string> {
+    const mock = supabaseMock();
+    const spies = [
+      jest.spyOn(mock as never, 'testSupabaseConnection' as never).mockImplementation((async () => ({ connected: true, projectCount: 1 })) as never),
+      jest.spyOn(mock as never, 'listProjectAreas' as never).mockImplementation(answers([]) as never),
+      jest.spyOn(mock as never, 'listScheduleItems' as never).mockImplementation(answers([]) as never),
+      jest.spyOn(mock as never, 'listReferenceDocuments' as never).mockImplementation(answers([]) as never),
+      jest.spyOn(mock as never, 'countCloudProjects' as never).mockImplementation(answers(1) as never),
+    ];
+    (listProjectUpdates as jest.Mock).mockImplementation(async () => ({ ok: true, configured: true, stubbed: false, data: cloudRows() }));
+    const messages: string[] = [];
+    try {
+      const { handleFullSyncNow } = evaluate<{ handleFullSyncNow: () => Promise<void> }>(
+        transpile(`${componentFunction('handleFullSyncNow', adminScreen)}\nmodule.exports = { handleFullSyncNow };`),
+        {
+          setIsSyncing: () => undefined, setLastFullSyncIssueCount: () => undefined,
+          setSyncAttemptMessage: (message: string) => { messages.push(message); }, setAdminActionSummary: () => undefined,
+          startProjectDocumentUploadRun: () => ({ remaining: () => 0 }), onRetryDocumentUploads: jest.fn(),
+          synchronizeLocalData, localProjects: ['P'], savedUpdates: phone.savedUpdatesRef.current,
+          projectAreas: [], scheduleItems: [], referenceDocuments: [],
+          getSyncStatus, getSyncConflicts, setSyncStatus: () => undefined, setSyncConflicts: () => undefined,
+          onApplyCloudRecovery: () => undefined, failedDocumentCountRef: { current: 0 },
+          projectDocumentsStillUploadingNotice: () => null, showMissingPhotoSyncAlert: jest.fn(),
+          updateSyncAttentionCount: 0, failedDocumentCount: 0,
+        },
+      );
+      await handleFullSyncNow();
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+    }
+    return messages.at(-1) || '';
+  }
+  /** Sent, edited on the phone offline, the iPad's edit lands after; reconnected, the upload pass finds the conflict. */
+  async function phoneEditInConflictWithIPad(photos: Array<{ id: string } & Record<string, unknown>>) {
+    const phone = await sentThroughTheApp(photos);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    return phone;
+  }
+  const photo = { id: 'photo-g2', uri: 'file:///phone/Documents/project-photos/g2.jpg', caption: '', createdAt: SENT_AT };
+
+  it.each([
+    ['without photos', []],
+    ['with photos', [photo]],
+  ])('G2 (%s): Sync Now keeps the iPad\'s note in the cloud and the conflict open, and says it needs review', async (_label, photos) => {
+    const phone = await phoneEditInConflictWithIPad(photos);
+    const message = await pressSyncNow(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(message).toBe('Cloud sync finished, but 1 saved conflict needs review.');
+  });
+
+  it('then Keep Phone still sends the phone\'s copy', async () => {
+    const phone = await phoneEditInConflictWithIPad([]);
+    await pressSyncNow(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('an update not in conflict still goes up with Sync Now', async () => {
+    const phone = await sentThroughTheApp([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const edited = { ...phone.saved()!, notes: OFFLINE_EDIT, status: 'queued' };
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? edited : update)); // its queue write was lost
+    phone.render();
+    const message = await pressSyncNow(phone);
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(message).toMatch(/^Cloud sync completed\./);
   });
 });
