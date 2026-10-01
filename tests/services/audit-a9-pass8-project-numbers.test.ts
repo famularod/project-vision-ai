@@ -405,8 +405,12 @@ describe('audit A9 pass 8 L7: a project number with one letter glued to it ("237
     expect(ecosProjectIdentifier(A)).toBe('2375');
     expect(ecosProjectIdentifier('2375a Main')).toBe('2375');
     expect(ecosProjectIdentifier('2375AB Main')).toBeNull();
-    // A name with a plain number keeps it.
+    // A name whose first number is plain keeps it. Audit A9 pass 11 F3: the
+    // first 3-6 digit number counts, lettered or plain, so a lettered number
+    // before a plain one is the identifier ("2375B Annex Suite 300" is 2375;
+    // this rule took the plain 300). See audit-a9-pass11-project-numbers.test.ts.
     expect(ecosProjectIdentifier('Building 2375 Phase 2B')).toBe('2375');
+    expect(ecosProjectIdentifier('2375B Annex Suite 300')).toBe('2375');
     expect(ecosProjectIdentifier(SELECTED)).toBe('2321');
   });
 

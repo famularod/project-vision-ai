@@ -1,6 +1,10 @@
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
 import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
 import { buildDAVETalkMemoryDraft, mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import {
+  ecosProjectDisplayIdentifier,
+  ecosProjectIdentifier,
+} from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 11 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -122,5 +126,39 @@ describe('audit A9 pass 11 F2: a hyphen letter always counts, even when it conti
     expect(desktop('Is 2375-A done?', PROJECTS, [], PHASE)).toBeNull();
     expect(talkAnswer('Is 2375-A done?', PROJECTS, [], PHASE)).toBeNull();
     expect(desktop('Is 2375 A Street done?', PROJECTS, [], A_STREET)).toBeNull();
+  });
+});
+
+describe('audit A9 pass 11 F3: a project\'s number is the first number in its name, lettered or plain', () => {
+  const MAIN = '2375 Main St';
+
+  it.each(['2375-B Annex Suite 300', '2375B Annex Suite 300'])('"%s" is project 2375, shown as 2375B (was 300)', name => {
+    expect(ecosProjectIdentifier(name)).toBe('2375');
+    expect(ecosProjectDisplayIdentifier(name)).toBe('2375B');
+  });
+
+  it('a name whose first number is plain keeps it', () => {
+    expect(ecosProjectIdentifier('2375 Main Suite 300B')).toBe('2375');
+    expect(ecosProjectDisplayIdentifier('2375 Main Suite 300B')).toBe('2375');
+    expect(ecosProjectDisplayIdentifier('Suite 300, 2375-B Annex')).toBe('300');
+  });
+
+  it.each(['2375-B Annex Suite 300', '2375B Annex Suite 300'])('with "%s", "2375-B" on 2321 or Main St names the Annex, in Ask ECOS and Talk', ANNEX => {
+    const projects = [SELECTED, MAIN, ANNEX];
+    expect(desktop('What is left at 2375-B?', projects)).toBe(switchOnDesktop('2375B'));
+    expect(desktop('What is left at 2375-B?', projects, [], MAIN)).toBe(switchOnDesktop('2375B', '2375'));
+    expect(talkAnswer('What is left at 2375-B?', projects, [], MAIN)).toBe(switchOnPhone('2375B', '2375'));
+    expect(mentionedDAVEProject('What is left at 2375-B?', projects)).toBe(ANNEX);
+  });
+
+  it.each(['2375-B Annex Suite 300', '2375B Annex Suite 300'])('on "%s", its own "2375-B" is answered and a bare 2375 names Main St', ANNEX => {
+    const projects = [SELECTED, MAIN, ANNEX];
+    expect(desktop('What is left at 2375-B?', projects, [], ANNEX)).toBeNull();
+    expect(talkAnswer('What is left at 2375-B?', projects, [], ANNEX)).toBeNull();
+    expect(desktop('What is left at 2375?', projects, [], ANNEX)).toBe(switchOnDesktop('2375', '2375B'));
+  });
+
+  it('its suite number is not its project number: "What is left at 300?" on 2321 is answered', () => {
+    expect(desktop('What is left at 300?', [SELECTED, '2375-B Annex Suite 300'])).toBeNull();
   });
 });

@@ -939,6 +939,22 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 11 F3: a project's number is the first number in its
+  // name, lettered or plain ("2375-B Annex Suite 300" is 2375B, not 300).
+  ...([
+    ['What is left at 2375-B?', SELECTED, [SELECTED, '2375 Main St', '2375-B Annex Suite 300'], '2375B', undefined],
+    ['What is left at 2375B?', '2375 Main St', [SELECTED, '2375 Main St', '2375B Annex Suite 300'], '2375B', '2375'],
+    ['What is left at 2375?', '2375B Annex Suite 300', [SELECTED, '2375 Main St', '2375B Annex Suite 300'], '2375', '2375B'],
+    ['What is left at 2375-B?', '2375-B Annex Suite 300', [SELECTED, '2375 Main St', '2375-B Annex Suite 300'], null, undefined],
+    ['What is left at 300?', SELECTED, [SELECTED, '2375-B Annex Suite 300'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 11 F3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   {
     name: 'pass 11 F1: a closed lettered project named by a spaced capital before a word is refused as closed',
     projectName: '2375 Main St',

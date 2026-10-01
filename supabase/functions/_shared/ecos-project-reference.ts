@@ -56,10 +56,12 @@ const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b(?!-[A-Za-z](?![A-Za-z0-
 /**
  * A project number with one letter glued to it ("2375A Main") or, since
  * audit A9 pass 10 L2, joined by a hyphen ("2375-B Annex", read as 2375B as
- * in a question). It is the project's identifier only when the name has no
- * plain 3-6 digit number: the digits name the project, and the letter is
- * kept for display and tells "2375A" from "2375B" (audit A9 pass 8 L7). A
- * spaced letter is not read ("2375 A Street" is 2375; pass 10 L1).
+ * in a question). The digits name the project, and the letter is kept for
+ * display and tells "2375A" from "2375B" (audit A9 pass 8 L7). It is the
+ * project's identifier when it is the first 3-6 digit number in the name:
+ * "2375-B Annex Suite 300" is 2375B (audit A9 pass 11 F3; pass 8 L7 took a
+ * plain number anywhere first, so it was 300). A spaced letter is not read
+ * ("2375 A Street" is 2375; pass 10 L1).
  */
 const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})-?([A-Za-z])(?![A-Za-z0-9])`;
 /**
@@ -128,18 +130,30 @@ export function findECOSProjectReferenceMismatch(
 
 /**
  * The selected project's numbers (every plain 3-6 digit number in its name,
- * as `source` reads them, or else the digits of a lettered one: "2375A Main"
- * is 2375), its lettered identifier upper-cased ("2375A", or '') and how the
+ * as `source` reads them, or the digits of a lettered one when it comes
+ * first: "2375A Main" and "2375A Main Suite 300" are 2375; audit A9 pass 11
+ * F3), its lettered identifier upper-cased ("2375A", or '') and how the
  * refusal shows it ("2375A"; audit A9 pass 8 L7). A name without a number
  * has none and is shown by name (audit A9 pass 9 M1: "Harbor Office" refused
  * nothing, so another project's 2375 was answered from Harbor Office).
  */
 function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; lettered: string; label: string } {
+  const first = firstProjectNumber(projectName, source);
+  if (first?.letter) return { numbers: [first.digits], lettered: `${first.digits}${first.letter}`.toUpperCase(), label: `${first.digits}${first.letter}` };
   const plain = uniqueMatches(projectName, source);
   if (plain.length > 0) return { numbers: plain, lettered: '', label: plain[0] };
-  const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
-  if (lettered) return { numbers: [lettered[1]], lettered: `${lettered[1]}${lettered[2]}`.toUpperCase(), label: `${lettered[1]}${lettered[2]}` };
   return { numbers: [], lettered: '', label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
+}
+
+/**
+ * The first project number in a name, plain (as `source` reads it) or with
+ * a letter ("2375B", "2375-B"), whichever comes first (audit A9 pass 11 F3).
+ */
+function firstProjectNumber(projectName: string, source = PROJECT_IDENTIFIER_SOURCE): { digits: string; letter: string } | null {
+  const plain = new RegExp(source).exec(projectName);
+  const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
+  if (lettered && (!plain || lettered.index < plain.index)) return { digits: lettered[1], letter: lettered[2] };
+  return plain ? { digits: plain[0], letter: '' } : null;
 }
 
 /**
@@ -381,13 +395,13 @@ function projectReferenceMismatch(
 }
 
 /**
- * The project's identifier: the first 3-6 digit number in its name, or else
- * the digits of a number with one letter glued to it ("2375A Main" is 2375;
- * audit A9 pass 8 L7), if any.
+ * The project's identifier: the first 3-6 digit number in its name, the
+ * digits only when a letter is glued or hyphen-joined to it ("2375A Main"
+ * is 2375; audit A9 pass 8 L7), if any. Since audit A9 pass 11 F3 the
+ * first number counts, lettered or plain ("2375B Annex Suite 300" is 2375).
  */
 export function ecosProjectIdentifier(projectName: string): string | null {
-  return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ??
-    new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName)?.[1] ?? null;
+  return firstProjectNumber(projectName)?.digits ?? null;
 }
 
 /**
@@ -396,9 +410,8 @@ export function ecosProjectIdentifier(projectName: string): string | null {
  * is 2375B, as a question's "2375-B" is; audit A9 pass 10 L2).
  */
 export function ecosProjectDisplayIdentifier(projectName: string): string | null {
-  const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
-  return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ??
-    (lettered ? `${lettered[1]}${lettered[2]}` : null);
+  const first = firstProjectNumber(projectName);
+  return first ? `${first.digits}${first.letter}` : null;
 }
 
 /** Whether a question has any number that either rule could treat as a project number. */
