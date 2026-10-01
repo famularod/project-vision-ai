@@ -2686,23 +2686,31 @@ async function writeStagedProjectUpdateRecord(
     const unchanged = { nextQueue: queue, result: null, persist: false };
     if (existing?.operation === 'delete') return unchanged;
     if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
-    if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(update)) return unchanged;
-    const patch = !overConflict && Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(update.status) ||
-      fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], update));
+    // Archived when the copy it goes over is (whole-app audit A4 pass 17
+    // L2): one queued, or the one this phone last put in the cloud. Nothing
+    // un-archives a field update. After Keep Phone kept the iPad's archive,
+    // the card's copy, never archived, went up over it, and the update came
+    // back on the iPad.
+    const queuedCopy = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData;
+    const copy = withArchiveKept(update, existing ? [existing] : [], [queuedCopy, projectUpdateLastVersionInCloud.get(update.id)]
+      .find(item => isRecord(item) && item.isArchived === true)) as ProjectUpdate;
+    if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(copy)) return unchanged;
+    const patch = !overConflict && Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(copy.status) ||
+      fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], copy));
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
           id, entity: 'project_update', operation: 'update', createdAt: now, retryCount: 0, lastError: null,
           // The second write of a send over a conflict keeps the first's time.
-          changedAt: ((!overConflict || replacing) && existing && queuedEditSavedAt(existing, update)) || now,
+          changedAt: ((!overConflict || replacing) && existing && queuedEditSavedAt(existing, copy)) || now,
           payload: {
-            id: update.id, projectId: update.projectId, projectName: update.projectName,
-            selectedAreaName: update.selectedAreaName, updateData: update, pendingPhotoAssetIds: pending,
+            id: copy.id, projectId: copy.projectId, projectName: copy.projectName,
+            selectedAreaName: copy.selectedAreaName, updateData: copy, pendingPhotoAssetIds: pending,
             ...(overConflict ? { overConflict } : {}),
           },
           ...(ownerId ? { ownerId } : {}),
         };
-    if (!patch) projectUpdateLastVersionInCloud.delete(update.id);
+    if (!patch) projectUpdateLastVersionInCloud.delete(copy.id);
     return {
       nextQueue: patch ? queue.map(item => item === existing ? next : item) : [...queue.filter(item => item.id !== id), next],
       result: next,
@@ -5720,18 +5728,23 @@ function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
   }
 }
 
+/** Its archive aside when that copy is archived and this one not (A4 pass 17 L2): nothing un-archives an update. */
 function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
-  return Boolean(sent) && sameProjectUpdateContent(sent, update);
+  return Boolean(sent) && sameProjectUpdateContent(sent, withArchiveKept(update, [], sent) as ProjectUpdate);
 }
 
 /**
  * Whether this copy of a field update is, in content, the one this device
  * last put in the cloud (its documents' upload state and a Retry's stamps
- * aside): as Keep Phone leaves it (whole-app audit A7 pass 9 L1).
+ * aside): as Keep Phone leaves it (whole-app audit A7 pass 9 L1). An archive
+ * that copy carries and this one does not is aside too (A4 pass 17 L2): the
+ * card is not archived when Keep Phone keeps an archive made on the iPad,
+ * and Settings took it for a newer edit, which left it Waiting to Sync.
  */
 export function projectUpdateCopyIsLastInCloud(update: ProjectUpdate): boolean {
-  return fieldUpdateOwesNothingBeyond(projectUpdateLastVersionInCloud.get(update.id), [], update);
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  return fieldUpdateOwesNothingBeyond(sent, [], withArchiveKept(update, [], sent) as object);
 }
 
 /** A field update still owing its own sync: "Waiting to Sync", or failed (A7 pass 8 L1). */

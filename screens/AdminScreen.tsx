@@ -978,11 +978,23 @@ export function AdminScreen({
         // phone since the conflict stays as it is: it still owes its own sync.
         // A card reading Sent is not one: a refresh or echo during the
         // conflict showed the iPad's copy there (A4 pass 12 L3).
+        // An archive Keep Phone kept is no newer edit (whole-app audit A4
+        // pass 17 L2; the check leaves it aside).
         const phoneCopy = savedUpdates.find(update => update.id === conflict.localId);
         const newerPhoneEdit = Boolean(phoneCopy) && (phoneCopy!.status === 'queued' || phoneCopy!.status === 'failed') &&
           !projectUpdateCopyIsLastInCloud(phoneCopy!);
         if (resolution === 'keep_cloud' || !newerPhoneEdit) {
           onApplyCloudConflictUpdate(resolvedUpdate);
+        } else if ((resolvedUpdate as ArchivableUpdate).isArchived && !(phoneCopy as ArchivableUpdate).isArchived) {
+          // The newer edit's card takes the kept copy's archive, which hides
+          // it, and goes up archived after it (A4 pass 17 L2): left as it
+          // was, the waiting-update sync sent it un-archived over the kept
+          // copy. Through Settings' Retry callback, the one way Settings
+          // writes a card that still owes its sync; no conflict is open now.
+          const archived: ArchivableUpdate = {
+            ...phoneCopy!, isArchived: true, archivedAt: (resolvedUpdate as ArchivableUpdate).archivedAt ?? null,
+          };
+          void onRetryUpdateSync(archived, { automatic: true }).catch(() => undefined);
         }
       }
 
@@ -1535,6 +1547,9 @@ function SyncConflictReviewList({
     </>
   );
 }
+
+/** A field update as the App stores it, with its archive (the shared type leaves it out). */
+type ArchivableUpdate = ProjectUpdate & { isArchived?: boolean; archivedAt?: string | null };
 
 const CONFLICT_NEWER_PHONE_EDIT_NOTE = 'Includes a change you made after the conflict was found.';
 /** Keep Cloud withdraws every copy of the update waiting on this phone, that edit too, and the card takes the cloud's copy. */
