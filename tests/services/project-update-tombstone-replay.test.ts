@@ -131,6 +131,39 @@ describe('deletion-journal replay (audit A2 pass 2 M1)', () => {
   });
 });
 
+// Whole-app audit A4 pass 12 L2: a document change still waiting for an
+// update the cloud reads archived goes onto the archived copy; nothing else
+// is sent for it.
+describe('deletion-journal replay of an update archived in the cloud (audit A4 pass 12 L2)', () => {
+  const hidden = (updateId: string): Tombstone => ({
+    updateId, action: 'hide_cloud_update', deletedAt: '2026-09-04T12:00:00.000Z', cloudIdPresent: true,
+  });
+  const removal = [{ documentId: 'permit', remove: true }];
+
+  it('a waiting document change becomes an archive carrying it; an archive already carrying one stays as it is; anything else goes', async () => {
+    mockStorage.set(QUEUE, JSON.stringify([
+      queueItem('project-update-patched', { id: 'patched', updateData: { id: 'patched' }, documentPatches: removal }),
+      queueItem('project-update-retrying', { id: 'retrying', archiveOnly: true, archivedAt: '2026-09-04T12:00:00.000Z', documentPatches: removal }),
+      queueItem('project-update-archive-only', { id: 'archive-only', archiveOnly: true, archivedAt: '2026-09-04T12:00:00.000Z' }),
+      queueItem('project-update-record', { id: 'record', updateData: { id: 'record' } }),
+    ]));
+
+    await reconcileProjectUpdateDeletionJournal(['patched', 'retrying', 'archive-only', 'record', 'nothing-queued'].map(hidden));
+
+    const byId = new Map((await getOfflineQueue()).map(item => [item.id, item]));
+    expect([...byId.keys()].sort()).toEqual(['project-update-patched', 'project-update-retrying']);
+    expect(byId.get('project-update-patched')).toMatchObject({
+      payload: { id: 'patched', archiveOnly: true, archivedAt: '2026-09-04T12:00:00.000Z', documentPatches: removal },
+      retryCount: 0,
+    });
+    expect(byId.get('project-update-retrying')).toMatchObject({ retryCount: 3, lastError: 'Offline' });
+
+    mockWrites.length = 0;
+    await reconcileProjectUpdateDeletionJournal(['patched', 'retrying', 'archive-only', 'record', 'nothing-queued'].map(hidden));
+    expect(queueWrites()).toHaveLength(0); // the next launch writes nothing
+  });
+});
+
 // Whole-app audit A2 pass 3 L2 (30 Sep 2026): each launch re-recorded every
 // "Delete Update" ever made in the deletion journal (a verified rewrite
 // each) before checking that the cloud had confirmed it.

@@ -149,12 +149,16 @@ export async function reconcileProjectUpdateDeletionJournal(
   // 'hide_cloud_update' tombstone (the startup cloud merge), so it is not sent again.
   // A delete the cloud confirmed is skipped too (audit A2 pass 3 L2): it was
   // re-recorded in the deletion journal, one rewrite each, on every launch.
+  // One archived in the cloud still carries the document changes waiting for
+  // it onto the archived copy (audit A4 pass 12 L2).
   const { queuedDeleteIds, confirmedDeleteIds } = await replayProjectUpdateTombstonesInQueue(tombstones.map(tombstone => ({
     updateId: tombstone.updateId,
     archive: tombstone.action === 'archive_sent_update' ||
       (tombstone.action === 'remove_from_device' && tombstone.cloudIdPresent)
       ? { archivedAt: tombstone.deletedAt || null }
-      : false,
+      : tombstone.action === 'hide_cloud_update'
+        ? { archivedAt: tombstone.deletedAt || null, documentChangesOnly: true }
+        : false,
   })));
   await Promise.allSettled(tombstones
     .filter(tombstone => tombstone.action === 'delete_update_everywhere' &&

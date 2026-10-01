@@ -2617,8 +2617,12 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
 
 export type ProjectUpdateTombstoneReplay = {
   updateId: string;
-  /** Re-queue a cloud archive when none is queued; null for any archive time. */
-  archive: false | { archivedAt: string | null };
+  /**
+   * Re-queue a cloud archive when none is queued; null for any archive time.
+   * `documentChangesOnly`: the cloud already reads it archived, so an archive
+   * goes only to carry document changes still waiting (A4 pass 12 L2).
+   */
+  archive: false | { archivedAt: string | null; documentChangesOnly?: boolean };
 };
 
 /**
@@ -2651,7 +2655,12 @@ export async function replayProjectUpdateTombstonesInQueue(
     const archiveKept = new Set<string>();
     // A document change still waiting for an update being archived goes up
     // with the archive (whole-app audit A4 pass 11 O2): the archive replaced
-    // it, and the archived cloud copy still listed a document taken off.
+    // it, and the archived cloud copy still listed a document taken off. So
+    // does one for an update the cloud already reads archived (A4 pass 12
+    // L2): a refresh turns this phone's archive record into that one, and
+    // the next replay dropped the change with the rest of the update's work.
+    // The archive save re-reads the cloud's copy, so sending it again is
+    // harmless; with nothing waiting, no archive goes, as before.
     const waitingDocumentChanges = new Map<string, FieldUpdateDocumentPatch[]>();
     const kept = queue.filter(item => {
       const replay = item.entity === 'project_update' && item.operation !== 'delete'
@@ -2661,7 +2670,8 @@ export async function replayProjectUpdateTombstonesInQueue(
       const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
       const sameArchive = replay.archive !== false && payload.archiveOnly === true &&
         item.id === projectUpdateQueueItemId(replay.updateId) &&
-        (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt);
+        (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt) &&
+        (!replay.archive.documentChangesOnly || Boolean(queuedFieldUpdateDocumentPatches(item)));
       if (sameArchive) archiveKept.add(replay.updateId);
       const patches = replay.archive !== false && !sameArchive ? queuedFieldUpdateDocumentPatches(item) : null;
       if (patches) waitingDocumentChanges.set(replay.updateId, patches);
@@ -2671,6 +2681,7 @@ export async function replayProjectUpdateTombstonesInQueue(
       if (replay.archive === false || archiveKept.has(replay.updateId) || queuedDeleteIds.has(replay.updateId)) return [];
       const archivedAt = replay.archive.archivedAt || queuedAt;
       const documentPatches = waitingDocumentChanges.get(replay.updateId);
+      if (replay.archive.documentChangesOnly && !documentPatches) return [];
       return [{
         id: projectUpdateQueueItemId(replay.updateId), entity: 'project_update', operation: 'update',
         payload: { id: replay.updateId, updateData: undefined, archiveOnly: true, archivedAt, ...(documentPatches ? { documentPatches } : {}) },

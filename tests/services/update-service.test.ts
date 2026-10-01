@@ -95,6 +95,7 @@ describe('project update deletion persistence', () => {
       { updateId: 'archived', action: 'archive_sent_update', deletedAt: '2026-07-19T08:01:00.000Z', cloudIdPresent: true },
       { updateId: 'device-only-cloud', action: 'remove_from_device', deletedAt: '2026-07-19T08:02:00.000Z', cloudIdPresent: true },
       { updateId: 'device-only-draft', action: 'remove_from_device', deletedAt: '2026-07-19T08:03:00.000Z', cloudIdPresent: false },
+      { updateId: 'archived-in-cloud', action: 'hide_cloud_update', deletedAt: '2026-07-19T08:04:00.000Z', cloudIdPresent: true },
     ]);
 
     expect(replayProjectUpdateTombstonesInQueue).toHaveBeenCalledTimes(1);
@@ -103,6 +104,8 @@ describe('project update deletion persistence', () => {
       { updateId: 'archived', archive: { archivedAt: '2026-07-19T08:01:00.000Z' } },
       { updateId: 'device-only-cloud', archive: { archivedAt: '2026-07-19T08:02:00.000Z' } },
       { updateId: 'device-only-draft', archive: false },
+      // Audit A4 pass 12 L2: only to carry document changes still waiting.
+      { updateId: 'archived-in-cloud', archive: { archivedAt: '2026-07-19T08:04:00.000Z', documentChangesOnly: true } },
     ]);
     expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
     expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'permanent' });

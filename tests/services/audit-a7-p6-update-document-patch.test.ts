@@ -1738,3 +1738,82 @@ async function chooseInSettingsExpectingFailure(phone: Device, conflict: { id: s
   await resolveConflict((await getSyncConflicts()).find(item => item.id === conflict.id), resolution);
   return alerts;
 }
+
+/**
+ * A4 pass 12 L2 (A7 pass 10 L-2): a document change waiting for an update
+ * the cloud reads archived was dropped. The refresh turns this phone's
+ * "archived here" record into "hidden, archived in the cloud" (records are
+ * replaced by update id), and the next full replay of the records (a
+ * relaunch, deleting another update or a project) dropped the update's whole
+ * queue item, the change with it. The re-queue of removed documents skips
+ * archived copies, so nothing put it back.
+ */
+describe('a document change waiting for an update archived in the cloud still reaches its archived copy (audit A4 pass 12 L2)', () => {
+  /** The refresh, with this phone's own records of updates taken off its list. */
+  async function refreshWithRecords(phone: Device, records: { current: unknown[] }) {
+    await refresh(phone, { deletedUpdateTombstonesRef: records, setDeletedUpdateTombstones: (next: unknown[]) => { records.current = next; } });
+    return records.current as Array<{ updateId: string; action: string; deletedAt: string }>;
+  }
+  const archiveTheRow = ({ id, archivedAt }: { id: string; archivedAt: string }) => {
+    const row = mockCloud.get(id)!;
+    mockCloud.set(id, { updatedAt: archivedAt, updateData: { ...row.updateData, isArchived: true, archivedAt } });
+    return { ok: true, configured: true, stubbed: false, data: null };
+  };
+
+  it('archived on this phone, the archive saved but the removal\'s save failed; a refresh, then a relaunch: the removal still goes up', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    const archivedAt = new Date().toISOString();
+    const records = { current: [A.buildUpdateTombstone(phone.saved()!, 'archive_sent_update', archivedAt)] as unknown[] };
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    try {
+      // Weak signal: the archive is saved, every other save fails, until the relaunch.
+      (archiveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: { id: string; archivedAt: string }) => archiveTheRow(params));
+      (saveProjectUpdate as jest.Mock).mockResolvedValue({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+      await reconcileProjectUpdateDeletionJournal(records.current as never);
+      await uploadPendingChanges();
+      await uploadPendingChanges(); // and any pass the archive's queueing asked for
+      expect(inCloud()).toMatchObject({ isArchived: true, archivedAt });
+      expect(documentIds(inCloud())).toEqual(['permit', 'survey']); // the removal's save failed
+      expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true, documentPatches: [{ documentId: 'permit', remove: true }] });
+
+      expect(await refreshWithRecords(phone, records)).toEqual([expect.objectContaining({ updateId: 'u1', action: 'hide_cloud_update' })]);
+      resetFieldUpdateSyncMemoryForTests(); // a relaunch replays the records
+      await reconcileProjectUpdateDeletionJournal(records.current as never);
+      expect((await queuedFor())!.payload).toMatchObject({ documentPatches: [{ documentId: 'permit', remove: true }] });
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+    await uploadPendingChanges(); // the signal returns
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: IPAD_NOTE });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('archived on the iPad while a removal waits on the phone; a refresh, then a relaunch: the removal goes onto the archived copy', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...inCloud(), isArchived: true, archivedAt }, archivedAt); // the iPad archives it
+    const records = { current: [] as unknown[] };
+    expect(await refreshWithRecords(phone, records)).toEqual([expect.objectContaining({ updateId: 'u1', action: 'hide_cloud_update' })]);
+
+    resetFieldUpdateSyncMemoryForTests();
+    await reconcileProjectUpdateDeletionJournal(records.current as never);
+    expect((await queuedFor())!.payload).toMatchObject({ documentPatches: [{ documentId: 'permit', remove: true }] });
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: IPAD_NOTE });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('an update archived in the cloud with only its own record waiting: the record is still dropped, and the cloud copy is not written', async () => {
+    const sent = savedUpdate([uploaded('permit')]);
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...sent, isArchived: true, archivedAt }, archivedAt);
+    await queueProjectUpdateRecord({ ...sent, notes: EDIT, status: 'queued' }, false);
+    (saveProjectUpdate as jest.Mock).mockClear();
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone({ ...sent, isArchived: true, archivedAt }, 'hide_cloud_update', archivedAt)]);
+    expect(await getOfflineQueue()).toEqual([]);
+    await uploadPendingChanges();
+    expect(saveProjectUpdate).not.toHaveBeenCalled();
+  });
+});
