@@ -24,7 +24,9 @@ import {
 } from '../../services/DAVEReportSnapshot';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from '../../services/ScheduleImportMerge';
+import {
+  mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks,
+} from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
@@ -246,5 +248,51 @@ describe('M2: after the lookahead that added a third twin is deleted (a later lo
     const H = doc('MASTER H', '2026-09-28T12:00:00.000Z');
     state = approve(state, H, ['Pour slab,Alpha,Lot,10/06/2026,10/10/2026,', 'Pour slab,Alpha,Lot,10/20/2026,10/24/2026,', 'Pour slab,Alpha,Lot,11/03/2026,11/07/2026,']);
     expect(named(state, 'Pour slab').map(item => [item.startDate, item.percentComplete])).toEqual([['10/06/2026', 0], ['10/20/2026', 0], ['11/03/2026', 30]]);
+  });
+});
+
+describe('L1: Set Active or Make Current back to an older master carries David\'s progress to twins from different imports', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const H = doc('MASTER H', '2026-09-21T12:00:00.000Z');
+  const ONE = 'Pour slab,Alpha,Lot,10/05/2026,10/09/2026,';
+  /** The web's Make Current: the shown tasks before and after, carried (desktop-auth-provider). */
+  const makeCurrent = (state: State, target: ReferenceDocument, now: string): State => {
+    const saved = state.documents.find(document => document.id === target.id)!;
+    const after: State = { ...state, documents: scheduleDocumentsAfterActivation(saved, state.documents, 'project') };
+    const carried = new Map(scheduleProgressCarriedToShownTasks({
+      before: shown(state), after: shown(after), documentsBefore: state.documents, documentsAfter: after.documents, now,
+    }).map(item => [item.id, item]));
+    return { ...after, items: after.items.map(item => carried.get(item.id) || item) };
+  };
+  const run = (gMovesBoth: boolean, back: (state: State, target: ReferenceDocument, now: string) => State = setActive) => {
+    let state = approve(EMPTY, F, [ONE, 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,']);
+    // G moves the second pour (and, in the control, the first too).
+    state = approve(state, G, [gMovesBoth ? 'Pour slab,Alpha,Lot,10/06/2026,10/10/2026,' : ONE, 'Pour slab,Alpha,Lot,10/21/2026,10/25/2026,']);
+    state = approve(state, H, ['Pour slab,Alpha,Lot,10/07/2026,10/11/2026,', 'Pour slab,Alpha,Lot,10/23/2026,10/27/2026,']);
+    const [first, second] = named(state, 'Pour slab');
+    state = record(record(state, first.id, 100, '2026-09-22T15:00:00.000Z'), second.id, 40, '2026-09-22T15:00:00.000Z');
+    const r1 = send(null, state, '2026-09-24T15:00:00.000Z');
+    const backed = back(state, G, '2026-09-25T10:00:00.000Z');
+    const r2 = send(r1.sent, backed, '2026-09-25T12:00:00.000Z');
+    return { batches: named(backed, 'Pour slab').map(item => item.importBatchId), percents: named(backed, 'Pour slab').map(item => item.percentComplete), r2 };
+  };
+
+  it('control: G moved both pours (one import): David\'s 100% and 40% follow them back', () => {
+    expect(run(true).percents).toEqual([100, 40]);
+  });
+
+  it('G moved only the second pour: the twins shown come from F and G, and David\'s 100% and 40% follow them back', () => {
+    const { batches, percents, r2 } = run(false);
+    expect(batches).toEqual(['batch-MASTER F', 'batch-MASTER G']);
+    expect(percents).toEqual([100, 40]);
+    expect(r2.counts).toBe('0 completed; 0 open');
+    expect(r2.lines.filter(line => /reopened|moved from 40% to 0%/.test(line))).toEqual([]);
+  });
+
+  it('the same on the web\'s Make Current', () => {
+    const { percents, r2 } = run(false, makeCurrent);
+    expect(percents).toEqual([100, 40]);
+    expect(r2.counts).toBe('0 completed; 0 open');
   });
 });

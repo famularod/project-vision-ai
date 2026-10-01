@@ -520,7 +520,11 @@ function pairTaskRevisions(
 ): Map<ScheduleItem, ScheduleItem> {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
-    const group = [item.taskName, projectKey(item), item.locationName, item.importBatchId].map(key).join('|');
+    // Whole-app audit A6 pass 19 L1 (1 Oct 2026): Set Active back to G showed one Pour slab from F's import
+    // (G found it unchanged) and one G moved. Grouped by import, each group met both of David's twins on H,
+    // so neither paired and the report said "Pour slab was reopened at 0% complete." The tasks Set Active and
+    // Make Current show (inFile false) are grouped by name, project and area only; an import's rows by import.
+    const group = [item.taskName, projectKey(item), item.locationName, ...(inFile ? [item.importBatchId] : [])].map(key).join('|');
     groups.set(group, [...(groups.get(group) || []), item]);
   });
   const candidates = [...groups.values()].map(rows => {
