@@ -101,6 +101,15 @@ export function partitionProjectUpdatesByDeletedTask<T>(
  * update linked to the old id stayed current evidence of a task that was
  * gone. The ids a task delete removes: the task, and the saved hidden rows it
  * answers to (its earlier ids), in its project. A row still shown is left.
+ *
+ * Whole-app audit A10 pass 8 L1 / A5 pass 10 L2 (30 Sep 2026): after Make
+ * Current back to the old master, deleting A's Pour slab phase 1 left master
+ * B's hidden row of it, which answers to A's row, so the report on phase 1
+ * stayed current, fell back by name onto phase 2 ("… complete while the
+ * schedule remains Not Started …"), and Set Active on B showed the deleted
+ * task again. The delete now also takes the saved hidden rows that answer to
+ * the task (a later revision lists every earlier id), in its project: the
+ * task's revision chain both ways.
  */
 export function scheduleItemIdsDeletedWithTask(
   items: readonly ScheduleItem[],
@@ -108,8 +117,10 @@ export function scheduleItemIdsDeletedWithTask(
   documents: readonly ReferenceDocument[],
 ): string[] {
   const earlier = new Set(scheduleTaskEarlierIds(task));
+  const taskId = normalized(task.id);
   const project = scheduleTaskProjectKey(task); // the app project, not a Gantt root's (A8 pass 9 M1)
-  const rows = items.filter(item => item.id !== task.id && earlier.has(item.id) &&
+  const rows = items.filter(item => item.id !== task.id &&
+    (earlier.has(item.id) || scheduleTaskEarlierIds(item).some(id => normalized(id) === taskId)) && // both ways (A10 pass 8 L1)
     scheduleTaskProjectKey(item) === project);
   if (rows.length === 0) return [task.id];
   const shown = new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id));
