@@ -44,6 +44,22 @@ const KEYCHAIN_FORMER_SENDER_ID_KEY = 'vitruvius.report-sender-id.app-storage.v1
 const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
+/**
+ * When this device sent reports, for this account (whole-app audit A6 pass
+ * 12 L2, 30 Sep 2026): the phone sent with no sender id (its Keychain
+ * locked, none read yet that app session), approved the next report the
+ * next day without sending it, and after another relaunch, before any
+ * download since its send, said "This device hasn't received your other
+ * device's latest changes yet…" with Approve disabled. Its own no-id send
+ * was known only while its saved copy was that send, and the approval had
+ * replaced it. Each send this device makes or recognizes is kept here, the
+ * last `MOST_OWN_SENDS_KEPT`. The key sits under the report snapshot prefix,
+ * which the owner storage sandbox keeps for each account.
+ */
+const OWN_SENDS_KEY = '@vitruvius/report-snapshots/own-sends/v1';
+const MOST_OWN_SENDS_KEPT = 50;
+/** One write at a time, so two sends recorded together both stay on the list. */
+let ownSendWrites: Promise<unknown> = Promise.resolve();
 /** How long opening Reports waits for the shared period before using this device's own. */
 const CLOUD_READ_TIMEOUT_MS = 4000;
 
@@ -273,6 +289,13 @@ async function formerReportSenderId(storage: SnapshotStorage, keychain: SenderId
  * L3): opening Reports reads it before any send. A send under this install's
  * former id (the app-storage one, pass 11 L4) is known by the saved copy
  * too: a device restored from a backup may have carried that id as well.
+ *
+ * Whole-app audit A6 pass 12 L2 (30 Sep 2026): a send with no id, or under
+ * the former id, is also this device's when its send time is on this
+ * account's list of this device's own sends (`rememberReportSentHere`), so
+ * it stays known once an approval is saved over it. An approval's
+ * superseded send is never taken for this device's on its own say: it may
+ * be the other device's.
  */
 export async function reportSnapshotSentHere(
   snapshot: DAVEReportSnapshot | null | undefined,
@@ -283,9 +306,32 @@ export async function reportSnapshotSentHere(
   const here = await savedReportSenderId(storage, keychain).catch(() => null);
   if (snapshot.sentBy && snapshot.sentBy === here) return true;
   if (snapshot.sentBy && snapshot.sentBy !== await formerReportSenderId(storage, keychain).catch(() => null)) return false;
+  await ownSendWrites;
+  if ((await ownReportSendTimesSaved(storage)).includes(snapshot.deliveredAt)) return true;
   if (!snapshot.reportFormat) return false;
   const own = await loadLocalDAVEReportSnapshot(snapshot.scopeKey, snapshot.reportFormat, storage);
   return own?.deliveredAt === snapshot.deliveredAt && own.sourceFingerprint === snapshot.sourceFingerprint;
+}
+
+/** This device sent a report at `sentAt` (A6 pass 12 L2): kept on this account's list of its own sends. */
+export function rememberReportSentHere(sentAt: string, storage: SnapshotStorage = AsyncStorage): Promise<void> {
+  const write = ownSendWrites.then(async () => {
+    if (Number.isNaN(Date.parse(sentAt))) return;
+    const kept = await ownReportSendTimesSaved(storage);
+    if (kept.includes(sentAt)) return;
+    await storage.setItem(OWN_SENDS_KEY, JSON.stringify([...kept, sentAt].slice(-MOST_OWN_SENDS_KEPT)));
+  }).catch(() => undefined);
+  ownSendWrites = write;
+  return write;
+}
+
+async function ownReportSendTimesSaved(storage: SnapshotStorage): Promise<string[]> {
+  try {
+    const saved: unknown = JSON.parse(await storage.getItem(OWN_SENDS_KEY) ?? '[]');
+    return Array.isArray(saved) ? saved.filter((time): time is string => typeof time === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function randomSenderId(): string {

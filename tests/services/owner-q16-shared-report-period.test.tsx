@@ -421,12 +421,16 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
     // sender id, outside that list on purpose (it names the install, never the account); pin updated deliberately.
     // Whole-app audit A6 pass 10 M1/M2: a device that waited for the other device's changes also keeps when it
     // last downloaded the tasks, under the same per-account prefix; set aside here, pin updated deliberately.
+    // Whole-app audit A6 pass 12 L2 (30 Sep 2026): each device that sent also keeps the times of its own
+    // sends, under the same per-account prefix; pin updated deliberately to expect it.
+    const ownSendsKey = '@vitruvius/report-snapshots/own-sends/v1';
     for (const device of ['phone', 'ipad']) {
       expect(Array.from(mockDevices.get(device)?.keys() ?? []).filter(key => key !== SCHEDULE_CLOUD_PULL_KEY).sort())
-        .toEqual(['@vitruvius/report-sender-id/v1', keyFor('project_manager')]);
+        .toEqual(['@vitruvius/report-sender-id/v1', ownSendsKey, keyFor('project_manager')]);
     }
     expect(keyFor('project_manager').startsWith(PREFIX)).toBe(true);
     expect(SCHEDULE_CLOUD_PULL_KEY.startsWith(PREFIX.slice(0, -'v1:'.length))).toBe(true);
+    expect(ownSendsKey.startsWith(PREFIX.slice(0, -'v1:'.length))).toBe(true);
   });
 
   it('an approval on the iPad that was never sent does not move the phone\'s period', async () => {

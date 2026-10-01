@@ -264,8 +264,11 @@ describe('each report format keeps its own period on the Reports screen (owner a
     expect(onCopyReport).toHaveBeenCalledTimes(3);
     // Whole-app audit A6 pass 9 L2 (30 Sep 2026): a device that sent a report also keeps its install's
     // random sender id; pin updated deliberately to set that one key aside.
+    // Whole-app audit A6 pass 12 L2 (30 Sep 2026): and the times of its own sends, one list for every format,
+    // under the per-account report-snapshot prefix; pin updated deliberately to expect it.
     expect(Array.from(mockStorage.keys()).filter(key => key !== '@vitruvius/report-sender-id/v1').sort())
-      .toEqual([keyFor('executive'), keyFor('project_manager')]);
+      .toEqual(['@vitruvius/report-snapshots/own-sends/v1', keyFor('executive'), keyFor('project_manager')]);
+    expect(JSON.parse(mockStorage.get('@vitruvius/report-snapshots/own-sends/v1') as string)).toHaveLength(3);
     expect(stored(keyFor('project_manager'))?.deliveredAt).not.toBeNull();
     expect(stored(keyFor('executive'))?.deliveredAt).not.toBeNull();
   });

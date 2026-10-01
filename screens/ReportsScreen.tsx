@@ -69,6 +69,7 @@ import {
 import {
   loadDAVEReportPeriod,
   loadDAVEReportSnapshot,
+  rememberReportSentHere,
   reportSenderId,
   reportSnapshotSentHere,
   saveDAVEReportSnapshot,
@@ -617,6 +618,8 @@ export function ReportsScreen({
         for (const sent of new Set([loaded.snapshot, reportPeriodSend(loaded.snapshot)])) {
           if (await reportSnapshotSentHere(sent).catch(() => false)) {
             rememberOwnReportSend(sent?.deliveredAt as string);
+            // Kept for this account, so it stays this device's once an approval is saved over it (A6 pass 12 L2).
+            void rememberReportSentHere(sent?.deliveredAt as string);
           }
         }
         // When this device last downloaded every task, read with the period (A6 pass 10 M1, M2).
@@ -983,6 +986,8 @@ export function ReportsScreen({
     // a tab switch is never taken for the other device's; the approval it
     // sent now stands on the period that send starts (A6 pass 8 M1).
     rememberOwnReportSend(deliveredAt);
+    // And for this account, past this app session, whether or not the send carries an id (A6 pass 12 L2).
+    void rememberReportSentHere(deliveredAt);
     rememberApprovedReportSent(sentStateKey, reportPeriodSentAt(saved), deliveredAt);
     // Marked with this install's sender id, so it stays known as this
     // device's after a relaunch (A6 pass 9 L2).
