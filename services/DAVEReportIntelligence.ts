@@ -862,7 +862,12 @@ function buildRecentChanges({
         reportingPeriodStart !== null &&
         (dateValue(occurredAt) ?? 0) <= reportingPeriodStart
       ) continue;
-      const activity = clean(task.latestActivitySummary);
+      // A6 pass 13: an activity from before the earlier report was said
+      // there; a later stamp (a delete writing ids) does not repeat it.
+      const activity = reportingPeriodStart === null ||
+        (dateValue(task.latestActivityAt) ?? 0) > reportingPeriodStart
+        ? clean(task.latestActivitySummary)
+        : '';
       if (activity) {
         taskChanges.push(Object.freeze({
           id: `report-change:${task.taskId}:activity`,

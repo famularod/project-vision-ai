@@ -294,6 +294,22 @@ describe('what still prints', () => {
       .toEqual(lines.filter(line => line.startsWith('• Alpha: Pour slab — ')));
   });
 
+  it('an activity from before the earlier report is not said again once the delete stamps the task', () => {
+    const OLD_NOTE_AT = '2026-09-27T20:00:00.000Z';
+    const { before } = oldMasterCase();
+    const pour = named(shown(before), 'Pour slab')[0];
+    const noted = edited(before, pour.id, {
+      activity: [{ id: 'a0', message: 'Forms set.', author: 'David', createdAt: OLD_NOTE_AT }],
+    }, OLD_NOTE_AT);
+    const sent = snapshotOf(noted, REPORT_SENT);
+    const deleted = deleteWithItems(noted, F);
+    expect(byId(deleted, pour.id).updatedAt).toBe(DELETED_AT);
+    expect(sinceLines(deleted, sent)).toEqual(NOTHING_CHANGED);
+    // A hand edit after the report reads "was updated.", not the old note.
+    const moved = edited(deleted, pour.id, { startDate: '10/04/2026' });
+    expect(sinceLines(moved, sent).filter(line => line.includes('Pour slab'))).toEqual(['• Alpha: Pour slab was updated.']);
+  });
+
   it('a real change the comparison names is said once, as before', () => {
     const { sent, deleted } = oldMasterCase();
     const pour = named(shown(deleted), 'Pour slab')[0];
