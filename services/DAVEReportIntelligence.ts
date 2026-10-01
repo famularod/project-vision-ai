@@ -253,10 +253,15 @@ export function buildDAVEReportBriefing({
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
   const lastUpdatedAt = completedTaskLastUpdatedAt(scheduleItems);
-  const completedWork = unique(truths.flatMap(truth => truth.schedule
+  const completedTasks = truths.flatMap(truth => truth.schedule
     .filter(scheduleProgressIsComplete)
     .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
-    .map(task => reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt))),
+    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
+  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
+  const tasksOnLine = new Map<string, Set<string>>();
+  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
+  const completedWork = unique(completedTasks.map(({ truth, task, line }) =>
+    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
   ).slice(0, 12);
   const currentWork = unique(truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
@@ -432,6 +437,8 @@ function reportCompletedTaskFact(
   task: DAVEProjectTruth['schedule'][number],
   includeProject: boolean,
   lastUpdatedAt: CompletedTaskLastUpdatedAt,
+  /** How many different tasks read this same line (A6 pass 19 L4): "(2 tasks)". */
+  tasks = 1,
 ) {
   const prefix = includeProject ? `${projectName} — ` : '';
   const area = task.areaName ? ` (${task.areaName})` : '';
@@ -439,7 +446,7 @@ function reportCompletedTaskFact(
   const lastUpdated = latestChange
     ? ` Last updated ${formatReportDate(latestChange)}.`
     : '';
-  return `${prefix}${task.taskName}${area}: Complete; 100% complete.${lastUpdated}`;
+  return `${prefix}${task.taskName}${area}: Complete; 100% complete${tasks > 1 ? ` (${tasks} tasks)` : ''}.${lastUpdated}`;
 }
 
 function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number], lastUpdatedAt: CompletedTaskLastUpdatedAt) {
@@ -864,15 +871,21 @@ function buildRecentChanges({
   truths: readonly DAVEProjectTruth[];
   reportingPeriod: DAVEReportPeriodComparison;
 }): DAVEReportRecentChange[] {
-  const comparisonChanges = reportingPeriod.changes.map(change => Object.freeze({
-    id: `report-change:${change.id}`,
-    projectName: change.projectName,
-    taskName: change.taskName,
-    areaName: change.areaName,
-    occurredAt: reportingPeriod.endedAt,
-    summary: `${change.projectName}: ${change.summary}`,
-    source: 'approved_report_comparison' as const,
-  }));
+  // The task each line is about, for lines two tasks share (A6 pass 19 L4).
+  const taskIdOf = new Map<DAVEReportRecentChange, string>();
+  const comparisonChanges = reportingPeriod.changes.map(change => {
+    const line: DAVEReportRecentChange = Object.freeze({
+      id: `report-change:${change.id}`,
+      projectName: change.projectName,
+      taskName: change.taskName,
+      areaName: change.areaName,
+      occurredAt: reportingPeriod.endedAt,
+      summary: `${change.projectName}: ${change.summary}`,
+      source: 'approved_report_comparison' as const,
+    });
+    taskIdOf.set(line, change.taskId);
+    return line;
+  });
   const reportingPeriodStart = dateValue(reportingPeriod.startedAt);
   // Whole-app audit A6 pass 9 M1 (30 Sep 2026): a task the comparison
   // already reports gets no "was updated." line as well. A revised task is a
@@ -922,7 +935,7 @@ function buildRecentChanges({
           : ''
       );
       if (activity) {
-        taskChanges.push(Object.freeze({
+        const line: DAVEReportRecentChange = Object.freeze({
           id: `report-change:${task.taskId}:activity`,
           projectName: truth.projectName,
           taskName: task.taskName,
@@ -930,9 +943,11 @@ function buildRecentChanges({
           occurredAt,
           summary: `${truth.projectName}: ${task.taskName} — ${toPMReportLanguage(activity) || activity}`,
           source: 'task_activity',
-        }));
+        });
+        taskIdOf.set(line, task.taskId);
+        taskChanges.push(line);
       } else if (occurredAt && !comparedTaskIds.has(task.taskId) && !unchangedTaskIds.has(task.taskId)) {
-        taskChanges.push(Object.freeze({
+        const line: DAVEReportRecentChange = Object.freeze({
           id: `report-change:${task.taskId}:revision`,
           projectName: truth.projectName,
           taskName: task.taskName,
@@ -940,16 +955,52 @@ function buildRecentChanges({
           occurredAt,
           summary: `${truth.projectName}: ${task.taskName} was updated.`,
           source: 'task_revision',
-        }));
+        });
+        taskIdOf.set(line, task.taskId);
+        taskChanges.push(line);
       }
     }
   }
 
-  return uniqueBy(
+  return sameLineOfSameNamedTasks(
     [...comparisonChanges, ...taskChanges]
       .sort((left, right) => (dateValue(right.occurredAt) ?? 0) - (dateValue(left.occurredAt) ?? 0)),
-    change => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`,
+    taskIdOf,
   );
+}
+
+/**
+ * Lines once each (whole-app audit A6 pass 9 M1), and the same line of two
+ * different same-named tasks told apart (whole-app audit A6 pass 19 L4, 1 Oct
+ * 2026). Lines were kept once by name and text, so Pour slab in Lot and Pour
+ * slab in Deck, both completed, read "+2 completed" with one "Pour slab was
+ * completed." The same task reached twice still says it once. Different tasks
+ * in different areas name the area ("Pour slab (Deck) was completed."); in
+ * one area they say it once with the count ("Pour slab was completed (2
+ * tasks).").
+ */
+function sameLineOfSameNamedTasks(
+  changes: readonly DAVEReportRecentChange[],
+  taskIdOf: ReadonlyMap<DAVEReportRecentChange, string>,
+): DAVEReportRecentChange[] {
+  const lineKey = (change: DAVEReportRecentChange) => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`;
+  const areaKey = (change: DAVEReportRecentChange) => normalized(change.areaName);
+  const perTask = uniqueBy(changes, change => `${lineKey(change)}|${taskIdOf.get(change) ?? change.id}`);
+  const tasksOn = new Map<string, DAVEReportRecentChange[]>();
+  perTask.forEach(change => tasksOn.set(lineKey(change), [...(tasksOn.get(lineKey(change)) || []), change]));
+  const areasNamed = (change: DAVEReportRecentChange) => new Set(tasksOn.get(lineKey(change))!.map(areaKey)).size > 1;
+  return uniqueBy(perTask, change => (areasNamed(change) ? `${lineKey(change)}|${areaKey(change)}` : lineKey(change)))
+    .map(change => {
+      const tasks = tasksOn.get(lineKey(change))!;
+      if (tasks.length === 1) return change;
+      const area = areasNamed(change) && clean(change.areaName) ? ` (${clean(change.areaName)})` : '';
+      const inArea = tasks.filter(other => areaKey(other) === areaKey(change)).length;
+      const prefix = `${change.projectName}: ${change.taskName}`;
+      if (!change.summary.startsWith(prefix)) return change;
+      const rest = change.summary.slice(prefix.length);
+      const counted = inArea < 2 ? rest : rest.endsWith('.') ? `${rest.slice(0, -1)} (${inArea} tasks).` : `${rest} (${inArea} tasks)`;
+      return Object.freeze({ ...change, summary: `${prefix}${area}${counted}` });
+    });
 }
 
 function buildReportMilestones(

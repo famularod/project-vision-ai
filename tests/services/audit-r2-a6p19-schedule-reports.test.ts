@@ -377,3 +377,52 @@ describe('L3: a note on a task the earlier report did not have (an older master 
     expect(r3.lines).toEqual(['Alpha: Cleanup was added to the project plan.']);
   });
 });
+
+describe('L4: two same-named tasks with the same change are told apart', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const completeBoth = (lines: string[]) => {
+    let state = approve(EMPTY, F, lines);
+    const r0 = send(null, state, '2026-09-08T15:00:00.000Z');
+    const [one, two] = named(state, 'Pour slab');
+    state = record(record(state, one.id, 100, '2026-09-10T15:00:00.000Z'), two.id, 100, '2026-09-10T15:00:00.000Z');
+    return { r0, state, r1: send(r0.sent, state, '2026-09-14T15:00:00.000Z') };
+  };
+
+  it('in different areas: each line names its area', () => {
+    const { r1 } = completeBoth(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Deck,10/12/2026,10/16/2026,']);
+    expect(r1.counts).toBe('2 completed; -2 open');
+    expect([...r1.lines].sort()).toEqual(['Alpha: Pour slab (Deck) was completed.', 'Alpha: Pour slab (Lot) was completed.']);
+    expect(r1.completed.map(line => line.replace(/ Last updated .*$/, '')).sort())
+      .toEqual(['Pour slab (Deck): Complete; 100% complete.', 'Pour slab (Lot): Complete; 100% complete.']);
+  });
+
+  it('in the same area: one line with the count, in the since lines and in Completed Work', () => {
+    const { r1 } = completeBoth(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,']);
+    expect(r1.counts).toBe('2 completed; -2 open');
+    expect(r1.lines).toEqual(['Alpha: Pour slab was completed (2 tasks).']);
+    expect(r1.completed).toEqual(['Pour slab (Lot): Complete; 100% complete (2 tasks). Last updated Sep 10, 2026.']);
+  });
+
+  it('one of the two: no count, no area', () => {
+    let state = approve(EMPTY, F, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Deck,10/12/2026,10/16/2026,']);
+    const r0 = send(null, state, '2026-09-08T15:00:00.000Z');
+    state = record(state, named(state, 'Pour slab')[0].id, 100, '2026-09-10T15:00:00.000Z');
+    expect(send(r0.sent, state, '2026-09-14T15:00:00.000Z').lines).toEqual(['Alpha: Pour slab was completed.']);
+  });
+
+  it('the same task reached twice still says it once, with no count', () => {
+    const { r0, state } = completeBoth(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Framing,Alpha,Lot,10/12/2026,10/16/2026,']
+      .concat(['Pour slab,Alpha,Deck,10/19/2026,10/23/2026,']));
+    const truth = truthOf(state, '2026-09-14T15:00:00.000Z');
+    const lot = truth.schedule.find(task => task.taskName === 'Pour slab' && task.areaName === 'Lot')!;
+    const twice = { ...truth, schedule: [...truth.schedule, lot] };
+    const fingerprint = buildDAVEReportSourceFingerprint([twice]);
+    const briefing = buildDAVEReportBriefing({
+      truths: [twice], selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(r0.sent, fingerprint), scheduleItems: shown(state),
+    });
+    expect(briefing.recentChanges.map(change => change.summary).sort())
+      .toEqual(['Alpha: Pour slab (Deck) was completed.', 'Alpha: Pour slab (Lot) was completed.']);
+    expect(briefing.completedWork.map(line => line.replace(/ Last updated .*$/, '')).sort())
+      .toEqual(['Pour slab (Deck): Complete; 100% complete.', 'Pour slab (Lot): Complete; 100% complete.']);
+  });
+});
