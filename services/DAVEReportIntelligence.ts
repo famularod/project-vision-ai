@@ -1111,12 +1111,21 @@ function stableHash(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * Left out of the report's fingerprint: when the truth was generated, and the
+ * ids a task had before new masters moved it (whole-app audit A6 pass 12 L1,
+ * 30 Sep 2026). Those say which task a revised row is, not what the report
+ * says about it, so an approval given, or a send made on the other device,
+ * before the truth carried them is still the same content.
+ */
+const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds']);
+
 function withoutVolatileReportSourceFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => key !== 'generatedAt')
+        .filter(([key]) => !VOLATILE_REPORT_SOURCE_FIELDS.has(key))
         .map(([key, child]) => [key, withoutVolatileReportSourceFields(child)]),
     );
   }

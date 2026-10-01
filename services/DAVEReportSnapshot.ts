@@ -28,6 +28,14 @@ export type DAVEReportSnapshotTask = Readonly<{
   approvalStatus: string | null;
   estimatedScheduleImpactDays: number | null;
   /**
+   * The ids this task had before new masters moved its dates, oldest first:
+   * the ids the import recorded on the revised row (revisedFromTaskIds).
+   * Whole-app audit A6 pass 12 L1 (30 Sep 2026): a revised task is paired
+   * with the earlier report's task by these first. Absent when there are
+   * none, and on snapshots saved before then (read with `earlierIdsOf`).
+   */
+  earlierTaskIds?: readonly string[];
+  /**
    * When this task last changed on the device that saved the snapshot, saved
    * by A6 pass 9 M2 only (30 Sep 2026). No longer saved or read: a row's
    * update time also moves for a note or an owner change, so it could not
@@ -378,6 +386,7 @@ export function buildDAVEReportSnapshot({
 }): DAVEReportSnapshot {
   const tasks = truths.flatMap(truth => truth.schedule.map(task => Object.freeze({
     taskId: task.taskId,
+    ...withEarlierIds(task),
     projectName: truth.projectName,
     taskName: task.taskName,
     areaName: clean(task.areaName) || null,
@@ -442,12 +451,14 @@ export function compareDAVEReportSnapshots({
   const currentById = new Map(current.tasks.map(task => [task.taskId, task]));
   // A task on new dates in a revised schedule is a new row with the file's id
   // (whole-app audit A6 pass 8 M2): it is compared with the task the
-  // previous report had, not listed as added and removed.
+  // previous report had, not listed as added and removed. By the ids the
+  // import recorded first (A6 pass 12 L1); by name only for tasks with none.
+  const linked = linkTasksById(previous.tasks, current.tasks);
   const revisions = pairRevisedTasks(
-    previous.tasks.filter(task => !currentById.has(task.taskId)),
-    current.tasks.filter(task => !previousById.has(task.taskId)),
+    previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task)),
+    current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task)),
   );
-  const revisedPriorIds = new Set([...revisions.values()].map(task => task.taskId));
+  const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
 
   // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
@@ -457,7 +468,7 @@ export function compareDAVEReportSnapshots({
   // has the other device's changes is now told for the whole report, by
   // when it last downloaded the tasks (`otherDeviceSendNotReceived`).
   for (const task of current.tasks) {
-    const prior = previousById.get(task.taskId) ?? revisions.get(task);
+    const prior = previousById.get(task.taskId) ?? linked.pairs.get(task) ?? revisions.get(task);
     if (!prior) {
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
       continue;
@@ -571,6 +582,75 @@ export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
     .join('|') || 'selected-projects';
 }
 
+/** The earlier ids a snapshot task carries, read as stored (a snapshot saved before A6 pass 12 has none). */
+function earlierIdsOf(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTaskIds'>): string[] {
+  const listed: readonly unknown[] = Array.isArray(task.earlierTaskIds) ? task.earlierTaskIds : [];
+  return [...new Set(listed.map(clean).filter(id => id && id !== task.taskId))];
+}
+
+function withEarlierIds(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTaskIds'>) {
+  const earlierTaskIds = earlierIdsOf(task);
+  return earlierTaskIds.length > 0 ? { earlierTaskIds: Object.freeze(earlierTaskIds) } : {};
+}
+
+type TaskIdLinks = Readonly<{
+  /** Each current task and the earlier report's task it is by id. */
+  pairs: ReadonlyMap<DAVEReportSnapshotTask, DAVEReportSnapshotTask>;
+  /** Earlier tasks a current task answers to: never paired by name. */
+  previous: ReadonlySet<DAVEReportSnapshotTask>;
+  /** Current tasks that answer to an earlier task: never paired by name. */
+  current: ReadonlySet<DAVEReportSnapshotTask>;
+}>;
+
+/**
+ * Whole-app audit A6 pass 12 L1 (30 Sep 2026): the report paired a revised
+ * task by name, area and a tie-break, and cross-paired two "Inspection" tasks
+ * the import had paired by file order: "moved from 40% to 50%" and "finish
+ * changed from 2026-10-01 to 2026-12-08", which no task did, while field
+ * updates and Project Truth followed the import. A task now answers to its
+ * own id and the ids it had before new masters moved it (the import's
+ * revisedFromTaskIds): a current task not in the earlier report by its own
+ * id is the earlier task that answers to one of the same ids. Only one to
+ * one: a task that could be either of two earlier tasks, or one of two that
+ * could be the same earlier task, is neither, and none of them is paired by
+ * name (never a guess against the ids). Tasks with no such link (rows saved
+ * before the import kept earlier ids) are left to `pairRevisedTasks`.
+ */
+function linkTasksById(
+  previous: readonly DAVEReportSnapshotTask[],
+  current: readonly DAVEReportSnapshotTask[],
+): TaskIdLinks {
+  const answersTo = (task: DAVEReportSnapshotTask) => [task.taskId, ...earlierIdsOf(task)];
+  const previousIds = new Set(previous.map(task => task.taskId));
+  const currentIds = new Set(current.map(task => task.taskId));
+  const previousByAnyId = new Map<string, DAVEReportSnapshotTask[]>();
+  previous.forEach(task => answersTo(task).forEach(id => {
+    previousByAnyId.set(id, [...(previousByAnyId.get(id) || []), task]);
+  }));
+  const linkedPrevious = new Set<DAVEReportSnapshotTask>();
+  const linkedCurrent = new Set<DAVEReportSnapshotTask>();
+  const claims = new Map<DAVEReportSnapshotTask, DAVEReportSnapshotTask[]>();
+  const matchesOf = new Map<DAVEReportSnapshotTask, DAVEReportSnapshotTask[]>();
+  current.filter(task => !previousIds.has(task.taskId)).forEach(task => {
+    const matches = [...new Set(answersTo(task).flatMap(id => previousByAnyId.get(id) || []))];
+    if (matches.length === 0) return;
+    linkedCurrent.add(task);
+    matchesOf.set(task, matches);
+    matches
+      .filter(prior => !currentIds.has(prior.taskId))
+      .forEach(prior => {
+        linkedPrevious.add(prior);
+        claims.set(prior, [...(claims.get(prior) || []), task]);
+      });
+  });
+  const pairs = new Map<DAVEReportSnapshotTask, DAVEReportSnapshotTask>();
+  matchesOf.forEach((matches, task) => {
+    const [prior] = matches;
+    if (matches.length === 1 && !currentIds.has(prior.taskId) && claims.get(prior)?.length === 1) pairs.set(task, prior);
+  });
+  return Object.freeze({ pairs, previous: linkedPrevious, current: linkedCurrent });
+}
+
 /**
  * The previous report's task each unmatched current task revises (whole-app
  * audit A6 pass 8 M2, 30 Sep 2026), paired as the schedule import pairs a
@@ -593,6 +673,10 @@ export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
  * tasks now pair the way with the fewest status, completion and owner
  * differences (`pairByStanding`); only a tie between ways that would say
  * different things leaves them added and removed.
+ *
+ * Since A6 pass 12 L1 only tasks with no id link reach here
+ * (`linkTasksById`): rows a new master saved before the import kept the ids
+ * a task had before.
  */
 function pairRevisedTasks(
   previous: readonly DAVEReportSnapshotTask[],
@@ -638,6 +722,14 @@ const MOST_SAME_NAMED_TO_PAIR = 6;
  * changes. A tie now goes to the way that moves the tasks least
  * (`movement`), finish order first among equals; when ways that move as
  * little would still print different lines, none.
+ *
+ * Whole-app audit A6 pass 12 L1 (30 Sep 2026): the percent change came
+ * first, so a revision that re-dated both by a week, one percent raised and
+ * the other lowered, was cross-paired by the smaller percent change and
+ * printed two finish changes of two months. How far the finish dates moved
+ * now comes first, as finish order did in pass 10 and as the import pairs a
+ * revision (in file order). Pass 11's case pairs the same way the import
+ * does: the task due first is the one completed.
  */
 function pairByStanding(
   earlier: readonly DAVEReportSnapshotTask[],
@@ -681,12 +773,13 @@ function saidBy(
 const FINISH_SET_OR_CLEARED_DAYS = 3650;
 
 /**
- * How much a pairing moves the tasks (A6 pass 11 L2), compared in order: the
- * percent change of tasks whose completion did not change (a completion is
- * said as completed or reopened, not as a percent); then how far the finish
- * dates moved, squared per task so a schedule shifted by more than the gap
- * between two same-named tasks still pairs them in finish order; then how
- * many approval and schedule-impact changes it would print.
+ * How much a pairing moves the tasks (A6 pass 11 L2), compared in order: how
+ * far the finish dates moved, squared per task so a schedule shifted by more
+ * than the gap between two same-named tasks still pairs them in finish order
+ * (first since A6 pass 12 L1); then the percent change of tasks whose
+ * completion did not change (a completion is said as completed or reopened,
+ * not as a percent); then how many approval and schedule-impact changes it
+ * would print.
  */
 function movement(pairs: readonly (readonly [DAVEReportSnapshotTask, DAVEReportSnapshotTask])[]): number[] {
   let percent = 0;
@@ -700,7 +793,7 @@ function movement(pairs: readonly (readonly [DAVEReportSnapshotTask, DAVEReportS
     other += Number(normalized(prior.approvalStatus) !== normalized(task.approvalStatus)) +
       Number(prior.estimatedScheduleImpactDays !== task.estimatedScheduleImpactDays);
   }
-  return [percent, finish, other];
+  return [finish, percent, other];
 }
 
 function lessMovement(left: readonly number[], right: readonly number[]): number {

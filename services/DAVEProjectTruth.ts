@@ -30,7 +30,7 @@ import {
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
-import { scheduleTaskLinks } from './ScheduleTaskRevisions';
+import { scheduleTaskEarlierIds, scheduleTaskLinks } from './ScheduleTaskRevisions';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -109,6 +109,14 @@ export type DAVEPhotoComparisonTruth = {
 
 export type DAVEScheduleTruth = {
   taskId: string;
+  /**
+   * The ids this task had before new masters moved its dates, oldest first
+   * (revisedFromTaskIds, as the import recorded them; ScheduleTaskRevisions).
+   * Absent when there are none. Whole-app audit A6 pass 12 L1 (30 Sep 2026):
+   * "since the last report" pairs a revised task with the earlier report's
+   * task by these, as field updates do, before any guess by name.
+   */
+  earlierTaskIds?: string[];
   taskName: string;
   itemType: ScheduleItem['itemType'];
   areaName: string | null;
@@ -704,8 +712,10 @@ function buildScheduleTruth(
       .sort((left, right) =>
         (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
       )[0];
+    const earlierTaskIds = scheduleTaskEarlierIds(item);
     return {
       taskId: item.id,
+      ...(earlierTaskIds.length > 0 ? { earlierTaskIds } : {}),
       taskName: item.taskName,
       itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),

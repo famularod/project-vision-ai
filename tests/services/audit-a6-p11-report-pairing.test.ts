@@ -64,15 +64,23 @@ const summaries = (comparison: ReturnType<typeof compare>) => comparison.changes
 const kinds = (comparison: ReturnType<typeof compare>) => comparison.changes.map(change => change.kind).sort();
 
 describe('L2: a tie between same-named tasks goes to the way that moves them least', () => {
-  it('B completed on Oct 2, A still 50% and now due Oct 30: no progress change is printed, and the finish changes are the true ones', () => {
+  // Changed on purpose by A6 pass 12 L1 (30 Sep 2026): how far the finish
+  // dates moved now comes before the percent change, as finish order did in
+  // pass 10 and as the import pairs a revision (file order). With nothing else
+  // to tell them apart, the task due first (A, Oct 1) is the one completed on
+  // Oct 2, which is how the import records it (row 1 revises row 1), so field
+  // updates, Project Truth and the report name the same Inspection. Pass 11
+  // pinned the other reading (B completed, A moved to Oct 30).
+  it('one completed on Oct 2, the other 50% due Oct 30: paired by the least finish movement, as the import pairs them', () => {
     const comparison = compare(
       [task('a', '2026-10-01', 50), task('b', '2026-10-20', 10)],
       [task('b2', '2026-10-02', 100), task('a2', '2026-10-30', 50)],
     );
     expect(comparison).toMatchObject({ completeDelta: 1, openDelta: -1 });
     expect(summaries(comparison).sort()).toEqual([
-      'Inspection finish changed from 2026-10-01 to 2026-10-30.',
-      'Inspection finish changed from 2026-10-20 to 2026-10-02.',
+      'Inspection finish changed from 2026-10-01 to 2026-10-02.',
+      'Inspection finish changed from 2026-10-20 to 2026-10-30.',
+      'Inspection moved from 10% to 50% complete.',
       'Inspection was completed.',
     ]);
   });
@@ -180,7 +188,11 @@ describe('L2 through the real import merge, in both report formats', () => {
     generatedAt: NOW,
   } as unknown as PIEReportDraft;
 
-  it('the revised file completes B on Oct 2 and moves A to Oct 30: no "moved from 10% to 50%"', () => {
+  // Changed on purpose by A6 pass 12 L1 (30 Sep 2026): the revised rows carry
+  // the task each revises (revisedFromTaskIds: row 1 revises row 1), and the
+  // report now pairs by those, as field updates and Project Truth do. Pass 11
+  // pinned the report's own guess, which named the other Inspection completed.
+  it('the revised file\'s row 1 is complete on Oct 2 and row 2 is 50% due Oct 30: the report follows the import\'s pairing', () => {
     const v1 = [
       row('tower-v1', 'tower-v1-inspection-1', '2026-10-01', 50, 1),
       row('tower-v1', 'tower-v1-inspection-2', '2026-10-20', 10, 2),
@@ -210,7 +222,10 @@ describe('L2 through the real import merge, in both report formats', () => {
       const since = body.slice(start, body.indexOf('COMPLETED WORK', start));
       expect(since).toContain('+1 completed; -1 open;');
       expect(since).toContain('Tower: Inspection was completed.');
-      expect(since).not.toMatch(/moved from \d+% to \d+%|was added|was removed/);
+      expect(since).toContain('Tower: Inspection finish changed from 2026-10-01 to 2026-10-02.');
+      expect(since).toContain('Tower: Inspection moved from 10% to 50% complete.');
+      expect(since).toContain('Tower: Inspection finish changed from 2026-10-20 to 2026-10-30.');
+      expect(since).not.toMatch(/was added|was removed|2026-10-01 to 2026-10-30|2026-10-20 to 2026-10-02/);
     }
   });
 });
