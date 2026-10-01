@@ -80,15 +80,11 @@ export function ScheduleTaskEditorModal({
     closedProjects,
     projectInView: initialProjectName,
   });
-  const defaultProjectAreas = projectAreasForProject({
-    projectAreas,
-    projectName: defaultProjectName,
-    scheduleItems,
-  });
+  const defaultLocationName = firstProjectLocation(projectAreas, scheduleItems, defaultProjectName);
   const [taskName, setTaskName] = useState('');
   const [itemType, setItemType] = useState<ProjectItemType>('Task');
   const [projectName, setProjectName] = useState(defaultProjectName);
-  const [locationName, setLocationName] = useState(defaultProjectAreas[0]?.name || '');
+  const [locationName, setLocationName] = useState(defaultLocationName);
   const [startDate, setStartDate] = useState('');
   const [finishDate, setFinishDate] = useState('');
   const [milestone, setMilestone] = useState('');
@@ -118,11 +114,11 @@ export function ScheduleTaskEditorModal({
     if (filledRef.current) return;
     filledRef.current = true;
     setProjectName(defaultProjectName);
-    setLocationName(defaultProjectAreas[0]?.name || '');
+    setLocationName(defaultLocationName);
     setOwner(defaultOwner || '');
   }, [
+    defaultLocationName,
     defaultOwner,
-    defaultProjectAreas,
     defaultProjectName,
     initialProjectName,
     visible,
@@ -132,22 +128,11 @@ export function ScheduleTaskEditorModal({
     () => uniqueOptions(openScheduleTaskProjects({ projects, closedProjects })),
     [closedProjects, projects],
   );
-  const scopedProjectAreas = useMemo(() => projectAreasForProject({
-    projectAreas,
-    projectName,
-    scheduleItems,
-  }), [projectAreas, projectName, scheduleItems]);
-  const scopedScheduleItems = useMemo(() => {
-    const target = projectName.trim().toLowerCase();
-    if (!target) return scheduleItems;
-    return scheduleItems.filter(item =>
-      (item.scheduleProjectName?.trim() || item.projectName.trim()).toLowerCase() === target,
-    );
-  }, [projectName, scheduleItems]);
-  const locationOptions = useMemo(() => uniqueOptions([
-    ...scopedProjectAreas.map(area => area.name),
-    ...scopedScheduleItems.map(item => item.locationName),
-  ]), [scopedProjectAreas, scopedScheduleItems]);
+  // The chosen project's areas, for the Location field and the fill alike.
+  const locationOptions = useMemo(
+    () => projectLocationChoices(projectAreas, scheduleItems, projectName),
+    [projectAreas, projectName, scheduleItems],
+  );
   const ownerOptions = useMemo(() => uniqueOptions([
     defaultOwner || '',
     ...scheduleItems.map(item => item.owner),
@@ -160,10 +145,6 @@ export function ScheduleTaskEditorModal({
     () => uniqueOptions(scheduleItems.map(item => item.milestone)),
     [scheduleItems],
   );
-  const taskFillLocationOptions = useMemo(() => uniqueOptions([
-    ...projectAreas.map(area => area.name),
-    ...scheduleItems.map(item => item.locationName),
-  ]), [projectAreas, scheduleItems]);
   const taskFillCandidates = useMemo(() => scheduleItems.map(item => ({
     id: item.id,
     taskName: item.taskName,
@@ -177,7 +158,7 @@ export function ScheduleTaskEditorModal({
     setTaskName('');
     setItemType('Task');
     setProjectName(defaultProjectName);
-    setLocationName(defaultProjectAreas[0]?.name || '');
+    setLocationName(defaultLocationName);
     setStartDate('');
     setFinishDate('');
     setMilestone('');
@@ -244,7 +225,17 @@ export function ScheduleTaskEditorModal({
     onClose();
   }
 
-  function applyTaskFillPatch(patch: DAVETaskFillPatch) {
+  // Returns the fill as applied: the guided questions prefill from it.
+  function applyTaskFillPatch(fill: DAVETaskFillPatch): DAVETaskFillPatch {
+    const patch = { ...fill };
+    // A fill that changes the project changes the location as the Project
+    // field does, unless it names an area of the new project (A3 pass 9 L1).
+    if (patch.projectName !== undefined && !sameName(patch.projectName, projectName)) {
+      const target = patch.projectName;
+      patch.locationName = projectLocationChoices(projectAreas, scheduleItems, target)
+        .find(choice => sameName(choice, patch.locationName ?? ''))
+        ?? firstProjectLocation(projectAreas, scheduleItems, target);
+    }
     if (patch.taskName !== undefined) setTaskName(patch.taskName);
     if (patch.itemType !== undefined) setItemType(patch.itemType);
     if (patch.projectName !== undefined) setProjectName(patch.projectName);
@@ -270,6 +261,7 @@ export function ScheduleTaskEditorModal({
     if (patch.priority !== undefined) setPriority(patch.priority);
     if (patch.notes !== undefined) setNotes(patch.notes);
     if (patch.nextAction !== undefined) setNextAction(patch.nextAction);
+    return patch;
   }
 
   function updatePercentComplete(rawValue: string) {
@@ -313,7 +305,8 @@ export function ScheduleTaskEditorModal({
               initiallyGuided={initiallyGuided}
               projectNames={projectOptions}
               projectRecords={projectRecords}
-              locationNames={taskFillLocationOptions}
+              locationNames={locationOptions}
+              locationNamesForProject={name => projectLocationChoices(projectAreas, scheduleItems, name)}
               ownerNames={ownerOptions}
               contractorNames={contractorOptions}
               milestoneNames={milestoneOptions}
@@ -346,12 +339,7 @@ export function ScheduleTaskEditorModal({
               value={projectName}
               onChange={value => {
                 setProjectName(value);
-                const nextAreas = projectAreasForProject({
-                  projectAreas,
-                  projectName: value,
-                  scheduleItems,
-                });
-                setLocationName(nextAreas[0]?.name || '');
+                setLocationName(firstProjectLocation(projectAreas, scheduleItems, value));
               }}
               options={projectOptions}
               placeholder="Project name"
@@ -427,6 +415,26 @@ function Chips({ values, selected, onSelect, suffix = '', selectionMode = 'radio
       accessibilityState={selectionMode === 'radio' ? { selected: isSelected } : undefined}
     ><Text style={[styles.chipText, isSelected && styles.chipTextActive]}>{value}{suffix}</Text></TouchableOpacity>;
   })}</View>;
+}
+
+function sameName(a: string, b: string) {
+  return a.trim().replace(/\s+/g, ' ').toLowerCase() === b.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+// A project's areas and the locations its tasks use (every one with no project).
+function projectLocationChoices(projectAreas: ProjectArea[], scheduleItems: ScheduleItem[], projectName: string) {
+  const target = projectName.trim().toLowerCase();
+  return uniqueOptions([
+    ...projectAreasForProject({ projectAreas, projectName, scheduleItems }).map(area => area.name),
+    ...scheduleItems
+      .filter(item => !target || (item.scheduleProjectName?.trim() || item.projectName.trim()).toLowerCase() === target)
+      .map(item => item.locationName),
+  ]);
+}
+
+// The location a project starts with when it is chosen: its first area.
+function firstProjectLocation(projectAreas: ProjectArea[], scheduleItems: ScheduleItem[], projectName: string) {
+  return projectAreasForProject({ projectAreas, projectName, scheduleItems })[0]?.name || '';
 }
 
 function uniqueOptions(values: readonly string[]) {

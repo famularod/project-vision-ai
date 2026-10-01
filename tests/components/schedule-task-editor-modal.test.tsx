@@ -649,4 +649,79 @@ describe('ScheduleTaskEditorModal', () => {
       expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
     });
   });
+
+  // Whole-app audit A3 pass 9 L1 (30 Sep 2026): the form opened on Lot 9 and
+  // "Fill task with voice or text" with "Task Seal roof, project Main St, due
+  // tomorrow" saved the task under Main St with the location "Lot 9 Yard". In
+  // guided mode the area question after the Main St answer offered "Lot 9
+  // Yard" and both projects' areas. A fill that changes the project now resets
+  // the location as the Project field does, unless it names one of the new
+  // project's own areas, and the area choices are the chosen project's only.
+  describe('a fill that changes the project brings that project\'s location', () => {
+    const area = (name: string, projectName: string) => ({
+      id: `area-${name}`, name, projectName, latitude: 34, longitude: -118, radiusFeet: 250,
+    });
+    const fillProps = {
+      visible: true,
+      projects: ['Lot 9', 'Main St'],
+      projectAreas: [area('Lot 9 Yard', 'Lot 9'), area('Main St Yard', 'Main St'), area('Main St Roof', 'Main St')],
+      scheduleItems: [],
+      initialProjectName: 'Lot 9',
+      defaultOwner: 'David',
+      onClose: jest.fn(),
+    };
+    const fields = (screen: Awaited<ReturnType<typeof render>>) => ['Task or milestone', 'Project', 'Location']
+      .map(label => screen.getByLabelText(label).props.value);
+
+    async function typedFill(onSubmit: jest.Mock, instruction: string) {
+      const screen = await render(<ScheduleTaskEditorModal {...fillProps} onSubmit={onSubmit} />);
+      expect(fields(screen)).toEqual(['', 'Lot 9', 'Lot 9 Yard']);
+      fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+      fireEvent.changeText(screen.getByLabelText('Editable task instruction'), instruction);
+      fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+      fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
+      return screen;
+    }
+
+    it('a typed fill naming another project saves with that project\'s area', async () => {
+      const onSubmit = jest.fn();
+      const screen = await typedFill(onSubmit, 'Task Seal roof, project Main St, due tomorrow');
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        taskName: 'Seal roof', projectName: 'Main St', locationName: 'Main St Yard',
+      }));
+    });
+
+    it('keeps an area the fill names when it is the new project\'s own', async () => {
+      const screen = await typedFill(jest.fn(), 'Task Seal roof, project Main St, area Main St Roof');
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Roof']);
+    });
+
+    it('does not keep the old project\'s area even when the fill names it', async () => {
+      const screen = await render(<ScheduleTaskEditorModal {...fillProps} onSubmit={jest.fn()} />);
+      fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+      fireEvent.changeText(screen.getByLabelText('Editable task instruction'), 'Task Seal roof, project Main St, area Lot 9 Yard');
+      fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+      // Not one of Main St's areas, so the review asks before using it.
+      fireEvent.press(screen.getByRole('button', { name: 'Confirm Area / location' }));
+      fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+    });
+
+    it('guided: the area question after another project offers that project\'s areas only', async () => {
+      const screen = await render(<ScheduleTaskEditorModal {...fillProps} initiallyGuided onSubmit={jest.fn()} />);
+      fireEvent.changeText(screen.getByLabelText('Answer Task'), 'Seal roof');
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task answer and continue' }));
+      fireEvent.press(screen.getByRole('button', { name: 'Save Item type answer and continue' }));
+      fireEvent.changeText(screen.getByLabelText('Answer Project'), 'Main St');
+      fireEvent.press(screen.getByRole('button', { name: 'Save Project answer and continue' }));
+
+      expect(screen.getByText('Where will this work happen?')).toBeTruthy();
+      expect(screen.getByLabelText('Answer Area / location').props.value).toBe('Main St Yard');
+      expect(screen.getByRole('radio', { name: 'Area / location Main St Roof' })).toBeTruthy();
+      expect(screen.queryByRole('radio', { name: 'Area / location Lot 9 Yard' })).toBeNull();
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+    });
+  });
 });
