@@ -1,10 +1,5 @@
-import type { DAVESyncTombstone, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../types';
-import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
-import {
-  scheduleTaskEarlierIds,
-  scheduleTaskLinks,
-  type ScheduleTaskReference,
-} from './ScheduleTaskRevisions';
+import type { DAVESyncTombstone, ProjectUpdate, ScheduleItem } from '../types';
+import { scheduleTaskEarlierIds, type ScheduleTaskReference } from './ScheduleTaskRevisions';
 
 export const DELETED_TASK_EVIDENCE_LABEL =
   'Historical evidence — linked task was deleted.';
@@ -35,9 +30,6 @@ export function projectUpdateIsLinkedToDeletedTask(
 export type DeletedTaskScheduleContext = Readonly<{
   /** Every saved task, hidden ones included. */
   scheduleItems: readonly ScheduleItem[];
-  /** The tasks shown, when the caller has them; else worked out from the saved schedules. */
-  shownScheduleItems?: readonly ScheduleItem[];
-  scheduleDocuments?: readonly ReferenceDocument[];
 }>;
 
 /**
@@ -48,27 +40,26 @@ export type DeletedTaskScheduleContext = Readonly<{
  * reconciliation, correlation, Project Truth, the inbox, the project stats
  * and the report scope, and the feed called it "Historical evidence — linked
  * task was deleted." An update is now that only when no saved task left
- * answers to its task id: by the ids a task had before a new master moved it
- * (revisedFromTaskIds), or, for a row saved before those were kept, by the
- * update's stored task name among the tasks shown (ScheduleTaskRevisions).
+ * answers to its task id by the ids a task had before a new master moved it
+ * (revisedFromTaskIds); "Delete PDF + Items" writes the removed id onto a row
+ * saved before those were kept, when it is safe (ScheduleTaskRevisions).
+ *
+ * Whole-app audit A10 pass 7 L1 (30 Sep 2026): the check also fell back by
+ * the update's stored task name among the tasks shown. The deleted row is
+ * gone, so its own schedule could not be checked (the A10 pass 6 L2 guard):
+ * David deleted phase 1 of two "Pour slab" tasks, and its "complete" report
+ * stayed current on phase 2 ("… complete while the schedule remains Not
+ * Started at 0%"), with its open action. A deleted id never falls back by
+ * name now.
  */
 function deletedTaskStillAnswered(
   schedule: DeletedTaskScheduleContext,
   deletedIds: ReadonlySet<string>,
 ): (reference: ScheduleTaskReference) => boolean {
-  const living = schedule.scheduleItems.filter(item => !deletedIds.has(normalized(item.id)));
-  const earlier = new Set(living.flatMap(item => scheduleTaskEarlierIds(item).map(normalized)));
-  let linkOf: ReturnType<typeof scheduleTaskLinks> | null = null;
-  return reference => {
-    if (earlier.has(normalized(reference.scheduleItemId))) return true;
-    if (!linkOf) {
-      const shown = schedule.shownScheduleItems
-        ? schedule.shownScheduleItems.filter(item => !deletedIds.has(normalized(item.id)))
-        : selectAuthoritativeScheduleItems({ scheduleItems: living, scheduleDocuments: [...(schedule.scheduleDocuments || [])] });
-      linkOf = scheduleTaskLinks(shown, living); // never by a name the update's own schedule shared (A10 pass 6 L2)
-    }
-    return Boolean(linkOf(reference));
-  };
+  const earlier = new Set(schedule.scheduleItems
+    .filter(item => !deletedIds.has(normalized(item.id)))
+    .flatMap(item => scheduleTaskEarlierIds(item).map(normalized)));
+  return reference => earlier.has(normalized(reference.scheduleItemId));
 }
 
 /**

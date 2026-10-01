@@ -14,9 +14,9 @@
  * slab was still shown. The web did the same.
  *
  * Now an update is deleted-task evidence only when no saved task left
- * answers to its task id (its earlier ids, or for a row saved before those
- * were kept, the update's stored task name among the tasks shown, one task
- * only). And "Delete PDF + Items" writes each removed id onto the one task
+ * answers to its task id (its earlier ids; the stored-name fallback 1cebe2f
+ * also used here was dropped by A10 pass 7 L1). And "Delete PDF + Items"
+ * writes each removed id onto the one task
  * shown after the delete with its name, project and area, before the
  * deletions are recorded, so a row saved before the earlier ids were kept
  * answers to it by id. A task genuinely deleted stays history. Synthetic data.
@@ -151,9 +151,9 @@ async function deleteWithItems(state: State, document: ReferenceDocument) {
   return { items: scheduleItemsCurrentRef.current, documents: referenceDocumentsCurrentRef.current, tombstones, synced };
 }
 
-/** The phone's partition: every saved task and the saved schedules (App.tsx). */
+/** The phone's partition: every saved task (App.tsx; the saved schedules too until A10 pass 7 L1). */
 const phonePartition = (state: State, tombstones: readonly DAVESyncTombstone[], updates: ProjectUpdate[]) =>
-  partitionProjectUpdatesByDeletedTask(updates, tombstones, update => update, { scheduleItems: state.items, scheduleDocuments: state.documents });
+  partitionProjectUpdatesByDeletedTask(updates, tombstones, update => update, { scheduleItems: state.items });
 
 describe('A10 p6 M1: "Delete PDF + Items" on the old master keeps the field updates of a task the new master moved', () => {
   it.each([
@@ -209,10 +209,15 @@ describe('A10 p6 M1: the partition asks whether a saved task still answers to th
     expect(phonePartition(after, tombstones, [fieldUpdate('u', state.oldId)]).active).toHaveLength(1);
   });
 
-  it('by the stored task name, one task shown only, for a row saved before 79f49d3', () => {
+  // Pin changed deliberately (A10 pass 7 L1, 30 Sep 2026): this asserted that a deleted id still answered by
+  // the update's stored task name among the tasks shown. That fallback put a task David deleted himself onto a
+  // same-named task, so a deleted id answers only by the ids a task had before; "Delete PDF + Items" writes the
+  // removed id onto a row saved before those were kept (the it.each above), and an old master deleted before
+  // that (no id written) leaves its updates history, as before 1cebe2f.
+  it('a row saved before 79f49d3 with no id written: the stored task name no longer answers to a deleted id', () => {
     const { state, after, tombstones } = deletedBeforeFix(true);
-    expect(phonePartition(after, tombstones, [fieldUpdate('u', state.oldId)]).active).toHaveLength(1);
-    // Two tasks shown with the name: never a guess, so the update stays history.
+    expect(phonePartition(after, tombstones, [fieldUpdate('u', state.oldId)]).historical).toHaveLength(1);
+    // Two tasks shown with the name: history too.
     const twin = { ...named(after.items, 'Pour slab')[0], id: 'twin-pour' };
     const twins = { ...after, items: [...after.items, twin] };
     expect(phonePartition(twins, tombstones, [fieldUpdate('u', state.oldId)]).historical).toHaveLength(1);
@@ -232,9 +237,11 @@ describe('A10 p6 M1: the partition asks whether a saved task still answers to th
     expect(partitionProjectUpdatesByDeletedTask([fieldUpdate('u', state.oldId)], tombstones, update => update).historical).toHaveLength(1);
   });
 
-  it('the phone passes every saved task and the saved schedules to the partition', () => {
-    expect(app).toMatch(/partitionProjectUpdatesByDeletedTask\(\s*savedUpdates,\s*operationalSyncTombstones,\s*update => update,\s*\{ scheduleItems: scheduleItems as unknown as [^,]+, scheduleDocuments: referenceDocuments \}/);
-    expect(app).toMatch(/\[operationalSyncTombstones, savedUpdates, scheduleItems, referenceDocuments\]/);
+  // Pin changed deliberately (A10 pass 7 L1): with no name fallback the partition needs no schedules, only
+  // every saved task, so the phone no longer passes the saved schedules (nor re-runs on them).
+  it('the phone passes every saved task to the partition', () => {
+    expect(app).toMatch(/partitionProjectUpdatesByDeletedTask\(\s*savedUpdates,\s*operationalSyncTombstones,\s*update => update,\s*\{ scheduleItems: scheduleItems as unknown as [^}]+\}/);
+    expect(app).toMatch(/\[operationalSyncTombstones, savedUpdates, scheduleItems\]/);
   });
 
   it('the web: an update linked to the old row stays in the snapshot; one linked to a task genuinely deleted does not', async () => {

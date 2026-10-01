@@ -6522,9 +6522,9 @@ useEffect(() => {
       savedUpdates,
       operationalSyncTombstones,
       update => update,
-      { scheduleItems: scheduleItems as unknown as import('./types').ScheduleItem[], scheduleDocuments: referenceDocuments }, // a task a new master moved still answers to its old id (A10 pass 6 M1)
+      { scheduleItems: scheduleItems as unknown as import('./types').ScheduleItem[] }, // a task a new master moved still answers to its old id (A10 pass 6 M1), never by name (A10 pass 7 L1)
     ),
-    [operationalSyncTombstones, savedUpdates, scheduleItems, referenceDocuments],
+    [operationalSyncTombstones, savedUpdates, scheduleItems],
   );
   const activeSavedUpdates = useMemo(() => savedUpdateTaskEvidence.active.filter(update => !update.isArchived), [savedUpdateTaskEvidence.active]); // an archived update stops counting at once, not when the cloud copy returns (audit round 2 L4)
   const deletedTaskEvidenceIds = useMemo(
