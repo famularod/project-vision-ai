@@ -246,6 +246,12 @@ export function DesktopSchedulePage({
     // them: they had been saved blank, and Apply My Changes on a phase
     // blanked the phone's newer phase dates (A12 pass 4 L1).
     const phaseDate = (stored: string | null | undefined) => stored ?? '';
+    // Nor are a phase's predecessors, lag, duration, baseline dates or
+    // milestone flag: a phase leaves them out of its draft, so the save
+    // keeps them as stored and Apply My Changes keeps the newer version's.
+    // A phase had been saved with no dependencies, which wiped those set on
+    // the phone (whole-app audit A12 pass 4 residual R2, 30 Sep 2026).
+    const isPhase = form.kind === 'phase';
     return {
       ok: true,
       draft: {
@@ -259,10 +265,10 @@ export function DesktopSchedulePage({
         taskName: form.taskName,
         projectName: form.projectName,
         locationName: form.locationName,
-        startDate: form.kind === 'phase'
+        startDate: isPhase
           ? phaseDate(opened?.startDate)
           : storedDate(startDate, opened?.startDate),
-        finishDate: form.kind === 'phase'
+        finishDate: isPhase
           ? phaseDate(opened?.finishDate)
           : storedDate(finishDate, opened?.finishDate),
         milestone: scheduleBuilderMilestoneText(form, opened),
@@ -278,17 +284,23 @@ export function DesktopSchedulePage({
         parentItemId: form.parentItemId,
         sortOrder: opened?.sortOrder ??
           nextScheduleSortOrder(form.parentItemId || null, projectTasks),
-        durationDays: form.kind === 'milestone' ? 0 : form.durationDays,
-        dependencies: form.kind === 'phase'
-          ? []
+        durationDays: isPhase
+          ? undefined
+          : form.kind === 'milestone' ? 0 : form.durationDays,
+        dependencies: isPhase
+          ? undefined
           : planningDependenciesFromIds(form.predecessorItemIds, form.lagDays),
-        isSummary: form.kind === 'phase',
-        isMilestone: form.kind === 'milestone',
-        baselineStartDate: storedDate(form.baselineStartDate, opened?.baselineStartDate),
-        baselineFinishDate: storedDate(
-          form.kind === 'milestone' ? form.baselineStartDate : form.baselineFinishDate,
-          opened?.baselineFinishDate,
-        ),
+        isSummary: isPhase,
+        isMilestone: isPhase ? undefined : form.kind === 'milestone',
+        baselineStartDate: isPhase
+          ? undefined
+          : storedDate(form.baselineStartDate, opened?.baselineStartDate),
+        baselineFinishDate: isPhase
+          ? undefined
+          : storedDate(
+              form.kind === 'milestone' ? form.baselineStartDate : form.baselineFinishDate,
+              opened?.baselineFinishDate,
+            ),
         projectControls: opened?.projectControls ?? null,
       },
     };
