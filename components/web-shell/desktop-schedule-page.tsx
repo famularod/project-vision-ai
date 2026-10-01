@@ -124,6 +124,17 @@ export function DesktopSchedulePage({
   const editorProjectTasks = editor
     ? tasks.filter(task => inProject(task, editor.projectName))
     : [];
+  // The task's own parent and predecessors in another building under its
+  // root, set while the page grouped by root (A5 pass 13 L1): listed so they
+  // can be seen and removed. Saving had kept them with no way to uncheck them.
+  const editorLinksElsewhere = editor && editingTask
+    ? tasks.filter(task =>
+        !inProject(task, editor.projectName) &&
+        sameRoot(task, editingTask) &&
+        (task.id === editingTask.parentItemId?.trim() ||
+          (editingTask.dependencies || []).some(dependency => dependency.predecessorItemId === task.id)),
+      )
+    : [];
   const editorScenario = useMemo(() => {
     if (!editor || !editingTask || editor.kind === 'phase') return null;
     return buildVitruviusScheduleChangeScenario({
@@ -684,6 +695,7 @@ export function DesktopSchedulePage({
           editingTask={editingTask}
           projects={projectNames}
           projectTasks={editorProjectTasks}
+          linksElsewhere={editorLinksElsewhere}
           scenario={editorScenario}
           pending={pending}
           awaitingConflictChoice={Boolean(conflict)}
@@ -713,7 +725,7 @@ export function DesktopSchedulePage({
             <Text style={styles.emptyText}>Start with a phase, then add its tasks and milestones.</Text>
           </View>
         ) : groupedProjects.map(group => {
-          const hierarchy = buildVitruviusScheduleHierarchy(group.tasks);
+          const hierarchy = buildingScheduleHierarchy(group.tasks, tasks);
           return (
             <View key={group.projectName} style={styles.projectGroup}>
               <View style={styles.projectHeading}>
@@ -1478,6 +1490,7 @@ function ScheduleEditor({
   editingTask,
   projects,
   projectTasks,
+  linksElsewhere = [],
   scenario,
   pending,
   awaitingConflictChoice = false,
@@ -1489,6 +1502,8 @@ function ScheduleEditor({
   editingTask: DAVEWebScheduleItem | null;
   projects: readonly string[];
   projectTasks: readonly DAVEWebScheduleItem[];
+  /** The task's parent and predecessors in another building under the same root (A5 pass 13 L1). */
+  linksElsewhere?: readonly DAVEWebScheduleItem[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
   /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
@@ -1497,8 +1512,20 @@ function ScheduleEditor({
   onCancel: () => void;
   onSave: () => void;
 }) {
-  const parentOptions = scheduleParentOptions(editingTask?.id || null, projectTasks);
-  const predecessorOptions = schedulePredecessorOptions(editingTask?.id || null, projectTasks);
+  // The building's own choices, then the task's existing links in another
+  // building under its root, labelled with that building (A5 pass 13 L1).
+  const parentOptions = [
+    ...scheduleParentOptions(editingTask?.id || null, projectTasks),
+    ...linksElsewhere.filter(item => item.id === editingTask?.parentItemId?.trim()),
+  ];
+  const predecessorOptions = [
+    ...schedulePredecessorOptions(editingTask?.id || null, projectTasks),
+    ...linksElsewhere.filter(item =>
+      (editingTask?.dependencies || []).some(dependency => dependency.predecessorItemId === item.id),
+    ),
+  ];
+  const buildingLabel = (item: ScheduleItem) =>
+    linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
@@ -1542,7 +1569,10 @@ function ScheduleEditor({
           label="Parent phase"
           value={state.parentItemId}
           options={parentOptions.map(item => item.id)}
-          optionLabel={value => parentOptions.find(item => item.id === value)?.taskName || value}
+          optionLabel={value => {
+            const parent = parentOptions.find(item => item.id === value);
+            return parent ? `${parent.taskName}${buildingLabel(parent)}` : value;
+          }}
           onChange={value => update('parentItemId', value)}
           allowNone
         />
@@ -1630,7 +1660,7 @@ function ScheduleEditor({
                     color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
                   />
                   <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
-                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{buildingLabel(item)}
                   </Text>
                 </Pressable>
               );
@@ -2108,6 +2138,27 @@ function inProject(task: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName
 
 function sameRoot(left: ScheduleItem, right: ScheduleItem): boolean {
   return Boolean(normalize(left.scheduleProjectName)) && normalize(left.scheduleProjectName) === normalize(right.scheduleProjectName);
+}
+
+/**
+ * A building's rows, a parent phase in another building under the same root
+ * counted as present. Whole-app audit A5 pass 13 L1 (1 Oct 2026): a phase
+ * added under a combined master's root while the page grouped by root holds
+ * North's and South's tasks; grouped by building, its children showed as
+ * orphan rows with "1 hierarchy issue need review." in each building. A
+ * parent that is missing, or under another root, is still an issue.
+ */
+function buildingScheduleHierarchy(buildingTasks: readonly ScheduleItem[], allTasks: readonly ScheduleItem[]) {
+  const hierarchy = buildVitruviusScheduleHierarchy(buildingTasks);
+  const parentUnderSameRoot = (itemId: string) => {
+    const item = buildingTasks.find(candidate => candidate.id === itemId);
+    const parentId = item?.parentItemId?.trim();
+    return Boolean(item && parentId && allTasks.some(task => task.id === parentId && sameRoot(task, item)));
+  };
+  return {
+    rows: hierarchy.rows.map(row => row.orphaned && parentUnderSameRoot(row.item.id) ? { ...row, orphaned: false } : row),
+    issues: hierarchy.issues.filter(issue => issue.code !== 'missing_parent' || !parentUnderSameRoot(issue.itemId)),
+  };
 }
 
 function uniqueText(values: readonly (string | null | undefined)[]) {
