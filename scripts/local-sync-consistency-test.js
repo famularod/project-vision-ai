@@ -205,8 +205,10 @@ assert(
 includes(operationalRefresh, "table: 'schedule_items'", 'task changes must trigger open-device refresh');
 includes(operationalRefresh, "table: 'project_areas'", 'area changes must trigger open-device refresh');
 includes(app, 'runFieldUpdateCloudSync', 'send/retry must call the shared structured cloud sync work');
-includes(app, 'onRetryUpdateSync={update => retryQueuedUpdate', 'Settings must retry through the live Field Update sync path');
-includes(admin, 'onRetryUpdateSync(update)', 'Settings must await the live update retry result');
+// Pins changed in A7 pass 12 M-1: Settings' Retry Sync passes { automatic: true }
+// through the same retry, so an update in conflict is left for Review Conflicts.
+includes(app, 'onRetryUpdateSync={(update, sync) => retryQueuedUpdate(update as unknown as ProjectUpdate, sync)}', 'Settings must retry through the live Field Update sync path');
+includes(admin, 'onRetryUpdateSync(update, { automatic: true })', 'Settings must await the live update retry result');
 includes(admin, 'withSyncTimeout', 'Settings sync must not remain indefinitely stuck in its busy state');
 includes(admin, 'Review Conflicts', 'Settings must provide a review path for genuine sync conflicts');
 includes(admin, 'remainingConflicts > 0', 'Settings must not report success while sync conflicts remain');

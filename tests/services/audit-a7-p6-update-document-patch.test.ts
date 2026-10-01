@@ -111,6 +111,9 @@ import {
   uploadPendingChanges,
 } from '../../services/SyncService';
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
+import { reconcileFieldUpdateSyncResult } from '../../services/FieldUpdateSyncGeneration';
+import { persistedStatusForSyncResult } from '../../services/FieldUpdateLifecycle';
+import { classifySyncFailureText } from '../../services/SyncFailureCategory';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
 import { hasMatchingQueuedProjectUpdateRevision, refreshKeepsLocalProjectUpdate } from '../../services/ProjectUpdateQueueRevision';
@@ -2449,5 +2452,135 @@ describe('Sync Now leaves an update in conflict for review (audit A4 pass 13 G2)
     expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
     expect(await getSyncConflicts()).toEqual([]);
     expect(message).toMatch(/^Cloud sync completed\./);
+  });
+});
+
+/**
+ * A7 pass 12 M-1 (A4 pass 14 #1): Settings › Retry Sync retried each queued
+ * or failed card through the card's own Retry, an explicit send. An update in
+ * conflict went up whole, stamped now, over the iPad's newer note: the
+ * conflict was gone, and Settings said "1 pending item synced successfully."
+ * Retry Sync is the button Settings offers whenever anything is pending, and
+ * before its status read lands. It now leaves an update in conflict for
+ * review, as Sync Now does (A4 pass 13 G2), and counts it as needing review.
+ */
+const RETRY_SYNC_OFFLINE_EDIT = 'Pour, 40 yards (typed on the phone with no signal)';
+/** The App's own retryQueuedUpdate (with its missing-photo repair and its result handling), on this phone's state. */
+function appRetryQueuedUpdate(phone: Device) {
+  const diagnostics = [
+    'classifySyncFailureCategory', 'syncCategoryForStorageFailure', 'syncCategoryIsRlsOrAuth', 'emptyPermissionAttempt',
+    'inferPermissionAttemptFromFailure', 'buildSkippedSyncDiagnostics', 'buildSyncDiagnosticsFromUpload', 'statusForSyncDiagnostics',
+  ];
+  const own = ['upsertSavedUpdateUnlessDeleted', 'applyFieldUpdateSyncResultIfCurrent', 'syncFieldUpdateWithMissingPhotoRepair', 'retryQueuedUpdate'];
+  return evaluate<{ retryQueuedUpdate: (update: Update, sync?: { automatic?: boolean }) => Promise<Update> }>(
+    transpile([...diagnostics.map(appFunction), ...own.map(name => componentFunction(name)), 'module.exports = { retryQueuedUpdate };'].join('\n')),
+    {
+      classifySyncFailureText, persistedStatusForSyncResult, reconcileFieldUpdateSyncResult,
+      savedUpdatesRef: phone.savedUpdatesRef, setSavedUpdates: phone.setSavedUpdates,
+      mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones, deletedUpdateTombstonesRef: { current: [] },
+      getCurrentSessionAccessToken: async () => ({ ok: true, data: { status: 'token_present' } }),
+      fieldUpdateSyncCategoryWithoutSession: async () => 'offline', signInPendingRef: { current: false },
+      runFieldUpdateCloudSync, markMissingPhotosUnavailable: (update: Update) => update,
+      removeMissingPhotosFromSyncQueue: async () => undefined, persistSavedUpdateImmediately: async () => true,
+    },
+  ).retryQueuedUpdate;
+}
+/** AdminScreen's own Retry Sync (handleRetrySync), through the App's own onRetryUpdateSync; the message it shows. */
+async function pressRetrySync(phone: Device): Promise<string> {
+  const wiring = /onRetryUpdateSync=\{(.+)\}\n/.exec(app)![1];
+  const onRetryUpdateSync = evaluate<(...args: unknown[]) => Promise<Update>>(
+    transpile(`module.exports = ${wiring};`), { retryQueuedUpdate: appRetryQueuedUpdate(phone) });
+  const messages: string[] = [];
+  const { handleRetrySync } = evaluate<{ handleRetrySync: () => Promise<void> }>(
+    transpile(`${componentFunction('handleRetrySync', adminScreen)}\nmodule.exports = { handleRetrySync };`),
+    {
+      setIsSyncing: () => undefined, setAdminActionSummary: () => undefined,
+      setSyncAttemptMessage: (message: string | null) => { if (message) messages.push(message); },
+      startProjectDocumentUploadRun: () => ({ remaining: () => 0 }), onRetryDocumentUploads: jest.fn(),
+      savedUpdates: phone.savedUpdatesRef.current, onRetryUpdateSync, withSyncTimeout: <T>(work: Promise<T>) => work,
+      uploadPendingChanges, getSyncStatus, SETTINGS_STATUS_TIMEOUT_MS: 8_000, setSyncStatus: () => undefined,
+      failedDocumentCountRef: { current: 0 }, setSyncConflicts: () => undefined, getSyncConflicts,
+    },
+  );
+  await handleRetrySync();
+  phone.render();
+  return messages.at(-1) || '';
+}
+/** Sent, edited on the phone offline, the iPad's edit lands after; reconnected, the conflict is found. */
+async function offlineEditInConflictWithIPad(photos: Array<{ id: string } & Record<string, unknown>>) {
+  const phone = await sentThroughTheApp(photos);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await iPadEditsNow(IPAD_NOTE);
+  await uploadPendingChanges();
+  await waitingUpdateSync(phone);
+  expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  return phone;
+}
+
+describe('Settings › Retry Sync leaves an update in conflict for review (audit A7 pass 12 M-1)', () => {
+  const photo = { id: 'photo-m-1', uri: 'file:///phone/Documents/project-photos/m-1.jpg', caption: '', createdAt: SENT_AT };
+
+  it.each([
+    ['without photos', []],
+    ['with photos', [photo]],
+  ])('M-1 (%s): Retry Sync keeps the iPad\'s note in the cloud and the conflict open, leaves the card as it was, and says it needs review', async (_label, photos) => {
+    const phone = await offlineEditInConflictWithIPad(photos);
+    const before = phone.saved()!;
+    expect(['queued', 'failed']).toContain(before.status); // Retry Sync retries it
+    const message = await pressRetrySync(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: before.status, sendAttempts: before.sendAttempts });
+    expect(message).toBe('The sync queue is clear, but 1 saved conflict needs review.');
+  });
+
+  it('another update that fails alongside is counted apart: it needs attention, and the conflict needs review', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const other = { ...savedUpdate([], 'queued', 'u2'), notes: 'Strip forms' };
+    phone.setSavedUpdates(prev => [...prev, other]);
+    phone.render();
+    await queueProjectUpdateRecord(other, false);
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementation(async (params: { id: string }) => params.id === 'u2'
+      ? { ok: false, configured: true, stubbed: false, error: 'permission denied' }
+      : save(params));
+    try {
+      const message = await pressRetrySync(phone);
+      expect(message).toBe('1 item still needs attention. It remains saved on this phone. 1 saved conflict also needs review.');
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+  });
+
+  it('an update not in conflict still goes up with Retry Sync', async () => {
+    const phone = await sentThroughTheApp([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    const message = await pressRetrySync(phone);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(phone.saved()).toMatchObject({ status: 'sent' });
+    expect(message).toBe('1 pending item synced successfully.');
+  });
+
+  it('the card\'s own Retry is still an explicit send: the phone\'s copy goes over the iPad\'s, and the conflict is settled', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await pressRetrySync(phone);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await appRetryQueuedUpdate(phone)(phone.saved()!);
+    phone.render();
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(phone.saved()).toMatchObject({ status: 'sent' });
+  });
+
+  it('then Keep Phone still sends the phone\'s copy', async () => {
+    const phone = await offlineEditInConflictWithIPad([photo]);
+    await pressRetrySync(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
   });
 });

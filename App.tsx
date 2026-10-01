@@ -8000,7 +8000,8 @@ useEffect(() => {
     return { ...repairedAttempt, update: repairedUpdate };
   }
 
-  async function retryQueuedUpdate(update: ProjectUpdate) {
+  // Settings' Retry Sync is `automatic`: an update in conflict is left for review (A7 pass 12 M-1).
+  async function retryQueuedUpdate(update: ProjectUpdate, sync: { automatic?: boolean } = {}) {
     const now = new Date().toISOString();
     const retryUpdate: ProjectUpdate = {
       ...update,
@@ -8045,12 +8046,16 @@ useEffect(() => {
         syncResult,
         workAttempt,
         update: syncReadyUpdate,
+        heldForConflictReview,
       } = await syncFieldUpdateWithMissingPhotoRepair(
         retryUpdate,
         repairedUpdate => {
           activeRetryUpdate = repairedUpdate;
         },
+        sync,
       );
+      // Left for review, as the waiting-update sync leaves it: its card as it was.
+      if (heldForConflictReview) return { ...(applyFieldUpdateSyncResultIfCurrent(retryUpdate, update).current || update), heldForConflictReview };
       activeRetryUpdate = syncReadyUpdate;
       const syncDiagnostics = buildSyncDiagnosticsFromUpload(
         syncResult,
@@ -13998,7 +14003,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void useCurrentLocationForArea(areaId);
               }}
               onRemoveMissingPhotos={removeMissingSyncPhotos}
-              onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
+              onRetryUpdateSync={(update, sync) => retryQueuedUpdate(update as unknown as ProjectUpdate, sync)}
               onRetryDocumentUploads={() => projectDocumentUploadRetry.run(retryProjectDocumentUpload, { ignoreBackoff: true })}
               failedDocumentCount={projectDocumentsAwaitingUpload(projectDocuments).length}
               onApplyCloudConflictUpdate={update => {

@@ -194,7 +194,11 @@ export function AdminScreen({
   onDeleteArea: (areaId: string) => void;
   onUseCurrentLocationForArea: (areaId: string) => void;
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
-  onRetryUpdateSync: (update: ProjectUpdate) => Promise<{ status?: string }>;
+  /** `automatic`: Retry Sync's, not a choice made for this update; one in conflict is left for review (whole-app audit A7 pass 12 M-1). */
+  onRetryUpdateSync: (
+    update: ProjectUpdate,
+    sync?: { automatic?: boolean },
+  ) => Promise<{ status?: string; heldForConflictReview?: boolean }>;
   /** Uploads the documents saved on this phone whose file has not uploaded. */
   onRetryDocumentUploads: () => Promise<ProjectDocumentUploadRetryResult>;
   /** Those documents: they are not in the sync queue (whole-app audit A8 pass 1 F5, 30 Sep 2026). */
@@ -709,9 +713,13 @@ export function AdminScreen({
       const updatesToRetry = savedUpdates.filter(
         update => update.status === 'queued' || update.status === 'failed',
       );
+      // Retry Sync is not a choice between two copies (whole-app audit A7
+      // pass 12 M-1): it retried an update in conflict as its card's Retry
+      // does, sent it whole over the iPad's newer edit and said it synced, a
+      // silent Keep Phone. Left for Review Conflicts, as Sync Now leaves it.
       const retryResults = updatesToRetry.length > 0
         ? await withSyncTimeout(
-            Promise.all(updatesToRetry.map(update => onRetryUpdateSync(update))),
+            Promise.all(updatesToRetry.map(update => onRetryUpdateSync(update, { automatic: true }))),
           )
         : [];
       const queueResult = updatesToRetry.length === 0
@@ -724,9 +732,10 @@ export function AdminScreen({
       setSyncStatus(nextSyncStatus);
 
       const syncedUpdates = retryResults.filter(update => update.status === 'sent').length;
-      const unsyncedUpdates = retryResults.length - syncedUpdates;
+      const heldForReview = retryResults.filter(update => update.heldForConflictReview).length;
+      const unsyncedUpdates = retryResults.length - syncedUpdates - heldForReview;
       const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
-      const remainingConflicts = nextSyncStatus.conflicts;
+      const remainingConflicts = Math.max(nextSyncStatus.conflicts, heldForReview);
       const recoveryAvailable = nextSyncStatus.recoveryAvailable;
       const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRun.remaining(failedDocumentCountRef.current);
       const syncSucceeded =
@@ -735,6 +744,8 @@ export function AdminScreen({
         !recoveryAvailable;
       const message = recoveryAvailable
         ? `Cloud sync finished. Current changes are protected, but ${nextSyncStatus.recoveryCopies} older recovery ${nextSyncStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${remainingConflicts > 0 ? ` ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        : remainingConflicts > 0 && unsyncedCount > 0
+        ? `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone. ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.`
         : remainingConflicts > 0
         ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
