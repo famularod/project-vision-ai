@@ -94,7 +94,7 @@ const task = (id: string, batch: string, source: string): ScheduleItem => ({
 } as ScheduleItem);
 
 /** The phone, as far as these functions see it. */
-function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: ScheduleItem[] }) {
+function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: ScheduleItem[]; retirement?: 'schedule' | 'project' | null }) {
   const state = { cards: initial.cards, documents: initial.documents, items: initial.items, persisted: [] as Card[][] };
   const alerts: Array<{ title: string; message: string; buttons: Array<{ text: string; onPress?: () => void }> }> = [];
   const refs = {
@@ -119,7 +119,8 @@ function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: 
     get scheduleItems() { return state.items; },
     scheduleTasksHiddenWarning, scheduleTasksHiddenByActivation, phoneScheduleActivationTarget, importedScheduleOfPhoneSchedule,
     markCurrentProjectScheduleDocument,
-    loadECOSScheduleRetirementScope: async () => 'schedule', getSupabaseClient: () => null,
+    // The cloud's retirement rule; null is unknown (a slow or failed read), added for A8 pass 5 L1.
+    loadECOSScheduleRetirementScope: async () => (initial.retirement === undefined ? 'schedule' : initial.retirement), getSupabaseClient: () => null,
     activateReferenceDocument: jest.fn(async () => true),
     markReferenceDocumentCurrent: jest.fn(),
     ensureVerifiedProjectDocumentBytes: jest.fn(async (verified: object) => ({ ...verified, localUri: 'file:///verified/Schedule.pdf' })),
@@ -276,5 +277,24 @@ describe('Set Active in the Schedule screen warns as the card does (audit A8 pas
     await h.setActiveScheduleDocument('Rev 2');
     expect(h.alerts).toEqual([]);
     expect(h.deps.markReferenceDocumentCurrent).toHaveBeenCalledWith('Rev 2');
+  });
+});
+
+describe('Make Current on a card with the cloud\'s rule unknown still warns (whole-app audit A8 pass 5 L1)', () => {
+  it('a slow or failed read of the rule asks before the master\'s tasks are hidden, as Set Active does', async () => {
+    const h = phone({ cards: [card()], documents: [uploadCopy, master], items: masterTasks(), retirement: null });
+    await h.makeProjectScheduleDocumentCurrent('phone-pdf');
+    expect(h.alerts.map(alert => alert.message)).toEqual([WARNING]);
+    expect(h.deps.activateReferenceDocument).not.toHaveBeenCalled();
+    // Confirmed, the cloud makes it current by its own rule.
+    await h.press('Make Current');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.deps.activateReferenceDocument).toHaveBeenCalledWith('upload-copy');
+  });
+
+  it('Set Active, for comparison, already asked with the rule unknown', async () => {
+    const h = phone({ cards: [], documents: [uploadCopy, master], items: masterTasks(), retirement: null });
+    await h.setActiveScheduleDocument('upload-copy');
+    expect(h.alerts).toHaveLength(1);
   });
 });

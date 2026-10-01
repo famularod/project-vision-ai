@@ -11290,7 +11290,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // The same file already imported for the project is made current, unasked, not its task-less copy (whole-app audit A8 pass 2 #2).
     const importedCopy = importedScheduleOfPhoneSchedule(document, projectName, referenceDocuments);
     const warning = hidingTasksConfirmed || importedCopy ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
-      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems, retirement));
+      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems, retirement ?? 'schedule')); // unknown: warned as the cloud may retire, as Set Active (A8 pass 5 L1)
     if (warning) return Alert.alert(warning.title, warning.message, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
