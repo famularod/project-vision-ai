@@ -19145,7 +19145,7 @@ function UpdateHistoryCard({
         </View>
         <FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />
         {onRetry ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
+          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview && (lifecycle === 'queued' || lifecycle === 'failed'), onRetry)}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry</Text>
           </TouchableOpacity>

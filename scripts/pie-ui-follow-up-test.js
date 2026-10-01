@@ -281,8 +281,10 @@ const updateHistoryCard = sliceBetween(app, 'function UpdateHistoryCard', 'funct
 assert(
   updateHistoryCard.includes('onRetry?: FieldUpdateRetry') &&
     // Pin changed in A7 pass 12 M-1: the same Retry, which asks first only when
-    // the update waits for conflict review.
-    updateHistoryCard.includes('onPress={retryOverConflictConfirmed(conflictReview, onRetry)}') &&
+    // the update waits for conflict review. Changed again in A4 pass 21 F3:
+    // and only when this Retry sends it (Waiting to Sync or failed); a Sent
+    // card's Retry runs its photo analysis again, and sends nothing.
+    updateHistoryCard.includes("onPress={retryOverConflictConfirmed(conflictReview && (lifecycle === 'queued' || lifecycle === 'failed'), onRetry)}") &&
     updateHistoryCard.includes('onPress={onOpen}'),
   'Retryable Needs Attention cards must expose an inline Retry action distinct from the card tap target.',
 );

@@ -282,3 +282,42 @@ describe('the card reads Needs Review exactly when every automatic sync leaves t
     expect(held).toBeUndefined();
   });
 });
+
+/**
+ * Whole-app audit A4 pass 21 F3 (wording): an update in conflict whose card
+ * a refresh showed as Sent (the iPad's copy) still offers Retry for a photo
+ * analysis that failed or is stuck. That Retry asked "Send your version?",
+ * but Send only runs the analysis again: nothing was sent, and the card
+ * still read Needs Review. The question is now asked only when the Retry
+ * sends the update: its card reads Waiting to Sync or failed.
+ */
+describe('a Retry that only runs a photo analysis again does not ask to send over the conflict (audit A4 pass 21 F3)', () => {
+  const SENT_COPY = { ...sent, notes: 'Pour moved to Tuesday (typed on the iPad)' };
+  const renderAs = (update: object, lifecycle: string, onRetry = jest.fn()) => {
+    render(<UpdateHistoryCard update={update} lifecycle={lifecycle} pieStatus="Analysis failed — Retry" onOpen={jest.fn()}
+      onRetry={onRetry} onDelete={jest.fn()} onArchive={jest.fn()} />);
+    return onRetry;
+  };
+
+  it('Sent (a refresh showed the iPad\'s copy), its analysis failed: Retry runs it again at once, without the question', async () => {
+    await phoneEditThenIPadEdit();
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toHaveLength(1);
+    const onRetry = renderAs(SENT_COPY, 'sent');
+    await screen.findByText(REVIEW); // still Needs Review
+    fireEvent.press(screen.getByText('Retry'));
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenLastCalledWith(); // never a choice to send over the conflict
+  });
+
+  it.each([['Waiting to Sync', 'queued'], ['Sync failed', 'failed']])('control: %s, Retry still asks first', async (_label, lifecycle) => {
+    await phoneEditThenIPadEdit();
+    await uploadPendingChanges();
+    const onRetry = renderAs({ ...phoneEdit, status: lifecycle }, lifecycle);
+    await screen.findByText(REVIEW);
+    fireEvent.press(screen.getByText('Retry'));
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(Alert.alert).toHaveBeenCalledWith('Send your version?', expect.any(String), expect.any(Array));
+  });
+});
