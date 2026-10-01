@@ -125,9 +125,12 @@ describe('A5 p13: unchanged where it should be', () => {
     expect(screen.getAllByText('Beta')).toHaveLength(1);
   });
 
-  it('a task naming no schedule project: the phone keeps "Unassigned Project", the web shows its project', () => {
+  // Pin changed on purpose by A5 pass 14 L3 (1 Oct 2026): the phone's Timeline labelled every
+  // phone-imported CSV task (which names no schedule root) "Unassigned Project"; its default now
+  // falls back to the task's project, as the phone's Lookahead does. A root still wins (above).
+  it('a task naming no schedule project: the phone and the web both show its project', () => {
     const manual = [task('m-1', 'Alpha', null, 'WALKTHROUGH', '2025-09-03')];
-    expect(buildVitruviusGanttModel({ items: manual, zoom: 'week', today: TODAY }).rows[0]?.projectName).toBe('Unassigned Project');
+    expect(buildVitruviusGanttModel({ items: manual, zoom: 'week', today: TODAY }).rows[0]?.projectName).toBe('Alpha');
     expect(buildVitruviusGanttModel({ items: manual, zoom: 'week', today: TODAY, groupBy: 'appProject' }).rows[0]?.projectName).toBe('Alpha');
   });
 });

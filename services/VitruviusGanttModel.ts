@@ -6,7 +6,8 @@ export type VitruviusGanttZoom = 'day' | 'week' | 'month';
 
 /**
  * The project a row is grouped and labelled under. 'scheduleRoot' (the
- * default; the phone's Timeline and Lookahead): the schedule's root.
+ * default; the phone's Timeline and Lookahead): the schedule's root, the task's
+ * project only when it names none (A5 pass 14 L3).
  * 'appProject' (the web Schedule page): the task's app project, the root only
  * when it names none, as scheduleTaskProjectKey keys it. Whole-app audit A5
  * pass 13 (1 Oct 2026): a combined Microsoft Project master files every row
@@ -152,9 +153,11 @@ export function buildVitruviusGanttModel({
 function projectScheduleRows(items: readonly ScheduleItem[], groupBy: VitruviusScheduleGrouping) {
   const groups = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
+    // The root, else the task's project, as the Lookahead's default (A5 pass 14 L3: the phone
+    // Timeline labelled every phone-imported CSV task, which names no root, "Unassigned Project").
     const projectName = groupBy === 'appProject'
       ? vitruviusAppProjectName(item)
-      : item.scheduleProjectName?.trim() || 'Unassigned Project';
+      : item.scheduleProjectName?.trim() || item.projectName?.trim() || 'Unassigned Project';
     const group = groups.get(projectName);
     if (group) group.push(item);
     else groups.set(projectName, [item]);
