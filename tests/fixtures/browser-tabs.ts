@@ -7,7 +7,11 @@
  *
  * The cloud is a captured fetch: the account a request is for comes from
  * its own access token, so a request shows whose sign-in it carried. Only
- * 'owner-1' passes the owner check. Nothing reaches the network. A password
+ * 'owner-1' passes the owner check. Nothing reaches the network. Access
+ * tokens are shaped as Supabase's: a JWT whose payload carries `sub` and
+ * `session_id` (the signature is a stand-in). Each password sign-in starts
+ * a new session; a refresh keeps its session id while its tokens change,
+ * as Supabase Auth does (A12 pass 9). A password
  * sign-in works with TAB_TEST_PASSWORD (a synthetic test value), and a test
  * can hold the next /logout, refresh or password sign-in to make it slow
  * (A12 pass 7 L1). /logout and a password sign-in can also fail as when the
@@ -55,9 +59,37 @@ export function tabAuthStorage(storage: TabStorage) {
   };
 }
 
-function sessionFor(userId: string, generation: number, expiresAt: number) {
+const base64Url = (text: string) => Buffer.from(text, 'utf8').toString('base64url');
+
+/**
+ * The session id of the sign-in an account made at a generation of the
+ * cloud, shaped as Supabase's (a UUID). A sign-in stored by storeTabSignIn
+ * is generation 1.
+ */
+export function tabSessionId(userId: string, signInGeneration: number): string {
+  const account = String(Object.keys(TAB_ACCOUNTS).indexOf(userId) + 1).padStart(4, '0');
+  return `5e55101d-${account}-4000-8000-${String(signInGeneration).padStart(12, '0')}`;
+}
+
+/** An access token shaped as Supabase's; no `session_id` claim when null. */
+function accessTokenFor(userId: string, sessionId: string | null, expiresAt: number) {
+  const header = base64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = base64Url(JSON.stringify({
+    aud: 'authenticated',
+    exp: expiresAt,
+    iat: expiresAt - 3600,
+    sub: userId,
+    email: TAB_ACCOUNTS[userId].email,
+    role: 'authenticated',
+    aal: 'aal1',
+    ...(sessionId === null ? {} : { session_id: sessionId }),
+  }));
+  return `${header}.${payload}.${base64Url('browser-tabs-stand-in-signature')}`;
+}
+
+function sessionFor(userId: string, generation: number, expiresAt: number, sessionId: string | null) {
   return {
-    access_token: `access:${userId}:${generation}`,
+    access_token: accessTokenFor(userId, sessionId, expiresAt),
     refresh_token: `refresh:${userId}:${generation}`,
     token_type: 'bearer',
     expires_in: 3600,
@@ -66,16 +98,23 @@ function sessionFor(userId: string, generation: number, expiresAt: number) {
   };
 }
 
-/** Puts a sign-in in a tab's storage; `expired` as after an hour hidden. */
+/**
+ * Puts a sign-in in a tab's storage; `expired` as after an hour hidden.
+ * `sessionId: null` stores an access token without the `session_id` claim
+ * (an old or malformed token).
+ */
 export function storeTabSignIn(
   storage: TabStorage,
   userId: string,
-  { expired = false }: { expired?: boolean } = {},
+  { expired = false, sessionId = tabSessionId(userId, 1) }: {
+    expired?: boolean;
+    sessionId?: string | null;
+  } = {},
 ) {
   const now = Math.floor(Date.now() / 1000);
   storage.setItem(
     `${WEB_KEY_PREFIX}${TAB_STORAGE_KEY}`,
-    JSON.stringify(sessionFor(userId, 1, expired ? now - 60 : now + 3600)),
+    JSON.stringify(sessionFor(userId, 1, expired ? now - 60 : now + 3600, sessionId)),
   );
 }
 
@@ -83,12 +122,35 @@ export function tabHoldsSignIn(storage: TabStorage): boolean {
   return storage.getItem(`${WEB_KEY_PREFIX}${TAB_STORAGE_KEY}`) !== null;
 }
 
-/** Which sign-in a tab holds: its account and refresh token, or null. */
-export function tabSignIn(storage: TabStorage): Readonly<{ userId: string; refreshToken: string }> | null {
+/** The claims of an access token shaped as Supabase's, or null. */
+function accessTokenClaims(token: string | null | undefined): Record<string, unknown> | null {
+  const parts = String(token ?? '').split('.');
+  if (parts.length !== 3) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which sign-in a tab holds: its account, refresh token and session id (null
+ * when its access token has no `session_id` claim), or null.
+ */
+export function tabSignIn(storage: TabStorage): Readonly<{
+  userId: string;
+  refreshToken: string;
+  sessionId: string | null;
+}> | null {
   const raw = storage.getItem(`${WEB_KEY_PREFIX}${TAB_STORAGE_KEY}`);
   if (!raw) return null;
-  const session = JSON.parse(raw) as { refresh_token: string; user: { id: string } };
-  return { userId: session.user.id, refreshToken: session.refresh_token };
+  const session = JSON.parse(raw) as { access_token: string; refresh_token: string; user: { id: string } };
+  const sessionId = accessTokenClaims(session.access_token)?.session_id;
+  return {
+    userId: session.user.id,
+    refreshToken: session.refresh_token,
+    sessionId: typeof sessionId === 'string' ? sessionId : null,
+  };
 }
 
 type CloudCall = Readonly<{ method: string; path: string; userId: string | null }>;
@@ -100,6 +162,18 @@ export function createTabCloud() {
   const state = {
     logout: 'ok' as 'ok' | 503 | 'dropped',
     password: 'ok' as 'ok' | 'dropped',
+    /** false: the tokens it issues carry no `session_id` claim. */
+    sessionIdClaim: true,
+  };
+  /** The session each refresh token it issued belongs to. */
+  const sessionOfRefreshToken = new Map<string, string | null>();
+  /** A new sign-in's session, or a refreshed one's (same id, new tokens). */
+  const issue = (userId: string, sessionId: string | null) => {
+    generation += 1;
+    const claim = state.sessionIdClaim ? sessionId : null;
+    const session = sessionFor(userId, generation, Math.floor(Date.now() / 1000) + 3600, claim);
+    sessionOfRefreshToken.set(session.refresh_token, claim);
+    return session;
   };
   const dropped = () => new TypeError('Failed to fetch');
   const holds = new Map<HeldCall, Readonly<{ arrived: () => void; released: Promise<void> }>>();
@@ -116,8 +190,10 @@ export function createTabCloud() {
     headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' },
   });
   const tokenUser = (token: string | null | undefined) => {
+    const sub = accessTokenClaims(token)?.sub;
+    if (typeof sub === 'string') return TAB_ACCOUNTS[sub] ? sub : null;
     const [kind, userId] = String(token ?? '').split(':');
-    return (kind === 'access' || kind === 'refresh') && TAB_ACCOUNTS[userId] ? userId : null;
+    return kind === 'refresh' && TAB_ACCOUNTS[userId] ? userId : null;
   };
 
   const fetch = async (input: unknown, init?: { method?: string; headers?: HeadersInit; body?: unknown }) => {
@@ -130,8 +206,15 @@ export function createTabCloud() {
       calls.push({ method, path: '/auth/v1/token?grant_type=refresh_token', userId });
       await waitIfHeld('refresh');
       if (!userId) return json(400, { code: 'refresh_token_not_found', message: 'Invalid Refresh Token' });
-      generation += 1;
-      return json(200, sessionFor(userId, generation, Math.floor(Date.now() / 1000) + 3600));
+      // The same session, with new tokens. A sign-in stored by
+      // storeTabSignIn (generation 1) is tabSessionId(userId, 1); one stored
+      // without the claim gets it here, as Supabase Auth adds it to an old
+      // token's refresh.
+      const refreshToken = String(body.refresh_token);
+      const sessionId = sessionOfRefreshToken.has(refreshToken)
+        ? sessionOfRefreshToken.get(refreshToken) ?? null
+        : tabSessionId(userId, 1);
+      return json(200, issue(userId, sessionId));
     }
     if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'password') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { email?: string; password?: string };
@@ -142,8 +225,8 @@ export function createTabCloud() {
       if (!userId || body.password !== TAB_TEST_PASSWORD) {
         return json(400, { code: 'invalid_credentials', message: 'Invalid login credentials' });
       }
-      generation += 1;
-      return json(200, sessionFor(userId, generation, Math.floor(Date.now() / 1000) + 3600));
+      // A new session for every sign-in.
+      return json(200, issue(userId, tabSessionId(userId, generation + 1)));
     }
     const userId = tokenUser(bearer);
     calls.push({ method, path: `${url.pathname}${url.search}`, userId });
