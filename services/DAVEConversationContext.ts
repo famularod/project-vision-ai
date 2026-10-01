@@ -55,9 +55,10 @@ export function resolveDAVEConversationContext({
   // Audit A9 pass 6 L6: a question naming two projects, or a project Talk did
   // not move to (a closed one), is not answered from this project, whether it
   // is new or a follow-up ("What about 200?"). Talk asks instead, in the
-  // "One detail needed" alert; a note is not checked here.
-  const projectRefusal = projectName && projectNames && classifyDAVEConversationIntent(originalQuestion) === 'ask'
-    ? talkProjectQuestionRefusal(originalQuestion, projectName, projectNames, closedProjectNames || [])
+  // "One detail needed" alert; a note is not checked here. Audit A9 pass 7
+  // L6b: also when Talk opened with no project selected (projectName '').
+  const projectRefusal = projectNames && classifyDAVEConversationIntent(originalQuestion) === 'ask'
+    ? talkProjectQuestionRefusal(originalQuestion, projectName ?? '', projectNames, closedProjectNames || [])
     : null;
   if (projectRefusal) {
     return resolution('ambiguous_follow_up', originalQuestion, projectRefusal, null, null,

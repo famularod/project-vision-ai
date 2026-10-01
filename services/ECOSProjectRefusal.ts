@@ -45,22 +45,31 @@ export function ecosProjectReferenceMismatchMessage(
     : null;
 }
 
+/**
+ * `selectedProjectIdentifier` is the selected project's number (or its name
+ * when it has none); '' when no project is selected (Talk opened from a
+ * screen without one; audit A9 pass 7 L6b). `referencedProjectIdentifier` is
+ * the other project's number, or its name when it was named by name.
+ */
 export function projectReferenceMismatchText(
   selectedProjectIdentifier: string,
   referencedProjectIdentifier: string,
   referencedProjectClosed: boolean,
   refusalWording: ECOSProjectRefusalWording,
 ) {
+  const selected = selectedProjectIdentifier
+    ? `Project ${selectedProjectIdentifier} is selected, but`
+    : 'No project is selected, and';
   if (referencedProjectClosed) {
     // A closed project is not offered anywhere until it is reopened, and only
     // the phone app can reopen one (Archived Projects on the Overview tab).
     const reopenStep = refusalWording === 'phone'
       ? 'Reopen it under Archived Projects on the Overview tab, then ask there.'
       : 'Reopen it in the Vitruvius iPhone or iPad app, then select it above and ask again.';
-    return `Project ${selectedProjectIdentifier} is selected, but ${referencedProjectIdentifier} is a closed project. ${reopenStep}`;
+    return `${selected} ${referencedProjectIdentifier} is a closed project. ${reopenStep}`;
   }
   const switchStep = refusalWording === 'phone'
     ? `Close this, open project ${referencedProjectIdentifier}, then ask again.`
     : `Select project ${referencedProjectIdentifier} above, then ask again.`;
-  return `Project ${selectedProjectIdentifier} is selected, but this question names ${referencedProjectIdentifier}. ${switchStep}`;
+  return `${selected} this question names ${referencedProjectIdentifier}. ${switchStep}`;
 }

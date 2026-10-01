@@ -19,7 +19,7 @@ import {
   ecosProjectNumberExemptSpans,
   ecosProjectNumberMentionsAt,
 } from '../supabase/functions/_shared/ecos-project-reference';
-import { ecosProjectReferenceMismatchMessage } from './ECOSProjectRefusal';
+import { ecosProjectReferenceMismatchMessage, projectReferenceMismatchText } from './ECOSProjectRefusal';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -177,9 +177,8 @@ function talkNamedProjects(
 
   const named = new Map<string, TalkNamedProject>();
   const add = (name: string, at: number, inFull: boolean) => {
-    const identifier = ecosProjectIdentifier(name);
-    const key = identifier ?? `name:${normalize(name)}`;
-    const project = named.get(key) ?? { key, label: identifier ?? name, open: [], exactOpen: [], at };
+    const key = talkProjectKey(name);
+    const project = named.get(key) ?? { key, label: ecosProjectIdentifier(name) ?? name, open: [], exactOpen: [], at };
     project.at = Math.min(project.at, at);
     const isOpen = openKeys.has(normalize(name));
     if (isOpen && !project.open.includes(name)) project.open.push(name);
@@ -191,6 +190,11 @@ function talkNamedProjects(
     for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
+}
+
+/** One key per project: its number, or its name when it has none (projects sharing a number are one). */
+function talkProjectKey(name: string) {
+  return ecosProjectIdentifier(name) ?? `name:${normalize(name)}`;
 }
 
 /** [start, end) of each whole-word occurrence of `name` in `text`, without case. */
@@ -222,6 +226,9 @@ function uniqueNames(names: readonly string[]) {
  * to, such as a closed one, in Ask ECOS's phone wording ("... is a closed
  * project. Reopen it under Archived Projects ..."). Null to answer. Talk
  * shows it through resolveDAVEConversationContext, before any answer.
+ * Audit A9 pass 7 L6: a closed project named only by its name ("What is left
+ * at Harbor?") is refused like a closed number, and `selectedProjectName`
+ * may be '' (Talk opened with no project selected).
  */
 export function talkProjectQuestionRefusal(
   question: string,
@@ -236,10 +243,22 @@ export function talkProjectQuestionRefusal(
     const list = `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
     return `This question names ${count} projects, ${list}. Which one do you mean? Ask again about just that project.`;
   }
-  return ecosProjectReferenceMismatchMessage(selectedProjectName, question, projectNames, {
+  const numberRefusal = ecosProjectReferenceMismatchMessage(selectedProjectName, question, projectNames, {
     closedProjectNames,
     refusalWording: 'phone',
   });
+  if (numberRefusal) return numberRefusal;
+  // One project is named and Talk did not move to it: a closed one (by name
+  // or number), or one Talk could not pick (two open projects share it).
+  const [project] = named;
+  const selected = selectedProjectName.trim();
+  if (!project || (selected && project.key === talkProjectKey(selected))) return null;
+  return projectReferenceMismatchText(
+    ecosProjectIdentifier(selected) ?? selected,
+    project.label,
+    project.open.length === 0,
+    'phone',
+  );
 }
 
 /**
