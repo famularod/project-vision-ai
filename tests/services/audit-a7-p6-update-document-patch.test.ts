@@ -4038,6 +4038,42 @@ describe('Keep Phone\'s archive is not undone by the waiting-update sync (audit 
     expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
   });
 
+  /**
+   * A4 pass 17 (observation): after Keep Phone with a newer edit that has a
+   * new photo, nothing started the waiting-update sync: its card already
+   * read Waiting to Sync, so the trigger for cards waiting did not fire
+   * again, and the edit waited for the app to come back to the front or for
+   * realtime to reconnect. Settings now sends it at once, after the kept
+   * copy, through its Retry callback.
+   */
+  it('observation: Keep Phone with a held newer edit with a new photo sends it at once, with no automatic retry or waiting-update sync', async () => {
+    const phone = await offlineEditInConflictWithIPad([photo]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    (createPhotoSignedUrl as jest.Mock).mockImplementation(async (path: string) => String(path).includes(added.id) ? notInCloudYet : signedUrl);
+    fileSystemMock().getInfoAsync.mockImplementation(async (uri: string) => uri === added.uri ? { exists: true, size: 2048 } : { exists: false });
+    await appSaveSync(phone)(await editAndSave(phone, { notes: NEWER, photos: [photo, added] }));
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync);
+    expect(onRetryUpdateSync).toHaveBeenCalledWith(expect.objectContaining({ notes: NEWER }), { automatic: true });
+    await settled();
+    // It kept the conflict's copy, the newer edit and its photo still waiting.
+    expect(upload).toHaveBeenCalled();
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect((inCloud().photos as Array<{ id: string }>).map(item => item.id)).toEqual([photo.id, added.id]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(inCloud().isArchived ?? false).toBe(false);
+  });
+
+  it('observation, control: Keep Phone with no newer edit asks for no further send', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const { onRetryUpdateSync } = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync);
+    expect(onRetryUpdateSync).not.toHaveBeenCalled();
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+  });
+
   it('control: not archived, Keep Phone with a held newer edit ends with the newer edit, not archived', async () => {
     const phone = await offlineEditInConflictWithIPad([]);
     await new Promise(resolve => setTimeout(resolve, 5));

@@ -985,16 +985,21 @@ export function AdminScreen({
           !projectUpdateCopyIsLastInCloud(phoneCopy!);
         if (resolution === 'keep_cloud' || !newerPhoneEdit) {
           onApplyCloudConflictUpdate(resolvedUpdate);
-        } else if ((resolvedUpdate as ArchivableUpdate).isArchived && !(phoneCopy as ArchivableUpdate).isArchived) {
-          // The newer edit's card takes the kept copy's archive, which hides
-          // it, and goes up archived after it (A4 pass 17 L2): left as it
-          // was, the waiting-update sync sent it un-archived over the kept
-          // copy. Through Settings' Retry callback, the one way Settings
-          // writes a card that still owes its sync; no conflict is open now.
-          const archived: ArchivableUpdate = {
-            ...phoneCopy!, isArchived: true, archivedAt: (resolvedUpdate as ArchivableUpdate).archivedAt ?? null,
-          };
-          void onRetryUpdateSync(archived, { automatic: true }).catch(() => undefined);
+        } else {
+          // The newer edit goes up now, after the kept copy, through Settings'
+          // Retry callback (A4 pass 17): its card already read Waiting to
+          // Sync, so nothing started the waiting-update sync that checks its
+          // photos, and it waited for the app to come back to the front.
+          // No conflict is open now, and it never sends over one. The card
+          // takes the kept copy's archive, which hides it, and goes up
+          // archived (L2): left as it was, the waiting-update sync sent it
+          // un-archived over the kept copy. This callback is the one way
+          // Settings writes a card that still owes its sync.
+          const kept = resolvedUpdate as ArchivableUpdate;
+          const card: ArchivableUpdate = kept.isArchived && !(phoneCopy as ArchivableUpdate).isArchived
+            ? { ...phoneCopy!, isArchived: true, archivedAt: kept.archivedAt ?? null }
+            : phoneCopy!;
+          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined);
         }
       }
 
