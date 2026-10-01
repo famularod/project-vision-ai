@@ -13385,7 +13385,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       id: `talk-memory-${uid()}`,
       createdAt: new Date().toISOString(),
       projectName,
-      switchedProject: projectName !== talkProjectName,
+      switchedProject: projectName !== talkProjectName, projectNames: reportAvailableProjectNames, closedProjectNames: ecosProjectQuestion.closedProjectNames, // A11 pass 7 L3
       transcript: route.transcript,
       fields: hasUnderstoodFields ? understoodFields! : route.suggestedFields,
       voiceResult,

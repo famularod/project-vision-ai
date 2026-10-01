@@ -109,10 +109,12 @@ export function classifyDAVEConversationIntent(transcript: string): DAVEConversa
  * project is named, or the one named is closed (audit A9 pass 6 L6b; Talk
  * then refuses a question in the closed wording, see
  * talkProjectQuestionRefusal).
- * A question naming two different projects stays too (L6a: Talk asks which);
- * a note naming two keeps the earlier rule and moves, for confirmation, to an
- * open project named in full. The selected project itself may be returned;
- * that is no move.
+ * A question naming two different projects stays too (L6a: Talk asks which).
+ * A note naming exactly one open project moves to it, whatever closed
+ * projects it names alongside ("Crew from 4410 moves to 2375", 4410 closed;
+ * audit A11 pass 7 L3); a note naming two or more open projects keeps the
+ * earlier rule and moves, for confirmation, to an open project named in
+ * full. The selected project itself may be returned; that is no move.
  */
 export function mentionedDAVEProject(
   transcript: string,
@@ -123,11 +125,18 @@ export function mentionedDAVEProject(
   if (named.length === 0) return null;
   if (named.length > 1) {
     if (classifyDAVEConversation(transcript).intent === 'ask') return null;
+    const open = named.filter(project => project.open.length > 0);
+    if (open.length === 1) return openProjectNamed(open[0]);
     return projectNames.find(name => named.some(project => project.exactOpen.includes(name))) ?? null;
   }
-  const [project] = named;
-  // Prefer the open project named in full; then the one open project with
-  // that number (a number an open and a closed project share is the open one).
+  return openProjectNamed(named[0]);
+}
+
+/**
+ * The open project named in full; else the one open project with that
+ * number (a number an open and a closed project share is the open one).
+ */
+function openProjectNamed(project: TalkNamedProject) {
   if (project.exactOpen.length === 1) return project.exactOpen[0];
   return project.open.length === 1 ? project.open[0] : null;
 }
@@ -267,12 +276,18 @@ export function talkProjectQuestionRefusal(
  * it to another project, and that move was saved pre-confirmed with the
  * location heard against the first project's areas. A moved note now needs
  * the manager to confirm the project, and starts with no location.
+ * Audit A11 pass 7 L3: with the open and closed project lists, a note that
+ * stays but names any other project (open or closed: "Riverside Clinic crew
+ * is done", "Crew from 2321 moves to 2375") is not pre-confirmed either;
+ * David chooses in Confirm Memory.
  */
 export function buildDAVETalkMemoryDraft({
   id,
   createdAt,
   projectName,
   switchedProject,
+  projectNames,
+  closedProjectNames,
   transcript,
   fields,
   voiceResult,
@@ -281,10 +296,16 @@ export function buildDAVETalkMemoryDraft({
   createdAt: string;
   projectName: string;
   switchedProject: boolean;
+  projectNames?: readonly string[] | null;
+  closedProjectNames?: readonly string[] | null;
   transcript: string;
   fields: Partial<DAVECaptureMemoryFields>;
   voiceResult?: DAVEVoiceUnderstandingResponse;
 }): DAVECaptureMemory {
+  const projectKey = talkProjectKey(projectName);
+  const namesAnotherProject = talkNamedProjects(transcript, projectNames || [], closedProjectNames || [])
+    .some(project => project.key !== projectKey);
+  const needsProjectChoice = switchedProject || namesAnotherProject;
   const location = switchedProject ? null : voiceResult?.understanding.recommendedLocation;
   return createCaptureMemory({
     id,
@@ -295,8 +316,8 @@ export function buildDAVETalkMemoryDraft({
     createdAt,
     recommendedProject: {
       value: projectName,
-      confidence: switchedProject ? 'medium' : 'high',
-      confirmed: !switchedProject,
+      confidence: needsProjectChoice ? 'medium' : 'high',
+      confirmed: !needsProjectChoice,
     },
     recommendedLocation: {
       value: location?.value || null,
