@@ -109,7 +109,8 @@ export function classifyDAVEConversationIntent(transcript: string): DAVEConversa
  * project is named, or the one named is closed (audit A9 pass 6 L6b; Talk
  * then refuses a question in the closed wording, see
  * talkProjectQuestionRefusal).
- * A question naming two different projects stays too (L6a: Talk asks which).
+ * A question naming two different projects stays too (L6a: Talk asks which),
+ * and so does a task update (audit A9 pass 8 L6: Talk refuses it).
  * A note naming exactly one open project moves to it, whatever closed
  * projects it names alongside ("Crew from 4410 moves to 2375", 4410 closed;
  * audit A11 pass 7 L3); a note naming two or more open projects keeps the
@@ -126,7 +127,8 @@ export function mentionedDAVEProject(
   const named = talkNamedProjects(transcript, projectNames, closedProjectNames || []);
   if (named.length === 0) return null;
   if (named.length > 1) {
-    if (classifyDAVEConversation(transcript).intent === 'ask') return null;
+    const intent = classifyDAVEConversation(transcript).intent;
+    if (intent === 'ask' || intent === 'task_update') return null;
     const open = named.filter(project => project.open.length > 0 && !project.unsure);
     if (open.length === 1) return openProjectNamed(open[0]);
     return projectNames.find(name => named.some(project => project.exactOpen.includes(name))) ?? null;

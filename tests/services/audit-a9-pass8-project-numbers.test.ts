@@ -333,3 +333,58 @@ describe('audit A9 pass 8 L5: a closed one-word project name counts only when na
     expect(talkAnswer('Is 4410 done?', PROJECTS, ['4410'])).toBe(talkReopen('4410'));
   });
 });
+
+describe('audit A9 pass 8 L6: a Talk task update naming another project Talk does not move to is refused', () => {
+  const OLD_YARD = '4410 Old Yard';
+  const ANNEX = '2380 Harbor Annex';
+  const OPEN = [SELECTED, OTHER, ANNEX];
+  const CLOSED = [OLD_YARD, 'Riverside Clinic'];
+  const TASKS: Task[] = [
+    { id: 'task-2321', projectName: SELECTED, taskName: 'Framing' },
+    { id: 'task-2375', projectName: OTHER, taskName: 'Framing' },
+    { id: 'task-2380', projectName: ANNEX, taskName: 'Framing' },
+  ];
+  const twoProjects = (first: string, second: string) =>
+    `This question names two projects, ${first} and ${second}. Which one do you mean? Ask again about just that project.`;
+
+  it.each([
+    ['Mark 4410 framing complete', talkReopen('4410')],
+    ['Mark Riverside Clinic framing complete', talkReopen('Riverside Clinic')],
+    ['Mark 2375 and 2380 framing complete', twoProjects('2375', '2380')],
+    ['Mark 2375 and 4410 framing complete', twoProjects('2375', '4410')],
+    ['Set 2375 framing at 4410 to 50%', twoProjects('2375', '4410')],
+  ])('"%s" is refused in the question wording', (command, refusal) => {
+    expect(routeDAVEConversation({ transcript: command, intelligence: intelligenceFor(SELECTED) }).intent).toBe('task_update');
+    expect(mentionedDAVEProject(command, OPEN, CLOSED)).toBeNull();
+    expect(talkAnswer(command, OPEN, CLOSED)).toBe(refusal);
+  });
+
+  it('App.tsx Talk refuses "Mark 4410 framing complete", stays on 2321 and pre-fills no task', async () => {
+    const h = talkHarness(OPEN, CLOSED, SELECTED, TASKS);
+    await h.handleTalkInput('Mark 4410 framing complete');
+    expect(h.projectNames).toEqual([SELECTED]);
+    expect(h.alert).toHaveBeenCalledWith('One detail needed', talkReopen('4410'));
+    expect(h.taskActions).toEqual([]);
+  });
+
+  it('App.tsx Talk refuses a task update naming two projects and does not move', async () => {
+    const h = talkHarness(OPEN, CLOSED, SELECTED, TASKS);
+    await h.handleTalkInput('Mark 2375 and 4410 framing complete');
+    expect(h.projectNames).toEqual([SELECTED]);
+    expect(h.alert).toHaveBeenCalledWith('One detail needed', twoProjects('2375', '4410'));
+    expect(h.taskActions).toEqual([]);
+  });
+
+  it.each([
+    ['Mark 2375 framing complete', OTHER, 'task-2375'],
+    ['Mark 2321 framing complete', SELECTED, 'task-2321'],
+    ['Mark framing complete', SELECTED, 'task-2321'],
+  ])('"%s" still offers %s\'s task', async (command, project, taskId) => {
+    const h = talkHarness(OPEN, CLOSED, SELECTED, TASKS);
+    await h.handleTalkInput(command);
+    expect(h.alert).not.toHaveBeenCalled();
+    expect(h.taskActions).toHaveLength(1);
+    expect(h.taskActions[0].projectName).toBe(project);
+    expect(h.taskActions[0].candidates.map(task => task.id)).toEqual([taskId]);
+  });
+});

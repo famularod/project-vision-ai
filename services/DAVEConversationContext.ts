@@ -57,7 +57,10 @@ export function resolveDAVEConversationContext({
   // is new or a follow-up ("What about 200?"). Talk asks instead, in the
   // "One detail needed" alert; a note is not checked here. Audit A9 pass 7
   // L6b: also when Talk opened with no project selected (projectName '').
-  const projectRefusal = projectNames && classifyDAVEConversationIntent(originalQuestion) === 'ask'
+  // Audit A9 pass 8 L6: a task update too ("Mark 4410 framing complete" with
+  // 4410 closed offered this project's framing task), in the same words.
+  const intent = classifyDAVEConversationIntent(originalQuestion);
+  const projectRefusal = projectNames && (intent === 'ask' || intent === 'task_update')
     ? talkProjectQuestionRefusal(originalQuestion, projectName ?? '', projectNames, closedProjectNames || [])
     : null;
   if (projectRefusal) {
