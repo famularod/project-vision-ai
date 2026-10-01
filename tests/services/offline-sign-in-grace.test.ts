@@ -37,6 +37,7 @@ import {
   offlineSignInGraceRefusal,
   offlineSignInRefusalMessage,
   readLatestTimeSeen,
+  SIGN_IN_SERVER_NOT_ANSWERING_MESSAGE,
   watchOfflineSignInGrace,
   workspaceOwnerAfterFailedLookup,
 } from '../../services/OfflineSignInGrace';
@@ -457,5 +458,42 @@ describe('whole-app audit A1 pass 3 (30 Sep 2026)', () => {
     expect(await recheck(saved('owner-a', -DAY))).toEqual([['clock', NOW + DAY]]);
     expect(await recheck(saved('owner-a', OFFLINE_SIGN_IN_GRACE_MS + MINUTE))).toEqual([['expired']]);
     expect(await recheck(saved('owner-a', HOUR))).toEqual([]);
+  });
+});
+
+describe('whole-app audit A1 pass 4 (30 Sep 2026)', () => {
+  const DAY = 24 * 60 * MINUTE;
+  const HOUR = 60 * MINUTE;
+  const TIME_SEEN = '@vitruvius/offline-sign-in/latest-time-seen/v1/owner-a';
+  beforeEach(() => {
+    mockPhone.clear();
+    mockPhoneReadFails = false;
+    mockReadSavedSignIn.mockReset();
+    mockAwaitSavedSignInRefresh.mockReset();
+  });
+
+  it('L2 the sign-in server answering 5xx: the 7 days still apply, and the lockout says the server, not "No signal"', async () => {
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'server_unavailable' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 14 * HOUR));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: true, lastRefreshedAtMs: NOW - 14 * HOUR });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 8 * DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ refused: 'server_not_answering' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-b', MINUTE));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ refused: 'server_not_answering' });
+    // The clock's refusal keeps its own words.
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', -DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW))
+      .resolves.toEqual({ refused: 'clock', seenAtMs: NOW + DAY });
+    expect(offlineSignInRefusalMessage('server_not_answering')).toBe(
+      'The sign-in server isn\'t answering right now. Your work on this phone is kept. Try again in a few minutes.',
+    );
+    expect(SIGN_IN_SERVER_NOT_ANSWERING_MESSAGE).not.toMatch(/signal/i);
+    // A real network failure still says "No signal".
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 8 * DAY));
+    await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW)).resolves.toEqual({ refused: 'expired' });
   });
 });

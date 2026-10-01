@@ -129,8 +129,14 @@ jest.mock('../App', () => {
 });
 
 // 'hang': requests get no answer until released (a captive portal).
-type Mode = 'offline' | 'reject' | 'online' | 'hang';
-const network = { mode: 'offline' as Mode, calls: [] as string[], hung: [] as (() => void)[] };
+// 'token503': signal, and the auth server's health answers, but its token
+// endpoint answers 503 (an auth-server outage, A1 pass 4 L2).
+type Mode = 'offline' | 'reject' | 'online' | 'hang' | 'token503';
+const network = {
+  mode: 'offline' as Mode,
+  calls: [] as string[],
+  hung: [] as (() => void)[],
+};
 function releaseHungRequests() {
   network.hung.splice(0).forEach(release => release());
 }
@@ -153,6 +159,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
     if (network.mode === 'reject') {
       return json(400, { code: 'refresh_token_not_found', message: 'Invalid Refresh Token: Refresh Token Not Found' });
     }
+    if (network.mode === 'token503') return json(503, { message: 'Service Unavailable' });
     const token = JSON.parse(init?.body || '{}').refresh_token as string;
     const owner = token.replace(/^refresh-/, '');
     const now = Math.floor(Date.now() / 1000);
@@ -1317,11 +1324,14 @@ describe('A1 pass 3 review', () => {
  * Devices, then another app for two minutes, came back to "Other devices not
  * signed out… needs signal… Nothing was signed out" with signal there, and
  * Retry on the 7-day lockout showed the lockout again before opening.
+ * L2: an auth-server outage (health answers, the token endpoint 503) read as
+ * "Signal is back — finishing sign-in…", then "No signal…".
  */
 describe('A1 pass 4 review', () => {
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const EXPIRED = 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.';
   const SIGNAL_BACK = 'Signal is back — finishing sign-in…';
+  const SERVER_NOT_ANSWERING = 'The sign-in server isn\'t answering right now. Your work on this phone is kept. Try again in a few minutes.';
   const REFRESH = 'POST /auth/v1/token?grant_type=refresh_token';
   const HEALTH = 'GET /auth/v1/health';
   const authCalls = (from: number) => network.calls.slice(from).filter(call => call === HEALTH || call.startsWith('POST /auth/v1/'));
@@ -1425,6 +1435,110 @@ describe('A1 pass 4 review', () => {
       expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
     } finally {
       clock?.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L2 the token endpoint answers 503 with the health check fine: "the sign-in server isn\'t answering", never "Signal is back" or "No signal"', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    network.mode = 'token503';
+    const { screen, rtl } = launch();
+    // At launch: before, "No signal, and your sign-in has not refreshed for 7
+    // days…" after 8 seconds.
+    await rtl.waitFor(() => expect(screen.getByText(SERVER_NOT_ANSWERING)).toBeTruthy(), { timeout: 5_000 });
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    await refreshGivenUp(rtl);
+
+    // Retry while auth-js still answers from that 503: said at once, no
+    // signal check, nothing sent.
+    let from = network.calls.length;
+    await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+    await rtl.waitFor(() => expect(screen.getByText(SERVER_NOT_ANSWERING)).toBeTruthy(), OPEN);
+    expect(screen.queryByText(SIGNAL_BACK)).toBeNull();
+    expect(authCalls(from)).toEqual([]);
+
+    // The server is back: Retry opens the workspace.
+    network.mode = 'online';
+    from = network.calls.length;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+    try {
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+      await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 15_000 });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(authCalls(from)).toContain(REFRESH);
+    screen.unmount();
+  });
+
+  test('L2 Retry after no signal, then the token endpoint answers 503: "Signal is back" gives way to "the sign-in server isn\'t answering" at the first 503', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+    await refreshGivenUp(rtl);
+
+    network.mode = 'token503';
+    const from = network.calls.length;
+    await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+    // The health check answers, so signal is back (true).
+    await rtl.waitFor(() => expect(screen.getByText(SIGNAL_BACK)).toBeTruthy(), OPEN);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+    try {
+      // Before: "Signal is back" for about 90 seconds, then "No signal…".
+      await rtl.waitFor(() => expect(screen.getByText(SERVER_NOT_ANSWERING)).toBeTruthy(), { timeout: 5_000 });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(screen.queryByText(SIGNAL_BACK)).toBeNull();
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    // (auth-js keeps retrying the 503 meanwhile, as it does any 5xx.)
+    expect(authCalls(from).slice(0, 2)).toEqual([HEALTH, REFRESH]);
+    expect(new Set(authCalls(from).slice(1))).toEqual(new Set([REFRESH]));
+    // Locked, not signed out: a 503 is no refusal.
+    expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+    screen.unmount();
+  });
+
+  test('L2 within the 7 days a 503 still opens the workspace offline, sign-in pending (owner answer Q13)', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    network.mode = 'token503';
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 5_000 });
+    expect(screen.getByText('Offline, sign-in pending')).toBeTruthy();
+    screen.unmount();
+  });
+
+  test('L2 Sign Out of All Devices while the token endpoint answers 503 says the sign-in server isn\'t answering, not "needs signal"', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      network.mode = 'token503';
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(network.calls).toContain(HEALTH), OPEN);
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+      try {
+        await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out', 'Other devices not signed out']), { timeout: 5_000 });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(alerts.shown[1].message).toBe(
+        'Signing out your other devices needs the sign-in server, and it isn\'t answering right now. Nothing was signed out. Try again in a few minutes.' +
+        '\n\nYou can sign out of this device now. Your other devices stay signed in.',
+      );
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy();
+    } finally {
+      alerts.spy.mockRestore();
       screen.unmount();
     }
   });

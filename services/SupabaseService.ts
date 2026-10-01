@@ -364,6 +364,15 @@ export const SIGNED_OUT_ON_THIS_DEVICE_ONLY = 'signed_out_on_this_device_only';
 export type SignOutScope = 'local' | 'global';
 /** SupabaseServiceResult.code of a Sign Out of All Devices that could not reach the cloud: nothing signed out. */
 export const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL = 'sign_out_of_all_devices_needs_signal';
+const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL_MESSAGE =
+  'Signing out your other devices needs signal, and Vitruvius could not reach the cloud just now. Nothing was signed out.';
+/**
+ * Whole-app audit A1 pass 4 L2: the same code when the sign-in server
+ * answered 5xx (an outage): there is signal, so "needs signal" was not why.
+ */
+const SIGN_OUT_OF_ALL_DEVICES_SERVER_NOT_ANSWERING_MESSAGE =
+  'Signing out your other devices needs the sign-in server, and it isn\'t answering right now. ' +
+  'Nothing was signed out. Try again in a few minutes.';
 /**
  * SupabaseServiceResult.code of a Sign Out of All Devices whose sign-in the
  * server had already ended (its refresh was refused): this device is signed
@@ -435,8 +444,15 @@ function supabaseAuthStorageKey(url: string): string | undefined {
  * It retries a network failure for about 25 seconds before saying so, and the
  * first failed request already settles it: no answer is no rejection.
  */
-let lastSignInRefreshTransport: 'failed' | 'answered' | null = null;
-const signInRefreshFailureWaiters = new Set<() => void>();
+let lastSignInRefreshTransport: 'failed' | 'answered' | 'server_error' | null = null;
+/**
+ * Told as each refresh request ends without the sign-in: no answer
+ * (network_unavailable), or, whole-app audit A1 pass 4 L2, a 5xx from the
+ * sign-in server (server_unavailable). An auth-server outage (health
+ * answering, the token endpoint 503) read as "Signal is back — finishing
+ * sign-in…", then "No signal…".
+ */
+const signInRefreshFailureWaiters = new Set<(outcome: SavedSignInRefresh) => void>();
 /**
  * Whole-app audit A1 pass 3 L1: after its retries auth-js answers "failed" from
  * its last failure for AUTH_REFRESH_FAILURE_COOLDOWN_MS, sending nothing. That
@@ -482,8 +498,10 @@ function fetchObservingSignInRefresh(
     });
   return request.then(response => {
     if (refresh) {
-      lastSignInRefreshTransport = 'answered';
+      const serverError = response.status >= 500;
+      lastSignInRefreshTransport = serverError ? 'server_error' : 'answered';
       lastSignInRefreshEndedAtMs = Date.now();
+      if (serverError) signInRefreshFailureWaiters.forEach(notify => notify(SIGN_IN_SERVER_NOT_ANSWERING));
     }
     return response;
   }, error => {
@@ -491,7 +509,7 @@ function fetchObservingSignInRefresh(
       lastSignInRefreshTransport = 'failed';
       signInRefreshRequestsUnanswered += 1;
       lastSignInRefreshEndedAtMs = Date.now();
-      signInRefreshFailureWaiters.forEach(notify => notify());
+      signInRefreshFailureWaiters.forEach(notify => notify(UNANSWERED_REFRESH));
     }
     throw error;
   });
@@ -592,9 +610,14 @@ async function readSavedSession(): Promise<Readonly<{ signIn: SavedSignIn; refre
   }
 }
 
+/**
+ * 'server_unavailable' (whole-app audit A1 pass 4 L2): the sign-in server
+ * answered 5xx. Like 'network_unavailable' it is no refusal (owner answer
+ * Q13), but there is signal, so it is never called "no signal".
+ */
 export type SavedSignInRefresh =
   | Readonly<{ status: 'signed_in'; ownerId: string }>
-  | Readonly<{ status: 'signed_out' | 'rejected' | 'network_unavailable' | 'unreadable' }>;
+  | Readonly<{ status: 'signed_out' | 'rejected' | 'network_unavailable' | 'server_unavailable' | 'unreadable' }>;
 
 export type SavedSignInRefreshOptions = Readonly<{
   /**
@@ -609,6 +632,16 @@ export type SavedSignInRefreshOptions = Readonly<{
 }>;
 
 const UNANSWERED_REFRESH: SavedSignInRefresh = Object.freeze({ status: 'network_unavailable' });
+const SIGN_IN_SERVER_NOT_ANSWERING: SavedSignInRefresh = Object.freeze({ status: 'server_unavailable' });
+
+/**
+ * auth-js reports a refresh that got no answer and one the server answered
+ * 5xx alike (AuthRetryableFetchError); only the second carries the status
+ * (A1 pass 4 L2).
+ */
+function isSignInServerNotAnswering(error: unknown): boolean {
+  return isAuthRetryableFetchError(error) && typeof error.status === 'number' && error.status >= 500;
+}
 
 /**
  * How the saved sign-in's refresh ends (owner answer Q13): 'network_unavailable'
@@ -627,11 +660,19 @@ export async function awaitSavedSignInRefresh(
   if (!client) return { status: 'signed_out' };
   const noAnswerMark = options.noAnswerMark ?? signInRefreshRequestsUnanswered;
   const stillWanted = options.stillWanted ?? (() => true);
-  let notify: () => void = () => undefined;
+  let notify: (outcome: SavedSignInRefresh) => void = () => undefined;
   const refreshFailed = new Promise<SavedSignInRefresh>(resolve => {
-    notify = () => resolve(UNANSWERED_REFRESH);
+    notify = resolve;
   });
-  if (lastSignInRefreshTransport === 'failed') notify();
+  if (lastSignInRefreshTransport === 'failed') notify(UNANSWERED_REFRESH);
+  // A1 pass 4 L2: a 5xx that auth-js is still retrying, or answers from in
+  // its cooldown, is the server not answering, with signal; said at once.
+  else if (
+    lastSignInRefreshTransport === 'server_error' &&
+    Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS
+  ) {
+    notify(SIGN_IN_SERVER_NOT_ANSWERING);
+  }
   signInRefreshFailureWaiters.add(notify);
   let outcome: SavedSignInRefresh;
   try {
@@ -650,6 +691,7 @@ export async function awaitSavedSignInRefresh(
 /** The saved sign-in as auth-js has it: getSession refreshes an expired one. */
 function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInRefresh> {
   return client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
+    if (isSignInServerNotAnswering(error)) return SIGN_IN_SERVER_NOT_ANSWERING;
     if (error) return isAuthRetryableFetchError(error) ? UNANSWERED_REFRESH : { status: 'rejected' };
     const ownerId = data.session?.user?.id;
     return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
@@ -672,7 +714,8 @@ async function savedSignInRefreshWithSignal(
   const wait: ForegroundWait = { foregroundMs: 0, stillWanted };
   for (;;) {
     const sentBefore = signInRefreshRequestsSent;
-    const asked = savedSignInRefreshOutcome(client);
+    // A 5xx ends the wait at once: no "Signal is back" past it (A1 pass 4 L2).
+    const asked = untilServerNotAnswering(savedSignInRefreshOutcome(client));
     let outcome = await beforeForegroundWaitOver(asked, wait);
     // A request it sent may be about to answer: a few seconds more.
     if (!outcome && signInRefreshRequestsSent > sentBefore && wait.stillWanted()) {
@@ -692,6 +735,20 @@ async function savedSignInRefreshWithSignal(
         signInRefreshRequestsSent === sentBefore)
     );
   }
+}
+
+/** `work`'s answer, or 'server_unavailable' at the next 5xx a refresh request gets (A1 pass 4 L2). */
+function untilServerNotAnswering(work: Promise<SavedSignInRefresh>): Promise<SavedSignInRefresh> {
+  let notify: (outcome: SavedSignInRefresh) => void = () => undefined;
+  const serverNotAnswering = new Promise<SavedSignInRefresh>(resolve => {
+    notify = outcome => {
+      if (outcome.status === 'server_unavailable') resolve(outcome);
+    };
+  });
+  signInRefreshFailureWaiters.add(notify);
+  return Promise.race([work, serverNotAnswering]).finally(() => {
+    signInRefreshFailureWaiters.delete(notify);
+  });
 }
 
 /** The wait for the sign-in, in foreground time (A1 pass 4 L1). */
@@ -977,8 +1034,10 @@ export async function signOut(
   // so whether there is signal is asked, not assumed. With signal the expired
   // token is refreshed first (the sign-out needs a valid one); a refusal
   // means the server had already ended this sign-in, and that is what is said.
+  let serverNotAnswering = false;
   if (unreachable && scope === 'global' && await authServerReachable()) {
     const refreshed = await savedSignInRefreshWithSignal(client);
+    serverNotAnswering = refreshed.status === 'server_unavailable';
     if (refreshed.status === 'signed_in') {
       unreachable = false;
     } else if (refreshed.status === 'rejected' || refreshed.status === 'signed_out') {
@@ -1000,9 +1059,12 @@ export async function signOut(
   if (error && !isAuthRetryableFetchError(error)) return errorResult(error.message);
   // Owner answer Q21: only the cloud can sign out the other devices. Without
   // it nothing is signed out here either; the owner is told and chooses.
+  // A1 pass 4 L2: a sign-in server answering 5xx is not "needs signal".
   if (scope === 'global') {
     return errorResult(
-      'Signing out your other devices needs signal, and Vitruvius could not reach the cloud just now. Nothing was signed out.',
+      serverNotAnswering || isSignInServerNotAnswering(error)
+        ? SIGN_OUT_OF_ALL_DEVICES_SERVER_NOT_ANSWERING_MESSAGE
+        : SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL_MESSAGE,
       undefined,
       SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
     );

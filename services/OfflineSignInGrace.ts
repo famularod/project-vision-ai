@@ -48,6 +48,14 @@ export const OFFLINE_SIGN_IN_GRACE_RECHECK_MS = 60_000;
 export const OFFLINE_SIGN_IN_TIME_SEEN_TRUST_MS = OFFLINE_SIGN_IN_GRACE_MS + 60 * 60 * 1000;
 /** A1 pass 3 L1: shown while the sign-in finishes once signal is back. */
 export const SIGNAL_BACK_FINISHING_SIGN_IN = 'Signal is back — finishing sign-in…';
+/**
+ * Whole-app audit A1 pass 4 L2: the lockout when the sign-in server answered
+ * 5xx (an outage). It said "Signal is back — finishing sign-in…" for about 90
+ * seconds, then "No signal, and your sign-in has not refreshed for 7 days…",
+ * with signal there all along.
+ */
+export const SIGN_IN_SERVER_NOT_ANSWERING_MESSAGE =
+  'The sign-in server isn\'t answering right now. Your work on this phone is kept. Try again in a few minutes.';
 
 export type WorkspaceOwnerAfterFailedLookup = Readonly<{
   ownerId: string;
@@ -61,6 +69,12 @@ export type WorkspaceOwnerAfterFailedLookup = Readonly<{
 
 /** Why an offline opening was refused (whole-app audit A1 pass 2 #3). */
 export type OfflineSignInRefusal = 'expired' | 'other_account' | 'clock' | 'unconfirmed';
+
+/**
+ * Why the launch lookup kept the lockout: a refusal, or with any refusal but
+ * the clock's, the sign-in server not answering (A1 pass 4 L2).
+ */
+export type OfflineSignInLookupRefusal = OfflineSignInRefusal | 'server_not_answering';
 
 /** With 'clock', the latest time this phone saw, which the clock is earlier than (A1 pass 3 L2). */
 export type OfflineSignInRefusalDetail = Readonly<{ reason: OfflineSignInRefusal; seenAtMs?: number }>;
@@ -82,7 +96,8 @@ export const OFFLINE_SIGN_IN_REFUSAL_MESSAGES: Readonly<Record<OfflineSignInRefu
 };
 
 /** The lockout's message; for a clock refusal, with the time seen (A1 pass 3 L2). */
-export function offlineSignInRefusalMessage(reason: OfflineSignInRefusal, seenAtMs?: number | null): string {
+export function offlineSignInRefusalMessage(reason: OfflineSignInLookupRefusal, seenAtMs?: number | null): string {
+  if (reason === 'server_not_answering') return SIGN_IN_SERVER_NOT_ANSWERING_MESSAGE;
   if (reason !== 'clock' || typeof seenAtMs !== 'number' || !Number.isFinite(seenAtMs)) {
     return OFFLINE_SIGN_IN_REFUSAL_MESSAGES[reason];
   }
@@ -226,14 +241,18 @@ export async function workspaceOwnerAfterFailedLookup(
   refreshOptions: SavedSignInRefreshOptions = {},
 ): Promise<
   | WorkspaceOwnerAfterFailedLookup
-  | Readonly<{ refused: OfflineSignInRefusal; seenAtMs?: number }>
+  | Readonly<{ refused: OfflineSignInLookupRefusal; seenAtMs?: number }>
   | null
 > {
   const refresh = await savedSignInRefreshWithin(timeoutMs, refreshOptions);
   if (refresh.status === 'signed_in') {
     return { ownerId: refresh.ownerId, signInPending: false };
   }
-  if (refresh.status !== 'network_unavailable') return null;
+  // A1 pass 4 L2: a sign-in server answering 5xx is no refusal either (owner
+  // answer Q13: the 7 days apply), but the lockout says the server, not "No
+  // signal". The clock's refusal keeps its own words.
+  const serverNotAnswering = refresh.status === 'server_unavailable';
+  if (refresh.status !== 'network_unavailable' && !serverNotAnswering) return null;
   const [saved, workspaceOwnerId] = await Promise.all([
     readSavedSignIn(),
     workspaceOwnerOnThisPhone(),
@@ -242,11 +261,12 @@ export async function workspaceOwnerAfterFailedLookup(
   const nowMs = now();
   const refused = offlineSignInGraceRefusalDetail({ saved, workspaceOwnerId, nowMs, latestTimeSeenMs });
   if (refused) {
+    if (serverNotAnswering && refused.reason !== 'clock') return { refused: 'server_not_answering' };
     return refused.seenAtMs === undefined
       ? { refused: refused.reason }
       : { refused: refused.reason, seenAtMs: refused.seenAtMs };
   }
-  if (!workspaceOwnerId || !saved) return { refused: 'unconfirmed' };
+  if (!workspaceOwnerId || !saved) return { refused: serverNotAnswering ? 'server_not_answering' : 'unconfirmed' };
   await noteLatestTimeSeen(workspaceOwnerId, nowMs, saved.lastRefreshedAtMs);
   // The launch read's last refresh goes with the opening (A1 pass 3 L3).
   return { ownerId: workspaceOwnerId, signInPending: true, lastRefreshedAtMs: saved.lastRefreshedAtMs };
