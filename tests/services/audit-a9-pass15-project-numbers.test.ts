@@ -1,6 +1,6 @@
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectRefusal';
 import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
-import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import { buildDAVETalkMemoryDraft, mentionedDAVEProject } from '../../services/DAVEConversationRouter';
 
 // Audit A9 pass 15 (1 Oct 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -90,5 +90,53 @@ describe('audit A9 pass 15 L1: a name said in full beats one said in part only a
     expect(desktop('Is 2375 Main St done?', [SELECTED, MAIN], ['24117 - 2375 Main St'], MAIN)).toBeNull();
     expect(desktop('What is left at 450 Elm St?', [SELECTED, '24117 - 450 Elm St', '450 Elm St'], [], '24117 - 450 Elm St'))
       .toBe(switchOnDesktop('450', '24117'));
+  });
+});
+
+/** Whether a Talk note on `selected` is pre-confirmed to it, the way App.tsx builds the draft. */
+function notePreConfirmed(note: string, selected: string, open: readonly string[], closed: readonly string[] = []) {
+  const projectName = mentionedDAVEProject(note, open, closed) || selected;
+  return buildDAVETalkMemoryDraft({
+    id: 'talk-memory-1',
+    createdAt: '2026-10-01T12:00:00.000Z',
+    projectName,
+    switchedProject: projectName !== selected,
+    projectNames: open,
+    closedProjectNames: closed,
+    transcript: note,
+    fields: { generalMemory: note },
+  }).recommendedProject.confirmed;
+}
+
+describe('audit A9 pass 15 L2: projects sharing the selected job number are its own in a tie, and a Talk note Ask would refuse is not pre-confirmed', () => {
+  const ANNEX = '24117 - 2375 Main St Annex';
+  const OLD_MAIN = '24117 - 2375 Main St';
+
+  it('on the Annex, "What is left at 2375 Main St?" is its own with a closed "24117 - 2375 Main St" (was "names two projects")', () => {
+    expect(phone('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+  });
+
+  it('a tie that also names a project with another job number still asks which', () => {
+    const other = '23088 - 2375 Main St';
+    const expected = 'This question names two projects, 2375 (24117 - 2375 Main St Annex) and 2375 (23088 - 2375 Main St). '
+      + 'Which one do you mean? Ask again about just that project.';
+    expect(phone('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN, other], ANNEX)).toBe(expected);
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN, other], ANNEX)).toBe(expected);
+  });
+
+  it.each([
+    ['Crew finished framing at 400 Court St today', OLD_MAIN, ['24117 - 400 Court St']],
+    ['Inspector signed off 2375 Main St this morning', '24117 - 450 A Street', [ANNEX]],
+  ])('the note "%s" on "%s" is not pre-confirmed when Ask ECOS would refuse it (was confirmed)', (note, selected, closed) => {
+    expect(phone(note, [SELECTED, selected], closed, selected)).not.toBeNull();
+    expect(notePreConfirmed(note, selected, [SELECTED, selected], closed)).toBe(false);
+  });
+
+  it('a note Ask ECOS would answer stays pre-confirmed', () => {
+    expect(notePreConfirmed('Crew finished framing at 2375 Main St today', ANNEX, [SELECTED, ANNEX], [OLD_MAIN])).toBe(true);
+    expect(notePreConfirmed('Ordered 2375 feet of conduit', SELECTED, [SELECTED, '2375 Main St'])).toBe(true);
+    expect(notePreConfirmed('The gate code is 2321, tell the crew', SELECTED, [SELECTED, '2375 Main St'])).toBe(true);
   });
 });

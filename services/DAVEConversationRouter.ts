@@ -397,7 +397,12 @@ export function buildDAVETalkMemoryDraft({
   const projectKey = talkProjectKey(projectName);
   const namesAnotherProject = talkNamedProjects(transcript, projectNames || [], closedProjectNames || [], projectName)
     .some(project => project.key !== projectKey);
-  const needsProjectChoice = switchedProject || namesAnotherProject;
+  // Audit A9 pass 15 L2: nor when Ask ECOS would refuse it as a question
+  // (Talk keys projects by job number, so "24117 - 400 Court St" on "24117
+  // - 2375 Main St" looked like this project).
+  const askWouldRefuse = Boolean(projectNames) &&
+    ecosProjectReferenceMismatchMessage(projectName, transcript, projectNames, { closedProjectNames }) !== null;
+  const needsProjectChoice = switchedProject || namesAnotherProject || askWouldRefuse;
   const location = switchedProject ? null : voiceResult?.understanding.recommendedLocation;
   return createCaptureMemory({
     id,

@@ -153,8 +153,13 @@ export function findECOSProjectReferenceMismatch(
     if (!letter && !spacedLetter) {
       const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames], projectName);
       const isSelected = isSelectedFor(number);
-      const others = around.filter(name => !isSelected(name));
-      const other = others.length > 0 ? refusal(number, name => others.includes(name), around.some(isSelected)) : null;
+      // Audit A9 pass 15 L2: in a tie with the selected project, a project
+      // shown by its number is it too, as in Talk ("What is left at 2375
+      // Main St?" on "24117 - 2375 Main St Annex" with a closed "24117 -
+      // 2375 Main St" is its own).
+      const tiedWithSelected = around.some(isSelected);
+      const others = around.filter(name => !isSelected(name) && !(tiedWithSelected && shown(name) === shown(projectName)));
+      const other = others.length > 0 ? refusal(number, name => others.includes(name), tiedWithSelected) : null;
       if (other) return other;
       if (around.length > 0) continue;
     }

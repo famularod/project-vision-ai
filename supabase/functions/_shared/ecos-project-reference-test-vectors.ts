@@ -1349,6 +1349,27 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     closedProjectNames: ['2375 Main St'],
     refused: null,
   },
+  // Audit A9 pass 15 L2: in a tie with the selected project, a project shown
+  // by its number is it too.
+  {
+    name: 'pass 15 L2: on "24117 - 2375 Main St Annex", "What is left at 2375 Main St?" is its own with a closed "24117 - 2375 Main St"',
+    projectName: '24117 - 2375 Main St Annex',
+    question: 'What is left at 2375 Main St?',
+    knownProjectNames: [SELECTED, '24117 - 2375 Main St Annex'],
+    closedProjectNames: ['24117 - 2375 Main St'],
+    refused: null,
+  },
+  {
+    name: 'pass 15 L2: the same tie with a "23088 - 2375 Main St" also closed asks which of two',
+    projectName: '24117 - 2375 Main St Annex',
+    question: 'What is left at 2375 Main St?',
+    knownProjectNames: [SELECTED, '24117 - 2375 Main St Annex'],
+    closedProjectNames: ['24117 - 2375 Main St', '23088 - 2375 Main St'],
+    refused: '2375 (23088 - 2375 Main St)',
+    refusedClosed: true,
+    refusedSelected: '24117',
+    refusedTogether: ['2375 (24117 - 2375 Main St Annex)', '2375 (23088 - 2375 Main St)'],
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
