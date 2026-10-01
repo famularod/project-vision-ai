@@ -672,6 +672,14 @@ function handTasksRestatedWhenCurrent(
       status: entry.status, priority: task.priority, notes: '', importBatchId: entry.importBatchId,
       sourceDocumentId: entry.sourceDocumentId ?? null, createdAt: now,
     } as ScheduleItem;
+    // Whole-app audit A5 pass 19 L1 (1 Oct 2026): a lookahead David approved after this schedule was
+    // uploaded restated the task since (10/14, 60%), and Make Current put it back on the upload's older
+    // row (10/08, his 40%); a task a file brought in keeps the lookahead's. The row now only brings the
+    // note's master dates and percent up to it, as a master does under a lookahead; the task keeps what it shows.
+    const madeCurrentAt = timeOf(madeCurrent.importedAt);
+    const restatedSince = madeCurrentAt > 0 && (task.lookaheadOverlay?.lookaheads || []).some(noted => documentsAfter.some(document =>
+      key(document.importBatchId) === key(noted.batchId) && timeOf(document.importedAt) > madeCurrentAt));
+    if (restatedSince) return [{ ...scheduleTaskMasterRestated(scheduleNoteTakesManagersProgress(base), row, now), updatedAt: now }];
     // Restated as the phone's approval restates it; a row that no longer pairs (renamed since) only drops the note.
     const { next } = mergeApprovedScheduleImportItems({
       existing: [base], imported: [row], completionMatch: () => null, mergeCompletion: item => item, approvedAt: now,
