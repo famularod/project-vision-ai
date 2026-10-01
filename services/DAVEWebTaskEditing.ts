@@ -117,9 +117,34 @@ export function buildDAVEWebScheduleItem({
   const projectNameForRecord = current && currentProjectScope === normalized(projectName)
     ? current.projectName
     : projectName;
-  const progressChanged = !current ||
-    current.status !== progress.status ||
-    current.percentComplete !== progress.percentComplete;
+  // The progress is marked as the project manager's only when this save
+  // changes its percent or status, as on the phone. Every web save had
+  // marked it, so changing only the area of an imported 100% task made the
+  // summaries say it "was verified complete" (whole-app audit A12 pass 4
+  // M1, 30 Sep 2026). Compared with the task's own progress as stored
+  // (99.6% is 100%), so a value the save only tidies is not a change; an
+  // unchanged progress keeps its source, confirmer and time exactly,
+  // absent included.
+  const storedProgress = current
+    ? reconcileScheduleProgress(current.status, current.percentComplete)
+    : null;
+  const progressEditedHere = !storedProgress ||
+    storedProgress.status !== progress.status ||
+    storedProgress.percentComplete !== progress.percentComplete;
+  const progressMarking: Pick<
+    ScheduleItem,
+    'progressSource' | 'progressConfirmedAt' | 'progressConfirmedBy'
+  > = progressEditedHere || !current
+    ? {
+        progressSource: 'project_manager',
+        progressConfirmedAt: now,
+        progressConfirmedBy: actor.trim() || 'Project manager',
+      }
+    : {
+        ...('progressSource' in current ? { progressSource: current.progressSource } : {}),
+        ...('progressConfirmedAt' in current ? { progressConfirmedAt: current.progressConfirmedAt } : {}),
+        ...('progressConfirmedBy' in current ? { progressConfirmedBy: current.progressConfirmedBy } : {}),
+      };
   const activityMessage = draft.activityMessage.trim();
   const activity = draft.workflowAction
     ? [...(current?.activity || [])]
@@ -173,11 +198,7 @@ export function buildDAVEWebScheduleItem({
       current?.baselineFinishDate,
     ),
     percentComplete: progress.percentComplete,
-    progressSource: 'project_manager',
-    progressConfirmedAt: progressChanged ? now : current?.progressConfirmedAt ?? now,
-    progressConfirmedBy: progressChanged
-      ? actor.trim() || 'Project manager'
-      : current?.progressConfirmedBy ?? (actor.trim() || 'Project manager'),
+    ...progressMarking,
     priority: draft.priority,
     status: progress.status,
     notes: draft.notes.trim(),
@@ -199,7 +220,7 @@ export function buildDAVEWebScheduleItem({
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,
     sourceRowNumber: current?.sourceRowNumber ?? null,
-    completionVerification: progressChanged ? null : current?.completionVerification ?? null,
+    completionVerification: progressEditedHere ? null : current?.completionVerification ?? null,
     createdAt: current?.createdAt || now,
     updatedAt: now,
     cloudUpdatedAt: current?.cloudUpdatedAt ?? null,
