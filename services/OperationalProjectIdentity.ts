@@ -282,6 +282,24 @@ function withoutOwnLegacyProjectNameKey(
   return ownName ? { ...record, projectId: null, projectName: ownName } : record;
 }
 
+/**
+ * Which of the refusals above an upload error carries. Waiting does not clear
+ * them: 'not_open' clears once the named project is open in the cloud,
+ * 'unresolved' once the record's project is corrected (whole-app audit A3
+ * pass 6 M1, 30 Sep 2026).
+ */
+export function operationalProjectIdentityFailureKind(
+  errorText: string,
+): 'not_open' | 'unresolved' | null {
+  if (/could not be found\. The saved (?:item|document) was preserved|no longer matches an active cloud project|does not identify any active project/.test(errorText)) {
+    return 'not_open';
+  }
+  if (/invalid cloud project identity|cloud identity disagree|More than one cloud project is named|does not identify its project|not included in its project list/.test(errorText)) {
+    return 'unresolved';
+  }
+  return null;
+}
+
 export function exactProjectId(value: unknown): string | null {
   return typeof value === 'string' && value === value.trim() && EXACT_UUID_PATTERN.test(value)
     ? value

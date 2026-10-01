@@ -657,6 +657,7 @@ import {
   reconcileScheduleProgress,
   reconcileScheduleProgressEdit,
 } from './services/ScheduleProgressInvariant';
+import { checkScheduleTaskProject, scheduleTaskSaveNotice } from './services/ScheduleTaskProject';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   parseMonthNameDateParts,
@@ -11679,10 +11680,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  function addScheduleItem(item: Partial<ScheduleItem>) {
+  function addScheduleItem(item: Partial<ScheduleItem>): false | void {
+    const project = checkScheduleTaskProject({ projectName: item.projectName || '', projects: projectsCurrentRef.current, closedProjects: archivedProjectsCurrentRef.current, projectRecords: projectRecordsCurrentRef.current });
+    if (!project.ok) { Alert.alert(project.title, project.message); return false; } // only an open project's task can upload (audit A3 pass 6 M1)
     const now = new Date().toISOString();
     const next = normalizeScheduleItem({
       ...item,
+      projectName: project.projectName,
       id: uid(),
       progressSource: 'project_manager',
       progressConfirmedAt: now,
@@ -11741,10 +11745,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_pending');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        Alert.alert(
-          'Task saved on this device',
-          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
-        );
+        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors }); // not "still retrying" when its project is not open (audit A3 pass 6 M1)
+        Alert.alert(notice.title, notice.message);
       }
       return false;
     } catch {
@@ -11760,10 +11762,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_error');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        Alert.alert(
-          'Task saved on this device',
-          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
-        );
+        const notice = scheduleTaskSaveNotice({});
+        Alert.alert(notice.title, notice.message);
       }
       return false;
     }
@@ -13909,6 +13909,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
+              closedProjects={archivedProjects}
               projectRecords={projectRecords}
               scheduleDocuments={referenceDocuments.filter(document =>
                 document.category === 'Schedules' ||
@@ -19226,6 +19227,7 @@ function ScheduleScreen({
   savedUpdates,
   projectAreas,
   projects,
+  closedProjects,
   projectRecords,
   scheduleDocuments,
   onBack,
@@ -19259,13 +19261,14 @@ function ScheduleScreen({
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
   projects: string[];
+  closedProjects: readonly string[];
   projectRecords: readonly ProjectRecord[];
   scheduleDocuments: ReferenceDocument[];
   onBack: () => void;
   onOpenDocument: (document: ReferenceDocument) => void;
   onDeleteDocument: (documentId: string) => void;
   onSetActiveDocument: (documentId: string) => void;
-  onAdd: (item: Partial<ScheduleItem>) => void;
+  onAdd: (item: Partial<ScheduleItem>) => false | void;
   onUpdate: (
     itemId: string,
     next: Partial<ScheduleItem>,
@@ -19838,7 +19841,7 @@ function ScheduleScreen({
   const taskEditor = (
     <ScheduleTaskEditorModal
       visible={showAdd}
-      projects={projects}
+      projects={projects} closedProjects={closedProjects}
       projectRecords={projectRecords}
       projectAreas={projectAreas}
       scheduleItems={scheduleItems}

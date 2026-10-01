@@ -20,6 +20,11 @@ import type {
 } from '../types';
 import { PROJECT_ITEM_TYPES } from '../types';
 import { projectAreasForProject } from '../services/DAVEProjectAreaScope';
+import {
+  checkScheduleTaskProject,
+  defaultScheduleTaskProject,
+  openScheduleTaskProjects,
+} from '../services/ScheduleTaskProject';
 import type { DAVETaskFillPatch } from '../services/DAVETaskFieldParser';
 import { applyProjectControlTemplateToControls } from '../services/ProjectControlTemplates';
 import {
@@ -36,10 +41,12 @@ import { NativeDateField } from './native-date-field';
 
 const PRIORITIES: SchedulePriority[] = ['Low', 'Medium', 'High'];
 const STATUSES: ScheduleStatus[] = ['Not Started', 'In Progress', 'Waiting', 'Complete'];
+const NO_CLOSED_PROJECTS: readonly string[] = [];
 
 export function ScheduleTaskEditorModal({
   visible,
   projects,
+  closedProjects = NO_CLOSED_PROJECTS,
   projectRecords = [],
   projectAreas,
   scheduleItems,
@@ -51,6 +58,11 @@ export function ScheduleTaskEditorModal({
 }: {
   visible: boolean;
   projects: string[];
+  /**
+   * Closed projects (they may be on `projects` too). Add Task offers and
+   * accepts open projects only (whole-app audit A3 pass 6 M1).
+   */
+  closedProjects?: readonly string[];
   projectRecords?: readonly DAVETaskFillProjectRecord[];
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
@@ -58,9 +70,16 @@ export function ScheduleTaskEditorModal({
   initiallyGuided?: boolean;
   defaultOwner?: string;
   onClose: () => void;
-  onSubmit: (item: Partial<ScheduleItem>) => void;
+  /** Returns false when the task was not saved; the form then stays open. */
+  onSubmit: (item: Partial<ScheduleItem>) => false | void;
 }) {
-  const defaultProjectName = initialProjectName || projects[0] || '';
+  // The project in view when it is open, otherwise the first open project:
+  // a just-closed newest project is no longer the default.
+  const defaultProjectName = defaultScheduleTaskProject({
+    projects,
+    closedProjects,
+    projectInView: initialProjectName,
+  });
   const defaultProjectAreas = projectAreasForProject({
     projectAreas,
     projectName: defaultProjectName,
@@ -109,7 +128,10 @@ export function ScheduleTaskEditorModal({
     visible,
   ]);
 
-  const projectOptions = useMemo(() => uniqueOptions(projects), [projects]);
+  const projectOptions = useMemo(
+    () => uniqueOptions(openScheduleTaskProjects({ projects, closedProjects })),
+    [closedProjects, projects],
+  );
   const scopedProjectAreas = useMemo(() => projectAreasForProject({
     projectAreas,
     projectName,
@@ -181,11 +203,23 @@ export function ScheduleTaskEditorModal({
       Alert.alert('Invalid start date', 'Use MM/DD/YYYY for the start date.');
       return;
     }
+    // A typed name must be an open project's; it is saved as that project's
+    // exact name. A new or closed name is refused: such a task never uploads.
+    const project = checkScheduleTaskProject({
+      projectName,
+      projects,
+      closedProjects,
+      projectRecords,
+    });
+    if (!project.ok) {
+      Alert.alert(project.title, project.message);
+      return;
+    }
     const progress = reconcileScheduleProgress(status, percentComplete);
-    onSubmit({
+    const saved = onSubmit({
       taskName,
       itemType,
-      projectName,
+      projectName: project.projectName,
       locationName,
       startDate,
       finishDate,
@@ -205,6 +239,7 @@ export function ScheduleTaskEditorModal({
             now: new Date().toISOString(),
           }),
     });
+    if (saved === false) return;
     reset();
     onClose();
   }

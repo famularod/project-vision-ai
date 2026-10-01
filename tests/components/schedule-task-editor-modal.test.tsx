@@ -1,4 +1,5 @@
 import { fireEvent, render } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 import { ScheduleTaskEditorModal } from '../../components/schedule-task-editor-modal';
 import {
@@ -472,5 +473,84 @@ describe('ScheduleTaskEditorModal', () => {
 
     expect(screen.getByText('Question 5 of 14')).toBeTruthy();
     expect(screen.getByLabelText('Location').props.value).toBe('');
+  });
+
+  // Whole-app audit A3 pass 6 M1 (30 Sep 2026): Add Task offered closed
+  // projects, defaulted to the newest project even once closed, and saved any
+  // typed name; such a task never uploads.
+  describe('offers and accepts open projects only', () => {
+    const projectProps = {
+      visible: true,
+      // The newest project was just closed; the refresh keeps it on both lists.
+      projects: ['2375 Main St', 'Lot 5'],
+      closedProjects: ['2375 Main St'],
+      projectRecords: [{ id: '72e941d8-8114-4082-a976-ae5b2b5daba9', name: '2375 Main St' }],
+      projectAreas: [],
+      scheduleItems: [],
+    };
+    let alert: jest.SpyInstance;
+    beforeEach(() => {
+      alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    });
+    afterEach(() => alert.mockRestore());
+
+    async function typeTask(onSubmit: jest.Mock, onClose = jest.fn(), extra: Record<string, unknown> = {}) {
+      const screen = await render(
+        <ScheduleTaskEditorModal {...projectProps} {...extra} onClose={onClose} onSubmit={onSubmit} />,
+      );
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Stripe the lot');
+      return screen;
+    }
+
+    it('defaults to the first open project and offers no closed one', async () => {
+      const screen = await typeTask(jest.fn());
+      expect(screen.getByLabelText('Project').props.value).toBe('Lot 5');
+      fireEvent.press(screen.getByRole('button', { name: 'Choose Project' }));
+      expect(screen.getByRole('radio', { name: 'Lot 5' })).toBeTruthy();
+      expect(screen.queryByRole('radio', { name: '2375 Main St' })).toBeNull();
+    });
+
+    it('defaults to the project in view, unless it is closed', async () => {
+      const open = await typeTask(jest.fn(), jest.fn(), { projects: ['Lot 5', 'Tower B'], initialProjectName: 'Tower B' });
+      expect(open.getByLabelText('Project').props.value).toBe('Tower B');
+      open.unmount();
+      const closed = await typeTask(jest.fn(), jest.fn(), { initialProjectName: '2375 Main St' });
+      expect(closed.getByLabelText('Project').props.value).toBe('Lot 5');
+    });
+
+    it.each([
+      ['a typed new name', 'Lot 9 Typed', 'Project not found',
+        'No open project is named “Lot 9 Typed”. Choose one from the list, or add it first with Add project on Overview.'],
+      ['a closed project', '2375 main st', 'Project closed', '2375 Main St is closed. Reopen it on Overview to add tasks.'],
+      ['a closed project by its id', '72e941d8-8114-4082-a976-ae5b2b5daba9', 'Project closed',
+        '2375 Main St is closed. Reopen it on Overview to add tasks.'],
+    ])('refuses %s and keeps the form open', async (_label, typed, title, message) => {
+      const onSubmit = jest.fn();
+      const onClose = jest.fn();
+      const screen = await typeTask(onSubmit, onClose);
+      fireEvent.changeText(screen.getByLabelText('Project'), typed);
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(alert).toHaveBeenCalledWith(title, message);
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByLabelText('Task or milestone').props.value).toBe('Stripe the lot');
+    });
+
+    it('saves a typed open project under its exact name', async () => {
+      const onSubmit = jest.fn();
+      const screen = await typeTask(onSubmit);
+      fireEvent.changeText(screen.getByLabelText('Project'), '  lot   5 ');
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(alert).not.toHaveBeenCalled();
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ projectName: 'Lot 5', taskName: 'Stripe the lot' }));
+    });
+
+    it('stays open with the typed task when the save is refused', async () => {
+      const onClose = jest.fn();
+      const screen = await typeTask(jest.fn(() => false), onClose);
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByLabelText('Task or milestone').props.value).toBe('Stripe the lot');
+    });
   });
 });
