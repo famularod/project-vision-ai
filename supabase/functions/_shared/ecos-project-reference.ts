@@ -46,7 +46,8 @@
  * (see ecosProjectsAroundNumber), when exactly one does: "Is 300 Elm done?"
  * names 300 Elm on "2375-B Annex Suite 300", and "Suite 300" is that
  * project's own. A tie is refused as ambiguous; no name around it falls
- * back to the identifier rules.
+ * back to the identifier rules. Audit A9 pass 14 L1: a function word ("at",
+ * "of", "the"...) is not counted as a name word.
  */
 
 export type ECOSProjectReferenceMismatch = Readonly<{
@@ -500,11 +501,28 @@ function wordsIn(text: string): string[] {
   return text.match(/[a-z0-9]+/gi) ?? [];
 }
 
-/** How many words the two lists share from the start, as name words (sameNameWord). */
+/**
+ * How many name words the two lists share from the start, as name words
+ * (sameNameWord). Audit A9 pass 14 L1: a function word of the name is
+ * passed over when it matches but never counted, so "What is left at
+ * 2375?" does not continue "Suite 300 at 2375 Main" and "Is 300 at 2375
+ * Main done?" still does.
+ */
 function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
+  let walked = 0;
   let count = 0;
-  while (count < nameWords.length && count < words.length && sameNameWord(words[count], nameWords[count])) count += 1;
+  while (walked < nameWords.length && walked < words.length && sameNameWord(words[walked], nameWords[walked])) {
+    if (!isFunctionWord(nameWords[walked])) count += 1;
+    walked += 1;
+  }
   return count;
+}
+
+const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to', 'a', 'an', 'by', 'with', 'from']);
+
+/** A function word in a name; a capital A is a letter, as in "2375 A Street" (audit A9 pass 10 L1). */
+function isFunctionWord(nameWord: string) {
+  return nameWord !== 'A' && FUNCTION_WORDS.has(nameWord.toLowerCase());
 }
 
 /**

@@ -1189,6 +1189,23 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames,
     refused,
   })),
+  // Audit A9 pass 14 L1: a function word in a name ("at", "of", "the"...)
+  // is not a name word, so "at 2375" does not continue "Suite 300 at 2375 Main".
+  ...([
+    ['What is left at 2375?', '2375 Elm', [SELECTED, 'Suite 300 at 2375 Main', '2375 Elm', '300 Oak'], null, undefined],
+    ['What is left at 2375 Elm?', '2375 Elm', [SELECTED, 'Suite 300 at 2375 Main', '2375 Elm', '300 Oak'], null, undefined],
+    ['What is left at 2375?', 'Suite 300 at 2375 Main', [SELECTED, 'Suite 300 at 2375 Main', '2375 Elm', '300 Oak'], '2375', '300'],
+    ['Is Suite 300 at 2375 Main done?', 'Suite 300 at 2375 Main', [SELECTED, 'Suite 300 at 2375 Main', '2375 Elm', '300 Oak'], null, undefined],
+    ['What is left at 450 Oak?', '450 Oak Ave', [SELECTED, '2025 Roof Replacement at 450 Elm St', '450 Oak Ave'], null, undefined],
+    ['What is left on 2375 A?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 14 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
