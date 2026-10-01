@@ -218,6 +218,18 @@ export function DAVETaskFillAssistant({
     setGuidedComplete(false);
   }, [active]);
 
+  // The area question's answer follows the form's Location while David has
+  // not edited it: a GPS suggestion can land while the question is showing,
+  // and the answer stayed blank above a filled form (Q31 review L5, 1 Oct 2026).
+  const formLocation = currentValues.locationName;
+  const formLocationRef = useRef(formLocation);
+  useEffect(() => {
+    const previous = formLocationRef.current;
+    formLocationRef.current = formLocation;
+    if (previous === formLocation || !guided || currentGuidedField !== 'locationName') return;
+    setGuidedAnswer(answer => (answer === previous ? formLocation : answer));
+  }, [currentGuidedField, formLocation, guided]);
+
   function goToGuidedQuestion(nextIndex: number, values: DAVETaskFillValues = currentValues) {
     if (nextIndex >= GUIDED_FIELD_NAMES.length) {
       setGuidedComplete(true);

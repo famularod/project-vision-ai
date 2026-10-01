@@ -13978,7 +13978,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onInitialAddConsumed={() => { setScheduleAddGuided(false); setScheduleAddProjectName(null); }}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
-              getLocationFix={overviewLocationFixRef.current.get} // the recent fix while fresh, else a new one as a new update takes it (Q31)
+              getLocationFix={getCurrentLocationSnapshot} // a new fix each time Add Task opens, as a new update takes it (Q31; review L2)
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
             />
           )}
@@ -19894,7 +19894,7 @@ function ScheduleScreen({
       projects={projects} closedProjects={closedProjects}
       projectRecords={projectRecords}
       projectAreas={projectAreas}
-      scheduleItems={scheduleItems}
+      scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems} savedUpdates={savedUpdates} // GPS areas: New Update's scope (Q31 review L3)
       initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
       initiallyGuided={Boolean(initialAddGuided)}
       defaultOwner={defaultOwner}

@@ -14,6 +14,7 @@ import { colors } from '../theme';
 import type {
   ProjectItemType,
   ProjectArea,
+  ProjectUpdate,
   ScheduleItem,
   SchedulePriority,
   ScheduleStatus,
@@ -52,6 +53,8 @@ export function ScheduleTaskEditorModal({
   projectRecords = [],
   projectAreas,
   scheduleItems,
+  knownScheduleItems,
+  savedUpdates,
   initialProjectName,
   initiallyGuided = false,
   defaultOwner,
@@ -69,10 +72,13 @@ export function ScheduleTaskEditorModal({
   projectRecords?: readonly DAVETaskFillProjectRecord[];
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
+  /** Every saved task and the active saved updates: Location's GPS areas are a new update's (Q31 review L3). */
+  knownScheduleItems?: readonly ScheduleItem[];
+  savedUpdates?: readonly ProjectUpdate[];
   initialProjectName?: string | null;
   initiallyGuided?: boolean;
   defaultOwner?: string;
-  /** A GPS fix, as a new update takes one; none (web, tests) leaves Location blank (Q31). */
+  /** A new GPS fix, as a new update takes one; none (web, tests) leaves Location blank (Q31). */
   getLocationFix?: () => Promise<AddTaskGpsFix | null>;
   onClose: () => void;
   /** Returns false when the task was not saved; the form then stays open. */
@@ -99,7 +105,9 @@ export function ScheduleTaskEditorModal({
   const [notes, setNotes] = useState('');
   const [nextAction, setNextAction] = useState('');
   // Starts blank, then the area GPS places David in, until he enters his own (owner answer Q31, 1 Oct 2026).
-  const location = useAddTaskLocation({ visible, projectName, projectAreas, scheduleItems, getLocationFix });
+  const location = useAddTaskLocation({
+    visible, projectName, projectAreas, scheduleItems: knownScheduleItems ?? scheduleItems, updates: savedUpdates, getLocationFix,
+  });
   const locationName = location.value;
   // Whether the form has been filled since it opened.
   const filledRef = useRef(false);
@@ -236,24 +244,30 @@ export function ScheduleTaskEditorModal({
   // Returns the fill as applied: the guided questions prefill from it.
   function applyTaskFillPatch(fill: DAVETaskFillPatch): DAVETaskFillPatch {
     const patch = { ...fill };
-    // A fill that changes the project drops the old project's location
-    // unless it names an area of the new project (A3 pass 9 L1); otherwise
-    // the area GPS places David in there, else blank, not the first area (Q31).
-    let fillNamesLocation = patch.locationName !== undefined;
+    // A fill that changes the project keeps a location it names only when
+    // it is the new project's (A3 pass 9 L1); one it names otherwise gives
+    // way to the area GPS places David in there, else blank, not the first
+    // area (Q31). Naming none, the change is the Project field's (Q31 review L1).
+    const fillNamesLocation = patch.locationName !== undefined;
+    let keepNamedLocation = fillNamesLocation;
     if (patch.projectName !== undefined && !sameName(patch.projectName, projectName)) {
       const target = patch.projectName;
       const named = projectLocationChoices(projectAreas, scheduleItems, target)
         .find(choice => sameName(choice, patch.locationName ?? ''));
-      fillNamesLocation = named !== undefined;
-      patch.locationName = named ?? location.suggestionFor(target) ?? '';
+      keepNamedLocation = named !== undefined;
+      if (named !== undefined) {
+        patch.locationName = named;
+      } else if (fillNamesLocation) {
+        location.reset();
+        patch.locationName = location.suggestionFor(target) ?? '';
+      } else {
+        patch.locationName = location.changeProject(projectName, target);
+      }
     }
     if (patch.taskName !== undefined) setTaskName(patch.taskName);
     if (patch.itemType !== undefined) setItemType(patch.itemType);
     if (patch.projectName !== undefined) setProjectName(patch.projectName);
-    if (patch.locationName !== undefined) {
-      if (fillNamesLocation) location.set(patch.locationName);
-      else location.reset();
-    }
+    if (keepNamedLocation && patch.locationName !== undefined) location.set(patch.locationName);
     if (patch.startDate !== undefined) setStartDate(patch.startDate);
     if (patch.finishDate !== undefined) setFinishDate(patch.finishDate);
     if (patch.milestone !== undefined) setMilestone(patch.milestone);
@@ -351,7 +365,10 @@ export function ScheduleTaskEditorModal({
             <ChoiceOrText
               label="Project"
               value={projectName}
-              onChange={setProjectName}
+              onChange={value => {
+                location.changeProject(projectName, value); // his entry stays unless it is the old project's area (Q31 review L1)
+                setProjectName(value);
+              }}
               options={projectOptions}
               placeholder="Project name"
             />
