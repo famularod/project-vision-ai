@@ -263,6 +263,18 @@ describe('M1: a lookahead row with no area, or no parent project, pairs with the
     expect(merged.additions.map(item => item.taskName)).toEqual(['Pour slab']);
   });
 
+  it('two area-less rows and two tasks in two areas: never paired in file order across areas', () => {
+    const twoAreas = [...masterItems(), task('m-pour-2', 'Alpha', 'Pour slab', master, '11/01/2026', '11/03/2026', { locationName: 'Level 2' })];
+    const rows = csvRows([
+      'Task,Project,Start,Finish,Owner',
+      'Pour slab,Alpha,09/28/2026,09/30/2026,Acme Concrete',
+      'Pour slab,Alpha,10/28/2026,10/30/2026,Acme Concrete',
+    ].join('\n'), lookahead);
+    const { merged } = approve(twoAreas, [master], lookahead, rows);
+    expect(merged.overlaidIds).toEqual([]);
+    expect(merged.additions.map(item => item.id)).toEqual(['Alpha 3 Week Lookahead-1', 'Alpha 3 Week Lookahead-2']);
+  });
+
   it('the master\'s rows name a parent project and the lookahead\'s do not', () => {
     const parented = masterItems().map(item => item.projectName === 'Alpha'
       ? { ...item, scheduleProjectName: 'Alpha', projectName: 'Alpha Tower' } : item);
