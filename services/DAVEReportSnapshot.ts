@@ -551,6 +551,13 @@ export function compareDAVEReportSnapshots({
     const prior = previousById.get(task.taskId) ?? linked.pairs.get(task) ?? revisions.get(task);
     if (!prior) {
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
+      // Whole-app audit A6 pass 19 L3 (1 Oct 2026): a report went out while a master without Cleanup was
+      // current, and Cleanup came back. Its note made after the report before that one ("Dumpster
+      // ordered.") was older than the earlier report, so the time rule never said it. A task the earlier
+      // report did not have is checked against the report before it, as a row paired across a master
+      // change is (A6 pass 16 L1); failing that, the time rule stands.
+      const activity = activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
+      if (activity) (activity === 'new' ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
       continue;
     }
     if (sameContent(prior, task)) unchangedTaskIds.add(task.taskId);

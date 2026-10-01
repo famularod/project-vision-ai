@@ -342,3 +342,38 @@ describe('L2: deleting a lookahead while an older master is current keeps David\
     expect(state.items.find(item => item.id === 'MASTER F-1')!.percentComplete).toBe(0);
   });
 });
+
+describe('L3: a note on a task the earlier report did not have (an older master was current) reaches the next report', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const run = (noteBeforeR1: boolean) => {
+    let state = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,']);
+    state = approve(state, G, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', 'Cleanup,Alpha,Lot,11/16/2026,11/17/2026,']);
+    const r0 = send(null, state, '2026-09-15T15:00:00.000Z');
+    state = noted(state, named(state, 'Framing')[0].id, 'Framing crew booked.', '2026-09-16T09:00:00.000Z');
+    const cleanupNote = (at: string) => { state = noted(state, named(state, 'Cleanup')[0].id, 'Dumpster ordered.', at); };
+    if (noteBeforeR1) cleanupNote('2026-09-17T14:00:00.000Z');
+    const r1 = send(r0.sent, state, '2026-09-17T15:00:00.000Z');
+    if (!noteBeforeR1) cleanupNote('2026-09-17T16:00:00.000Z');
+    state = setActive(state, F, '2026-09-18T10:00:00.000Z');
+    const r2 = send(r1.sent, state, '2026-09-18T12:00:00.000Z');
+    state = setActive(state, G, '2026-09-18T14:00:00.000Z');
+    const r3 = send(r2.sent, state, '2026-09-21T09:00:00.000Z');
+    return { r1, r2, r3, state };
+  };
+
+  it('Cleanup\'s note made after R1 is said in R3 with "added" (R2, under F, did not have Cleanup)', () => {
+    const { r2, r3, state } = run(false);
+    expect(r2.lines).toEqual(['Alpha: Cleanup was removed from the current project plan.']);
+    expect([...r3.lines].sort()).toEqual(['Alpha: Cleanup was added to the project plan.', 'Alpha: Cleanup — Dumpster ordered.']);
+    // Said once: the next report does not repeat it.
+    expect(send(r3.sent, noted(state, named(state, 'Framing')[0].id, 'Inspector called.', '2026-09-21T12:00:00.000Z'), '2026-09-22T09:00:00.000Z').lines)
+      .toEqual(['Alpha: Framing — Inspector called.']);
+  });
+
+  it('a note R1 already said is not said again when the task comes back', () => {
+    const { r1, r3 } = run(true);
+    expect(r1.lines).toEqual(expect.arrayContaining(['Alpha: Cleanup — Dumpster ordered.']));
+    expect(r3.lines).toEqual(['Alpha: Cleanup was added to the project plan.']);
+  });
+});
