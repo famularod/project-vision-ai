@@ -46,6 +46,15 @@ import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
  * manager's percent stood over changes nothing, no file sets the task below
  * the manager's noted percent, and the delete gives the percent back as the
  * manager's.
+ *
+ * Whole-app audit A5 pass 7 M1 (30 Sep 2026): the note kept the manager's
+ * percent from when the lookahead came, after the manager had corrected it.
+ * Master 20%, David 40% by mistake, lookahead 60% (noted: 40%, David), David
+ * corrects to 20%; masters at 30% then 35% left the task at 40%, David's,
+ * confirmed on the 35% master's approval. Before any file applies to a task
+ * with a note, the note now takes the progress the manager holds on it then
+ * (scheduleNoteTakesManagersProgress), so the floor is the manager's newest
+ * word, and a hand edit made on the phone or the web counts at the next file.
  */
 export type ScheduleImportRole = 'master' | 'lookahead';
 
@@ -134,6 +143,41 @@ function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string): Partial
 }
 
 /**
+ * The task with its note brought up to the progress the manager holds on it
+ * now (whole-app audit A5 pass 7 M1): the manager's percent, who, when, and
+ * the percents the lookaheads gave no longer stand (the manager's word is
+ * newer). Applied before any file (a lookahead or a master) applies to the
+ * task, so a percent the manager corrected by hand, on the phone or the web,
+ * never comes back from the note. The same task when its progress is not
+ * the manager's own, or the note already says so.
+ */
+export function scheduleNoteTakesManagersProgress(task: ScheduleItem): ScheduleItem {
+  const overlay = overlayOf(task);
+  if (!overlay || !scheduleProgressIsManagers(task)) return task;
+  const stated = managersStatement(task);
+  const next: ScheduleLookaheadOverlay = {
+    ...overlay,
+    ...stated,
+    masterFilePercentComplete: masterFilePercent(overlay),
+    lookaheads: overlay.lookaheads.map(entry => ({ ...entry, percentComplete: null })),
+  };
+  const same = (Object.keys(stated) as Array<keyof typeof stated>).every(field => overlay[field] === next[field]) &&
+    overlay.masterFilePercentComplete === next.masterFilePercentComplete &&
+    overlay.lookaheads.every(entry => entry.percentComplete === null);
+  return same ? task : withOverlay(task, next);
+}
+
+/** What the task states now, for the note: its percent, and who stated it when. */
+function managersStatement(task: ScheduleItem) {
+  return {
+    masterPercentComplete: percentOf(task),
+    masterProgressSource: task.progressSource ?? null,
+    masterProgressConfirmedBy: task.progressConfirmedBy ?? null,
+    masterProgressConfirmedAt: task.progressConfirmedAt ?? null,
+  };
+}
+
+/**
  * Progress a file sets on a task a lookahead restated, never below the
  * manager's own percent its note shows (whole-app audit A5 pass 6 M2): at or
  * below it, the task takes the manager's percent back as the manager's. A
@@ -172,29 +216,19 @@ export function scheduleTaskRestatedByLookahead(
 ): ScheduleItem {
   const batchId = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
   const owned = Boolean(key(task.importBatchId) || key(task.sourceDocumentId));
-  const previous = overlayOf(task);
   // Who stated the percent (A5 pass 6 M2): a manager's word recorded under an earlier lookahead is the
-  // newer one, and the percents those lookaheads gave no longer stand.
-  const managersNow = Boolean(previous) && scheduleProgressIsManagers(task);
-  const stated = {
-    masterPercentComplete: percentOf(task),
-    masterProgressSource: task.progressSource ?? null,
-    masterProgressConfirmedBy: task.progressConfirmedBy ?? null,
-    masterProgressConfirmedAt: task.progressConfirmedAt ?? null,
-  };
+  // newer one, and the percents those lookaheads gave no longer stand (the step every file takes, A5 pass 7 M1).
+  const previous = overlayOf(scheduleNoteTakesManagersProgress(task));
   const overlay: ScheduleLookaheadOverlay = {
-    ...(previous
-      ? { ...previous, ...(managersNow ? { ...stated, masterFilePercentComplete: masterFilePercent(previous) } : {}) }
-      : {
-          masterStartDate: task.startDate,
-          masterFinishDate: task.finishDate,
-          ...stated,
-          // The master file's own percent, unless the manager's stands over it.
-          masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
-        }),
+    ...(previous || {
+      masterStartDate: task.startDate,
+      masterFinishDate: task.finishDate,
+      ...managersStatement(task),
+      // The master file's own percent, unless the manager's stands over it.
+      masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
+    }),
     lookaheads: [
-      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId))
-        .map(entry => managersNow ? { ...entry, percentComplete: null } : entry),
+      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)),
       { batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent },
     ],
   };

@@ -11,6 +11,7 @@ import {
 } from './ScheduleProgressSource';
 import {
   scheduleFileProgressAboveManagers,
+  scheduleNoteTakesManagersProgress,
   scheduleRowRepeatsMasterBeforeLookahead,
   scheduleTaskMasterRestated,
   scheduleTaskRestatedByLookahead,
@@ -87,6 +88,12 @@ import {
  * that said the same lowered a percent the newer one still stated. A
  * lookahead now notes the percent its row states whenever the task ends at
  * it.
+ *
+ * Whole-app audit A5 pass 7 M1 (30 Sep 2026): a percent the manager corrected
+ * by hand after a lookahead noted it came back as the manager's when a later
+ * file stated less than it. Before any file applies to a task with a note,
+ * the note now takes the progress the manager holds then
+ * (scheduleNoteTakesManagersProgress), and the floor uses that.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -375,16 +382,18 @@ export function mergeApprovedScheduleImportItems({
     if (seen.has(identity)) return;
     seen.add(identity);
     const pairedId = pairs.get(importedItem)?.id;
-    const paired = pairedId ? next.find(item => item.id === pairedId) : undefined;
+    const pairedSaved = pairedId ? next.find(item => item.id === pairedId) : undefined;
     if (overlay) {
-      const target = paired || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
-      if (!target) {
+      const saved = pairedSaved || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      if (!saved) {
         additions.push(importedItem);
         return;
       }
-      claimed.add(target.id);
+      claimed.add(saved.id);
       const batchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
-      if (batchId && scheduleItemImportBatchIds(target).map(key).includes(key(batchId))) return;
+      if (batchId && scheduleItemImportBatchIds(saved).map(key).includes(key(batchId))) return;
+      // The note takes the progress the manager holds now before the file applies (A5 pass 7 M1).
+      const target = scheduleNoteTakesManagersProgress(saved);
       const fileProgress = scheduleFileProgressAboveManagers(target, fileProgressFor(target, importedItem, approvedAt), approvedAt);
       // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1):
       // the percent its row states whenever the task ends at it, unchanged too, so deleting an older lookahead
@@ -392,17 +401,20 @@ export function mergeApprovedScheduleImportItems({
       const endsAt = percentOf({ ...target, ...(fileProgress || {}) } as ScheduleItem);
       const givenPercent = scheduleRowStatesPercent(importedItem) && percentOf(importedItem) === endsAt ? endsAt : null;
       next = next.map(item => item.id === target.id
-        ? { ...scheduleTaskRestatedByLookahead(item, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
+        ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
         : item);
       overlaidIds.push(target.id);
       if (fileProgress) fileProgressIds.push(target.id);
       return;
     }
+    // A note takes the progress the manager holds now before the file applies (A5 pass 7 M1).
+    const paired = pairedSaved && scheduleNoteTakesManagersProgress(pairedSaved);
     // A new master repeating what it said before a lookahead restated the task (Q22).
     const repeated = paired ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem) : { dates: false, percent: false };
-    const duplicate = paired
+    const found = paired
       ? (unchangedTask(paired, importedItem) || repeated.dates ? paired : undefined)
       : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+    const duplicate = found && scheduleNoteTakesManagersProgress(found);
     if (duplicate) {
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import
@@ -416,7 +428,7 @@ export function mergeApprovedScheduleImportItems({
       const fileProgress = repeated.percent ? null
         : scheduleFileProgressAboveManagers(duplicate, fileProgressFor(duplicate, importedItem, approvedAt), approvedAt);
       const restated = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
-      if (rehome || fileProgress || restated !== duplicate) {
+      if (rehome || fileProgress || restated !== next.find(item => item.id === duplicate.id)) {
         next = next.map(item => item.id === duplicate.id
           ? {
               ...restated,
