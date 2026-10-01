@@ -1,4 +1,5 @@
 import { queuedFieldUpdateDocumentPatches } from './FieldUpdateDocumentPatch';
+import { isFieldUpdatePhotoAnalysisPatch } from './FieldUpdatePhotoAnalysisPatch';
 import { getOfflineQueue, subscribeToOfflineQueue, type SyncQueueItem } from './SyncService';
 
 /**
@@ -26,7 +27,8 @@ export type FieldUpdateDocumentChangeWaiting = Readonly<{
  * Whether a field update has a document change waiting to sync that its card
  * shows: a document patch for it is queued and its upload failed, or it has
  * waited FIELD_UPDATE_DOCUMENT_CHANGE_SHOWN_AFTER_MS. An update whose own
- * record waits already reads "Waiting to Sync" or failed.
+ * record waits already reads "Waiting to Sync" or failed. A late photo
+ * analysis result waiting alone is not a document change (A4 pass 13 G1).
  */
 export function fieldUpdateDocumentChangeWaiting(
   queue: readonly SyncQueueItem[],
@@ -34,7 +36,8 @@ export function fieldUpdateDocumentChangeWaiting(
   now = Date.now(),
 ): FieldUpdateDocumentChangeWaiting {
   const item = queue.find(candidate =>
-    (candidate.payload as { id?: unknown }).id === updateId && queuedFieldUpdateDocumentPatches(candidate));
+    (candidate.payload as { id?: unknown }).id === updateId &&
+    queuedFieldUpdateDocumentPatches(candidate)?.some(patch => !isFieldUpdatePhotoAnalysisPatch(patch)));
   if (!item) return { shown: false, shownAt: null };
   if (item.lastError) return { shown: true, shownAt: now };
   const queuedAt = Date.parse(item.createdAt);

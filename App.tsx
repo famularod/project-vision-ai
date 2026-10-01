@@ -31,7 +31,7 @@ import {
   runScheduleItemCloudSync,
   queueProjectAreaRecord,
   queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
-  queueProjectUpdateRecord, queueProjectUpdateDocumentChange, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
+  queueProjectUpdateRecord, queueProjectUpdateDocumentChange, queueProjectUpdatePhotoAnalysis, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
@@ -9646,14 +9646,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setSavedUpdates(prev => prev.map(applyToUpdate));
     // A result that arrives after the update synced, or while it syncs, would
     // otherwise stay on this phone and the desktop would show "Analyzing" for
-    // good (code review 27 Sep 2026). Queue the update with the result and ask
-    // for a sync pass; one already running is followed by one more, so a
-    // second result a few seconds later is not left behind (review 28 Sep).
-    // Every pass uploads the update's single queue record, so the newest wins.
-    // The queue record is written at once, as a save does: until a queued
-    // record carries this revision, a realtime echo or a refresh would replace
-    // the phone's copy with the older cloud row and lose the result (review
-    // pass 6).
+    // good (code review 27 Sep 2026). Only the result goes up, as a patch on
+    // the cloud's copy (whole-app audit A4 pass 13 G1): the whole copy, queued
+    // again stamped now, went over a newer iPad edit of the note. A Sent update
+    // stays Sent; its patch goes through the queue upload. An edit still
+    // waiting takes the result in its own queued copy, keeping the time David
+    // saved it, and asks for a sync pass (one running is followed by one more,
+    // review 28 Sep). Queued at once: a realtime echo or a refresh shows the
+    // cloud's copy with the result (review pass 6).
     // A pass already checking this update's photos no longer writes its older
     // copy over this record (whole-app audit A7 pass 7 M1). A pass that read
     // the update before the result and has not written it yet still may; the
@@ -9664,9 +9664,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       saved && withResult && withResult !== saved && result.status !== 'analyzing' &&
       (saved.status === 'sent' || saved.status === 'queued')
     ) {
-      const queued: ProjectUpdate = { ...withResult, status: 'queued' };
-      upsertSavedUpdateUnlessDeleted(queued);
-      void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);
+      upsertSavedUpdateUnlessDeleted(withResult);
+      void queueProjectUpdatePhotoAnalysis(withResult, photoId, saved).catch(() => undefined)
+        .finally(() => saved.status === 'sent' ? requestPendingChangesUpload('late_photo_analysis') : requestQueuedUpdateSync());
     }
   }
 

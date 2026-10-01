@@ -1,4 +1,10 @@
 import type { SyncQueueItem } from './SyncService';
+import {
+  applyFieldUpdatePhotoAnalysisPatch,
+  isFieldUpdatePhotoAnalysisPatch,
+  mergeFieldUpdatePhotoAnalysisPatches,
+  type FieldUpdatePhotoAnalysisPatch,
+} from './FieldUpdatePhotoAnalysisPatch';
 
 /**
  * A change to one document attached to a sent field update, sent on its own
@@ -31,14 +37,22 @@ export const FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS = [
 ] as const;
 
 /** Taken off the update, or its upload state as this device has it. */
-export type FieldUpdateDocumentPatch = Readonly<{
+export type FieldUpdateDocumentChange = Readonly<{
   documentId: string;
   remove?: true;
   uploadState?: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * A change that goes up on its own, as a patch on the cloud's copy: a
+ * document's, or a photo analysis result that finished late (whole-app audit
+ * A4 pass 13 G1; FieldUpdatePhotoAnalysisPatch). Both wait in a queued item's
+ * `documentPatches`, the name it has on disk.
+ */
+export type FieldUpdateDocumentPatch = FieldUpdateDocumentChange | FieldUpdatePhotoAnalysisPatch;
+
 /** The patch that brings a copy of the update to `update` for this document. */
-export function fieldUpdateDocumentPatchFor(update: object, documentId: string): FieldUpdateDocumentPatch {
+export function fieldUpdateDocumentPatchFor(update: object, documentId: string): FieldUpdateDocumentChange {
   const document = (update as UpdateWithDocuments).documents?.find(item => item.id === documentId) as
     Record<string, unknown> | undefined;
   if (!document) return { documentId, remove: true };
@@ -60,6 +74,7 @@ export function applyFieldUpdateDocumentPatches<TUpdate extends object>(
   patches: readonly FieldUpdateDocumentPatch[],
 ): TUpdate {
   return patches.reduce((current, patch) => {
+    if (isFieldUpdatePhotoAnalysisPatch(patch)) return applyFieldUpdatePhotoAnalysisPatch(current, patch);
     const documents = (current as UpdateWithDocuments).documents;
     if (!Array.isArray(documents) || !documents.some(document => document.id === patch.documentId)) return current;
     if (patch.remove) return { ...current, documents: documents.filter(document => document.id !== patch.documentId) };
@@ -79,17 +94,30 @@ export function applyFieldUpdateDocumentPatches<TUpdate extends object>(
   }, update);
 }
 
-/** Patches waiting for one update: a later one for the same document replaces it; a removal stands. */
+/**
+ * Patches waiting for one update: a later one for the same document replaces
+ * it; a removal stands. A later result for the same photo goes last, with
+ * what the earlier one cleared.
+ */
 export function mergeFieldUpdateDocumentPatches(
   existing: readonly FieldUpdateDocumentPatch[],
   incoming: FieldUpdateDocumentPatch,
 ): FieldUpdateDocumentPatch[] {
-  const earlier = existing.find(patch => patch.documentId === incoming.documentId);
-  if (earlier?.remove) return [...existing];
-  return [...existing.filter(patch => patch.documentId !== incoming.documentId), incoming];
+  if (isFieldUpdatePhotoAnalysisPatch(incoming)) {
+    const earlier = existing.find((patch): patch is FieldUpdatePhotoAnalysisPatch =>
+      isFieldUpdatePhotoAnalysisPatch(patch) && patch.photoId === incoming.photoId);
+    return [
+      ...existing.filter(patch => patch !== earlier),
+      earlier ? mergeFieldUpdatePhotoAnalysisPatches(earlier, incoming) : incoming,
+    ];
+  }
+  const sameDocument = (patch: FieldUpdateDocumentPatch): patch is FieldUpdateDocumentChange =>
+    !isFieldUpdatePhotoAnalysisPatch(patch) && patch.documentId === incoming.documentId;
+  if (existing.find(sameDocument)?.remove) return [...existing];
+  return [...existing.filter(patch => !sameDocument(patch)), incoming];
 }
 
-/** The patches of a queued item that carries only document changes; null for any other item. */
+/** The patches of a queued item that carries only document changes (or late analysis results); null for any other item. */
 export function queuedFieldUpdateDocumentPatches(item: SyncQueueItem | undefined): FieldUpdateDocumentPatch[] | null {
   if (!item || item.entity !== 'project_update' || item.operation === 'delete') return null;
   const patches = (item.payload as { documentPatches?: unknown }).documentPatches;

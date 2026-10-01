@@ -43,10 +43,14 @@ describe('desktop photo analysis status', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     // Only when the result changed the saved update (review pass 7).
     expect(app).toContain('saved && withResult && withResult !== saved && result.status !== \'analyzing\' &&');
-    expect(app).toContain("const queued: ProjectUpdate = { ...withResult, status: 'queued' };");
-    // The queue record carries the new revision at once, so a realtime echo or
-    // refresh keeps the phone's copy (review pass 6).
-    expect(app).toContain('void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);');
+    // Pins changed in whole-app audit A4 pass 13 G1: only the result goes up,
+    // as a patch on the cloud's copy (a Sent update stays Sent; an edit still
+    // waiting takes it in its own queued copy). The whole copy, queued again
+    // stamped now, went over a newer iPad edit. The patch is queued at once, so
+    // a realtime echo or refresh shows the cloud's copy with it (review pass 6).
+    expect(app).toContain('upsertSavedUpdateUnlessDeleted(withResult);');
+    expect(app).toContain('void queueProjectUpdatePhotoAnalysis(withResult, photoId, saved).catch(() => undefined)');
+    expect(app).toContain(".finally(() => saved.status === 'sent' ? requestPendingChangesUpload('late_photo_analysis') : requestQueuedUpdateSync());");
     // A request during a running pass is followed by one more pass inside the
     // same task (a new task would hit the guard's 2-run limit; review pass 3).
     expect(app).toContain('queuedHydrationRerunRequested.current = true;');

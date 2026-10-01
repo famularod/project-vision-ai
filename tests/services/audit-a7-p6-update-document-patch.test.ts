@@ -100,6 +100,7 @@ import {
   loadRemovedFieldUpdateDocuments,
   projectUpdateCopyIsLastInCloud,
   queueProjectUpdateDocumentChange,
+  queueProjectUpdatePhotoAnalysis,
   queueProjectUpdateRecord,
   requeueRemovedFieldUpdateDocuments,
   resetFieldUpdateSyncMemoryForTests,
@@ -2179,5 +2180,181 @@ describe('Keep Phone keeps the newer phone edit on disk while it runs (audit A7 
     expect(phone.saved()).toMatchObject({ notes: NEWER });
     await uploadPendingChanges();
     expect(inCloud()).toMatchObject({ notes: NEWER });
+  });
+});
+
+/**
+ * A4 pass 13 G1: a photo analysis that finished after its update was sent
+ * (it adds what the photo shows) queued the phone's whole copy again, stamped
+ * now. When the iPad had edited the note meanwhile, the conflict check read
+ * the phone's copy as the newer one, and its older note went over the iPad's.
+ * Now only the result goes up, as a patch on the cloud's copy, like a
+ * document change; an edit still waiting on the phone takes the result in its
+ * own queued copy, and keeps the time David saved it.
+ */
+describe('a late photo analysis result does not go over a newer iPad edit (audit A4 pass 13 G1)', () => {
+  const OFFLINE_EDIT = 'Pour, 40 yards (typed on the phone with no signal)';
+  const analyzing = { id: 'photo-g1', uri: 'file:///phone/Documents/project-photos/g1.jpg', caption: '', createdAt: SENT_AT,
+    photoIntelligence: { status: 'analyzing', updatedAt: SENT_AT } };
+  const finished = () => ({ status: 'analysis_complete', updatedAt: new Date().toISOString(),
+    currentObservation: 'Rebar mat placed at column C4', additions: ['Rebar mat'] });
+
+  /** The App's own applyPhotoIntelligenceResult, compiled from App.tsx, on the phone's state: the result lands. */
+  function analysisFinishes(phone: Device, result: Record<string, unknown>, photoId = analyzing.id) {
+    const { applyPhotoIntelligenceResult } = evaluate<{
+      applyPhotoIntelligenceResult: (projectId: string, updateId: string, photoId: string, result: unknown) => void;
+    }>(
+      transpile([componentFunction('applyPhotoIntelligenceResult'), 'module.exports = { applyPhotoIntelligenceResult };'].join('\n')),
+      {
+        authorityProjectId: () => 'p-key',
+        // The update's analysis reads complete once each photo's has finished.
+        summarizePIEStatusForUpdate: (update: Update) => (update.photos as Array<{ photoIntelligence?: { status?: string } }>)
+          .every(photo => photo.photoIntelligence?.status === 'analysis_complete')
+          ? { status: 'complete', summary: 'Possible changes found' }
+          : { status: 'analyzing', summary: 'Checking photos' },
+        setDraft: () => undefined, setSavedUpdates: phone.setSavedUpdates, savedUpdatesRef: phone.savedUpdatesRef,
+        upsertSavedUpdateUnlessDeleted: (update: Update) => {
+          phone.setSavedUpdates(prev => prev.map(item => item.id === update.id ? update : item));
+          phone.render();
+        },
+        queueProjectUpdateRecord, queueProjectUpdatePhotoAnalysis,
+        requestQueuedUpdateSync: phone.requestQueuedUpdateSync, requestPendingChangesUpload: phone.requestPendingChangesUpload,
+      },
+    );
+    applyPhotoIntelligenceResult('p-key', 'u1', photoId, result);
+  }
+  /** Reconnected: the queue upload, then the waiting-update sync, whichever the result asked for. */
+  async function reconnect(phone: Device) {
+    await phone.settle();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+  }
+  const photoAnalysis = (update: Update | undefined) => (update?.photos as Array<{ photoIntelligence?: unknown }>)[0].photoIntelligence;
+
+  it('G1: a Sent update whose analysis finishes after the iPad edited its note: the iPad keeps its note, and the result reaches the cloud', async () => {
+    const phone = await sentThroughTheApp([analyzing]);
+    await iPadEditsNow(IPAD_NOTE); // the phone has not seen it
+    const result = finished();
+    analysisFinishes(phone, result);
+    await phone.settle();
+    // The card stays Sent; only the result waits, for the queue upload.
+    expect(phone.saved()).toMatchObject({ notes: 'Pour', status: 'sent' });
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledWith('late_photo_analysis');
+    expect(phone.requestQueuedUpdateSync).not.toHaveBeenCalled();
+    // A refresh before it goes up shows the iPad's note, and keeps the result on the card.
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent', pieStatus: 'complete' });
+    expect(photoAnalysis(phone.saved())).toEqual(result);
+
+    await reconnect(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(photoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_NOTE, status: 'sent', pieStatus: 'complete' });
+    expect(photoAnalysis(phone.saved())).toEqual(result);
+  });
+
+  it('a result that cannot go up yet keeps waiting, and its card does not call it a document change', async () => {
+    const phone = await sentThroughTheApp([analyzing]);
+    analysisFinishes(phone, finished());
+    await phone.settle();
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementation(async () =>
+      ({ ok: false, configured: true, stubbed: false, error: 'Network request failed' }));
+    try {
+      await uploadPendingChanges();
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+    expect((await queuedFor())!.lastError).toBeTruthy();
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1').shown).toBe(false);
+    await uploadPendingChanges(); // the signal is back
+    expect(photoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a result on an update not edited elsewhere still reaches the cloud, and the card reads Sent', async () => {
+    const phone = await sentThroughTheApp([analyzing]);
+    const result = finished();
+    analysisFinishes(phone, result);
+    await reconnect(phone);
+    expect(inCloud()).toMatchObject({ notes: 'Pour', pieStatus: 'complete' });
+    expect(photoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(phone.saved()).toMatchObject({ notes: 'Pour', status: 'sent' });
+    // A relaunch, then the waiting-update sync and an upload pass: nothing more goes up.
+    const writes = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    resetFieldUpdateSyncMemoryForTests();
+    await reconnect(phone);
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(writes);
+  });
+
+  it('an edit still waiting on the phone takes the result in its own queued copy, keeping the time David saved it: the iPad\'s later note is a conflict, not overwritten', async () => {
+    const phone = await sentThroughTheApp([analyzing]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: OFFLINE_EDIT });
+    const savedAt = (await queuedFor())!.changedAt;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    analysisFinishes(phone, finished());
+    await phone.settle();
+    const queued = (await queuedFor())!;
+    expect(queued.changedAt).toBe(savedAt);
+    expect(queued.payload.updateData).toMatchObject({ notes: OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(photoAnalysis(queued.payload.updateData as Update)).toMatchObject({ status: 'analysis_complete' });
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT, status: 'queued' });
+    expect(phone.requestQueuedUpdateSync).toHaveBeenCalled();
+
+    await reconnect(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+
+  it('a pass that read the waiting edit before the result, and stages it after: the time David saved it still stands, and the conflict is found', async () => {
+    const phone = await sentThroughTheApp([analyzing]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: OFFLINE_EDIT });
+    // Another update waits ahead of it in the same pass.
+    const ahead = { ...savedUpdate([], 'queued', 'u0'),
+      photos: [{ id: 'photo-u0', uri: 'file:///phone/Documents/project-photos/u0.jpg', caption: '', createdAt: SENT_AT }] };
+    phone.setSavedUpdates(prev => [ahead, ...prev]);
+    phone.render();
+    await queueProjectUpdateRecord(ahead, false);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    let landed = false;
+    (createPhotoSignedUrl as jest.Mock).mockImplementation(async () => {
+      if (!landed) { // while the pass checks the other update's photos
+        landed = true;
+        analysisFinishes(phone, finished());
+        await phone.settle();
+      }
+      return signedUrl;
+    });
+
+    await waitingUpdateSync(phone); // then stages the edit as it read it, without the result
+    expect(landed).toBe(true);
+    await waitingUpdateSync(phone); // the rerun the result asked for
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    // Known limit: the copy that pass read, without the result, is the one
+    // kept for review.
+    expect((await getSyncConflicts())[0].localPayload).toMatchObject({ updateData: { notes: OFFLINE_EDIT } });
+  });
+
+  it('two results, one per photo, both go up; neither undoes the other', async () => {
+    const second = { ...analyzing, id: 'photo-g1b', uri: 'file:///phone/Documents/project-photos/g1b.jpg' };
+    const phone = await sentThroughTheApp([analyzing, second]);
+    await iPadEditsNow(IPAD_NOTE);
+    analysisFinishes(phone, finished());
+    await phone.settle();
+    analysisFinishes(phone, finished(), second.id);
+    await reconnect(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect((inCloud().photos as Array<{ photoIntelligence: { status: string } }>).map(photo => photo.photoIntelligence.status))
+      .toEqual(['analysis_complete', 'analysis_complete']);
+    expect(await getOfflineQueue()).toEqual([]);
   });
 });

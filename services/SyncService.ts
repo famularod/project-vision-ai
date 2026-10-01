@@ -86,6 +86,7 @@ import {
   type FieldUpdateDocumentPatch,
   type RemovedFieldUpdateDocuments,
 } from './FieldUpdateDocumentPatch';
+import { fieldUpdatePhotoAnalysisPatchFor, isFieldUpdatePhotoAnalysisPatch, withoutPhotoAnalysis } from './FieldUpdatePhotoAnalysisPatch';
 import { loadRemovedFieldUpdateDocuments, recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
 import { resetDocumentsResentThisLaunchForTests, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
@@ -2379,7 +2380,31 @@ export async function queueProjectUpdateRecord<TUpdate extends {
  * the patch goes up, as for a sent update. Sending the whole copy, stamped
  * now, put the phone's older note over the iPad's newer one.
  */
-export async function queueProjectUpdateDocumentChange<TUpdate extends {
+export async function queueProjectUpdateDocumentChange<TUpdate extends PatchedProjectUpdate>(
+  update: TUpdate,
+  documentId: string,
+): Promise<void> {
+  await queueProjectUpdatePatch(update, fieldUpdateDocumentPatchFor(update, documentId));
+}
+
+/**
+ * A photo analysis result that finished after the update was saved (`before`
+ * is the update without it), queued as a patch on the cloud's copy, under
+ * the same rules as a document change (whole-app audit A4 pass 13 G1;
+ * FieldUpdatePhotoAnalysisPatch). A sent update stays sent and only the
+ * result goes up: its whole copy, queued again stamped now, went over a
+ * newer iPad edit of the note. An edit still waiting on this phone takes the
+ * result in its own queued copy, which keeps the time David saved it.
+ */
+export async function queueProjectUpdatePhotoAnalysis<TUpdate extends PatchedProjectUpdate>(
+  update: TUpdate,
+  photoId: string,
+  before: object,
+): Promise<void> {
+  await queueProjectUpdatePatch(update, fieldUpdatePhotoAnalysisPatchFor(before, update, photoId));
+}
+
+type PatchedProjectUpdate = {
   id: string;
   projectId?: string | null;
   projectName?: string;
@@ -2387,12 +2412,15 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
   status?: string;
   photos?: ReadonlyArray<{ id: string }>;
   documents?: ReadonlyArray<{ id: string }> | null;
-}>(update: TUpdate, documentId: string): Promise<void> {
+};
+
+async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
   const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
-  const patch = fieldUpdateDocumentPatchFor(update, documentId);
-  if (patch.remove) await recordRemovedFieldUpdateDocument(update.id, documentId).catch(() => undefined);
+  if (!isFieldUpdatePhotoAnalysisPatch(patch) && patch.remove) {
+    await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
+  }
   const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update);
   const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !(await getSyncConflicts())
     .some(conflict => conflict.entity === 'project_update' && conflict.localId === update.id);
@@ -2597,12 +2625,15 @@ async function writeStagedProjectUpdateRecord(
  * record (whole-app audit A4 pass 13 M1). The conflict check compares the
  * cloud's time with it. Each sync attempt stamped it "now": an edit saved
  * with no signal, waiting on its photos, always read newer than the iPad's
- * later edit, and went over it with no conflict shown.
+ * later edit, and went over it with no conflict shown. Photo analysis aside
+ * too (A4 pass 13 G1): a result that landed in the queued copy after a sync
+ * attempt read the update is not an edit, and re-stamped it now.
  */
 function queuedEditSavedAt(item: SyncQueueItem, update: ProjectUpdate): string | null {
   const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
   if (item.operation === 'delete' || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return null;
-  return sameProjectUpdateContent(payload.updateData, update, { retryStampsAside: true }) ? item.changedAt : null;
+  return sameProjectUpdateContent(withoutPhotoAnalysis(payload.updateData), withoutPhotoAnalysis(update) as ProjectUpdate,
+    { retryStampsAside: true }) ? item.changedAt : null;
 }
 
 /**
