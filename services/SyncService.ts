@@ -2618,7 +2618,12 @@ function sameStagedProjectUpdateRecord(current: SyncQueueItem, written: SyncQueu
 }
 
 export async function removeProjectUpdateFromSyncQueue(updateId: string): Promise<number> {
-  if (!updateId.trim()) return 0;
+  return (await withdrawProjectUpdateFromSyncQueue(updateId)).length;
+}
+
+/** The update's queued record work (its deletes stay), taken off the queue: the items as they were. */
+async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<SyncQueueItem[]> {
+  if (!updateId.trim()) return [];
 
   return mutateOfflineQueue(queue => {
     const nextQueue = queue.filter(item => {
@@ -2628,12 +2633,29 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
       const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
       return payload.id !== updateId;
     });
-    const removed = queue.length - nextQueue.length;
+    const withdrawn = queue.filter(item => !nextQueue.includes(item));
     return {
       nextQueue,
-      result: removed,
-      persist: removed > 0,
+      result: withdrawn,
+      persist: withdrawn.length > 0,
     };
+  });
+}
+
+/**
+ * Keep Cloud's save failed (whole-app audit A4 pass 13 L2): the phone's work
+ * it withdrew goes back, in place of the cloud copy it queued, so neither
+ * copy has changed, as Settings says. That work had been lost (a newer
+ * edit, a document change), and the cloud copy went up later and cleared
+ * the conflict. Work queued since is newer, and stays.
+ */
+async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueItem[], queued: SyncQueueItem | null): Promise<void> {
+  await mutateOfflineQueue(queue => {
+    const kept = queued ? queue.filter(item => !(item.id === queued.id && sameStagedProjectUpdateRecord(item, queued))) : queue;
+    const queuedIds = new Set(kept.map(item => item.id));
+    // The later withdrawal of an id holds the newer work.
+    const back = [...new Map(withdrawn.map(item => [item.id, item])).values()].filter(item => !queuedIds.has(item.id));
+    return { nextQueue: [...kept, ...back], result: undefined, persist: kept.length !== queue.length || back.length > 0 };
   });
 }
 
@@ -4165,39 +4187,46 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // while Settings said neither copy was changed.
     const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
     if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
-    await removeProjectUpdateFromSyncQueue(conflict.localId);
-    await uploadPendingChanges();
-    await removeProjectUpdateFromSyncQueue(conflict.localId);
-    // And read again now (A4 pass 13 L1): an iPad save that landed while
-    // this phone's work was withdrawn and that upload pass ran went under
-    // the copy read before it. The first read stays the check that the
-    // cloud can be reached, and stands in when this one fails.
-    const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
-    const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
-    const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
-      sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
-      ? currentCopy : cloudUpdate;
-    const chosenCloudUpdate = withDocumentChanges(cloudNow) as TUpdate;
-    await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
-      id: projectUpdateQueueItemId(conflict.localId),
-      entity: 'project_update',
-      operation: 'update',
-      payload: {
-        id: conflict.localId,
-        projectId: typeof cloudNow.projectId === 'string' ? cloudNow.projectId : localPayload.projectId,
-        projectName: typeof cloudNow.projectName === 'string' ? cloudNow.projectName : localPayload.projectName,
-        selectedAreaName: typeof cloudNow.selectedAreaName === 'string'
-          ? cloudNow.selectedAreaName
-          : localPayload.selectedAreaName,
-        updateData: chosenCloudUpdate,
-        // The cloud copy's photos are already in cloud storage.
-        pendingPhotoAssetIds: [],
-      },
-      changedAt: new Date().toISOString(),
-      autoUpload: false,
-    });
-    const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId));
-    if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
+    const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
+    let queuedCloudCopy: SyncQueueItem | null = null;
+    let chosenCloudUpdate: TUpdate;
+    try {
+      await uploadPendingChanges();
+      withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId));
+      // And read again now (A4 pass 13 L1): an iPad save that landed while
+      // this phone's work was withdrawn and that upload pass ran went under
+      // the copy read before it. The first read stays the check that the
+      // cloud can be reached, and stands in when this one fails.
+      const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+      const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
+      const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
+        sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
+        ? currentCopy : cloudUpdate;
+      chosenCloudUpdate = withDocumentChanges(cloudNow) as TUpdate;
+      queuedCloudCopy = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+        id: projectUpdateQueueItemId(conflict.localId),
+        entity: 'project_update',
+        operation: 'update',
+        payload: {
+          id: conflict.localId,
+          projectId: typeof cloudNow.projectId === 'string' ? cloudNow.projectId : localPayload.projectId,
+          projectName: typeof cloudNow.projectName === 'string' ? cloudNow.projectName : localPayload.projectName,
+          selectedAreaName: typeof cloudNow.selectedAreaName === 'string'
+            ? cloudNow.selectedAreaName
+            : localPayload.selectedAreaName,
+          updateData: chosenCloudUpdate,
+          // The cloud copy's photos are already in cloud storage.
+          pendingPhotoAssetIds: [],
+        },
+        changedAt: new Date().toISOString(),
+        autoUpload: false,
+      }) as SyncQueueItem;
+      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId));
+      if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
+    } catch (error) {
+      await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
+      throw error;
+    }
     await clearResolvedConflict(conflict.id);
     return chosenCloudUpdate;
   }

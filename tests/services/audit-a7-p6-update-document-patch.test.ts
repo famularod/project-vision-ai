@@ -2051,3 +2051,53 @@ describe('Keep Cloud keeps an iPad save that lands while it runs (audit A4 pass 
     expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
   });
 });
+
+/**
+ * A4 pass 13 L2 (the open part of A4 pass 12 L1): Keep Cloud read the cloud,
+ * withdrew the phone's waiting work (a newer edit, a document change), and
+ * then its save failed. Settings said "Neither copy was changed", but that
+ * work was gone, and the cloud copy it had queued went up later and cleared
+ * the conflict. Now the withdrawn work goes back in its place.
+ */
+describe('Keep Cloud whose save fails leaves the phone\'s waiting work as it was (audit A4 pass 13 L2)', () => {
+  const NEWER = 'Pour, 45 yards (typed on the phone after the conflict)';
+  const offline = async <T>(work: () => Promise<T>) => {
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockResolvedValue({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+    try { return await work(); } finally { (saveProjectUpdate as jest.Mock).mockImplementation(save); }
+  };
+
+  it('a newer phone edit made since the conflict is queued again; reconnected, it reaches the cloud', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    const before = await queuedFor();
+    await expect(offline(() => chooseInSettingsExpectingFailure(phone, conflict, 'keep_cloud'))).resolves.toEqual(['Conflict not resolved']);
+    expect(await getOfflineQueue()).toEqual([before]);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+
+    await uploadPendingChanges(); // reconnected
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('a document change waiting since the conflict is queued again', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    const before = await queuedFor();
+    expect(before!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await expect(offline(() => resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud'))).rejects.toThrow();
+    expect(await getOfflineQueue()).toEqual([before]);
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+
+  it('nothing was waiting: the cloud copy it queued does not stay to clear the conflict later', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    expect(await getOfflineQueue()).toEqual([]);
+    await expect(offline(() => chooseInSettingsExpectingFailure(phone, conflict, 'keep_cloud'))).resolves.toEqual(['Conflict not resolved']);
+    expect(await getOfflineQueue()).toEqual([]);
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+});
