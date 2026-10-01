@@ -258,28 +258,39 @@ async function openSavedWorkspace(
   lookup: Pick<SavedSignInRefreshOptions, 'onSignalBack' | 'stillWanted'>,
 ): Promise<Readonly<{ ownerId: string | null; signInPending: boolean; lastRefreshedAtMs?: number }>> {
   const noAnswerMark = signInRefreshNoAnswerMark();
+  const refreshOptions = { ...lookup, noAnswerMark };
   const result = await getCurrentSessionUser();
+  let owner: Readonly<{ ownerId: string | null; signInPending: boolean; lastRefreshedAtMs?: number }>;
   if (result.ok) {
-    const ownerId = result.data?.id || null;
-    // A1 pass 4 L3: a clock set back is not trusted with a token valid by it.
-    const seenAtMs = ownerId ? await savedSignInClockSetBack(ownerId) : null;
-    if (seenAtMs === null) return { ownerId, signInPending: false };
-    const confirmed = await workspaceOwnerWithClockSetBack(seenAtMs, undefined, { ...lookup, noAnswerMark });
-    if ('ownerId' in confirmed) return confirmed;
-    throw new Error(offlineSignInRefusalMessage('clock', confirmed.seenAtMs));
+    owner = { ownerId: result.data?.id || null, signInPending: false };
+  } else {
+    const offline = await workspaceOwnerAfterFailedLookup(
+      () => sandbox.activeOwnerId(),
+      undefined,
+      undefined,
+      refreshOptions,
+    );
+    if (!offline || !('ownerId' in offline)) {
+      throw new Error(
+        (offline && offlineSignInRefusalMessage(offline.refused, offline.seenAtMs)) ||
+        result.message || result.error ||
+        'Vitruvius could not verify the signed-in account.',
+      );
+    }
+    owner = offline;
   }
-  const offline = await workspaceOwnerAfterFailedLookup(
-    () => sandbox.activeOwnerId(),
-    undefined,
-    undefined,
-    { ...lookup, noAnswerMark },
-  );
-  if (offline && 'ownerId' in offline) return offline;
-  throw new Error(
-    (offline && offlineSignInRefusalMessage(offline.refused, offline.seenAtMs)) ||
-    result.message || result.error ||
-    'Vitruvius could not verify the signed-in account.',
-  );
+  // A1 pass 4 L3: a clock set back is not trusted with a token valid by it.
+  // A1 pass 5 L1: checked once here, whichever way the lookup found the
+  // sign-in valid. A slow Keychain at launch (the lookup gives up after
+  // 1.5 s) sent it down the failed-lookup path, which took the token as
+  // valid by the phone's clock and opened the workspace fully signed in.
+  // "Offline, sign-in pending" was checked against the clock already.
+  if (owner.signInPending || !owner.ownerId) return owner;
+  const seenAtMs = await savedSignInClockSetBack(owner.ownerId);
+  if (seenAtMs === null) return owner;
+  const confirmed = await workspaceOwnerWithClockSetBack(seenAtMs, undefined, refreshOptions);
+  if ('ownerId' in confirmed) return confirmed;
+  throw new Error(offlineSignInRefusalMessage('clock', confirmed.seenAtMs));
 }
 
 const ownerBoundaryStyles = StyleSheet.create({

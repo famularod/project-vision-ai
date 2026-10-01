@@ -25,6 +25,8 @@ let mockDuringSecureDelete: ((key: string) => Promise<void>) | null = null;
 let mockSettingsProps: Record<string, unknown> | null = null;
 /** Keychain reads fail (the phone is locked), as in audit A2 pass 2 L1. */
 let mockFailingSecureReads = false;
+/** How long each of the next Keychain reads takes, in order: a slow Keychain at launch (A1 pass 5 L1). */
+const mockSecureReadDelays: number[] = [];
 /** A voice recording on this phone (A11 pass 4 L1); null leaves the real module. */
 let mockVoiceRecordingInfo: { exists: boolean; size: number } | null = null;
 jest.mock('expo-file-system/legacy', () => {
@@ -40,6 +42,8 @@ jest.mock('expo-file-system/legacy', () => {
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
   getItemAsync: jest.fn(async (key: string) => {
+    const delayMs = mockSecureReadDelays.shift();
+    if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
     if (mockFailingSecureReads) throw new Error('User interaction is not allowed.');
     return mockSecure.get(key) ?? null;
   }),
@@ -234,6 +238,7 @@ beforeEach(() => {
   mockDuringSecureDelete = null;
   mockSettingsProps = null;
   mockFailingSecureReads = false;
+  mockSecureReadDelays.length = 0;
   mockVoiceRecordingInfo = null;
   network.mode = 'offline';
   network.calls = [];
@@ -1634,6 +1639,87 @@ describe('A1 pass 4 review', () => {
     const { screen, rtl } = launch();
     await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
     expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+    expect(network.calls.filter(call => call.startsWith('POST /auth/v1/token'))).toEqual([]);
+    screen.unmount();
+  });
+});
+
+/**
+ * Whole-app audit A1 pass 5 (30 Sep 2026), gaps left by pass 4, end to end.
+ * L1: a slow Keychain at launch (the startup lookup gives up after 1.5 s)
+ * opened the workspace fully signed in with the clock set back into the
+ * saved token's last hour: the failed-lookup path took the sign-in as valid
+ * without the clock check.
+ */
+describe('A1 pass 5 review', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const LOCKOUT = 'Workspace protection needs attention';
+  const REFRESH = 'POST /auth/v1/token?grant_type=refresh_token';
+  const HEALTH = 'GET /auth/v1/health';
+  const authCalls = (from: number) => network.calls.slice(from).filter(call => call === HEALTH || call.startsWith('POST /auth/v1/'));
+  const realNow = Date.now.bind(Date);
+  type Rtl = { act: (work: () => Promise<void>) => Promise<void> };
+  /** auth-js gives up on the refresh (its ~25 s of retries, woken at once); its minute of cooldown begins. */
+  async function refreshGivenUp(rtl: Rtl) {
+    for (let round = 0, idle = 0; round < 300 && idle < 5; round += 1) {
+      await rtl.act(async () => { wakeSleepingRetries(); await pause(10); });
+      idle = mockSleepingRetries.size === 0 ? idle + 1 : 0;
+    }
+    expect(mockSleepingRetries.size).toBe(0);
+  }
+  /** As in pass 4: opened offline (the time seen is kept), then the clock set back two days into the token's last hour. */
+  async function openedOfflineThenClockSetBack() {
+    await saveSignIn('owner-a', 2 * 24 + 0.5);
+    await phoneWorkspaceOf('owner-a');
+    const first = launch();
+    await first.rtl.waitFor(() => expect(first.screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    await first.rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(true), OPEN);
+    const seenAtMs = Number(mockAsync.get(TIME_SEEN('owner-a')));
+    await refreshGivenUp(first.rtl);
+    first.screen.unmount();
+    await client?.auth.stopAutoRefresh();
+    mockWorkspaceMounts.length = 0;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 2 * 24 * HOUR * 1000);
+    return { seenAtMs, clock };
+  }
+
+  test('L1 a slow Keychain at launch, the clock set back into the saved token\'s last hour, no signal: the clock lockout, not a full sign-in', async () => {
+    const { seenAtMs, clock } = await openedOfflineThenClockSetBack();
+    try {
+      const from = network.calls.length;
+      // The saved sign-in's first two Keychain reads take a second each, so
+      // the startup lookup gives up (1.5 s) and the failed-lookup path decides.
+      mockSecureReadDelays.push(1_000, 1_000);
+      const second = launch();
+      await second.rtl.waitFor(() => expect(
+        second.screen.queryByText(LOCKOUT) ?? second.screen.queryByText('WORKSPACE OPEN owner-a'),
+      ).toBeTruthy(), OPEN);
+      // Before: "WORKSPACE OPEN owner-a", fully signed in, no pending marker, nothing sent.
+      expect(second.screen.queryByText('WORKSPACE OPEN owner-a')).toBeNull();
+      expect(second.screen.getByText(clockMessage(seenAtMs))).toBeTruthy();
+      expect(mockSecureReadDelays).toEqual([]);
+      await second.rtl.act(async () => { await pause(300); });
+      expect(mockWorkspaceMounts).toEqual([]);
+      // The server's time was asked for (a real refresh), and there was no signal.
+      expect(authCalls(from)).toContain(REFRESH);
+      // Locked, not signed out.
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBe('owner-a');
+      second.screen.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('L1 a slow Keychain at launch with a right clock still opens at once, signed in, with nothing sent', async () => {
+    await saveSignIn('owner-a', 0.5);
+    await phoneWorkspaceOf('owner-a');
+    mockAsync.set(TIME_SEEN('owner-a'), String(Date.now() - HOUR * 1000));
+    mockSecureReadDelays.push(1_000, 1_000);
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+    expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+    expect(mockSecureReadDelays).toEqual([]);
     expect(network.calls.filter(call => call.startsWith('POST /auth/v1/token'))).toEqual([]);
     screen.unmount();
   });
