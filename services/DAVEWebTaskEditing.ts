@@ -238,7 +238,8 @@ export function buildDAVEWebScheduleItem({
   // M1, 30 Sep 2026). Compared with the task's own progress as stored
   // (99.6% is 100%), so a value the save only tidies is not a change; an
   // unchanged progress keeps its source, confirmer and time exactly,
-  // absent included.
+  // absent included, and the time David judged a percent given back to him
+  // (progressJudgment, whole-app audit A10 pass 5 L1).
   const storedProgress = current
     ? reconcileScheduleProgress(current.status, current.percentComplete)
     : null;
@@ -247,7 +248,7 @@ export function buildDAVEWebScheduleItem({
     storedProgress.percentComplete !== progress.percentComplete;
   const progressMarking: Pick<
     ScheduleItem,
-    'progressSource' | 'progressConfirmedAt' | 'progressConfirmedBy'
+    'progressSource' | 'progressConfirmedAt' | 'progressConfirmedBy' | 'progressJudgment'
   > = progressEditedHere || !current
     ? {
         progressSource: 'project_manager',
@@ -258,6 +259,7 @@ export function buildDAVEWebScheduleItem({
         ...('progressSource' in current ? { progressSource: current.progressSource } : {}),
         ...('progressConfirmedAt' in current ? { progressConfirmedAt: current.progressConfirmedAt } : {}),
         ...('progressConfirmedBy' in current ? { progressConfirmedBy: current.progressConfirmedBy } : {}),
+        ...(current.progressJudgment ? { progressJudgment: current.progressJudgment } : {}),
       };
   const activityMessage = draft.activityMessage.trim();
   const activity = draft.workflowAction

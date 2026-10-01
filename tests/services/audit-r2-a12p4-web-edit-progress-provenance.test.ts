@@ -22,6 +22,7 @@ import {
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
 import { SCHEDULE_FILE_PROGRESS_CONFIRMER } from '../../services/ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from '../../services/ScheduleProgressSource';
 
 const PROJECT = 'Alpha Tower';
 const IMPORTED_AT = '2026-09-01T09:00:00.000Z';
@@ -257,5 +258,41 @@ describe('progress David changes on the web is still his (A12 pass 4 M1)', () =>
       progressConfirmedAt: NOW,
       progressConfirmedBy: ACTOR,
     });
+  });
+});
+
+/**
+ * Whole-app audit A10 pass 5 L1 follow-up (30 Sep 2026): a percent given
+ * back to David (a lookahead deleted, or a master below his word) is stamped
+ * with the give-back time for sync and keeps the time he judged it in
+ * progressJudgment. A web edit that left progress alone dropped
+ * progressJudgment (the web lists the fields it keeps), so field reports
+ * were weighed against the give-back time again.
+ */
+describe('a web edit keeps the time David judged a percent given back to him (A10 pass 5 L1)', () => {
+  const JUDGED_AT = '2026-09-10T15:00:00.000Z';
+  const GIVEN_BACK_AT = '2026-09-25T15:00:00.000Z';
+  const givenBack: DAVEWebScheduleItem = {
+    ...imported,
+    percentComplete: 40,
+    status: 'In Progress',
+    progressSource: 'project_manager',
+    progressConfirmedAt: GIVEN_BACK_AT,
+    progressConfirmedBy: ACTOR,
+    progressJudgment: { judgedAt: JUDGED_AT, givenBackAt: GIVEN_BACK_AT },
+  };
+
+  test('an area-only edit keeps it, so his 40% still dates from 10 Sep', () => {
+    const edited = save(givenBack, { locationName: 'Level 1 East' });
+
+    expect(edited.progressJudgment).toEqual({ judgedAt: JUDGED_AT, givenBackAt: GIVEN_BACK_AT });
+    expect(scheduleProgressJudgedAt(edited)).toBe(JUDGED_AT);
+  });
+
+  test('a percent he changes on the web is judged now, with no earlier time kept', () => {
+    const edited = save(givenBack, { percentComplete: '50' });
+
+    expect(edited.progressJudgment).toBeUndefined();
+    expect(scheduleProgressJudgedAt(edited)).toBe(NOW);
   });
 });
