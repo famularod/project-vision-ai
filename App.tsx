@@ -13296,6 +13296,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const mentionedProject = mentionedDAVEProject(
       transcript,
       reportAvailableProjectNames, ecosProjectQuestion.closedProjectNames, // closed names too (audit A9 pass 6 L6b)
+      talkProjectName, // naming it is no move; Talk stays here when Ask ECOS would refuse the move (A9 pass 17 L1)
     );
     const projectName = mentionedProject || talkProjectName;
     const taskContextId = mentionedProject && mentionedProject !== talkProjectName

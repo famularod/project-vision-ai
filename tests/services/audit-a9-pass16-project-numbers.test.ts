@@ -119,9 +119,12 @@ describe('audit A9 pass 16 L2: a spaced capital is another project\'s letter whe
     expect(talkAnswer('What is left at 400 N?', PROJECTS, [], MAIN)).toBe(switchOnPhone('400N', '24117'));
   });
 
-  it('on 2321 it names 400N, and Talk moves to 400N Tower (was 24117 - 400 N Main St)', () => {
+  it('on 2321 it names 400N, and Talk stays on 2321 (pass 16 moved it to 400N Tower; was 24117 - 400 N Main St)', () => {
     expect(desktop('What is left at 400 N?', PROJECTS)).toBe(switchOnDesktop('400N'));
-    expect(mentionedDAVEProject('What is left at 400 N?', PROJECTS)).toBe(TOWER);
+    // Audit A9 pass 17 L1 changed this pin from TOWER: Ask ECOS on 400N Tower
+    // refuses the question (there the address names the N Main job), so Talk
+    // no longer moves there and refuses on 2321 instead.
+    expect(mentionedDAVEProject('What is left at 400 N?', PROJECTS, [], SELECTED)).toBeNull();
   });
 
   it('a closed 400N Tower is named too', () => {
@@ -133,7 +136,9 @@ describe('audit A9 pass 16 L2: a spaced capital is another project\'s letter whe
   it('when unsure, refuse: with 400N Tower open, the address "400 N. Main St" is read as 400N too, as before pass 15 M1', () => {
     expect(desktop('Is 400 N. Main St done?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('400N', '24117'));
     expect(desktop('Is 400 N Main St done?', PROJECTS, [], MAIN)).toBe(switchOnDesktop('400N', '24117'));
-    expect(mentionedDAVEProject('Is 400 N. Main done?', PROJECTS)).toBe(TOWER);
+    // Audit A9 pass 17 L1 changed this pin from TOWER: Ask ECOS on 400N Tower
+    // refuses it (the N Main address), so Talk does not move there.
+    expect(mentionedDAVEProject('Is 400 N. Main done?', PROJECTS, [], MAIN)).toBeNull();
   });
 
   it('on 400N Tower, an address that continues the N Main job still names it (when unsure, refuse; unchanged)', () => {

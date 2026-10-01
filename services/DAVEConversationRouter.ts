@@ -121,16 +121,43 @@ export function classifyDAVEConversationIntent(transcript: string): DAVEConversa
  * full. The selected project itself may be returned; that is no move.
  * Audit A9 pass 8 L2: Talk never moves to a project named only by a part of
  * a comma group ("the 1,200 bricks" with a project 200); it asks instead.
+ * Audit A9 pass 17 L1: a question, task update or note never moves to a
+ * project on which Ask ECOS would refuse the same words ("What is left at
+ * 400 N?" moved to "400N Tower", where the address names "24117 - 400 N Main
+ * St"); Talk stays on `currentProjectName`, refuses a question there in Ask
+ * ECOS's words, and leaves a note there for David to confirm. A note naming
+ * two or more projects still moves as above, so Ask ECOS is asked without the
+ * other projects the note itself names. "Open ..." moves as before.
  */
 export function mentionedDAVEProject(
   transcript: string,
   projectNames: readonly string[],
   closedProjectNames: readonly string[] | null = [],
+  currentProjectName = '',
 ) {
-  const named = talkNamedProjects(transcript, projectNames, closedProjectNames || []);
+  const closed = closedProjectNames || [];
+  const named = talkNamedProjects(transcript, projectNames, closed);
+  const intent = classifyDAVEConversation(transcript).intent;
+  const target = talkMoveTarget(named, intent, projectNames);
+  if (!target || target === currentProjectName || intent === 'navigate') return target;
+  const alongside = new Set(named.map(project => project.key).filter(key => key !== talkProjectKey(target)));
+  const notAlongside = (name: string) => !alongside.has(talkProjectKey(name));
+  const askWouldRefuse = ecosProjectReferenceMismatchMessage(
+    target,
+    transcript.replace(/\s+/g, ' ').trim(),
+    projectNames.filter(notAlongside),
+    { closedProjectNames: closed.filter(notAlongside) },
+  ) !== null;
+  return askWouldRefuse ? null : target;
+}
+
+function talkMoveTarget(
+  named: readonly TalkNamedProject[],
+  intent: DAVEConversationRoute['intent'],
+  projectNames: readonly string[],
+) {
   if (named.length === 0) return null;
   if (named.length > 1) {
-    const intent = classifyDAVEConversation(transcript).intent;
     if (intent === 'ask' || intent === 'task_update') return null;
     const open = named.filter(project => project.open.length > 0 && !project.unsure);
     if (open.length === 1) return openProjectNamed(open[0]);
