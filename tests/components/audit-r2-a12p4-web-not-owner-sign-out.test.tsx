@@ -161,6 +161,12 @@ function expectNotAuthorizedPage(screen: ReturnType<typeof render>) {
   expect(screen.queryByText('Account and Sync')).toBeNull();
 }
 
+// The default one-second waitFor timeout was missed three times when the whole
+// suite ran on a busy machine (30 Sep / 1 Oct batteries); the outcomes waited
+// for are unchanged, only how long a loaded machine may take to reach them.
+const LOADED_MACHINE = { timeout: 10_000 };
+jest.setTimeout(20_000);
+
 const settle = () => act(async () => {
   for (let index = 0; index < 20; index += 1) await Promise.resolve();
 });
@@ -173,8 +179,8 @@ test('not the owner, and the browser sign-out fails: the not-authorized page, no
   mockedGateway.signOut.mockRejectedValue(signOutFailed());
   const screen = renderShell();
 
-  await waitFor(() => expect(mockedGateway.signOut).toHaveBeenCalledWith('local'));
-  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
+  await waitFor(() => expect(mockedGateway.signOut).toHaveBeenCalledWith('local'), LOADED_MACHINE);
+  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy(), LOADED_MACHINE);
   expectNotAuthorizedPage(screen);
 });
 
@@ -216,7 +222,7 @@ test('a later event for the same sign-in reads nothing and never shows "not load
   // A12 pass 6 L1 (30 Sep 2026) only this tab's own refresh is acted on.
   mockedGateway.storedSignInUserId.mockReturnValue('visitor-1');
   const screen = renderShell();
-  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy(), LOADED_MACHINE);
   // The connection is still dropping: a second owner check would not finish.
   mockedLoadSnapshot.mockRejectedValue(ownerCheckIncomplete());
 
@@ -253,7 +259,7 @@ test('the owner signing in afterwards opens the workspace, and the quiet sign-ou
 test('signing in again with the same account checks it again rather than reusing the old answer', async () => {
   mockedGateway.signOut.mockRejectedValue(signOutFailed());
   const screen = renderShell();
-  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy(), LOADED_MACHINE);
 
   // Access was granted meanwhile: this time the owner check passes.
   mockedGateway.signIn.mockResolvedValue({ ok: true, session: visitorSession });
@@ -262,7 +268,7 @@ test('signing in again with the same account checks it again rather than reusing
   fireEvent.changeText(screen.getByLabelText('Password'), 'synthetic-test-password');
   fireEvent.press(screen.getByText('Sign in securely'));
 
-  await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull());
+  await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull(), LOADED_MACHINE);
   expect(mockedLoadSnapshot).toHaveBeenCalledTimes(2);
 });
 
@@ -277,7 +283,7 @@ test('the owner signing in in another tab leaves this tab’s not-authorized pag
   // The visitor's sign-out here has not gone through yet.
   mockedGateway.storedSignInUserId.mockReturnValue('visitor-1');
   const screen = renderShell();
-  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(NOT_AUTHORIZED)).toBeTruthy(), LOADED_MACHINE);
 
   mockedLoadSnapshot.mockResolvedValue(snapshot as never);
   await emit('SIGNED_IN', ownerSession);
