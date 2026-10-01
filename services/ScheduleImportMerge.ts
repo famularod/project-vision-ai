@@ -109,6 +109,14 @@ import {
  * back to David's 40%). The new row now carries the note, brought up to what
  * the new master says (scheduleTaskMasterRestated), as the task left on its
  * dates keeps it.
+ *
+ * Whole-app audit A5 pass 17 M1 (1 Oct 2026): a task David entered by hand
+ * belongs to no import, so it always shows; a master moving it added a new
+ * row as well and Pour slab showed twice, and the next master, with two
+ * candidates for one row, paired with neither (0%). Such a task is now
+ * restated in place on the master's dates, as a task on the same dates and
+ * a lookahead's task are: its id, progress (only raised by a file, Q22), who
+ * judged it and when, owner and notes stay, and it keeps no import.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -168,6 +176,11 @@ function fileProgressFor(
 
 function key(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
+}
+
+/** A task an import brought in; one entered by hand belongs to none and always shows. */
+function ownedByImport(item: ScheduleItem): boolean {
+  return Boolean(key(item.importBatchId) || key(item.sourceDocumentId));
 }
 
 /**
@@ -485,11 +498,13 @@ export function mergeApprovedScheduleImportItems({
     const paired = pairedSaved && scheduleNoteTakesManagersProgress(pairedSaved);
     // A new master repeating what it said before a lookahead restated the task (Q22).
     const repeated = paired ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem) : { dates: false, percent: false };
+    // A task entered by hand, on new dates: restated in place on the master's dates (A5 pass 17 M1).
+    const movedByHand = Boolean(paired) && !ownedByImport(paired!) && !unchangedTask(paired!, importedItem) && !repeated.dates;
     const found = paired
-      ? (unchangedTask(paired, importedItem) || repeated.dates ? paired : undefined)
+      ? (unchangedTask(paired, importedItem) || repeated.dates || movedByHand ? paired : undefined)
       : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
-    // A task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
+    // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
     const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
     const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
@@ -499,7 +514,7 @@ export function mergeApprovedScheduleImportItems({
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import
       // too; a task entered by hand keeps its own provenance and stays visible.
-      const owned = Boolean(key(duplicate.importBatchId) || key(duplicate.sourceDocumentId));
+      const owned = ownedByImport(duplicate);
       const newBatchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
       const batches = scheduleItemImportBatchIds(duplicate).map(key);
       // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
@@ -507,7 +522,15 @@ export function mergeApprovedScheduleImportItems({
       const rehome = owned && Boolean(newBatchId);
       const fileProgress = repeated.percent ? null
         : scheduleFileProgressAboveManagers(duplicate, fileProgressFor(duplicate, importedItem, approvedAt), approvedAt);
-      const restated = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
+      const noted = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
+      // On the master's dates, as a lookahead restates a task (A5 pass 17 M1); a date the row leaves blank stays.
+      const dates = {
+        startDate: key(importedItem.startDate) ? importedItem.startDate : noted.startDate,
+        finishDate: key(importedItem.finishDate) ? importedItem.finishDate : noted.finishDate,
+      };
+      const restated = movedByHand && !unchangedTask(noted, { ...noted, ...dates })
+        ? { ...noted, ...dates, updatedAt: approvedAt }
+        : noted;
       if (rehome || fileProgress || restated !== next.find(item => item.id === duplicate.id)) {
         next = next.map(item => item.id === duplicate.id
           ? {
