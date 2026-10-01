@@ -48,8 +48,9 @@ export type ScheduleTaskLink = Readonly<{
   item: ScheduleItem;
   /**
    * task_id: the task itself; earlier_task_id: the row a new master saved
-   * the task as; stored_task_name: a row saved before the earlier ids were
-   * kept, found by the update's task name, project and area.
+   * the task as, or the shown row the update's own row replaced (A10 pass 9
+   * L1); stored_task_name: a row saved before the earlier ids were kept,
+   * found by the update's task name, project and area.
    */
   basis: 'task_id' | 'earlier_task_id' | 'stored_task_name';
 }>;
@@ -128,6 +129,15 @@ function sameSchedule(own: ScheduleItem): (item: ScheduleItem) => boolean {
  * such updates reconciliation, the commitment register and correlation each
  * took several times longer. The saved tasks are now indexed once per call,
  * by schedule and name, on the first update that needs it.
+ *
+ * Whole-app audit A10 pass 9 L1 (30 Sep 2026): Lot had two "Pour slab" tasks
+ * on master A; master B moved phase 1, and a report on B's row said "Pour
+ * slab is complete." After Make Current back to A, B's row was hidden and no
+ * shown row lists its id, so the report linked to no task (the twin guard
+ * rightly refused the name) and Home said Pour slab "lacks recent field
+ * evidence". Linking only went forward. Now, after that, the update's saved
+ * row is looked up: when a row it lists as earlier is shown, in its app
+ * project, the update links to the newest of those (earlier_task_id).
  */
 export function scheduleTaskLinks(
   items: readonly ScheduleItem[],
@@ -173,6 +183,13 @@ export function scheduleTaskLinks(
     if (own) return { item: own, basis: 'task_id' };
     const revised = byEarlierId.get(taskId) || [];
     if (revised.length === 1) return { item: revised[0], basis: 'earlier_task_id' };
+    // The rows the update's saved row replaced, when one is shown (A10 pass 9 L1).
+    const saved = knownById.get(taskId);
+    const replaced = saved
+      ? scheduleTaskEarlierIds(saved).map(id => byId.get(id))
+        .filter((item): item is ScheduleItem => Boolean(item) && scheduleTaskProjectKey(item!) === scheduleTaskProjectKey(saved))
+      : [];
+    if (replaced.length > 0) return { item: replaced[replaced.length - 1], basis: 'earlier_task_id' };
     const name = nameKey(reference.scheduleTaskName);
     const named = name && !nameSharedInOwnSchedule(reference, taskId, name)
       ? (byName.get(name) || []).filter(item => sameProject(item, reference) && sameArea(item, reference))
