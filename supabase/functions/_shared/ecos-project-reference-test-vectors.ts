@@ -27,6 +27,12 @@ export type ECOSProjectReferenceVector = Readonly<{
   refusedClosed?: boolean;
   /** The selected project's identifier in a refusal; '2321' when omitted (audit A9 pass 8 L7). */
   refusedSelected?: string;
+  /**
+   * The projects a refusal that asks which one names, the selected one first
+   * (audit A9 pass 14 L2: a tie with the selected project); omitted when the
+   * refusal names one project.
+   */
+  refusedTogether?: readonly string[];
 }>;
 
 const SELECTED = '2321 Compliance Project';
@@ -1155,18 +1161,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['What is left in Suite 300?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300 Elm'], null, undefined],
     ['What is left at 450 Elm St?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Oak Ave'], null, undefined],
     ['What is left at 450 Oak Ave?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Oak Ave'], '450', '24117'],
-    ['What is left at 450 Elm?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Elm Annex'], '450', '24117'],
+    // Audit A9 pass 14 L2: a tie with the selected project names both and
+    // asks which one (was a plain refusal naming only the other project).
+    ['What is left at 450 Elm?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Elm Annex'], '450', '24117', ['450 (24117 - 450 Elm St)', '450']],
     // The name that continues furthest around the number owns it.
     ['Is 2375 Main St done?', '2375 Main St', [SELECTED, '2375 Main St', 'Bldg 100A 2375 Main'], null, undefined],
     ['Is 1950s Remodel 2377 Days Inn done?', '1950s Remodel 2377 Days Inn', [SELECTED, '1950s Remodel 2377 Days Inn', '2377 Days Inn Renovation'], null, undefined],
-    ['What is left at 2375 Main?', 'Bldg 100A 2375 Main', [SELECTED, '2375 Main St', 'Bldg 100A 2375 Main'], '2375', '100A'],
-  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    ['What is left at 2375 Main?', 'Bldg 100A 2375 Main', [SELECTED, '2375 Main St', 'Bldg 100A 2375 Main'], '2375', '100A', ['2375 (Bldg 100A 2375 Main)', '2375']],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected, refusedTogether]: readonly [string, string, readonly string[], string | null, string | undefined, (readonly string[])?]) => ({
     name: `pass 13 L3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
     question,
     knownProjectNames,
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
+    ...(refusedTogether ? { refusedTogether } : {}),
   })),
   {
     name: 'pass 13 L3: with 450 Oak Ave closed, "What is left at 450 Elm St?" is still its own on "24117 - 450 Elm St"',
@@ -1206,6 +1215,45 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 14 L2: a tie with the selected project names both and asks
+  // which one; a name said in full beats one said in part.
+  {
+    name: 'pass 14 L2: "What is left at 450 Elm St?" on "24117 - 450 Elm St" with a closed "23088 - 450 Elm St" names both',
+    projectName: '24117 - 450 Elm St',
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED, '24117 - 450 Elm St', '2375 Main St'],
+    closedProjectNames: ['23088 - 450 Elm St'],
+    refused: '450 (23088 - 450 Elm St)',
+    refusedClosed: true,
+    refusedSelected: '24117',
+    refusedTogether: ['450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)'],
+  },
+  {
+    name: 'pass 14 L2: "Is 2375 Main St done?" on "2375 Main St" is its own with a closed "24117 - 2375 Main St"',
+    projectName: '2375 Main St',
+    question: 'Is 2375 Main St done?',
+    knownProjectNames: [SELECTED, '2375 Main St'],
+    closedProjectNames: ['24117 - 2375 Main St'],
+    refused: null,
+  },
+  {
+    name: 'pass 14 L2: "Is 24117 - 2375 Main St done?" on "2375 Main St" names the closed one said in full',
+    projectName: '2375 Main St',
+    question: 'Is 24117 - 2375 Main St done?',
+    knownProjectNames: [SELECTED, '2375 Main St'],
+    closedProjectNames: ['24117 - 2375 Main St'],
+    refused: '24117',
+    refusedClosed: true,
+    refusedSelected: '2375',
+  },
+  {
+    name: 'pass 14 L2: "What is left at 450 Elm St?" on "24117 - 450 Elm St" names "450 Elm St" said in full',
+    projectName: '24117 - 450 Elm St',
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED, '24117 - 450 Elm St', '450 Elm St'],
+    refused: '450',
+    refusedSelected: '24117',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

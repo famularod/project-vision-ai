@@ -22,7 +22,7 @@ import {
   ecosProjectNumberMentionsAt,
   ecosProjectsAroundNumber,
 } from '../supabase/functions/_shared/ecos-project-reference';
-import { ecosProjectReferenceMismatchMessage, projectReferenceMismatchText } from './ECOSProjectRefusal';
+import { ecosProjectReferenceMismatchMessage, projectReferenceMismatchText, projectsNamedTogetherText } from './ECOSProjectRefusal';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -332,12 +332,7 @@ export function talkProjectQuestionRefusal(
   closedProjectNames: readonly string[] = [],
 ): string | null {
   const named = talkNamedProjects(question, projectNames, closedProjectNames, selectedProjectName.trim());
-  if (named.length >= 2) {
-    const labels = named.map(project => project.label);
-    const count = labels.length === 2 ? 'two' : String(labels.length);
-    const list = `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-    return `This question names ${count} projects, ${list}. Which one do you mean? Ask again about just that project.`;
-  }
+  if (named.length >= 2) return projectsNamedTogetherText(named.map(project => project.label));
   const numberRefusal = ecosProjectReferenceMismatchMessage(selectedProjectName, question, projectNames, {
     closedProjectNames,
     refusalWording: 'phone',

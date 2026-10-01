@@ -55,6 +55,13 @@ export type ECOSProjectReferenceMismatch = Readonly<{
   referencedProjectIdentifier: string;
   /** The number is a closed (archived, not deleted) project's, and no open project's (audit A9 pass 3 L1). */
   referencedProjectClosed: boolean;
+  /**
+   * Audit A9 pass 14 L2: only when the selected project's name continues as
+   * far around the number as another's (a tie, so unsure which is meant):
+   * every project named, as shown, the selected one first ("450 (24117 - 450
+   * Elm St)", "450 (23088 - 450 Elm St)"). The refusal asks which one.
+   */
+  namedProjects?: readonly string[];
 }>;
 
 /** More rows than this and the list may be incomplete, so the stricter check applies. */
@@ -109,10 +116,16 @@ export function findECOSProjectReferenceMismatch(
   const selected = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE).label;
   // The other projects `isProject` picks out, as a refusal: the open ones, or
   // else the closed ones (a number both use is read as the open one).
-  const refusal = (fallbackLabel: string, isProject: (name: string) => boolean) => {
+  // With `withSelected`, the selected project is named as much as they are
+  // (a tie; audit A9 pass 14 L2).
+  const refusal = (fallbackLabel: string, isProject: (name: string) => boolean, withSelected = false) => {
     const open = knownNames.filter(isProject);
     const names = open.length > 0 ? open : closedNames.filter(isProject);
-    return names.length > 0 ? projectReferenceMismatch(selected, numberLabel(names, fallbackLabel), open.length === 0) : null;
+    if (names.length === 0) return null;
+    const namedProjects = withSelected
+      ? [ecosProjectNamedAs(projectName, fallbackLabel), ...numberLabels(names, fallbackLabel)]
+      : undefined;
+    return projectReferenceMismatch(selected, numberLabel(names, fallbackLabel), open.length === 0, namedProjects);
   };
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
   const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
@@ -129,11 +142,14 @@ export function findECOSProjectReferenceMismatch(
     // it is ambiguous: when unsure, refuse). L3: when only the selected
     // one's does, it is its own, identifier or not ("Suite 300" on "2375
     // Main St Suite 300", "450 Elm St" on "24117 - 450 Elm St", and "2375
-    // Main St" on that project with "Bldg 100A 2375 Main").
+    // Main St" on that project with "Bldg 100A 2375 Main"). Audit A9 pass 14
+    // L2: a tie with the selected one asks which project is meant ("What is
+    // left at 450 Elm St?" on "24117 - 450 Elm St" with a closed "23088 - 450
+    // Elm St"), and a name said in full beats one said in part.
     if (!letter && !spacedLetter) {
       const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames]);
       const others = around.filter(name => !isSelected(name));
-      const other = others.length > 0 ? refusal(number, name => others.includes(name)) : null;
+      const other = others.length > 0 ? refusal(number, name => others.includes(name), around.some(isSelected)) : null;
       if (other) return other;
       if (around.length > 0) continue;
     }
@@ -231,12 +247,17 @@ function hasIdentifierNumber(projectName: string, number: string) {
  * ecosProjectNamedAs).
  */
 function numberLabel(projectNames: readonly string[], used: string) {
-  const labels = new Set(projectNames.map(name => ecosProjectNamedAs(name, used)));
-  const distinct = [...labels].filter((label, index, all) =>
-    all.findIndex(other => other.toUpperCase() === label.toUpperCase()) === index);
-  if (labels.size === 1) return [...labels][0];
+  const distinct = numberLabels(projectNames, used);
   if (distinct.length === 1) return distinct[0];
   return `${distinct.slice(0, -1).join(', ')} or ${distinct[distinct.length - 1]}`;
+}
+
+/** Each refused project as shown, once ("2375A" for "2375A Main" and "2375a Annex"). */
+function numberLabels(projectNames: readonly string[], used: string) {
+  const labels = new Set(projectNames.map(name => ecosProjectNamedAs(name, used)));
+  if (labels.size === 1) return [...labels];
+  return [...labels].filter((label, index, all) =>
+    all.findIndex(other => other.toUpperCase() === label.toUpperCase()) === index);
 }
 
 /**
@@ -462,7 +483,9 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
  * outward from the number on both sides, so "Is 2375 Main St done?" is
  * "2375 Main St" (two words) and not also "Bldg 100A 2375 Main" (one). A
  * number belongs to the project whose name continues furthest around it,
- * when exactly one does; more than one is ambiguous.
+ * when exactly one does; more than one is ambiguous. Audit A9 pass 14 L2:
+ * among those, a name said in full beats one said in part ("Is 2375 Main St
+ * done?" is "2375 Main St", not also "24117 - 2375 Main St").
  */
 export function ecosProjectsAroundNumber(
   text: string,
@@ -472,29 +495,38 @@ export function ecosProjectsAroundNumber(
   const plain = new RegExp(String.raw`(?<![A-Za-z0-9])${number}(?![A-Za-z0-9]|-[A-Za-z](?![A-Za-z0-9]))`);
   const reach = projectNames.map(name => {
     const at = plain.exec(name);
-    return at ? nameWordsAround(name, at, text.slice(0, start), text.slice(end)) : 0;
+    return at ? nameWordsAround(name, at, text.slice(0, start), text.slice(end)) : { count: 0, full: false };
   });
-  const furthest = Math.max(0, ...reach);
-  return furthest > 0 ? projectNames.filter((_, index) => reach[index] === furthest) : [];
+  const furthest = Math.max(0, ...reach.map(({ count }) => count));
+  if (furthest === 0) return [];
+  const inFull = projectNames.filter((_, index) => reach[index].count === furthest && reach[index].full);
+  return inFull.length > 0 ? inFull : projectNames.filter((_, index) => reach[index].count === furthest);
 }
 
 /** Whether the name around name[at] continues in `before` or `after`. */
 function nameContinuesAt(name: string, at: RegExpExecArray, before: string, after: string) {
-  return nameWordsAround(name, at, before, after) > 0;
+  return nameWordsAround(name, at, before, after).count > 0;
 }
 
 /**
  * How many of the name's words around name[at] continue in `before` and
- * `after`, word by word outward from the number. The nearest word must touch
- * the number: after a space, comma or hyphen ("2375 Main"), or before it with
- * only a space, #, :, . or - between ("Tower E-2375").
+ * `after`, word by word outward from the number, and whether all of them do
+ * (`full`: the whole name is said). The nearest word must touch the number:
+ * after a space, comma or hyphen ("2375 Main"), or before it with only a
+ * space, #, :, . or - between ("Tower E-2375").
  */
 function nameWordsAround(name: string, at: RegExpExecArray, before: string, after: string) {
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
   // The last 64 characters are enough to test the end and keep the match linear.
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
-  return wordsInCommon(wordsIn(name.slice(at.index + at[0].length)), afterWords) +
-    wordsInCommon(wordsIn(name.slice(0, at.index)).reverse(), beforeWords);
+  const nameAfter = wordsIn(name.slice(at.index + at[0].length));
+  const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
+  const following = wordsInCommon(nameAfter, afterWords);
+  const preceding = wordsInCommon(nameBefore, beforeWords);
+  return {
+    count: following.count + preceding.count,
+    full: following.walked === nameAfter.length && preceding.walked === nameBefore.length,
+  };
 }
 
 function wordsIn(text: string): string[] {
@@ -506,7 +538,7 @@ function wordsIn(text: string): string[] {
  * (sameNameWord). Audit A9 pass 14 L1: a function word of the name is
  * passed over when it matches but never counted, so "What is left at
  * 2375?" does not continue "Suite 300 at 2375 Main" and "Is 300 at 2375
- * Main done?" still does.
+ * Main done?" still does. `walked` counts every word matched (pass 14 L2).
  */
 function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
   let walked = 0;
@@ -515,7 +547,7 @@ function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
     if (!isFunctionWord(nameWords[walked])) count += 1;
     walked += 1;
   }
-  return count;
+  return { count, walked };
 }
 
 const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to', 'a', 'an', 'by', 'with', 'from']);
@@ -560,8 +592,14 @@ function projectReferenceMismatch(
   selectedProjectIdentifier: string,
   referencedProjectIdentifier: string,
   referencedProjectClosed: boolean,
+  namedProjects?: readonly string[],
 ): ECOSProjectReferenceMismatch {
-  return Object.freeze({ selectedProjectIdentifier, referencedProjectIdentifier, referencedProjectClosed });
+  return Object.freeze({
+    selectedProjectIdentifier,
+    referencedProjectIdentifier,
+    referencedProjectClosed,
+    ...(namedProjects ? { namedProjects: Object.freeze([...namedProjects]) } : {}),
+  });
 }
 
 /**

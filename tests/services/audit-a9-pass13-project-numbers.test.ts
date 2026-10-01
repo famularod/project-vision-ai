@@ -133,7 +133,11 @@ describe('audit A9 pass 13 L3: the selected project\'s own name continuing aroun
   });
 
   it('when another project\'s name continues as far around it, it is ambiguous and refused', () => {
-    expect(desktop('What is left at 450 Elm?', [SELECTED, ELM_ST, '450 Elm Annex'], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+    // Audit A9 pass 14 L2: a tie with the selected project now asks which one
+    // (was "this question names 450", as if only the other were named).
+    expect(desktop('What is left at 450 Elm?', [SELECTED, ELM_ST, '450 Elm Annex'], [], ELM_ST)).toBe(
+      'This question names two projects, 450 (24117 - 450 Elm St) and 450. Which one do you mean? Ask again about just that project.',
+    );
   });
 
   it('the name that continues furthest owns it: the selected one\'s full name is not refused for a shorter match', () => {
@@ -147,7 +151,11 @@ describe('audit A9 pass 13 L3: the selected project\'s own name continuing aroun
     expect(desktop('Is 2377 Days Inn Renovation done?', [SELECTED, REMODEL, RENOVATION], [], RENOVATION)).toBeNull();
     // Further for the other project names it; as far is ambiguous.
     expect(desktop('Is Bldg 100A 2375 Main St done?', [SELECTED, MAIN, BLDG], [], MAIN)).toMatch(/this question names /);
-    expect(desktop('What is left at 2375 Main?', [SELECTED, MAIN, BLDG], [], BLDG)).toBe(switchOnDesktop('2375', '100A'));
+    // Audit A9 pass 14 L2: as far is a tie with the selected one, which asks
+    // which project is meant (was "this question names 2375").
+    expect(desktop('What is left at 2375 Main?', [SELECTED, MAIN, BLDG], [], BLDG)).toBe(
+      'This question names two projects, 2375 (Bldg 100A 2375 Main) and 2375. Which one do you mean? Ask again about just that project.',
+    );
   });
 });
 

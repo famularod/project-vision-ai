@@ -73,3 +73,43 @@ describe('audit A9 pass 14 L1: a function word in a name is not a name word', ()
     expect(desktop('Is 2375 A St. done?', projects, [], '2375 A Street')).toBeNull();
   });
 });
+
+describe('audit A9 pass 14 L2: a tie with the selected project asks which one, and a name said in full is its own', () => {
+  const ELM_ST = '24117 - 450 Elm St';
+  const OLD_ELM_ST = '23088 - 450 Elm St';
+  const both = (...labels: string[]) =>
+    `This question names two projects, ${labels.join(' and ')}. Which one do you mean? Ask again about just that project.`;
+
+  it('own address with an older closed job at the same address: Ask ECOS asks which, as Talk does (was "Reopen it")', () => {
+    const open = [SELECTED, ELM_ST, '2375 Main St'];
+    const expected = both('450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)');
+    expect(phone('What is left at 450 Elm St?', open, [OLD_ELM_ST], ELM_ST)).toBe(expected);
+    expect(desktop('What is left at 450 Elm St?', open, [OLD_ELM_ST], ELM_ST)).toBe(expected);
+    expect(talkAnswer('What is left at 450 Elm St?', open, [OLD_ELM_ST], ELM_ST)).toBe(expected);
+  });
+
+  it('an open tie is worded the same way (was "this question names 450")', () => {
+    const open = [SELECTED, ELM_ST, '450 Elm Annex'];
+    const expected = both('450 (24117 - 450 Elm St)', '450');
+    expect(desktop('What is left at 450 Elm?', open, [], ELM_ST)).toBe(expected);
+    expect(phone('What is left at 450 Elm?', open, [], ELM_ST)).toBe(expected);
+    expect(talkAnswer('What is left at 450 Elm?', open, [], ELM_ST)).toBe(expected);
+  });
+
+  it('"Is 2375 Main St done?" on 2375 Main St is its own with a closed "24117 - 2375 Main St" (was "Reopen it")', () => {
+    const open = [SELECTED, '2375 Main St'];
+    const closed = ['24117 - 2375 Main St'];
+    expect(phone('Is 2375 Main St done?', open, closed, '2375 Main St')).toBeNull();
+    expect(desktop('Is 2375 Main St done?', open, closed, '2375 Main St')).toBeNull();
+    expect(talkAnswer('Is 2375 Main St done?', open, closed, '2375 Main St')).toBeNull();
+  });
+
+  it('the other name said in full still names it, and so does a bare job number', () => {
+    const open = [SELECTED, '2375 Main St'];
+    const closed = ['24117 - 2375 Main St'];
+    expect(phone('Is 24117 - 2375 Main St done?', open, closed, '2375 Main St')).toBe(closedOnPhone('24117', '2375'));
+    expect(phone('Is 24117 done?', open, closed, '2375 Main St')).toBe(closedOnPhone('24117', '2375'));
+    // The other project's name said in full and the selected one's only in part.
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_ST, '450 Elm St'], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+  });
+});

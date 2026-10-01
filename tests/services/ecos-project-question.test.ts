@@ -349,6 +349,8 @@ describe('Ask ECOS wrong-project guard (owner answer Q20)', () => {
     if (vector.refused) expect(mismatch?.referencedProjectClosed).toBe(vector.refusedClosed ?? false);
     // As the Deno suite checks (audit A9 pass 8 L7: "2375A" when a lettered project is selected).
     if (vector.refused) expect(mismatch?.selectedProjectIdentifier).toBe(vector.refusedSelected ?? '2321');
+    // Audit A9 pass 14 L2: a tie with the selected project names both.
+    if (vector.refused) expect(mismatch?.namedProjects).toEqual(vector.refusedTogether);
   });
 
   it.each([

@@ -35,6 +35,7 @@ export function ecosProjectReferenceMismatchMessage(
   { closedProjectNames, refusalWording = 'desktop' }: Omit<ECOSProjectRefusalContext, 'knownProjectNames'> = {},
 ): string | null {
   const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames, closedProjectNames);
+  if (mismatch?.namedProjects) return projectsNamedTogetherText(mismatch.namedProjects);
   return mismatch
     ? projectReferenceMismatchText(
       mismatch.selectedProjectIdentifier,
@@ -73,4 +74,17 @@ export function projectReferenceMismatchText(
     ? `Close this, open project ${referencedProjectIdentifier}, then ask again.`
     : `Select project ${referencedProjectIdentifier} above, then ask again.`;
   return `${selected} this question names ${referencedProjectIdentifier}. ${switchStep}`;
+}
+
+/**
+ * A question that names two or more projects, none more than another, so it
+ * is not clear which is meant (audit A9 pass 6 L6a in Talk). Audit A9 pass
+ * 14 L2: Ask ECOS (phone and desktop) uses the same words when the selected
+ * project is one of them ("What is left at 450 Elm St?" on "24117 - 450 Elm
+ * St" with a closed "23088 - 450 Elm St"), instead of only naming the other.
+ */
+export function projectsNamedTogetherText(labels: readonly string[]) {
+  const count = labels.length === 2 ? 'two' : String(labels.length);
+  const list = `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+  return `This question names ${count} projects, ${list}. Which one do you mean? Ask again about just that project.`;
 }
