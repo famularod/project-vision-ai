@@ -6,6 +6,7 @@ import {
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
@@ -183,14 +184,52 @@ function fileProgressFor(
   const change = percentOf(file) - percentOf(saved);
   if (managers ? change <= 0 : change === 0) return null;
   const confirmed = { progressConfirmedAt: approvedAt, progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER };
+  // David's own percent the file's higher one replaces, kept as a lookahead's floor (A5 recorded Low, Q22).
+  const under = managers ? { managersPercentUnderFile: percentOf(saved) } : {};
   // Taken at approval: a manager-ranked task stays manager-ranked, confirmed
   // by the approval, so every device's merge keeps the file's value.
   if (saved.progressSource === 'project_manager') {
-    return { percentComplete: file.percentComplete, status: file.status, progressSource: 'project_manager', ...confirmed, updatedAt: approvedAt };
+    return { percentComplete: file.percentComplete, status: file.status, progressSource: 'project_manager', ...confirmed, ...under, updatedAt: approvedAt };
   }
   return owned
-    ? { percentComplete: file.percentComplete, status: file.status, updatedAt: approvedAt }
-    : { percentComplete: file.percentComplete, status: file.status, progressSource: 'schedule_import', ...confirmed, updatedAt: approvedAt };
+    ? { percentComplete: file.percentComplete, status: file.status, ...under, updatedAt: approvedAt }
+    : { percentComplete: file.percentComplete, status: file.status, progressSource: 'schedule_import', ...confirmed, ...under, updatedAt: approvedAt };
+}
+
+/**
+ * The row a master moves a task to, with David's own percent a file's
+ * replaced on the task (managersPercentUnderFile) while the row carries a
+ * file's percent: the floor follows the task to its new row, as its note
+ * does (A5 recorded Low, Q22 floor gap).
+ */
+function withManagersPercentUnderFile(row: ScheduleItem, paired: ScheduleItem): ScheduleItem {
+  const under = paired.managersPercentUnderFile;
+  if (typeof under !== 'number' || typeof row.managersPercentUnderFile === 'number' || scheduleProgressIsManagers(paired)) return row;
+  return { ...row, managersPercentUnderFile: under };
+}
+
+/**
+ * Whole-app audit A5 recorded Low (the Q22 floor gap, 1 Oct 2026; wrong at
+ * c73ceab too): David entered 40% on a task, master G stated 60% (a file's
+ * percent above his, so the task took it), and a newer lookahead stating
+ * 30% took the task to 30%, below David's 40%. Q22 floors a lookahead's
+ * percent at David's own, but once G's 60% replaced his percent nothing
+ * kept it: the lookahead's note noted G's 60% as the schedule's. A file's
+ * percent that replaces David's own now keeps his percent on the task
+ * (managersPercentUnderFile), and while the task's percent is still a
+ * file's, a lookahead's percent is never set below it. The floored percent
+ * is the lookahead's (the file's, as its percent would have been), so
+ * deleting the lookahead gives back the master's percent before it, as
+ * for any percent a lookahead gave. A task entered by hand and an imported
+ * task alike; a master's percent is unchanged (a later file may still
+ * correct a file's percent, A5 pass 7 L2).
+ */
+function lookaheadProgressAboveManagersUnderFile(task: ScheduleItem, progress: Partial<ScheduleItem> | null): Partial<ScheduleItem> | null {
+  const floor = task.managersPercentUnderFile;
+  if (!progress || typeof floor !== 'number' || !Number.isFinite(floor) || scheduleProgressIsManagers(task)) return progress;
+  if (percentOf(progress as ScheduleItem) >= floor) return progress;
+  const kept = reconcileScheduleProgress(progress.status ?? task.status, floor);
+  return { ...progress, percentComplete: kept.percentComplete, status: kept.status };
 }
 
 function key(value: unknown): string {
@@ -833,13 +872,15 @@ export function mergeApprovedScheduleImportItems({
       if (batchId && scheduleItemImportBatchIds(saved).map(key).includes(key(batchId))) return;
       // The note takes the progress the manager holds now before the file applies (A5 pass 7 M1).
       const target = scheduleNoteTakesManagersProgress(saved);
-      const fileProgress = scheduleFileProgressAboveManagers(target, fileProgressFor(target, importedItem, approvedAt), approvedAt);
+      const statedProgress = scheduleFileProgressAboveManagers(target, fileProgressFor(target, importedItem, approvedAt), approvedAt);
+      // Never below David's own percent a file's replaced (A5 recorded Low, Q22 floor gap).
+      const fileProgress = lookaheadProgressAboveManagersUnderFile(target, statedProgress);
       // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1):
       // the percent its row states whenever the task ends at it, unchanged too, so deleting an older lookahead
-      // that said the same leaves it (A5 pass 6 M1).
+      // that said the same leaves it (A5 pass 6 M1); the floored percent when David's floored it.
       const endsAt = percentOf({ ...target, ...(fileProgress || {}) } as ScheduleItem);
       const givenPercent = scheduleRowStatesPercent(importedItem)
-        ? (percentOf(importedItem) === endsAt ? endsAt : null)
+        ? (percentOf(importedItem) === endsAt || fileProgress !== statedProgress ? endsAt : null)
         : (fileProgress && statusStartsTask(target, importedItem) && endsAt === 1 ? 1 : null); // the 1% "In Progress" gave (A5 pass 10 L1)
       next = next.map(item => item.id === target.id
         ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
@@ -867,7 +908,7 @@ export function mergeApprovedScheduleImportItems({
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
     const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
     const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
-      ? scheduleTaskRevisedFrom(note ? { ...row, lookaheadOverlay: note } : row, paired)
+      ? scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired)
       : row;
     if (duplicate) {
       claimed.add(duplicate.id);
@@ -935,7 +976,9 @@ export function mergeApprovedScheduleImportItems({
       const fileProgress = fileProgressFor(paired, importedItem, approvedAt);
       const floored = scheduleFileProgressAboveManagers(paired, fileProgress, approvedAt);
       if (fileProgress && floored === fileProgress) {
-        additions.push(revision(filled));
+        // David's own percent the file's replaces stays with the task on its new row (A5 recorded Low, Q22 floor gap).
+        const under = fileProgress.managersPercentUnderFile;
+        additions.push(revision(typeof under === 'number' ? { ...filled, managersPercentUnderFile: under } : filled));
         fileProgressIds.push(importedItem.id);
         return;
       }

@@ -313,3 +313,116 @@ describe('R-b: a newer master listing the noted dates while the task shows a loo
     });
   });
 });
+
+/**
+ * R-c (Low, the older Q22 floor gap; wrong at c73ceab too): David entered
+ * 40% on a task, master G stated 60% (a file's percent above his, so the
+ * task took it), then a newer lookahead stated 30%: the task ended at 30%,
+ * below David's 40%. Q22 floors a lookahead's percent at David's own, but
+ * nothing kept his 40% once G's 60% replaced it. The same for a task David
+ * entered by hand and for an imported task he recorded progress on.
+ */
+describe('R-c: a lookahead\'s percent is floored at David\'s own after a master\'s higher percent replaced it', () => {
+  const F = doc('MASTER F', '2026-09-06T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-08T12:00:00.000Z');
+  const L = doc('LOOKAHEAD L', '2026-09-10T12:00:00.000Z', 'lookahead');
+  const H = doc('MASTER H', '2026-09-12T12:00:00.000Z');
+  const AT = '2026-09-09T10:00:00.000Z';
+  const pour = (start: string, finish: string, percent: string) => `Pour slab,Alpha,Lot,${start},${finish},${percent}`;
+  const ON = pour('10/01/2026', '10/05/2026', '60');
+  const LOOK = (percent: string) => pour('10/03/2026', '10/07/2026', percent);
+  const progress = (state: State) => named(state, 'Pour slab').map(item => item.percentComplete);
+  const deleteL = (state: State) => deleteWithItems(state, L, '2026-09-11T10:00:00.000Z');
+
+  describe('a task David entered by hand at 40%', () => {
+    const hand = buildDAVEWebScheduleItem({
+      id: 'hand-pour', now: '2026-09-06T15:00:00.000Z', actor: 'David',
+      draft: {
+        itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+        startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: 'Crew A', contractor: '', percentComplete: '40',
+        priority: 'Medium', status: 'In Progress', notes: 'Pump booked', nextAction: '', activityMessage: '',
+      },
+    }) as unknown as ScheduleItem;
+    const START: State = { items: [hand], documents: [] };
+    /** G at 60% approved on the phone. */
+    const phoneG = () => approve(START, G, [ON, SURVEY]);
+
+    it('G approved on the phone, then L at 30%: 40%, given by L; deleting L gives G\'s 60% back', () => {
+      const state = approve(phoneG(), L, [LOOK('30')], true);
+      expect(copies(state, 'Pour slab')).toEqual([['10/03/2026', '10/07/2026', 40]]);
+      expect(state.items.find(item => item.id === 'hand-pour')!.lookaheadOverlay!.lookaheads).toEqual([
+        expect.objectContaining({ batchId: 'batch-LOOKAHEAD L', percentComplete: 40 }),
+      ]);
+      expect(copies(deleteL(state), 'Pour slab')).toEqual([['10/01/2026', '10/05/2026', 60]]);
+    });
+
+    it.each(HOWS)('G uploaded on the web and made current by %s, then L at 30%: 40%', (_how, activate) => {
+      const up = upload(START, 'alpha-master-g.csv', [ON, SURVEY], G.importedAt as string);
+      const current = activate(up.state, up.document, AT);
+      expect(progress(current)).toEqual([60]);
+      expect(progress(approve(current, L, [LOOK('30')], true))).toEqual([40]);
+    });
+
+    it('a web edit of the task\'s notes after G keeps the floor', () => {
+      const state = phoneG();
+      const task = state.items.find(item => item.id === 'hand-pour')!;
+      const edited = buildDAVEWebScheduleItem({
+        id: 'hand-pour', now: AT, actor: 'David', current: { ...task, cloudUpdatedAt: task.updatedAt ?? null } as any,
+        draft: {
+          itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+          startDate: task.startDate, finishDate: task.finishDate, milestone: '', owner: 'Crew A', contractor: '', percentComplete: '60',
+          priority: 'Medium', status: task.status, notes: 'Pump booked for Monday', nextAction: '', activityMessage: '',
+        },
+      }) as unknown as ScheduleItem;
+      expect(edited).toMatchObject({ percentComplete: 60, progressConfirmedBy: 'Schedule update', managersPercentUnderFile: 40 });
+      const { cloudUpdatedAt: _cloud, ...plain } = edited as ScheduleItem & { cloudUpdatedAt?: string | null };
+      const next: State = { ...state, items: state.items.map(item => item.id === 'hand-pour' ? plain : item) };
+      expect(progress(approve(next, L, [LOOK('30')], true))).toEqual([40]);
+    });
+
+    it('unchanged: L above David\'s 40% (50%) gives 50%, the newer file\'s word over G\'s', () => {
+      expect(progress(approve(phoneG(), L, [LOOK('50')], true))).toEqual([50]);
+    });
+
+    it('unchanged: David\'s own newer percent stands; L at 30% leaves his 70%', () => {
+      const state = record(phoneG(), 'hand-pour', 70, AT);
+      expect(progress(approve(state, L, [LOOK('30')], true))).toEqual([70]);
+    });
+
+    it('unchanged: a later master still corrects G\'s file percent above David\'s (A5 pass 7 L2)', () => {
+      expect(progress(approve(phoneG(), H, [pour('10/01/2026', '10/05/2026', '50'), SURVEY]))).toEqual([50]);
+    });
+  });
+
+  describe('an imported task David recorded at 40%', () => {
+    /** F at 0%, David's 40% on the phone. */
+    const start = () => {
+      const state = approve(EMPTY, F, [pour('10/01/2026', '10/05/2026', '0'), SURVEY]);
+      return record(state, named(state, 'Pour slab')[0].id, 40, '2026-09-07T10:00:00.000Z');
+    };
+
+    it('G at 60% on the same dates, then L at 30%: 40%; deleting L gives G\'s 60% back', () => {
+      const state = approve(approve(start(), G, [ON, SURVEY]), L, [LOOK('30')], true);
+      expect(copies(state, 'Pour slab')).toEqual([['10/03/2026', '10/07/2026', 40]]);
+      expect(copies(deleteL(state), 'Pour slab')).toEqual([['10/01/2026', '10/05/2026', 60]]);
+    });
+
+    it('G at 60% moving the task (a new row), then L at 30%: 40%', () => {
+      const moved = approve(start(), G, [pour('10/02/2026', '10/06/2026', '60'), SURVEY]);
+      expect(copies(moved, 'Pour slab')).toEqual([['10/02/2026', '10/06/2026', 60]]);
+      expect(progress(approve(moved, L, [pour('10/04/2026', '10/08/2026', '30')], true))).toEqual([40]);
+    });
+
+    it.each(HOWS)('G uploaded on the web and made current by %s, then L at 30%: 40%', (_how, activate) => {
+      const up = upload(start(), 'alpha-master-g.csv', [ON, SURVEY], G.importedAt as string);
+      const current = activate(up.state, up.document, AT);
+      expect(progress(current)).toEqual([60]);
+      expect(progress(approve(current, L, [LOOK('30')], true))).toEqual([40]);
+    });
+
+    it('unchanged: a file\'s percent David never entered under (F at 60%) still goes to L\'s 30%', () => {
+      const state = approve(EMPTY, F, [ON, SURVEY]);
+      expect(progress(approve(state, L, [LOOK('30')], true))).toEqual([30]);
+    });
+  });
+});

@@ -836,6 +836,15 @@ export type ScheduleItem = {
    * still givenBackAt: any later confirmation is a newer judgment.
    */
   progressJudgment?: { judgedAt: string; givenBackAt: string } | null;
+  /**
+   * The percent David last entered himself, when a schedule file's higher
+   * percent replaced it as the task's (whole-app audit A5 recorded Low, the
+   * Q22 floor gap, 1 Oct 2026): while the task's percent is still a file's,
+   * a lookahead never sets it below this (owner answer Q22). Kept in the
+   * task's JSON record. Missing on every other task, and on one saved
+   * before.
+   */
+  managersPercentUnderFile?: number | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
