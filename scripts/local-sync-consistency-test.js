@@ -243,8 +243,9 @@ includes(sync, 'mapWithBoundedConcurrency(', 'shared sync must bound concurrent 
 // so a queued document patch is kept (a sync attempt is not an edit); the
 // record is still queued before photo work. Pass 7 M1: through its own
 // writer, which re-sends no copy already in the cloud and whose second write
-// replaces only the first one's record.
-const stagedRecordWrite = 'const staged = await writeStagedProjectUpdateRecord(\n    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id)';
+// replaces only the first one's record. Pin changed in A4 pass 13 M1: the
+// waiting-update sync writes nothing for an update in conflict.
+const stagedRecordWrite = 'const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(\n    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id)';
 includes(sync, stagedRecordWrite, 'shared sync must stage cloud-recoverable update metadata in the durable queue');
 // The photo work now carries the account the staging began under (audit A1 M3).
 assert(
@@ -313,9 +314,11 @@ includes(
   'async function syncFieldUpdateWithMissingPhotoRepair(',
   'retry repair must use one bounded missing-photo recovery path',
 );
+// Pins changed in A4 pass 13 M1: both attempts carry the caller's `sync`
+// (the waiting-update sync leaves an update in conflict for review).
 includes(
   app,
-  'await runFieldUpdateCloudSync(update)',
+  'await runFieldUpdateCloudSync(update, sync)',
   'missing-photo recovery must start with the normal durable sync engine',
 );
 const missingPhotoRepairStart = app.indexOf(
@@ -326,7 +329,7 @@ const repairedUpdatePersistence = app.indexOf(
   missingPhotoRepairStart,
 );
 const repairedUpdateCloudAttempt = app.indexOf(
-  'const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate)',
+  'const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate, sync)',
   missingPhotoRepairStart,
 );
 assert(

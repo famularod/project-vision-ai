@@ -7981,8 +7981,9 @@ useEffect(() => {
   async function syncFieldUpdateWithMissingPhotoRepair(
     update: ProjectUpdate,
     onRepair?: (repairedUpdate: ProjectUpdate) => void,
+    sync: { automatic?: boolean } = {}, // the waiting-update sync's: an update in conflict is left for review (A4 pass 13 M1)
   ) {
-    const firstAttempt = await runFieldUpdateCloudSync(update);
+    const firstAttempt = await runFieldUpdateCloudSync(update, sync);
     if (firstAttempt.missingPhotos.length === 0) {
       return { ...firstAttempt, update };
     }
@@ -7995,7 +7996,7 @@ useEffect(() => {
     const repairPersisted = await persistSavedUpdateImmediately(repairedUpdate, update);
     if (!repairPersisted) return { ...firstAttempt, update };
     onRepair?.(repairedUpdate);
-    const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate);
+    const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate, sync);
     return { ...repairedAttempt, update: repairedUpdate };
   }
 
@@ -8187,7 +8188,9 @@ useEffect(() => {
           syncResult,
           workAttempt,
           update: syncReadyUpdate,
-        } = await syncFieldUpdateWithMissingPhotoRepair(update);
+          heldForConflictReview,
+        } = await syncFieldUpdateWithMissingPhotoRepair(update, undefined, { automatic: true });
+        if (heldForConflictReview) return; // Keep Phone, Keep Cloud or Retry sends it; its card stays (A4 pass 13 M1)
         const syncDiagnostics = buildSyncDiagnosticsFromUpload(
           syncResult,
           attemptStartedAt,

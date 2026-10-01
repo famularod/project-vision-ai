@@ -406,6 +406,8 @@ export type StagedProjectUpdateSync = {
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
   pendingPhotoAssetIds: string[];
+  /** Left for review: in conflict, and this attempt automatic (whole-app audit A4 pass 13 M1). Nothing was written or sent. */
+  heldForConflictReview?: boolean;
 };
 
 export type OfflineQueueQuarantineExport = {
@@ -2539,12 +2541,16 @@ function projectUpdateQueueItemId(updateId: string) {
  *   8 L1; the same test as a document change makes, A7 pass 9 L1). Otherwise
  *   this copy goes up whole: an edit whose queue write was lost after the
  *   document change was never sent.
+ * - a whole copy keeps the time David saved it (A4 pass 13 M1; see
+ *   queuedEditSavedAt), unless it is sent over a conflict (a Retry).
  * The item left in the queue; null when nothing was written.
  */
 async function writeStagedProjectUpdateRecord(
   update: ProjectUpdate,
   pendingPhotoAssetIds: readonly string[],
-  { lastVersionInCloud = false, replacing }: { lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null },
+  { lastVersionInCloud = false, replacing, overConflict = false }: {
+    lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null; overConflict?: boolean;
+  },
 ): Promise<SyncQueueItem | null> {
   if (await hasProjectUpdateDeletionIntent(update.id)) return null;
   const id = projectUpdateQueueItemId(update.id);
@@ -2562,7 +2568,8 @@ async function writeStagedProjectUpdateRecord(
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
-          id, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          id, entity: 'project_update', operation: 'update', createdAt: now, retryCount: 0, lastError: null,
+          changedAt: (!overConflict && existing && queuedEditSavedAt(existing, update)) || now,
           payload: {
             id: update.id, projectId: update.projectId, projectName: update.projectName,
             selectedAreaName: update.selectedAreaName, updateData: update, pendingPhotoAssetIds: pending,
@@ -2575,6 +2582,21 @@ async function writeStagedProjectUpdateRecord(
       result: next,
     };
   });
+}
+
+/**
+ * When David saved this copy of the update: the time its whole queued copy
+ * of the same content carries (its documents' upload state, the project id
+ * an upload pass bound and a Retry's stamps aside); null for any other
+ * record (whole-app audit A4 pass 13 M1). The conflict check compares the
+ * cloud's time with it. Each sync attempt stamped it "now": an edit saved
+ * with no signal, waiting on its photos, always read newer than the iPad's
+ * later edit, and went over it with no conflict shown.
+ */
+function queuedEditSavedAt(item: SyncQueueItem, update: ProjectUpdate): string | null {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (item.operation === 'delete' || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return null;
+  return sameProjectUpdateContent(payload.updateData, update, { retryStampsAside: true }) ? item.changedAt : null;
 }
 
 /**
@@ -2701,17 +2723,24 @@ export async function replayProjectUpdateTombstonesInQueue(
 
 export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
+  { automatic = false }: { automatic?: boolean } = {},
 ): Promise<StagedProjectUpdateSync> {
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
   const owner = currentCloudOwner();
   // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
   // see writeStagedProjectUpdateRecord. An update in conflict keeps its own
-  // copy for review, and is sent whole when retried.
+  // copy for review, and is sent whole when retried. The waiting-update sync
+  // (`automatic`) leaves it for Keep Phone, Keep Cloud or Retry (A4 pass 13
+  // M1): it sent it whole, over the iPad's newer edit, and the conflict was
+  // gone, an automatic Keep Phone.
   const conflicted = (await getSyncConflicts()).some(conflict =>
     conflict.entity === 'project_update' && conflict.localId === update.id);
-  const staged = await writeStagedProjectUpdateRecord(
-    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id), { lastVersionInCloud: !conflicted });
-  const nothingToSend = !staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate);
+  const heldForConflictReview = conflicted && automatic;
+  const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(
+    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id),
+    { lastVersionInCloud: !conflicted, overConflict: conflicted });
+  const nothingToSend = heldForConflictReview ||
+    (!staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate));
   const photoAttempt = await uploadUpdatePhotosForSync(
     nothingToSend ? { ...cloudRecoverableUpdate, photos: [] } : cloudRecoverableUpdate, owner);
   // A photo found under a legacy project path keeps that path, so the cloud
@@ -2752,18 +2781,31 @@ export async function stageProjectUpdateForSync(
     uploadedPhotoCount: photoAttempt.uploadedPhotoCount,
     missingPhotos: photoAttempt.missingPhotos,
     pendingPhotoAssetIds: photoAttempt.failedPhotoIds,
+    ...(heldForConflictReview ? { heldForConflictReview } : {}),
   };
 }
 
 export async function runFieldUpdateCloudSync(
   update: ProjectUpdate,
+  { automatic = false }: { automatic?: boolean } = {},
 ): Promise<{
   syncResult: SyncUploadResult;
   workAttempt: FieldUpdateSyncWorkAttempt;
   missingPhotos: MissingSyncPhoto[];
+  /** The waiting-update sync left it alone, in conflict (A4 pass 13 M1): its card stays as it is. */
+  heldForConflictReview?: boolean;
 }> {
-  const staged = await stageProjectUpdateForSync(update);
+  const staged = await stageProjectUpdateForSync(update, { automatic });
   const workAttempt = staged.workAttempt;
+  if (staged.heldForConflictReview) {
+    return {
+      syncResult: {
+        configured: true, uploaded: 0, uploadedByEntity: {}, itemOutcomes: {}, queued: 0, conflicts: 1, failureCategory: 'unknown',
+        errors: [`Field update for “${update.projectName || 'Unassigned Project'}” has a cloud conflict that needs review.`],
+      },
+      workAttempt, missingPhotos: [], heldForConflictReview: true,
+    };
+  }
   const queueItemId = projectUpdateQueueItemId(update.id);
   let aggregateResult = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();

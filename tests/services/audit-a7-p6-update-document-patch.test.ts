@@ -1896,3 +1896,116 @@ describe('Keep Phone keeps a newer phone edit still waiting in the queue (audit 
     expect(await getOfflineQueue()).toEqual([]);
   });
 });
+
+/**
+ * A4 pass 13 M1: David edits a Sent update on the phone with no signal; the
+ * iPad then edits the same update online. When the phone reconnected, its
+ * older note replaced the iPad's newer one, with no conflict shown:
+ * - with photos, the upload pass skips the edit while it waits on them, and
+ *   the waiting-update sync then wrote it again stamped "now": the conflict
+ *   check compared the cloud's time with that stamp, so the phone always
+ *   read newer;
+ * - without photos, the conflict was found, but the card still read Waiting
+ *   to Sync, and the waiting-update sync sent the phone's copy whole: an
+ *   automatic Keep Phone.
+ * Now a sync attempt keeps the time David saved the edit, and the
+ * waiting-update sync leaves an update in conflict for Settings (or Retry).
+ */
+/** The waiting-update sync, as the App runs it: its own hydrateQueuedUpdatesPass and missing-photo repair, compiled from App.tsx. */
+async function waitingUpdateSync(phone: Device) {
+  const { runAutomaticSyncQueue, shouldPersistAutomaticSyncOutcome } = jest.requireActual('../../services/AutomaticSyncState');
+  const { hydrateQueuedUpdatesPass } = evaluate<{ hydrateQueuedUpdatesPass: () => Promise<void> }>(
+    transpile([componentFunction('syncFieldUpdateWithMissingPhotoRepair'), componentFunction('hydrateQueuedUpdatesPass'),
+      'module.exports = { hydrateQueuedUpdatesPass };'].join('\n')),
+    {
+      savedUpdatesRef: phone.savedUpdatesRef, updateNeedsAutomaticSyncRetry: A.updateNeedsAutomaticSyncRetry,
+      directSyncIsRecent: () => false, queuedHydrationDeferredRerun: { current: null },
+      getCurrentSessionAccessToken: async () => ({ ok: true, data: { status: 'token_present' } }),
+      runAutomaticSyncQueue, shouldPersistAutomaticSyncOutcome, runFieldUpdateCloudSync,
+      buildSyncDiagnosticsFromUpload: (result: { uploaded: number; errors: string[]; failureCategory?: string | null }) => ({
+        lastSyncResult: result.uploaded > 0 && result.errors.length === 0 ? 'success' : 'failed',
+        lastSyncFailureCategory: result.uploaded > 0 && result.errors.length === 0 ? null : result.failureCategory ?? 'unknown',
+      }),
+      statusForSyncDiagnostics: (diagnostics: { lastSyncResult: string }) => diagnostics.lastSyncResult === 'success' ? 'sent' : 'failed',
+      applyFieldUpdateSyncResultIfCurrent: (attempted: Update, next: Update) => {
+        phone.setSavedUpdates(prev => prev.map(update => update.id === attempted.id ? next : update));
+      },
+    },
+  );
+  await hydrateQueuedUpdatesPass();
+  phone.render();
+}
+
+describe('a phone edit saved offline does not go over a newer iPad edit (audit A4 pass 13 M1)', () => {
+  const OFFLINE_EDIT = 'Pour, 40 yards (typed on the phone with no signal)';
+  /** Sent, then edited on the phone offline; the iPad's edit lands after it. */
+  async function offlineEditThenIPadEdit(photos: Array<{ id: string } & Record<string, unknown>>) {
+    const phone = await sentThroughTheApp(photos);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE); // the phone reconnects later still
+    return phone;
+  }
+  const photo = { id: 'photo-m1', uri: 'file:///phone/Documents/project-photos/m1.jpg', caption: '', createdAt: SENT_AT };
+
+  it('S2a, with photos: the upload pass waits on them; the waiting-update sync finds the conflict, and the iPad keeps its note', async () => {
+    const phone = await offlineEditThenIPadEdit([photo]);
+    await uploadPendingChanges(); // reconnected: the edit waits on its photos
+    expect(await getSyncConflicts()).toEqual([]);
+
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT });
+  });
+
+  it('S2c, without photos: the upload pass finds the conflict; the waiting-update sync leaves it for Settings', async () => {
+    const phone = await offlineEditThenIPadEdit([]);
+    await uploadPendingChanges(); // reconnected
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT, status: 'queued' });
+
+    await waitingUpdateSync(phone);
+    await waitingUpdateSync(phone); // and again on the next trigger
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT, status: 'queued' }); // left as it was
+  });
+
+  it('then Keep Phone, Keep Cloud or Retry still sends it', async () => {
+    const phone = await offlineEditThenIPadEdit([]);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await syncWaitingUpdate(phone); // Retry on the card
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it.each([
+    ['with photos', [photo]],
+    ['without photos', []],
+  ])('an offline edit with no iPad edit still goes up by itself, with no conflict (%s)', async (_label, photos) => {
+    const phone = await sentThroughTheApp(photos);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(phone.saved()).toMatchObject({ notes: OFFLINE_EDIT, status: 'sent' });
+  });
+
+  it('a Retry of the waiting edit keeps the time it was saved: the conflict is found, not sent over', async () => {
+    const phone = await offlineEditThenIPadEdit([photo]);
+    const retried = { ...phone.saved()!, sendAttempts: 2, lastSendAttemptAt: new Date().toISOString() };
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? retried : update));
+    phone.render();
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+});
