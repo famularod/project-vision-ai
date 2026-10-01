@@ -607,11 +607,11 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Are the 500 MCM feeders pulled?', '500 Harrison'],
     ['Is the RTU 250 MBH?', '250 Main Street'],
     ['Is the beam load 600 plf?', '600 Pine'],
-    ['Is the run 300 meters?', '300 Bay'],
-    ['Is the run 300 metres?', '300 Bay'],
+    // "300 meters", "300 metres" and "200 pieces" were here until audit A9
+    // pass 7 L1; they now name the project (see the pass 7 L1 vectors).
+    ['Is the run 300 m?', '300 Bay'],
     ['Is the heater 500 watts?', '500 Harrison'],
     ['Did the 200 pcs of rebar arrive?', '200 Oak Street'],
-    ['Did the 200 pieces of rebar arrive?', '200 Oak Street'],
     ['Is the cure 120 min?', '120 Elm'],
   ] as const).flatMap(([question, project]) => [
     {
@@ -637,6 +637,23 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED, '200 Oak Street'],
     refused: '200',
   },
+  // Audit A9 pass 7 L1: "meters", "metres" and "pieces" are construction
+  // nouns like "units" and "sheets", not units; "m" and "pcs" still are.
+  ...([
+    ['Are the 2375 meters set?', OWNER_PROJECTS, '2375'],
+    ['Are the 2375 metres set?', OWNER_PROJECTS, '2375'],
+    ['Are the 2375 pieces delivered?', OWNER_PROJECTS, '2375'],
+    ['Is the run 300 meters?', [SELECTED, '300 Bay'], '300'],
+    ['Did the 200 pieces of rebar arrive?', [SELECTED, '200 Oak Street'], '200'],
+    ['Is the run 2375 m?', OWNER_PROJECTS, null],
+    ['Did the 2375 pcs of rebar arrive?', OWNER_PROJECTS, null],
+  ] as const).map(([question, knownProjectNames, refused]) => ({
+    name: `pass 7 L1: "${question}" with ${knownProjectNames.slice(1).join(', ')}`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

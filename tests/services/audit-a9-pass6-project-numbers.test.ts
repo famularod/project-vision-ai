@@ -206,11 +206,13 @@ describe('audit A9 pass 6 L5: units the earlier rule knew are measurements again
     ['Are the 500 kcmil feeders pulled?', '500 Harrison'],
     ['Is the RTU 250 MBH?', '250 Main Street'],
     ['Is the beam load 600 plf?', '600 Pine'],
-    ['Is the run 300 meters?', '300 Bay'],
-    ['Is the run 300 metres?', '300 Bay'],
+    // "300 meters", "300 metres" and "200 pieces" were here until audit A9
+    // pass 7 L1: those words are construction nouns ("the 2375 meters", "the
+    // 2375 pieces"), so they name the project now (see the refusals below and
+    // audit-a9-pass7-project-numbers.test.ts). "m" and "pcs" stay units.
+    ['Is the run 300 m?', '300 Bay'],
     ['Is the heater 500 watts?', '500 Harrison'],
     ['Did the 200 pcs of rebar arrive?', '200 Oak Street'],
-    ['Did the 200 pieces of rebar arrive?', '200 Oak Street'],
     ['Is the cure 120 min?', '120 Elm'],
   ])('"%s" is a measurement with "%s" open or closed', (question, project) => {
     expectAllowed(question, [SELECTED, project]);
@@ -221,6 +223,10 @@ describe('audit A9 pass 6 L5: units the earlier rule knew are measurements again
     ['Is 500 done?', '500 Harrison'],
     ['What is overdue at 250?', '250 Main Street'],
     ['Did the 200 crates of rebar arrive?', '200 Oak Street'],
+    // Audit A9 pass 7 L1: no longer units.
+    ['Is the run 300 meters?', '300 Bay'],
+    ['Is the run 300 metres?', '300 Bay'],
+    ['Did the 200 pieces of rebar arrive?', '200 Oak Street'],
   ])('"%s" still names "%s"', (question, project) => {
     const number = project.split(' ')[0];
     expectRefusedOpen(question, [SELECTED, project], number, project);

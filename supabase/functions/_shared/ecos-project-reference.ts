@@ -143,14 +143,17 @@ const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|jul
  * psf, kips, foot, yards, cubic feet, gallons, cfm, btu(h), gpm and percent
  * are kept from the earlier rule; none reads as English after a project number.
  * Audit A9 pass 6 L5 brought back more of the earlier rule's units (plf,
- * meters/metres, watts, mcm, mbh, min, pcs/pieces): "500 kcmil" passed while
- * its synonym "500 MCM" was refused for a project 500.
+ * watts, mcm, mbh, min, pcs): "500 kcmil" passed while its synonym "500 MCM"
+ * was refused for a project 500. Audit A9 pass 7 L1 took "meters", "metres"
+ * and "pieces" out again: like "units" and "sheets" they are construction
+ * nouns ("Are the 2375 meters set?", "Are the 2375 pieces delivered?" name
+ * project 2375). The short forms "m" and "pcs" stay.
  */
 const MEASUREMENT_WORD_UNITS = [
   // pressure and load
   'psi', 'ksi', 'psf', 'ksf', 'kips?', 'plf',
   // length
-  'mm', 'cm', String.raw`in\.`, 'inch(?:es)?', String.raw`ft\.?`, 'feet', 'foot', 'lf', 'meters', 'metres',
+  'mm', 'cm', String.raw`in\.`, 'inch(?:es)?', String.raw`ft\.?`, 'feet', 'foot', 'lf',
   String.raw`(?:lineal|linear)\s(?:feet|foot|ft\.?)`, String.raw`yds?\.?`, 'yards?',
   // area
   'sf', String.raw`sq\.?\s?ft\.?`, 'sqft', String.raw`square\s(?:feet|foot)`, 'sy',
@@ -162,8 +165,9 @@ const MEASUREMENT_WORD_UNITS = [
   'amps?', 'volts?', 'watts', 'kw', 'kva', 'kcmil', 'mcm', 'hp', 'cfm', 'btuh?', 'mbh', 'gpm',
   // percent, temperature and time
   'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins', 'min',
-  // counts ("units" and "sheets" read as a project's units or drawing sheets; audit A9 pass 6 M1)
-  'ea', 'bags', 'pcs', 'pieces',
+  // counts ("units", "sheets" and "pieces" read as a project's units, drawing
+  // sheets or delivered pieces; audit A9 pass 6 M1 and pass 7 L1)
+  'ea', 'bags', 'pcs',
 ];
 
 const EXEMPT_PATTERNS: readonly RegExp[] = [
