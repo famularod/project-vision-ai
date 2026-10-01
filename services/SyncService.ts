@@ -217,6 +217,12 @@ export type SyncUploadResult = {
    */
   heldErrorCount?: number;
   /**
+   * The error of each queue item that failed in this pass, by its id (an
+   * entry of `errors`): Sync Now counts an item failing in both of its passes
+   * once (whole-app audit A7 pass 13 L-2).
+   */
+  itemErrors?: Record<string, string>;
+  /**
    * A task save only: this phone's own create or reopen of the task's project
    * is still queued, so a cloud answer that the project is not open clears
    * once that change uploads (whole-app audit A3 pass 7 L1).
@@ -3104,6 +3110,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const attemptedItemsById = new Map(uploadBatch.map(item => [item.id, item]));
   const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
+  const itemErrors: Record<string, string> = {};
+  const itemFailed = (itemId: string, message: string) => {
+    errors.push(message);
+    itemErrors[itemId] = message;
+  };
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   const uploadContext: QueueUploadContext = { settledQueueItemIds: resolvedIds };
   // Still queued, with no error: no retry is owed until David chooses.
@@ -3197,7 +3208,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       // queues a new revision (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
       itemOutcomes[item.id] = 'blocked';
       heldErrorCount += 1;
-      errors.push(formatQueueItemFailure(item, item.lastError || CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE));
+      itemFailed(item.id, formatQueueItemFailure(item, item.lastError || CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE));
       continue;
     }
 
@@ -3216,7 +3227,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         lastError: sanitizedResult,
         lastFailureCategory: classifySyncFailureText([reason]),
       });
-      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      itemFailed(item.id, formatQueueItemFailure(item, sanitizedResult));
       continue;
     }
 
@@ -3240,7 +3251,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         lastError: sanitizedResult,
         lastFailureCategory: classifySyncFailureText([prepared]),
       });
-      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      itemFailed(item.id, formatQueueItemFailure(item, sanitizedResult));
       continue;
     }
     attemptedItem = prepared;
@@ -3285,7 +3296,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       lastError: sanitizedResult,
       lastFailureCategory: failureCategory,
     });
-    errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
+    itemFailed(item.id, formatQueueItemFailure(attemptedItem, sanitizedResult));
   }
 
   // The account changed: the queue on this phone is no longer this pass's,
@@ -3347,6 +3358,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     conflicts: (await getSyncConflicts()).length,
     errors,
     heldErrorCount,
+    itemErrors,
   };
 }
 
@@ -3946,7 +3958,7 @@ export async function synchronizeLocalData(
 
   const stagedUpdateUpload = await uploadPendingChanges();
   details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0;
-  errors.push(...stagedUpdateUpload.errors);
+  errors.push(...withoutRepeatedItemErrors(stagedUpdateUpload, queuedUpload));
 
   for (const area of syncableProjectAreas) {
     if (!cloudOwnerUnchanged(owner)) break;
@@ -4142,6 +4154,22 @@ export async function synchronizeLocalData(
       collectionErrors: download.collectionErrors,
     },
   };
+}
+
+/**
+ * A later pass's errors without those of items that failed in the earlier
+ * pass with the same message (whole-app audit A7 pass 13 L-2): Sync Now
+ * counted and listed such an item twice. Two items failing with the same
+ * words still count as two.
+ */
+function withoutRepeatedItemErrors(later: SyncUploadResult, earlier: SyncUploadResult): string[] {
+  const errors = [...later.errors];
+  Object.entries(later.itemErrors ?? {}).forEach(([itemId, message]) => {
+    if (earlier.itemErrors?.[itemId] !== message) return;
+    const index = errors.indexOf(message);
+    if (index >= 0) errors.splice(index, 1);
+  });
+  return errors;
 }
 
 export async function removeMissingPhotosFromSyncQueue(

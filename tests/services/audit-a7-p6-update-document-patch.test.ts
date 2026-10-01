@@ -3178,3 +3178,77 @@ describe('a copy David chose is not stamped back to an earlier patch\'s time (au
     expect(Date.parse(mockCloud.get('u1')!.updatedAt)).toBeGreaterThan(Date.parse(iPadSavedOfflineAt));
   });
 });
+
+/**
+ * A7 pass 13 L-2 (older; visible since A4 pass 14 #5 names other failures
+ * after the conflict sentence): Sync Now runs two upload passes, and an item
+ * that fails in both was counted, and listed, twice: "2 other items still
+ * need attention", the same update twice; with no conflict, "Cloud sync
+ * finished with 2 items still needing attention". Errors of the same item
+ * with the same message now count once.
+ */
+describe('Sync Now counts an item failing in both of its upload passes once (audit A7 pass 13 L-2)', () => {
+  const REFUSED = 'permission denied for table project_updates';
+  /** Another update, waiting on this phone, that the cloud refuses each time. */
+  async function anotherUpdateRefused(phone: Device) {
+    const other = { ...savedUpdate([], 'queued', 'u2'), notes: 'Strip forms' };
+    phone.setSavedUpdates(prev => [...prev, other]);
+    phone.render();
+    await queueProjectUpdateRecord(other, false);
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementation(async (params: { id: string }) => params.id === 'u2'
+      ? { ok: false, configured: true, stubbed: false, error: REFUSED }
+      : save(params));
+    return () => (saveProjectUpdate as jest.Mock).mockImplementation(save);
+  }
+  const failure = 'Field update for “P” could not sync. Cloud sync needs service attention. Your changes remain saved on this phone.';
+
+  it('beside a conflict: "1 other item still needs attention", listed once', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const restore = await anotherUpdateRefused(phone);
+    try {
+      expect(await pressSyncNow(phone)).toBe([
+        'Cloud sync finished, but 1 saved conflict needs review.',
+        '1 other item still needs attention:',
+        `• ${failure}`,
+      ].join('\n'));
+    } finally {
+      restore();
+    }
+  });
+
+  it('with no conflict: "Cloud sync finished with 1 item still needing attention", listed once', async () => {
+    const phone = await sentThroughTheApp([]);
+    const restore = await anotherUpdateRefused(phone);
+    try {
+      expect(await pressSyncNow(phone)).toBe([
+        'Cloud sync finished with 1 item still needing attention:',
+        `• ${failure}`,
+      ].join('\n'));
+    } finally {
+      restore();
+    }
+  });
+
+  it('two updates of the same project failing with the same message still count as two', async () => {
+    const phone = await sentThroughTheApp([]);
+    const restore = await anotherUpdateRefused(phone);
+    const third = { ...savedUpdate([], 'queued', 'u3'), notes: 'Pour deck' };
+    phone.setSavedUpdates(prev => [...prev, third]);
+    phone.render();
+    await queueProjectUpdateRecord(third, false);
+    const refuseBoth = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementation(async (params: { id: string }) => params.id === 'u3'
+      ? { ok: false, configured: true, stubbed: false, error: REFUSED }
+      : refuseBoth(params));
+    try {
+      expect(await pressSyncNow(phone)).toBe([
+        'Cloud sync finished with 2 items still needing attention:',
+        `• ${failure}`,
+        `• ${failure}`,
+      ].join('\n'));
+    } finally {
+      restore();
+    }
+  });
+});
