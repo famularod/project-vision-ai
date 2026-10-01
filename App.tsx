@@ -269,7 +269,7 @@ import {
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
 import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
-import { applyFixToDraft, areaChangeLocationFields } from './services/DraftFix';
+import { applyFixToDraft, areaChangeLocationFields, draftAfterAreaDeleted } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
@@ -9142,10 +9142,8 @@ function addProject(projectName: string) {
               .then(() => {
                 markProjectAreasAuthorityReady(true);
                 setProjectAreas(prev => prev.filter(item => item.id !== areaId));
-
-                if (draft.selectedAreaId === areaId) {
-                  changeDraftArea('');
-                }
+                // Back to no choice made, not "chose Unassigned" (GPS pass 1 low, G-L2).
+                setDraft(prev => draftAfterAreaDeleted(prev, areaId));
               })
               .catch(() => {
                 Alert.alert(
