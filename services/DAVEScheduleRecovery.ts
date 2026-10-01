@@ -1,4 +1,4 @@
-import type { ScheduleItem } from '../types';
+import type { ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -248,7 +248,8 @@ function mergeScheduleRevisions(
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   const { progressJudgment: _baseJudgment, ...baseRecord } = base;
   // What a master said under a lookahead, from the copy that has it (A7 pass 24 L-3).
-  const lookaheadOverlay = lookaheadNoteOfBoth(base, base === local ? cloud : local);
+  // With David's own later percent on the other copy's task (A6 pass 22 L1).
+  const lookaheadOverlay = lookaheadNoteWithPercentOf(lookaheadNoteOfBoth(base, base === local ? cloud : local), base, base === local ? cloud : local);
   return {
     ...baseRecord,
     ...(lookaheadOverlay !== base.lookaheadOverlay ? { lookaheadOverlay } : {}),
@@ -348,6 +349,59 @@ function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleI
     ...(behind ? {} : ownPercentNewer ? theirMasterFile : theirMaster),
     lookaheads: own.lookaheads.map(entry => gained.includes(entry) ? { ...entry, datesReplacedByMaster: marked.get(entryKey(entry)) } : entry),
   };
+}
+
+/**
+ * Whole-app audit A6 pass 22 L1 (1 Oct 2026, older; the gap A5 pass 21 R2
+ * left): David's 40%, then lookahead L1 on both devices. The phone recorded
+ * 60% (16 Sep); the offline iPad approved L2 at 70% (17 Sep), and its note
+ * took the 40% it held then. Full Sync kept the iPad's note, never weighing
+ * David's percent on the phone's task itself, so deleting L2 gave 40% ("moved
+ * from 70% to 40% complete"), not 60%; with master G on the phone and 50% on
+ * the iPad, also 40%. The merged note now keeps David's latest own percent
+ * known on either copy: the other copy's note's, when he stated it later
+ * than the merged note's percent was stated, and the other copy's task's,
+ * when this copy approved a lookahead the other never saw (its note was
+ * brought up to this copy's percent then) and sync orders it after this
+ * copy's own percent. The note's dates, marks and the lookaheads' percents
+ * stay; the same note otherwise. Of two copies of a note, both devices end
+ * with the same one.
+ */
+function lookaheadNoteWithPercentOf(
+  note: ScheduleItem['lookaheadOverlay'],
+  base: ScheduleItem,
+  other: ScheduleItem,
+): ScheduleItem['lookaheadOverlay'] {
+  if (!note || !Array.isArray(note.lookaheads)) return note;
+  const theirs = other.lookaheadOverlay;
+  type Stated = Pick<ScheduleLookaheadOverlay, 'masterPercentComplete' | 'masterStatus' | 'masterProgressSource' | 'masterProgressConfirmedBy' | 'masterProgressConfirmedAt'>;
+  const candidates: Stated[] = [];
+  // David's own percent on the other copy's note.
+  if (theirs && theirs.masterProgressSource === 'project_manager' && theirs.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER) {
+    candidates.push({
+      masterPercentComplete: theirs.masterPercentComplete, masterStatus: theirs.masterStatus, masterProgressSource: theirs.masterProgressSource,
+      masterProgressConfirmedBy: theirs.masterProgressConfirmedBy, masterProgressConfirmedAt: theirs.masterProgressConfirmedAt,
+    });
+  }
+  // David's own percent on the other copy's task, later than this copy's own (as sync orders his percents), when this
+  // copy approved a lookahead the other never saw (its note was brought up to this copy's percent then).
+  const theirBatches = new Set((theirs?.lookaheads || []).map(entry => normalized(entry.batchId)));
+  const unseen = note.lookaheads.some(entry => !theirBatches.has(normalized(entry.batchId)));
+  if (unseen && scheduleProgressIsManagers(other) && (!scheduleProgressIsManagers(base) || compareProgressAuthority(other, base) > 0)) {
+    candidates.push({
+      masterPercentComplete: boundedPercent(Number(other.percentComplete)), masterStatus: other.status,
+      masterProgressSource: other.progressSource ?? null, masterProgressConfirmedBy: other.progressConfirmedBy ?? null,
+      masterProgressConfirmedAt: scheduleProgressJudgedAt(other),
+    });
+  }
+  const latest = candidates.reduce<Stated | null>((best, candidate) =>
+    !best || timestamp(candidate.masterProgressConfirmedAt) > timestamp(best.masterProgressConfirmedAt) ? candidate : best, null);
+  if (!latest || timestamp(latest.masterProgressConfirmedAt) <= timestamp(note.masterProgressConfirmedAt)) return note;
+  // A file's percent with no time of its own stands over a lower one of David's, as above (A5 pass 21 R2, Q22).
+  if (!note.masterProgressConfirmedAt && note.masterProgressSource !== 'project_manager' &&
+    boundedPercent(Number(note.masterPercentComplete)) > boundedPercent(Number(latest.masterPercentComplete))) return note;
+  if ((Object.keys(latest) as Array<keyof Stated>).every(field => note[field] === latest[field])) return note;
+  return { ...note, ...latest };
 }
 
 function stableMeaning(value: ScheduleItem) {
