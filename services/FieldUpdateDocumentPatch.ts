@@ -3,6 +3,7 @@ import {
   applyFieldUpdatePhotoAnalysisPatch,
   isFieldUpdatePhotoAnalysisPatch,
   mergeFieldUpdatePhotoAnalysisPatches,
+  photoAnalysisFinishedAfterPatch,
   type FieldUpdatePhotoAnalysisPatch,
 } from './FieldUpdatePhotoAnalysisPatch';
 
@@ -62,6 +63,23 @@ export function fieldUpdateDocumentPatchFor(update: object, documentId: string):
       .filter(field => document[field] !== undefined)
       .map(field => [field, document[field]])),
   };
+}
+
+/**
+ * The patches that still go onto a copy of the update: an analysis result is
+ * left out when the copy holds a later result for that photo, or the same one,
+ * which may carry David's review mark (whole-app audit A4 pass 23 L2, pass 24
+ * M1). Document patches all go. Used wherever this device's queued patches go
+ * onto a copy: its own edit going up (A4 pass 14 #3), the cloud's copy at
+ * upload and on the card, and the copies Keep Phone and Keep Cloud send (A4
+ * pass 25 L1: the phone's result, finished offline, went over the iPad's
+ * newer retried result and its Confirmed mark).
+ */
+export function fieldUpdatePatchesNotSuperseded(
+  update: object,
+  patches: readonly FieldUpdateDocumentPatch[],
+): FieldUpdateDocumentPatch[] {
+  return patches.filter(patch => !isFieldUpdatePhotoAnalysisPatch(patch) || !photoAnalysisFinishedAfterPatch(update, patch));
 }
 
 /**

@@ -5364,3 +5364,75 @@ describe('David\'s review mark on a late result goes up with his edit (audit A4 
     expect(firstPhotoAnalysis(inCloud())).toEqual(later);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 25 L1 (older, from A4 pass 13 G1): the phone sent
+ * an update while a photo was still being analysed and lost signal; its
+ * analysis ended offline and waited as a patch. On the iPad the photo read
+ * Analyzing long enough to offer Retry; David tapped it, got a result and
+ * marked it Confirmed. Back online, the phone's older result went onto the
+ * cloud's copy over the iPad's: both devices ended with the phone's result,
+ * and the Confirmed finding dropped out of reports.
+ */
+describe('the phone\'s older analysis result does not go over the iPad\'s newer one (audit A4 pass 25 L1)', () => {
+  const failedAnalysis = () => ({ status: 'analysis_failed_retry', updatedAt: new Date().toISOString(),
+    title: 'Visual comparison unavailable', summary: 'Photo comparison could not be completed.' });
+  /** On the iPad: Retry, a result, Confirmed in Edit, saved (with a note, when given). */
+  async function iPadRetriesAndConfirms(note?: string) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const at = new Date().toISOString();
+    const result = { ...finishedAnalysis(), currentObservation: 'Rebar mat placed at column C4 (iPad)',
+      userReview: 'confirmed', userReviewedAt: at };
+    const copy = inCloud();
+    putInCloud({ ...copy, ...(note ? { notes: note } : {}), photos: (copy.photos as Array<Record<string, unknown>>)
+      .map((photo, index) => index === 0 ? { ...photo, photoIntelligence: result } : photo) }, at);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return result;
+  }
+
+  it('no conflict: the card shows the iPad\'s result while the phone\'s waits, and the cloud and the card keep it once the phone is back online', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    lateAnalysisFinishes(phone, failedAnalysis()); // offline: it waits as a patch
+    await phone.settle();
+    expect((await queuedFor())?.payload).toMatchObject({
+      documentPatches: [expect.objectContaining({ photoId: analyzingPhoto.id })],
+    });
+    const iPad = await iPadRetriesAndConfirms();
+    await refresh(phone);
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    await uploadPendingChanges(); // back online
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('Keep Cloud: the phone\'s result waits during the conflict; the iPad retries, confirms and saves; after "review again", Keep Cloud keeps the iPad\'s result', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadRetriesAndConfirms(IPAD_SECOND_NOTE);
+    await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_cloud', IPAD_SECOND_NOTE);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a result the phone finished after the iPad\'s still goes up, as before', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await iPadRetriesAndConfirms();
+    const later = finishedAnalysis();
+    lateAnalysisFinishes(phone, later);
+    await phone.settle();
+    await uploadPendingChanges();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(later);
+  });
+});

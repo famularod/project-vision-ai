@@ -81,6 +81,7 @@ import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import {
   applyFieldUpdateDocumentPatches,
   fieldUpdateDocumentPatchFor,
+  fieldUpdatePatchesNotSuperseded,
   mergeFieldUpdateDocumentPatches,
   queuedDocumentPatchesForUpdate,
   queuedFieldUpdateDocumentPatches,
@@ -93,7 +94,6 @@ import {
   applyFieldUpdatePhotoAnalysisPatch,
   fieldUpdatePhotoAnalysisPatchFor,
   isFieldUpdatePhotoAnalysisPatch,
-  photoAnalysisFinishedAfterPatch,
   withoutPhotoAnalysis,
   type FieldUpdatePhotoAnalysisPatch,
 } from './FieldUpdatePhotoAnalysisPatch';
@@ -4654,7 +4654,8 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       // conflict's own copy is read again too: such a result went into it.
       const conflictNow = (await getSyncConflicts()).find(item => item.id === conflict.id) ?? conflict;
       chosenCloudUpdate = withArchiveKept(withPhoneAnalysisResults(
-        applyFieldUpdateDocumentPatches(withDocumentChanges(cloudNow) as object, changesTakenIn(withdrawn)),
+        applyFieldUpdateDocumentPatches(withDocumentChanges(cloudNow) as object,
+          fieldUpdatePatchesNotSuperseded(cloudNow as object, changesTakenIn(withdrawn))),
         phoneCopiesOfFieldUpdateInConflict(conflictNow, withdrawn)), withdrawn) as TUpdate;
       const queuedAt = new Date().toISOString();
       const ownerId = currentCloudOwner().ownerId;
@@ -5002,9 +5003,14 @@ async function withDocumentChangesSinceConflict(updateId: string): Promise<(copy
   ]);
   const deviceDocuments = parseStoredProjectDocuments(storedDocuments) || [];
   const waiting = queuedDocumentPatchesForUpdate(queue, updateId) || [];
-  return copy => isRecord(copy)
-    ? applyFieldUpdateDocumentPatches(withDeviceDocumentUploadState(copy, deviceDocuments, undefined, removed), waiting)
-    : copy;
+  // Not an analysis result the copy holds a later one for, or the same one
+  // (A4 pass 25 L1): Keep Cloud put the phone's result, finished offline, over
+  // the iPad's retried, Confirmed one.
+  return copy => {
+    if (!isRecord(copy)) return copy;
+    const shown = withDeviceDocumentUploadState(copy, deviceDocuments, undefined, removed);
+    return applyFieldUpdateDocumentPatches(shown, fieldUpdatePatchesNotSuperseded(shown, waiting));
+  };
 }
 
 /**
@@ -6095,8 +6101,12 @@ async function uploadProjectUpdateQueueItem(
   // copy goes up whole only when the cloud has none (whole-app audit A7 pass
   // 6 M1, A4 pass 8 F3).
   const cloudCopy = documentPatches && remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data : null;
+  // Not an analysis result the cloud's copy holds a later one for, or the
+  // same one (A4 pass 25 L1): the phone's result, finished offline, went over
+  // the iPad's retried result and David's Confirmed mark on it.
   const patchedCloudCopy = cloudCopy?.updateData
-    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, documentPatches || [])
+    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object,
+      fieldUpdatePatchesNotSuperseded(cloudCopy.updateData as object, documentPatches || []))
     : null;
   // An archive has no copy of its own to send (A4 pass 11 O2).
   if (payload.archiveOnly && !patchedCloudCopy) return 'uploaded';
@@ -6167,7 +6177,7 @@ async function uploadProjectUpdateQueueItem(
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
     updateData: ownPatchesSinceEdit
       ? applyFieldUpdateDocumentPatches(payload.updateData as object,
-        ownPatchesUnderEdit(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
+        fieldUpdatePatchesNotSuperseded(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
       : payload.updateData,
     // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
     // copy and a confirmed Retry's are stamped now, after the patches, and
@@ -6241,17 +6251,6 @@ function ownProjectUpdatePatchesSince(
   const landed = projectUpdatePatchesLanded.get(updateId);
   return landed && cloud.updatedAt && sameCloudTime(landed.at, cloud.updatedAt) &&
     projectUpdatePayloadsMatch(landed.copy, cloud.updateData) && !isRemoteNewer(landed.onto, changedAt) ? landed : null;
-}
-
-/**
- * This device's own patches put on an edit as it goes up (A4 pass 14 #3),
- * but an analysis result the edit holds a later one for (whole-app audit A4
- * pass 23 L2): a failed result went up as a patch, the edit took a retried
- * one while it waited, and the earlier result went up over it. Document
- * patches all go, as before.
- */
-function ownPatchesUnderEdit(edit: object, patches: readonly FieldUpdateDocumentPatch[]): FieldUpdateDocumentPatch[] {
-  return patches.filter(patch => !isFieldUpdatePhotoAnalysisPatch(patch) || !photoAnalysisFinishedAfterPatch(edit, patch));
 }
 
 function sameCloudTime(left: string, right: string): boolean {

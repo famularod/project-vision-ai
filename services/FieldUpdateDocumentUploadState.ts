@@ -2,6 +2,7 @@ import type { PersistedFieldUpdateStatus } from './FieldUpdateLifecycle';
 import {
   applyFieldUpdateDocumentPatches,
   FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS,
+  fieldUpdatePatchesNotSuperseded,
   queuedDocumentPatchesForUpdate,
   withoutRemovedFieldUpdateDocuments,
   type RemovedFieldUpdateDocuments,
@@ -51,7 +52,9 @@ export function withDeviceDocumentUploadState<TUpdate extends object>(
 ): TUpdate {
   const updateId = (cloudCopy as { id?: unknown }).id;
   const patches = queue && typeof updateId === 'string' ? queuedDocumentPatchesForUpdate(queue, updateId) : null;
-  const update = applyFieldUpdateDocumentPatches(withoutRemovedFieldUpdateDocuments(cloudCopy, removed), patches || []);
+  const shown = withoutRemovedFieldUpdateDocuments(cloudCopy, removed);
+  // As the upload will (A4 pass 25 L1): not over a later or the same result.
+  const update = applyFieldUpdateDocumentPatches(shown, fieldUpdatePatchesNotSuperseded(shown, patches || []));
   const documents = (update as UpdateWithDocuments).documents;
   if (!Array.isArray(documents) || documents.length === 0 || !deviceDocuments?.length) {
     return update;
