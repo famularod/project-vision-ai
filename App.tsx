@@ -12071,7 +12071,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const { identity: sourceIdentity, alreadyImported, asLookahead, alreadyAddedMessage } = scheduleImportOfFile({
       bytes: sourcePayload.data, projects: scopedProjectRecords,
       documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
-      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current, projectNames: scopeProjects,
+      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current, projectNames: scopeProjects, onDocumentsScreen: screen === 'ProjectDocuments',
     });
     if (alreadyImported) {
       Alert.alert(

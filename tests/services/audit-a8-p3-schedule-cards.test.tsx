@@ -105,7 +105,9 @@ const uploadCopy = normalizeReferenceDocument(buildSharedReferenceDocument({
   projectName: 'Alpha', contentSha256: SHA, updatedAt: '2026-09-20T00:00:05.000Z',
 }));
 
-function phone(documents: ReferenceDocument[], items: ScheduleItem[] = []) {
+// Audit round 2, A8 pass 7 (30 Sep 2026): the pick reads the screen it was made from (the Documents
+// screen's refusal says where Schedule Sources is); the Schedule screen unless a case says otherwise.
+function phone(documents: ReferenceDocument[], items: ScheduleItem[] = [], screen = 'Schedule') {
   const alerts: Array<{ title: string; message: string }> = [];
   const refs = {
     projectScheduleImportCardRef: { current: null as null | { batchId: string; documentId: string } },
@@ -113,7 +115,7 @@ function phone(documents: ReferenceDocument[], items: ScheduleItem[] = []) {
     scheduleItemsCurrentRef: { current: items },
   };
   const deps: Record<string, unknown> = {
-    ...refs,
+    ...refs, screen,
     activeProjects: ['Alpha'], projects: ['Alpha'],
     archivedProjectsCurrentRef: { current: [] }, deletedProjectNamesRef: { current: [] },
     projectsCurrentRef: { current: ['Alpha', 'Beta'] }, projectRecordsCurrentRef: { current: [] },
@@ -215,6 +217,13 @@ describe('"Import This Schedule" on a card that has uploaded (audit A8 pass 3 M1
     expect(nothingShown.alerts).toEqual([{
       title: 'Schedule already added',
       message: 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.',
+    }]);
+    // Picked on the Documents screen, it says where Schedule Sources is (audit round 2, A8 pass 7).
+    const fromDocuments = phone([legacy], [task], 'ProjectDocuments');
+    await expect(fromDocuments.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
+    expect(fromDocuments.alerts).toEqual([{
+      title: 'Schedule already added',
+      message: 'This schedule file is already saved. Open it in Schedule Sources on the Schedule screen and use Set Active to show it again.',
     }]);
 
     // Another project's import of the same file is not this one: a plain import, no role preset.

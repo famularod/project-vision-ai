@@ -45,6 +45,12 @@ export type ScheduleRetirementEffect = Readonly<{
   projectName: string;
   /** The older schedule the cloud still marks current there, shown next; null when none is left. */
   fallbackSchedule: Readonly<{ id: string; name: string }> | null;
+  /**
+   * Set for one of the chosen schedule's own projects: the newer schedule it
+   * shows now, which the chosen schedule (fallbackSchedule) replaces there
+   * (whole-app audit A8 pass 7 L1).
+   */
+  newerScheduleReplaced?: Readonly<{ id: string; name: string }>;
 }>;
 
 export async function activateSharedReferenceDocument({
@@ -164,7 +170,27 @@ export function scheduleActivationEffects(
       });
     }
   }
+  // Whole-app audit A8 pass 7 L1 (30 Sep 2026): the chosen schedule's own projects were left out, so Set
+  // Active on a combined master F, for Beta which showed nothing, quietly replaced the newer MA Alpha showed.
+  // Each own project that shows a newer schedule now is named, when Set Active is for another of its
+  // projects (one showing nothing, or an older schedule); a rollback of every project it covers asks nothing.
+  const own = scopeNamesOf(target)
+    .map(name => ({ name, before: scheduleShownFor(name, documents) }))
+    .filter(({ before }) => before?.id !== target.id);
+  const replacing = own.flatMap(({ name, before }) => before && importedAtOf(before) > importedAtOf(target) &&
+    scheduleShownFor(name, after)?.id === target.id ? [{ name, before }] : []);
+  if (replacing.length < own.length) {
+    replacing.forEach(({ name, before }) => effects.push({
+      projectName: name,
+      fallbackSchedule: { id: target.id, name: target.name },
+      newerScheduleReplaced: { id: before.id, name: before.name },
+    }));
+  }
   return effects;
+}
+
+function importedAtOf(document: ReferenceDocument): number {
+  return Date.parse(document.importedAt || '') || 0;
 }
 
 /**
@@ -406,6 +432,13 @@ function scheduleImportsSavedForFile({
  * lookahead. The saved full copy is now in use too while any project it
  * covers shows no full schedule: the import is refused, saying to open it in
  * Schedule Sources and use Set Active.
+ *
+ * Whole-app audit A8 pass 7 L1 (30 Sep 2026): Set Active on a combined
+ * master also replaces the newer schedule another of its projects shows, so
+ * that advice is given only when no project it covers shows a different
+ * schedule; otherwise the refusal is plain ("already saved under Schedule
+ * Sources"). A project shown through the task list's fallback (a combined
+ * schedule retired for it, current for another) counts as showing one.
  */
 export function scheduleImportOfFile({
   bytes,
@@ -414,6 +447,7 @@ export function scheduleImportOfFile({
   documents,
   scheduleItems,
   projectNames,
+  onDocumentsScreen = false,
 }: Readonly<{
   bytes: ArrayBuffer | Uint8Array;
   projects: readonly ScheduleImportScopeProject[];
@@ -421,6 +455,8 @@ export function scheduleImportOfFile({
   documents: readonly ReferenceDocument[];
   scheduleItems: readonly ScheduleItem[];
   projectNames: readonly string[];
+  /** Picked on the Documents screen: the refusal says where Schedule Sources is (A8 pass 7). */
+  onDocumentsScreen?: boolean;
 }>): {
   identity: ScheduleImportSourceIdentity;
   alreadyImported: boolean;
@@ -436,15 +472,20 @@ export function scheduleImportOfFile({
     saved.every(document => isScheduleDocument(document) && !scheduleDocumentAddsToMaster(document));
   const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
   const inUse = savedAsFullSchedule && saved.some(document => shown.has(document.id));
-  // A project it covers shows no full schedule: Set Active shows it again (A8 pass 6 L1).
-  const leftUnshown = savedAsFullSchedule && !inUse && saved.some(document => scheduleFullCopyLeftUnshown(document, documents));
+  // A project it covers shows no full schedule: Set Active shows it again (A8 pass 6 L1), and is the advice
+  // only when it replaces no schedule another project it covers shows (A8 pass 7 L1).
+  const unshown = savedAsFullSchedule && !inUse ? saved.map(document => scheduleFullCopyLeftUnshown(document, documents)) : [];
+  const leftUnshown = unshown.includes('other_shown') ? 'other_shown' : unshown.includes('set_active') ? 'set_active' : null;
   if (!savedAsFullSchedule || inUse || leftUnshown) {
+    // The phone's Schedule Sources panel and its Set Active button: the same words as ScheduleLookahead's review.
+    const sources = onDocumentsScreen ? 'Schedule Sources on the Schedule screen' : 'Schedule Sources';
     return {
       identity,
       alreadyImported: saved.length > 0,
       asLookahead: false,
       alreadyAddedMessage: inUse ? `${SCHEDULE_ALREADY_ADDED} ${SCHEDULE_MASTER_CURRENT_FIRST}`
-        : leftUnshown ? SCHEDULE_FILE_SET_ACTIVE : SCHEDULE_ALREADY_ADDED,
+        : leftUnshown === 'set_active' ? `This schedule file is already saved. Open it in ${sources} and use Set Active to show it again.`
+        : leftUnshown ? `This schedule file is already saved under ${sources}.` : SCHEDULE_ALREADY_ADDED,
     };
   }
   const savedIds = new Set(documents.map(document => document.id));
@@ -458,8 +499,6 @@ export function scheduleImportOfFile({
 
 const SCHEDULE_ALREADY_ADDED = 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.';
 const SCHEDULE_MASTER_CURRENT_FIRST = 'If this file is a lookahead, make your master schedule current first, then import it again.';
-/** The phone's Schedule Sources panel and its Set Active button (A8 pass 6 L1); the same words as ScheduleLookahead's review. */
-const SCHEDULE_FILE_SET_ACTIVE = 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.';
 
 function canonicalProjectNames(projectNames: readonly unknown[]): string {
   return [...new Set(projectNames
@@ -496,13 +535,21 @@ export function scheduleActivationNotice(
   return [...sentences, 'Earlier schedules remain available as history.'].join(' ');
 }
 
-/** The Set Active confirmation: what each other project shows next. */
+/**
+ * The Set Active confirmation: what each other project shows next, then each
+ * of the chosen schedule's own projects that switches away from a newer
+ * schedule (A8 pass 7 L1).
+ */
 export function scheduleRetirementMessage(effects: readonly ScheduleRetirementEffect[]): string {
+  const others = effects.filter(effect => !effect.newerScheduleReplaced);
   return [
-    `The schedule now current for ${effects.map(effect => effect.projectName).join(', ')} will be retired too.`,
-    ...effects.map(effect => effect.fallbackSchedule
+    ...(others.length > 0 ? [`The schedule now current for ${others.map(effect => effect.projectName).join(', ')} will be retired too.`] : []),
+    ...others.map(effect => effect.fallbackSchedule
       ? `${effect.projectName} goes back to ${effect.fallbackSchedule.name}, an older schedule still marked current there.`
       : `${effect.projectName} is left with no current schedule and shows no schedule tasks until you set one.`),
+    ...effects.flatMap(effect => effect.newerScheduleReplaced && effect.fallbackSchedule
+      ? [`${effect.projectName} now shows ${effect.newerScheduleReplaced.name} (newer). Set Active on ${effect.fallbackSchedule.name} will show ${effect.fallbackSchedule.name} for ${effect.projectName} too.`]
+      : []),
   ].join(' ');
 }
 
@@ -618,7 +665,7 @@ function sameEffects(
   right: readonly ScheduleRetirementEffect[],
 ): boolean {
   const key = (effects: readonly ScheduleRetirementEffect[]) => effects
-    .map(effect => `${effect.projectName.trim().toLowerCase()}>${effect.fallbackSchedule?.id ?? ''}`)
+    .map(effect => `${effect.projectName.trim().toLowerCase()}>${effect.fallbackSchedule?.id ?? ''}>${effect.newerScheduleReplaced?.id ?? ''}`)
     .sort()
     .join('|');
   return key(left) === key(right);

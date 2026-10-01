@@ -500,15 +500,30 @@ export function scheduleProjectScopeKey(projectName: string): string {
  * the replacement deleted, so Set Active on it is the way to show it again.
  * Its file picked again is in use, as when it is the schedule shown, and is
  * never pushed into a lookahead. A lookahead is never a full schedule.
+ *
+ * Whole-app audit A8 pass 7 L1 (30 Sep 2026): a project shows a schedule
+ * when the task list shows one (selectAuthoritativeScheduleItems): its own
+ * current schedule or, with none, a current schedule that lists it. A
+ * combined master retired for Alpha and current for Beta still shows Alpha's
+ * tasks, and Alpha's old master was refused with the Set Active advice
+ * instead of offered as a lookahead. And Set Active is the advice only when
+ * it replaces nothing: 'set_active' while no project it covers shows a
+ * schedule; 'other_shown' while another project it covers shows a different
+ * one, which Set Active would quietly replace; null when every project it
+ * covers shows a schedule.
  */
 export function scheduleFullCopyLeftUnshown(
   document: ReferenceDocument,
   documents: readonly ReferenceDocument[],
-): boolean {
-  if (!scheduleDocumentIsScheduleLike(document) || scheduleDocumentAddsToMaster(document)) return false;
+): 'set_active' | 'other_shown' | null {
+  if (!scheduleDocumentIsScheduleLike(document) || scheduleDocumentAddsToMaster(document)) return null;
   const current = currentScheduleDocumentsByProject(documents);
+  const winners = currentScheduleDocumentWinners(documents);
   const scope = scheduleDocumentScope(document);
-  return (scope.length > 0 ? scope : ['']).some(project => !current.has(project));
+  const shown = (scope.length > 0 ? scope : ['']).map(project => current.get(project) ??
+    winners.find(winner => scheduleDocumentScope(winner).includes(project)));
+  if (shown.every(Boolean)) return null;
+  return shown.some(other => other && other.id !== document.id) ? 'other_shown' : 'set_active';
 }
 
 function scheduleDocumentScope(document: ReferenceDocument): string[] {

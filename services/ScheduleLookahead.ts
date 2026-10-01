@@ -524,7 +524,8 @@ export function suggestScheduleImportRole({
   const file = batch.documents.find(document => document.category === 'Schedules');
   if (file && scheduleDocumentAddsToMaster(file)) {
     const inUse = scheduleFileFullCopyInUse(file, documents);
-    return { role: 'lookahead', reason: inUse === 'shown' ? SHOWN_AS_FULL_SCHEDULE : inUse === 'left_unshown' ? SAVED_SET_ACTIVE : SAVED_AS_FULL_SCHEDULE, only: true };
+    return { role: 'lookahead', reason: inUse === 'shown' ? SHOWN_AS_FULL_SCHEDULE : inUse === 'set_active' ? SAVED_SET_ACTIVE
+      : inUse === 'other_shown' ? SAVED_UNDER_SOURCES : SAVED_AS_FULL_SCHEDULE, only: true };
   }
   const projects = [...new Map([
     ...batch.items.map(item => item.scheduleProjectName || item.projectName || ''),
@@ -564,6 +565,8 @@ export function suggestScheduleImportRole({
 const SAVED_AS_FULL_SCHEDULE = 'this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead';
 const SHOWN_AS_FULL_SCHEDULE = 'this exact file is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead';
 const SAVED_SET_ACTIVE = 'this schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again';
+/** Another project it covers shows a different schedule, which Set Active would replace: no advice (A8 pass 7 L1). */
+const SAVED_UNDER_SOURCES = 'this schedule file is already saved under Schedule Sources';
 
 function scopeOf(document: ReferenceDocument): string {
   const names = (document.projectNames || []).map(key).filter(Boolean);
@@ -578,16 +581,19 @@ function scopeOf(document: ReferenceDocument): string {
  * covers shows no full schedule (whole-app audit A8 pass 6 L1, 30 Sep 2026:
  * its master was replaced and the replacement deleted, so Set Active shows
  * it again, and a lookahead of it would be the master as its own
- * lookahead); null otherwise.
+ * lookahead); null otherwise. Left unshown, 'set_active' when Set Active
+ * replaces nothing, 'other_shown' when another project it covers shows a
+ * different schedule (A8 pass 7 L1, scheduleFullCopyLeftUnshown).
  */
-function scheduleFileFullCopyInUse(file: ReferenceDocument, documents: readonly ReferenceDocument[]): 'shown' | 'left_unshown' | null {
+function scheduleFileFullCopyInUse(file: ReferenceDocument, documents: readonly ReferenceDocument[]): 'shown' | 'set_active' | 'other_shown' | null {
   const sha = typeof file.contentSha256 === 'string' ? file.contentSha256.trim() : '';
   if (!sha) return null;
   const copies = documents.filter(document => document.id !== file.id &&
     document.contentSha256 === sha && scopeOf(document) === scopeOf(file));
   const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
   if (copies.some(document => shown.has(document.id))) return 'shown';
-  return copies.some(document => scheduleFullCopyLeftUnshown(document, documents)) ? 'left_unshown' : null;
+  const unshown = copies.map(document => scheduleFullCopyLeftUnshown(document, documents));
+  return unshown.includes('other_shown') ? 'other_shown' : unshown.includes('set_active') ? 'set_active' : null;
 }
 
 /**
@@ -612,8 +618,10 @@ export function scheduleImportRoleRefusal(
   if (inUse === 'shown') {
     return 'This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.';
   }
-  // A project it covers shows no full schedule: either choice is refused (A8 pass 6 L1).
-  if (inUse === 'left_unshown') return 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.';
+  // A project it covers shows no full schedule: either choice is refused (A8 pass 6 L1); Set Active is the
+  // advice only when it replaces no schedule another project shows (A8 pass 7 L1).
+  if (inUse === 'set_active') return 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.';
+  if (inUse === 'other_shown') return 'This schedule file is already saved under Schedule Sources.';
   return role === 'master'
     ? 'This exact schedule is already saved as a full schedule for these projects. Choose Lookahead to add it to the master schedule, or Reject Import.'
     : null;

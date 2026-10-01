@@ -71,7 +71,10 @@ describe('A8 pass 6 L1: with no schedule shown, the old master\'s file is never 
     const savedCombined = combined.saved('2026-08-31T12:00:00.000Z', { isCurrent: false });
     const betaMaster = schedule('BETA 0926', ['Beta'], '2026-09-26T12:00:00.000Z');
     const alphaMaster = schedule('ALPHA 0926', ['Alpha'], '2026-09-26T12:00:00.000Z');
-    expect(combined.pick([savedCombined, betaMaster])).toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: SET_ACTIVE });
+    // Pin updated deliberately (audit round 2, A8 pass 7 L1, 30 Sep 2026): still refused, but Beta shows its
+    // own newer master, which Set Active on the combined copy would quietly replace: no Set Active advice.
+    expect(combined.pick([savedCombined, betaMaster])).toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: 'This schedule file is already saved under Schedule Sources.' });
+    expect(combined.pick([savedCombined])).toMatchObject({ alreadyImported: true, asLookahead: false, alreadyAddedMessage: SET_ACTIVE });
     expect(combined.pick([savedCombined, alphaMaster, betaMaster])).toMatchObject({ alreadyImported: false, asLookahead: true });
   });
 
