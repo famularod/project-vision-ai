@@ -8,6 +8,7 @@ import {
 } from './ECOSHostedIndexer';
 import {
   currentScheduleDocumentsByProject,
+  scheduleFullCopyLeftUnshown,
   currentScheduleDocumentWinners,
   scheduleDocumentAddsToMaster,
   scheduleDocumentRetiredProjectNames,
@@ -398,6 +399,13 @@ function scheduleImportsSavedForFile({
  * master was made current. The file is offered as a lookahead only while no
  * saved full copy of it is the schedule shown for its projects; otherwise
  * "Schedule already added" says to make the master current first.
+ *
+ * Whole-app audit A8 pass 6 L1 (30 Sep 2026): with no schedule shown for the
+ * project (master F replaced by M2, M2 deleted), picking F's file again was
+ * still offered as a lookahead, and accepted, the master became its own
+ * lookahead. The saved full copy is now in use too while any project it
+ * covers shows no full schedule: the import is refused, saying to open it in
+ * Schedule Sources and use Set Active.
  */
 export function scheduleImportOfFile({
   bytes,
@@ -428,12 +436,15 @@ export function scheduleImportOfFile({
     saved.every(document => isScheduleDocument(document) && !scheduleDocumentAddsToMaster(document));
   const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
   const inUse = savedAsFullSchedule && saved.some(document => shown.has(document.id));
-  if (!savedAsFullSchedule || inUse) {
+  // A project it covers shows no full schedule: Set Active shows it again (A8 pass 6 L1).
+  const leftUnshown = savedAsFullSchedule && !inUse && saved.some(document => scheduleFullCopyLeftUnshown(document, documents));
+  if (!savedAsFullSchedule || inUse || leftUnshown) {
     return {
       identity,
       alreadyImported: saved.length > 0,
       asLookahead: false,
-      alreadyAddedMessage: inUse ? `${SCHEDULE_ALREADY_ADDED} ${SCHEDULE_MASTER_CURRENT_FIRST}` : SCHEDULE_ALREADY_ADDED,
+      alreadyAddedMessage: inUse ? `${SCHEDULE_ALREADY_ADDED} ${SCHEDULE_MASTER_CURRENT_FIRST}`
+        : leftUnshown ? SCHEDULE_FILE_SET_ACTIVE : SCHEDULE_ALREADY_ADDED,
     };
   }
   const savedIds = new Set(documents.map(document => document.id));
@@ -447,6 +458,8 @@ export function scheduleImportOfFile({
 
 const SCHEDULE_ALREADY_ADDED = 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.';
 const SCHEDULE_MASTER_CURRENT_FIRST = 'If this file is a lookahead, make your master schedule current first, then import it again.';
+/** The phone's Schedule Sources panel and its Set Active button (A8 pass 6 L1); the same words as ScheduleLookahead's review. */
+const SCHEDULE_FILE_SET_ACTIVE = 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.';
 
 function canonicalProjectNames(projectNames: readonly unknown[]): string {
   return [...new Set(projectNames

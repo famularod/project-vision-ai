@@ -203,11 +203,19 @@ describe('"Import This Schedule" on a card that has uploaded (audit A8 pass 3 M1
     }]);
 
     // An older import without a batch, recognised by its tasks: a full schedule, so offered as a lookahead too.
+    // Pin updated deliberately (whole-app audit A8 pass 6 L1, 30 Sep 2026): only while another master is
+    // shown. With no schedule shown for Alpha, the file is refused, saying to use Set Active on the saved copy.
     const legacy = normalizeReferenceDocument({ ...uploadCopy, id: 'legacy-import' });
     const task = { id: 't1', projectName: 'Alpha', taskName: 'Pour', sourceDocumentId: 'legacy-import' } as ScheduleItem;
-    const legacyPhone = phone([legacy], [task]);
+    const legacyPhone = phone([legacy, master], [task]);
     await expect(legacyPhone.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toMatchObject({ documents: [{ scheduleRole: 'lookahead' }] });
     expect(legacyPhone.alerts).toEqual([]);
+    const nothingShown = phone([legacy], [task]);
+    await expect(nothingShown.prepareScheduleImportFromAsset(file, ['Alpha'])).resolves.toBeNull();
+    expect(nothingShown.alerts).toEqual([{
+      title: 'Schedule already added',
+      message: 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.',
+    }]);
 
     // Another project's import of the same file is not this one: a plain import, no role preset.
     const beta = phone([{ ...imported, id: 'beta-import', projectNames: ['Beta'], projectName: 'Beta' }]);

@@ -494,6 +494,23 @@ export function scheduleProjectScopeKey(projectName: string): string {
   return normalize(projectName);
 }
 
+/**
+ * A saved full schedule some project of which shows no full schedule now
+ * (whole-app audit A8 pass 6 L1, 30 Sep 2026): its master was replaced and
+ * the replacement deleted, so Set Active on it is the way to show it again.
+ * Its file picked again is in use, as when it is the schedule shown, and is
+ * never pushed into a lookahead. A lookahead is never a full schedule.
+ */
+export function scheduleFullCopyLeftUnshown(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): boolean {
+  if (!scheduleDocumentIsScheduleLike(document) || scheduleDocumentAddsToMaster(document)) return false;
+  const current = currentScheduleDocumentsByProject(documents);
+  const scope = scheduleDocumentScope(document);
+  return (scope.length > 0 ? scope : ['']).some(project => !current.has(project));
+}
+
 function scheduleDocumentScope(document: ReferenceDocument): string[] {
   const names = (document.projectNames || []).map(normalize).filter(Boolean);
   if (names.length > 0) return [...new Set(names)];

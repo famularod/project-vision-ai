@@ -3,6 +3,7 @@ import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
   scheduleDocumentAddsToMaster,
+  scheduleFullCopyLeftUnshown,
   scheduleProjectScopeKey,
 } from './PIEScheduleReconciliation';
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
@@ -505,7 +506,9 @@ function spanWords(count: number): string {
  * as lookaheads). A file already saved as a full schedule, imported again,
  * comes preset as a lookahead (A8 pass 5 L3). David can change it. While
  * the file's full copy is the schedule shown, it can be neither: the master
- * must be made current first (A8 pass 5 M1, A5 pass 6 L1).
+ * must be made current first (A8 pass 5 M1, A5 pass 6 L1); while a project
+ * it covers shows no full schedule, neither: Set Active shows it again (A8
+ * pass 6 L1).
  */
 export function suggestScheduleImportRole({
   batch,
@@ -520,7 +523,8 @@ export function suggestScheduleImportRole({
 }>): ScheduleImportRoleSuggestion {
   const file = batch.documents.find(document => document.category === 'Schedules');
   if (file && scheduleDocumentAddsToMaster(file)) {
-    return { role: 'lookahead', reason: scheduleFileShownAsFullSchedule(file, documents) ? SHOWN_AS_FULL_SCHEDULE : SAVED_AS_FULL_SCHEDULE, only: true };
+    const inUse = scheduleFileFullCopyInUse(file, documents);
+    return { role: 'lookahead', reason: inUse === 'shown' ? SHOWN_AS_FULL_SCHEDULE : inUse === 'left_unshown' ? SAVED_SET_ACTIVE : SAVED_AS_FULL_SCHEDULE, only: true };
   }
   const projects = [...new Map([
     ...batch.items.map(item => item.scheduleProjectName || item.projectName || ''),
@@ -559,6 +563,7 @@ export function suggestScheduleImportRole({
 
 const SAVED_AS_FULL_SCHEDULE = 'this exact file is already saved as a full schedule for these projects, so it can only be added again as a lookahead';
 const SHOWN_AS_FULL_SCHEDULE = 'this exact file is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead';
+const SAVED_SET_ACTIVE = 'this schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again';
 
 function scopeOf(document: ReferenceDocument): string {
   const names = (document.projectNames || []).map(key).filter(Boolean);
@@ -566,17 +571,23 @@ function scopeOf(document: ReferenceDocument): string {
 }
 
 /**
- * Whether a saved full schedule of these same bytes and projects is the
- * schedule shown for its projects (A8 pass 5 M1, A5 pass 6 L1): added as a
- * lookahead now, the file would restate its own copy's tasks, not the
- * master's.
+ * Whether a saved full schedule of these same bytes and projects is in use
+ * (A8 pass 5 M1, A5 pass 6 L1): 'shown' while it is the schedule shown for
+ * its projects (added as a lookahead now, the file would restate its own
+ * copy's tasks, not the master's); 'left_unshown' while some project it
+ * covers shows no full schedule (whole-app audit A8 pass 6 L1, 30 Sep 2026:
+ * its master was replaced and the replacement deleted, so Set Active shows
+ * it again, and a lookahead of it would be the master as its own
+ * lookahead); null otherwise.
  */
-function scheduleFileShownAsFullSchedule(file: ReferenceDocument, documents: readonly ReferenceDocument[]): boolean {
+function scheduleFileFullCopyInUse(file: ReferenceDocument, documents: readonly ReferenceDocument[]): 'shown' | 'left_unshown' | null {
   const sha = typeof file.contentSha256 === 'string' ? file.contentSha256.trim() : '';
-  if (!sha) return false;
-  const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
-  return documents.some(document => document.id !== file.id && shown.has(document.id) &&
+  if (!sha) return null;
+  const copies = documents.filter(document => document.id !== file.id &&
     document.contentSha256 === sha && scopeOf(document) === scopeOf(file));
+  const shown = new Set([...currentScheduleDocumentsByProject(documents).values()].map(document => document.id));
+  if (copies.some(document => shown.has(document.id))) return 'shown';
+  return copies.some(document => scheduleFullCopyLeftUnshown(document, documents)) ? 'left_unshown' : null;
 }
 
 /**
@@ -586,7 +597,8 @@ function scheduleFileShownAsFullSchedule(file: ReferenceDocument, documents: rea
  * owner answer Q22 into one); saving it as a full schedule again would only
  * duplicate it. While that full copy is the schedule shown, saving it either
  * way is refused: the master is made current first (A8 pass 5 M1, A5 pass 6
- * L1).
+ * L1). While a project it covers shows no full schedule, either way is
+ * refused too: Set Active shows it again (A8 pass 6 L1).
  */
 export function scheduleImportRoleRefusal(
   batch: Pick<PIEScheduleImportBatch, 'documents'>,
@@ -596,9 +608,12 @@ export function scheduleImportRoleRefusal(
 ): string | null {
   const preset = batch.documents.find(document => document.category === 'Schedules' && scheduleDocumentAddsToMaster(document));
   if (!preset) return null;
-  if (scheduleFileShownAsFullSchedule(preset, documents)) {
+  const inUse = scheduleFileFullCopyInUse(preset, documents);
+  if (inUse === 'shown') {
     return 'This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.';
   }
+  // A project it covers shows no full schedule: either choice is refused (A8 pass 6 L1).
+  if (inUse === 'left_unshown') return 'This schedule file is already saved. Open it in Schedule Sources and use Set Active to show it again.';
   return role === 'master'
     ? 'This exact schedule is already saved as a full schedule for these projects. Choose Lookahead to add it to the master schedule, or Reject Import.'
     : null;
