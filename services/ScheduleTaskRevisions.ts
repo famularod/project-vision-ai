@@ -388,6 +388,12 @@ function batchKey(value: unknown): string {
  * Whether a full schedule saved for the task's project, imported after the
  * removed task's last schedule and before the task's first, left the task
  * out (A8 pass 9 L1). The saved rows are indexed by import on first use.
+ *
+ * Whole-app audit A8 pass 10 (30 Sep 2026): each removed row filtered every
+ * row of each import in between by project and compared each with it; at
+ * 1,500 removed rows the delete took 424 ms with one full master in between
+ * and 1,205 ms with three (jest). Each import's rows are now indexed by app
+ * project and name once per delete; the rule is unchanged.
  */
 function scheduleLeftTaskOut(
   saved: readonly ScheduleItem[],
@@ -399,17 +405,26 @@ function scheduleLeftTaskOut(
     const at = Date.parse(document.importedAt || '');
     if (batch && Number.isFinite(at)) importedAt.set(batch, at);
   });
-  let byBatch: Map<string, ScheduleItem[]> | null = null;
-  const rowsOf = (batch: string): ScheduleItem[] => {
+  // Each import's rows by app project and name (A8 pass 10: scanned for every removed row).
+  let byBatch: Map<string, Map<string, Map<string, ScheduleItem[]>>> | null = null;
+  const projectRowsOf = (batch: string, project: string): Map<string, ScheduleItem[]> | undefined => {
     if (!byBatch) {
-      const index = new Map<string, ScheduleItem[]>();
-      saved.forEach(item => scheduleItemImportBatchIds(item).map(batchKey).forEach(key => {
-        const list = index.get(key);
-        if (list) list.push(item); else index.set(key, [item]);
-      }));
+      const index = new Map<string, Map<string, Map<string, ScheduleItem[]>>>();
+      saved.forEach(item => {
+        const project = scheduleTaskProjectKey(item);
+        const name = nameKey(item.taskName);
+        scheduleItemImportBatchIds(item).map(batchKey).forEach(key => {
+          const projects = index.get(key) || new Map<string, Map<string, ScheduleItem[]>>();
+          index.set(key, projects);
+          const named = projects.get(project) || new Map<string, ScheduleItem[]>();
+          projects.set(project, named);
+          const list = named.get(name);
+          if (list) list.push(item); else named.set(name, [item]);
+        });
+      });
       byBatch = index;
     }
-    return byBatch.get(batch) || [];
+    return byBatch.get(batch)?.get(project);
   };
   const times = (item: ScheduleItem) => scheduleItemImportBatchIds(item)
     .map(batch => importedAt.get(batchKey(batch)))
@@ -422,10 +437,12 @@ function scheduleLeftTaskOut(
     const to = Math.min(...taskTimes);
     const own = new Set([...scheduleItemImportBatchIds(gone), ...scheduleItemImportBatchIds(task)].map(batchKey));
     const project = scheduleTaskProjectKey(task);
+    const goneName = nameKey(gone.taskName);
     return [...importedAt.entries()].some(([batch, at]) => {
       if (at <= from || at >= to || own.has(batch)) return false;
-      const rows = rowsOf(batch).filter(row => scheduleTaskProjectKey(row) === project);
-      return rows.length > 0 && !rows.some(row => sameRemovedTask(row, gone));
+      // A schedule with rows of the project, none of them the task.
+      const named = projectRowsOf(batch, project);
+      return Boolean(named) && !(named!.get(goneName) || []).some(row => sameRemovedTask(row, gone));
     });
   };
 }
