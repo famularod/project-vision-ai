@@ -308,6 +308,16 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     expect(pours(state)).toEqual([['MASTER G-1', '10/02/2026', 80, ['MASTER F-1']], ['MASTER G-2', '10/09/2026', 0, ['MASTER F-2']]]);
   });
 
+  it('twins all moved and a third added: the counts differ, so none pair (no progress guessed onto another task)', () => {
+    const { merged, state } = approve(onF, G, rows(G, [
+      'Pour slab,Alpha,Lot,10/02/2026,10/04/2026,', 'Pour slab,Alpha,Lot,10/09/2026,10/11/2026,', 'Pour slab,Alpha,Lot,10/16/2026,10/18/2026,', FRAMING,
+    ]));
+    expect(merged.carriedProgressIds.filter(id => id.includes('MASTER G-1') || id.includes('MASTER G-2') || id.includes('MASTER G-3'))).toEqual([]);
+    expect(pours(state)).toEqual([
+      ['MASTER G-1', '10/02/2026', 0, []], ['MASTER G-2', '10/09/2026', 0, []], ['MASTER G-3', '10/16/2026', 0, []],
+    ]);
+  });
+
   it('twins each restated by a lookahead: a master repeating what it said before pairs each on the days its note keeps', () => {
     const lookahead = (id: string, importedAt: string) => ({ ...schedule(id, importedAt), scheduleRole: 'lookahead' }) as ReferenceDocument;
     const approveLookahead = (state: State, source: ReferenceDocument, lines: string[]): State => {
