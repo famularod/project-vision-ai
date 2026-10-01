@@ -1,6 +1,6 @@
 import type { DAVESyncTombstone, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../types';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
-import { scheduleTaskEarlierIds, type ScheduleTaskReference } from './ScheduleTaskRevisions';
+import { scheduleTaskEarlierIds, scheduleTaskProjectKey, type ScheduleTaskReference } from './ScheduleTaskRevisions';
 
 export const DELETED_TASK_EVIDENCE_LABEL =
   'Historical evidence — linked task was deleted.';
@@ -108,9 +108,9 @@ export function scheduleItemIdsDeletedWithTask(
   documents: readonly ReferenceDocument[],
 ): string[] {
   const earlier = new Set(scheduleTaskEarlierIds(task));
-  const project = normalized(task.scheduleProjectName || task.projectName);
+  const project = scheduleTaskProjectKey(task); // the app project, not a Gantt root's (A8 pass 9 M1)
   const rows = items.filter(item => item.id !== task.id && earlier.has(item.id) &&
-    normalized(item.scheduleProjectName || item.projectName) === project);
+    scheduleTaskProjectKey(item) === project);
   if (rows.length === 0) return [task.id];
   const shown = new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id));
   return [task.id, ...rows.filter(item => !shown.has(item.id)).map(item => item.id)];

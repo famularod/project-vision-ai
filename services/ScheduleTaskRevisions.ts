@@ -192,9 +192,20 @@ export function scheduleItemAnsweringToTaskId(
   return scheduleTaskLinks(items, known)({ ...saved, scheduleItemId: taskId })?.item ?? null;
 }
 
+/**
+ * The app project a task belongs to (whole-app audit A8 pass 9 M1, 30 Sep
+ * 2026): a Microsoft Project master files every row under its root summary
+ * row ("PLZ 2375 Campus Project") as scheduleProjectName, so 2375A's and
+ * 2375B's Pour slab looked like one project's twins. The schedule's root only
+ * when the task names no app project.
+ */
+export function scheduleTaskProjectKey(item: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>): string {
+  return nameKey(item.projectName || item.scheduleProjectName);
+}
+
 function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
   if (!nameKey(removed.taskName) || nameKey(shown.taskName) !== nameKey(removed.taskName)) return false;
-  if (nameKey(shown.scheduleProjectName || shown.projectName) !== nameKey(removed.scheduleProjectName || removed.projectName)) return false;
+  if (scheduleTaskProjectKey(shown) !== scheduleTaskProjectKey(removed)) return false; // the app project (A8 pass 9 M1)
   const area = nameKey(shown.locationName);
   const removedArea = nameKey(removed.locationName);
   return !area || !removedArea || area === removedArea;
