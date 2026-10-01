@@ -219,12 +219,17 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
   }>>();
   const realtimeSatisfiedCollections = new Set<DAVEOperationalCollectionName>();
   /**
-   * Sign-ins made in this tab: those under way now, and those that may have
-   * stored a sign-in (A12 pass 7 L1). Ending this tab's sign-in tells its
-   * own refresh from a sign-in David made meanwhile by these.
+   * Sign-ins made in this tab that still await an answer, and who waits for
+   * them to settle (A12 pass 7 L1, pass 8 H1).
    */
   let signInsUnderway = 0;
-  let signInsStored = 0;
+  let whenSignInsSettle: Array<() => void> = [];
+  /**
+   * Each ending of this tab's sign-in under way, with the refresh tokens of
+   * the sign-ins that SUCCEEDED here since it began (A12 pass 8 H1). Only
+   * a stored sign-in that is one of these outlives the ending.
+   */
+  const endingsUnderway = new Set<Set<string>>();
 
   function cacheAcknowledgedScheduleItem(
     item: ScheduleItem,
@@ -459,17 +464,21 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async signIn(email: string, password: string): Promise<DAVEWebSignInResult> {
       if (!client) return { ok: false, session: null };
       signInsUnderway += 1;
-      let stored = true;
       try {
         const { data, error } = await client.auth.signInWithPassword({ email, password });
-        if (error || !data.session) {
-          stored = false;
-          return { ok: false, session: null };
-        }
+        if (error || !data.session) return { ok: false, session: null };
+        // Only a sign-in that succeeded is kept by an ending under way; one
+        // that failed or threw never is (A12 pass 8 H1).
+        const { refresh_token: refreshToken } = data.session;
+        endingsUnderway.forEach(succeededSince => succeededSince.add(refreshToken));
         return { ok: true, session: data.session };
       } finally {
         signInsUnderway -= 1;
-        if (stored) signInsStored += 1;
+        if (signInsUnderway === 0) {
+          const settled = whenSignInsSettle;
+          whenSignInsSettle = [];
+          settled.forEach(resolve => resolve());
+        }
       }
     },
 
@@ -507,35 +516,49 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
      * and a tab holding none sends nothing, so tabs never answer each
      * other's sign-outs back and forth. Never throws.
      *
-     * Only the sign-in being ended is taken out (A12 pass 7 L1). auth-js
-     * does not hold a sign-in back while it signs out, and when it could
-     * not finish (it threw its refresh away because storage changed, or
-     * /logout answered 503) this had deleted whatever this tab held by
-     * then: a sign-in David had just made here, with no SIGNED_OUT, so his
-     * workspace stayed with no sign-in behind it. It is still the one
-     * being ended while it is the same account with the same refresh
-     * token, or with the token auth-js's own refresh here rotated it to
-     * (no sign-in here since could have stored one).
+     * A sign-in David made here meanwhile is not taken out (A12 pass 7
+     * L1). auth-js does not hold a sign-in back while it signs out, and
+     * when it could not finish (it threw its refresh away because storage
+     * changed, or /logout answered 503) this had deleted whatever this tab
+     * held by then: a sign-in David had just made here, with no
+     * SIGNED_OUT, so his workspace stayed with no sign-in behind it.
+     *
+     * What it keeps is only a sign-in made here that SUCCEEDED since it
+     * began (A12 pass 8 H1). It had also kept whatever this tab held while
+     * a sign-in here was still awaiting an answer: when that sign-in then
+     * failed (a mistyped password, a dropped connection), the sign-in it
+     * was ending stayed, refreshed by auth-js and valid on the server, and
+     * a reload opened his projects with no password. It now waits for such
+     * sign-ins to answer before it decides.
      */
     async signOutThisTabToo(userId: string): Promise<void> {
       if (!client || !userId) return;
       const ending = browserTabStoredSignIn();
       if (!ending || ending.userId !== userId) return;
-      const signInsStoredBefore = signInsStored;
+      const succeededSince = new Set<string>();
+      endingsUnderway.add(succeededSince);
       try {
-        await client.auth.signOut({ scope: 'local' });
-      } catch {
-        // Whatever auth-js left in storage is looked at below.
+        try {
+          await client.auth.signOut({ scope: 'local' });
+        } catch {
+          // Whatever auth-js left in storage is looked at below.
+        }
+        // A sign-in still awaiting its answer has not succeeded (yet).
+        while (signInsUnderway > 0) {
+          await new Promise<void>(resolve => { whenSignInsSettle.push(resolve); });
+        }
+        const stored = browserTabStoredSignIn();
+        const newSignInMadeHere = stored !== null &&
+          stored.refreshToken !== null &&
+          stored.refreshToken !== ending.refreshToken &&
+          succeededSince.has(stored.refreshToken);
+        // A sign-in made here meanwhile is kept, with what it has read.
+        if (newSignInMadeHere) return;
+        if (stored) forgetBrowserTabSignIn();
+        forgetSignedInReads();
+      } finally {
+        endingsUnderway.delete(succeededSince);
       }
-      const stored = browserTabStoredSignIn();
-      const stillTheOneBeingEnded = stored !== null &&
-        stored.userId === ending.userId &&
-        (stored.refreshToken === ending.refreshToken ||
-          (signInsUnderway === 0 && signInsStored === signInsStoredBefore));
-      // A sign-in made here meanwhile is kept, with what it has read.
-      if (stored && !stillTheOneBeingEnded) return;
-      if (stored) forgetBrowserTabSignIn();
-      forgetSignedInReads();
     },
 
     async loadAuthorizedRows(

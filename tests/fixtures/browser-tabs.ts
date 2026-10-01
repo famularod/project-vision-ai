@@ -10,7 +10,8 @@
  * 'owner-1' passes the owner check. Nothing reaches the network. A password
  * sign-in works with TAB_TEST_PASSWORD (a synthetic test value), and a test
  * can hold the next /logout, refresh or password sign-in to make it slow
- * (A12 pass 7 L1).
+ * (A12 pass 7 L1). /logout and a password sign-in can also fail as when the
+ * network drops (`'dropped'`: the fetch rejects, A12 pass 8 H1).
  *
  * A test needs `document` defined (auth-js opens the channel only in a
  * browser) and Node's BroadcastChannel, and must call closeTabClient on
@@ -96,7 +97,11 @@ type HeldCall = 'logout' | 'refresh' | 'password';
 export function createTabCloud() {
   const calls: CloudCall[] = [];
   let generation = 1;
-  const state = { logout: 'ok' as 'ok' | 503 };
+  const state = {
+    logout: 'ok' as 'ok' | 503 | 'dropped',
+    password: 'ok' as 'ok' | 'dropped',
+  };
+  const dropped = () => new TypeError('Failed to fetch');
   const holds = new Map<HeldCall, Readonly<{ arrived: () => void; released: Promise<void> }>>();
   /** A held call waits here until the test releases it. */
   const waitIfHeld = async (kind: HeldCall) => {
@@ -133,6 +138,7 @@ export function createTabCloud() {
       const userId = Object.keys(TAB_ACCOUNTS).find(id => TAB_ACCOUNTS[id].email === body.email) ?? null;
       calls.push({ method, path: '/auth/v1/token?grant_type=password', userId });
       await waitIfHeld('password');
+      if (state.password === 'dropped') throw dropped();
       if (!userId || body.password !== TAB_TEST_PASSWORD) {
         return json(400, { code: 'invalid_credentials', message: 'Invalid login credentials' });
       }
@@ -148,6 +154,7 @@ export function createTabCloud() {
     }
     if (url.pathname === '/auth/v1/logout') {
       await waitIfHeld('logout');
+      if (state.logout === 'dropped') throw dropped();
       if (state.logout === 503) return json(503, { message: 'Service Unavailable' });
       return new Response(null, { status: 204 });
     }

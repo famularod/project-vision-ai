@@ -8,9 +8,10 @@
  * meanwhile was deleted with no SIGNED_OUT, and the workspace stayed with no
  * sign-in behind it ("Sign in is required…" on the next read).
  *
- * Now it forgets only the sign-in it was ending (its account and refresh
- * token, or the token auth-js's own refresh here rotated it to). The
- * provider's wait makes such a sign-in rare; this keeps it if one happens.
+ * Now it keeps a sign-in made here meanwhile. The provider's wait makes such
+ * a sign-in rare; this keeps it if one happens. Since A12 pass 8 H1 it keeps
+ * only one that SUCCEEDED, and waits for one still awaiting an answer
+ * (tests/services/audit-r2-a12p8-web-ending-failed-sign-in.test.ts).
  */
 import { createTabStorage, type TabStorage } from '../fixtures/browser-tabs';
 
@@ -136,11 +137,21 @@ describe('signOutThisTabToo keeps a sign-in made here while it ran (A12 pass 7 L
     const newSignIn = tabSignIn(tab.storage);
     expect(newSignIn?.refreshToken).not.toBe('refresh:owner-1:1');
     logout.release();
-    await ending;
 
+    // Re-pinned for A12 pass 8 H1: the ending now waits for a sign-in still
+    // under way to answer before it decides (one that then fails must not
+    // keep anything), so it settles after this sign-in finishes. Meanwhile
+    // it takes nothing out, and the successful sign-in is kept.
+    let ended = false;
+    void ending.then(() => { ended = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(ended).toBe(false);
     expect(tabSignIn(tab.storage)).toEqual(newSignIn);
     letSignInFinish();
     expect((await signIn).ok).toBe(true);
+    await ending;
+
+    expect(tabSignIn(tab.storage)).toEqual(newSignIn);
     slowListener.data.subscription.unsubscribe();
   });
 
