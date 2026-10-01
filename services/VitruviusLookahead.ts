@@ -3,6 +3,8 @@ import {
   parseVitruviusScheduleDate,
   projectScheduleToday,
   scheduleTimeZone,
+  vitruviusAppProjectName,
+  type VitruviusScheduleGrouping,
 } from './VitruviusGanttModel';
 import {
   analyzeVitruviusCriticalPath,
@@ -51,12 +53,15 @@ export function buildVitruviusLookahead({
   weeks,
   today = new Date(),
   projectTimeZone,
+  groupBy = 'scheduleRoot',
 }: {
   items: readonly ScheduleItem[];
   weeks: VitruviusLookaheadWeeks;
   today?: Date;
   /** Sets the window; each task's own project zone decides its overdue and days left. */
   projectTimeZone?: string | null;
+  /** The schedule's root (the default, the phone) or the app project (the web; A5 pass 13). */
+  groupBy?: VitruviusScheduleGrouping;
 }): VitruviusLookahead {
   const windowTimeZone = scheduleTimeZone(items, projectTimeZone);
   const todayDate = projectScheduleToday(today, windowTimeZone);
@@ -102,8 +107,9 @@ export function buildVitruviusLookahead({
               : 'ready';
       return [Object.freeze({
         item,
-        projectName: item.scheduleProjectName?.trim() || item.projectName?.trim() ||
-          'Unassigned Project',
+        projectName: groupBy === 'appProject'
+          ? vitruviusAppProjectName(item)
+          : item.scheduleProjectName?.trim() || item.projectName?.trim() || 'Unassigned Project',
         areaName: item.locationName?.trim() || 'No area',
         contractor: item.contractor?.trim() || 'Unassigned',
         owner: item.owner?.trim() || 'Unassigned',

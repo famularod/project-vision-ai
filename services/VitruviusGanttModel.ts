@@ -4,6 +4,22 @@ import { buildVitruviusScheduleHierarchy } from './VitruviusScheduleWorkspace';
 
 export type VitruviusGanttZoom = 'day' | 'week' | 'month';
 
+/**
+ * The project a row is grouped and labelled under. 'scheduleRoot' (the
+ * default; the phone's Timeline and Lookahead): the schedule's root.
+ * 'appProject' (the web Schedule page): the task's app project, the root only
+ * when it names none, as scheduleTaskProjectKey keys it. Whole-app audit A5
+ * pass 13 (1 Oct 2026): a combined Microsoft Project master files every row
+ * under its root ("2400 Compliance Project"), so the web's Gantt and
+ * Lookahead put Harbor North's and Harbor South's identical tasks side by
+ * side under one root heading while its Builder showed them by building.
+ */
+export type VitruviusScheduleGrouping = 'scheduleRoot' | 'appProject';
+
+export function vitruviusAppProjectName(item: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>): string {
+  return item.projectName?.trim() || item.scheduleProjectName?.trim() || 'Unassigned Project';
+}
+
 export type VitruviusGanttColumn = Readonly<{
   key: string;
   label: string;
@@ -46,14 +62,16 @@ export function buildVitruviusGanttModel({
   zoom,
   today = new Date(),
   projectTimeZone,
+  groupBy = 'scheduleRoot',
 }: {
   items: readonly ScheduleItem[];
   zoom: VitruviusGanttZoom;
   today?: Date;
   /** Defaults to the first task's project zone, then the app default. */
   projectTimeZone?: string | null;
+  groupBy?: VitruviusScheduleGrouping;
 }): VitruviusGanttModel {
-  const hierarchyRows = projectScheduleRows(items);
+  const hierarchyRows = projectScheduleRows(items, groupBy);
   const datesById = derivedScheduleDates(items);
   const realDates = [...datesById.values()]
     .flatMap(range => [range.start, range.finish])
@@ -131,10 +149,12 @@ export function buildVitruviusGanttModel({
   });
 }
 
-function projectScheduleRows(items: readonly ScheduleItem[]) {
+function projectScheduleRows(items: readonly ScheduleItem[], groupBy: VitruviusScheduleGrouping) {
   const groups = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
-    const projectName = item.scheduleProjectName?.trim() || 'Unassigned Project';
+    const projectName = groupBy === 'appProject'
+      ? vitruviusAppProjectName(item)
+      : item.scheduleProjectName?.trim() || 'Unassigned Project';
     const group = groups.get(projectName);
     if (group) group.push(item);
     else groups.set(projectName, [item]);

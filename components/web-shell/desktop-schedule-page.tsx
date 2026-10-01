@@ -856,7 +856,8 @@ function GanttWorkspace({
   const [showBaselines, setShowBaselines] = useState(true);
   const [showImpactPreview, setShowImpactPreview] = useState(false);
   const model = useMemo(
-    () => buildVitruviusGanttModel({ items: tasks, zoom }),
+    // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
+    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject' }),
     [tasks, zoom],
   );
   const analytics = useMemo(
@@ -1140,7 +1141,8 @@ function LookaheadWorkspace({
   onOpenItem: (item: ScheduleItem) => void;
 }) {
   const lookahead = useMemo(
-    () => buildVitruviusLookahead({ items: tasks, weeks }),
+    // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
+    () => buildVitruviusLookahead({ items: tasks, weeks, groupBy: 'appProject' }),
     [tasks, weeks],
   );
   const groupedRows = useMemo(
