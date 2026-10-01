@@ -88,23 +88,45 @@ export function withoutPhotoAnalysis(update: unknown): unknown {
   return rest;
 }
 
+/** The results Retry is offered on (a failed run, a comparison that could not be made). */
+const RETRYABLE_PHOTO_ANALYSIS_STATUSES = new Set(['analysis_failed_retry', 'comparison_unavailable']);
+
+/** A result's outcome, time and review time; null for none, or a photo still analysing. */
+function photoAnalysisOutcome(result: unknown) {
+  const { status, updatedAt, userReviewedAt } = (result && typeof result === 'object' ? result : {}) as
+    { status?: unknown; updatedAt?: unknown; userReviewedAt?: unknown };
+  if (typeof status !== 'string' || status === 'analyzing') return null;
+  const time = (value: unknown) => Date.parse(typeof value === 'string' ? value : '') || 0;
+  return { retryable: RETRYABLE_PHOTO_ANALYSIS_STATUSES.has(status), at: time(updatedAt), reviewedAt: time(userReviewedAt) };
+}
+
 /**
- * Whether the update holds a result for the patch's photo that finished
- * later than the patch's (whole-app audit A4 pass 23 L2): by the results'
- * own times; a photo still analysing has none. The same time is the same
- * result, which the update may hold with David's review mark (Confirmed,
- * Incorrect, Not useful) set in Edit: the patch's copy has none, and put
- * back over the edit it wiped the mark (A4 pass 24 M1).
+ * Whether the result held for a photo stands over another result for it,
+ * the rule wherever two results for one photo meet (whole-app audit A4 pass
+ * 23 L2, pass 24 M1, pass 26 L1/L2):
+ * - a finished result stands over one Retry is offered on, whatever their
+ *   times: on one device a later run always follows a failure, but across
+ *   two a failed retry on the iPad went over the phone's finished result;
+ * - otherwise the later one stands;
+ * - the same result (the same time) is the one David reviewed last: the
+ *   copy without his Confirmed mark wiped it.
+ * Nothing stands over a result unless it is finished itself; a finished one
+ * stands over a photo still analysing.
  */
+export function photoAnalysisResultStands(held: unknown, other: unknown): boolean {
+  const kept = photoAnalysisOutcome(held);
+  if (!kept) return false;
+  const incoming = photoAnalysisOutcome(other);
+  if (!incoming) return kept.at > 0;
+  if (kept.retryable !== incoming.retryable) return !kept.retryable;
+  if (kept.at !== incoming.at) return kept.at > incoming.at;
+  return incoming.at > 0 && incoming.reviewedAt <= kept.reviewedAt;
+}
+
+/** Whether the update's result for the patch's photo stands over the patch's (photoAnalysisResultStands). */
 export function photoAnalysisFinishedAfterPatch(update: object, patch: FieldUpdatePhotoAnalysisPatch): boolean {
-  const finishedAt = (analysis: unknown) => {
-    const { status, updatedAt } = (analysis && typeof analysis === 'object' ? analysis : {}) as { status?: unknown; updatedAt?: unknown };
-    return typeof status === 'string' && status !== 'analyzing'
-      ? Date.parse(typeof updatedAt === 'string' ? updatedAt : '') || 0 : null;
-  };
-  const held = finishedAt((update as UpdateWithPhotos).photos?.find(photo => photo?.id === patch.photoId)?.photoIntelligence);
-  const patchAt = finishedAt(patch.photoIntelligence) ?? 0;
-  return held !== null && (held > patchAt || (patchAt > 0 && held === patchAt));
+  const held = (update as UpdateWithPhotos).photos?.find(photo => photo?.id === patch.photoId)?.photoIntelligence;
+  return photoAnalysisResultStands(held, patch.photoIntelligence);
 }
 
 /** A later result for the same photo: its own, with what the earlier one cleared. */

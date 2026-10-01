@@ -94,6 +94,7 @@ import {
   applyFieldUpdatePhotoAnalysisPatch,
   fieldUpdatePhotoAnalysisPatchFor,
   isFieldUpdatePhotoAnalysisPatch,
+  photoAnalysisResultStands,
   withoutPhotoAnalysis,
   type FieldUpdatePhotoAnalysisPatch,
 } from './FieldUpdatePhotoAnalysisPatch';
@@ -2720,8 +2721,9 @@ async function writeStagedProjectUpdateRecord(
     // the card's copy, never archived, went up over it, and the update came
     // back on the iPad.
     const queuedCopy = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData;
-    const copy = withArchiveKept(update, existing ? [existing] : [], [queuedCopy, projectUpdateLastVersionInCloud.get(update.id)]
-      .find(item => isRecord(item) && item.isArchived === true)) as ProjectUpdate;
+    const copy = withQueuedAnalysisResults(withArchiveKept(update, existing ? [existing] : [], [queuedCopy,
+      projectUpdateLastVersionInCloud.get(update.id)].find(item => isRecord(item) && item.isArchived === true)) as ProjectUpdate,
+    queuedCopy);
     if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(copy)) return unchanged;
     const patch = !overConflict && Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(copy.status) ||
       fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], copy));
@@ -2744,6 +2746,22 @@ async function writeStagedProjectUpdateRecord(
       result: next,
     };
   });
+}
+
+/**
+ * The copy a sync attempt stages, with a result the queued copy holds that
+ * stands over the copy's own (photoAnalysisResultStands; whole-app audit A4
+ * pass 26 L2): Keep Phone put the iPad's newer, Confirmed result into the
+ * newer edit it queued, and the waiting-update sync then sent the card's
+ * failed one over it. A photo the card is analysing again keeps its own.
+ */
+function withQueuedAnalysisResults(copy: ProjectUpdate, queuedCopy: unknown): ProjectUpdate {
+  if (!isRecord(queuedCopy) || !Array.isArray(queuedCopy.photos)) return copy;
+  const analysing = new Set((copy.photos || [])
+    .filter(photo => (photo.photoIntelligence as { status?: unknown } | undefined)?.status === 'analyzing')
+    .map(photo => photo.id));
+  const finished = { ...queuedCopy, photos: (queuedCopy.photos as unknown[]).filter(photo => !isRecord(photo) || !analysing.has(photo.id as string)) };
+  return withPhoneAnalysisResults(copy, [finished]) as ProjectUpdate;
 }
 
 /**
@@ -4714,7 +4732,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // David's choice, and the copy he keeps stays archived. The conflict's own
   // copy, never archived, un-archived the update in the cloud.
   const conflictCopy = withDocumentChanges(localPayload.updateData);
-  const localUpdateData = withArchiveKept(conflictCopy, await getOfflineQueue(), current.data?.updateData) as TUpdate;
+  // With the cloud's analysis results that stand over the phone's (A4 pass
+  // 26 L2): the phone's result, failed offline, went over the iPad's retried
+  // and Confirmed one.
+  const cloudResults = [current.data?.updateData];
+  const localUpdateData = withArchiveKept(withPhoneAnalysisResults(conflictCopy, cloudResults),
+    await getOfflineQueue(), current.data?.updateData) as TUpdate;
   const queueItemId = projectUpdateQueueItemId(localPayload.id);
   // A newer edit saved on this phone since the conflict, still waiting to go
   // up (whole-app audit A7 pass 10 L-4): the copy recorded with the conflict
@@ -4735,7 +4758,8 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId);
     const newerFound = newerPhoneEditForFieldUpdateConflict(conflict, queue, conflictCopy);
-    const newer = newerFound && withArchiveKeptInQueuedCopy(newerFound, localUpdateData);
+    const newer = newerFound && withCloudAnalysisResultsInQueuedCopy(
+      withArchiveKeptInQueuedCopy(newerFound, localUpdateData), cloudResults);
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
       payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
@@ -4782,16 +4806,17 @@ function withArchiveKept(copy: unknown, queued: readonly SyncQueueItem[], cloudC
 /**
  * The cloud's copy with this phone's analysis results for the photos it
  * shares (whole-app audit A7 pass 14 L-2), as each result's own patch would
- * have put them there: a finished result newer than the copy's (or the copy
- * still analysing), with the analysis summary of the phone copy it came
- * from. Keep Cloud lost a result taken into one of the phone's copies.
- * "Send your version?" keeps the card's this way when it sends the copy
- * David chose (A4 pass 21 F2): the card read "Analyzing" again.
+ * have put them there: a result that stands over the copy's
+ * (photoAnalysisResultStands: a finished one over a failed one, else the
+ * later, or the same one reviewed later; any over a photo still analysing),
+ * with the analysis summary of the phone copy it came from. Keep Cloud lost
+ * a result taken into one of the phone's copies. "Send your version?" keeps
+ * the card's this way when it sends the copy David chose (A4 pass 21 F2):
+ * the card read "Analyzing" again. Keep Phone takes the cloud's this way
+ * (A4 pass 26 L2).
  */
 export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly unknown[]): unknown {
   if (!isRecord(copy) || !Array.isArray(copy.photos)) return copy;
-  const finishedAt = (analysis: unknown) => isRecord(analysis) && typeof analysis.status === 'string' && analysis.status !== 'analyzing'
-    ? Date.parse(typeof analysis.updatedAt === 'string' ? analysis.updatedAt : '') || 0 : null;
   const analysisOf = (update: unknown, photoId: string) => isRecord(update) && Array.isArray(update.photos)
     ? (update.photos as unknown[]).find(photo => isRecord(photo) && photo.id === photoId) as Record<string, unknown> | undefined
     : undefined;
@@ -4799,15 +4824,22 @@ export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly un
   for (const photo of copy.photos as unknown[]) {
     if (!isRecord(photo) || typeof photo.id !== 'string') continue;
     const photoId = photo.id;
-    const cloudFinishedAt = finishedAt(photo.photoIntelligence);
-    const newest = phoneCopies
-      .map(phone => ({ phone, at: finishedAt(analysisOf(phone, photoId)?.photoIntelligence) }))
-      .filter((candidate): candidate is { phone: unknown; at: number } => candidate.at !== null)
-      .sort((left, right) => right.at - left.at)[0];
-    if (!newest || (cloudFinishedAt !== null && newest.at <= cloudFinishedAt)) continue;
-    next = applyFieldUpdatePhotoAnalysisPatch(next, fieldUpdatePhotoAnalysisPatchFor(newest.phone as object, newest.phone as object, photoId));
+    const best = phoneCopies
+      .map(phone => ({ phone, result: analysisOf(phone, photoId)?.photoIntelligence }))
+      .filter(candidate => isRecord(candidate.result) && candidate.result.status !== 'analyzing')
+      .reduce<{ phone: unknown; result: unknown } | null>((kept, candidate) =>
+        kept && photoAnalysisResultStands(kept.result, candidate.result) ? kept : candidate, null);
+    if (!best || photoAnalysisResultStands(photo.photoIntelligence, best.result)) continue;
+    next = applyFieldUpdatePhotoAnalysisPatch(next, fieldUpdatePhotoAnalysisPatchFor(best.phone as object, best.phone as object, photoId));
   }
   return next;
+}
+
+/** A newer edit Keep Phone carries, with the cloud's results that stand over its own (A4 pass 26 L2). */
+function withCloudAnalysisResultsInQueuedCopy(item: SyncQueueItem, cloudCopies: readonly unknown[]): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  const updateData = withPhoneAnalysisResults(payload.updateData, cloudCopies);
+  return updateData === payload.updateData ? item : { ...item, payload: { ...payload, updateData } };
 }
 
 /** A newer edit Keep Phone carries, archived as the copy it keeps is (A7 pass 14 L-3). */
@@ -6104,16 +6136,20 @@ async function uploadProjectUpdateQueueItem(
   // Not an analysis result the cloud's copy holds a later one for, or the
   // same one (A4 pass 25 L1): the phone's result, finished offline, went over
   // the iPad's retried result and David's Confirmed mark on it.
+  const patchesToApply = cloudCopy?.updateData
+    ? fieldUpdatePatchesNotSuperseded(cloudCopy.updateData as object, documentPatches || []) : [];
   const patchedCloudCopy = cloudCopy?.updateData
-    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object,
-      fieldUpdatePatchesNotSuperseded(cloudCopy.updateData as object, documentPatches || []))
+    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, patchesToApply)
     : null;
   // An archive has no copy of its own to send (A4 pass 11 O2).
   if (payload.archiveOnly && !patchedCloudCopy) return 'uploaded';
   // A document change settles no conflict: the phone's own edit waits for
   // review, with its Keep Phone choice (whole-app audit A4 pass 9 L1).
   if (cloudCopy && patchedCloudCopy === cloudCopy.updateData) {
-    recordProjectUpdateUpload(payload.id);
+    // Nothing was written. A result left out for the cloud's own is not this
+    // phone's copy in the cloud (A7 pass 22 L-1): recorded, a refresh kept
+    // the card's older result, shown as Sent.
+    if (patchesToApply.length === (documentPatches || []).length) recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
   if (!patchedCloudCopy && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
