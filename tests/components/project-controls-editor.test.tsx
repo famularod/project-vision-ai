@@ -192,4 +192,54 @@ describe('ProjectControlsEditor', () => {
       expect(view.getByPlaceholderText('Assumptions, exposure, or mitigation').props.value).toBe('From iPad');
     });
   });
+
+  // Whole-app audit A3 pass 6 L2 (30 Sep 2026): a field focused while another
+  // device changed it, then left without typing, saved nothing (right) but
+  // kept showing the old text, and a later edit started from it and put the
+  // old text back over the other device's value.
+  describe('a field left unchanged shows the latest saved value (audit A3 pass 6 L2)', () => {
+    beforeEach(() => noteSignedInOwner('owner-a'));
+    const withAssignee = (assignee: string): ScheduleItem => ({
+      ...ITEM,
+      projectControls: { ...(ITEM.projectControls || {}), assignee } as ProjectControls,
+    });
+    const focusThenIPadChanges = () => {
+      const onUpdate = jest.fn<void, [ProjectControls]>();
+      const view = render(<ProjectControlsEditor item={withAssignee('Maria Lopez')} actor="David" onUpdate={onUpdate} />);
+      fireEvent.press(view.getByRole('button', { name: /Project controls/i }));
+      const field = () => view.getByPlaceholderText('Person responsible');
+      fireEvent(field(), 'focus');
+      view.rerender(<ProjectControlsEditor item={withAssignee('Ann from iPad')} actor="David" onUpdate={onUpdate} />);
+      return { view, onUpdate, field };
+    };
+
+    it('takes the other device\'s value when left unchanged, and a later edit starts from it', () => {
+      const { onUpdate, field } = focusThenIPadChanges();
+      expect(field().props.value).toBe('Maria Lopez');
+      fireEvent(field(), 'blur');
+      expect(onUpdate).not.toHaveBeenCalled();
+      expect(field().props.value).toBe('Ann from iPad');
+
+      fireEvent(field(), 'focus');
+      fireEvent.changeText(field(), `${field().props.value} and Bob`);
+      fireEvent(field(), 'blur');
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ assignee: 'Ann from iPad and Bob' }));
+    });
+
+    it('still saves what was typed over the other device\'s value', () => {
+      const { onUpdate, field } = focusThenIPadChanges();
+      fireEvent.changeText(field(), 'Maria Lopez Jr');
+      fireEvent(field(), 'blur');
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ assignee: 'Maria Lopez Jr' }));
+    });
+
+    it('saves nothing when the section closes with the field unchanged', () => {
+      const { view, onUpdate } = focusThenIPadChanges();
+      fireEvent.press(view.getByRole('button', { name: /Project controls/i }));
+      view.unmount();
+      expect(onUpdate).not.toHaveBeenCalled();
+    });
+  });
 });
