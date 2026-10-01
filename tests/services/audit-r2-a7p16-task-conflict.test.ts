@@ -452,6 +452,12 @@ describe('L-4: Keep Phone on a task keeps a newer phone edit still waiting (audi
  *     again: the new conflict has a new id. Nothing had reached the cloud,
  *     and the task was still in conflict. It is now matched by the task, as
  *     Keep Cloud does: another conflict open for the task means review again.
+ *
+ * L-4 A whole copy of a task (a Save with nothing queued, an activation
+ *     carry) whose row the paged list missed was written as it was: the
+ *     web's 50% became 0%. Only field edits read the row by id (pass 16
+ *     L-5). Every upload whose row the list missed now reads it; the whole-
+ *     copy rules then decide as when the list has the row (a conflict here).
  */
 describe('A7 pass 17 L-2: after a Keep Cloud that could not finish, a progress edit that never left the phone is not undone', () => {
   /** Pass 16 L-2: a phone note lands during Keep Cloud, and the second read fails; the note waits on the conflict. */
@@ -560,5 +566,56 @@ describe('A7 pass 17 L-3: Keep Phone on a task whose conflict was replaced by a 
     const error = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown })
       .catch((caught: unknown) => caught);
     expect(syncConflictChoiceStopReason(error)).toBe('conflict_closed');
+  });
+});
+
+describe('A7 pass 17 L-4: a whole copy of a task whose row the paged list missed is checked against the row itself', () => {
+  const web50: ScheduleItem = {
+    ...phoneTask, notes: '', percentComplete: 50, status: 'In Progress', updatedAt: '2026-09-30T09:00:00.000Z',
+  };
+  const listMissesTheRow = () => mockListScheduleItems.mockImplementation(async () => mockOk([otherTask(1), otherTask(2)]));
+  /** Saved on the phone before the web's 50%, with nothing queued: the whole copy goes up. */
+  const queueWholeCopy = () => queueScheduleItemRecord({ ...phoneTask, notes: NEWER, updatedAt: '2026-09-29T10:00:00.000Z' }, false);
+
+  it.each([
+    ['the list misses the row', true],
+    ['control: the list has the row', false],
+  ])('%s: the web\'s 50%% stays, and the conflict is shown', async (_label, missed) => {
+    mockCloudRows.set(phoneTask.id, web50);
+    if (missed) listMissesTheRow();
+    await queueWholeCopy();
+
+    await uploadPendingChanges();
+    // It wrote the phone's whole copy: 0%, "Not Started", with no conflict.
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(web50);
+    await expect(getSyncConflicts()).resolves.toEqual([expect.objectContaining({
+      entity: 'schedule_item', localId: phoneTask.id, remotePayload: web50,
+    })]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a read of the row that fails leaves the whole copy queued, writing nothing', async () => {
+    mockCloudRows.set(phoneTask.id, web50);
+    listMissesTheRow();
+    mockGetScheduleItem.mockImplementation(async () => mockUnreadable());
+    await queueWholeCopy();
+
+    await uploadPendingChanges();
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(web50);
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({ id: expect.stringContaining(phoneTask.id), lastError: expect.any(String) }),
+    ]);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('control: a new task the cloud has no row for is written from the phone\'s copy, as before', async () => {
+    await queueWholeCopy();
+
+    await uploadPendingChanges();
+    expect(mockGetScheduleItem).toHaveBeenCalledWith(phoneTask.id);
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER, percentComplete: 0 });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 });
