@@ -187,6 +187,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const maintenanceOwnerRef = useRef<string | null>(null);
   const realtimeHealthyRef = useRef(false);
   const lastSuccessfulRefreshAtRef = useRef<string | null>(null);
+  /**
+   * The sign-in the owner check said is not the owner's, while this browser
+   * signs it out (whole-app audit A12 pass 4 L3, 30 Sep 2026).
+   */
+  const notOwnerRef = useRef<Readonly<{ userId: string; message: string }> | null>(null);
+  const notOwnerSignOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notOwnerSignOutRunningRef = useRef(false);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -201,9 +208,63 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     pendingFullBackgroundRefreshRef.current = false;
     setSnapshot(null);
     setFreshness(initialDAVEWebFreshnessState());
-    setMessage(null);
     setUnavailableAttempts(0);
-    setPhase(nextPhase);
+    // While the owner check's "not the owner" stands, the view stays on it:
+    // the browser's own sign-out going through (SIGNED_OUT, now or on a
+    // quiet retry) does not turn it into a plain sign-in page (A12 pass 4 L3).
+    const notOwner = notOwnerRef.current;
+    setMessage(notOwner ? notOwner.message : null);
+    setPhase(notOwner ? 'unauthorized' : nextPhase);
+  }, []);
+
+  /** A new sign-in: the earlier "not the owner" no longer applies. */
+  const forgetNotOwner = useCallback(() => {
+    notOwnerRef.current = null;
+    if (notOwnerSignOutTimerRef.current) {
+      clearTimeout(notOwnerSignOutTimerRef.current);
+      notOwnerSignOutTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Signs a sign-in that is not the owner's out of this browser only (owner
+   * answer Q21), and when that cannot reach the server (a dropped
+   * connection) tries again after 5 s, 15 s, 30 s, then every minute, with
+   * nothing on screen (A12 pass 4 L3). Never throws.
+   */
+  const signOutNotOwnerQuietly = useCallback(async () => {
+    if (notOwnerSignOutRunningRef.current) return;
+    if (notOwnerSignOutTimerRef.current) {
+      clearTimeout(notOwnerSignOutTimerRef.current);
+      notOwnerSignOutTimerRef.current = null;
+    }
+    const attempt = async (index: number): Promise<void> => {
+      const notOwner = notOwnerRef.current;
+      if (!mountedRef.current || !notOwner) return;
+      notOwnerSignOutRunningRef.current = true;
+      try {
+        await daveWebSupabaseGateway.signOut('local');
+        notOwnerSignOutRunningRef.current = false;
+        if (mountedRef.current && notOwnerRef.current === notOwner) {
+          // Signed out: nothing is left to retry; the answer stays on screen.
+          notOwnerRef.current = null;
+          setPhase('unauthorized');
+          setMessage(notOwner.message);
+        }
+        return;
+      } catch {
+        notOwnerSignOutRunningRef.current = false;
+      }
+      if (!mountedRef.current || notOwnerRef.current !== notOwner) return;
+      const delay = DESKTOP_WORKSPACE_RETRY_DELAYS_MS[
+        Math.min(index, DESKTOP_WORKSPACE_RETRY_DELAYS_MS.length - 1)
+      ];
+      notOwnerSignOutTimerRef.current = setTimeout(() => {
+        notOwnerSignOutTimerRef.current = null;
+        void attempt(index + 1);
+      }, delay);
+    };
+    await attempt(0);
   }, []);
 
   const loadAuthorizedSnapshot = useCallback(async (
@@ -217,6 +278,17 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       clearSessionView();
       return false;
     }
+    const notOwner = notOwnerRef.current;
+    if (notOwner && notOwner.userId === session.user.id) {
+      // The owner check already said this sign-in is not the owner's and its
+      // sign-out has not gone through yet: nothing is read again (a second
+      // check on a dropping connection showed "still signed in"), and the
+      // sign-out is tried again now (A12 pass 4 L3).
+      clearSessionView('unauthorized');
+      await signOutNotOwnerQuietly();
+      return false;
+    }
+    if (notOwner) forgetNotOwner();
 
     const loadSequence = loadSequenceRef.current + 1;
     loadSequenceRef.current = loadSequence;
@@ -248,13 +320,16 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
       if (error instanceof DAVEWebAuthorizationError) {
-        // This browser only: an automatic sign-out never ends the owner's
-        // iPhone and iPad sign-ins (owner answer Q21).
-        await daveWebSupabaseGateway.signOut('local');
-        if (mountedRef.current) {
-          setPhase('unauthorized');
-          setMessage(error.message);
-        }
+        // Not the owner: the not-authorized page, whatever the browser's
+        // sign-out does next. A sign-out that could not reach the server had
+        // thrown out of here, and the start-up check showed "Your projects
+        // are not loaded yet… You are still signed in" (whole-app audit A12
+        // pass 4 L3, 30 Sep 2026). Nothing loaded is kept. This browser only:
+        // an automatic sign-out never ends the owner's iPhone and iPad
+        // sign-ins (owner answer Q21).
+        notOwnerRef.current = { userId: session.user.id, message: error.message };
+        clearSessionView('unauthorized');
+        await signOutNotOwnerQuietly();
         return false;
       }
       if (snapshotRef.current) {
@@ -273,7 +348,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       }
       return false;
     }
-  }, [clearSessionView]);
+  }, [clearSessionView, forgetNotOwner, signOutNotOwnerQuietly]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -297,6 +372,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       // desktop session could not be checked." and no Try Again; it is now
       // the "not loaded yet" page, with Try Again and the automatic retry.
       // Nothing is shown until a check confirms the owner (A12 pass 3 L1).
+      // Never after the owner check has said "not the owner" (A12 pass 4 L3).
+      if (!cancelled && mountedRef.current && notOwnerRef.current) {
+        clearSessionView('unauthorized');
+        return;
+      }
       if (!cancelled && mountedRef.current) {
         setPhase('unavailable');
         setMessage(WORKSPACE_UNAVAILABLE_MESSAGE);
@@ -328,10 +408,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       mountedRef.current = false;
       unsubscribe();
+      if (notOwnerSignOutTimerRef.current) {
+        clearTimeout(notOwnerSignOutTimerRef.current);
+        notOwnerSignOutTimerRef.current = null;
+      }
     };
   }, [clearSessionView, loadAuthorizedSnapshot]);
 
   const signInWithPassword = useCallback(async (email: string, password: string) => {
+    forgetNotOwner();
     if (mountedRef.current) {
       setPhase('signing_in');
       setMessage(null);
@@ -345,7 +430,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       return false;
     }
     return loadAuthorizedSnapshot(result.session);
-  }, [loadAuthorizedSnapshot]);
+  }, [forgetNotOwner, loadAuthorizedSnapshot]);
 
   const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
     await daveWebSupabaseGateway.signOut(scope);
