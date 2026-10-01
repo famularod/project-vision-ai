@@ -193,12 +193,25 @@ export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000]
  */
 export const DESKTOP_SIGN_IN_ENDING_WAIT_MS = 10_000;
 
+const SIGN_IN_FAILED_MESSAGE =
+  'Sign-in could not be completed. Check your email and password, then try again.';
+
+/** What a sign-in here answered when it opened nothing (A12 pass 11 L1). */
+type DesktopSignInAnswer = Readonly<{ phase: 'signed_out' | 'unauthorized'; message: string }>;
+
 /** This tab ending its sign-in because another tab signed out. */
 type DesktopSignInEnding = {
   /** Settles once the ending has, either way. */
   settled: Promise<void>;
   /** A sign-in was made here during it: its settling leaves the view be. */
   signInMadeDuring: boolean;
+  /**
+   * A sign-in here answered during it and opened nothing (a mistyped
+   * password, a dropped connection, an account that is not the owner's):
+   * its settling shows that answer again, not the plain sign-in page (A12
+   * pass 11 L1).
+   */
+  signInAnsweredDuring: DesktopSignInAnswer | null;
 };
 
 export function DesktopAuthProvider({ children }: { children: ReactNode }) {
@@ -270,11 +283,29 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
    * This tab's sign-in ended: the sign-in page. While a sign-in here awaits
    * its answer, the button stays busy and that sign-in's own result decides
    * what shows: an ending starting or settling then had shown "Sign in
-   * securely" while his request was still out (A12 pass 10 L1).
+   * securely" while his request was still out (A12 pass 10 L1). An ending
+   * settling after his sign-in answered without opening anything clears the
+   * view, then shows that answer again: it had replaced it with the plain
+   * sign-in page (A12 pass 11 L1).
    */
-  const showSignInEnded = useCallback(() => {
-    clearSessionView(signInsAwaitingAnswerRef.current > 0 ? 'signing_in' : 'signed_out');
+  const showSignInEnded = useCallback((answer: DesktopSignInAnswer | null = null) => {
+    const awaitingAnswer = signInsAwaitingAnswerRef.current > 0;
+    clearSessionView(awaitingAnswer ? 'signing_in' : 'signed_out');
+    if (answer && !awaitingAnswer && mountedRef.current) {
+      setPhase(answer.phase);
+      setMessage(answer.message);
+    }
   }, [clearSessionView]);
+
+  /**
+   * A sign-in here answered (null: it opened the workspace, or a new one
+   * started); the ending under way, if any, keeps that answer for its
+   * settling (A12 pass 11 L1).
+   */
+  const noteSignInAnswer = useCallback((answer: DesktopSignInAnswer | null) => {
+    const ending = endingSignInRef.current;
+    if (ending) ending.signInAnsweredDuring = answer;
+  }, []);
 
   /** A new sign-in: the earlier "not the owner" no longer applies. */
   const forgetNotOwner = useCallback(() => {
@@ -305,10 +336,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         await daveWebSupabaseGateway.signOut('local');
         notOwnerSignOutRunningRef.current = false;
         if (mountedRef.current && notOwnerRef.current === notOwner) {
-          // Signed out: nothing is left to retry; the answer stays on screen.
+          // Signed out: nothing is left to retry; the answer stays on screen,
+          // an ending settling later included (A12 pass 11 L1).
           notOwnerRef.current = null;
           setPhase('unauthorized');
           setMessage(notOwner.message);
+          noteSignInAnswer({ phase: 'unauthorized', message: notOwner.message });
         }
         return;
       } catch {
@@ -324,7 +357,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       }, delay);
     };
     await attempt(0);
-  }, []);
+  }, [noteSignInAnswer]);
 
   const loadAuthorizedSnapshot = useCallback(async (
     session: Session | null,
@@ -536,6 +569,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       setPhase('signing_in');
       setMessage(null);
     }
+    // An earlier sign-in's answer is no longer on screen.
+    noteSignInAnswer(null);
     signInsAwaitingAnswerRef.current += 1;
     let endingPastLimit: DesktopSignInEnding | null;
     let result: DAVEWebSignInResult;
@@ -554,8 +589,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     if (!result.ok || !result.session) {
       if (mountedRef.current) {
         setPhase('signed_out');
-        setMessage('Sign-in could not be completed. Check your email and password, then try again.');
+        setMessage(SIGN_IN_FAILED_MESSAGE);
       }
+      // An ending that settles after this keeps the message (A12 pass 11 L1).
+      noteSignInAnswer({ phase: 'signed_out', message: SIGN_IN_FAILED_MESSAGE });
       return false;
     }
     // His sign-in worked: an ending past the time limit no longer holds this
@@ -570,7 +607,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       endingSignInRef.current = null;
     }
     return loadAuthorizedSnapshot(result.session);
-  }, [forgetNotOwner, loadAuthorizedSnapshot, waitForSignInToFinishEnding]);
+  }, [forgetNotOwner, loadAuthorizedSnapshot, noteSignInAnswer, waitForSignInToFinishEnding]);
 
   const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
     const userId = daveWebSupabaseGateway.storedSignInUserId();
@@ -616,6 +653,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       const ending: DesktopSignInEnding = {
         settled: Promise.resolve(),
         signInMadeDuring: false,
+        signInAnsweredDuring: null,
       };
       endingSignInRef.current = ending;
       showSignInEnded();
@@ -627,8 +665,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
           // A sign-in made here meanwhile shows its own outcome: one that
           // waited on this ending, or one it kept. An ending started while
           // his sign-in was out had shown the sign-in page as it kept his
-          // new sign-in, the workspace open on it (A12 pass 10 L1).
-          if (outcome !== 'kept' && !ending.signInMadeDuring) showSignInEnded();
+          // new sign-in, the workspace open on it (A12 pass 10 L1). One that
+          // answered during it and opened nothing keeps its answer on the
+          // sign-in page; nothing loaded stays (A12 pass 11 L1).
+          if (outcome !== 'kept' && !ending.signInMadeDuring) {
+            showSignInEnded(ending.signInAnsweredDuring);
+          }
         });
     };
     return () => {
