@@ -394,3 +394,127 @@ describe('DAVEVoiceCaptureSheet F2: an unused recording is not discarded without
     expect(screen.queryByText('Replay Recording')).toBeNull();
   });
 });
+
+// Whole-app audit A11 pass 4 M1 (30 Sep 2026): X while "Preparing…" deleted
+// the dictation without asking, and a late transcript was thrown away. Type
+// Instead is greyed out then, so X was the only way out, and on weak signal
+// "Preparing…" can last a minute or more.
+describe('DAVEVoiceCaptureSheet A11 pass 4 M1: leaving while a recording is being prepared', () => {
+  const STOP_PREPARING = 'Stop preparing this recording?';
+  let alert: jest.SpyInstance;
+  beforeEach(() => { alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined); });
+  afterEach(() => { alert.mockRestore(); });
+
+  async function recordThenPrepare(result: Promise<unknown>) {
+    transcription.transcribeDAVECaptureMemoryAudio.mockImplementationOnce(() => result);
+    await startListening(8_000);
+    fireEvent.press(screen.getByText('Stop & Continue'));
+    await screen.findByText('Preparing…');
+  }
+
+  function buttonNamed(text: string): AlertButton {
+    const button = lastAlertButtons(alert).find(candidate => candidate.text === text);
+    if (!button) throw new Error(`No ${text} button`);
+    return button;
+  }
+
+  it('X asks first: Keep Waiting changes nothing, and the transcript is still used when it arrives', async () => {
+    const upload = deferred<{ transcript: string }>();
+    const props = renderSheet({ autoSubmitOnStop: true });
+    await recordThenPrepare(upload.promise);
+
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(alert.mock.calls[0][0]).toBe(STOP_PREPARING);
+    expect(alert.mock.calls[0][1]).toBe(
+      'It is still being turned into text. You can keep waiting, keep the recording here to try Continue again later, or discard it.',
+    );
+    expect(lastAlertButtons(alert).map(button => [button.text, button.style])).toEqual([
+      ['Keep Waiting', 'cancel'],
+      ['Keep Recording for Later', undefined],
+      ['Discard', 'destructive'],
+    ]);
+    await act(async () => { buttonNamed('Keep Waiting').onPress?.(); });
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+    expect(screen.getByText('Preparing…')).toBeTruthy();
+
+    await act(async () => { upload.resolve({ transcript: 'Conduit is done.' }); });
+    await waitFor(() => expect(props.onMemoryReady).toHaveBeenCalledWith({ transcript: 'Conduit is done.' }));
+  });
+
+  it('the Android back button asks the same', async () => {
+    const upload = deferred<{ transcript: string }>();
+    const props = renderSheet({ autoSubmitOnStop: true });
+    await recordThenPrepare(upload.promise);
+
+    await act(async () => { screen.UNSAFE_getByType(Modal).props.onRequestClose(); });
+    expect(alert.mock.calls[0][0]).toBe(STOP_PREPARING);
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+    await act(async () => { buttonNamed('Keep Waiting').onPress?.(); });
+    await act(async () => { upload.resolve({ transcript: 'Conduit is done.' }); });
+  });
+
+  it('Keep Recording for Later stops waiting and keeps the audio; a late transcript waits for the next Continue on that recording', async () => {
+    const upload = deferred<{ transcript: string }>();
+    const props = renderSheet({ autoSubmitOnStop: true });
+    await recordThenPrepare(upload.promise);
+
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await act(async () => { buttonNamed('Keep Recording for Later').onPress?.(); });
+
+    expect(screen.queryByText('Preparing…')).toBeNull();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    expect(screen.getByText('Replay Recording')).toBeTruthy();
+    expect(screen.getByText('Stopped waiting. The recording is kept here. Tap Continue to try again.')).toBeTruthy();
+    expect(props.onCancel).not.toHaveBeenCalled();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+
+    // The answer to the request he stopped waiting for arrives: not applied by itself.
+    await act(async () => { upload.resolve({ transcript: 'Late words.' }); });
+    expect(props.onMemoryReady).not.toHaveBeenCalled();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+
+    // Continue on the same recording uses those words without uploading it again.
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(props.onMemoryReady).toHaveBeenCalledWith({ transcript: 'Late words.' }));
+    expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenCalledTimes(1);
+    expect(fileSystem.deleteAsync).toHaveBeenCalledWith(RECORDING_URI, { idempotent: true });
+  });
+
+  it('a late transcript never lands on a new recording made after Keep Recording for Later', async () => {
+    const upload = deferred<{ transcript: string }>();
+    const props = renderSheet({ autoSubmitOnStop: true });
+    await recordThenPrepare(upload.promise);
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await act(async () => { buttonNamed('Keep Recording for Later').onPress?.(); });
+
+    // Record Again replaces the kept recording before the late answer arrives.
+    fireEvent.press(screen.getByText('Record Again'));
+    await waitFor(() => expect(recorder.record).toHaveBeenCalledTimes(2));
+    await act(async () => { upload.resolve({ transcript: 'Late words.' }); });
+    await act(async () => { store.set({ durationMillis: 5_000 }); });
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'New words.' });
+    fireEvent.press(screen.getByText('Stop & Continue'));
+
+    await waitFor(() => expect(props.onMemoryReady).toHaveBeenCalledTimes(1));
+    expect(props.onMemoryReady).toHaveBeenCalledWith({ transcript: 'New words.' });
+    expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenCalledTimes(2);
+  });
+
+  it('Discard deletes the recording and closes; a late transcript is ignored', async () => {
+    const upload = deferred<{ transcript: string }>();
+    const props = renderSheet({ autoSubmitOnStop: true });
+    await recordThenPrepare(upload.promise);
+
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await act(async () => { buttonNamed('Discard').onPress?.(); });
+    await waitFor(() => expect(props.onCancel).toHaveBeenCalledTimes(1));
+    expect(fileSystem.deleteAsync).toHaveBeenCalledWith(RECORDING_URI, { idempotent: true });
+
+    await act(async () => { upload.resolve({ transcript: 'Late words.' }); });
+    expect(props.onMemoryReady).not.toHaveBeenCalled();
+  });
+});

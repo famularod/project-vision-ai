@@ -118,10 +118,20 @@ export function DAVEVoiceCaptureSheet({
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
   const recordingFinishingRef = useRef(false);
+  // Whole-app audit A11 pass 4 M1: X while "Preparing…" asks first. "Keep
+  // Recording for Later" stops waiting for the upload under way; its answer is
+  // held for this recording only, and used by the next tap on continueLabel.
+  const recordingGenerationRef = useRef(0);
+  const preparingOperationRef = useRef<number | null>(null);
+  const stoppedWaitingRef = useRef<{ operation: number; recording: number } | null>(null);
+  const heldTranscriptRef = useRef<{ recording: number; result: DAVEVoiceUnderstandingResponse } | null>(null);
 
   useEffect(() => () => {
-    // A closed/unmounted sheet or different project must not start an upload retry.
+    // A closed/unmounted sheet or different project must not start an upload retry,
+    // nor use a held transcript for another note.
     transcriptionOperationRef.current += 1;
+    stoppedWaitingRef.current = null;
+    heldTranscriptRef.current = null;
   }, [visible, projectId]);
 
   useEffect(() => {
@@ -208,6 +218,7 @@ export function DAVEVoiceCaptureSheet({
 
   async function startRecording() {
     if (isTranscribing || recorderState.isRecording || recordingFinishingRef.current) return;
+    recordingGenerationRef.current += 1;
     setError(null);
     setNotice(null);
     await removeRecording(recordingUri);
@@ -273,7 +284,20 @@ export function DAVEVoiceCaptureSheet({
       setError(`The recording is too short. Speak for at least ${DAVE_MIN_RECORDING_DURATION_MS / 1_000} second, then try again.`);
       return;
     }
+    const recording = recordingGenerationRef.current;
+    const held = heldTranscriptRef.current;
+    heldTranscriptRef.current = null;
+    if (held?.recording === recording) {
+      // The words for this recording arrived after he stopped waiting for them.
+      setError(null);
+      setNotice(null);
+      await removeRecording(uri);
+      setRecordingUri(null);
+      onMemoryReady(held.result);
+      return;
+    }
     const operation = ++transcriptionOperationRef.current;
+    preparingOperationRef.current = operation;
     setError(null);
     setNotice(null);
     setIsTranscribing(true);
@@ -286,7 +310,13 @@ export function DAVEVoiceCaptureSheet({
         purpose: transcriptionPurpose,
         isRequestCurrent: () => operation === transcriptionOperationRef.current,
       });
-      if (operation !== transcriptionOperationRef.current) return;
+      if (operation !== transcriptionOperationRef.current) {
+        const stopped = stoppedWaitingRef.current;
+        if (stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
+          heldTranscriptRef.current = { recording: stopped.recording, result };
+        }
+        return;
+      }
       await removeRecording(uri);
       setRecordingUri(null);
       onMemoryReady(result);
@@ -294,8 +324,22 @@ export function DAVEVoiceCaptureSheet({
       if (operation !== transcriptionOperationRef.current) return;
       setError(reason instanceof Error ? reason.message : 'The recording could not be transcribed.');
     } finally {
-      if (operation === transcriptionOperationRef.current) setIsTranscribing(false);
+      if (operation === transcriptionOperationRef.current) {
+        preparingOperationRef.current = null;
+        setIsTranscribing(false);
+      }
     }
+  }
+
+  // "Keep Recording for Later": stop waiting, keep the audio, back to "Recording ready".
+  function stopWaitingKeepRecording() {
+    const operation = preparingOperationRef.current;
+    if (operation === null || operation !== transcriptionOperationRef.current) return;
+    stoppedWaitingRef.current = { operation, recording: recordingGenerationRef.current };
+    preparingOperationRef.current = null;
+    transcriptionOperationRef.current += 1;
+    setIsTranscribing(false);
+    setNotice(`Stopped waiting. The recording is kept here. Tap ${continueLabel} to try again.`);
   }
 
   async function transcribe() {
@@ -304,10 +348,23 @@ export function DAVEVoiceCaptureSheet({
   }
 
   // A finished recording that has not been used (for example after an offline
-  // transcription failure) is only deleted once the owner confirms. While listening,
-  // or with nothing recorded, leaving discards at once as before.
+  // transcription failure) is only deleted once the owner confirms, and so is one
+  // still being prepared (A11 pass 4 M1). While listening, or with nothing
+  // recorded, leaving discards at once as before.
   function confirmDiscardThen(leave: () => Promise<void>) {
-    if (!recordingUri || recorderState.isRecording || isTranscribing) {
+    if (isTranscribing) {
+      Alert.alert(
+        'Stop preparing this recording?',
+        `It is still being turned into text. You can keep waiting, keep the recording here to try ${continueLabel} again later, or discard it.`,
+        [
+          { text: 'Keep Waiting', style: 'cancel' },
+          { text: 'Keep Recording for Later', onPress: stopWaitingKeepRecording },
+          { text: 'Discard', style: 'destructive', onPress: () => { void leave(); } },
+        ],
+      );
+      return;
+    }
+    if (!recordingUri || recorderState.isRecording) {
       void leave();
       return;
     }
@@ -323,6 +380,11 @@ export function DAVEVoiceCaptureSheet({
 
   async function discardRecording() {
     transcriptionOperationRef.current += 1;
+    recordingGenerationRef.current += 1;
+    preparingOperationRef.current = null;
+    stoppedWaitingRef.current = null;
+    heldTranscriptRef.current = null;
+    setIsTranscribing(false);
     // Claim the recording first so a lock or call cannot also finish and offer it.
     recordingActiveRef.current = false;
     if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
