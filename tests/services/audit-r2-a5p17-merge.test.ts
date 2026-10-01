@@ -230,6 +230,11 @@ describe('A5 p17 M1 on the web: the upload plan and Make Current show David\'s t
  * rest pair by order only when exactly one is left on each side; otherwise
  * they are left unpaired (new rows) rather than move David's progress to
  * another task. The import, Set Active's and Make Current's carry share it.
+ *
+ * A5 pass 18 (1 Oct 2026) replaced "same days first" where it swapped
+ * progress: a master (and the carry) with as many rows as twins pairs in one
+ * stable order, a lookahead by nearest days; same days now decide only when
+ * a master's counts differ. The tests changed for it say so.
  */
 describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => {
   const PHASE_1 = 'Pour slab,Alpha,Lot,10/01/2026,10/03/2026,';
@@ -246,28 +251,35 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     .sort((left, right) => left[1].localeCompare(right[1]));
   const link = (state: State, id: string) => scheduleTaskLinks(shown(state), state.items)(report(id))?.item.id ?? null;
 
-  it('A: a revised master drops phase 1, keeps phase 2 on its dates and adds phase 3: phase 2 stays itself', () => {
+  // Changed deliberately (A5 pass 18 F1): A and B are the same file as "both
+  // twins slipped a week" (10/01 and 10/08 become 10/08 and 10/15), and same
+  // days first swapped David's 80% in that everyday case. A master with as
+  // many rows as twins now pairs in one stable order (start, finish, row, id):
+  // a slip keeps each twin's progress; A and B, which no date can tell from
+  // it, are the recorded remaining ambiguity (audit-r2-a5p18-twins.test.ts).
+  it('A: a revised master drops phase 1, keeps phase 2 on its dates and adds phase 3: read as the slip it looks like', () => {
     const { state } = approve(onF, G, rows(G, [PHASE_2, PHASE_3, FRAMING]));
     expect(pours(state)).toEqual([
-      // Phase 2 is F's own row, now in G too, at its own 0%.
-      ['MASTER F-2', '10/08/2026', 0, []],
-      // The one row left pairs with the one twin left (phase 1), as a single task's move would.
-      ['MASTER G-2', '10/15/2026', 80, ['MASTER F-1']],
+      ['MASTER G-1', '10/08/2026', 80, ['MASTER F-1']],
+      ['MASTER G-2', '10/15/2026', 0, ['MASTER F-2']],
     ]);
-    // A report on phase 2 stays on phase 2; one on phase 1 follows the row that replaced it.
-    expect(link(state, 'MASTER F-2')).toBe('MASTER F-2');
-    expect(link(state, 'MASTER F-1')).toBe('MASTER G-2');
+    // Reports follow the pairing.
+    expect(link(state, 'MASTER F-2')).toBe('MASTER G-2');
+    expect(link(state, 'MASTER F-1')).toBe('MASTER G-1');
   });
 
-  it('B: a CSV sorted by start date where phase 1 slips past phase 2: phase 2 keeps its 0%, phase 1 keeps David\'s 80%', () => {
+  it('B: a CSV sorted by start date where phase 1 slips past phase 2: read as the slip it looks like (same file as A)', () => {
     const { state } = approve(onF, G, rows(G, [PHASE_2, 'Pour slab,Alpha,Lot,10/15/2026,10/17/2026,', FRAMING]));
     expect(pours(state)).toEqual([
-      ['MASTER F-2', '10/08/2026', 0, []],
-      ['MASTER G-2', '10/15/2026', 80, ['MASTER F-1']],
+      ['MASTER G-1', '10/08/2026', 80, ['MASTER F-1']],
+      ['MASTER G-2', '10/15/2026', 0, ['MASTER F-2']],
     ]);
   });
 
-  it('C: a lookahead with phase 1 rolled off and one new: phase 1\'s 80% never moves onto phase 2\'s dates', () => {
+  // Changed deliberately (A5 pass 18 F3): a lookahead is a rolling window, so
+  // phase 1, which it does not list, is not "the one left" for phase 3's row.
+  // Phase 3 is nearest phase 2, which its own row takes, so it is added.
+  it('C: a lookahead with phase 1 rolled off and one new: phase 1\'s 80% stays on phase 1', () => {
     const overlay = mergeApprovedScheduleImportItems({
       existing: onF.items, imported: rows(L, [PHASE_2, PHASE_3]), completionMatch: () => null, mergeCompletion: item => item,
       isCurrent: scheduleItemsVisibleBeforeImport(onF.items, [...onF.documents, L], L.importBatchId || ''), approvedAt: L.importedAt, overlay: true,
@@ -276,10 +288,11 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     // Phase 2's own row restates phase 2 (its dates and 0% unchanged).
     expect(state.items.find(item => item.id === 'MASTER F-2')).toMatchObject({ startDate: '10/08/2026', percentComplete: 0 });
     expect(shownNamed(state, 'Pour slab').filter(item => item.startDate === '10/08/2026').map(item => item.percentComplete)).toEqual([0]);
-    // The one row left pairs with the one twin left by the rule (phase 1, on the row's dates).
+    // Phase 1 keeps its dates and David's 80%; phase 3 is the lookahead's own new row.
     expect(pours(state)).toEqual([
+      ['MASTER F-1', '10/01/2026', 80, []],
       ['MASTER F-2', '10/08/2026', 0, []],
-      ['MASTER F-1', '10/15/2026', 80, []],
+      ['LOOKAHEAD L-2', '10/15/2026', 0, []],
     ]);
   });
 
@@ -340,7 +353,9 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     expect(pours(state)).toEqual([['MASTER F-1', '10/04/2026', 80, []], ['MASTER F-2', '10/11/2026', 0, []]]);
   });
 
-  it('Set Active and Make Current carry: progress on G\'s rows goes back to the twin on the same days, not the one in that row\'s place', () => {
+  // Changed deliberately (A5 pass 18 F1): the carry pairs as a master does, in one stable order. G here is the
+  // same file as F slipped a week, and same days first gave phase 2's 50% to phase 1 in that case (Set Active F1).
+  it('Set Active and Make Current carry: progress on G\'s rows goes back to the twin in the same place in the order', () => {
     // G (sorted by start date) came in while nothing was shown to pair with: fresh rows. David records on them.
     const gRows = rows(G, [PHASE_2, 'Pour slab,Alpha,Lot,10/15/2026,10/17/2026,', FRAMING]);
     const fRows = rows(F, [PHASE_1, PHASE_2, FRAMING]);
@@ -351,8 +366,8 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     const before = [recorded(gRows[0], 50), recorded(gRows[1], 90), gRows[2]];
     const carried = scheduleProgressCarriedToShownTasks({ before, after: fRows, now: '2026-09-28T00:00:00.000Z' });
     expect(carried.map(item => [item.id, item.startDate, item.percentComplete])).toEqual([
-      ['MASTER F-1', '10/01/2026', 90],
-      ['MASTER F-2', '10/08/2026', 50],
+      ['MASTER F-1', '10/01/2026', 50],
+      ['MASTER F-2', '10/08/2026', 90],
     ]);
   });
 });

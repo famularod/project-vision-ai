@@ -297,11 +297,13 @@ describe('a copy left behind by a later import shows once, from the newest file'
     ];
     expect(shown(items, [master, lookahead]).filter(item => item.taskName === 'Pour slab').map(item => item.id).sort())
       .toEqual(['la-pour', 'm-pour', 'm-pour-2']);
-    // The import leaves them unpaired too: the lookahead row is added, the master's untouched.
+    // Changed deliberately (A5 pass 18 F3): the import had left a lookahead row against two twins unpaired,
+    // so Pour slab showed three times and the next master paired neither. A lookahead is a rolling window:
+    // its one Pour slab (09/28) is uniquely nearest the first twin (10/01, not 11/01) and restates it in place.
     const { merged } = approve([...masterItems(), task('m-pour-2', 'Alpha', 'Pour slab', master, '11/01/2026', '11/03/2026')],
       [master], lookahead, lookaheadRows());
-    expect(merged.overlaidIds).toEqual([]);
-    expect(merged.additions.map(item => item.id).sort()).toEqual(['Alpha 3 Week Lookahead-pour', 'Alpha 3 Week Lookahead-rebar']);
+    expect(merged.overlaidIds).toEqual(['m-pour']);
+    expect(merged.additions.map(item => item.id).sort()).toEqual(['Alpha 3 Week Lookahead-rebar']);
   });
 
   it('a schedule imported before today, with no role, is a full schedule as before (A5 pass 4)', () => {

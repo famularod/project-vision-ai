@@ -2,7 +2,7 @@ import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
-import { sameScheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
@@ -123,6 +123,12 @@ import {
  * David's 80% to the unchanged phase 2. They now pair by calendar days
  * first, then only the one left with the one left (pairSameNamedTasks);
  * otherwise neither, for the import, Set Active's and Make Current's carry.
+ *
+ * Whole-app audit A5 pass 18 (1 Oct 2026): same days first swapped David's
+ * progress when a slip landed one twin on the other's days, "file order" was
+ * the order each device keeps tasks in, and a lookahead listing some twins
+ * paired none. Twins now pair by one rule per schedule role
+ * (pairSameNamedTasks).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -248,38 +254,139 @@ function inImport(item: ScheduleItem, importBatchId: string | null | undefined):
   return Boolean(key(importBatchId)) && scheduleItemImportBatchIds(item).map(key).includes(key(importBatchId));
 }
 
-function inFileOrder(items: readonly ScheduleItem[]): ScheduleItem[] {
-  const row = (item: ScheduleItem) => Number.isFinite(item.sourceRowNumber) ? Number(item.sourceRowNumber) : Infinity;
-  return items
-    .map((item, index) => ({ item, index }))
-    .sort((left, right) => (row(left.item) - row(right.item)) || left.index - right.index)
-    .map(({ item }) => item);
-}
-
 /** A row's start and finish as calendar days (2026-10-05 and 10/05/2026 are one day). */
 function calendarDays(item: Pick<ScheduleItem, 'startDate' | 'finishDate'>): string {
   return `${scheduleCalendarDayKey(item.startDate)}\n${scheduleCalendarDayKey(item.finishDate)}`;
 }
 
+type Days = Pick<ScheduleItem, 'startDate' | 'finishDate'>;
+
+/** What the master last said of a task's days: the days a lookahead's note keeps, else the task's own. */
+function masterDays(item: ScheduleItem): Days {
+  const note = item.lookaheadOverlay;
+  return note ? { startDate: note.masterStartDate, finishDate: note.masterFinishDate } : item;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** A day that sorts as a day (YYYY-MM-DD); one naming no day after every day. */
+function dayOrder(value: unknown): string {
+  return scheduleCalendarDay(value) ?? `~${key(value)}`;
+}
+
+function rowNumberOf(item: ScheduleItem): number {
+  return Number.isFinite(item.sourceRowNumber) ? Number(item.sourceRowNumber) : Number.MAX_SAFE_INTEGER;
+}
+
 /**
- * Same-named rows paired with their saved twins (one project and area), by
- * calendar days first (whole-app audit A5 pass 17 M2, 1 Oct 2026). Rows had
- * paired purely in file order, so a revised master that dropped phase 1 of
- * two Pour slabs paired the unchanged phase 2 with phase 1 (David's 80% went
- * to phase 2, and phase 2's report to phase 3); a CSV sorted by start date
- * where phase 1 slipped past phase 2 did the same, as did a lookahead with
- * one twin rolled off. Now a row pairs first with a saved twin on the same
- * days (the days it shows, then, for a twin a lookahead restated, the
- * master's days its note keeps), in file order where several share the
- * days and only when as many rows as twins share them; then the rest in
- * file order when as many are left on each side (both twins moved: a slip of
- * every date keeps David's progress on its task, Q22). Otherwise none pair:
- * a new row rather than David's progress on another task.
+ * Twins that all carry a Microsoft Project row number from one file, in that
+ * file's order, or null. Microsoft Project keeps no identity a revision
+ * leaves alone: the normalizer reads its ID, WBS / outline number and row,
+ * and an inserted task renumbers all three below it (no Unique ID is read).
+ * The order of a file's rows is its outline order, which an insert, a slip
+ * or one twin passing the other does not change, so it is compared between
+ * files, never the numbers themselves (A5 pass 3 F3: never by ID).
  */
-function pairSameNamedTasks(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
+function inMicrosoftProjectOrder(items: readonly ScheduleItem[]): ScheduleItem[] | null {
+  const file = (item: ScheduleItem) => key(item.importBatchId) || key(item.sourceDocumentId);
+  if (!items.every(item => Number.isFinite(item.sourceRowNumber) && file(item) && file(item) === file(items[0]))) return null;
+  return [...items].sort((left, right) => rowNumberOf(left) - rowNumberOf(right));
+}
+
+/**
+ * Twins in one stable order (whole-app audit A5 pass 18 F1/F2, 1 Oct 2026):
+ * the master's start day, finish day, the file's row number, then the file's
+ * own order (one import's rows) or the task id (saved tasks). Never the order
+ * a device happens to keep saved tasks in: the phone saves a new row ahead of
+ * the ones it re-homes and a task entered by hand at the top, the web reads
+ * the newest updated first, so that order paired twins differently on each.
+ */
+function inStableOrder(items: readonly ScheduleItem[], inFile: boolean): ScheduleItem[] {
+  return items
+    .map((item, index) => ({ item, index, days: masterDays(item) }))
+    .sort((left, right) =>
+      compareText(dayOrder(left.days.startDate), dayOrder(right.days.startDate)) ||
+      compareText(dayOrder(left.days.finishDate), dayOrder(right.days.finishDate)) ||
+      (rowNumberOf(left.item) - rowNumberOf(right.item)) ||
+      (inFile ? left.index - right.index : compareText(left.item.id, right.item.id)))
+    .map(({ item }) => item);
+}
+
+/** A day as a whole number of days, or null when it names none. */
+function dayNumber(value: unknown): number | null {
+  const day = scheduleCalendarDay(value);
+  if (!day) return null;
+  const [year, month, date] = day.split('-').map(Number);
+  return Math.round(Date.UTC(year, month - 1, date) / 86_400_000);
+}
+
+function spanOf(days: Days): readonly [number, number] | null {
+  const start = dayNumber(days.startDate);
+  const finish = dayNumber(days.finishDate);
+  if (start === null && finish === null) return null;
+  const from = start ?? finish!;
+  const to = finish ?? start!;
+  return from <= to ? [from, to] : [to, from];
+}
+
+/** How far apart two spans are: minus the days they share when they overlap, else the days between them. */
+function apart(left: readonly [number, number], right: readonly [number, number]): number {
+  const shared = Math.min(left[1], right[1]) - Math.max(left[0], right[0]) + 1;
+  return shared > 0 ? -shared : Math.max(left[0], right[0]) - Math.min(left[1], right[1]);
+}
+
+/** The one candidate scoring lowest, or null when none scores or two tie. */
+function uniquelyNearest<T>(candidates: readonly T[], scoreOf: (candidate: T) => number | null): T | null {
+  let nearest: T | null = null;
+  let lowest = Infinity;
+  let tied = false;
+  candidates.forEach(candidate => {
+    const score = scoreOf(candidate);
+    if (score === null) return;
+    if (score < lowest) {
+      nearest = candidate;
+      lowest = score;
+      tied = false;
+    } else if (score === lowest) tied = true;
+  });
+  return tied ? null : nearest;
+}
+
+/**
+ * A lookahead's twin rows by their dates (whole-app audit A5 pass 18 F3, 1 Oct
+ * 2026). A lookahead is a rolling window: it lists the twins its weeks hold,
+ * so a twin it does not list is not left over for another row. A row pairs
+ * with the saved twin it overlaps most, else the one it is nearest to (the
+ * days the twin shows, or the master's days its note keeps), when that twin
+ * is uniquely its nearest and it is uniquely that twin's nearest row; else
+ * with none (a new row, never David's progress on another task).
+ */
+function pairByNearestDays(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
+  const score = (row: ScheduleItem, twin: ScheduleItem): number | null => {
+    const span = spanOf(row);
+    const spans = [spanOf(twin), twin.lookaheadOverlay ? spanOf(masterDays(twin)) : null]
+      .filter((value): value is readonly [number, number] => value !== null);
+    return span && spans.length > 0 ? Math.min(...spans.map(twinSpan => apart(span, twinSpan))) : null;
+  };
   const pairs = new Map<ScheduleItem, ScheduleItem>();
-  let rowsLeft = inFileOrder(rows);
-  let savedLeft = inFileOrder(saved);
+  rows.forEach(row => {
+    const twin = uniquelyNearest(saved, candidate => score(row, candidate));
+    if (twin && uniquelyNearest(rows, candidate => score(candidate, twin)) === row) pairs.set(row, twin);
+  });
+  return pairs;
+}
+
+/**
+ * Rows on exactly a twin's days pair with it (the days it shows, then, for a
+ * twin a lookahead restated, the master's days its note keeps), only when as
+ * many rows as twins share them (whole-app audit A5 pass 17 M2).
+ */
+function pairOnSameDays(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[], inFile: boolean): Map<ScheduleItem, ScheduleItem> {
+  const pairs = new Map<ScheduleItem, ScheduleItem>();
+  let rowsLeft = inStableOrder(rows, inFile);
+  let savedLeft = inStableOrder(saved, false);
   const pairOnDays = (daysOf: (item: ScheduleItem) => string | null) => {
     const twinsOn = new Map<string, ScheduleItem[]>();
     savedLeft.forEach(item => {
@@ -295,30 +402,93 @@ function pairSameNamedTasks(rows: readonly ScheduleItem[], saved: readonly Sched
     savedLeft = savedLeft.filter(item => !taken.has(item));
   };
   pairOnDays(calendarDays);
-  pairOnDays(item => item.lookaheadOverlay
-    ? calendarDays({ startDate: item.lookaheadOverlay.masterStartDate, finishDate: item.lookaheadOverlay.masterFinishDate })
-    : null);
-  // The rest pair in file order when as many are left on each side: a revised
-  // master that slips every date moves both twins, and David's progress follows
-  // them (owner answer Q22); none, when the counts differ.
-  if (rowsLeft.length === savedLeft.length) rowsLeft.forEach((row, index) => pairs.set(row, savedLeft[index]));
+  pairOnDays(item => item.lookaheadOverlay ? calendarDays(masterDays(item)) : null);
   return pairs;
+}
+
+/**
+ * Same-named rows paired with their saved twins (one project and area).
+ *
+ * Whole-app audit A5 pass 17 M2 (1 Oct 2026) paired them on the same calendar
+ * days first, then the rest in file order. Whole-app audit A5 pass 18 (1 Oct
+ * 2026): that swapped David's progress whenever a slip landed one twin on the
+ * other's days (twins on 10/05 at 80% and 10/12, both slipped a week: the
+ * new 10/12 row took the second twin, and the 80% went to 10/19), for a
+ * master, Microsoft Project's one-day QUALITY INSPECTION twins, a lookahead
+ * and Set Active (F1); "file order" was the order a device keeps saved tasks
+ * in, which differs on the phone and the web (F2); and a lookahead listing
+ * only some twins paired none, so Pour slab showed three times and the next
+ * master paired none either (F3).
+ *
+ * Now, by the schedule's role:
+ * - A master (and Set Active / Make Current) with as many rows as twins:
+ *   when the rows are on exactly the twins' days (the master's days a note
+ *   keeps), each pairs with the twin on its days, whatever order the file
+ *   lists them in; otherwise Microsoft Project twins, every one with a row
+ *   number from one file on each side, pair in each file's row order
+ *   (inMicrosoftProjectOrder: its outline order; no identity of Project's
+ *   survives a revision), and others pair both sides in one stable order
+ *   (inStableOrder). A slip, of any size, keeps each twin's progress on its
+ *   task.
+ * - A master with a different count: a twin only a lookahead added (none of
+ *   its imports a master's) is left to the lookahead when that makes the
+ *   counts equal (the next master after a rolling lookahead, F3); else only
+ *   twins on the same days pair (a twin added or dropped); none otherwise.
+ * - A lookahead pairs by nearest days (pairByNearestDays).
+ *
+ * Dates alone cannot tell a slip by exactly the twin spacing from "drop the
+ * first, keep the second, add a third", nor (outside Microsoft Project) from
+ * "the first slipped past the second": a master reads it as the slip, a
+ * lookahead (a rolling window) as the drop and add. That is the remaining
+ * ambiguity. A single row and a single task always pair.
+ */
+function pairSameNamedTasks(
+  rows: readonly ScheduleItem[],
+  saved: readonly ScheduleItem[],
+  { lookahead, inFile, addedByLookahead }: { lookahead: boolean; inFile: boolean; addedByLookahead: (item: ScheduleItem) => boolean },
+): Map<ScheduleItem, ScheduleItem> {
+  if (rows.length === 1 && saved.length === 1) return new Map([[rows[0], saved[0]]]);
+  if (lookahead) return pairByNearestDays(rows, saved);
+  if (rows.length === saved.length) return pairAsMany(rows, saved, inFile);
+  const statedByMaster = saved.filter(item => !addedByLookahead(item));
+  if (statedByMaster.length === rows.length && statedByMaster.length < saved.length) return pairAsMany(rows, statedByMaster, inFile);
+  return pairOnSameDays(rows, saved, inFile);
+}
+
+/** As many rows as twins (a master's, or Set Active's): see pairSameNamedTasks. */
+function pairAsMany(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[], inFile: boolean): Map<ScheduleItem, ScheduleItem> {
+  const rowOrder = inStableOrder(rows, inFile);
+  const savedOrder = inStableOrder(saved, false);
+  const daysOf = (items: readonly ScheduleItem[]) => items.map(item => calendarDays(masterDays(item))).sort().join('\n\n');
+  if (daysOf(rowOrder) === daysOf(savedOrder)) {
+    // Unchanged twins (a file listing them in another order): each the twin on its days.
+    const left = [...savedOrder];
+    return new Map(rowOrder.map(row => [row, left.splice(left.findIndex(item => calendarDays(masterDays(item)) === calendarDays(masterDays(row))), 1)[0]]));
+  }
+  const rowsInProject = inMicrosoftProjectOrder(rows);
+  const savedInProject = rowsInProject && inMicrosoftProjectOrder(saved);
+  const [rowsPaired, savedPaired] = rowsInProject && savedInProject ? [rowsInProject, savedInProject] : [rowOrder, savedOrder];
+  return new Map(rowsPaired.map((row, index) => [row, savedPaired[index]]));
 }
 
 /**
  * The saved task each imported row revises (whole-app audit A5 pass 3 F3,
  * 30 Sep 2026): among the tasks the manager sees and those this import
- * already saved, by name, project and area; same-named rows by their days,
- * then the one left (pairSameNamedTasks, A5 pass 17 M2), and only where no
- * saved row could be either of two tasks (an empty saved area matches every
- * area); never by ID. A lookahead row with no area or parent project pairs
- * loosely, with a single task only (A5 pass 5 M1).
+ * already saved, by name, project and area; same-named rows by the rule for
+ * twins (pairSameNamedTasks: a master in one stable order, a lookahead by
+ * nearest days, A5 pass 18), and only where no saved row could be either of
+ * two tasks (an empty saved area matches every area); never by ID. A
+ * lookahead row with no area or parent project pairs loosely, with a single
+ * task only (A5 pass 5 M1). Set Active's and Make Current's carry pair the
+ * tasks they show and hide as a master does (inFile false: both are saved
+ * tasks, ordered by id where the days tie).
  */
 function pairTaskRevisions(
   existing: readonly ScheduleItem[],
   imported: readonly ScheduleItem[],
   isCurrent: (item: ScheduleItem) => boolean,
   lookahead = false,
+  inFile = true,
 ): Map<ScheduleItem, ScheduleItem> {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
@@ -334,11 +504,18 @@ function pairTaskRevisions(
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
+  // The lookaheads, known by the notes of the tasks they restated (A5 pass 18 F3).
+  const lookaheads = new Set(existing.flatMap(item => (item.lookaheadOverlay?.lookaheads || []).map(entry => key(entry.batchId))).filter(Boolean));
+  const addedByLookahead = (item: ScheduleItem) => {
+    const imports = scheduleItemImportBatchIds(item).map(key).filter(Boolean);
+    return imports.length > 0 && imports.every(batch => lookaheads.has(batch));
+  };
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   candidates
     .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
       saved.every(item => groupCount.get(item.id) === 1))
-    .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved).forEach((item, row) => pairs.set(row, item)));
+    .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved, { lookahead, inFile, addedByLookahead })
+      .forEach((item, row) => pairs.set(row, item)));
   return pairs;
 }
 
@@ -415,7 +592,7 @@ export function scheduleProgressCarriedToShownTasks({
   const nowShown = after.filter(item => !beforeIds.has(item.id));
   const nowHidden = before.filter(item => !afterIds.has(item.id));
   if (nowShown.length === 0 || nowHidden.length === 0) return [];
-  const pairs = pairTaskRevisions(nowHidden, nowShown, () => true);
+  const pairs = pairTaskRevisions(nowHidden, nowShown, () => true, false, false);
   return nowShown.flatMap(shown => {
     const hidden = pairs.get(shown);
     if (!hidden || !scheduleProgressIsManagers(hidden)) return [];
