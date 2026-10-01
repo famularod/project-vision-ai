@@ -95,6 +95,39 @@ describe('audit A9 pass 4 L1: an address written differently from the project na
   });
 });
 
+describe('audit A9 pass 4 L2: reference words exempt only the number they label', () => {
+  it.each([
+    'Did we invoice 2375 yet?',
+    'Any open items 2375?',
+    'Open RFIs 2375?',
+    'Copy submittal 14 to 2375?',
+    'Compare level 2 to 2375',
+    'Did RFI 12 and 2375 close?',
+    'Did the city permit 2375 yet?',
+    'Was permit 2375 issued?',
+    'Are submittals 2375 approved?',
+  ])('"%s" is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+  });
+
+  it.each([
+    'Which finish goes in rooms 2375 and 2376?',
+    'Which finish goes in rooms 2374 and 2375?',
+    'Are RFIs 2374, 2375 and 2376 answered?',
+    'Are rooms 2370 through 2375 painted?',
+    'Are rooms from 2370 to 2375 painted?',
+    'Was invoice #2375 paid?',
+    'Was invoice no. 2375 paid?',
+    'Was permit number 2375 issued?',
+    'What did RFI 2375 say about the embeds?',
+    'What did RFI #2375 say about the embeds?',
+    'Is the kitchen in unit 2375 finished?',
+    'Was submittal 2375 approved?',
+  ])('"%s" is still allowed and Talk stays', question => {
+    expectAllowed(question, PROJECTS);
+  });
+});
+
 describe('audit A9 pass 4: what the review found correctly refused stays refused', () => {
   const MAIN = '2375 Main Street';
   const SUITE = 'Suite 2375 Tenant Improvement';

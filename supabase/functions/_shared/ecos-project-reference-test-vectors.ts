@@ -348,6 +348,39 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: ['2375 Harbor Blvd', SELECTED],
     refused: null,
   },
+  // Audit A9 pass 4 L2: a reference word labels only the number right after
+  // it; a plural only a real list; "invoice" and "permit" only with "#", "no."
+  // or "number".
+  ...[
+    'Did we invoice 2375 yet?',
+    'Any open items 2375?',
+    'Open RFIs 2375?',
+    'Copy submittal 14 to 2375?',
+    'Compare level 2 to 2375',
+    'Did RFI 12 and 2375 close?',
+    'Was permit 2375 issued?',
+  ].map(question => ({
+    name: `refuses "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused: '2375',
+  })),
+  ...[
+    'Which finish goes in rooms 2374 and 2375?',
+    'Are RFIs 2374, 2375 and 2376 answered?',
+    'Are rooms 2370 through 2375 painted?',
+    'Are rooms from 2370 to 2375 painted?',
+    'Was invoice #2375 paid?',
+    'Was invoice no. 2375 paid?',
+    'Was permit number 2375 issued?',
+  ].map(question => ({
+    name: `allows "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused: null,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

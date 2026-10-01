@@ -116,18 +116,51 @@ const NOT_A_PROJECT_NUMBER_SOURCE = [DATE_SOURCE, DOLLAR_SOURCE, PHONE_SOURCE, Q
 
 // A drawing, building or paperwork reference, not a project: "room 1105",
 // "Rm. 1105", "rooms 2375 and 2376", "RFI #2375", "unit 2375", "sheet #2375".
-const REFERENCE_WORDS = [
-  'rooms?', 'rm', 'units?', 'apt', 'apartment', 'suites?', 'ste', 'rfis?', 'submittals?', 'keynotes?', 'sheets?',
-  'details?', 'sections?', 'doors?', 'elevations?', 'elev', 'el', 'grids?', 'levels?', 'specs?', 'drawings?',
-  'dwgs?', 'invoices?', 'asis?', 'pcos?', 'bulletins?', 'permits?', 'items?',
+//
+// Audit A9 pass 4 L2 (30 Sep 2026): with 2375 another project, "Did we invoice
+// 2375 yet?", "Open RFIs 2375?", "Copy submittal 14 to 2375?" or "Did RFI 12
+// and 2375 close?" were not refused, because any reference word, plural or
+// verb, also covered numbers carried over "and", "or" or "to". Now:
+// - a singular word labels only the number right after it (optionally after
+//   "#", "no." or "number"): "RFI 2375", "unit 2375", "sheet no. 2375";
+// - a plural word labels only a real list of two or more numbers: "rooms 2375
+//   and 2376", "RFIs 12, 13 and 14", "rooms 2370 through 2375"; "to" joins a
+//   list only in a range started with "from" ("rooms from 2370 to 2375");
+// - "invoice" and "permit", which are also verbs, label a number only with
+//   "#", "no." or "number": "invoice #2375", "permit no. 2375".
+const SINGLE_REFERENCE_WORDS = [
+  'room', 'rm', 'unit', 'apt', 'apartment', 'suite', 'ste', 'rfi', 'submittal', 'keynote', 'sheet', 'detail',
+  'section', 'door', 'elevation', 'elev', 'el', 'grid', 'level', 'spec', 'drawing', 'dwg', 'asi', 'pco',
+  'bulletin', 'item',
 ].join('|');
-const REFERENCE_LIST_ITEM = String.raw`#?[a-z]{0,3}[-.]?\d+[a-z]?`;
-const REFERENCE_LIST_SEPARATOR = String.raw`(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|to|through|thru)\s+|\s*[&-]\s*)`;
-const REFERENCE_WORD_BEFORE_NUMBER = new RegExp(
-  String.raw`\b(?:${REFERENCE_WORDS})\.?\s*(?:(?:no|nos|number|numbers)\.?\s*)?[:#-]?\s*` +
-    String.raw`(?:${REFERENCE_LIST_ITEM}${REFERENCE_LIST_SEPARATOR})*$`,
+const LIST_REFERENCE_WORDS = [
+  'rooms', 'units', 'apartments', 'suites', 'rfis', 'submittals', 'keynotes', 'sheets', 'details', 'sections',
+  'doors', 'elevations', 'grids', 'levels', 'specs', 'drawings', 'dwgs', 'asis', 'pcos', 'bulletins', 'items',
+].join('|');
+const MARKED_REFERENCE_WORDS = ['invoices?', 'permits?'].join('|');
+const SINGLE_REFERENCE_BEFORE_NUMBER = new RegExp(
+  String.raw`\b(?:${SINGLE_REFERENCE_WORDS})\.?\s*(?:(?:no|number)\.?\s*)?[:#-]?\s*$`,
   'i',
 );
+const MARKED_REFERENCE_BEFORE_NUMBER = new RegExp(
+  String.raw`\b(?:${MARKED_REFERENCE_WORDS})\.?\s*(?:#|(?:no|number)\.?\s*#?)\s*$`,
+  'i',
+);
+const REFERENCE_LIST_ITEM = String.raw`#?[a-z]{0,3}[-.]?\d+[a-z]?`;
+const REFERENCE_LIST_SEPARATOR = String.raw`(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|through|thru)\s+|\s*[&-]\s*)`;
+const REFERENCE_RANGE_SEPARATOR = String.raw`(?:${REFERENCE_LIST_SEPARATOR}|\s+to\s+)`;
+// Group 1 holds the list items before the number; empty when it is the first.
+const REFERENCE_LIST_BEFORE_NUMBER = new RegExp(
+  String.raw`\b(?:${LIST_REFERENCE_WORDS})\.?\s*(?:(?:nos?|numbers?)\.?\s*)?[:#-]?\s*` +
+    String.raw`((?:${REFERENCE_LIST_ITEM}${REFERENCE_LIST_SEPARATOR})*)#?$`,
+  'i',
+);
+const REFERENCE_RANGE_BEFORE_NUMBER = new RegExp(
+  String.raw`\b(?:${LIST_REFERENCE_WORDS})\s+from\s+((?:${REFERENCE_LIST_ITEM}${REFERENCE_RANGE_SEPARATOR})*)#?$`,
+  'i',
+);
+const REFERENCE_LIST_CONTINUES = new RegExp(String.raw`^${REFERENCE_LIST_SEPARATOR}${REFERENCE_LIST_ITEM}\b`, 'i');
+const REFERENCE_RANGE_CONTINUES = new RegExp(String.raw`^${REFERENCE_RANGE_SEPARATOR}${REFERENCE_LIST_ITEM}\b`, 'i');
 
 // A street address: "2375 Main Street", "2375 N. Harbor Blvd". The street name
 // is capitalized and is not an ordinary word, so "2375 by the service road"
@@ -191,13 +224,22 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
     const after = blanked.slice(match.index + number.length);
     if (
       projectNameAroundNumber(number, before, after, projectNames) ||
-      (!REFERENCE_WORD_BEFORE_NUMBER.test(before) &&
+      (!referenceWordLabelsNumber(before, after) &&
         (addressProjectNumbers.has(number) || !streetAddressAfterNumber(after)))
     ) {
       mentions.push(number);
     }
   }
   return mentions;
+}
+
+/** Whether a room, RFI, sheet or other reference word labels this number (audit A9 pass 4 L2). */
+function referenceWordLabelsNumber(before: string, after: string) {
+  if (SINGLE_REFERENCE_BEFORE_NUMBER.test(before) || MARKED_REFERENCE_BEFORE_NUMBER.test(before)) return true;
+  const list = REFERENCE_LIST_BEFORE_NUMBER.exec(before);
+  if (list && (list[1] || REFERENCE_LIST_CONTINUES.test(after))) return true;
+  const range = REFERENCE_RANGE_BEFORE_NUMBER.exec(before);
+  return Boolean(range && (range[1] || REFERENCE_RANGE_CONTINUES.test(after)));
 }
 
 function streetAddressAfterNumber(after: string) {
