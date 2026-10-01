@@ -1126,6 +1126,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const carried = scheduleProgressCarriedToShownTasks({
       before: shownBefore,
       after: snapshotRef.current?.scheduleItems ?? [],
+      // A task entered by hand waiting on this schedule is restated now (whole-app audit A5 pass 18 L3).
+      documentsBefore: scheduleDocuments,
+      documentsAfter: snapshotRef.current?.referenceDocuments ?? [],
     }) as DAVEWebScheduleItem[];
     if (carried.length > 0) await updateTasks(carried).catch(() => 0);
     return scope;

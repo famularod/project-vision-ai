@@ -203,20 +203,28 @@ describe('A5 p17 M1 on the web: the upload plan and Make Current show David\'s t
     documents: [prepared.document],
   };
   const current: State = { ...uploaded, documents: scheduleDocumentsAfterActivation(prepared.document, uploaded.documents, 'project') };
-  const carried = new Map(scheduleProgressCarriedToShownTasks({ before: shown(uploaded), after: shown(current) }).map(item => [item.id, item]));
+  const carried = new Map(scheduleProgressCarriedToShownTasks({
+    before: shown(uploaded), after: shown(current), documentsBefore: uploaded.documents, documentsAfter: current.documents,
+  }).map(item => [item.id, item]));
   const afterMakeCurrent: State = { ...current, items: current.items.map(item => carried.get(item.id) || item) };
 
-  it('the upload restates David\'s task (a revision) and adds only the master\'s other task', () => {
+  // Changed deliberately (A5 pass 18 L3): the upload is not current until Make Current, and restating David's
+  // task at upload moved it on every device even if he never made the file current. The upload now notes the
+  // row on his task (a revision that changes nothing he sees); Make Current restates it.
+  it('the upload notes the row on David\'s task (a revision, his dates kept) and adds only the master\'s other task', () => {
     expect(plan.additions.map(item => item.taskName)).toEqual(['Framing']);
     expect(plan.revisions.map(revision => revision.item)).toEqual([expect.objectContaining({
-      id: 'web-hand-pour', startDate: '10/08/2026', finishDate: '10/12/2026', percentComplete: 40, progressSource: 'project_manager',
+      id: 'web-hand-pour', startDate: '10/01/2026', finishDate: '10/05/2026', percentComplete: 40, progressSource: 'project_manager',
       progressConfirmedBy: 'David',
+      scheduleRowsAwaitingCurrent: [expect.objectContaining({ importBatchId: prepared.document.importBatchId, startDate: '10/08/2026', finishDate: '10/12/2026' })],
     })]);
     expect(plan.revisions[0].cloudUpdatedAt).toBe('rev-1');
   });
 
-  it('after Make Current, Pour slab shows once at David\'s 40%', () => {
-    expect(shownNamed(afterMakeCurrent, 'Pour slab')).toEqual([expect.objectContaining({ id: 'web-hand-pour', percentComplete: 40 })]);
+  it('after Make Current, Pour slab shows once at David\'s 40%, on the master\'s dates', () => {
+    expect(shownNamed(afterMakeCurrent, 'Pour slab')).toEqual([expect.objectContaining({
+      id: 'web-hand-pour', percentComplete: 40, startDate: '10/08/2026', finishDate: '10/12/2026',
+    })]);
     expect(shown(afterMakeCurrent).map(item => item.taskName).sort()).toEqual(['Framing', 'Pour slab']);
   });
 });

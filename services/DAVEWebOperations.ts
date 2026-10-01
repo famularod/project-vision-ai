@@ -353,6 +353,12 @@ export type DAVEWebScheduleImportPlan = Readonly<{
  * Only the tasks the web shows (snapshot.scheduleItems, the current
  * schedules) are offered: with every saved row, a task changed in two
  * revisions running has two manager-progress copies and carries nothing.
+ *
+ * Whole-app audit A5 pass 18 L3 (1 Oct 2026): the upload is not current
+ * until Make Current, so a task entered by hand is no longer restated here
+ * (that moved David's task on every device even if he never made the file
+ * current): the row is noted on the task and restates it at Make Current
+ * (scheduleProgressCarriedToShownTasks with the schedules before and after).
  */
 export function planDAVEWebScheduleImport({
   snapshot,
@@ -375,6 +381,8 @@ export function planDAVEWebScheduleImport({
     mergeCompletion: mergeReportedCompletionClaim,
     // Every task offered is one the web shows.
     isCurrent: () => true,
+    // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
+    current: false,
   });
   const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
   const revisions = merged.next.flatMap(item => {

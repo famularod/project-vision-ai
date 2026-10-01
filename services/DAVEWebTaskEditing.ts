@@ -333,6 +333,8 @@ export function buildDAVEWebScheduleItem({
     // What the task said before a lookahead restated it (owner answer Q22).
     ...(current?.lookaheadOverlay ? { lookaheadOverlay: current.lookaheadOverlay } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
+    // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
+    ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,

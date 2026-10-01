@@ -30,11 +30,13 @@
  */
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
   mergeApprovedScheduleImportItems,
   scheduleItemsVisibleBeforeImport,
+  scheduleProgressCarriedOnActivation,
   scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
 import { scheduleItemsAfterLookaheadDeleted } from '../../services/ScheduleLookahead';
@@ -382,5 +384,77 @@ describe('A5 p18 L2: a master row with no dates leaves the lookahead note\'s mas
     expect([task.startDate, task.finishDate]).toEqual(['10/03/2026', '10/07/2026']);
     const back = scheduleItemsAfterLookaheadDeleted(state.items, L, '2026-09-30T12:00:00.000Z').find(item => item.id === 'hand-pour')!;
     expect([back.startDate, back.finishDate]).toEqual(['10/01/2026', '10/05/2026']);
+  });
+});
+
+/**
+ * L3 (from 348e414): a schedule uploaded on the web is not current until
+ * David makes it current ("must be reviewed"), but its upload already moved
+ * his hand-entered task to the file's dates on every device, and nothing
+ * undid that if he never made it current. Now the task is restated when the
+ * schedule becomes current: Make Current on the web, Set Active on the phone.
+ */
+describe('A5 p18 L3: a web upload restates a hand-entered task only when it is made current', () => {
+  const hand = buildDAVEWebScheduleItem({
+    id: 'web-hand-pour', now: '2026-09-20T15:00:00.000Z', actor: 'David',
+    draft: {
+      itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+      startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: 'Crew A', contractor: '', percentComplete: '40',
+      priority: 'Medium', status: 'In Progress', notes: 'Pump booked', nextAction: '', activityMessage: '',
+    },
+  });
+  const prepared = prepareDAVEWebDocumentUpload({
+    fileName: 'alpha-master-f.csv', mimeType: 'text/csv', sizeBytes: 200, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+    contents: ['Task,Project,Location,Start,Finish,Owner,Status,Percent Complete',
+      'Pour slab,Alpha,Lot,10/08/2026,10/12/2026,,In Progress,60', 'Framing,Alpha,Lot,10/14/2026,10/20/2026,,Not Started,0'].join('\n'),
+    fingerprint: 'f'.repeat(64), now: '2026-09-25T12:00:00.000Z',
+  });
+  const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: [{ ...hand, cloudUpdatedAt: 'rev-1' }] }, importedScheduleItems: prepared.scheduleItems });
+  const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
+  const uploaded: State = { items: [...plan.additions, ...[hand].map(item => revised.get(item.id) || item)], documents: [prepared.document] };
+
+  it('after the upload (not current) David\'s task shows on his own dates and percent, on every device', () => {
+    expect(prepared.document.isCurrent).toBe(false);
+    expect(shownNamed(uploaded, 'Pour slab')).toEqual([expect.objectContaining({
+      id: 'web-hand-pour', startDate: '10/01/2026', finishDate: '10/05/2026', percentComplete: 40, owner: 'Crew A',
+    })]);
+    expect(plan.additions.map(item => item.taskName)).toEqual(['Framing']);
+  });
+
+  it('Make Current on the web restates it in place: the file\'s dates, the file\'s higher 60%, his owner and notes; shown once', () => {
+    const current: State = { ...uploaded, documents: scheduleDocumentsAfterActivation(prepared.document, uploaded.documents, 'project') };
+    const carried = new Map(scheduleProgressCarriedToShownTasks({
+      before: shown(uploaded), after: shown(current), documentsBefore: uploaded.documents, documentsAfter: current.documents,
+      now: '2026-09-27T12:00:00.000Z',
+    }).map(item => [item.id, item]));
+    const after: State = { ...current, items: current.items.map(item => carried.get(item.id) || item) };
+    expect(shownNamed(after, 'Pour slab')).toEqual([expect.objectContaining({
+      id: 'web-hand-pour', startDate: '10/08/2026', finishDate: '10/12/2026', percentComplete: 60, owner: 'Crew A', notes: 'Pump booked',
+    })]);
+    // Applied once: the task no longer waits on that schedule.
+    expect(after.items.find(item => item.id === 'web-hand-pour')).not.toHaveProperty('scheduleRowsAwaitingCurrent');
+  });
+
+  it('Set Active on the phone does the same', () => {
+    const documentsAfter = scheduleDocumentsAfterActivation(prepared.document, uploaded.documents, 'project');
+    const carried = scheduleProgressCarriedOnActivation({
+      items: uploaded.items, documentsBefore: uploaded.documents, documentsAfter, now: '2026-09-27T12:00:00.000Z',
+    });
+    expect(carried).toEqual([expect.objectContaining({ id: 'web-hand-pour', startDate: '10/08/2026', percentComplete: 60 })]);
+  });
+
+  it('another schedule made current leaves David\'s task and the waiting row alone', () => {
+    const other = { ...schedule('MASTER OTHER', '2026-09-26T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const documentsBefore = [...uploaded.documents, other];
+    const documentsAfter = scheduleDocumentsAfterActivation(other, documentsBefore, 'project');
+    expect(scheduleProgressCarriedOnActivation({ items: uploaded.items, documentsBefore, documentsAfter })).toEqual([]);
+  });
+
+  it('a percent David raised meanwhile stays (a file never lowers his): 70% over the file\'s 60%', () => {
+    const raised: State = { ...uploaded, items: uploaded.items.map(item => item.id === 'web-hand-pour'
+      ? { ...item, percentComplete: 70, progressConfirmedAt: '2026-09-26T12:00:00.000Z', updatedAt: '2026-09-26T12:00:00.000Z' } : item) };
+    const documentsAfter = scheduleDocumentsAfterActivation(prepared.document, raised.documents, 'project');
+    const carried = scheduleProgressCarriedOnActivation({ items: raised.items, documentsBefore: raised.documents, documentsAfter, now: '2026-09-27T12:00:00.000Z' });
+    expect(carried).toEqual([expect.objectContaining({ id: 'web-hand-pour', startDate: '10/08/2026', percentComplete: 70, progressConfirmedBy: 'David' })]);
   });
 });

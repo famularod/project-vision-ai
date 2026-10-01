@@ -1,6 +1,10 @@
-import type { ReferenceDocument, ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem, ScheduleRowAwaitingCurrent } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
-import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
+import {
+  currentScheduleDocumentsByProject,
+  scheduleProjectScopeKey,
+  selectAuthoritativeScheduleItems,
+} from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
@@ -128,7 +132,8 @@ import {
  * progress when a slip landed one twin on the other's days, "file order" was
  * the order each device keeps tasks in, and a lookahead listing some twins
  * paired none. Twins now pair by one rule per schedule role
- * (pairSameNamedTasks).
+ * (pairSameNamedTasks). A schedule uploaded on the web restates a task
+ * entered by hand only when it is made current (scheduleRowsAwaitingCurrent).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -588,14 +593,94 @@ function progressStatedAt(item: ScheduleItem): number {
 export function scheduleProgressCarriedToShownTasks({
   before,
   after,
+  documentsBefore,
+  documentsAfter,
   now = new Date().toISOString(),
 }: {
   /** The tasks shown before the schedule was made current. */
   before: readonly ScheduleItem[];
   /** The tasks shown after. */
   after: readonly ScheduleItem[];
+  /** The schedules before and after: a task entered by hand waiting on one made current is restated (A5 pass 18 L3). */
+  documentsBefore?: readonly ReferenceDocument[];
+  documentsAfter?: readonly ReferenceDocument[];
   now?: string;
 }): ScheduleItem[] {
+  const carried = progressCarried(before, after, now);
+  const restated = documentsBefore && documentsAfter ? handTasksRestatedWhenCurrent(after, documentsBefore, documentsAfter, now) : [];
+  const carriedIds = new Set(carried.map(item => item.id));
+  return [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
+}
+
+/**
+ * A row of a schedule saved before it is current, noted on the task entered
+ * by hand it restates (whole-app audit A5 pass 18 L3), replacing an earlier
+ * row of the same schedule.
+ */
+function withRowAwaitingCurrent(task: ScheduleItem, row: ScheduleItem, at: string): ScheduleItem {
+  const batchId = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
+  if (!batchId) return task;
+  const entry: ScheduleRowAwaitingCurrent = {
+    importBatchId: batchId,
+    sourceDocumentId: row.sourceDocumentId ?? null,
+    startDate: row.startDate,
+    finishDate: row.finishDate,
+    percentComplete: percentOf(row),
+    ...(scheduleRowStatesPercent(row) ? {} : { percentCompleteStated: false }),
+    status: row.status,
+  };
+  const others = (task.scheduleRowsAwaitingCurrent || []).filter(waiting => key(waiting.importBatchId) !== key(batchId));
+  return { ...task, scheduleRowsAwaitingCurrent: [...others, entry], updatedAt: at };
+}
+
+/**
+ * Whole-app audit A5 pass 18 L3 (1 Oct 2026): a schedule uploaded on the web
+ * is not current until David makes it current ("must be reviewed"), but its
+ * upload already moved his hand-entered Pour slab to the file's dates on
+ * every device, and nothing undid that if he never made it current. The
+ * upload now notes the row on the task (scheduleRowsAwaitingCurrent) and
+ * changes nothing he sees. When a schedule becomes the current one for the
+ * task's project (Make Current on the web, Set Active on the phone), its row
+ * restates the task as approving it on the phone does: in place, on the
+ * file's dates, the file's percent only over a lower one of his (owner answer
+ * Q22), his owner and notes kept. The note is dropped then.
+ */
+function handTasksRestatedWhenCurrent(
+  shown: readonly ScheduleItem[],
+  documentsBefore: readonly ReferenceDocument[],
+  documentsAfter: readonly ReferenceDocument[],
+  now: string,
+): ScheduleItem[] {
+  const currentBefore = currentScheduleDocumentsByProject(documentsBefore);
+  const currentAfter = currentScheduleDocumentsByProject(documentsAfter);
+  return shown.flatMap(task => {
+    const waiting = task.scheduleRowsAwaitingCurrent || [];
+    if (waiting.length === 0 || ownedByImport(task)) return [];
+    const project = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
+    const madeCurrent = currentAfter.get(project);
+    if (!madeCurrent || currentBefore.get(project)?.id === madeCurrent.id) return [];
+    const entry = waiting.find(row => key(row.importBatchId) === key(madeCurrent.importBatchId));
+    if (!entry) return [];
+    const { scheduleRowsAwaitingCurrent: _waiting, ...plain } = task;
+    const rest = waiting.filter(row => row !== entry);
+    const base = (rest.length > 0 ? { ...plain, scheduleRowsAwaitingCurrent: rest } : plain) as ScheduleItem;
+    const row = {
+      id: `${task.id}#${entry.importBatchId}`, projectName: task.projectName, scheduleProjectName: task.scheduleProjectName ?? null,
+      locationName: task.locationName, taskName: task.taskName, startDate: entry.startDate, finishDate: entry.finishDate,
+      milestone: task.milestone, owner: '', contractor: '', percentComplete: entry.percentComplete,
+      ...(entry.percentCompleteStated === false ? { percentCompleteStated: false } : {}),
+      status: entry.status, priority: task.priority, notes: '', importBatchId: entry.importBatchId,
+      sourceDocumentId: entry.sourceDocumentId ?? null, createdAt: now,
+    } as ScheduleItem;
+    // Restated as the phone's approval restates it; a row that no longer pairs (renamed since) only drops the note.
+    const { next } = mergeApprovedScheduleImportItems({
+      existing: [base], imported: [row], completionMatch: () => null, mergeCompletion: item => item, approvedAt: now,
+    });
+    return [next[0]];
+  });
+}
+
+function progressCarried(before: readonly ScheduleItem[], after: readonly ScheduleItem[], now: string): ScheduleItem[] {
   const beforeIds = new Set(before.map(item => item.id));
   const afterIds = new Set(after.map(item => item.id));
   const nowShown = after.filter(item => !beforeIds.has(item.id));
@@ -653,7 +738,9 @@ export function scheduleProgressCarriedOnActivation({
 }): ScheduleItem[] {
   const shownWith = (documents: readonly ReferenceDocument[]) =>
     selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] });
-  return scheduleProgressCarriedToShownTasks({ before: shownWith(documentsBefore), after: shownWith(documentsAfter), now });
+  return scheduleProgressCarriedToShownTasks({
+    before: shownWith(documentsBefore), after: shownWith(documentsAfter), documentsBefore, documentsAfter, now,
+  });
 }
 
 /** The import identity, with an empty saved area matching the imported one. */
@@ -671,6 +758,7 @@ export function mergeApprovedScheduleImportItems({
   isCurrent = () => true,
   approvedAt = new Date().toISOString(),
   overlay = false,
+  current = true,
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
@@ -683,6 +771,12 @@ export function mergeApprovedScheduleImportItems({
   approvedAt?: string;
   /** A lookahead: it adds to the master and restates the master's tasks in place (owner answer Q22). */
   overlay?: boolean;
+  /**
+   * False for a schedule saved before it is current (a web upload "must be
+   * reviewed"): a task entered by hand is restated only when the schedule is
+   * made current (scheduleRowsAwaitingCurrent, A5 pass 18 L3).
+   */
+  current?: boolean;
 }): ScheduleImportMergeResult {
   let next = [...existing];
   const additions: ScheduleItem[] = [];
@@ -769,6 +863,13 @@ export function mergeApprovedScheduleImportItems({
       const restated = movedByHand && !unchangedTask(noted, { ...noted, ...dates })
         ? { ...noted, ...dates, updatedAt: approvedAt }
         : noted;
+      if (!current && !owned) {
+        // Not current yet: the row waits on the task until its schedule is made current (A5 pass 18 L3).
+        if (fileProgress || restated !== duplicate) {
+          next = next.map(item => item.id === duplicate.id ? withRowAwaitingCurrent(item, importedItem, approvedAt) : item);
+        }
+        return;
+      }
       if (rehome || fileProgress || restated !== next.find(item => item.id === duplicate.id)) {
         next = next.map(item => item.id === duplicate.id
           ? {

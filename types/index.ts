@@ -722,6 +722,18 @@ export type DAVECompletionVerification = {
   evidence: DAVECompletionEvidence[];
 };
 
+/** A schedule row waiting for its schedule to become current (ScheduleItem.scheduleRowsAwaitingCurrent). */
+export type ScheduleRowAwaitingCurrent = {
+  importBatchId: string;
+  sourceDocumentId?: string | null;
+  startDate: string;
+  finishDate: string;
+  percentComplete: number;
+  /** False when the file stated no percent for the row (A5 pass 5 H1). */
+  percentCompleteStated?: boolean | null;
+  status: ScheduleStatus;
+};
+
 export type ScheduleLookaheadOverlay = {
   /** The task's dates and percent before the first lookahead changed it. */
   masterStartDate: string;
@@ -840,6 +852,15 @@ export type ScheduleItem = {
    * record, as lookaheadOverlay is. Missing on a row saved before.
    */
   revisedFromTaskIds?: string[] | null;
+  /**
+   * A task entered by hand: the rows of schedules uploaded on the web, not
+   * current yet, that restate it (whole-app audit A5 pass 18 L3, 1 Oct
+   * 2026). Each restates the task when its schedule is made current for the
+   * task's project (Make Current on the web, Set Active on the phone), and
+   * is dropped then. Kept in the task's JSON record. Missing on every other
+   * task.
+   */
+  scheduleRowsAwaitingCurrent?: ScheduleRowAwaitingCurrent[] | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
   /** Immutable activity identifier captured from the source schedule row. */
