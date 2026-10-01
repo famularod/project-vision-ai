@@ -1252,13 +1252,17 @@ async function chooseInSettings(
   onRetryUpdateSync: (...args: unknown[]) => Promise<unknown> = jest.fn(async () => ({})),
   /** What happens on the phone while the choice talks to the cloud (A4 pass 18 L1). */
   duringChoice?: () => Promise<void>,
-  /** `settingsRef`: Settings' own copy of the cards, read again only when Settings re-renders (A4 pass 19 L1). */
-  { settingsRef = phone.savedUpdatesRef }: { settingsRef?: { current: Update[] } } = {},
+  /**
+   * `settingsRef`: Settings' own copy of the cards, read again only when Settings re-renders (A4 pass 19 L1).
+   * `afterApply`: what lands right after the App applies the chosen copy, before it re-renders (A4 pass 19 L2).
+   */
+  { settingsRef = phone.savedUpdatesRef, afterApply }: { settingsRef?: { current: Update[] }; afterApply?: () => void } = {},
 ) {
   const applyChosen = evaluate<(update: Update) => void>(
     transpile(`module.exports = function (update) ${blockAfter('onApplyCloudConflictUpdate={update => {')}`),
     {
       normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord, setSavedUpdates: phone.setSavedUpdates,
+      savedUpdatesRef: phone.savedUpdatesRef, // held at once (A4 pass 19 L2)
       mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones, deletedUpdateTombstonesRef: { current: [] },
     },
   );
@@ -1274,7 +1278,8 @@ async function chooseInSettings(
           return resolved;
         }
         : resolveProjectUpdateSyncConflict,
-      syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: settingsRef.current,
+      syncConflictChoiceStopReason, savedUpdates: settingsRef.current,
+      onApplyCloudConflictUpdate: (update: Update) => { applyChosen(update); afterApply?.(); },
       savedUpdatesRef: settingsRef, projectUpdateCopyIsLastInCloud, onRetryUpdateSync,
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
@@ -4322,6 +4327,46 @@ describe('a Retry sends the card as it is now (audit A4 pass 19 L1)', () => {
     expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
     expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 19 L2 (older): after Keep Cloud, the App briefly
+ * still held the discarded edit. Applying the cloud's copy changed the App's
+ * state but not the copy of the cards its other writes read at once, until
+ * the next render. A photo analysis that finished in that moment read the
+ * discarded card as Waiting to Sync, put it back on the card and queued it
+ * whole, and the waiting-update sync sent it over the copy David kept. The
+ * App now holds the cloud's copy at once, as its other card writes do.
+ */
+describe('after Keep Cloud the App holds the cloud\'s copy at once (audit A4 pass 19 L2)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('a photo analysis that lands after the choice, before the App re-renders, goes onto the cloud\'s copy', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud', undefined, undefined, {
+      afterApply: () => lateAnalysisFinishes(phone, result),
+    });
+    await phone.settle();
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(await getOfflineQueue()).toEqual([]);
     expect(await getSyncConflicts()).toEqual([]);
   });
 });

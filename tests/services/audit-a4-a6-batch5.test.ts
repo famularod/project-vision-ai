@@ -20,7 +20,9 @@ describe('A4 pass 4 lows', () => {
     expect(app).toMatch(/if \(error instanceof FieldUpdatePersistenceBlockedError\) blockFieldUpdateStores\(error\);/);
     expect(app).toMatch(/function blockFieldUpdateStores\(error: FieldUpdatePersistenceBlockedError\) \{\n\s+startupHydration\.fail\(UPDATES_STORAGE_KEY, 'field update save recovery', error\);/);
     expect(app).toMatch(/if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\(persistError =>/);
-    expect(app).toMatch(/onApplyCloudConflictUpdate=\{update => \{\n\s+const cloudUpdate = normalizeStoredUpdateRecord\(update\);\n(?:\s*\/\/.*\n)*\s+setSavedUpdates\(previous => mergeSavedUpdatesWithTombstones\(\{\n\s+localUpdates: previous\.filter\(item => item\.id !== cloudUpdate\.id\),/);
+    // Pin changed in A4 pass 19 L2: the App's copy of the cards is set at once
+    // with the state (it read the discarded copy until the next render).
+    expect(app).toMatch(/onApplyCloudConflictUpdate=\{update => \{\n\s+const cloudUpdate = normalizeStoredUpdateRecord\(update\);\n(?:\s*\/\/.*\n)*\s+savedUpdatesRef\.current = mergeSavedUpdatesWithTombstones\(\{\n\s+localUpdates: savedUpdatesRef\.current\.filter\(item => item\.id !== cloudUpdate\.id\),\n\s+cloudUpdates: \[cloudUpdate\],\n\s+tombstones: deletedUpdateTombstonesRef\.current,\n\s+\}\);\n\s+setSavedUpdates\(savedUpdatesRef\.current\);/);
   });
 });
 

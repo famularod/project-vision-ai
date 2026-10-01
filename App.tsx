@@ -14026,11 +14026,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 // The owner chose the cloud copy: it replaces the local
                 // failed one rather than lending it a receipt (audit A4 pass 4);
                 // the resolver withdrew the phone's queued copies and wrote it back (pass 5).
-                setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
-                  localUpdates: previous.filter(item => item.id !== cloudUpdate.id),
+                // Held at once, as every card write is (A4 pass 19 L2): a photo
+                // analysis landing before the next render put the discarded copy back.
+                savedUpdatesRef.current = mergeSavedUpdatesWithTombstones({
+                  localUpdates: savedUpdatesRef.current.filter(item => item.id !== cloudUpdate.id),
                   cloudUpdates: [cloudUpdate],
                   tombstones: deletedUpdateTombstonesRef.current,
-                }));
+                });
+                setSavedUpdates(savedUpdatesRef.current);
               }}
               onApplyCloudConflictScheduleItem={item => {
                 const resolvedItem = migrateLegacyScheduleItem(
