@@ -118,3 +118,33 @@ describe('audit A9 pass 6 L2: a closing quote after a number is not an inch mark
     expectAllowed(question, PROJECTS);
   });
 });
+
+describe('audit A9 pass 6 L3: a date exempts its year only when the year is 19xx or 20xx', () => {
+  it.each([
+    'Pull the Sept 30 2375 daily log',
+    'Did the May 3 2375 pour pass?',
+    'Send the Oct 5, 2375 report',
+    'Was the inspection on 5 Oct 2375 passed?',
+    'Was the inspection on 9/30/2375 passed?',
+    'Was the inspection on 2375-10-05 passed?',
+  ])('"%s" is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it.each([
+    'Pull the Sept 30 2026 daily log',
+    'Did the May 3 2026 pour pass?',
+    'Send the Oct 5, 2026 report',
+    'Was the inspection on 5 Oct 2026 passed?',
+    'Was the inspection on 9/30/2026 passed?',
+    'Was the inspection on 2026-10-05 passed?',
+    'Was the inspection on 10-5-26 passed?',
+  ])('"%s" is a full date, not project 2026', question => {
+    expectAllowed(question, [SELECTED, '2026 Fit-Out']);
+  });
+
+  it('a 19xx year is a date year too', () => {
+    expectAllowed('Was the survey on Mar 2, 1999 filed?', [SELECTED, '1999 Survey Archive']);
+  });
+});

@@ -220,7 +220,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     'Was the $2375 invoice for the rebar paid?',
     'Is the new slab 2375 mm thick?',
     'Is the main service a 2375 amp service?',
-    'Was the inspection on 9/30/2375 passed?',
+    // "9/30/2375" was allowed here until audit A9 pass 6 L3: a date's year
+    // must be 19xx or 20xx, so 2375 now names the project (refusing is right;
+    // see the pass 6 L3 vectors below).
   ].map(question => ({
     name: `allows "${question}" when 2375 is another project`,
     projectName: SELECTED,
@@ -556,6 +558,33 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     question,
     knownProjectNames: OWNER_PROJECTS,
     refused,
+  })),
+  // Audit A9 pass 6 L3: a four-digit date year is 19xx or 20xx in every shape.
+  ...([
+    ['Pull the Sept 30 2375 daily log', '2375'],
+    ['Did the May 3 2375 pour pass?', '2375'],
+    ['Send the Oct 5, 2375 report', '2375'],
+    ['Was the inspection on 9/30/2375 passed?', '2375'],
+    ['Was the inspection on 2375-10-05 passed?', '2375'],
+    ['Was the inspection on 5 Oct 2375 passed?', '2375'],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 6 L3: refuses "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
+  ...[
+    'Pull the Sept 30 2026 daily log',
+    'Send the Oct 5, 2026 report',
+    'Was the inspection on 9/30/2026 passed?',
+    'Was the inspection on 2026-10-05 passed?',
+  ].map(question => ({
+    name: `pass 6 L3: allows "${question}" when 2026 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [...OWNER_PROJECTS, '2026 Fit-Out'],
+    refused: null,
   })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {

@@ -110,6 +110,7 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
 }
 
 const NUMBER = String.raw`\b(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
+const YEAR = '(?:19|20)\\d{2}';
 const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
 
 /**
@@ -162,12 +163,13 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
   // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",
   //    "Oct 5, 2026", "5th October 2026", "7:30", "0730 hrs". A bare year
-  //    ("due in 2026") is not exempt.
+  //    ("due in 2026") is not exempt, and a four-digit year is 19xx or 20xx
+  //    ("Sept 30 2375", "9/30/2375" name 2375; audit A9 pass 6 L3).
   new RegExp([
-    String.raw`\b\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2})\b`,
-    String.raw`\b\d{4}[/.-]\d{1,2}[/.-]\d{1,2}\b`,
-    `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
-    `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+\\d{4}\\b`,
+    String.raw`\b\d{1,2}[/.-]\d{1,2}[/.-](?:${YEAR}|\d{2})\b`,
+    String.raw`\b${YEAR}[/.-]\d{1,2}[/.-]\d{1,2}\b`,
+    `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+${YEAR}\\b`,
+    `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+${YEAR}\\b`,
     String.raw`\b(?:[01]?\d|2[0-3]):[0-5]\d\b`,
     String.raw`\b(?:[01]\d|2[0-3])[0-5]\d\s?(?:hrs?|hours)\b`,
   ].join('|'), 'gi'),

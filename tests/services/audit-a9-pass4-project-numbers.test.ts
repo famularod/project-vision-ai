@@ -227,7 +227,9 @@ describe('audit A9 pass 4: of what the review found correctly allowed, the five 
     ['What strength is the 4000 psi concrete?', [...PROJECTS, '4000 Warehouse']],
     ['Which sealant does spec 03 30 00 call for?', PROJECTS],
     ['Which sealant does 033000 call for?', PROJECTS],
-    ['Was the inspection on 9/30/2375 passed?', PROJECTS],
+    // Audit A9 pass 6 L3: "9/30/2375" is no real date, so 2375 names the
+    // project and is refused (see the pass 6 tests); a 20xx year is a date.
+    ['Was the inspection on 9/30/2026 passed?', [...PROJECTS, '2026 Fit-Out']],
     ['Was the inspection on Sep 30, 2026 passed?', [...PROJECTS, '2026 Fit-Out']],
     ['Was the $2,375 change order approved?', PROJECTS],
     ['Is the beam 2375 lb?', PROJECTS],
