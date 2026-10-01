@@ -1843,3 +1843,56 @@ describe('Keep Phone after a refresh shows the phone\'s copy on the card (audit 
     expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
   });
 });
+
+/**
+ * A7 pass 10 L-4: Keep Phone put the copy recorded with the conflict on the
+ * queue over a newer edit David had saved on the phone since, still waiting
+ * there. Offline it then said "Neither copy was changed"; once the older
+ * copy went up, a refresh before the waiting-update sync showed it as Sent,
+ * and the newer edit was lost.
+ */
+describe('Keep Phone keeps a newer phone edit still waiting in the queue (audit A7 pass 10 L-4)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('offline: nothing changes, the newer edit stays queued; reconnected, a refresh before the waiting-update sync keeps it and it reaches the cloud', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    try {
+      (saveProjectUpdate as jest.Mock).mockResolvedValue({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+      await expect(chooseInSettingsExpectingFailure(phone, conflict, 'keep_local')).resolves.toEqual(['Conflict not resolved']);
+      expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER);
+      expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+
+    await uploadPendingChanges(); // reconnected
+    await refresh(phone); // before the waiting-update sync
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+  });
+
+  it('online: the kept copy goes up, then the newer edit after it; a refresh before the waiting-update sync keeps it', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'queued' }); // still owes its own sync
+    expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER);
+
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a Retry of the conflict\'s own copy is not a newer edit: nothing is queued after Keep Phone', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await queueProjectUpdateRecord({ ...phone.saved()!, status: 'queued', sendAttempts: 2, lastSendAttemptAt: new Date().toISOString() }, false);
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+});

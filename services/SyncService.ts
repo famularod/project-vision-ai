@@ -4159,7 +4159,16 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     throw new Error('sync_conflict_local_copy_missing');
   }
   const localUpdateData = (await withDocumentChangesSinceConflict(conflict.localId))(localPayload.updateData) as TUpdate;
-  await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+  const queueItemId = projectUpdateQueueItemId(localPayload.id);
+  // A newer edit saved on this phone since the conflict, still waiting to go
+  // up (whole-app audit A7 pass 10 L-4): the copy recorded with the conflict
+  // was put over it, and once that went up a refresh before the waiting-
+  // update sync showed it as Sent; the newer edit was lost. It is put back:
+  // as it was when the choice fails ("Neither copy was changed"), and after
+  // the kept copy when it lands, so it goes up next.
+  const newerEdit = (await getOfflineQueue()).find(item =>
+    item.id === queueItemId && isNewerQueuedPhoneEdit(item, localUpdateData)) ?? null;
+  const written = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: `project-update-${localPayload.id}`,
     entity: 'project_update',
     operation: 'update',
@@ -4167,11 +4176,40 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     changedAt: new Date().toISOString(),
     autoUpload: false,
   });
-  const exact = await uploadExactQueueItem(projectUpdateQueueItemId(localPayload.id));
-  if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
+  const exact = await uploadExactQueueItem(queueItemId);
+  if (!exact.landed) {
+    if (newerEdit) await putBackNewerQueuedPhoneEdit(newerEdit, written as SyncQueueItem);
+    throw new Error(exact.error || 'sync_conflict_save_failed');
+  }
 
   await clearResolvedConflict(conflict.id);
+  if (newerEdit) {
+    const now = new Date().toISOString();
+    await enqueuePendingChange({
+      ...newerEdit, createdAt: now, changedAt: now, autoUpload: false,
+      keepExisting: existing => existing, // queued meanwhile: newer still
+    });
+  }
   return localUpdateData;
+}
+
+/** A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4). */
+function isNewerQueuedPhoneEdit(item: SyncQueueItem, conflictCopy: unknown): boolean {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  return item.entity === 'project_update' && item.operation !== 'delete' && !payload.archiveOnly &&
+    !queuedFieldUpdateDocumentPatches(item) && isRecord(payload.updateData) &&
+    !sameProjectUpdateContent(payload.updateData, conflictCopy as ProjectUpdate, { retryStampsAside: true });
+}
+
+/** The newer edit back in place of the kept copy Keep Phone queued, unless something newer was queued meanwhile. */
+async function putBackNewerQueuedPhoneEdit(newerEdit: SyncQueueItem, written: SyncQueueItem): Promise<void> {
+  await mutateOfflineQueue(queue => {
+    const current = queue.find(item => item.id === newerEdit.id);
+    if (current && !sameStagedProjectUpdateRecord(current, written)) {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+    return { nextQueue: [...queue.filter(item => item.id !== newerEdit.id), newerEdit], result: undefined };
+  });
 }
 
 /**
