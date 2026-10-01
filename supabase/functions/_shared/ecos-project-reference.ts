@@ -118,9 +118,11 @@ const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|jul
  * Left out on purpose because they read as English after a project number:
  * a bare "in" ("Is 2375 in progress?"; write "in." or "inches") and "each"
  * ("2375 each week"). The singular "unit", "bag" and "sheet" are left out too
- * ("2375 unit 4"). Beyond the owner's list, ksi, psf, kips, foot, yards,
- * cubic feet, gallons, cfm, btu(h), gpm and percent are kept from the earlier
- * rule; none reads as English after a project number.
+ * ("2375 unit 4"), and since audit A9 pass 6 M1 so are "units" and "sheets":
+ * "Are the 2375 units framed?" and "Are the 2375 sheets issued?" name project
+ * 2375 (a count of 200 units now costs a tap). Beyond the owner's list, ksi,
+ * psf, kips, foot, yards, cubic feet, gallons, cfm, btu(h), gpm and percent
+ * are kept from the earlier rule; none reads as English after a project number.
  */
 const MEASUREMENT_WORD_UNITS = [
   // pressure and load
@@ -138,8 +140,8 @@ const MEASUREMENT_WORD_UNITS = [
   'amps?', 'volts?', 'kw', 'kva', 'kcmil', 'hp', 'cfm', 'btuh?', 'gpm',
   // percent, temperature and time
   'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins',
-  // counts
-  'ea', 'bags', 'units', 'sheets',
+  // counts ("units" and "sheets" read as a project's units or drawing sheets; audit A9 pass 6 M1)
+  'ea', 'bags',
 ];
 
 const EXEMPT_PATTERNS: readonly RegExp[] = [

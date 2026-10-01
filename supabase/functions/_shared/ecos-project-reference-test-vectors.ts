@@ -512,6 +512,20 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED, project],
     refused: null,
   })),
+  // Audit A9 pass 6 M1: "units" and "sheets" are not units of measure; "bags"
+  // and "ea" still are.
+  ...([
+    ['Are the 2375 units framed?', '2375'],
+    ['Are the 2375 sheets issued?', '2375'],
+    ['Are the 2375 bags here?', null],
+    ['Are the 2375 ea anchors here?', null],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 6 M1: "${question}" when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

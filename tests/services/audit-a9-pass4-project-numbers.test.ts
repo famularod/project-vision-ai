@@ -332,8 +332,8 @@ describe('audit A9 pass 5: the five exemptions', () => {
     ['Did we pour 2375 c.y. today?', PROJECTS],
     ['Is the crane rented for 200 days?', [SELECTED, OAK]],
     ['Did the 200 bags of grout arrive?', [SELECTED, OAK]],
-    ['Are the 200 units delivered?', [SELECTED, OAK]],
-    ['Are the 200 sheets issued?', [SELECTED, OAK]],
+    // "200 units" and "200 sheets" left the list in audit A9 pass 6 M1 ("Are
+    // the 2375 units framed?" named project 2375); see the pass 6 tests.
     ['Are the 200 EA anchors here?', [SELECTED, OAK]],
     // 2. Money.
     ['Was the $2,375 change order approved?', PROJECTS],
