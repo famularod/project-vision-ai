@@ -268,16 +268,19 @@ function inchQuoteMarkIsMeasurement(before: string) {
 /**
  * Whether a double quotation opened in `text` is still open at its end: “
  * opens and ” closes; a straight " closes an open quotation, and opens one
- * only after the start, a space or punctuation (after a digit or a letter it
- * is an inch mark or a stray mark: 'the 6" pipe').
+ * only after the start, a space or punctuation (after a letter it is a stray
+ * mark). A straight " right after a digit is an inch mark ('the 6" pipe'): it
+ * neither opens nor closes, so 'He wrote "the 6" pipe at 2375" today' keeps
+ * the quotation open up to 2375 (audit A9 pass 7 L4).
  */
 function doubleQuotationOpen(text: string) {
   let open = false;
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
+    const previous = text[index - 1] ?? '';
     if (character === '“') open = true;
     else if (character === '”') open = false;
-    else if (character === '"') open = open ? false : !/[a-z0-9]/i.test(text[index - 1] ?? '');
+    else if (character === '"' && !/\d/.test(previous)) open = open ? false : !/[a-z]/i.test(previous);
   }
   return open;
 }

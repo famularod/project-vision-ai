@@ -703,6 +703,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
+  // Audit A9 pass 7 L4: a straight " right after a digit is an inch mark and
+  // does not close an open double quotation.
+  ...([
+    ['He wrote "the 6" pipe at 2375" this morning?', '2375'],
+    ['He wrote “the 6" pipe at 2375” this morning?', '2375'],
+    ['Is the "2375" job done?', '2375'],
+    ['Is the 6" pipe 2375" long?', null],
+    ['He wrote "set the 6" sleeve at 12\' 2375" above grade" today?', null],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 7 L4: ${question} when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

@@ -153,3 +153,25 @@ describe('audit A9 pass 7 L3: a closing single quote after a number is not a fee
     expectAllowed(question, PROJECTS);
   });
 });
+
+describe('audit A9 pass 7 L4: an inch mark inside a double quotation does not close it', () => {
+  it.each([
+    'He wrote "the 6" pipe at 2375" this morning?',
+    'He wrote “the 6" pipe at 2375” this morning?',
+    'He wrote "run 4" conduit, 2" sleeves to 2375" today?',
+    'Is the "2375" job done?',
+  ])('%s is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it.each([
+    'Is the 6" pipe 2375" long?',
+    'Is the pipe 2375" long?',
+    'He said "ok" and the pipe is 2375" long?',
+    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
+    'He wrote "set the 6" sleeve at 12\' 2375" above grade" today?',
+  ])('%s is a measurement and is allowed', question => {
+    expectAllowed(question, PROJECTS);
+  });
+});
