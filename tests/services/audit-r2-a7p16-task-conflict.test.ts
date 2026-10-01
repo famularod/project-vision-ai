@@ -30,6 +30,13 @@
  *     tasks) wrote the phone's whole copy: a notes-only edit put 0% over the
  *     web's 50%. The row is now read by its id before anything is written.
  *
+ * L-4 An offline edit of the task made during the conflict was still
+ *     waiting when David tapped Keep Phone. The kept copy (the one saved
+ *     with the conflict) replaced it on the queue, and the phone's task then
+ *     took the kept copy: the newer note was gone everywhere. The kept copy
+ *     now carries the newer edit's fields, and those of the edits a Keep
+ *     Cloud that could not finish left on the conflict (L-2).
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as audit-r2-a7p15-task-conflict-reread.test.ts does).
  */
@@ -381,6 +388,49 @@ describe('L-5: a task field edit whose row the paged list missed is checked agai
 
     await uploadPendingChanges();
     expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER, percentComplete: 0 });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+describe('L-4: Keep Phone on a task keeps a newer phone edit still waiting (audit A7 pass 16)', () => {
+  it('an offline note made during the conflict is still queued: the kept copy carries it, to the cloud and back to the phone', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    await queueScheduleItemRecord(
+      { ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'],
+    );
+
+    // The kept copy had the conflict's older note, in the cloud and, through
+    // Settings, on the phone.
+    const kept = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown });
+    expect(kept).toMatchObject({ notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' });
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('after a Keep Cloud that could not finish, a later Keep Phone carries the edits it left on the conflict', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    const { land, inFlight } = await newerPhoneEditOnItsWayUp();
+    mockGetScheduleItem
+      .mockImplementationOnce(async (id: string) => {
+        const answer = await mockCloud.get(id);
+        land();
+        await inFlight;
+        return answer;
+      })
+      .mockImplementationOnce(async () => mockUnreadable());
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+
+    // The cloud holds the landed note, which the screen never showed: review again.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_changed');
+    const [saved] = await getSyncConflicts();
+    const kept = await resolveScheduleItemSyncConflict(saved.id, 'keep_local', { cloudCopyShown: saved.remotePayload });
+    // It sent the conflict's older note over the newer one.
+    expect(kept).toMatchObject({ notes: NEWER });
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 });

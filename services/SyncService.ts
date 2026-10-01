@@ -4871,6 +4871,21 @@ function withPhoneEditsUndone(row: ScheduleItem, fields: readonly string[], befo
   return next as ScheduleItem;
 }
 
+/**
+ * A task copy with this phone's newer edits of it over it, oldest first
+ * (whole-app audit A7 pass 16 L-4): each edit's own fields, or all of a
+ * whole copy. A delete is no edit of the copy.
+ */
+function withNewerPhoneTaskEdits(copy: ScheduleItem, edits: readonly SyncQueueItem[]): ScheduleItem {
+  return edits.reduce<ScheduleItem>((next, edit) => {
+    const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+    if (edit.entity !== 'schedule_item' || edit.operation === 'delete' || !isRecord(payload.itemData)) return next;
+    const itemData = payload.itemData;
+    if (!Array.isArray(payload.changedFields)) return itemData;
+    return payload.changedFields.reduce<ScheduleItem>((merged, field) => ({ ...merged, [field]: itemData[field] }), next);
+  }, copy);
+}
+
 /** Two copies of a task alike in every field but identity, stamps, earlier task ids and import memberships. */
 function sameTaskContent(left: unknown, right: unknown): boolean {
   if (!isRecord(left) || !isRecord(right)) return false;
@@ -5023,7 +5038,7 @@ export async function resolveScheduleItemSyncConflict(
     await uploadPendingChanges();
     withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
     // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
-    const phoneEdits = [...localPayload.withdrawnEdits ?? [], ...waitingEdits, ...withdrawn];
+    const phoneEdits = [...(localPayload.withdrawnEdits ?? []), ...waitingEdits, ...withdrawn];
     // An edit of this phone's can be in the cloud only when one landed during
     // this choice (a landing closes the conflict) or during an earlier Keep
     // Cloud that could not finish (its edits wait on the conflict) (A7 pass
@@ -5107,22 +5122,32 @@ export async function resolveScheduleItemSyncConflict(
     throw new Error('sync_conflict_closed');
   }
 
-  // The phone's copy, still in every revision the cloud copy was re-homed
-  // into (whole-app audit A5 pass 3 F6) and answering to every earlier task
-  // id the cloud copy names (A8 pass 10 L2: a delete on another device wrote
-  // one): the cloud's row as it is now, not the copy saved with the conflict
-  // (A7 pass 15 L-3). The upload adds any newer ones.
-  const keptItem = withScheduleTaskEarlierIdsOf(
-    withScheduleImportMembershipOf(localItem, cloudNow),
-    cloudNow,
-  );
   const queueItemId = scheduleItemQueueItemId(localItem.id);
   const ownerId = currentCloudOwner().ownerId;
   // The kept copy takes the place of what waited for the task, which is kept
   // to put back if the choice fails (A7 pass 16 L-3, as for field updates).
-  const before = await mutateOfflineQueue(queue => {
+  const { keptItem, before } = await mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId) ?? null;
-    if (existing?.operation === 'delete') return { nextQueue: queue, result: existing, persist: false };
+    // The phone's copy with this phone's newer edits of the task (A7 pass 16
+    // L-4, as Keep Phone keeps a field update's, A7 pass 10 L-4): any a Keep
+    // Cloud that could not finish left on the conflict, then the one still
+    // waiting. The kept copy replaced a newer offline note, and the phone's
+    // task then took the kept copy: the note was gone everywhere.
+    // Still in every revision the cloud copy was re-homed into (whole-app
+    // audit A5 pass 3 F6) and answering to every earlier task id the cloud
+    // copy names (A8 pass 10 L2: a delete on another device wrote one): the
+    // cloud's row as it is now, not the copy saved with the conflict (A7
+    // pass 15 L-3). The upload adds any newer ones.
+    const keptItem = withScheduleTaskEarlierIdsOf(
+      withScheduleImportMembershipOf(
+        withNewerPhoneTaskEdits(localItem, [...(localPayload.withdrawnEdits ?? []), ...(existing ? [existing] : [])]),
+        cloudNow,
+      ),
+      cloudNow,
+    );
+    if (existing?.operation === 'delete') {
+      return { nextQueue: queue, result: { keptItem, before: existing }, persist: false };
+    }
     const now = new Date().toISOString();
     const kept: SyncQueueItem = {
       id: queueItemId,
@@ -5135,7 +5160,7 @@ export async function resolveScheduleItemSyncConflict(
       lastError: null,
       ...(ownerId ? { ownerId } : {}),
     };
-    return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: existing };
+    return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: { keptItem, before: existing } };
   });
   let result = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
