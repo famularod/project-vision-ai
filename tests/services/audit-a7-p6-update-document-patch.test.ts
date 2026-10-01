@@ -4829,6 +4829,10 @@ describe('"Send your version?" keeps a photo analysis that finished while the qu
  * The success twins (A4 pass 20 L1, A7 pass 19 L): the same change with a
  *    Keep Cloud that succeeds was dropped: the card and the cloud read
  *    "Analyzing", or the cloud kept a finished document upload "failed".
+ * A4 pass 23 L1 (caused by 402b53e): David saved again while Keep Cloud ran,
+ *    and an analysis finishing after that save turned it into a patch that
+ *    carried his newest edit (A7 pass 14 L-2). Keep Cloud failed, and the
+ *    put-back restored his older edit and dropped the newest everywhere.
  */
 describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pass 22, A7 pass 19)', () => {
   const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
@@ -5057,6 +5061,34 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
     expect(firstPhotoAnalysis(inCloud())).toEqual(newer);
     expect(firstPhotoAnalysis(phone.saved())).toEqual(newer);
+  });
+
+  it.each(['first pass', 'second read'] as const)('A4 pass 23 L1: David saves again while Keep Cloud runs, and an analysis finishes after that save in its %s; Keep Cloud fails: his newest edit goes back; after a refresh, Keep Phone ends with it everywhere', async moment => {
+    const NEWEST = 'Pour, 50 yards (saved on the phone while Keep Cloud ran)';
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    const ran = whileKeepCloudRuns(moment, async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await editAndSave(phone, { notes: NEWEST });
+      lateAnalysisFinishes(phone, result); // the queued copy becomes a patch carrying the newest edit (A7 pass 14 L-2)
+      await phone.settle();
+    }, { weak: true });
+    expect(await chooseInSettingsExpectingFailure(phone, (await getSyncConflicts())[0], 'keep_cloud')).toEqual(['Conflict not resolved']);
+    expect(ran()).toBe(true);
+    expect(await keepCloudCopyQueued()).toBe(false);
+    expect(await phoneSide()).toBe(NEWEST);
+    signalReturns();
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWEST });
+    await automaticSyncsLeaveItForReview(phone);
+    expect(await phoneSide()).toBe(NEWEST);
+    await keepPhone(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWEST, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: NEWEST, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
   });
 });
 

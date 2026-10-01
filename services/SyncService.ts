@@ -2865,12 +2865,24 @@ async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueIt
  *   patches, and what a Keep Cloud copy took in (one a killed app left
  *   before this one's).
  * - `card`: the copy those changes are made on.
+ *
+ * A patch item that carries a whole edit (newerEdit) is a whole copy too
+ * (whole-app audit A4 pass 23 L1): restored as it is, it holds that edit.
+ * David saved again while Keep Cloud ran, and an analysis finishing after
+ * that save turned his edit into such a patch (A7 pass 14 L-2); counted as
+ * changes only, it went back onto his older edit, and the newest was lost.
  */
 function phoneWorkToPutBack(taken: readonly SyncQueueItem[]): {
   restore: SyncQueueItem | null; changes: FieldUpdateDocumentPatch[]; card: unknown;
 } {
   const phoneWork = (item: SyncQueueItem) => !isKeepCloudChoice(item);
-  const lastWhole = taken.map(item => phoneWork(item) && !queuedFieldUpdateDocumentPatches(item)).lastIndexOf(true);
+  const carriesWholeEdit = (item: SyncQueueItem) => {
+    const carried = (item.payload as Partial<ProjectUpdateRecordPayload>).newerEdit;
+    return isRecord(carried) && !queuedFieldUpdateDocumentPatches(carried) &&
+      isRecord((carried.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData);
+  };
+  const lastWhole = taken.map(item => phoneWork(item) && (!queuedFieldUpdateDocumentPatches(item) || carriesWholeEdit(item)))
+    .lastIndexOf(true);
   const at = lastWhole >= 0 ? lastWhole : taken[0] && phoneWork(taken[0]) ? 0 : -1;
   const restore = at >= 0 ? taken[at] : null;
   const newestFirst = [...taken].reverse();
@@ -4539,7 +4551,7 @@ export async function clearScheduleItemSyncConflicts(
  *    restored phone work, oldest first, through queueProjectUpdatePatch when
  *    it fails; so are the changes its own copy took in.
  * 2. The latest whole phone copy it took is always what the put-back
- *    restores.
+ *    restores; a patch item carrying a held edit is one (A4 pass 23 L1).
  * 3. Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
  *    newer cloud copy as it goes up, it records that copy in the open
  *    conflict, nothing is sent, and David reviews again; the phone's work it
