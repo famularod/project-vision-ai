@@ -107,8 +107,9 @@ describe('audit A9 pass 7 L2: a comma-grouped number that is no project is check
     expect(desktop('Punch list for 101,205?', [SELECTED], [YARD])).toBe(reopenOnDesktop('205'));
   });
 
-  it('Talk reads each part: one project moves, two do not', () => {
-    expect(mentionedDAVEProject('Punch list for 101,205?', [SELECTED, YARD])).toBe(YARD);
+  it('Talk reads each part but moves to none', () => {
+    // Audit A9 pass 8 L2: this moved to YARD; a part of a comma group is unsure, so Talk asks instead.
+    expect(mentionedDAVEProject('Punch list for 101,205?', [SELECTED, YARD])).toBeNull();
     expect(mentionedDAVEProject('Compare 200,375', [SELECTED, OAK, MAIN])).toBeNull();
   });
 

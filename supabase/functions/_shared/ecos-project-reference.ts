@@ -116,14 +116,19 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
   return ecosProjectNumberMentionsAt(text, projectNames).map(mention => mention.number);
 }
 
-/** ecosProjectNumberMentions with where each number starts in `text` (Talk orders projects by it). */
+/**
+ * ecosProjectNumberMentions with where each number starts in `text` (Talk
+ * orders projects by it). `unsure`: the number was found only by splitting a
+ * comma group ("1,200" read as 200). Ask ECOS refuses it like any other; Talk
+ * asks instead of moving to it (audit A9 pass 8 L2).
+ */
 export function ecosProjectNumberMentionsAt(
   text: string,
   projectNames: readonly string[] = [],
-): Array<Readonly<{ number: string; start: number }>> {
+): Array<Readonly<{ number: string; start: number; unsure: boolean }>> {
   const exempt = exemptSpans(text);
   const known = new Set(projectNames.map(ecosProjectIdentifier));
-  const mentions: Array<Readonly<{ number: string; start: number }>> = [];
+  const mentions: Array<Readonly<{ number: string; start: number; unsure: boolean }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${MENTIONED_NUMBER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
@@ -133,11 +138,11 @@ export function ecosProjectNumberMentionsAt(
       exempt.some(([from, to]) => from <= start && end <= to) &&
       !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
     ) continue;
-    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start });
+    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, unsure: false });
     if (match[0].includes(',') && !known.has(number)) {
       let partStart = start;
       for (const part of match[0].split(',')) {
-        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart });
+        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart, unsure: true });
         partStart += part.length + 1;
       }
     }

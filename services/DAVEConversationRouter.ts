@@ -115,6 +115,8 @@ export function classifyDAVEConversationIntent(transcript: string): DAVEConversa
  * audit A11 pass 7 L3); a note naming two or more open projects keeps the
  * earlier rule and moves, for confirmation, to an open project named in
  * full. The selected project itself may be returned; that is no move.
+ * Audit A9 pass 8 L2: Talk never moves to a project named only by a part of
+ * a comma group ("the 1,200 bricks" with a project 200); it asks instead.
  */
 export function mentionedDAVEProject(
   transcript: string,
@@ -125,11 +127,11 @@ export function mentionedDAVEProject(
   if (named.length === 0) return null;
   if (named.length > 1) {
     if (classifyDAVEConversation(transcript).intent === 'ask') return null;
-    const open = named.filter(project => project.open.length > 0);
+    const open = named.filter(project => project.open.length > 0 && !project.unsure);
     if (open.length === 1) return openProjectNamed(open[0]);
     return projectNames.find(name => named.some(project => project.exactOpen.includes(name))) ?? null;
   }
-  return openProjectNamed(named[0]);
+  return named[0].unsure ? null : openProjectNamed(named[0]);
 }
 
 /**
@@ -150,6 +152,8 @@ type TalkNamedProject = {
   exactOpen: string[];
   /** Where the transcript first names it. */
   at: number;
+  /** Named only by a part of a comma group ("1,200" for 200; audit A9 pass 8 L2). */
+  unsure: boolean;
 };
 
 /**
@@ -177,7 +181,7 @@ function talkNamedProjects(
   const exempt = ecosProjectNumberExemptSpans(transcript);
   const occurrences = all.flatMap(name => nameOccurrences(transcript, name)
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
-    .map(([start, end]) => ({ name, start, end })));
+    .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
   // "Oak Street" names one project even when another is called "Oak".
   const exact = occurrences.filter(occurrence => !occurrences.some(other =>
     other.end - other.start > occurrence.end - occurrence.start &&
@@ -185,20 +189,27 @@ function talkNamedProjects(
   const numbers = ecosProjectNumberMentionsAt(transcript, all);
 
   const named = new Map<string, TalkNamedProject>();
-  const add = (name: string, at: number, inFull: boolean) => {
+  const add = (name: string, at: number, inFull: boolean, unsure: boolean) => {
     const key = talkProjectKey(name);
-    const project = named.get(key) ?? { key, label: ecosProjectIdentifier(name) ?? name, open: [], exactOpen: [], at };
+    const project = named.get(key) ?? { key, label: ecosProjectIdentifier(name) ?? name, open: [], exactOpen: [], at, unsure };
     project.at = Math.min(project.at, at);
+    project.unsure = project.unsure && unsure;
     const isOpen = openKeys.has(normalize(name));
     if (isOpen && !project.open.includes(name)) project.open.push(name);
-    if (isOpen && inFull && !project.exactOpen.includes(name)) project.exactOpen.push(name);
+    if (isOpen && inFull && !unsure && !project.exactOpen.includes(name)) project.exactOpen.push(name);
     named.set(key, project);
   };
-  for (const occurrence of exact) add(occurrence.name, occurrence.start, true);
-  for (const { number, start } of numbers) {
-    for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false);
+  // A name inside a comma group ("200" in "1,200") is as unsure as the number.
+  for (const occurrence of exact) add(occurrence.name, occurrence.start, true, occurrence.inCommaGroup);
+  for (const { number, start, unsure } of numbers) {
+    for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false, unsure);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
+}
+
+/** Whether text[start, end) is part of a comma-grouped number ("200" in "1,200" or "200,375"). */
+function inCommaGroup(text: string, start: number, end: number) {
+  return /\d,$/.test(text.slice(0, start)) || /^,\d{3}(?!\d)/.test(text.slice(end));
 }
 
 /** One key per project: its number, or its name when it has none (projects sharing a number are one). */

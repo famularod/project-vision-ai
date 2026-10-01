@@ -770,6 +770,15 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
+  // Audit A9 pass 8 L2: a part of a comma group is unsure. Ask ECOS refuses
+  // it (the accepted trade-off; Talk asks instead of moving to 200).
+  {
+    name: 'pass 8 L2: "the 1,200 bricks" with an open project 200 is refused',
+    projectName: SELECTED,
+    question: 'How many of the 1,200 bricks are laid?',
+    knownProjectNames: [SELECTED, '200 Oak Street'],
+    refused: '200',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
