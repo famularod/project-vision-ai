@@ -2,6 +2,7 @@ import type { ScheduleItem } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow } from './ScheduleImportProvenance';
+import { SCHEDULE_UPDATE_PROGRESS_CONFIRMER, scheduleProgressIsManagers, scheduleProgressJudgedAt } from './ScheduleProgressSource';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
   'Not Started',
@@ -229,6 +230,20 @@ function mergeScheduleRevisions(
  * has marks the base lacks, and lacks none the base has), it also gives what
  * that master says (the master's dates, percent and who stated it). The same
  * note when the other copy adds nothing.
+ *
+ * Whole-app audit A5 pass 21 R2 (1 Oct 2026, caused by a3239e3): David's 40%,
+ * then lookahead L1; on the phone master G restated Framing and marked L1; on
+ * the iPad, without G's copy, David entered 50% and approved L2 at 70%. Full
+ * Sync took the phone's percent with G's dates, David's older 40% and who
+ * stated it, so deleting L2 gave back 40%, not 50%, and the merged row went
+ * to the cloud. The other copy still gives the master's dates, the master
+ * file's own percent and the marks; the percent noted, its status and who
+ * stated it when stay with the base copy when it confirmed them later
+ * (masterProgressConfirmedAt) than the other copy's note and than David's
+ * own percent on the other copy; otherwise the other copy's, as before. A
+ * file's percent that a master only the other copy saw restated carries no
+ * time of its own: the other copy's, as before, unless it is at or below
+ * David's own percent the base copy notes (Q22).
  */
 function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleItem['lookaheadOverlay'] {
   const own = base.lookaheadOverlay;
@@ -242,9 +257,24 @@ function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleI
   const theirKeys = new Set(theirs.lookaheads.map(entryKey));
   const behind = own.lookaheads.some(entry => entry.datesReplacedByMaster && theirKeys.has(entryKey(entry)) && !marked.has(entryKey(entry)));
   const { lookaheads: _theirs, ...theirMaster } = theirs;
+  // A percent this copy confirmed later than the other copy's note, and than David's own percent on the other
+  // copy, stays with who stated it (A5 pass 21 R2). When the other copy notes a file's percent that a master only
+  // it saw stated, that master stamped no time to compare: the other copy's, as before, unless it is at or below
+  // David's own here (Q22: never below what David entered).
+  const ownAt = timestamp(own.masterProgressConfirmedAt);
+  const masterStatedUnseen = theirs.masterProgressSource !== 'project_manager' &&
+    theirs.masterFilePercentComplete !== own.masterFilePercentComplete;
+  const ownIsDavids = own.masterProgressSource === 'project_manager' && own.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
+  const ownPercentNewer = ownAt > (scheduleProgressIsManagers(other) ? timestamp(scheduleProgressJudgedAt(other)) : 0) && (masterStatedUnseen
+    ? ownIsDavids && boundedPercent(Number(theirs.masterPercentComplete)) <= boundedPercent(Number(own.masterPercentComplete))
+    : ownAt > timestamp(theirs.masterProgressConfirmedAt));
+  const {
+    masterPercentComplete: _percent, masterStatus: _status, masterProgressSource: _source,
+    masterProgressConfirmedBy: _by, masterProgressConfirmedAt: _at, ...theirMasterFile
+  } = theirMaster;
   return {
     ...own,
-    ...(behind ? {} : theirMaster),
+    ...(behind ? {} : ownPercentNewer ? theirMasterFile : theirMaster),
     lookaheads: own.lookaheads.map(entry => gained.includes(entry) ? { ...entry, datesReplacedByMaster: marked.get(entryKey(entry)) } : entry),
   };
 }

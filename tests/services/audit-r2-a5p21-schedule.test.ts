@@ -1,7 +1,8 @@
 /**
  * Audit round 2, A5 pass 21 (1 Oct 2026): Low findings in the schedule merge,
  * each caused by the previous round's fixes. R1 (b98824e): Set Active / Make
- * Current (ScheduleImportMerge, ScheduleLookahead).
+ * Current (ScheduleImportMerge, ScheduleLookahead). R2 (a3239e3): Full Sync's
+ * merge (DAVEScheduleRecovery).
  *
  * Owner answer Q22: a lookahead adds to the master, and file progress never
  * goes below what David entered. A newer master's dates replace older
@@ -9,8 +10,8 @@
  * percent floored at David's own.
  *
  * Real CSV normalizer, the phone's merge, Set Active, Delete PDF + Items and
- * shown-task pick, and the web's upload plan and Make Current carry.
- * Synthetic data.
+ * shown-task pick, the web's upload plan and Make Current carry, and Full
+ * Sync's merge. Synthetic data.
  */
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -18,6 +19,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { daveScheduleItemsNeedingCloudUpload, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
@@ -97,6 +99,15 @@ function deleteWithItems(state: State, target: ReferenceDocument, at: string): S
   const saved = new Map(scheduleItemsAfterScheduleDeleted({ items: kept, removed, document, documents, updatedAt: at }).map(item => [item.id, item]));
   return { items: kept.map(item => saved.get(item.id) || item), documents };
 }
+/** David records progress by hand on the phone. */
+const record = (state: State, id: string, pct: number, at: string): State => ({
+  ...state,
+  items: state.items.map(item => item.id === id ? {
+    ...item, percentComplete: pct, status: pct >= 100 ? 'Complete' : 'In Progress', progressSource: 'project_manager',
+    progressConfirmedAt: at, progressConfirmedBy: 'David', updatedAt: at,
+  } as ScheduleItem : item),
+});
+
 /**
  * R1 (Low, caused by b98824e): master F lists Framing 10/15-10/25; lookahead
  * L1 moves it to 10/18-10/28, then L2 to 10/20-10/30; master G lists Framing
@@ -187,5 +198,92 @@ describe('R1: making the master that replaced a lookahead\'s dates current again
     const id = named(moved, 'Framing')[0].id;
     const state = { ...moved, items: moved.items.map(item => item.id === id ? { ...item, startDate: '10/19/2026', finishDate: '10/29/2026' } : item) };
     expect(copies(setActive(state, G, AT), 'Framing')).toEqual([['10/19/2026', '10/29/2026', 0]]);
+  });
+});
+
+/**
+ * R2 (Low, caused by a3239e3): David's 40% on Framing, then lookahead L1. On
+ * the phone master G restates Framing in place and marks L1. On the iPad,
+ * which never got G's copy, David enters 50% and approves lookahead L2 at
+ * 70%. Full Sync took all of G's copy's note, its older 40% and who stated it
+ * included, so deleting L2 gave back 40%, not David's newer 50% (at c73ceab,
+ * 50%), and the merged row went to the cloud.
+ */
+describe('R2: Full Sync keeps David\'s newer percent on the lookahead note', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const L2 = doc('LOOKAHEAD L2', '2026-09-17T12:00:00.000Z', 'lookahead');
+  const SURVEY = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,';
+  let start = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', SURVEY]);
+  const framingId = named(start, 'Framing')[0].id;
+  start = record(start, framingId, 40, '2026-09-08T10:00:00.000Z');
+  start = approve(start, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+  /** The phone: G lists Framing on L1's dates and marks L1. */
+  const phone = approve(start, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,', SURVEY]);
+  /** The iPad, without G's copy: David's 50%, then L2 at 70%. */
+  const iPad = approve(record(start, framingId, 50, '2026-09-15T10:00:00.000Z'), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70'], true);
+  const documents = [...phone.documents, L2];
+  const deleteL2 = (items: ScheduleItem[]) => deleteWithItems({ items, documents }, L2, '2026-09-18T10:00:00.000Z');
+
+  it('the copies: G\'s marks on the phone, David\'s 50% and L2\'s 70% on the iPad', () => {
+    expect(phone.items.find(item => item.id === framingId)!.lookaheadOverlay!.lookaheads.map(entry => entry.datesReplacedByMaster)).toEqual(['batch-MASTER G']);
+    expect(iPad.items.find(item => item.id === framingId)).toMatchObject({ percentComplete: 70, lookaheadOverlay: { masterPercentComplete: 50 } });
+  });
+
+  it.each([
+    ['the iPad\'s Full Sync', () => recoverDAVEScheduleRecords({ local: iPad.items, cloud: phone.items, allowCloudOnly: true })],
+    ['the phone\'s Full Sync', () => recoverDAVEScheduleRecords({ local: phone.items, cloud: iPad.items, allowCloudOnly: true })],
+  ] as const)('%s keeps G\'s marks and dates with David\'s 50%; deleting L2 gives 50%', (_how, merge) => {
+    const merged = merge();
+    const task = merged.find(item => item.id === framingId)!;
+    expect(task.lookaheadOverlay).toMatchObject({
+      masterStartDate: '10/18/2026', masterFinishDate: '10/28/2026',
+      masterPercentComplete: 50, masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: '2026-09-15T10:00:00.000Z',
+    });
+    expect(task.lookaheadOverlay!.lookaheads.map(entry => [entry.batchId, entry.datesReplacedByMaster])).toEqual([
+      ['batch-LOOKAHEAD L1', 'batch-MASTER G'], ['batch-LOOKAHEAD L2', undefined],
+    ]);
+    expect(copies(deleteL2(merged), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+  });
+
+  it('what the iPad writes to the cloud keeps the 50%', () => {
+    const merged = recoverDAVEScheduleRecords({ local: iPad.items, cloud: phone.items, allowCloudOnly: true });
+    const uploaded = daveScheduleItemsNeedingCloudUpload({ local: merged, cloud: phone.items });
+    const cloudAfter = phone.items.map(item => uploaded.find(upload => upload.id === item.id) || item);
+    expect(cloudAfter.find(item => item.id === framingId)!.lookaheadOverlay).toMatchObject({ masterPercentComplete: 50, masterStartDate: '10/18/2026' });
+    expect(copies(deleteL2(cloudAfter), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+  });
+
+  it('unchanged: when G stated a percent the iPad never saw and David entered none since, G\'s word is kept', () => {
+    const phone60 = approve(start, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,60', SURVEY]);
+    const iPadL2 = approve(start, L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,'], true);
+    const merged = recoverDAVEScheduleRecords({ local: iPadL2.items, cloud: phone60.items, allowCloudOnly: true });
+    const phoneNote = phone60.items.find(item => item.id === framingId)!.lookaheadOverlay!;
+    const { lookaheads: _entries, ...phoneMaster } = phoneNote;
+    expect(merged.find(item => item.id === framingId)!.lookaheadOverlay).toMatchObject(phoneMaster);
+  });
+
+  it('unchanged: David\'s newer percent on the phone, after its last file, keeps the phone\'s note (50%)', () => {
+    // The phone's 50% (16 Sep) is David's word after the iPad's 10% (15 Sep): the note as before, 50%.
+    const phoneLater = record(approve(record(start, framingId, 50, '2026-09-08T11:00:00.000Z'), G,
+      ['Framing,Alpha,Lot,10/18/2026,10/28/2026,', SURVEY]), framingId, 50, '2026-09-16T10:00:00.000Z');
+    const iPad10 = approve(record(record(start, framingId, 50, '2026-09-08T11:00:00.000Z'), framingId, 10, '2026-09-15T10:00:00.000Z'), L2,
+      ['Framing,Alpha,Lot,10/20/2026,10/30/2026,80'], true);
+    const merged = recoverDAVEScheduleRecords({ local: iPad10.items, cloud: phoneLater.items, allowCloudOnly: true });
+    expect(copies(deleteL2(merged), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+  });
+
+  it('a master only the phone saw, stating less than David\'s own on the iPad, never lowers it (70%)', () => {
+    // No percent of David's on the phone: G's 60% is noted as the file's, with no time of its own.
+    let common = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', SURVEY]);
+    common = approve(common, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+    const phone60 = approve(common, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,60', SURVEY]);
+    const iPad70 = approve(record(common, framingId, 70, '2026-09-10T10:00:00.000Z'), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,80'], true);
+    const merged = recoverDAVEScheduleRecords({ local: iPad70.items, cloud: phone60.items, allowCloudOnly: true });
+    expect(merged.find(item => item.id === framingId)!.lookaheadOverlay).toMatchObject({
+      masterStartDate: '10/18/2026', masterPercentComplete: 70, masterProgressConfirmedBy: 'David', masterFilePercentComplete: 60,
+    });
+    expect(copies(deleteL2(merged), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 70]]);
   });
 });
