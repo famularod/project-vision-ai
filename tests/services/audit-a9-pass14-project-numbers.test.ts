@@ -172,3 +172,27 @@ describe('audit A9 pass 14 L4: a street abbreviation alone never makes a number 
     expect(desktop('What is left at 450 Elm Street?', [SELECTED, '24117 - 450 Elm St', '450 Elm Annex'], [], '24117 - 450 Elm St')).toBeNull();
   });
 });
+
+describe('audit A9 pass 14 L5: Talk\'s full-name match follows the name that continues furthest, as Ask ECOS does', () => {
+  const ELM_ST = '24117-450 Elm St';
+  const ELM = '450 Elm';
+  const PROJECTS = [SELECTED, ELM_ST, ELM];
+
+  it('"What is left at 450 Elm St?" on "24117-450 Elm St" with "450 Elm" open is answered in Talk too (was "names two projects")', () => {
+    expect(desktop('What is left at 450 Elm St?', PROJECTS, [], ELM_ST)).toBeNull();
+    expect(talkAnswer('What is left at 450 Elm St?', PROJECTS, [], ELM_ST)).toBeNull();
+    // The selected project itself: no move.
+    expect(mentionedDAVEProject('What is left at 450 Elm St?', PROJECTS)).toBe(ELM_ST);
+  });
+
+  it('on another project Talk names the same project Ask ECOS does (was "names two projects")', () => {
+    expect(desktop('What is left at 450 Elm St?', PROJECTS)).toBe(switchOnDesktop('450 (24117-450 Elm St)'));
+    expect(talkAnswer('What is left at 450 Elm St?', PROJECTS)).toBe(switchOnPhone('450 (24117-450 Elm St)'));
+  });
+
+  it('the shorter name said in full, with nothing further, still names it', () => {
+    expect(desktop('What is left at 450 Elm?', PROJECTS, [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+    expect(talkAnswer('What is left at 450 Elm?', PROJECTS, [], ELM_ST)).toBe(switchOnPhone('450', '24117'));
+    expect(mentionedDAVEProject('Crew finished framing at 450 Elm today', PROJECTS)).toBe(ELM);
+  });
+});

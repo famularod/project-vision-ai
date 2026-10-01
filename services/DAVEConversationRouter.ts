@@ -203,11 +203,20 @@ function talkNamedProjects(
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
     .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, transcript, start, end))
     .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
-  // "Oak Street" names one project even when another is called "Oak".
+  const numbers = ecosProjectNumberMentionsAt(transcript, all);
+  // The projects whose name continues furthest around each plain number (see the loop below).
+  const aroundNumbers = numbers.map(mention =>
+    mention.letter || mention.spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all));
+  // "Oak Street" names one project even when another is called "Oak". Audit
+  // A9 pass 14 L5: so does a name that continues further around a number in
+  // the one said in full ("What is left at 450 Elm St?" is "24117-450 Elm
+  // St", not also "450 Elm"), as Ask ECOS reads it.
   const exact = occurrences.filter(occurrence => !occurrences.some(other =>
     other.end - other.start > occurrence.end - occurrence.start &&
-    other.start <= occurrence.start && occurrence.end <= other.end));
-  const numbers = ecosProjectNumberMentionsAt(transcript, all);
+    other.start <= occurrence.start && occurrence.end <= other.end) &&
+    !numbers.some((mention, index) =>
+      occurrence.start <= mention.start && mention.end <= occurrence.end &&
+      aroundNumbers[index].length > 0 && !aroundNumbers[index].includes(occurrence.name)));
 
   const named = new Map<string, TalkNamedProject>();
   const add = (name: string, at: number, inFull: boolean, unsure: boolean, number = '') => {
@@ -228,14 +237,14 @@ function talkNamedProjects(
   const withKey = (key: string) => all.filter(name =>
     ecosProjectIdentifiers(name).some(({ digits, letter }) => `${digits}${letter}`.toUpperCase() === key.toUpperCase()));
   const withDigits = (number: string, name: string) => ecosProjectIdentifiers(name).some(({ digits }) => digits === number);
-  for (const mention of numbers) {
+  for (const [index, mention] of numbers.entries()) {
     const { number, start, unsure, letter, spacedLetter } = mention;
     // Audit A9 pass 13 L4: as in Ask ECOS, a plain number belongs to the
     // projects whose name continues around it ("What is left at 2375 Main
     // St?" is 2375 Main St, not also "480V Switchgear Upgrade 2375"; "450 Elm
     // St" is "24117 - 450 Elm St", not 450 Oak Ave). Two or more are each
     // named, so Talk asks which; none falls back to the identifiers below.
-    const around = letter || spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all);
+    const around = aroundNumbers[index];
     if (around.length > 0) {
       for (const name of around) add(name, start, false, unsure, number);
       continue;

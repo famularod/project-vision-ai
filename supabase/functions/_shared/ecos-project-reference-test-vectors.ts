@@ -1298,6 +1298,20 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refused ? { refusedClosed: true, refusedSelected: '400' } : {}),
   })),
+  // Audit A9 pass 14 L5: Talk now reads a name said in full the way these
+  // read it (Talk is checked in tests/services/audit-a9-pass14-project-numbers.test.ts).
+  ...([
+    ['What is left at 450 Elm St?', '24117-450 Elm St', [SELECTED, '24117-450 Elm St', '450 Elm'], null, undefined],
+    ['What is left at 450 Elm St?', SELECTED, [SELECTED, '24117-450 Elm St', '450 Elm'], '450 (24117-450 Elm St)', undefined],
+    ['What is left at 450 Elm?', '24117-450 Elm St', [SELECTED, '24117-450 Elm St', '450 Elm'], '450', '24117'],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 14 L5: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
