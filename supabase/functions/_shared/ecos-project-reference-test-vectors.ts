@@ -601,6 +601,42 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames,
     refused,
   })),
+  // Audit A9 pass 6 L5: units the earlier rule exempted are measurements
+  // again for an open or a closed 3-digit project.
+  ...([
+    ['Are the 500 MCM feeders pulled?', '500 Harrison'],
+    ['Is the RTU 250 MBH?', '250 Main Street'],
+    ['Is the beam load 600 plf?', '600 Pine'],
+    ['Is the run 300 meters?', '300 Bay'],
+    ['Is the run 300 metres?', '300 Bay'],
+    ['Is the heater 500 watts?', '500 Harrison'],
+    ['Did the 200 pcs of rebar arrive?', '200 Oak Street'],
+    ['Did the 200 pieces of rebar arrive?', '200 Oak Street'],
+    ['Is the cure 120 min?', '120 Elm'],
+  ] as const).flatMap(([question, project]) => [
+    {
+      name: `pass 6 L5: allows "${question}" when "${project}" is open`,
+      projectName: SELECTED,
+      question,
+      knownProjectNames: [SELECTED, project],
+      refused: null,
+    },
+    {
+      name: `pass 6 L5: allows "${question}" when "${project}" is closed`,
+      projectName: SELECTED,
+      question,
+      knownProjectNames: [SELECTED],
+      closedProjectNames: [project],
+      refused: null,
+    },
+  ]),
+  {
+    name: 'pass 6 L5: a count without a listed unit still names the 3-digit project',
+    projectName: SELECTED,
+    question: 'Did the 200 crates of rebar arrive?',
+    knownProjectNames: [SELECTED, '200 Oak Street'],
+    refused: '200',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

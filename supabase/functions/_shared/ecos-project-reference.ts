@@ -133,12 +133,15 @@ const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|jul
  * 2375 (a count of 200 units now costs a tap). Beyond the owner's list, ksi,
  * psf, kips, foot, yards, cubic feet, gallons, cfm, btu(h), gpm and percent
  * are kept from the earlier rule; none reads as English after a project number.
+ * Audit A9 pass 6 L5 brought back more of the earlier rule's units (plf,
+ * meters/metres, watts, mcm, mbh, min, pcs/pieces): "500 kcmil" passed while
+ * its synonym "500 MCM" was refused for a project 500.
  */
 const MEASUREMENT_WORD_UNITS = [
   // pressure and load
-  'psi', 'ksi', 'psf', 'ksf', 'kips?',
+  'psi', 'ksi', 'psf', 'ksf', 'kips?', 'plf',
   // length
-  'mm', 'cm', String.raw`in\.`, 'inch(?:es)?', String.raw`ft\.?`, 'feet', 'foot', 'lf',
+  'mm', 'cm', String.raw`in\.`, 'inch(?:es)?', String.raw`ft\.?`, 'feet', 'foot', 'lf', 'meters', 'metres',
   String.raw`(?:lineal|linear)\s(?:feet|foot|ft\.?)`, String.raw`yds?\.?`, 'yards?',
   // area
   'sf', String.raw`sq\.?\s?ft\.?`, 'sqft', String.raw`square\s(?:feet|foot)`, 'sy',
@@ -147,11 +150,11 @@ const MEASUREMENT_WORD_UNITS = [
   // weight
   String.raw`lbs?\.?`, 'pounds?', 'kg', 'tons?',
   // electrical and mechanical
-  'amps?', 'volts?', 'kw', 'kva', 'kcmil', 'hp', 'cfm', 'btuh?', 'gpm',
+  'amps?', 'volts?', 'watts', 'kw', 'kva', 'kcmil', 'mcm', 'hp', 'cfm', 'btuh?', 'mbh', 'gpm',
   // percent, temperature and time
-  'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins',
+  'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins', 'min',
   // counts ("units" and "sheets" read as a project's units or drawing sheets; audit A9 pass 6 M1)
-  'ea', 'bags',
+  'ea', 'bags', 'pcs', 'pieces',
 ];
 
 const EXEMPT_PATTERNS: readonly RegExp[] = [

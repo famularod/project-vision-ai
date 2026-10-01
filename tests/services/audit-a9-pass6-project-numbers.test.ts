@@ -187,3 +187,32 @@ describe('audit A9 pass 6 L4: a number written with thousands commas is read as 
     expectRefusedOpen('Are RFIs 2374, 2375 and 2376 answered?', PROJECTS, '2375', OTHER);
   });
 });
+
+describe('audit A9 pass 6 L5: units the earlier rule knew are measurements again', () => {
+  it.each([
+    ['Are the 500 MCM feeders pulled?', '500 Harrison'],
+    ['Are the 500 mcm feeders pulled?', '500 Harrison'],
+    ['Are the 500 kcmil feeders pulled?', '500 Harrison'],
+    ['Is the RTU 250 MBH?', '250 Main Street'],
+    ['Is the beam load 600 plf?', '600 Pine'],
+    ['Is the run 300 meters?', '300 Bay'],
+    ['Is the run 300 metres?', '300 Bay'],
+    ['Is the heater 500 watts?', '500 Harrison'],
+    ['Did the 200 pcs of rebar arrive?', '200 Oak Street'],
+    ['Did the 200 pieces of rebar arrive?', '200 Oak Street'],
+    ['Is the cure 120 min?', '120 Elm'],
+  ])('"%s" is a measurement with "%s" open or closed', (question, project) => {
+    expectAllowed(question, [SELECTED, project]);
+    expectAllowed(question, [SELECTED], [project]);
+  });
+
+  it.each([
+    ['Is 500 done?', '500 Harrison'],
+    ['What is overdue at 250?', '250 Main Street'],
+    ['Did the 200 crates of rebar arrive?', '200 Oak Street'],
+  ])('"%s" still names "%s"', (question, project) => {
+    const number = project.split(' ')[0];
+    expectRefusedOpen(question, [SELECTED, project], number, project);
+    expectRefusedClosed(question, project, number);
+  });
+});
