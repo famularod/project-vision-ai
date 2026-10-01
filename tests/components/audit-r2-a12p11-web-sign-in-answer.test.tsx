@@ -13,6 +13,14 @@
  * the plain sign-in page: nothing was stored, so the page was truthful, but
  * he lost the explanation. Now the ending's settling keeps his sign-in's own
  * answer; it still clears whatever was loaded first.
+ *
+ * L2: when the browser blocks site data, reading this tab's sessionStorage
+ * throws. His password was accepted, but auth-js could not store the
+ * sign-in and threw (the web storage adapter's "Browser session storage is
+ * unavailable…"); the provider and the sign-in form had no catch, so the
+ * page stayed "signing in" with no message, and every retry did the same.
+ * Now the sign-in page says the browser is blocking site storage; any other
+ * throw shows the usual sign-in message, never a busy button.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
@@ -98,6 +106,8 @@ function Probe() {
 
 const SIGN_IN_FAILED =
   'Sign-in could not be completed. Check your email and password, then try again.';
+const SITE_STORAGE_BLOCKED =
+  "This browser is blocking site storage, so Vitruvius can't keep you signed in. Allow site data for this site, then try again.";
 
 const root = globalThis as unknown as Record<string, unknown>;
 const originalDocument = root.document;
@@ -305,6 +315,59 @@ describe.each<[string, Answer]>([
     await act(async () => { firstLogout.release(); });
     await settle();
     await expectHisAnswer();
+    screen.unmount();
+  });
+});
+
+describe('L2: a sign-in that throws leaves the sign-in page with a message, never a busy button (A12 pass 11)', () => {
+  const passwordSignIns = () => cloud.callsFor('/auth/v1/token?grant_type=password');
+
+  /** He signs in, and the page answers: not busy, the sign-in page, a message. */
+  async function signInAndExpect(screen: ReturnType<typeof render>, message: string, signIns: number) {
+    await signInHere(screen, 'owner@example.com', TAB_TEST_PASSWORD);
+    await settle();
+    await waitFor(() => expect(text(screen, 'phase')).toBe('signed_out'));
+    expect(text(screen, 'message')).toBe(message);
+    // On the sign-in page too, with its button ready again.
+    expect(screen.getAllByText(message)).toHaveLength(2);
+    expect(screen.getByText('Sign in securely')).toBeTruthy();
+    expect(screen.queryByText('Account and Sync')).toBeNull();
+    // His password went out and was accepted; nothing could be kept.
+    expect(passwordSignIns()).toHaveLength(signIns);
+  }
+
+  test('the browser blocks site data: the page says so, and a retry says so again', async () => {
+    // Reading sessionStorage throws, as when the browser blocks site data.
+    useThisTab(() => {
+      throw Object.assign(new Error('The operation is insecure.'), { name: 'SecurityError' });
+    });
+    await startThisTab();
+    const screen = renderTab();
+    await waitFor(() => expect(text(screen, 'phase')).toBe('signed_out'));
+
+    await signInAndExpect(screen, SITE_STORAGE_BLOCKED, 1);
+    await signInAndExpect(screen, SITE_STORAGE_BLOCKED, 2);
+    expect((await thisTab.auth.getSession()).data.session).toBeNull();
+    screen.unmount();
+  });
+
+  test('storage that refuses only the sign-in itself (full): the usual sign-in message', async () => {
+    thisTabStorage = createTabStorage();
+    const fits = thisTabStorage.setItem;
+    // A small entry fits; the sign-in does not.
+    thisTabStorage.setItem = (key: string, value: string) => {
+      if (value.length > 64) {
+        throw Object.assign(new Error('The quota has been exceeded.'), { name: 'QuotaExceededError' });
+      }
+      fits(key, value);
+    };
+    useThisTab(thisTabStorage);
+    await startThisTab();
+    const screen = renderTab();
+    await waitFor(() => expect(text(screen, 'phase')).toBe('signed_out'));
+
+    await signInAndExpect(screen, SIGN_IN_FAILED, 1);
+    expect(tabHoldsSignIn(thisTabStorage)).toBe(false);
     screen.unmount();
   });
 });

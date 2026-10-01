@@ -58,6 +58,7 @@ import {
   shouldRefreshDAVEOperationalDataOnForeground,
   type DAVEOperationalCollectionName,
 } from '../../services/DAVEOperationalRefresh';
+import { isAuthStorageSecure } from '../../services/SupabaseAuthStorage.web';
 
 export type DesktopAuthPhase =
   | 'checking'
@@ -195,6 +196,9 @@ export const DESKTOP_SIGN_IN_ENDING_WAIT_MS = 10_000;
 
 const SIGN_IN_FAILED_MESSAGE =
   'Sign-in could not be completed. Check your email and password, then try again.';
+/** This tab cannot store a sign-in: the browser blocks site data (A12 pass 11 L2). */
+const SITE_STORAGE_BLOCKED_MESSAGE =
+  "This browser is blocking site storage, so Vitruvius can't keep you signed in. Allow site data for this site, then try again.";
 
 /** What a sign-in here answered when it opened nothing (A12 pass 11 L1). */
 type DesktopSignInAnswer = Readonly<{ phase: 'signed_out' | 'unauthorized'; message: string }>;
@@ -572,8 +576,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // An earlier sign-in's answer is no longer on screen.
     noteSignInAnswer(null);
     signInsAwaitingAnswerRef.current += 1;
-    let endingPastLimit: DesktopSignInEnding | null;
+    let endingPastLimit: DesktopSignInEnding | null = null;
     let result: DAVEWebSignInResult;
+    let failedMessage = SIGN_IN_FAILED_MESSAGE;
     try {
       // The ending's guard stays on until it settles; a sign-in starting no
       // longer turns it off (A12 pass 7 L1).
@@ -583,16 +588,25 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       // The button is busy while this sign-in goes out.
       if (mountedRef.current) setPhase('signing_in');
       result = await daveWebSupabaseGateway.signIn(email.trim(), password);
+    } catch {
+      // auth-js throws, rather than answering, when this tab cannot store
+      // the sign-in: with site data blocked, reading sessionStorage throws.
+      // Nothing was kept. The page had stayed "signing in" with no message,
+      // and every retry did the same (A12 pass 11 L2).
+      result = { ok: false, session: null };
+      if (!(await isAuthStorageSecure().catch(() => false))) {
+        failedMessage = SITE_STORAGE_BLOCKED_MESSAGE;
+      }
     } finally {
       signInsAwaitingAnswerRef.current -= 1;
     }
     if (!result.ok || !result.session) {
       if (mountedRef.current) {
         setPhase('signed_out');
-        setMessage(SIGN_IN_FAILED_MESSAGE);
+        setMessage(failedMessage);
       }
       // An ending that settles after this keeps the message (A12 pass 11 L1).
-      noteSignInAnswer({ phase: 'signed_out', message: SIGN_IN_FAILED_MESSAGE });
+      noteSignInAnswer({ phase: 'signed_out', message: failedMessage });
       return false;
     }
     // His sign-in worked: an ending past the time limit no longer holds this
