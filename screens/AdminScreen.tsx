@@ -235,7 +235,9 @@ export function AdminScreen({
   const failedDocumentCountRef = useRef(failedDocumentCount);
   failedDocumentCountRef.current = failedDocumentCount;
   // Read after a conflict choice's cloud calls (whole-app audit A4 pass 18
-  // L1): a photo analysis can land on the card while Keep Phone runs.
+  // L1) to tell a newer phone edit, and an archive Keep Phone kept. The App's
+  // Retry then sends its own card as it is (A4 pass 19 L1): this copy can
+  // still miss a photo analysis that landed before Settings re-rendered.
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
@@ -1008,7 +1010,8 @@ export function AdminScreen({
           // takes the kept copy's archive, which hides it, and goes up
           // archived (L2): left as it was, the waiting-update sync sent it
           // un-archived over the kept copy. This callback is the one way
-          // Settings writes a card that still owes its sync.
+          // Settings writes a card that still owes its sync. The App sends
+          // its own card as it is then, with only this archive (A4 pass 19 L1).
           const kept = resolvedUpdate as ArchivableUpdate;
           const card: ArchivableUpdate = kept.isArchived && !(phoneCopy as ArchivableUpdate).isArchived
             ? { ...phoneCopy!, isArchived: true, archivedAt: kept.archivedAt ?? null }

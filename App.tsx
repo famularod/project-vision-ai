@@ -8003,7 +8003,13 @@ useEffect(() => {
   }
 
   // Only a Retry David confirmed over a conflict sends it (A7 pass 12 M-1, A4 pass 15 H1).
-  async function retryQueuedUpdate(update: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
+  // The App's card as it is now (whole-app audit A4 pass 19 L1), not the copy
+  // a screen read earlier: that wrote over a photo analysis landed since. Only
+  // the archive Settings puts on after Keep Phone kept one comes from `given`.
+  async function retryQueuedUpdate(given: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
+    const current = savedUpdatesRef.current.find(item => item.id === given.id);
+    const update: ProjectUpdate = !current ? given : given.isArchived && !current.isArchived
+      ? { ...current, isArchived: true, archivedAt: given.archivedAt ?? null } : current;
     const now = new Date().toISOString();
     const retryUpdate: ProjectUpdate = {
       ...update,

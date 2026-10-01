@@ -1252,6 +1252,8 @@ async function chooseInSettings(
   onRetryUpdateSync: (...args: unknown[]) => Promise<unknown> = jest.fn(async () => ({})),
   /** What happens on the phone while the choice talks to the cloud (A4 pass 18 L1). */
   duringChoice?: () => Promise<void>,
+  /** `settingsRef`: Settings' own copy of the cards, read again only when Settings re-renders (A4 pass 19 L1). */
+  { settingsRef = phone.savedUpdatesRef }: { settingsRef?: { current: Update[] } } = {},
 ) {
   const applyChosen = evaluate<(update: Update) => void>(
     transpile(`module.exports = function (update) ${blockAfter('onApplyCloudConflictUpdate={update => {')}`),
@@ -1272,8 +1274,8 @@ async function chooseInSettings(
           return resolved;
         }
         : resolveProjectUpdateSyncConflict,
-      syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
-      savedUpdatesRef: phone.savedUpdatesRef, projectUpdateCopyIsLastInCloud, onRetryUpdateSync,
+      syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: settingsRef.current,
+      savedUpdatesRef: settingsRef, projectUpdateCopyIsLastInCloud, onRetryUpdateSync,
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
       Alert: { alert: (title: string) => { alerts.push(title); } },
@@ -4247,6 +4249,79 @@ describe('Keep Cloud is not undone by a waiting-update sync already running (aud
     expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
     await refresh(phone);
     expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 19 L1: two Retry paths still sent an older copy of
+ * the card. Settings, after Keep Phone, sent the newer edit from its own copy
+ * of the cards, which it reads again only when it re-renders: a photo
+ * analysis that reached the App's card just before missed it. And "Send your
+ * version?" on the card, the detail screen and the activity row sent the card
+ * as it was when the question opened: an analysis that finished while it was
+ * up was written over, on the card and, when its patch had not gone up yet,
+ * in the cloud. The App's Retry now starts from its own card as it is now,
+ * and takes from the copy it is given only the archive Settings puts on
+ * after Keep Phone kept an iPad archive.
+ */
+describe('a Retry sends the card as it is now (audit A4 pass 19 L1)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('Settings after Keep Phone: an analysis that reached the card before Settings re-rendered goes up with the newer edit', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const settingsRef = { current: phone.savedUpdatesRef.current }; // Settings' last render
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+    const result = finishedAnalysis();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync, async () => {
+      lateAnalysisFinishes(phone, result); // the App's card takes it at once; Settings has not re-rendered
+      await phone.settle();
+    }, { settingsRef });
+    expect(firstPhotoAnalysis(onRetryUpdateSync.mock.calls[0][0] as Update)).toEqual(analyzingPhoto.photoIntelligence);
+    await settled();
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it.each(['not gone up yet', 'already in the cloud'])('"Send your version?": an analysis that finishes while the question is up stays on the card and reaches the cloud (its patch %s)', async patch => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    const cardWhenAsked = phone.saved()!; // the render the question opened on
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    if (patch === 'already in the cloud') await uploadPendingChanges();
+    // Send: the Retry of the card, the detail screen and the activity row alike, with the card it was given.
+    await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true });
+    phone.render();
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
     expect(await getSyncConflicts()).toEqual([]);
   });
 });
