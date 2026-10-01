@@ -15,6 +15,11 @@
  *     sent the edit David chose to discard and closed the conflict. They now
  *     wait on the conflict, not on the queue.
  *
+ * L-6 Keep Phone said "The cloud copy changed — review again" when the
+ *     conflict had already closed (David's own in-flight edit landed while
+ *     Keep Phone read the cloud), over an empty list. It now says the
+ *     conflict closed, and sends nothing.
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as audit-r2-a7p15-task-conflict-reread.test.ts does).
  */
@@ -264,6 +269,22 @@ describe('L-2: a Keep Cloud on a task that cannot finish leaves no discarded edi
     await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
       .resolves.toEqual(shown);
     expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+describe('L-6: Keep Phone on a task whose conflict closed meanwhile says so (audit A7 pass 16)', () => {
+  it('David\'s own edit lands before Keep Phone reads the cloud: the conflict closed, and nothing is sent', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    landsDuringFirstRead(await newerPhoneEditOnItsWayUp());
+
+    const error = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown })
+      .catch((caught: unknown) => caught);
+    // It said "The cloud copy changed — review again" over an empty list.
+    expect(syncConflictChoiceStopReason(error)).toBe('conflict_closed');
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1); // the phone's own edit; Keep Phone sent nothing
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER });
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });

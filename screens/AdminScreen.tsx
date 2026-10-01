@@ -1040,6 +1040,16 @@ export function AdminScreen({
           : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
         return;
       }
+      // A task's conflict closed while Keep Phone read the cloud (whole-app
+      // audit A7 pass 16 L-6): this phone's own edit, already on its way up,
+      // landed. It said "The cloud copy changed — review again" over an
+      // empty list.
+      if (stopReason === 'conflict_closed') {
+        await showConflictsAfterChoice(
+          'This task\'s conflict closed by itself (an edit from this phone reached the cloud), so nothing was sent.',
+        ).catch(() => undefined);
+        return;
+      }
       // The cloud's copy changed since the screen showed it (whole-app audit
       // A4 pass 16 L3, A7 pass 14 M-1): nothing was sent, and the conflict
       // now holds the copy in the cloud, which the list shows. Keep Phone had

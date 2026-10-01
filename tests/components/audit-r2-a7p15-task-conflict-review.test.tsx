@@ -222,25 +222,28 @@ describe('Review Conflicts shows a task\'s cloud copy as it is now (audit A7 pas
 });
 
 /**
- * Whole-app audit A7 pass 16 L-2 (1 Oct 2026): a task's Keep Cloud put the
- * screen's copy back over a discarded phone edit that had landed, and the
- * cloud's answer was lost on weak signal. Settings said "Neither copy was
- * changed" though the cloud held the restore.
+ * Whole-app audit A7 pass 16 (1 Oct 2026), with a phone edit of the task on
+ * its way up when David chooses:
+ * - L-2: Keep Cloud put the screen's copy back over that edit, which had
+ *   landed, and the cloud's answer was lost on weak signal. Settings said
+ *   "Neither copy was changed" though the cloud held the restore.
+ * - L-6: the edit landed while Keep Phone read the cloud, which closed the
+ *   conflict. Settings said "The cloud copy changed — review again" over an
+ *   empty list.
  */
-describe('Keep Cloud on a task whose write the cloud does not confirm (audit A7 pass 16 L-2)', () => {
+describe('a task\'s conflict choice with a phone edit on its way up (audit A7 pass 16)', () => {
   const NEWER = 'Pump truck moved to Friday (a newer phone edit)';
   const ok = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
   const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
-  it('says the change may or may not have been saved, not "Neither copy was changed"', async () => {
+  /** Settings is open on the conflict; a newer phone note is on its way up, and lands as the choice first reads the row. */
+  async function reviewWithPhoneEditOnItsWayUp() {
     await offlineEditInConflictWithWeb();
     const shownCloud = { ...inCloud() };
-    renderSettings();
+    const onApplyCloudConflictScheduleItem = renderSettings();
     await openReviewConflicts();
     await waitFor(() => expect(getScheduleItem).toHaveBeenCalledTimes(1)); // the open-time read
     await waitFor(() => expect(cloudLine()).toBe(CLOUD_0));
-
-    // A newer phone note is on its way up when David chooses.
     let land!: () => void;
     const landing = new Promise<void>(resolve => { land = resolve; });
     let inFlight!: Promise<unknown>;
@@ -257,13 +260,16 @@ describe('Keep Cloud on a task whose write the cloud does not confirm (audit A7 
       inFlight = uploadPendingChanges();
       await sent;
     });
-    // It lands as Keep Cloud first reads the row; Keep Cloud's restore then
-    // reaches the cloud, and its answer is lost.
     jest.mocked(getScheduleItem).mockImplementationOnce(async id => {
       land();
       await inFlight;
       return ok(copy(mockTasks.get(id)!)) as never;
     });
+    return { shownCloud, onApplyCloudConflictScheduleItem };
+  }
+
+  it('L-2: Keep Cloud\'s restore lands and its answer is lost: it says the change may or may not have been saved, not "Neither copy was changed"', async () => {
+    const { shownCloud } = await reviewWithPhoneEditOnItsWayUp();
     jest.mocked(upsertScheduleItem).mockImplementationOnce(async item => {
       mockTasks.set(item.id, copy(item));
       return { ok: false, configured: true, stubbed: false, data: null, error: 'Network request failed' } as never;
@@ -279,5 +285,18 @@ describe('Keep Cloud on a task whose write the cloud does not confirm (audit A7 
     expect(await getSyncConflicts()).toHaveLength(1);
     expect(await getOfflineQueue()).toEqual([]);
     await waitFor(() => expect(screen.getByText('Keep Cloud')).toBeTruthy());
+  });
+
+  it('L-6: the edit lands while Keep Phone reads the cloud: Settings says the conflict closed by itself, and nothing was sent', async () => {
+    const { onApplyCloudConflictScheduleItem } = await reviewWithPhoneEditOnItsWayUp();
+
+    fireEvent.press(screen.getByText('Keep Phone'));
+    await act(async () => { proceedWithLastConfirmation(); });
+    await screen.findByText('This task\'s conflict closed by itself (an edit from this phone reached the cloud), so nothing was sent.');
+    await waitFor(() => expect(screen.queryByText('Review Cloud Conflicts')).toBeNull());
+    expect(Alert.alert).not.toHaveBeenCalledWith('Cloud copy changed', expect.anything());
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(onApplyCloudConflictScheduleItem).not.toHaveBeenCalled();
+    expect(await getSyncConflicts()).toEqual([]);
   });
 });

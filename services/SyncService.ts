@@ -4692,19 +4692,23 @@ async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Prom
 }
 
 /**
- * Why a conflict choice stopped without sending anything, for Settings to
- * explain in plain words: the record was deleted on another device, or the
- * cloud's copy changed since the screen showed it. Null for any other failure,
- * which Settings reports without detail (raw errors are never shown there).
+ * Why a conflict choice stopped, for Settings to explain in plain words: the
+ * record was deleted on another device, the cloud's copy changed since the
+ * screen showed it, or a task's conflict closed by itself meanwhile (nothing
+ * was sent for any of these); or a task's Keep Cloud wrote and the cloud did
+ * not confirm it. Null for any other failure, which Settings reports without
+ * detail (raw errors are never shown there).
  */
 export function syncConflictChoiceStopReason(
   error: unknown,
-): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | null {
+): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | 'conflict_closed' | null {
   if (!(error instanceof Error)) return null;
   if (error.message === 'sync_conflict_record_deleted') return 'record_deleted';
   if (error.message === 'sync_conflict_cloud_copy_changed') return 'cloud_copy_changed';
   // A task's Keep Cloud wrote and the cloud did not answer (A7 pass 16 L-2).
   if (error.message === 'sync_conflict_save_unconfirmed') return 'save_unconfirmed';
+  // A task's conflict closed while Keep Phone read the cloud (A7 pass 16 L-6).
+  if (error.message === 'sync_conflict_closed') return 'conflict_closed';
   return null;
 }
 
@@ -4891,7 +4895,8 @@ function phoneCopiesOfTaskInConflict(conflict: SyncConflict, queue: readonly Syn
  * import memberships, which change with no edit of David's or which Keep
  * Phone keeps from the row; and not when the row is one of this phone's own
  * copies. `seen` is by default the copy saved with the conflict. True when
- * it changed.
+ * it changed and the conflict was saved with it; not when the conflict is
+ * gone (A7 pass 16 L-6: Keep Phone said "review again" over an empty list).
  */
 async function recordTaskCloudCopyIfChanged(
   conflict: SyncConflict,
@@ -4900,14 +4905,14 @@ async function recordTaskCloudCopyIfChanged(
   seen: unknown = conflict.remotePayload,
 ): Promise<boolean> {
   if (sameTaskContent(row, seen) || phoneCopies.some(copy => sameTaskContent(row, copy))) return false;
-  await serializeSyncConflictMutation(async () => {
+  return serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
-    if (!conflicts.some(item => item.id === conflict.id)) return;
+    if (!conflicts.some(item => item.id === conflict.id)) return false;
     await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
       ? { ...item, remotePayload: row, remoteChangedAt: row.updatedAt ?? item.remoteChangedAt }
       : item));
+    return true;
   });
-  return true;
 }
 
 /**
@@ -5093,6 +5098,13 @@ export async function resolveScheduleItemSyncConflict(
   }
   if (await recordTaskCloudCopyIfChanged(conflict, cloudNow, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shown)) {
     throw new Error('sync_conflict_cloud_copy_changed');
+  }
+  // The conflict closed meanwhile (whole-app audit A7 pass 16 L-6): an edit
+  // of this phone's already under way landed while the cloud was read. There
+  // is nothing to choose, and the copy saved with the conflict, older than
+  // that edit, is not sent over it.
+  if (!(await getSyncConflicts()).some(item => item.id === conflict.id)) {
+    throw new Error('sync_conflict_closed');
   }
 
   // The phone's copy, still in every revision the cloud copy was re-homed
