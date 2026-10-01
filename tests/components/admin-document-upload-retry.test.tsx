@@ -7,7 +7,8 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
-const mockSyncStatus = { queuedChanges: 1, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 };
+// heldForConflictReview: none of the queued item is a field update held for conflict review (audit A4 pass 15b F2).
+const mockSyncStatus = { queuedChanges: 1, heldForConflictReview: 0, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 };
 const mockCalls: string[] = [];
 
 // Settings now reads this account's field notes for the Sign Out warning

@@ -188,6 +188,12 @@ export type FieldUpdateSyncChoice = Readonly<{ automatic?: boolean; overConflict
 export type SyncStatus = {
   configured: boolean;
   queuedChanges: number;
+  /**
+   * Of queuedChanges: whole copies of field updates in conflict, held for
+   * Review Conflicts (A4 pass 15 H1); each update is one of `conflicts`
+   * already (whole-app audit A4 pass 15b F2).
+   */
+  heldForConflictReview: number;
   conflicts: number;
   recoveryAvailable: boolean;
   recoveryCopies: number;
@@ -1455,6 +1461,7 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   return {
     configured: configuration.configured,
     queuedChanges: queue.length,
+    heldForConflictReview: queue.filter(item => fieldUpdateCopyHeldForReview(item, conflicts)).length,
     conflicts: conflicts.length,
     recoveryAvailable: recovery.recoveryAvailable,
     recoveryCopies: recovery.unresolvedQuarantineKeys.length,

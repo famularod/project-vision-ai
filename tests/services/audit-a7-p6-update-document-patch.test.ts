@@ -2650,8 +2650,10 @@ describe('a newer edit saved during a conflict has a way out (audit A7 pass 12 L
     const phone = await offlineEditInConflictWithIPad([photo]);
     await new Promise(resolve => setTimeout(resolve, 5));
     await editAndSave(phone, { notes: NEWER });
-    // The newer edit stays queued, so the queue is not called clear.
-    expect(await pressRetrySync(phone)).toBe('1 item still needs attention. It remains saved on this phone. 1 saved conflict also needs review.');
+    // The newer edit stays queued, so the queue is not called clear. Pin
+    // changed in A4 pass 15b F2: it is counted once, as the conflict, and no
+    // longer again as "1 item still needs attention".
+    expect(await pressRetrySync(phone)).toBe('Nothing else is waiting to sync, but 1 saved conflict needs review.');
     expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
     expect(await getSyncConflicts()).toHaveLength(1);
     expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER);
@@ -2718,6 +2720,64 @@ describe('a newer edit saved during a conflict has a way out (audit A7 pass 12 L
     expect(inCloud()).toMatchObject({ notes: NEWER });
     expect(await getSyncConflicts()).toEqual([]);
     expect(await getOfflineQueue()).toEqual([]);
+  });
+});
+
+/**
+ * A4 pass 15b F2: with a newer edit saved during a conflict, Settings › Retry
+ * Sync said "1 item still needs attention. It remains saved on this phone. 1
+ * saved conflict also needs review." for what is one update: the newer edit,
+ * held in the queue for review, was counted again as an item needing
+ * attention. An update held for conflict review is now counted once, in the
+ * conflict sentence; the queue, which still holds that edit, is not called
+ * clear.
+ */
+describe('Retry Sync counts an update held for conflict review once (audit A4 pass 15b F2)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const photo = { id: 'photo-f2', uri: 'file:///phone/Documents/project-photos/f2.jpg', caption: '', createdAt: SENT_AT };
+  const ONE_CONFLICT_ONLY = 'Nothing else is waiting to sync, but 1 saved conflict needs review.';
+
+  it.each([
+    ['with photos', [photo]],
+    ['without photos', []],
+  ])('a newer edit (%s) waiting for review: one conflict, and nothing else said to need attention', async (_label, photos) => {
+    const phone = await offlineEditInConflictWithIPad(photos);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    expect(await pressRetrySync(phone)).toBe(ONE_CONFLICT_ONLY);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER); // held, so the queue is not called clear
+  });
+
+  it('its card reading Sent (a refresh showed the iPad\'s copy), so Retry Sync only runs the queue: counted once too', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...inCloud(), status: 'sent' } : update));
+    phone.render();
+    expect(await pressRetrySync(phone)).toBe(ONE_CONFLICT_ONLY);
+    expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER);
+  });
+
+  it('another update that fails alongside is still counted, once: it needs attention, and the conflict needs review', async () => {
+    const phone = await offlineEditInConflictWithIPad([photo]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const other = { ...savedUpdate([], 'queued', 'u2'), notes: 'Strip forms' };
+    phone.setSavedUpdates(prev => [...prev, other]);
+    phone.render();
+    await queueProjectUpdateRecord(other, false);
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementation(async (params: { id: string }) => params.id === 'u2'
+      ? { ok: false, configured: true, stubbed: false, error: 'permission denied' }
+      : save(params));
+    try {
+      expect(await pressRetrySync(phone)).toBe('1 item still needs attention. It remains saved on this phone. 1 saved conflict also needs review.');
+    } finally {
+      (saveProjectUpdate as jest.Mock).mockImplementation(save);
+    }
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
   });
 });
 

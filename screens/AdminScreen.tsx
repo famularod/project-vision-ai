@@ -746,7 +746,11 @@ export function AdminScreen({
       const syncedUpdates = retryResults.filter(update => update.status === 'sent').length;
       const heldForReview = retryResults.filter(update => update.heldForConflictReview).length;
       const unsyncedUpdates = retryResults.length - syncedUpdates - heldForReview;
-      const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
+      // An update held for conflict review is counted once, as a conflict
+      // (whole-app audit A4 pass 15b F2): a newer edit of it, waiting in the
+      // queue for review, was also counted as an item needing attention.
+      const heldInQueue = nextSyncStatus.heldForConflictReview;
+      const remainingQueue = Math.max(0, (queueResult?.queued ?? nextSyncStatus.queuedChanges) - heldInQueue);
       const remainingConflicts = Math.max(nextSyncStatus.conflicts, heldForReview);
       const recoveryAvailable = nextSyncStatus.recoveryAvailable;
       const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRun.remaining(failedDocumentCountRef.current);
@@ -759,7 +763,8 @@ export function AdminScreen({
         : remainingConflicts > 0 && unsyncedCount > 0
         ? `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone. ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.`
         : remainingConflicts > 0
-        ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
+        // Not "clear" while the queue still holds an edit waiting for review.
+        ? `${heldInQueue > 0 ? 'Nothing else is waiting to sync' : 'The sync queue is clear'}, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
         ? `${syncedUpdates || queueResult?.uploaded || 0} pending ${syncedUpdates === 1 || queueResult?.uploaded === 1 ? 'item' : 'items'} synced successfully.`
         : `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
