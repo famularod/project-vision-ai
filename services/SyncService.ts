@@ -4103,15 +4103,18 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       .filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
         (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId && !queuedFieldUpdateDocumentPatches(item))
       .map(item => (item.payload as ProjectUpdateRecordPayload).updateData)];
-    await removeProjectUpdateFromSyncQueue(conflict.localId);
-    await uploadPendingChanges();
-    await removeProjectUpdateFromSyncQueue(conflict.localId);
     // The cloud's copy as it is now (whole-app audit A4 pass 11 O1): the one
     // saved when the conflict was found put that older copy back over an
     // iPad edit made since. Not one of this phone's own copies, which a retry
-    // in flight may have put there: that is not the cloud's choice.
+    // in flight may have put there: that is not the cloud's choice. Read
+    // before this phone's waiting work is withdrawn (A4 pass 12 L1): a failed
+    // read had taken a newer phone edit or a document change off the queue,
+    // while Settings said neither copy was changed.
     const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
     if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+    await removeProjectUpdateFromSyncQueue(conflict.localId);
+    await uploadPendingChanges();
+    await removeProjectUpdateFromSyncQueue(conflict.localId);
     const currentCopy = current.data?.updateData;
     const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
       sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))

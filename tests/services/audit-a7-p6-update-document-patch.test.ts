@@ -1687,3 +1687,54 @@ describe('a refresh keeps a card whose own queued copy still waits (audit A4 pas
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
   });
 });
+
+/**
+ * A4 pass 12 L1 (A7 pass 10 L-1): Keep Cloud took this update's waiting work
+ * off the queue before it read the cloud's copy. When that read failed,
+ * Settings said "Neither copy was changed", but a newer phone edit or a
+ * waiting document change was already gone from the queue.
+ */
+describe('Keep Cloud with an unreadable cloud leaves the phone\'s waiting work queued (audit A4 pass 12 L1)', () => {
+  const cloudReadFailsOnce = () => (jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock })
+    .getProjectUpdateSyncMetadata.mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+
+  it('a newer phone edit made since the conflict stays queued', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    const NEWER = 'Pour, 45 yards (typed on the phone after the conflict)';
+    await editAndSave(phone, { notes: NEWER });
+    cloudReadFailsOnce();
+    await expect(chooseInSettingsExpectingFailure(phone, conflict, 'keep_cloud')).resolves.toEqual(['Conflict not resolved']);
+    expect(((await queuedFor())!.payload.updateData as Update).notes).toBe(NEWER);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+  });
+
+  it('a document taken off since the conflict stays queued', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    const before = await queuedFor();
+    expect(before).toBeDefined();
+    cloudReadFailsOnce();
+    await expect(resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud')).rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+    expect(await queuedFor()).toEqual(before);
+  });
+});
+
+/** As chooseInSettings, for a choice that fails: the alerts Settings shows. */
+async function chooseInSettingsExpectingFailure(phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud') {
+  const alerts: string[] = [];
+  const { resolveConflict } = evaluate<{ resolveConflict: (conflict: unknown, resolution: string) => Promise<void> }>(
+    transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
+    {
+      setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
+      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: jest.fn(), savedUpdates: phone.savedUpdatesRef.current,
+      projectUpdateCopyIsLastInCloud,
+      getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
+      setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
+      Alert: { alert: (title: string) => { alerts.push(title); } },
+    },
+  );
+  await resolveConflict((await getSyncConflicts()).find(item => item.id === conflict.id), resolution);
+  return alerts;
+}
