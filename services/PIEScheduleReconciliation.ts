@@ -23,7 +23,7 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
-import { scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
+import { scheduleTaskEarlierIds, scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -287,8 +287,9 @@ export function selectAuthoritativeScheduleItems({
  * Q22). A lookahead import restates the master's task in place, so this is
  * only the copy a later import left behind: a new master that changed the
  * task's dates, or an older master made current again. The copy from the
- * newest file shows. Nothing is folded when a file lists the same task name
- * twice in the same area: those may be two tasks.
+ * newest file shows. When a file lists the same task name twice in the same
+ * area those may be two tasks, so only a copy a newer file's row answers to
+ * is folded (A6 pass 18).
  */
 function withoutLookaheadDuplicates(
   items: readonly ScheduleItem[],
@@ -309,8 +310,21 @@ function withoutLookaheadDuplicates(
     if ([...sources.values()].some(documents => documents.length === 0)) return;
     const perFile = new Map<string, number>();
     sources.forEach(documents => documents.forEach(document => perFile.set(document.id, (perFile.get(document.id) || 0) + 1)));
-    if ([...perFile.values()].some(count => count > 1)) return;
     const statedAt = (item: ScheduleItem) => Math.max(...(sources.get(item) || []).map(document => timestamp(document.importedAt)));
+    if ([...perFile.values()].some(count => count > 1)) {
+      // Whole-app audit A6 pass 18 (1 Oct 2026): twins a mid-week lookahead
+      // restated (so it holds both), which Monday's master then slipped,
+      // stayed shown on stale dates beside the master's new rows: four Pour
+      // slabs, and the next report said "+2 open", "Pour slab was added" and
+      // nothing of either slip. Twins are folded only by the link the import
+      // recorded: a copy whose task a newer file's row answers to
+      // (revisedFromTaskIds) is the copy that file left behind.
+      group.forEach(item => {
+        if (group.some(other => other !== item && statedAt(other) > statedAt(item) &&
+          scheduleTaskEarlierIds(other).includes(item.id.trim()))) hidden.add(item);
+      });
+      return;
+    }
     const inMaster = (item: ScheduleItem) => Boolean(master && sources.get(item)?.includes(master));
     const shown = [...group].sort((left, right) =>
       (statedAt(right) - statedAt(left)) || (Number(inMaster(right)) - Number(inMaster(left))))[0];

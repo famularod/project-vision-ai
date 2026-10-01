@@ -29,6 +29,9 @@
  * Synthetic data.
  */
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
+import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
+import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey } from '../../services/DAVEReportSnapshot';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -41,6 +44,7 @@ import {
 } from '../../services/ScheduleImportMerge';
 import { scheduleItemsAfterLookaheadDeleted } from '../../services/ScheduleLookahead';
 import { scheduleTaskLinks } from '../../services/ScheduleTaskRevisions';
+import type { PIEReportDraft } from '../../services/PIEReporter';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
@@ -298,13 +302,13 @@ describe('A5 p18 F3: a lookahead listing some of the twins restates the one it l
     expect(link(onL, 'MASTER F-1')).toBe('MASTER F-1');
   });
 
-  it('the next master slipping both pairs both: David\'s 80% follows phase 1', () => {
+  it('the next master slipping both pairs both: David\'s 80% and its reports follow phase 1', () => {
     const { state } = approve(onL, G, rows(G, ['Pour slab,Alpha,Lot,10/03/2026,10/05/2026,', 'Pour slab,Alpha,Lot,10/23/2026,10/25/2026,', FRAMING]));
-    // The master's rows (phase 1's own row, which the lookahead holds, still shows beside them).
-    expect(twins(state).filter(([id]) => id.startsWith('MASTER G'))).toEqual([
+    expect(twins(state)).toEqual([
       ['MASTER G-1', '10/03/2026', 80, ['MASTER F-1']],
       ['MASTER G-2', '10/23/2026', 0, ['MASTER F-2']],
     ]);
+    expect(link(state, 'MASTER F-1')).toBe('MASTER G-1');
   });
 
   it('after a rolling lookahead added a third, the next master\'s two rows pair with the master\'s two twins', () => {
@@ -315,8 +319,7 @@ describe('A5 p18 F3: a lookahead listing some of the twins restates the one it l
     ]);
     // Two rows against three shown: the lookahead's own twin is left to it, so the master's pair and 80% follows.
     const { state } = approve(rolling, G, rows(G, ['Pour slab,Alpha,Lot,10/03/2026,10/05/2026,', 'Pour slab,Alpha,Lot,10/23/2026,10/25/2026,', FRAMING]));
-    // (Phase 2's own row, which the lookahead holds, still shows beside the master's.)
-    expect(twins(state).filter(([id]) => !id.startsWith('MASTER F'))).toEqual([
+    expect(twins(state)).toEqual([
       ['MASTER G-1', '10/03/2026', 80, ['MASTER F-1']],
       ['MASTER G-2', '10/23/2026', 0, ['MASTER F-2']],
       ['LOOKAHEAD L-2', '10/29/2026', 0, []],
@@ -456,5 +459,84 @@ describe('A5 p18 L3: a web upload restates a hand-entered task only when it is m
     const documentsAfter = scheduleDocumentsAfterActivation(prepared.document, raised.documents, 'project');
     const carried = scheduleProgressCarriedOnActivation({ items: raised.items, documentsBefore: raised.documents, documentsAfter, now: '2026-09-27T12:00:00.000Z' });
     expect(carried).toEqual([expect.objectContaining({ id: 'web-hand-pour', startDate: '10/08/2026', percentComplete: 70, progressConfirmedBy: 'David' })]);
+  });
+});
+
+/**
+ * A6 pass 18 (Medium, same at 88198e3): a mid-week lookahead listed both
+ * Pour slabs (each restated in place, so the lookahead holds both), a report
+ * was sent, and Monday's master slipped every date. The master's new rows
+ * showed, and so did both old ones, which the lookahead holds and a
+ * lookahead's tasks always show: four Pour slabs, two on stale dates. The
+ * fold that hides the copy a newer file left behind gave up whenever a file
+ * lists a name twice. The next report said "+2 open" and "Pour slab was
+ * added to the project plan", and nothing about either slip.
+ */
+describe('A6 p18: twins a lookahead restated, then moved by the next master, show once each', () => {
+  const ONE = 'Pour slab,Alpha,Lot,10/05/2026,10/09/2026,';
+  const TWO = 'Pour slab,Alpha,Lot,10/12/2026,10/16/2026,';
+  const L = schedule('LOOKAHEAD L', '2026-09-23T12:00:00.000Z', 'lookahead');
+  const REPORT_SENT = '2026-09-24T15:00:00.000Z';
+  const NOW = '2026-09-28T15:00:00.000Z';
+  // Master F, David's 80% on phase 1; a mid-week lookahead lists both, a day later each.
+  const onF = record(approve(EMPTY, F, rows(F, [ONE, TWO, FRAMING])).state, 'MASTER F-1', 80, '2026-09-22T15:00:00.000Z');
+  const onL = approveLookahead(onF, L, rows(L, ['Pour slab,Alpha,Lot,10/06/2026,10/10/2026,', 'Pour slab,Alpha,Lot,10/13/2026,10/17/2026,'])).state;
+  // Monday's master slips every date (three days).
+  const SLIPPED = ['Pour slab,Alpha,Lot,10/08/2026,10/12/2026,', 'Pour slab,Alpha,Lot,10/15/2026,10/19/2026,', 'Framing,Alpha,Lot,10/29/2026,11/02/2026,'];
+  const truthOf = (items: ScheduleItem[], now: string) => buildDAVEProjectTruth({
+    projectId: 'report:alpha', projectName: 'Alpha', updates: [], scheduleItems: items, projectAreas: [], referenceDocuments: [], now,
+  });
+  /** The report's "since the last approved report" section, against the report sent after the lookahead. */
+  const sinceLastReport = (state: State) => {
+    const sent = truthOf(shown(onL), REPORT_SENT);
+    const briefing = buildDAVEReportBriefing({
+      truths: [truthOf(shown(state), NOW)], selectedProjectNames: ['Alpha'],
+      previousSnapshot: buildDAVEReportSnapshot({
+        truths: [sent], scopeKey: daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: buildDAVEReportSourceFingerprint([sent]),
+        capturedAt: REPORT_SENT, reportFormat: 'project_manager',
+      }),
+    });
+    const body = enhanceDAVEReportDraft({
+      id: 'draft-1', reportType: 'daily_project_update', audience: 'owner', title: 'Alpha update', subject: 'Alpha update', body: '',
+      openingLine: '', closingLine: '', executiveSummary: [], sections: [], locationGroups: [], actionItems: [], imageReferences: [], risks: [],
+      decisionsNeeded: [], confidence: 'high', reportReadiness: 'high', needsReview: false, reviewFlags: [], sourceEvidence: [],
+      constructionUnderstanding: {}, generatedAt: NOW,
+    } as unknown as PIEReportDraft, briefing, 'project_manager').body;
+    const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+    return body.slice(start, body.indexOf('COMPLETED WORK', start));
+  };
+  const expectOnceEach = (state: State) => {
+    expect(shownNamed(onL, 'Pour slab').map(item => item.id).sort()).toEqual(['MASTER F-1', 'MASTER F-2']);
+    expect(twins(state).map(([, start, percent, from]) => [start, percent, from])).toEqual([
+      ['10/08/2026', 80, ['MASTER F-1']],
+      ['10/15/2026', 0, ['MASTER F-2']],
+    ]);
+    expect(link(state, 'MASTER F-1')).toBe(twins(state)[0][0]);
+    expect(link(state, 'MASTER F-2')).toBe(twins(state)[1][0]);
+    const text = sinceLastReport(state);
+    expect(text).toContain('Pour slab finish changed from 10/10/2026 to 10/12/2026.');
+    expect(text).toContain('Pour slab finish changed from 10/17/2026 to 10/19/2026.');
+    expect(text).not.toMatch(/added to the project plan|\+[1-9]\d* open/);
+  };
+
+  it('phone: the master approved on the phone shows each Pour slab once, and the next report says the two slips', () => {
+    expectOnceEach(approve(onL, G, rows(G, SLIPPED)).state);
+  });
+
+  it('web: the master uploaded on the web and made current shows each once too', () => {
+    const prepared = prepareDAVEWebDocumentUpload({
+      fileName: 'alpha-master-g.csv', mimeType: 'text/csv', sizeBytes: 200, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+      contents: ['Task,Project,Location,Start,Finish,Percent Complete', ...SLIPPED].join('\n'), fingerprint: 'b'.repeat(64),
+      now: '2026-09-26T12:00:00.000Z',
+    });
+    const webShown = shown(onL).map(item => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null }));
+    const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown }, importedScheduleItems: prepared.scheduleItems });
+    const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
+    const uploaded: State = { items: [...plan.additions, ...onL.items.map(item => revised.get(item.id) || item)], documents: [...onL.documents, prepared.document] };
+    const current: State = { ...uploaded, documents: scheduleDocumentsAfterActivation(prepared.document, uploaded.documents, 'project') };
+    const carried = new Map(scheduleProgressCarriedToShownTasks({
+      before: shown(uploaded), after: shown(current), documentsBefore: uploaded.documents, documentsAfter: current.documents, now: NOW,
+    }).map(item => [item.id, item]));
+    expectOnceEach({ ...current, items: current.items.map(item => carried.get(item.id) || item) });
   });
 });
