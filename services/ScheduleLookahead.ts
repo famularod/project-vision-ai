@@ -487,9 +487,23 @@ function tasksAfterLookaheadDeleted(
  * leaves the lookahead's dates in effect. Only for a task shown after the
  * delete: a row the current master hides shows again only when one of its
  * own masters is made current, so it reads the mark as before. As before
- * (A6 pass 19 M1): a mark that names no master (true), one whose master is
- * no longer saved, the schedules not given, or no master current for the
- * project.
+ * (A6 pass 19 M1): a mark that names no master (true), the schedules not
+ * given, or no master current for the project.
+ *
+ * Whole-app audit A5 recorded Low (from the pass 22 fixer, 1 Oct 2026): a
+ * mark naming a master no longer saved still read as "replaced" here, as it
+ * did at Set Active and Make Current before A5 pass 22 L1. Master H listed
+ * Framing on lookahead L2's 10/20 and marked L1 and L2; H was deleted (Delete
+ * PDF + Items, or a web upload deleted before Make Current) and F made
+ * current, so Framing rightly showed L2's 10/20. Deleting L2 then gave the
+ * note's master dates, H's own 10/20, though L1 (10/18) is newer than F and
+ * H is gone (with a later L3 deleted instead, L1's 10/18 over L2's 10/20). A
+ * mark naming a master no longer saved now replaces nothing at the delete
+ * while the master current is older than the lookahead, as activation reads
+ * it (notedDatesWhileCurrent, then a lookahead's dates only under a master
+ * older than it): that master's dates are gone. Under a master newer than
+ * the lookahead it reads as before: a mark keeps only the first master that
+ * replaced the dates, and the newer one may have replaced them too.
  */
 function datesReplacedAtDelete(
   items: readonly ScheduleItem[],
@@ -508,7 +522,14 @@ function datesReplacedAtDelete(
     const by = entry.datesReplacedByMaster;
     if (!by) return false;
     if (by === true || !documents || !current || !shownAfter(task)) return true;
-    return markedMasterInEffect(by, documents, current.get(scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '')));
+    const shown = current.get(scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || ''));
+    // A master no longer saved replaces nothing under a master older than the lookahead, as Set Active and
+    // Make Current read it (A5 pass 22 L1, A5 pass 21 R1); under a newer one, as before.
+    if (!documents.some(saved => key(saved.importBatchId) === key(by))) {
+      const lookahead = documents.find(saved => key(saved.importBatchId) === key(entry.batchId));
+      return !lookahead || !shown || !(timeOf(lookahead.importedAt) > timeOf(shown.importedAt));
+    }
+    return markedMasterInEffect(by, documents, shown);
   };
 }
 
