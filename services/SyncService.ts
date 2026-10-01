@@ -6332,10 +6332,17 @@ function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
   }
 }
 
-/** Its archive aside when that copy is archived and this one not (A4 pass 17 L2): nothing un-archives an update. */
+/**
+ * Its archive aside when that copy is archived and this one not (A4 pass 17
+ * L2): nothing un-archives an update. So is a photo result that copy holds
+ * and that stands over this one's (A4 pass 29 L1), as staging takes it
+ * (withQueuedAnalysisResults): a card analysing a photo again, its record
+ * already in the cloud, read as owing a send, its photos went up again, and
+ * the card turned "Sync failed · Photo upload issue" with nothing to retry.
+ */
 function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
-  return Boolean(sent) && sameProjectUpdateContent(sent, withArchiveKept(update, [], sent) as ProjectUpdate);
+  return Boolean(sent) && sameProjectUpdateContent(sent, withSentCopysStandingParts(update, sent) as ProjectUpdate);
 }
 
 /**

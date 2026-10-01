@@ -5695,6 +5695,26 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ status: 'analyzing' });
   });
 
+  it('a re-run started while the waiting-update sync sends: the next pass leaves the card Sent with "Analyzing", not "Sync failed" (A4 pass 29 L1)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    await uploadPendingChanges(); // the failed result goes up as a patch
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 41 yards' }); // Waiting to Sync
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => {
+      lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() }); // Retry on the photo, mid-upload
+      await phone.settle();
+      return save(params);
+    });
+    await waitingUpdateSync(phone); // the record reached the cloud, but the card changed under it
+    expect(inCloud()).toMatchObject({ notes: 'Pour, 41 yards' });
+    await waitingUpdateSync(phone); // the next automatic pass, the re-run still under way
+    expect(phone.saved()?.status).toBe('sent');
+    expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ status: 'analyzing' });
+  });
+
   it('"Send your version?": the phone\'s note goes over the iPad\'s, with the iPad\'s Confirmed result (A4 pass 27 L3)', async () => {
     const phone = await sentThroughTheApp([analyzingPhoto]);
     await new Promise(resolve => setTimeout(resolve, 5));
