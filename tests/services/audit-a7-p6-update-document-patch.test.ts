@@ -1817,3 +1817,29 @@ describe('a document change waiting for an update archived in the cloud still re
     expect(saveProjectUpdate).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A4 pass 12 L3 (A7 pass 10 L-5): during a conflict nothing is queued for
+ * the update, so a refresh shows the iPad's copy on the card, as Sent. Keep
+ * Phone then took that card for a newer edit made on the phone and left it,
+ * while the cloud now held the phone's note.
+ */
+describe('Keep Phone after a refresh shows the phone\'s copy on the card (audit A4 pass 12 L3)', () => {
+  it('the refresh showed the iPad\'s copy: after Keep Phone the card reads the phone\'s note, Sent', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
+    expect(A.updateNeedsAutomaticSyncRetry(phone.saved()!)).toBe(false);
+  });
+
+  it('the realtime echo showed the iPad\'s copy: the same', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
+  });
+});

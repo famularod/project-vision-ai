@@ -885,8 +885,12 @@ export function AdminScreen({
         // and a document change then sent the phone's whole copy over a newer
         // iPad edit (whole-app audit A7 pass 9 L1). A newer edit made on the
         // phone since the conflict stays as it is: it still owes its own sync.
+        // A card reading Sent is not one: a refresh or echo during the
+        // conflict showed the iPad's copy there (A4 pass 12 L3).
         const phoneCopy = savedUpdates.find(update => update.id === conflict.localId);
-        if (resolution === 'keep_cloud' || !phoneCopy || projectUpdateCopyIsLastInCloud(phoneCopy)) {
+        const newerPhoneEdit = Boolean(phoneCopy) && (phoneCopy!.status === 'queued' || phoneCopy!.status === 'failed') &&
+          !projectUpdateCopyIsLastInCloud(phoneCopy!);
+        if (resolution === 'keep_cloud' || !newerPhoneEdit) {
           onApplyCloudConflictUpdate(resolvedUpdate);
         }
       }
