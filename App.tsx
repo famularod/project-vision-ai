@@ -231,6 +231,7 @@ import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from './services/ScheduleProgressSource';
+import { scheduleSavedTasksOfProjects } from './services/ScheduleTaskRevisions';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -13539,7 +13540,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       scheduleItems: (
         reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
       ) as unknown as PIELiveAuthorityInput['scheduleItems'],
-      knownScheduleItems: scheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'], // every saved task, for the name fallback (A10 pass 6 L2)
+      knownScheduleItems: scheduleSavedTasksOfProjects(scheduleItems as unknown as import('./types').ScheduleItem[], (reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems) as unknown as import('./types').ScheduleItem[], reportEvidenceScope?.projectNames || [projectName]) as unknown as PIELiveAuthorityInput['scheduleItems'], // its projects' saved tasks, for the name fallback (A10 pass 6 L2, A10 pass 8 L4)
       currentUpdate: (
         reportEvidenceScope ? reportEvidenceScope.currentUpdate : draft
       ) as unknown as PIELiveAuthorityInput['currentUpdate'],

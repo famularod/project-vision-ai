@@ -133,11 +133,10 @@ export function scheduleTaskLinks(
   items: readonly ScheduleItem[],
   known: readonly ScheduleItem[] = [],
 ): (reference: ScheduleTaskReference) => ScheduleTaskLink | null {
-  const knownById = new Map<string, ScheduleItem>();
-  known.forEach(item => { if (idOf(item.id) && !knownById.has(idOf(item.id))) knownById.set(idOf(item.id), item); });
-  let bySchedule: Map<string, ScheduleItem[]> | null = null;
+  const knownIndex = savedTaskIndexOf(known);
+  const knownById = knownIndex.byId;
   const inScheduleNamed = (key: string, name: string): ScheduleItem[] => {
-    if (!bySchedule) {
+    if (!knownIndex.bySchedule) {
       const index = new Map<string, ScheduleItem[]>();
       known.forEach(item => {
         const itemName = nameKey(item.taskName);
@@ -147,9 +146,9 @@ export function scheduleTaskLinks(
           if (list) list.push(item); else index.set(entry, [item]);
         });
       });
-      bySchedule = index;
+      knownIndex.bySchedule = index;
     }
-    return bySchedule.get(`${key}\n${name}`) || [];
+    return knownIndex.bySchedule.get(`${key}\n${name}`) || [];
   };
   const nameSharedInOwnSchedule = (reference: ScheduleTaskReference, taskId: string, name: string): boolean => {
     const own = knownById.get(taskId);
@@ -180,6 +179,61 @@ export function scheduleTaskLinks(
       : [];
     return named.length === 1 ? { item: named[0], basis: 'stored_task_name' } : null;
   };
+}
+
+type SavedTaskIndex = { byId: Map<string, ScheduleItem>; bySchedule: Map<string, ScheduleItem[]> | null };
+const savedTaskIndexes = new WeakMap<readonly ScheduleItem[], SavedTaskIndex>();
+
+/**
+ * Whole-app audit A10 pass 8 L4 (30 Sep 2026): Home's overview rows and the
+ * commitment register built this index again for every project on every
+ * render. The saved tasks are an immutable state value, so the index is kept
+ * with the array (by identity) and built once.
+ */
+function savedTaskIndexOf(known: readonly ScheduleItem[]): SavedTaskIndex {
+  const cached = known.length > 0 ? savedTaskIndexes.get(known) : undefined;
+  if (cached) return cached;
+  const byId = new Map<string, ScheduleItem>();
+  known.forEach(item => {
+    const id = idOf(item.id);
+    if (id && !byId.has(id)) byId.set(id, item);
+  });
+  const index: SavedTaskIndex = { byId, bySchedule: null };
+  if (known.length > 0) savedTaskIndexes.set(known, index);
+  return index;
+}
+
+const savedTasksOfProjects = new WeakMap<readonly ScheduleItem[], Map<string, readonly ScheduleItem[]>>();
+
+/**
+ * The saved tasks, hidden ones included, of the projects a scope covers
+ * (whole-app audit A10 pass 8 L4, 30 Sep 2026): those whose app project or
+ * schedule project is one of the scope's projects or one of its tasks'. The
+ * live authority took every project's saved tasks, which are part of its
+ * evidence signature, so a task change in Beta rebuilt Alpha's intelligence.
+ * An update's old row and its schedule's rows are always among these. The
+ * same saved tasks and projects give the same array.
+ */
+export function scheduleSavedTasksOfProjects(
+  saved: readonly ScheduleItem[],
+  projectTasks: readonly ScheduleItem[],
+  projectNames: readonly string[] = [],
+): readonly ScheduleItem[] {
+  const keys = new Set([
+    ...projectNames.map(nameKey),
+    ...projectTasks.flatMap(item => [nameKey(item.projectName), nameKey(item.scheduleProjectName)]),
+  ].filter(Boolean));
+  const signature = [...keys].sort().join('\n');
+  let byProjects = savedTasksOfProjects.get(saved);
+  if (!byProjects) {
+    byProjects = new Map();
+    savedTasksOfProjects.set(saved, byProjects);
+  }
+  const cached = byProjects.get(signature);
+  if (cached) return cached;
+  const own = saved.filter(item => keys.has(nameKey(item.projectName)) || keys.has(nameKey(item.scheduleProjectName)));
+  byProjects.set(signature, own);
+  return own;
 }
 
 /** The task shown that a task id (with what the update stored about it) answers to, or null. */
