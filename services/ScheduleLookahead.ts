@@ -4,6 +4,7 @@ import {
   currentScheduleDocumentsByProject,
   scheduleDocumentAddsToMaster,
   scheduleFullCopyLeftUnshown,
+  scheduleDocumentIsScheduleLike,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
@@ -468,7 +469,8 @@ export function scheduleItemsAfterScheduleDeleted({
     scheduleItems: items.map(item => changed.get(item.id) || item),
     scheduleDocuments: [...documents],
   });
-  scheduleTasksAnsweringToRemovedTasks(shown, removed, items).forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1)
+  const schedules = [document, ...documents].filter(saved => saved.importBatchId && scheduleDocumentIsScheduleLike(saved) && !scheduleDocumentAddsToMaster(saved)); // when each full schedule came in (A8 pass 9 L1)
+  scheduleTasksAnsweringToRemovedTasks(shown, removed, items, schedules).forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1)
   return [...changed.values()];
 }
 

@@ -1,4 +1,4 @@
-import type { ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
@@ -230,14 +230,28 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * schedule, not a revision of it), and only when the removed task's name was
  * unique in its own schedule, counting the rows the delete keeps (kept) as
  * well as those it removes.
+ *
+ * Whole-app audit A8 pass 9 L1 (30 Sep 2026): master F had Pour slab phase
+ * 1, master G dropped it, and master M added phase 2 as a new task; deleting
+ * F wrote phase 1's id onto phase 2. A row saved before 79f49d3 and a row the
+ * merge paired with nothing both list no earlier id (the merge leaves the
+ * field off), so the row cannot tell them apart. The id now goes only onto a
+ * task a master imported, never one entered by hand, and only when no full
+ * schedule saved for its project between the removed task's last schedule
+ * and the task's first (schedules) left the task out: the task came in where
+ * the import would have paired it. With either import's date unknown, as
+ * before.
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
   removed: readonly ScheduleItem[],
   /** Every saved task the delete keeps, hidden ones included. */
   kept: readonly ScheduleItem[] = [],
+  /** The full schedules (no lookahead), the deleted one included: when each import came in. */
+  schedules: readonly Pick<ReferenceDocument, 'importBatchId' | 'importedAt'>[] = [],
 ): ScheduleItem[] {
   const answered = new Set(shown.flatMap(item => [idOf(item.id), ...scheduleTaskEarlierIds(item)]));
+  const leftOutBetween = scheduleLeftTaskOut([...kept, ...removed], schedules);
   const added = new Map<ScheduleItem, string[]>();
   removed.forEach(gone => {
     const goneId = idOf(gone.id);
@@ -245,6 +259,8 @@ export function scheduleTasksAnsweringToRemovedTasks(
     const inSchedule = sameSchedule(gone);
     const matches = shown.filter(item => sameRemovedTask(item, gone));
     if (matches.length !== 1 || inSchedule(matches[0])) return;
+    // A master's task, where its import would have paired the removed one (A8 pass 9 L1).
+    if (scheduleItemImportBatchIds(matches[0]).length === 0 || leftOutBetween(gone, matches[0])) return;
     const ownRows = new Set([...kept, ...removed].filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
     if (ownRows.size !== 1) return;
     added.set(matches[0], [...(added.get(matches[0]) || []), goneId]);
@@ -253,4 +269,54 @@ export function scheduleTasksAnsweringToRemovedTasks(
     ...item,
     revisedFromTaskIds: scheduleTaskEarlierIds({ id: item.id, revisedFromTaskIds: [...ids, ...scheduleTaskEarlierIds(item)] }),
   }));
+}
+
+function batchKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+/**
+ * Whether a full schedule saved for the task's project, imported after the
+ * removed task's last schedule and before the task's first, left the task
+ * out (A8 pass 9 L1). The saved rows are indexed by import on first use.
+ */
+function scheduleLeftTaskOut(
+  saved: readonly ScheduleItem[],
+  schedules: readonly Pick<ReferenceDocument, 'importBatchId' | 'importedAt'>[],
+): (gone: ScheduleItem, task: ScheduleItem) => boolean {
+  const importedAt = new Map<string, number>();
+  schedules.forEach(document => {
+    const batch = batchKey(document.importBatchId);
+    const at = Date.parse(document.importedAt || '');
+    if (batch && Number.isFinite(at)) importedAt.set(batch, at);
+  });
+  let byBatch: Map<string, ScheduleItem[]> | null = null;
+  const rowsOf = (batch: string): ScheduleItem[] => {
+    if (!byBatch) {
+      const index = new Map<string, ScheduleItem[]>();
+      saved.forEach(item => scheduleItemImportBatchIds(item).map(batchKey).forEach(key => {
+        const list = index.get(key);
+        if (list) list.push(item); else index.set(key, [item]);
+      }));
+      byBatch = index;
+    }
+    return byBatch.get(batch) || [];
+  };
+  const times = (item: ScheduleItem) => scheduleItemImportBatchIds(item)
+    .map(batch => importedAt.get(batchKey(batch)))
+    .filter((at): at is number => at !== undefined);
+  return (gone, task) => {
+    const goneTimes = times(gone);
+    const taskTimes = times(task);
+    if (goneTimes.length === 0 || taskTimes.length === 0) return false;
+    const from = Math.max(...goneTimes);
+    const to = Math.min(...taskTimes);
+    const own = new Set([...scheduleItemImportBatchIds(gone), ...scheduleItemImportBatchIds(task)].map(batchKey));
+    const project = scheduleTaskProjectKey(task);
+    return [...importedAt.entries()].some(([batch, at]) => {
+      if (at <= from || at >= to || own.has(batch)) return false;
+      const rows = rowsOf(batch).filter(row => scheduleTaskProjectKey(row) === project);
+      return rows.length > 0 && !rows.some(row => sameRemovedTask(row, gone));
+    });
+  };
 }
