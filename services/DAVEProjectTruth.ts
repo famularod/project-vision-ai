@@ -30,6 +30,7 @@ import {
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
+import { scheduleTaskLinks } from './ScheduleTaskRevisions';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -354,15 +355,18 @@ function buildEvidenceLedger(
   },
 ): DAVEEvidenceLedgerRecord[] {
   const records: DAVEEvidenceLedgerRecord[] = [];
+  // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(input.scheduleItems);
   for (const update of input.updates) {
     const areaName = clean(update.selectedAreaName);
+    const taskId = linkOf(update)?.item.id || clean(update.scheduleItemId);
     records.push(record({
       id: `update:${update.id}`,
       kind: 'update',
       sourceRecordId: update.id,
       projectName: update.projectName,
       areaName,
-      taskId: clean(update.scheduleItemId),
+      taskId,
       text: update.notes,
       capturedAt: update.date,
       summary: clean(update.notes) || `Field update with ${update.photos.length} photo${update.photos.length === 1 ? '' : 's'}.`,
@@ -372,7 +376,7 @@ function buildEvidenceLedger(
         : 'Project is known, but no area or task relationship is recorded.',
     }));
     for (const photo of update.photos) {
-      records.push(photoRecord(update, photo));
+      records.push(photoRecord(update, photo, taskId));
       const gps = photoGpsOrUpdate(photo, update);
       if (gps.gpsLatitude !== null && gps.gpsLongitude !== null) {
         records.push(record({
@@ -381,7 +385,7 @@ function buildEvidenceLedger(
           sourceRecordId: photo.id,
           projectName: update.projectName,
           areaName: clean(photo.selectedAreaName) || areaName,
-          taskId: clean(update.scheduleItemId),
+          taskId,
           text: `${gps.gpsLatitude},${gps.gpsLongitude}`,
           capturedAt: photo.locationCapturedAt || update.locationCapturedAt || update.date,
           summary: `GPS evidence captured${clean(photo.selectedAreaName) || areaName ? ` for ${clean(photo.selectedAreaName) || areaName}` : ''}.`,
@@ -399,7 +403,7 @@ function buildEvidenceLedger(
           sourceRecordId: photo.id,
           projectName: update.projectName,
           areaName: clean(photo.selectedAreaName) || areaName,
-          taskId: clean(update.scheduleItemId),
+          taskId,
           text: photoIntelligenceText(photo),
           capturedAt: photoIntelligence.updatedAt,
           summary: photoIntelligence.visibleChange || photoIntelligence.currentObservation || photoIntelligence.summary,
@@ -482,7 +486,7 @@ function buildEvidenceLedger(
   return markDuplicates(records);
 }
 
-function photoRecord(update: ProjectUpdate, photo: UpdatePhoto): DAVEEvidenceLedgerRecord {
+function photoRecord(update: ProjectUpdate, photo: UpdatePhoto, taskId: string | null): DAVEEvidenceLedgerRecord {
   const areaName = clean(photo.selectedAreaName) || clean(update.selectedAreaName);
   return record({
     id: `photo:${photo.id}`,
@@ -490,7 +494,7 @@ function photoRecord(update: ProjectUpdate, photo: UpdatePhoto): DAVEEvidenceLed
     sourceRecordId: photo.id,
     projectName: update.projectName,
     areaName,
-    taskId: clean(update.scheduleItemId),
+    taskId,
     text: `${photo.caption} ${photo.actionRequired} ${photoIntelligenceText(photo)}`,
     capturedAt: photo.locationCapturedAt || update.date,
     summary: clean(photo.caption) || clean(photo.photoIntelligence?.currentObservation) || 'Field photo.',

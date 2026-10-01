@@ -832,6 +832,14 @@ export type ScheduleItem = {
    * task back its master schedule dates.
    */
   lookaheadOverlay?: ScheduleLookaheadOverlay | null;
+  /**
+   * The ids this task had before new masters moved its dates, oldest first
+   * (whole-app audit A10 pass 5 M1, 30 Sep 2026): a new master saves a moved
+   * task as a new row with a new id, and a field update linked to an earlier
+   * id stays this task's (ScheduleTaskRevisions). Kept in the task's JSON
+   * record, as lookaheadOverlay is. Missing on a row saved before.
+   */
+  revisedFromTaskIds?: string[] | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
   /** Immutable activity identifier captured from the source schedule row. */

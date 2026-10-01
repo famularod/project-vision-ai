@@ -23,6 +23,7 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -580,10 +581,13 @@ export function buildPIEScheduleReconciliation({
   );
   const matches: PIEScheduleFieldMatch[] = [];
   const warnings: PIEScheduleReconciliationWarning[] = [];
+  // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scopedScheduleItems);
+  const links = new Map(scopedUpdates.map(update => [update, linkOf(update)] as const));
 
   scopedScheduleItems.forEach(item => {
     const itemMatches = scopedUpdates
-      .map(update => matchScheduleItemToUpdate(item, update))
+      .map(update => matchScheduleItemToUpdate(item, update, links.get(update) ?? null))
       .filter((match): match is PIEScheduleFieldMatch => Boolean(match))
       .sort((left, right) =>
         MATCH_BASIS_RANK[left.matchBasis] - MATCH_BASIS_RANK[right.matchBasis] ||
@@ -721,12 +725,18 @@ export function buildPIEScheduleReconciliation({
 function matchScheduleItemToUpdate(
   item: ScheduleItem,
   update: ProjectUpdate,
+  /** The task the update's task id answers to now (A10 pass 5 M1). */
+  link: ScheduleTaskLink | null,
 ): PIEScheduleFieldMatch | null {
   const explicitScheduleItemId = update.scheduleItemId?.trim() || '';
+  // The task itself, or the row a new master saved it as; a row saved before
+  // that matches by the update's stored task name below (A10 pass 5 M1).
+  const linkedHere = link?.item === item;
   const explicitTaskMatched = Boolean(
-    explicitScheduleItemId && explicitScheduleItemId === item.id,
+    explicitScheduleItemId &&
+    (explicitScheduleItemId === item.id || (linkedHere && link?.basis === 'earlier_task_id')),
   );
-  if (explicitScheduleItemId && !explicitTaskMatched) return null;
+  if (explicitScheduleItemId && !explicitTaskMatched && !linkedHere) return null;
 
   const projectMatched =
     Boolean(item.projectName.trim()) &&

@@ -332,6 +332,7 @@ export function buildDAVEWebScheduleItem({
     ...(current?.alsoImportedInBatchIds?.length ? { alsoImportedInBatchIds: current.alsoImportedInBatchIds } : {}),
     // What the task said before a lookahead restated it (owner answer Q22).
     ...(current?.lookaheadOverlay ? { lookaheadOverlay: current.lookaheadOverlay } : {}),
+    ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,

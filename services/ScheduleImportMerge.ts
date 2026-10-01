@@ -3,6 +3,7 @@ import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -94,6 +95,12 @@ import {
  * file stated less than it. Before any file applies to a task with a note,
  * the note now takes the progress the manager holds then
  * (scheduleNoteTakesManagersProgress), and the floor uses that.
+ *
+ * Whole-app audit A10 pass 5 M1 (30 Sep 2026): a task a new master moved is
+ * saved as a new row with a new id, and field updates linked to the old id
+ * matched no task shown. The new row now keeps the ids the task had before
+ * (revisedFromTaskIds, carried forward: A→B→C keeps A and B), and the
+ * summaries resolve an update's task through them (ScheduleTaskRevisions).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -421,6 +428,8 @@ export function mergeApprovedScheduleImportItems({
       ? (unchangedTask(paired, importedItem) || repeated.dates ? paired : undefined)
       : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
+    // A task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1).
+    const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id ? scheduleTaskRevisedFrom(row, paired) : row;
     if (duplicate) {
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import
@@ -468,16 +477,16 @@ export function mergeApprovedScheduleImportItems({
       const fileProgress = fileProgressFor(paired, importedItem, approvedAt);
       const floored = scheduleFileProgressAboveManagers(paired, fileProgress, approvedAt);
       if (fileProgress && floored === fileProgress) {
-        additions.push(filled);
+        additions.push(revision(filled));
         fileProgressIds.push(importedItem.id);
         return;
       }
       if (floored) {
-        additions.push({ ...filled, ...floored, completionVerification: paired.completionVerification ?? null });
+        additions.push(revision({ ...filled, ...floored, completionVerification: paired.completionVerification ?? null }));
         carriedProgressIds.push(importedItem.id);
         return;
       }
-      additions.push({
+      additions.push(revision({
         ...filled,
         percentComplete: paired.percentComplete,
         status: paired.status,
@@ -485,13 +494,13 @@ export function mergeApprovedScheduleImportItems({
         progressConfirmedAt: paired.progressConfirmedAt ?? null,
         progressConfirmedBy: paired.progressConfirmedBy ?? null,
         completionVerification: paired.completionVerification ?? null,
-      });
+      }));
       carriedProgressIds.push(importedItem.id);
       return;
     }
     if (paired && !scheduleRowStatesPercent(importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
       // The file states no percent: the task on its new dates keeps the progress it had (A5 pass 5 H1).
-      additions.push({
+      additions.push(revision({
         ...importedItem,
         percentComplete: paired.percentComplete,
         status: paired.status,
@@ -499,11 +508,11 @@ export function mergeApprovedScheduleImportItems({
         progressConfirmedAt: paired.progressConfirmedAt ?? null,
         progressConfirmedBy: paired.progressConfirmedBy ?? null,
         completionVerification: paired.completionVerification ?? null,
-      });
+      }));
       carriedProgressIds.push(importedItem.id);
       return;
     }
-    additions.push(importedItem);
+    additions.push(revision(importedItem));
   });
 
   return { next, additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };

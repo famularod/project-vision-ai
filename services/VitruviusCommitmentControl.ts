@@ -2,6 +2,7 @@ import type { ProjectUpdate, ScheduleItem } from '../types';
 import { daysUntilDate, dueStatusText } from '../utils/date';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import { normalizeProjectControls } from './VitruviusProjectControls';
+import { scheduleTaskLinks } from './ScheduleTaskRevisions';
 
 export type VitruviusCommitmentState =
   | 'needs_verification'
@@ -57,7 +58,7 @@ export function buildVitruviusCommitmentControl({
     projectScope.size === 0 ||
     projectScope.has(normalizedKey(parentProjectName(item))),
   );
-  const updatesByTask = groupUpdatesByTask(updates);
+  const updatesByTask = groupUpdatesByTask(updates, scopedItems);
   const items = scopedItems
     .map(item => commitmentItem(item, updatesByTask.get(normalizedKey(item.id)) || [], now))
     .sort(compareCommitments);
@@ -196,10 +197,12 @@ function proofNeededFor(
   return 'Add a current field photo or note when the condition changes.';
 }
 
-function groupUpdatesByTask(updates: readonly ProjectUpdate[]) {
+function groupUpdatesByTask(updates: readonly ProjectUpdate[], scheduleItems: readonly ScheduleItem[]) {
   const grouped = new Map<string, ProjectUpdate[]>();
+  // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scheduleItems);
   updates.forEach(update => {
-    const key = normalizedKey(update.scheduleItemId);
+    const key = normalizedKey(linkOf(update)?.item.id || update.scheduleItemId);
     if (!key) return;
     grouped.set(key, [...(grouped.get(key) || []), update]);
   });

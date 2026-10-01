@@ -14,6 +14,7 @@ import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconcili
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
 
@@ -91,9 +92,12 @@ export function buildDAVEEvidenceCorrelations({
   now?: string;
 }): DAVEEvidenceCorrelationResult {
   const generatedAt = validTimestamp(now) ? new Date(now).toISOString() : new Date().toISOString();
+  // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scheduleItems);
+  const links = new Map(updates.map(update => [update, linkOf(update)] as const));
   const tasks = scheduleItems.map(item => correlateTask(
     item,
-    updates.filter(update => updateMatchesTask(update, item, scheduleItems)),
+    updates.filter(update => updateMatchesTask(update, item, scheduleItems, links.get(update) ?? null)),
   ));
 
   return deepFreeze({
@@ -360,8 +364,11 @@ function updateMatchesTask(
   update: ProjectUpdate,
   task: ScheduleItem,
   scheduleItems: readonly ScheduleItem[],
+  link: ScheduleTaskLink | null,
 ) {
-  if (update.scheduleItemId) return update.scheduleItemId === task.id;
+  // The task itself, the row a new master saved it as, or for a row saved before that the one task of the
+  // update's stored name in its project and area (A10 pass 5 M1).
+  if (update.scheduleItemId) return update.scheduleItemId === task.id || link?.item === task;
   const updateTaskKey = normalizedKey(update.scheduleTaskName || '');
   if (!updateTaskKey || updateTaskKey !== normalizedKey(task.taskName)) return false;
 

@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
+import { scheduleTaskEarlierIdsOfBoth } from './ScheduleTaskRevisions';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
   'Not Started',
@@ -153,6 +154,8 @@ function mergeScheduleRevisions(
     ...(local.alsoImportedInBatchIds || []),
     ...(cloud.alsoImportedInBatchIds || []),
   ])];
+  // Every id either copy knows the task had before a new master moved it (A10 pass 5 M1).
+  const revisedFromTaskIds = scheduleTaskEarlierIdsOfBoth(base, base === local ? cloud : local);
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   const { progressJudgment: _baseJudgment, ...baseRecord } = base;
   return {
@@ -168,6 +171,7 @@ function mergeScheduleRevisions(
     projectControls: mergeScheduleProjectControls(local, cloud, base),
     // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).
     ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),
+    ...(revisedFromTaskIds.length > 0 ? { revisedFromTaskIds } : {}),
   };
 }
 

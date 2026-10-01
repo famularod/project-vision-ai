@@ -201,10 +201,33 @@ const orphanedExplicitTaskLink = buildPIEScheduleReconciliation({
   projectName: 'Building 2375',
   now,
 });
+// Pin updated deliberately (whole-app audit A10 pass 5 M1, 30 Sep 2026): a
+// task id that is no current task is, in practice, a task a new master saved
+// under a new id (updates of a deleted task are removed first, by tombstone).
+// A row saved before the earlier ids were kept matches by the update's stored
+// task name within its project and area, only when exactly one current task
+// has that name: Canopy A here, never Canopy B or C, and none without an area.
+assert.deepStrictEqual(
+  orphanedExplicitTaskLink.matches.map(match => [match.scheduleItemId, match.matchBasis]),
+  [['wall-packs-canopy-a', 'stored_task_name']],
+  'An update targeting a missing explicit task ID falls back only to the one same-named task of its project and area.',
+);
+const orphanedExplicitTaskLinkWithoutArea = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks,
+  updates: [update({
+    id: 'wall-packs-update-orphaned-link-no-area',
+    areaName: null,
+    scheduleItemId: 'wall-packs-task-no-longer-present',
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
 assert.strictEqual(
-  orphanedExplicitTaskLink.matches.length,
+  orphanedExplicitTaskLinkWithoutArea.matches.length,
   0,
-  'An update targeting a missing explicit task ID must not fall back to any same-named task.',
+  'An update targeting a missing explicit task ID must never guess between same-named tasks.',
 );
 
 const confirmedCanopyBOnly = buildPIEScheduleReconciliation({
