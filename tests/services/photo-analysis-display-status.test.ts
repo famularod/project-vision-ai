@@ -50,7 +50,10 @@ describe('desktop photo analysis status', () => {
     // a realtime echo or refresh shows the cloud's copy with it (review pass 6).
     expect(app).toContain('upsertSavedUpdateUnlessDeleted(withResult);');
     expect(app).toContain('void queueProjectUpdatePhotoAnalysis(withResult, photoId, saved).catch(() => undefined)');
-    expect(app).toContain(".finally(() => saved.status === 'sent' ? requestPendingChangesUpload('late_photo_analysis') : requestQueuedUpdateSync());");
+    // Pin changed in A4 pass 14 #4: a failed card's result goes up as a patch
+    // through the queue upload too (one in conflict among them).
+    expect(app).toContain("(saved.status === 'sent' || saved.status === 'queued' || saved.status === 'failed')");
+    expect(app).toContain(".finally(() => saved.status === 'queued' ? requestQueuedUpdateSync() : requestPendingChangesUpload('late_photo_analysis'));");
     // A request during a running pass is followed by one more pass inside the
     // same task (a new task would hit the guard's 2-run limit; review pass 3).
     expect(app).toContain('queuedHydrationRerunRequested.current = true;');

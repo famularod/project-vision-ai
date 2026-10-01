@@ -9663,15 +9663,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // copy over this record (whole-app audit A7 pass 7 M1). A pass that read
     // the update before the result and has not written it yet still may; the
     // rerun asked for here then stages the result again (review pass 7).
+    // A failed card too, one in conflict among them (A4 pass 14 #4).
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
     const withResult = saved ? applyToUpdate(saved) : null;
     if (
       saved && withResult && withResult !== saved && result.status !== 'analyzing' &&
-      (saved.status === 'sent' || saved.status === 'queued')
+      (saved.status === 'sent' || saved.status === 'queued' || saved.status === 'failed')
     ) {
       upsertSavedUpdateUnlessDeleted(withResult);
       void queueProjectUpdatePhotoAnalysis(withResult, photoId, saved).catch(() => undefined)
-        .finally(() => saved.status === 'sent' ? requestPendingChangesUpload('late_photo_analysis') : requestQueuedUpdateSync());
+        .finally(() => saved.status === 'queued' ? requestQueuedUpdateSync() : requestPendingChangesUpload('late_photo_analysis'));
     }
   }
 

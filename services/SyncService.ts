@@ -86,7 +86,13 @@ import {
   type FieldUpdateDocumentPatch,
   type RemovedFieldUpdateDocuments,
 } from './FieldUpdateDocumentPatch';
-import { fieldUpdatePhotoAnalysisPatchFor, isFieldUpdatePhotoAnalysisPatch, withoutPhotoAnalysis } from './FieldUpdatePhotoAnalysisPatch';
+import {
+  applyFieldUpdatePhotoAnalysisPatch,
+  fieldUpdatePhotoAnalysisPatchFor,
+  isFieldUpdatePhotoAnalysisPatch,
+  withoutPhotoAnalysis,
+  type FieldUpdatePhotoAnalysisPatch,
+} from './FieldUpdatePhotoAnalysisPatch';
 import { loadRemovedFieldUpdateDocuments, recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
 import { resetDocumentsResentThisLaunchForTests, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
@@ -2422,8 +2428,14 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
     await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
   }
   const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update);
-  const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !(await getSyncConflicts())
+  const inConflict = (await getSyncConflicts())
     .some(conflict => conflict.entity === 'project_update' && conflict.localId === update.id);
+  const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !inConflict;
+  // A late analysis result is the phone's copy's too, in a conflict (whole-
+  // app audit A4 pass 14 #4): Keep Phone sends the copy recorded with the
+  // conflict, and undid the result once its patch had gone up. A document
+  // change is already taken in at the choice (withDocumentChangesSinceConflict).
+  if (inConflict && isFieldUpdatePhotoAnalysisPatch(patch)) await addResultToConflictCopy(update.id, patch);
   const queueId = projectUpdateQueueItemId(update.id);
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
@@ -2453,6 +2465,23 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
           ...(ownerId ? { ownerId } : {}),
         };
     return { nextQueue: [...queue.filter(item => item.id !== queueId), next], result: undefined };
+  });
+}
+
+/** The phone's copy recorded with an update's conflict, with this analysis result (A4 pass 14 #4). */
+async function addResultToConflictCopy(updateId: string, patch: FieldUpdatePhotoAnalysisPatch): Promise<void> {
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    let changed = false;
+    const next = conflicts.map(conflict => {
+      const local = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+      if (conflict.entity !== 'project_update' || conflict.localId !== updateId || !isRecord(local?.updateData)) return conflict;
+      const updateData = applyFieldUpdatePhotoAnalysisPatch(local!.updateData as object, patch);
+      if (updateData === local!.updateData) return conflict;
+      changed = true;
+      return { ...conflict, localPayload: { ...local, updateData } };
+    });
+    if (changed) await writeSyncConflicts(next);
   });
 }
 

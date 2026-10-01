@@ -2819,3 +2819,77 @@ describe('this phone\'s own patch landing after an edit is not a conflict (audit
     expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
   });
 });
+
+/**
+ * A4 pass 14 #4 (A7 pass 12): a photo analysis that finished while its
+ * update was in conflict (its card "Sync failed") stayed on the phone's card
+ * only: the late-analysis path handled Sent and Waiting cards. Keep Phone
+ * then sent the conflict's copy without the result, and Settings, seeing the
+ * card's copy (with it) as a newer edit, left the card reading "Sync failed".
+ * The cloud and the iPad showed "Analyzing" until a Retry. The result now
+ * goes up as a patch for a failed card too, and is the phone's copy's in the
+ * conflict, so it survives Keep Phone and Keep Cloud.
+ */
+describe('a late photo analysis on an update in conflict reaches the cloud (audit A4 pass 14 #4)', () => {
+  /** Sent while its photo was being analysed, edited offline, the iPad's edit after it; reconnected, the conflict is found. */
+  async function inConflictWhileAnalyzing() {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    expect(phone.saved()).toMatchObject({ status: 'failed' }); // "Sync failed"
+    return phone;
+  }
+
+  it.each([
+    ['offline until Keep Phone', false],
+    ['online: the result goes up before Keep Phone', true],
+  ])('#4 (%s): Keep Phone sends the phone\'s copy with the result, and the card reads Sent', async (_label, online) => {
+    const phone = await inConflictWhileAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    if (online) {
+      await uploadPendingChanges();
+      expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+      expect(await getSyncConflicts()).toHaveLength(1); // a result settles no conflict
+    }
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it.each([
+    ['offline until Keep Cloud', false],
+    ['online: the result goes up before Keep Cloud', true],
+  ])('#4 (%s): Keep Cloud keeps the iPad\'s note, with the result', async (_label, online) => {
+    const phone = await inConflictWhileAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    if (online) await uploadPendingChanges();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('#4: left in conflict, the result still reaches the cloud\'s copy, so the iPad stops showing Analyzing; the phone\'s own copy is still held', async () => {
+    const phone = await inConflictWhileAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    expect(phone.requestPendingChangesUpload).toHaveBeenCalledWith('late_photo_analysis');
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'failed' });
+  });
+});
