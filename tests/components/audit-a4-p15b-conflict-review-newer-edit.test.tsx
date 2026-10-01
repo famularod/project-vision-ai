@@ -236,3 +236,54 @@ describe('Review Conflicts shows the newer phone edit Keep Phone will send (audi
     expect(lastConfirmation().message).toBe('The cloud version for P will replace the copy saved on this phone.');
   });
 });
+
+/**
+ * Whole-app audit A4 pass 16 L3, raised to Medium as A7 pass 14 M-1: the
+ * "Cloud:" line showed the cloud's copy saved when the conflict was found,
+ * and nothing read it again. After another iPad edit, Keep Phone put the
+ * phone's copy over an iPad note the screen never showed. Review Conflicts
+ * now reads the cloud's copies when it opens, and a choice made on a copy
+ * the cloud no longer holds sends nothing and asks David to review again.
+ */
+describe('Review Conflicts shows the cloud\'s copy as it is now (audit A4 pass 16 L3, A7 pass 14 M-1)', () => {
+  const IPAD_SECOND_NOTE = 'Pour moved to Wednesday (typed on the iPad again)';
+  const cloudLine = () => screen.getByText(/^Cloud: /).props.children.join('');
+  const iPadEditsAgain = (note: string) => {
+    mockCloud.set('u1', { updatedAt: new Date().toISOString(), updateData: { ...sent, notes: note } });
+  };
+
+  it('opened after the iPad edited again: the Cloud line shows the iPad\'s newest copy', async () => {
+    await offlineEditInConflictWithIPad();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    iPadEditsAgain(IPAD_SECOND_NOTE);
+    renderSettings(offlineEdit);
+    await openReviewConflicts();
+    // It showed the copy saved with the conflict: `Cloud: ${DAY} · 0 photos · ${IPAD_NOTE}`.
+    await waitFor(() => expect(cloudLine()).toBe(`Cloud: ${DAY} · 0 photos · ${IPAD_SECOND_NOTE}`));
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+  });
+
+  it('the iPad edits while the screen is open: Keep Phone sends nothing, says the cloud copy changed, and shows it; chosen again, it goes ahead', async () => {
+    await offlineEditInConflictWithIPad();
+    renderSettings(offlineEdit);
+    await openReviewConflicts();
+    await waitFor(() => expect(cloudLine()).toBe(`Cloud: ${DAY} · 0 photos · ${IPAD_NOTE}`));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    iPadEditsAgain(IPAD_SECOND_NOTE);
+
+    fireEvent.press(screen.getByText('Keep Phone'));
+    await act(async () => { lastConfirmation().proceed(); });
+    await waitFor(() => expect(Alert.alert).toHaveBeenLastCalledWith('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.'));
+    await waitFor(() => expect(cloudLine()).toBe(`Cloud: ${DAY} · 0 photos · ${IPAD_SECOND_NOTE}`));
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(screen.getByText('Review Cloud Conflicts')).toBeTruthy();
+
+    await new Promise(resolve => setTimeout(resolve, 5));
+    fireEvent.press(screen.getByText('Keep Phone'));
+    await act(async () => { lastConfirmation().proceed(); });
+    await waitFor(() => expect(screen.queryByText('Review Cloud Conflicts')).toBeNull());
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});

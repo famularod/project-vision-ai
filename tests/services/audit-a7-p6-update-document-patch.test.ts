@@ -1268,6 +1268,20 @@ async function chooseInSettings(phone: Device, conflict: { id: string }, resolut
   expect(alerts).toEqual([]);
 }
 
+/**
+ * A4 pass 16 L3 (A7 pass 14 M-1): a choice made while the conflict still
+ * holds an older cloud copy than the cloud's sends nothing; the conflict takes
+ * the cloud's copy, which Review Conflicts then shows, and David chooses again.
+ */
+async function reviewAgainAfterIPadEdit(conflictId: string, resolution: 'keep_local' | 'keep_cloud', cloudNote: string) {
+  const cloudBefore = JSON.stringify(mockCloud.get('u1'));
+  await expect(resolveProjectUpdateSyncConflict<Update>(conflictId, resolution)).rejects.toThrow('sync_conflict_cloud_copy_changed');
+  expect(JSON.stringify(mockCloud.get('u1'))).toBe(cloudBefore);
+  expect(await getSyncConflicts()).toEqual([expect.objectContaining({
+    id: conflictId, remotePayload: expect.objectContaining({ notes: cloudNote }),
+  })]);
+}
+
 describe('a stale "Waiting to Sync" or failed status does not send the phone\'s older copy over the iPad\'s note (audit A7 pass 9 L1)', () => {
   it.each([
     ['the upload run lands first', true],
@@ -1445,6 +1459,11 @@ describe('a stale "Waiting to Sync" or failed status does not send the phone\'s 
       localId: 'u1',
       localPayload: expect.objectContaining({ updateData: expect.objectContaining({ notes: PHONE_NOTE }) }),
     })]);
+    // Pin changed in A4 pass 16 L3 (A7 pass 14 M-1): the conflict still showed
+    // the iPad's first note, and Keep Phone put the phone's copy over its
+    // second without it ever being shown. Now it sends nothing, the conflict
+    // takes the cloud's copy, and Keep Phone chosen again goes ahead.
+    await reviewAgainAfterIPadEdit(conflict.id, 'keep_local', IPAD_SECOND_NOTE);
     await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local');
     expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
     expect(documentIds(inCloud())).toEqual(['survey']);
@@ -1488,6 +1507,8 @@ describe('Keep Cloud takes the cloud\'s copy as it is now (audit A4 pass 11 O1)'
   it('an iPad edit made after the conflict was found stays in the cloud and comes to the phone', async () => {
     const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
     await iPadEditsNow(IPAD_SECOND_NOTE);
+    // Pin changed in A4 pass 16 L3 (A7 pass 14 M-1): shown first, then kept.
+    await reviewAgainAfterIPadEdit(conflict.id, 'keep_cloud', IPAD_SECOND_NOTE);
     await chooseInSettings(phone, conflict, 'keep_cloud');
     expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
     expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
@@ -1500,6 +1521,7 @@ describe('Keep Cloud takes the cloud\'s copy as it is now (audit A4 pass 11 O1)'
     await phone.deleteFromThisDevice('permit');
     persistDocuments();
     await iPadEditsNow(IPAD_SECOND_NOTE);
+    await reviewAgainAfterIPadEdit(conflict.id, 'keep_cloud', IPAD_SECOND_NOTE); // pin changed in A4 pass 16 L3: shown first
     const chosen = await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud');
     expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
     expect(documentIds(inCloud())).toEqual(['survey']);
@@ -2046,6 +2068,8 @@ describe('Keep Cloud keeps an iPad save that lands while it runs (audit A4 pass 
   it('the iPad\'s save stays in the cloud and comes to the phone', async () => {
     const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
     await iPadEditsNow(IPAD_SECOND_NOTE);
+    // Pin changed in A4 pass 16 L3 (A7 pass 14 M-1): the iPad's second note is shown first.
+    await reviewAgainAfterIPadEdit(conflict.id, 'keep_cloud', IPAD_SECOND_NOTE);
     iPadSavesAfterTheFirstRead();
     await chooseInSettings(phone, conflict, 'keep_cloud');
     expect(inCloud()).toMatchObject({ notes: IPAD_THIRD_NOTE });
@@ -2056,6 +2080,7 @@ describe('Keep Cloud keeps an iPad save that lands while it runs (audit A4 pass 
   it('the second read fails: the first read\'s copy is written, as before', async () => {
     const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
     await iPadEditsNow(IPAD_SECOND_NOTE);
+    await reviewAgainAfterIPadEdit(conflict.id, 'keep_cloud', IPAD_SECOND_NOTE); // pin changed in A4 pass 16 L3: shown first
     const read = cloudReads().getMockImplementation()!;
     cloudReads()
       .mockImplementationOnce(read)
@@ -3578,5 +3603,76 @@ describe('a conflict for an update deleted on the iPad is closed by either choic
     expect(seen.alerts).toEqual([]);
     expect(seen.messages.at(-1)).toBe('Cloud conflicts resolved.');
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+  });
+});
+
+/**
+ * A4 pass 16 L3, raised to Medium as A7 pass 14 M-1 (older): Review
+ * Conflicts' "Cloud:" line showed the cloud's copy saved when the conflict
+ * was found, and nothing read it again. When the iPad edited the update once
+ * more, Keep Phone (stamped now, so it passed the conflict check) put the
+ * phone's copy over an iPad edit the screen never showed, and Keep Cloud
+ * ended with a copy the screen never showed either. Each choice now reads the
+ * cloud's copy first; when it changed since the conflict was saved (other
+ * than by this phone's own document changes or analysis results), the
+ * conflict is saved again with the current copy, nothing is sent, and
+ * Settings says "The cloud copy changed — review again" and shows it.
+ */
+describe('Keep Phone and Keep Cloud never act on a cloud copy the screen did not show (audit A4 pass 16 L3, A7 pass 14 M-1)', () => {
+  const remoteNote = async () => (((await getSyncConflicts())[0]?.remotePayload as Update | undefined)?.notes);
+
+  it.each([
+    ['Keep Phone', 'keep_local'],
+    ['Keep Cloud', 'keep_cloud'],
+  ] as const)('%s after the iPad edited again: nothing is sent, Settings asks to review again, and the conflict shows the iPad\'s newest copy; chosen again, it goes ahead', async (_label, resolution) => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const [conflict] = await getSyncConflicts();
+    expect(await remoteNote()).toBe(IPAD_NOTE); // what the Cloud line shows
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    const writes = (saveProjectUpdate as jest.Mock).mock.calls.length;
+
+    const seen = await chooseInSettingsSeeing(phone, conflict, resolution);
+    expect(seen.alerts).toEqual([{ title: 'Cloud copy changed', message: 'The cloud copy changed — review again. Nothing was sent.' }]);
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(writes);
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(seen.applied).toEqual([]);
+    expect(seen.reviewClosed).toBe(false);
+    expect(seen.conflictsShown.at(-1)).toEqual([expect.objectContaining({ id: conflict.id, remotePayload: expect.objectContaining({ notes: IPAD_SECOND_NOTE }) })]);
+    expect(await remoteNote()).toBe(IPAD_SECOND_NOTE);
+    expect(await getOfflineQueue()).toEqual([]);
+
+    // Reviewed again: the choice goes ahead.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await chooseInSettings(phone, conflict, resolution);
+    expect(inCloud()).toMatchObject({ notes: resolution === 'keep_local' ? RETRY_SYNC_OFFLINE_EDIT : IPAD_SECOND_NOTE });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('this phone\'s own document change on the cloud\'s copy is not a change (an analysis result neither: R1 above): Keep Phone goes ahead at once', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    await uploadPendingChanges(); // the change goes onto the iPad's copy; the conflict stays
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('the cloud cannot be read: Keep Phone sends nothing, and neither copy changes', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const reads = supabaseMock().getProjectUpdateSyncMetadata as jest.Mock;
+    const read = reads.getMockImplementation()!;
+    try {
+      reads.mockResolvedValue(photoCheckFails);
+      const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local');
+      expect(seen.alerts.map(alert => alert.title)).toEqual(['Conflict not resolved']);
+    } finally {
+      reads.mockImplementation(read);
+    }
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(await getOfflineQueue()).toEqual([]);
   });
 });

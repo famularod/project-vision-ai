@@ -4346,6 +4346,21 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // Phone failed every time (A4 pass 16 L2): the deletion record superseded
   // its kept copy, and Settings said neither copy was changed.
   await closeConflictOfDeletedProjectUpdate(conflict);
+  // The cloud's copy as it is now, before either choice writes anything
+  // (whole-app audit A4 pass 16 L3, A7 pass 14 M-1). Review Conflicts showed
+  // the copy saved when the conflict was found: Keep Phone, stamped now, put
+  // the phone's copy over an iPad edit made since that the screen never
+  // showed, and Keep Cloud ended with it. When it changed, the conflict is
+  // saved again with it, and nothing is sent: David reviews it again. A copy
+  // that cannot be read changes nothing either. Keep Cloud's own first read
+  // (A4 pass 11 O1, pass 12 L1).
+  const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
+  if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+  const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
+  const phoneCopies = phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue());
+  if (await recordCloudCopyIfChangedSinceConflict(conflict, current.data, phoneCopies, withDocumentChanges)) {
+    throw new Error('sync_conflict_cloud_copy_changed');
+  }
 
   if (resolution === 'keep_cloud') {
     const cloudUpdate = conflict.remotePayload;
@@ -4356,21 +4371,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // are withdrawn around any upload in flight, and the chosen copy goes
     // back through the queue (the one write path, as Keep Phone does), so
     // neither a later upload nor a retry that already reached the cloud
-    // undoes the choice.
-    const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
-    const phoneCopies = [localPayload.updateData, ...(await getOfflineQueue())
-      .filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
-        (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId && !queuedFieldUpdateDocumentPatches(item))
-      .map(item => (item.payload as ProjectUpdateRecordPayload).updateData)];
-    // The cloud's copy as it is now (whole-app audit A4 pass 11 O1): the one
-    // saved when the conflict was found put that older copy back over an
-    // iPad edit made since. Not one of this phone's own copies, which a retry
-    // in flight may have put there: that is not the cloud's choice. Read
-    // before this phone's waiting work is withdrawn (A4 pass 12 L1): a failed
-    // read had taken a newer phone edit or a document change off the queue,
-    // while Settings said neither copy was changed.
-    const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
-    if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+    // undoes the choice. The cloud's copy as it is now (whole-app audit A4
+    // pass 11 O1): not one of this phone's own copies, which a retry in
+    // flight may have put there: that is not the cloud's choice. Read before
+    // this phone's waiting work is withdrawn (A4 pass 12 L1): a failed read
+    // had taken a newer phone edit or a document change off the queue, while
+    // Settings said neither copy was changed.
     const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
     let queuedCloudCopy: SyncQueueItem | null = null;
     let chosenCloudUpdate: TUpdate;
@@ -4419,7 +4425,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   if (localPayload.updateData === undefined) {
     throw new Error('sync_conflict_local_copy_missing');
   }
-  const localUpdateData = (await withDocumentChangesSinceConflict(conflict.localId))(localPayload.updateData) as TUpdate;
+  const localUpdateData = withDocumentChanges(localPayload.updateData) as TUpdate;
   const queueItemId = projectUpdateQueueItemId(localPayload.id);
   // A newer edit saved on this phone since the conflict, still waiting to go
   // up (whole-app audit A7 pass 10 L-4): the copy recorded with the conflict
@@ -4461,6 +4467,78 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * This phone's whole copies of an update in conflict: the conflict's own,
+ * those queued, and a newer edit one of them carries (A7 pass 11 L-2). A
+ * cloud copy that is one of them is not the iPad's edit.
+ */
+function phoneCopiesOfFieldUpdateInConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): unknown[] {
+  const localPayload = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+  const queued = queue.filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId);
+  const carried = [...queued.map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).newerEdit), localPayload?.newerEdit]
+    .filter((item): item is SyncQueueItem => isRecord(item));
+  return [localPayload?.updateData, ...[...queued, ...carried]
+    .filter(item => !queuedFieldUpdateDocumentPatches(item))
+    .map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).updateData)]
+    .filter(isRecord);
+}
+
+/**
+ * Whether the cloud's copy of an update in conflict changed since the
+ * conflict was saved, and if so, the conflict saved again with it (whole-app
+ * audit A4 pass 16 L3, A7 pass 14 M-1): Review Conflicts then shows it. Not a
+ * change: this phone's own document changes and analysis results, which go
+ * onto the cloud's copy during a conflict, an archive (carried by either
+ * choice), or one of this phone's own copies (a retry that reached the
+ * cloud). `cloud`: the cloud's row as read now; none, no change.
+ */
+async function recordCloudCopyIfChangedSinceConflict(
+  conflict: SyncConflict,
+  cloud: { updatedAt?: string | null; updateData?: unknown } | null | undefined,
+  phoneCopies: readonly unknown[],
+  withDocumentChanges: (copy: unknown) => unknown,
+): Promise<boolean> {
+  const cloudCopy = cloud?.updateData;
+  if (!isRecord(cloudCopy)) return false;
+  const shown = (copy: unknown) => {
+    if (!isRecord(copy)) return copy;
+    const { isArchived: _isArchived, archivedAt: _archivedAt, ...rest } = withoutPhotoAnalysis(copy) as Record<string, unknown>;
+    return withDocumentChanges(rest);
+  };
+  if (sameProjectUpdateContent(shown(conflict.remotePayload), shown(cloudCopy) as ProjectUpdate, { retryStampsAside: true })) return false;
+  if (phoneCopies.some(copy => sameProjectUpdateContent(copy, cloudCopy as unknown as ProjectUpdate, { retryStampsAside: true }))) {
+    return false;
+  }
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflict.id)) return;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
+      ? { ...item, remotePayload: cloudCopy, remoteChangedAt: cloud?.updatedAt ?? item.remoteChangedAt }
+      : item));
+  });
+  return true;
+}
+
+/**
+ * The cloud's copy of each field update in conflict, read again when Review
+ * Conflicts opens (whole-app audit A4 pass 16 L3, A7 pass 14 M-1): a conflict
+ * whose cloud copy changed since it was saved is saved again with it, so the
+ * "Cloud:" line shows the copy Keep Cloud keeps and Keep Phone replaces. One
+ * that cannot be read stays as it is. The conflicts, as saved now.
+ */
+export async function refreshFieldUpdateConflictCloudCopies(): Promise<SyncConflict[]> {
+  const conflicts = (await getSyncConflicts()).filter(conflict => conflict.entity === 'project_update');
+  for (const conflict of conflicts) {
+    const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    if (!current?.ok || current.stubbed) continue;
+    await recordCloudCopyIfChangedSinceConflict(conflict, current.data,
+      phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue()),
+      await withDocumentChangesSinceConflict(conflict.localId));
+  }
+  return getSyncConflicts();
 }
 
 /**

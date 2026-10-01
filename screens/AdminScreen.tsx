@@ -67,6 +67,7 @@ import {
   newerPhoneEditForFieldUpdateConflict,
   projectUpdateCopyIsLastInCloud,
   reconcileSyncConflicts,
+  refreshFieldUpdateConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
@@ -422,7 +423,7 @@ export function AdminScreen({
             <SecondaryButton
               label="Review Conflicts"
               icon="git-compare-outline"
-              onPress={() => setConflictReviewVisible(true)}
+              onPress={openConflictReview}
             />
           ) : null}
           {syncAttemptMessage ? (
@@ -892,6 +893,16 @@ export function AdminScreen({
     }
   }
 
+  /**
+   * Review Conflicts opens on the cloud's copies as they are now (whole-app
+   * audit A4 pass 16 L3, A7 pass 14 M-1): the "Cloud:" line showed the copy
+   * saved when the conflict was found, however often the iPad edited since.
+   */
+  function openConflictReview() {
+    setConflictReviewVisible(true);
+    void refreshFieldUpdateConflictCloudCopies().then(setSyncConflicts, () => undefined);
+  }
+
   function confirmConflictResolution(
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
@@ -976,6 +987,15 @@ export function AdminScreen({
         await showConflictsAfterChoice(conflict.entity === 'schedule_item'
           ? 'This task was deleted on another device, so the conflict is closed.'
           : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
+        return;
+      }
+      // The cloud's copy changed since the screen showed it (whole-app audit
+      // A4 pass 16 L3, A7 pass 14 M-1): nothing was sent, and the conflict
+      // now holds the copy in the cloud, which the list shows. Keep Phone had
+      // put the phone's copy over an iPad edit the screen never showed.
+      if (error instanceof Error && error.message === 'sync_conflict_cloud_copy_changed') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.');
         return;
       }
       Alert.alert(
