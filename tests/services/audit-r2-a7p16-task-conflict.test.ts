@@ -446,6 +446,12 @@ describe('L-4: Keep Phone on a task keeps a newer phone edit still waiting (audi
  *     manager rank (pass 16 L-1 again). While the conflict is still open,
  *     only the fields of the edits waiting on it are undone; every edit only
  *     when the conflict closed during this choice.
+ *
+ * L-3 Keep Phone said the conflict "closed by itself" when a whole copy of
+ *     the task saved offline went up while it read the cloud and conflicted
+ *     again: the new conflict has a new id. Nothing had reached the cloud,
+ *     and the task was still in conflict. It is now matched by the task, as
+ *     Keep Cloud does: another conflict open for the task means review again.
  */
 describe('A7 pass 17 L-2: after a Keep Cloud that could not finish, a progress edit that never left the phone is not undone', () => {
   /** Pass 16 L-2: a phone note lands during Keep Cloud, and the second read fails; the note waits on the conflict. */
@@ -522,5 +528,37 @@ describe('A7 pass 17 L-2: after a Keep Cloud that could not finish, a progress e
     expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ percentComplete: 0, status: 'Not Started', notes: '' });
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+describe('A7 pass 17 L-3: Keep Phone on a task whose conflict was replaced by a new one says review again', () => {
+  it('a whole copy saved offline goes up while Keep Phone reads the cloud and conflicts again: nothing is sent, and the new conflict is there to review', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    // Saved offline before the web's edit, with nothing queued: a whole copy.
+    await queueScheduleItemRecord({ ...phoneTask, notes: NEWER, updatedAt: '2026-09-29T10:00:00.000Z' }, false);
+    // It goes up while Keep Phone reads the cloud, and meets the web's newer row.
+    mockGetScheduleItem.mockImplementationOnce(async (id: string) => {
+      await uploadPendingChanges();
+      return mockCloud.get(id);
+    });
+
+    const error = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown })
+      .catch((caught: unknown) => caught);
+    // It said the conflict "closed by itself (an edit from this phone reached the cloud)".
+    expect(syncConflictChoiceStopReason(error)).toBe('cloud_copy_changed');
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+    const conflicts = await getSyncConflicts();
+    expect(conflicts).toEqual([expect.objectContaining({ entity: 'schedule_item', localId: phoneTask.id })]);
+    expect(conflicts[0].id).not.toBe(conflict.id);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('control: an edit of this phone\'s that lands while Keep Phone reads the cloud still closes it (pass 16 L-6)', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    landsDuringFirstRead(await newerPhoneEditOnItsWayUp());
+    const error = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown })
+      .catch((caught: unknown) => caught);
+    expect(syncConflictChoiceStopReason(error)).toBe('conflict_closed');
   });
 });

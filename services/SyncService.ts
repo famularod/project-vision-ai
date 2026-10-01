@@ -5132,10 +5132,14 @@ export async function resolveScheduleItemSyncConflict(
   // The conflict closed meanwhile (whole-app audit A7 pass 16 L-6): an edit
   // of this phone's already under way landed while the cloud was read. There
   // is nothing to choose, and the copy saved with the conflict, older than
-  // that edit, is not sent over it.
-  if (!(await getSyncConflicts()).some(item => item.id === conflict.id)) {
-    throw new Error('sync_conflict_closed');
-  }
+  // that edit, is not sent over it. Matched by the task, as Keep Cloud
+  // does (A7 pass 17 L-3): a whole copy of the task that went up meanwhile
+  // and conflicted again replaced it under a new id, and Keep Phone said it
+  // closed by itself. Then the task is still in conflict: review again.
+  const openForTask = (await getSyncConflicts())
+    .find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+  if (!openForTask) throw new Error('sync_conflict_closed');
+  if (openForTask.id !== conflict.id) throw new Error('sync_conflict_cloud_copy_changed');
 
   const queueItemId = scheduleItemQueueItemId(localItem.id);
   const ownerId = currentCloudOwner().ownerId;
