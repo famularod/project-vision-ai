@@ -14172,8 +14172,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onRetry={
                   liveDetailUpdate.status === 'queued' ||
                   liveDetailUpdate.status === 'failed'
-                    ? () => {
-                        void retryQueuedUpdate(liveDetailUpdate);
+                    ? choice => {
+                        void retryQueuedUpdate(liveDetailUpdate, choice);
                       }
                     : undefined
                 }
@@ -15073,8 +15073,9 @@ function Phase2ActivityRow({
 }: {
   item: Phase2ActivityItem;
   onPress: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
 }) {
+  const conflictReview = useFieldUpdateConflictReview(item.update.id); // its Retry asks first (A4 pass 15 M1)
   const statusStyle =
     item.pieStatus === PIE_STATUS_COPY.unavailableRetry ||
     item.pieStatus === PIE_STATUS_COPY.timeoutRetry ||
@@ -15102,7 +15103,7 @@ function Phase2ActivityRow({
         </Text>
       </View>
       {onRetry ? (
-        <TouchableOpacity style={styles.phase3ChangeButton} onPress={onRetry}>
+        <TouchableOpacity style={styles.phase3ChangeButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
           <Text style={styles.dashboardManageText}>Retry</Text>
         </TouchableOpacity>
       ) : (
@@ -16756,7 +16757,7 @@ function ReadOnlyUpdateDetailScreen({
   update: ProjectUpdate;
   backLabel: string;
   onBack: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onDelete: () => void;
   onArchive: () => void;
@@ -16765,6 +16766,7 @@ function ReadOnlyUpdateDetailScreen({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const lifecycle = lifecycleStatusForUpdate(update);
+  const conflictReview = useFieldUpdateConflictReview(update.id); // Needs Review, and its Retry asks first (A4 pass 15 M1)
   const pieStatus = updatePIEAnalysisStatus(update);
   const documents = update.documents || [];
   const timing = flowTimingForUpdate(update);
@@ -16806,7 +16808,7 @@ function ReadOnlyUpdateDetailScreen({
         onArchive={onArchive}
       />
       <View style={styles.panel}>
-        <Text style={styles.projectName}>{lifecycle}</Text>
+        <Text style={styles.projectName}>{conflictReview ? FIELD_UPDATE_CONFLICT_REVIEW_LABEL : lifecycle}</Text>
         <Text style={styles.rowSub}>
           {formatDisplayDate(update.date)}
           {update.selectedAreaName ? ` · ${update.selectedAreaName}` : ''}
@@ -16816,8 +16818,9 @@ function ReadOnlyUpdateDetailScreen({
         ) : update.photos.length === 0 ? (
           <Text style={styles.bodyText}>No photos attached</Text>
         ) : null}
+        <FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />
         {onRetry ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
+          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry Sync</Text>
           </TouchableOpacity>
@@ -17261,7 +17264,7 @@ function ProjectWorkspaceScreen({
   onOpenUpdates: () => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
   onOpenDocuments: () => void;
-  onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onRetryQueuedUpdate: (update: ProjectUpdate, choice?: FieldUpdateSyncChoice) => void;
   onDeleteProject: (projectName: string) => void;
   onCloseProject: (projectName: string) => void;
   isDeletingProject: boolean;
@@ -17738,7 +17741,7 @@ function ProjectWorkspaceScreen({
             onPress={() => onOpenUpdate(item.update)}
             onRetry={
               item.update.status === 'queued' || item.update.status === 'failed'
-                ? () => onRetryQueuedUpdate(item.update)
+                ? choice => onRetryQueuedUpdate(item.update, choice)
                 : undefined
             }
           />
@@ -18885,7 +18888,7 @@ function SavedUpdatesScreen({
         onBack={() => undefined}
         embedded
         onResume={isResumableFieldUpdateStatus(lifecycleStatusForUpdate(selectedUpdate)) ? () => onOpen(selectedUpdate) : undefined}
-        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? () => onRetryQueuedUpdate(selectedUpdate) : undefined}
+        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? choice => onRetryQueuedUpdate(selectedUpdate, choice) : undefined}
         onRetryPhotoAnalysis={onRetryPhotoAnalysis}
         onDelete={() => onDelete(selectedUpdate.id)}
         onArchive={() => onArchive(selectedUpdate.id)}
