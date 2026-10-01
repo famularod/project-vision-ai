@@ -361,18 +361,26 @@ export function scheduleProgressCarriedToShownTasks({
     // progressConfirmedAt (DAVEScheduleRecovery). The shown row given David's
     // older 40% back at a lookahead delete (28 Sep) took his newer 70% with
     // its own older stamp (27 Sep), so the next sync kept the cloud's 40%.
-    // Confirmed now, with when David judged it kept (progressJudgment).
-    const restamped = timeOf(hidden.progressConfirmedAt) < timeOf(shown.progressConfirmedAt);
+    // Confirmed again, with when David judged it kept (progressJudgment).
+    //
+    // Whole-app audit A5 pass 12 L (1 Oct 2026): confirmed at the Set Active,
+    // a device that had not caught up, repeating Set Active at 11:00, beat
+    // the 50% David entered at 10:00 on the iPad's carried row. Confirmed 1 ms
+    // after the later of the two rows' own confirmations instead: newer than
+    // the copies it replaces, never newer than a percent entered since.
+    const restampedAt = timeOf(hidden.progressConfirmedAt) < timeOf(shown.progressConfirmedAt)
+      ? new Date(Math.max(timeOf(hidden.progressConfirmedAt), timeOf(shown.progressConfirmedAt)) + 1).toISOString()
+      : null;
     const judgedAt = scheduleProgressJudgedAt(hidden);
     return [{
       ...shown,
       percentComplete: hidden.percentComplete,
       status: hidden.status,
       progressSource: hidden.progressSource ?? null,
-      progressConfirmedAt: restamped ? now : hidden.progressConfirmedAt ?? null,
+      progressConfirmedAt: restampedAt ?? hidden.progressConfirmedAt ?? null,
       progressConfirmedBy: hidden.progressConfirmedBy ?? null,
-      ...(restamped
-        ? { progressJudgment: judgedAt && judgedAt !== now ? { judgedAt, givenBackAt: now } : undefined }
+      ...(restampedAt
+        ? { progressJudgment: judgedAt && judgedAt !== restampedAt ? { judgedAt, givenBackAt: restampedAt } : undefined }
         : hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
       completionVerification: hidden.completionVerification ?? null,
       updatedAt: now,
