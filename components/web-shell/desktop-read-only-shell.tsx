@@ -39,6 +39,7 @@ import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -2226,7 +2227,20 @@ function TaskEditor({
           />
         )}
       </View>
-      <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
+      {task ? (
+        // A task keeps its project, as in the Schedule Builder: a move had
+        // saved the new name with the old project's cloud id, and the phone
+        // refused every upload of it (whole-app audit A3 pass 9 M1, 30 Sep 2026).
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Project</Text>
+          <View style={styles.workflowProtectedField}>
+            <Text style={styles.workflowProtectedValue}>{draft.projectName}</Text>
+            <Text style={styles.dataMeta}>{DAVE_WEB_TASK_PROJECT_FIXED_TEXT}</Text>
+          </View>
+        </View>
+      ) : (
+        <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
+      )}
       <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
       {task && onAddPhoto ? (
         <TaskPhotoPicker

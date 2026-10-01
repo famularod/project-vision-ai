@@ -64,6 +64,14 @@ export type DAVEWebTaskDraft = Readonly<{
   projectControls?: ProjectControls | null;
 }>;
 
+/**
+ * Why a web save of an existing task cannot change its project, and what
+ * to do instead (whole-app audit A3 pass 9 M1, 30 Sep 2026). Also shown
+ * under the project on the Tasks page's Edit Task.
+ */
+export const DAVE_WEB_TASK_PROJECT_FIXED_TEXT =
+  'A task stays in its project. To move it, add it in the right project, then delete it here.';
+
 export class DAVEWebTaskValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -113,9 +121,28 @@ export function buildDAVEWebScheduleItem({
         ...(percentChanged ? { percentComplete: draft.percentComplete } : {}),
       })
     : normalizedDraftProgress;
-  const currentProjectScope = normalized(current?.scheduleProjectName || current?.projectName);
-  const projectNameForRecord = current && currentProjectScope === normalized(projectName)
+  // An existing task keeps its project: its names and its cloud id exactly
+  // as stored (whole-app audit A3 pass 9 M1, 30 Sep 2026). The Tasks page
+  // had let a task be moved to another project; the save wrote the new name
+  // with the old project's cloud id, so the phone refused every upload of it
+  // ("project name and cloud identity disagree") and Ask ECOS counted it
+  // under the old project. Moving it between projects would also carry its
+  // parent phase, predecessors, schedule import and time zone into a
+  // project they do not belong to, which is why the Schedule Builder refuses
+  // it too.
+  const currentProjectNames = [current?.scheduleProjectName, current?.projectName]
+    .map(normalized)
+    .filter(Boolean);
+  const namesCurrentProject = currentProjectNames.includes(normalized(projectName));
+  if (current && currentProjectNames.length > 0 && !namesCurrentProject) {
+    throw new DAVEWebTaskValidationError(DAVE_WEB_TASK_PROJECT_FIXED_TEXT);
+  }
+  const keepsCurrentProject = Boolean(current) && namesCurrentProject;
+  const projectNameForRecord = current && keepsCurrentProject
     ? current.projectName
+    : projectName;
+  const scheduleProjectNameForRecord = current && keepsCurrentProject
+    ? current.scheduleProjectName || current.projectName
     : projectName;
   // The progress is marked as the project manager's only when this save
   // changes its percent or status, as on the phone. Every web save had
@@ -166,7 +193,7 @@ export function buildDAVEWebScheduleItem({
     id: requiredText(id, 'Task identity'),
     projectId,
     itemType: draft.itemType,
-    scheduleProjectName: projectName,
+    scheduleProjectName: scheduleProjectNameForRecord,
     projectTimeZone: current?.projectTimeZone ?? null,
     projectName: projectNameForRecord,
     locationName: draft.locationName.trim(),
