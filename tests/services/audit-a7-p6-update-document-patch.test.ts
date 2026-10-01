@@ -89,7 +89,7 @@ jest.mock('../../services/DAVECloudMaintenanceBudget', () => ({
   runDAVECloudMaintenanceIfDue: jest.fn(async () => ({ storageCleanupRemaining: 0, storageCleanupCompleted: 0, storageCleanupErrors: [] })),
 }));
 
-import { createPhotoSignedUrl, listProjectUpdates, saveProjectUpdate } from '../../services/SupabaseService';
+import { archiveProjectUpdate, createPhotoSignedUrl, listProjectUpdates, saveProjectUpdate } from '../../services/SupabaseService';
 import { fieldUpdateDocumentChangeWaiting } from '../../services/FieldUpdateDocumentChangeNotice';
 import {
   getOfflineQueue,
@@ -107,6 +107,7 @@ import {
   runFieldUpdateCloudSync,
   uploadPendingChanges,
 } from '../../services/SyncService';
+import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
 import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRepository';
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
 import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
@@ -1515,5 +1516,34 @@ describe('Keep Cloud takes the cloud\'s copy as it is now (audit A4 pass 11 O1)'
     await expect(resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_cloud')).rejects.toThrow();
     expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
     expect(await getSyncConflicts()).toHaveLength(1);
+  });
+});
+
+describe('archiving a Sent update while a document change waits keeps the change (audit A4 pass 11 O2)', () => {
+  it('the archived cloud copy no longer lists the document taken off', async () => {
+    (archiveProjectUpdate as jest.Mock).mockImplementationOnce(async ({ id, archivedAt }: { id: string; archivedAt: string }) => {
+      const row = mockCloud.get(id)!;
+      mockCloud.set(id, { updatedAt: archivedAt, updateData: { ...row.updateData, isArchived: true, archivedAt } });
+      return { ok: true, configured: true, stubbed: false, data: null };
+    });
+    const { phone } = await phoneTakesPermitOff();
+    const archivedAt = new Date().toISOString();
+    // As the App's Archive does: its tombstone is replayed into the queue.
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone(phone.saved()!, 'archive_sent_update', archivedAt)]);
+    expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true, documentPatches: [{ documentId: 'permit', remove: true }] });
+
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('an archive with nothing waiting is unchanged', async () => {
+    const sent = savedUpdate([uploaded('permit')]);
+    putInCloud(sent);
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone(sent, 'archive_sent_update', SENT_AT)]);
+    const payload = (await queuedFor())!.payload as Record<string, unknown>;
+    expect(payload).toMatchObject({ archiveOnly: true });
+    expect(payload.documentPatches).toBeUndefined();
   });
 });

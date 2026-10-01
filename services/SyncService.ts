@@ -2649,6 +2649,10 @@ export async function replayProjectUpdateTombstonesInQueue(
       return id ? [id] : [];
     }));
     const archiveKept = new Set<string>();
+    // A document change still waiting for an update being archived goes up
+    // with the archive (whole-app audit A4 pass 11 O2): the archive replaced
+    // it, and the archived cloud copy still listed a document taken off.
+    const waitingDocumentChanges = new Map<string, FieldUpdateDocumentPatch[]>();
     const kept = queue.filter(item => {
       const replay = item.entity === 'project_update' && item.operation !== 'delete'
         ? byId.get(payloadId(item) ?? '')
@@ -2659,14 +2663,17 @@ export async function replayProjectUpdateTombstonesInQueue(
         item.id === projectUpdateQueueItemId(replay.updateId) &&
         (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt);
       if (sameArchive) archiveKept.add(replay.updateId);
+      const patches = replay.archive !== false && !sameArchive ? queuedFieldUpdateDocumentPatches(item) : null;
+      if (patches) waitingDocumentChanges.set(replay.updateId, patches);
       return sameArchive;
     });
     const added: SyncQueueItem[] = [...byId.values()].flatMap(replay => {
       if (replay.archive === false || archiveKept.has(replay.updateId) || queuedDeleteIds.has(replay.updateId)) return [];
       const archivedAt = replay.archive.archivedAt || queuedAt;
+      const documentPatches = waitingDocumentChanges.get(replay.updateId);
       return [{
         id: projectUpdateQueueItemId(replay.updateId), entity: 'project_update', operation: 'update',
-        payload: { id: replay.updateId, updateData: undefined, archiveOnly: true, archivedAt },
+        payload: { id: replay.updateId, updateData: undefined, archiveOnly: true, archivedAt, ...(documentPatches ? { documentPatches } : {}) },
         createdAt: queuedAt, changedAt: archivedAt, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
       }];
     });
@@ -4912,11 +4919,12 @@ async function uploadProjectUpdateQueueItem(
       archivedAt: payload.archivedAt || item.changedAt,
       projectId: payload.projectId,
     });
-    return result.ok && !result.stubbed
-      ? 'uploaded'
-      : result.error || result.message || 'Field update archive is waiting for cloud sync.';
-  }
-  if (!payload.updateData) return 'Project update database payload is missing.';
+    if (!result.ok || result.stubbed) return result.error || result.message || 'Field update archive is waiting for cloud sync.';
+    if (!queuedFieldUpdateDocumentPatches(item)) return 'uploaded';
+    // Then the document changes that waited when it was archived go onto the
+    // archived copy (whole-app audit A4 pass 11 O2), read again after it.
+    context.projectUpdateMetadataPromises?.delete(payload.id);
+  } else if (!payload.updateData) return 'Project update database payload is missing.';
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);
@@ -4937,6 +4945,8 @@ async function uploadProjectUpdateQueueItem(
   const patchedCloudCopy = cloudCopy?.updateData
     ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, documentPatches || [])
     : null;
+  // An archive has no copy of its own to send (A4 pass 11 O2).
+  if (payload.archiveOnly && !patchedCloudCopy) return 'uploaded';
   // A document change settles no conflict: the phone's own edit waits for
   // review, with its Keep Phone choice (whole-app audit A4 pass 9 L1).
   if (cloudCopy && patchedCloudCopy === cloudCopy.updateData) {
