@@ -18,7 +18,7 @@ import {
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
-import { scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
+import { scheduleTaskProjectKey, scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
 
 /**
  * Owner answer Q22 (30 Sep 2026): "a shorter schedule should be made to
@@ -663,6 +663,16 @@ function spanWords(count: number): string {
  * must be made current first (A8 pass 5 M1, A5 pass 6 L1); while a project
  * it covers shows no full schedule, neither: Set Active shows it again (A8
  * pass 6 L1).
+ *
+ * Whole-app audit A5 pass 12 K1 (1 Oct 2026): a Microsoft Project master
+ * keeps its root ("2400 Compliance Project") as every row's schedule
+ * project, with the building (Harbor North) as its app project. The master's
+ * dates for a project were read from the rows whose root named it, so a
+ * master for Harbor North had none, and a three-week lookahead was suggested
+ * as a full schedule ("its dates could not be compared"). A row now counts
+ * for its app project (scheduleTaskProjectKey, as the merge, the delete and
+ * the shown schedule key it), or for its root when a master was saved for the
+ * root itself.
  */
 export function suggestScheduleImportRole({
   batch,
@@ -681,12 +691,16 @@ export function suggestScheduleImportRole({
     return { role: 'lookahead', reason: inUse === 'shown' ? SHOWN_AS_FULL_SCHEDULE : inUse === 'set_active' ? SAVED_SET_ACTIVE
       : inUse === 'other_shown' ? SAVED_UNDER_SOURCES : SAVED_AS_FULL_SCHEDULE, only: true };
   }
-  const projects = [...new Map([
-    ...batch.items.map(item => item.scheduleProjectName || item.projectName || ''),
+  const distinct = (names: readonly string[]) =>
+    [...new Map(names.map(name => name.trim()).filter(Boolean).map(name => [key(name), name] as const)).values()];
+  // Each row's app project, not its Microsoft Project root (whole-app audit A5 pass 12 K1, above).
+  const projects = distinct([
+    ...batch.items.map(item => item.projectName || item.scheduleProjectName || ''),
     ...(file?.projectNames || []),
-  ].map(name => name.trim()).filter(Boolean).map(name => [key(name), name] as const)).values()];
+  ]);
   const current = currentScheduleDocumentsByProject(documents);
-  const masters = projects
+  // A master saved for the root itself (an app project made from it) is still the root's.
+  const masters = distinct([...projects, ...batch.items.map(item => item.scheduleProjectName || '')])
     .map(project => ({ project, master: current.get(scheduleProjectScopeKey(project)) }))
     .filter((entry): entry is { project: string; master: ReferenceDocument } => Boolean(entry.master));
   if (masters.length === 0) {
@@ -700,7 +714,7 @@ export function suggestScheduleImportRole({
   const [longest] = masters.map(({ project, master }) => {
     const batchId = key(master.importBatchId);
     const rows = scheduleItems.filter(item =>
-      key(item.scheduleProjectName || item.projectName) === key(project) &&
+      (scheduleTaskProjectKey(item) === scheduleTaskProjectKey({ projectName: project }) || key(item.scheduleProjectName) === key(project)) &&
       ((Boolean(batchId) && scheduleItemImportBatchIds(item).map(key).includes(batchId)) ||
         key(item.sourceDocumentId) === key(master.id)));
     const range = span(rows);
