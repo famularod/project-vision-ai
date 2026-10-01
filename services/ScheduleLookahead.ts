@@ -132,20 +132,43 @@ function masterFilePercent(overlay: ScheduleLookaheadOverlay): number | null {
 }
 
 /**
+ * Whether the noted percent is a task entered by hand with nothing saying who
+ * set it: the manager's, as the import and the summaries count it.
+ */
+function notedPercentEnteredByHand(overlay: ScheduleLookaheadOverlay, task: ScheduleItem): boolean {
+  return !overlay.masterProgressSource && !key(task.importBatchId) && !key(task.sourceDocumentId);
+}
+
+/**
  * The noted percent's provenance, put back with it (A5 pass 6 M2). The
  * manager's is confirmed now, so every device takes it back
  * (DAVEScheduleRecovery keeps the newer confirmation), and keeps when the
  * manager judged it (progressJudgment, A10 pass 5 L1): a field report made
  * after that still counts against it, and the record keeps the manager's
  * date. Null for a note made before, which noted none.
+ *
+ * Whole-app audit A5 pass 8 L1 (30 Sep 2026): a task entered by hand at 40%
+ * with no source, raised to 50% by a lookahead (the schedule's, confirmed at
+ * approval, 80ccee6), got 40% back with no confirmation time, and the
+ * upload's merge with the cloud's 50% preferred the confirmed copy, so 50%
+ * came back on every device. The give-back is now confirmed at the delete
+ * whenever the task's percent carries a confirmation time, or the noted
+ * percent counts as the manager's (one entered by hand with no source
+ * included); the manager's keeps when it was judged, for one entered by hand
+ * the date the summaries gave it (importedAt, else createdAt).
  */
-function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string): Partial<ScheduleItem> | null {
+function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string, task?: ScheduleItem): Partial<ScheduleItem> | null {
   if (overlay.masterProgressSource === undefined) return null;
-  const judgedAt = notedPercentIsManagers(overlay) ? overlay.masterProgressConfirmedAt : null;
+  const byHand = Boolean(task && notedPercentEnteredByHand(overlay, task));
+  const confirmedNow = overlay.masterProgressSource === 'project_manager' || byHand || Boolean(task?.progressConfirmedAt);
+  // A file's percent confirmed again here keeps the time it carried, for dating it, as the manager's does.
+  const judgedAt = notedPercentIsManagers(overlay) ? overlay.masterProgressConfirmedAt
+    : byHand ? overlay.masterProgressConfirmedAt || task?.importedAt || task?.createdAt || null
+      : overlay.masterProgressSource !== 'project_manager' && confirmedNow ? overlay.masterProgressConfirmedAt : null;
   return {
     progressSource: overlay.masterProgressSource,
     progressConfirmedBy: overlay.masterProgressConfirmedBy ?? null,
-    progressConfirmedAt: overlay.masterProgressSource === 'project_manager' ? at : overlay.masterProgressConfirmedAt ?? null,
+    progressConfirmedAt: confirmedNow ? at : overlay.masterProgressConfirmedAt ?? null,
     ...(judgedAt && at && judgedAt !== at ? { progressJudgment: { judgedAt, givenBackAt: at } } : {}),
   };
 }
@@ -361,9 +384,10 @@ function tasksAfterLookaheadDeleted(
     // The noted percent comes back with the status noted with it (A5 pass 7 L3).
     const progress = !percentBack ? null
       : toNoted ? notedProgress(overlay, item) : reconcileScheduleProgress(item.status, backPercent);
-    // Given back with who stated it: the manager's percent reads as the manager's again.
-    const provenance = (toNoted && notedProvenance(overlay, updatedAt)) ||
-      (item.progressSource === 'project_manager' ? { progressConfirmedAt: updatedAt } : {});
+    // Given back with who stated it: the manager's percent reads as the manager's again. Confirmed at the
+    // delete over a percent that carries a confirmation time, so no device's copy takes it back (A5 pass 8 L1).
+    const provenance = (toNoted && notedProvenance(overlay, updatedAt, item)) ||
+      (item.progressSource === 'project_manager' || item.progressConfirmedAt ? { progressConfirmedAt: updatedAt } : {});
     return [{
       datesBack,
       percentBack,
