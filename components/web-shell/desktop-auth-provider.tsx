@@ -292,14 +292,25 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       }
       if (!cancelled) await loadAuthorizedSnapshot(status.session);
     }).catch(() => {
-      if (!cancelled) {
-        setPhase('error');
-        setMessage('The desktop session could not be checked.');
+      // The sign-in is kept but the check did not finish (an expired access
+      // token and no network). This had shown the password form with "The
+      // desktop session could not be checked." and no Try Again; it is now
+      // the "not loaded yet" page, with Try Again and the automatic retry.
+      // Nothing is shown until a check confirms the owner (A12 pass 3 L1).
+      if (!cancelled && mountedRef.current) {
+        setPhase('unavailable');
+        setMessage(WORKSPACE_UNAVAILABLE_MESSAGE);
+        setUnavailableAttempts(count => count + 1);
       }
     });
 
     const unsubscribe = daveWebSupabaseGateway.subscribeToAuthStateChange((event, session) => {
       if (cancelled) return;
+      // auth-js also sends the start-up event without a session when the
+      // refresh could not reach the server and the sign-in is kept. The
+      // start-up check above decides that view; a real sign-out arrives as
+      // SIGNED_OUT (A12 pass 3 L1).
+      if (event === 'INITIAL_SESSION' && !session) return;
       if (event === 'SIGNED_OUT' || !session) {
         clearSessionView();
         return;

@@ -1,5 +1,7 @@
 import {
   createClient,
+  isAuthError,
+  isAuthRefreshDiscardedError,
   isAuthRetryableFetchError,
   isAuthSessionMissingError,
   type AuthChangeEvent,
@@ -331,10 +333,24 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       await requireAuthorizedOwnerCached();
       return askECOSProjectQuestion({ client, ...input });
     },
+    /**
+     * Whole-app audit A12 pass 3 L1 (30 Sep 2026): with an expired access
+     * token and no network, auth-js answers with an error and no session but
+     * keeps the stored sign-in, so that check throws (it did not finish; the
+     * page says he is still signed in and tries again). When the server
+     * refused the refresh, auth-js has already ended the sign-in (and sent
+     * SIGNED_OUT): no session, as when nobody is signed in.
+     */
     async getSessionStatus(): Promise<DAVEWebSessionStatus> {
       if (!client) return { configured: false, session: null };
       const { data, error } = await client.auth.getSession();
-      if (error) throw new Error('The desktop session could not be checked.');
+      if (error) {
+        const signInKept = !isAuthError(error) ||
+          isAuthRetryableFetchError(error) ||
+          isAuthRefreshDiscardedError(error);
+        if (signInKept) throw new Error('The desktop session could not be checked.');
+        return { configured: true, session: null };
+      }
       return { configured: true, session: data.session ?? null };
     },
 
