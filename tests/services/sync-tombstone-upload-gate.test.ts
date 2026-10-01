@@ -1740,6 +1740,83 @@ describe('offline upload deletion barriers', () => {
     });
   });
 
+  // Whole-app audit A8 pass 10 L2 (1 Oct 2026): "Delete PDF + Items" on the
+  // web (or on another phone) writes the removed row's id onto the row shown
+  // (revisedFromTaskIds). Keep Phone on that row's conflict uploaded the
+  // phone's copy, which lacked the id, so the field update linked to the
+  // removed row became "Historical evidence — linked task was deleted." on
+  // every device. Keep Phone keeps every earlier id either copy knows, as the
+  // recovery merge does.
+  describe('Keep Phone keeps the earlier task ids another device wrote', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-phone-earlier-ids',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'Pour slab',
+      startDate: '2026-10-03',
+      finishDate: '2026-10-07',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Keep this phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'master-n.csv',
+      importBatchId: 'batch-n',
+      revisedFromTaskIds: ['row-a'],
+      createdAt: '2026-09-28T08:00:00.000Z',
+      updatedAt: '2026-09-28T09:00:00.000Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+
+    async function conflictWithWebDelete() {
+      // The web deleted master M: its row X now answers to this task.
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...phoneTask,
+        notes: '',
+        revisedFromTaskIds: ['row-x', 'row-a'],
+        updatedAt: '2026-09-29T12:00:00.000Z',
+      }]));
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      return conflict;
+    }
+
+    it('uploads the phone copy with every earlier id either copy names, and keeps them on the phone', async () => {
+      const conflict = await conflictWithWebDelete();
+      expect(conflict).toBeDefined();
+      // Meanwhile another delete handed it one more.
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        revisedFromTaskIds: ['row-w', 'row-x', 'row-a'],
+      }]));
+
+      const kept = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local');
+      expect(kept).toMatchObject({ notes: phoneTask.notes });
+      expect([...(kept.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-x']);
+      const uploaded = mockUpsertScheduleItem.mock.calls[mockUpsertScheduleItem.mock.calls.length - 1][0] as ScheduleItem;
+      expect(uploaded).toMatchObject({ notes: phoneTask.notes, importBatchId: 'batch-n' });
+      expect([...(uploaded.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    it('settles without a new conflict when the cloud differs only by an earlier id', async () => {
+      const conflict = await conflictWithWebDelete();
+      const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{ ...phoneCopy, revisedFromTaskIds: ['row-a', 'row-x'] }]));
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({ notes: phoneTask.notes });
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+  });
+
   it('removes newer queued phone edits when the project manager keeps the cloud task copy', async () => {
     const localTask: ScheduleItem = {
       id: 'task-resolve-cloud',

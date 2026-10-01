@@ -79,6 +79,28 @@ export function scheduleTaskEarlierIdsOfBoth(
 }
 
 /**
+ * The task with every earlier id either copy knows (whole-app audit A8 pass
+ * 10 L2, 1 Oct 2026): "Delete PDF + Items" on the web or another phone writes
+ * the removed row's id onto the row that answers to it, and Keep Phone on
+ * that row's conflict uploaded the phone's copy without it, so the field
+ * update linked to the removed row became history everywhere. The union the
+ * recovery merge keeps (scheduleTaskEarlierIdsOfBoth), in the other copy's
+ * order when it names them all (so a copy that differs from the cloud's only
+ * by that order uploads nothing new); the same object when nothing changes.
+ */
+export function withScheduleTaskEarlierIdsOf<T extends ScheduleItem>(
+  item: T,
+  other: Pick<ScheduleItem, 'revisedFromTaskIds'> | null | undefined,
+): T {
+  if (!other) return item;
+  const both = scheduleTaskEarlierIdsOfBoth(item, other);
+  if (both.length === 0) return item;
+  const theirs = scheduleTaskEarlierIds({ id: item.id, revisedFromTaskIds: other.revisedFromTaskIds });
+  const next = theirs.length === both.length ? theirs : both;
+  return JSON.stringify(next) === JSON.stringify(item.revisedFromTaskIds) ? item : { ...item, revisedFromTaskIds: next };
+}
+
+/**
  * The row a new master saves for a task it moved, answering to the saved
  * task's id and every id the saved task had before.
  */

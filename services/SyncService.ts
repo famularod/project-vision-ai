@@ -74,6 +74,7 @@ import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository'
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
+import { withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import {
   applyFieldUpdateDocumentPatches,
@@ -4612,10 +4613,13 @@ export async function resolveScheduleItemSyncConflict(
   }
 
   // The phone's copy, still in every revision the cloud copy was re-homed
-  // into (whole-app audit A5 pass 3 F6); the upload adds any newer ones.
-  const keptItem = withScheduleImportMembershipOf(
-    localItem,
-    isRecord(conflict.remotePayload) ? conflict.remotePayload as ScheduleItem : null,
+  // into (whole-app audit A5 pass 3 F6) and answering to every earlier task
+  // id the cloud copy names (A8 pass 10 L2: a delete on another device wrote
+  // one); the upload adds any newer ones.
+  const remoteCopy = isRecord(conflict.remotePayload) ? conflict.remotePayload as ScheduleItem : null;
+  const keptItem = withScheduleTaskEarlierIdsOf(
+    withScheduleImportMembershipOf(localItem, remoteCopy),
+    remoteCopy,
   );
   const queueItemId = scheduleItemQueueItemId(localItem.id);
   await enqueuePendingChange<ScheduleItemRecordPayload>({
@@ -4957,8 +4961,9 @@ async function uploadQueueItem(
             cloud: [remote],
             allowCloudOnly: true,
           }).find(candidate => candidate.id === payload.id) || payload.itemData
-        // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6).
-        : withScheduleImportMembershipOf(payload.itemData, remote);
+        // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
+        // and earlier task ids (A8 pass 10 L2).
+        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(payload.itemData, remote), remote);
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       if (
         changedFields ||
