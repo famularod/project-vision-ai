@@ -7,6 +7,7 @@ import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
+  scheduleProgressJudgedAt,
   scheduleRowAsTask,
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
@@ -283,11 +284,21 @@ function timeOf(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** When a task's progress was last stated: by the manager, or by the file it came from. */
+/**
+ * When a task's progress was last stated: by the manager, or by the file it
+ * came from.
+ *
+ * Whole-app audit A5 pass 10 M1 (30 Sep 2026): deleting a lookahead gives a
+ * hidden old row David's earlier 40% back, confirmed at the delete with his
+ * own time kept as when it was judged (progressJudgment). Dated by its
+ * confirmation, it looked newer than the 70% David entered on the row a new
+ * master moved the task to, so Set Active showed 40% and wrote it over 70%.
+ * Progress is dated by when it was judged (scheduleProgressJudgedAt).
+ */
 function progressStatedAt(item: ScheduleItem): number {
   const verification = item.completionVerification;
   return Math.max(
-    timeOf(item.progressConfirmedAt),
+    timeOf(scheduleProgressJudgedAt(item)),
     verification?.status === 'pm_verified' ? timeOf(verification.verifiedAt || verification.reportedAt) : 0,
     scheduleProgressIsManagers(item) ? 0 : timeOf(item.importedAt || item.createdAt),
   );
