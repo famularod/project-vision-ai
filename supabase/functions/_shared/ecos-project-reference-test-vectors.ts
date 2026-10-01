@@ -947,8 +947,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['What is left at 2375?', '2375B Annex Suite 300', [SELECTED, '2375 Main St', '2375B Annex Suite 300'], '2375', '2375B'],
     ['What is left at 2375-B?', '2375-B Annex Suite 300', [SELECTED, '2375 Main St', '2375-B Annex Suite 300'], null, undefined],
     // Audit A9 pass 12 L1: its first plain number (300) is a second
-    // identifier (when unsure, refuse); was null (answered).
-    ['What is left at 300?', SELECTED, [SELECTED, '2375-B Annex Suite 300'], '2375B', undefined],
+    // identifier (when unsure, refuse); was null (answered). Pass 13
+    // wording: shown as the number used and the name (was '2375B').
+    ['What is left at 300?', SELECTED, [SELECTED, '2375-B Annex Suite 300'], '300 (2375-B Annex Suite 300)', undefined],
   ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
     name: `pass 11 F3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
@@ -1019,18 +1020,19 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
   // Audit A9 pass 12 L1: a name whose first number is lettered ("480V",
   // "120K", "1950s", "200A", "Bldg 100A") also keeps its first plain number
   // (the job number). Either names it on another project and either is its
-  // own; it is shown by the first.
+  // own; it is shown by the first. Audit A9 pass 13 wording: named by its
+  // job number, it is shown by that number and its name (was the first).
   ...([
-    ['What is left on 2375?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '480V', undefined],
-    ['What is left on 2376?', SELECTED, [SELECTED, '120K SF Warehouse 2376'], '120K', undefined],
-    ['What is left on 2377?', SELECTED, [SELECTED, '1950s Bungalow Remodel 2377'], '1950s', undefined],
-    ['What is left on 2378?', SELECTED, [SELECTED, '200A Service Upgrade 2378'], '200A', undefined],
-    ['What is left on 2375?', SELECTED, [SELECTED, 'Bldg 100A 2375 Main'], '100A', undefined],
+    ['What is left on 2375?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '2375 (480V Switchgear Upgrade 2375)', undefined],
+    ['What is left on 2376?', SELECTED, [SELECTED, '120K SF Warehouse 2376'], '2376 (120K SF Warehouse 2376)', undefined],
+    ['What is left on 2377?', SELECTED, [SELECTED, '1950s Bungalow Remodel 2377'], '2377 (1950s Bungalow Remodel 2377)', undefined],
+    ['What is left on 2378?', SELECTED, [SELECTED, '200A Service Upgrade 2378'], '2378 (200A Service Upgrade 2378)', undefined],
+    ['What is left on 2375?', SELECTED, [SELECTED, 'Bldg 100A 2375 Main'], '2375 (Bldg 100A 2375 Main)', undefined],
     ['Is the 480V gear in?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '480V', undefined],
     ['What is left on 2375?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], null, undefined],
     ['Is the 480V gear in?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], null, undefined],
     ['What is left on 2321?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], '2321', '480V'],
-    ['Is 2377 Days Inn done?', SELECTED, [SELECTED, '1950s Remodel 2377 Days Inn'], '1950s', undefined],
+    ['Is 2377 Days Inn done?', SELECTED, [SELECTED, '1950s Remodel 2377 Days Inn'], '2377 (1950s Remodel 2377 Days Inn)', undefined],
   ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
     name: `pass 12 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
@@ -1045,7 +1047,7 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     question: 'What is left on 2375?',
     knownProjectNames: [SELECTED],
     closedProjectNames: ['480V Switchgear Upgrade 2375'],
-    refused: '480V',
+    refused: '2375 (480V Switchgear Upgrade 2375)',
     refusedClosed: true,
   },
   {
@@ -1174,6 +1176,19 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     closedProjectNames: ['450 Oak Ave'],
     refused: null,
   },
+  // Audit A9 pass 13 wording: a refusal shows the number the question used;
+  // when that is not the project's shown number, with the project's name.
+  ...([
+    ['What is left at 450 Elm St?', SELECTED, [SELECTED, '24117 - 450 Elm St'], '450 (24117 - 450 Elm St)'],
+    ['Is the 480V gear in?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '480V'],
+    ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main', '2375a Annex'], '2375A'],
+  ] as const).map(([question, projectName, knownProjectNames, refused]) => ({
+    name: `pass 13 wording: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

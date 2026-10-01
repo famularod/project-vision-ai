@@ -226,10 +226,11 @@ function hasIdentifierNumber(projectName: string, number: string) {
  * ("2375A", also when another writes it "2375a"; audit A9 pass 11 F4: a bare
  * "2375" showed "2375", which no project is); projects with different
  * identifiers are each named ("2375A or 2375B" for a bare "2375"; audit A9
- * pass 10).
+ * pass 10). `used` is the number as the question wrote it (see
+ * ecosProjectNamedAs).
  */
-function numberLabel(projectNames: readonly string[], fallback: string) {
-  const labels = new Set(projectNames.map(name => ecosProjectDisplayIdentifier(name) ?? fallback));
+function numberLabel(projectNames: readonly string[], used: string) {
+  const labels = new Set(projectNames.map(name => ecosProjectNamedAs(name, used)));
   const distinct = [...labels].filter((label, index, all) =>
     all.findIndex(other => other.toUpperCase() === label.toUpperCase()) === index);
   if (labels.size === 1) return [...labels][0];
@@ -575,6 +576,19 @@ export function ecosProjectIdentifiers(projectName: string): Array<Readonly<{ di
 export function ecosProjectDisplayIdentifier(projectName: string): string | null {
   const first = firstProjectNumber(projectName);
   return first ? `${first.digits}${first.letter}` : null;
+}
+
+/**
+ * How a refusal shows a project the question named by `used` ("2375",
+ * "2375B"): its shown identifier when `used` is that number ("2375A" for a
+ * bare "2375"), else the number the question used and the project's name.
+ * Audit A9 pass 13: "What is left on 2375?" said "names 480V", a number the
+ * question never used; now "2375 (480V Switchgear Upgrade 2375)".
+ */
+export function ecosProjectNamedAs(projectName: string, used: string): string {
+  const first = firstProjectNumber(projectName);
+  if (!first) return used;
+  return first.digits === used.replace(/[A-Za-z]$/, '') ? `${first.digits}${first.letter}` : `${used} (${projectName.trim()})`;
 }
 
 /** Whether a question has any number that either rule could treat as a project number. */

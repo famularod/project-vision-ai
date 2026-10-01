@@ -189,3 +189,30 @@ describe('audit A9 pass 13 L4: Talk applies the same principle', () => {
     expect(talkAnswer('What is left on 2375?', [SELECTED, SWITCHGEAR, MAIN])).toMatch(TWO_PROJECTS);
   });
 });
+
+describe('audit A9 pass 13 wording: a refusal names the number the question used', () => {
+  const SWITCHGEAR = '480V Switchgear Upgrade 2375';
+  const ELM_ST = '24117 - 450 Elm St';
+
+  it('"What is left on 2375?" names 2375 and the project it is, not 480V, open or closed (was "names 480V")', () => {
+    const label = '2375 (480V Switchgear Upgrade 2375)';
+    expect(desktop('What is left on 2375?', [SELECTED, SWITCHGEAR])).toBe(switchOnDesktop(label));
+    expect(phone('What is left on 2375?', [SELECTED], [SWITCHGEAR])).toBe(closedOnPhone(label));
+  });
+
+  it('a number in another project\'s name around which its name continues shows that name', () => {
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_ST])).toBe(switchOnDesktop('450 (24117 - 450 Elm St)'));
+  });
+
+  it('Talk lists the numbers David said the same way', () => {
+    expect(talkAnswer('What is left on 2375?', [SELECTED, SWITCHGEAR, '2375 Main St'])).toBe(
+      'This question names two projects, 2375 (480V Switchgear Upgrade 2375) and 2375. Which one do you mean? Ask again about just that project.',
+    );
+  });
+
+  it('a project named by its shown number keeps the short label', () => {
+    expect(desktop('Is the 480V gear in?', [SELECTED, SWITCHGEAR])).toBe(switchOnDesktop('480V'));
+    expect(desktop('What is left at 2375?', [SELECTED, '2375A Main', '2375a Annex'])).toBe(switchOnDesktop('2375A'));
+    expect(desktop('What is left at 2375-B?', [SELECTED, '2375-B Annex Suite 300'])).toBe(switchOnDesktop('2375B'));
+  });
+});

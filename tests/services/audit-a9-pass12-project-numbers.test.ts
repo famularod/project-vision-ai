@@ -50,11 +50,13 @@ describe('audit A9 pass 12 L1: a name whose first number is lettered keeps its j
     expect(ecosProjectDisplayIdentifier(name)).toBe(shown);
   });
 
-  it.each(NAMES)('on 2321, "What is left on <job number>?" names "%s" in Ask ECOS, and Talk moves there (was answered)', (name, shown, job) => {
+  // Audit A9 pass 13 wording: the refusal shows the job number the question
+  // used and the name ("2375 (480V Switchgear Upgrade 2375)"; was "480V").
+  it.each(NAMES)('on 2321, "What is left on <job number>?" names "%s" in Ask ECOS, and Talk moves there (was answered)', (name, _shown, job) => {
     const projects = [SELECTED, name];
     const question = `What is left on ${job}?`;
-    expect(desktop(question, projects)).toBe(switchOnDesktop(shown));
-    expect(phone(question, projects)).toBe(switchOnPhone(shown));
+    expect(desktop(question, projects)).toBe(switchOnDesktop(`${job} (${name})`));
+    expect(phone(question, projects)).toBe(switchOnPhone(`${job} (${name})`));
     expect(mentionedDAVEProject(question, projects)).toBe(name);
   });
 
@@ -74,8 +76,9 @@ describe('audit A9 pass 12 L1: a name whose first number is lettered keeps its j
   });
 
   it('on another project, the job number of a closed "480V Switchgear Upgrade 2375" is refused as closed', () => {
+    // Audit A9 pass 13 wording: was "but 480V is a closed project".
     expect(phone('What is left on 2375?', [SELECTED], ['480V Switchgear Upgrade 2375'])).toBe(
-      'Project 2321 is selected, but 480V is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+      'Project 2321 is selected, but 2375 (480V Switchgear Upgrade 2375) is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
     );
   });
 
@@ -88,7 +91,8 @@ describe('audit A9 pass 12 L1: a name whose first number is lettered keeps its j
 
   it('the name continuing around its job number names it even when written as a measurement ("2377 Days Inn")', () => {
     const projects = [SELECTED, '1950s Remodel 2377 Days Inn'];
-    expect(desktop('Is 2377 Days Inn done?', projects)).toBe(switchOnDesktop('1950s'));
+    // Audit A9 pass 13 wording: was "names 1950s".
+    expect(desktop('Is 2377 Days Inn done?', projects)).toBe(switchOnDesktop('2377 (1950s Remodel 2377 Days Inn)'));
   });
 });
 

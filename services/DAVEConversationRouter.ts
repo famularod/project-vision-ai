@@ -18,6 +18,7 @@ import {
   ecosProjectDisplayIdentifier,
   ecosProjectIdentifiers,
   ecosProjectNumberExemptSpans,
+  ecosProjectNamedAs,
   ecosProjectNumberMentionsAt,
   ecosProjectsAroundNumber,
 } from '../supabase/functions/_shared/ecos-project-reference';
@@ -149,7 +150,11 @@ function openProjectNamed(project: TalkNamedProject) {
 
 type TalkNamedProject = {
   key: string;
-  /** The project number ("2375A"), or the name of a project without one. */
+  /**
+   * The project number ("2375A"), or the name of a project without one; when
+   * first named by another number, that number and the name ("2375 (480V
+   * Switchgear Upgrade 2375)"; audit A9 pass 13).
+   */
   label: string;
   /** Open projects with this key, and those of them named in full. */
   open: string[];
@@ -205,9 +210,9 @@ function talkNamedProjects(
   const numbers = ecosProjectNumberMentionsAt(transcript, all);
 
   const named = new Map<string, TalkNamedProject>();
-  const add = (name: string, at: number, inFull: boolean, unsure: boolean) => {
+  const add = (name: string, at: number, inFull: boolean, unsure: boolean, number = '') => {
     const key = talkProjectKey(name);
-    const label = key.startsWith('name:') ? name : key;
+    const label = key.startsWith('name:') ? name : number ? ecosProjectNamedAs(name, number) : key;
     const project = named.get(key) ?? { key, label, open: [], exactOpen: [], at, unsure };
     project.at = Math.min(project.at, at);
     project.unsure = project.unsure && unsure;
@@ -232,7 +237,7 @@ function talkNamedProjects(
     // named, so Talk asks which; none falls back to the identifiers below.
     const around = letter || spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all);
     if (around.length > 0) {
-      for (const name of around) add(name, start, false, unsure);
+      for (const name of around) add(name, start, false, unsure, number);
       continue;
     }
     // "2375B" names the project written "2375B" when there is one (audit A9 pass 8 L7).
@@ -246,7 +251,7 @@ function talkNamedProjects(
     // project's identifier names only it, like a glued one ("2375-B" on
     // "2375-B Annex" is its own, not also 2375 Main St), as in Ask ECOS.
     const spaced = spacedLetter ? withKey(number + spacedLetter) : [];
-    for (const name of spaced.length > 0 ? spaced : withNumber) add(name, start, false, unsure);
+    for (const name of spaced.length > 0 ? spaced : withNumber) add(name, start, false, unsure, number);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
 }
