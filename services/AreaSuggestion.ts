@@ -5,7 +5,7 @@
  * review passes settled are unit-tested rather than pinned by source text.
  */
 import type { AreaSuggestion, ProjectArea } from '../types';
-import { isConfidentlyInsideArea } from './GpsPrecision';
+import { clearWinnerMarginFeet, GPS_CLEAR_WINNER_DISTANCE_FEET, isConfidentlyInsideArea } from './GpsPrecision';
 
 export type GpsPoint = Readonly<{ latitude: number; longitude: number }>;
 export type GpsFix = GpsPoint & Readonly<{ accuracy: number | null }>;
@@ -89,6 +89,30 @@ export function findClosestProjectArea(
 ): AreaSuggestion | null {
   const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas, options);
   return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;
+}
+
+/** A fix as the app takes it: Precise Location off means approximate (1-3 km). */
+export type AddTaskGpsFix = GpsFix & Readonly<{ preciseLocationOff?: boolean }>;
+
+/**
+ * The area Add Task fills Location with (owner answer Q31, 1 Oct 2026): the
+ * area the fix is confidently inside, as a new update's suggestion is, when
+ * it is the only one or nearer than any other it is confidently inside by
+ * the clear-winner margin. Otherwise none, and Location stays blank: two
+ * such areas within the margin (a tie), none, a fix with no accuracy or too
+ * imprecise to be confidently inside an area, Precise Location off, or no
+ * fix (location not allowed).
+ */
+export function addTaskAreaSuggestion(
+  fix: AddTaskGpsFix | null,
+  projectAreas: readonly ProjectArea[],
+): AreaSuggestion | null {
+  if (!fix || fix.preciseLocationOff) return null;
+  const [first, second] = findProjectAreaSuggestions(fix, projectAreas, { diagnose: false })
+    .filter(suggestion => suggestion.withinRadius);
+  if (!first) return null;
+  const margin = clearWinnerMarginFeet(GPS_CLEAR_WINNER_DISTANCE_FEET, fix.accuracy);
+  return !second || second.distanceFeet - first.distanceFeet >= margin ? first : null;
 }
 
 export type HomeDetectionStatus = 'unmatched' | 'multiple' | 'detected';

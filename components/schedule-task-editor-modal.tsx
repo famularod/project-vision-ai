@@ -19,6 +19,8 @@ import type {
   ScheduleStatus,
 } from '../types';
 import { PROJECT_ITEM_TYPES } from '../types';
+import { useAddTaskLocation } from '../hooks/use-add-task-location';
+import type { AddTaskGpsFix } from '../services/AreaSuggestion';
 import { projectAreasForProject } from '../services/DAVEProjectAreaScope';
 import {
   checkScheduleTaskProject,
@@ -53,6 +55,7 @@ export function ScheduleTaskEditorModal({
   initialProjectName,
   initiallyGuided = false,
   defaultOwner,
+  getLocationFix,
   onClose,
   onSubmit,
 }: {
@@ -69,6 +72,8 @@ export function ScheduleTaskEditorModal({
   initialProjectName?: string | null;
   initiallyGuided?: boolean;
   defaultOwner?: string;
+  /** A GPS fix, as a new update takes one; none (web, tests) leaves Location blank (Q31). */
+  getLocationFix?: () => Promise<AddTaskGpsFix | null>;
   onClose: () => void;
   /** Returns false when the task was not saved; the form then stays open. */
   onSubmit: (item: Partial<ScheduleItem>) => false | void;
@@ -80,11 +85,9 @@ export function ScheduleTaskEditorModal({
     closedProjects,
     projectInView: initialProjectName,
   });
-  const defaultLocationName = firstProjectLocation(projectAreas, scheduleItems, defaultProjectName);
   const [taskName, setTaskName] = useState('');
   const [itemType, setItemType] = useState<ProjectItemType>('Task');
   const [projectName, setProjectName] = useState(defaultProjectName);
-  const [locationName, setLocationName] = useState(defaultLocationName);
   const [startDate, setStartDate] = useState('');
   const [finishDate, setFinishDate] = useState('');
   const [milestone, setMilestone] = useState('');
@@ -95,10 +98,13 @@ export function ScheduleTaskEditorModal({
   const [status, setStatus] = useState<ScheduleStatus>('Not Started');
   const [notes, setNotes] = useState('');
   const [nextAction, setNextAction] = useState('');
+  // Starts blank, then the area GPS places David in, until he enters his own (owner answer Q31, 1 Oct 2026).
+  const location = useAddTaskLocation({ visible, projectName, projectAreas, scheduleItems, getLocationFix });
+  const locationName = location.value;
   // Whether the form has been filled since it opened.
   const filledRef = useRef(false);
 
-  // Project, location and owner are filled once, when the form opens. A
+  // Project and owner are filled once, when the form opens. A
   // change to the project lists (the default project closed elsewhere, a new
   // project at the top) changes nothing: the form kept switching project and
   // wiping the typed location and owner. A project closed since stays in the
@@ -117,10 +123,9 @@ export function ScheduleTaskEditorModal({
     if (filledRef.current) return;
     filledRef.current = true;
     setProjectName(defaultProjectName);
-    setLocationName(defaultLocationName);
+    location.reset();
     setOwner(defaultOwner || '');
   }, [
-    defaultLocationName,
     defaultOwner,
     defaultProjectName,
     initialProjectName,
@@ -161,7 +166,7 @@ export function ScheduleTaskEditorModal({
     setTaskName('');
     setItemType('Task');
     setProjectName(defaultProjectName);
-    setLocationName(defaultLocationName);
+    location.reset();
     setStartDate('');
     setFinishDate('');
     setMilestone('');
@@ -231,18 +236,24 @@ export function ScheduleTaskEditorModal({
   // Returns the fill as applied: the guided questions prefill from it.
   function applyTaskFillPatch(fill: DAVETaskFillPatch): DAVETaskFillPatch {
     const patch = { ...fill };
-    // A fill that changes the project changes the location as the Project
-    // field does, unless it names an area of the new project (A3 pass 9 L1).
+    // A fill that changes the project drops the old project's location
+    // unless it names an area of the new project (A3 pass 9 L1); otherwise
+    // the area GPS places David in there, else blank, not the first area (Q31).
+    let fillNamesLocation = patch.locationName !== undefined;
     if (patch.projectName !== undefined && !sameName(patch.projectName, projectName)) {
       const target = patch.projectName;
-      patch.locationName = projectLocationChoices(projectAreas, scheduleItems, target)
-        .find(choice => sameName(choice, patch.locationName ?? ''))
-        ?? firstProjectLocation(projectAreas, scheduleItems, target);
+      const named = projectLocationChoices(projectAreas, scheduleItems, target)
+        .find(choice => sameName(choice, patch.locationName ?? ''));
+      fillNamesLocation = named !== undefined;
+      patch.locationName = named ?? location.suggestionFor(target) ?? '';
     }
     if (patch.taskName !== undefined) setTaskName(patch.taskName);
     if (patch.itemType !== undefined) setItemType(patch.itemType);
     if (patch.projectName !== undefined) setProjectName(patch.projectName);
-    if (patch.locationName !== undefined) setLocationName(patch.locationName);
+    if (patch.locationName !== undefined) {
+      if (fillNamesLocation) location.set(patch.locationName);
+      else location.reset();
+    }
     if (patch.startDate !== undefined) setStartDate(patch.startDate);
     if (patch.finishDate !== undefined) setFinishDate(patch.finishDate);
     if (patch.milestone !== undefined) setMilestone(patch.milestone);
@@ -340,14 +351,12 @@ export function ScheduleTaskEditorModal({
             <ChoiceOrText
               label="Project"
               value={projectName}
-              onChange={value => {
-                setProjectName(value);
-                setLocationName(firstProjectLocation(projectAreas, scheduleItems, value));
-              }}
+              onChange={setProjectName}
               options={projectOptions}
               placeholder="Project name"
             />
-            <ChoiceOrText label="Location" value={locationName} onChange={setLocationName} options={locationOptions} placeholder="Location / work area" />
+            <ChoiceOrText label="Location" value={locationName} onChange={location.set} options={locationOptions} placeholder="Location / work area" />
+            {location.suggested ? <Text style={styles.help}>Suggested from your location</Text> : null}
 
             <View style={styles.twoColumns}>
               <View style={styles.dateColumn}>
@@ -433,11 +442,6 @@ function projectLocationChoices(projectAreas: ProjectArea[], scheduleItems: Sche
       .filter(item => !target || (item.scheduleProjectName?.trim() || item.projectName.trim()).toLowerCase() === target)
       .map(item => item.locationName),
   ]);
-}
-
-// The location a project starts with when it is chosen: its first area.
-function firstProjectLocation(projectAreas: ProjectArea[], scheduleItems: ScheduleItem[], projectName: string) {
-  return projectAreasForProject({ projectAreas, projectName, scheduleItems })[0]?.name || '';
 }
 
 function uniqueOptions(values: readonly string[]) {

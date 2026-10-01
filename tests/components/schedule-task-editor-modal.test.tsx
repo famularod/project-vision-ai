@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 import { ScheduleTaskEditorModal } from '../../components/schedule-task-editor-modal';
@@ -165,10 +165,17 @@ describe('ScheduleTaskEditorModal', () => {
       />,
     );
 
-    expect(screen.getByDisplayValue('Project A Yard')).toBeTruthy();
+    // Owner answer Q31 (1 Oct 2026): Location no longer starts on the
+    // project's first area; with no GPS fix it stays blank, and the choices
+    // are the chosen project's areas.
+    expect(screen.getByLabelText('Location').props.value).toBe('');
+    fireEvent.press(screen.getByRole('button', { name: 'Choose Location' }));
+    expect(screen.getByRole('radio', { name: 'Project A Yard' })).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Choose Project' }));
     fireEvent.press(screen.getByRole('radio', { name: 'Project B' }));
-    expect(screen.getByDisplayValue('Project B Yard')).toBeTruthy();
+    expect(screen.getByLabelText('Location').props.value).toBe('');
+    expect(screen.getByRole('radio', { name: 'Project B Yard' })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: 'Project A Yard' })).toBeNull();
   });
 
   it('does not erase in-progress input when live project data refreshes', async () => {
@@ -390,6 +397,8 @@ describe('ScheduleTaskEditorModal', () => {
     saveAnswer('Task');
     saveAnswer('Item type');
     saveAnswer('Project');
+    // Owner answer Q31: the area no longer starts on the first area; David answers it.
+    fireEvent.changeText(screen.getByLabelText('Answer Area / location'), 'East Lobby');
     saveAnswer('Area / location');
     skipAnswer('Start date');
     skipAnswer('Finish / due date');
@@ -442,11 +451,15 @@ describe('ScheduleTaskEditorModal', () => {
     expect(screen.getByLabelText('Task or milestone').props.value).toBe('Field Test 149');
   });
 
+  // Owner answer Q31 (1 Oct 2026): the area is prefilled from GPS, not
+  // from the project's first area.
   it('clears a prefilled optional area when the user skips it', async () => {
+    let landFix: (fix: { latitude: number; longitude: number; accuracy: number }) => void = () => undefined;
     const screen = await render(
       <ScheduleTaskEditorModal
         visible
         initiallyGuided
+        getLocationFix={() => new Promise(resolve => { landFix = resolve; })}
         projects={['Project A']}
         projectAreas={[{
           id: 'area-a',
@@ -455,6 +468,7 @@ describe('ScheduleTaskEditorModal', () => {
           latitude: 34,
           longitude: -118,
           radiusFeet: 250,
+          locationCapturedAt: '2026-09-29T12:00:00.000Z',
         }]}
         scheduleItems={[]}
         initialProjectName="Project A"
@@ -463,6 +477,8 @@ describe('ScheduleTaskEditorModal', () => {
       />,
     );
 
+    await act(async () => landFix({ latitude: 34, longitude: -118, accuracy: 5 }));
+    expect(screen.getByLabelText('Location').props.value).toBe('Prefilled Yard');
     fireEvent.changeText(screen.getByLabelText('Answer Task'), 'Field Test 149');
     fireEvent.press(screen.getByRole('button', { name: 'Save Task answer and continue' }));
     fireEvent.press(screen.getByRole('button', { name: 'Save Item type answer and continue' }));
@@ -560,6 +576,8 @@ describe('ScheduleTaskEditorModal', () => {
   // location and owner: "Lot 5 | Lot 5 Yard | David", and Save filed the task
   // under Lot 5. The form fills project, location and owner when it opens
   // (or when the project in view changes) and never changes what David typed.
+  // Owner answer Q31 (1 Oct 2026): Location opens blank (no GPS fix here),
+  // not on the project's first area ("Main St Yard" and the like).
   describe('keeps the form as filled and typed while the project lists change', () => {
     const area = (name: string, projectName: string) => ({
       id: `area-${name}`, name, projectName, latitude: 34, longitude: -118, radiusFeet: 250,
@@ -585,25 +603,25 @@ describe('ScheduleTaskEditorModal', () => {
     it('leaves a default project closed elsewhere in the field, keeps what was typed, and Save refuses it', async () => {
       const onSubmit = jest.fn();
       const screen = await render(<ScheduleTaskEditorModal {...listProps} onSubmit={onSubmit} />);
-      expect(form(screen)).toEqual(['', 'Main St', 'Main St Yard', 'David']);
+      expect(form(screen)).toEqual(['', 'Main St', '', 'David']);
       fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Stripe the lot');
       fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
 
       // Main St is closed on another device; the refresh keeps it on both lists.
       screen.rerender(<ScheduleTaskEditorModal {...listProps} closedProjects={['Main St']} onSubmit={onSubmit} />);
-      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', 'Main St Yard', 'Field super']);
+      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', '', 'Field super']);
 
       fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
       expect(alert).toHaveBeenCalledWith('Project closed', 'Main St is closed. Reopen it on Overview to add tasks.');
       expect(onSubmit).not.toHaveBeenCalled();
-      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', 'Main St Yard', 'Field super']);
+      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', '', 'Field super']);
     });
 
     it('keeps the project and typed fields when a new project takes the top of the list', async () => {
       const onSubmit = jest.fn();
       const props = { ...listProps, projects: ['Lot 5', 'Tower B'] };
       const screen = await render(<ScheduleTaskEditorModal {...props} onSubmit={onSubmit} />);
-      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
+      expect(form(screen)).toEqual(['', 'Lot 5', '', 'David']);
       fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Stripe the lot');
       fireEvent.changeText(screen.getByLabelText('Location'), 'North gate');
 
@@ -625,7 +643,7 @@ describe('ScheduleTaskEditorModal', () => {
       const onSubmit = jest.fn();
       const props = { ...listProps, initialProjectName: 'Tower B', onSubmit };
       const screen = await render(<ScheduleTaskEditorModal {...props} />);
-      expect(form(screen)).toEqual(['', 'Tower B', 'Tower B Yard', 'David']);
+      expect(form(screen)).toEqual(['', 'Tower B', '', 'David']);
       fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Seal roof');
       fireEvent.changeText(screen.getByLabelText('Location'), 'Tower B Roof');
 
@@ -646,7 +664,7 @@ describe('ScheduleTaskEditorModal', () => {
       fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
       screen.rerender(<ScheduleTaskEditorModal {...props} visible={false} />);
       screen.rerender(<ScheduleTaskEditorModal {...props} closedProjects={['Main St']} />);
-      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
+      expect(form(screen)).toEqual(['', 'Lot 5', '', 'David']);
     });
   });
 
@@ -657,6 +675,9 @@ describe('ScheduleTaskEditorModal', () => {
   // Yard" and both projects' areas. A fill that changes the project now resets
   // the location as the Project field does, unless it names one of the new
   // project's own areas, and the area choices are the chosen project's only.
+  // Owner answer Q31 (1 Oct 2026): the reset location is no longer the new
+  // project's first area but the area GPS places David in there, else blank
+  // (no GPS fix in these tests); the form opens blank too.
   describe('a fill that changes the project brings that project\'s location', () => {
     const area = (name: string, projectName: string) => ({
       id: `area-${name}`, name, projectName, latitude: 34, longitude: -118, radiusFeet: 250,
@@ -675,7 +696,7 @@ describe('ScheduleTaskEditorModal', () => {
 
     async function typedFill(onSubmit: jest.Mock, instruction: string) {
       const screen = await render(<ScheduleTaskEditorModal {...fillProps} onSubmit={onSubmit} />);
-      expect(fields(screen)).toEqual(['', 'Lot 9', 'Lot 9 Yard']);
+      expect(fields(screen)).toEqual(['', 'Lot 9', '']);
       fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
       fireEvent.changeText(screen.getByLabelText('Editable task instruction'), instruction);
       fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
@@ -683,13 +704,13 @@ describe('ScheduleTaskEditorModal', () => {
       return screen;
     }
 
-    it('a typed fill naming another project saves with that project\'s area', async () => {
+    it('a typed fill naming another project saves with none of the old project\'s area, and no first area', async () => {
       const onSubmit = jest.fn();
       const screen = await typedFill(onSubmit, 'Task Seal roof, project Main St, due tomorrow');
-      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', '']);
       fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-        taskName: 'Seal roof', projectName: 'Main St', locationName: 'Main St Yard',
+        taskName: 'Seal roof', projectName: 'Main St', locationName: '',
       }));
     });
 
@@ -706,7 +727,7 @@ describe('ScheduleTaskEditorModal', () => {
       // Not one of Main St's areas, so the review asks before using it.
       fireEvent.press(screen.getByRole('button', { name: 'Confirm Area / location' }));
       fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
-      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', '']);
     });
 
     it('guided: the area question after another project offers that project\'s areas only', async () => {
@@ -718,10 +739,11 @@ describe('ScheduleTaskEditorModal', () => {
       fireEvent.press(screen.getByRole('button', { name: 'Save Project answer and continue' }));
 
       expect(screen.getByText('Where will this work happen?')).toBeTruthy();
-      expect(screen.getByLabelText('Answer Area / location').props.value).toBe('Main St Yard');
+      expect(screen.getByLabelText('Answer Area / location').props.value).toBe('');
+      expect(screen.getByRole('radio', { name: 'Area / location Main St Yard' })).toBeTruthy();
       expect(screen.getByRole('radio', { name: 'Area / location Main St Roof' })).toBeTruthy();
       expect(screen.queryByRole('radio', { name: 'Area / location Lot 9 Yard' })).toBeNull();
-      expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
+      expect(fields(screen)).toEqual(['Seal roof', 'Main St', '']);
     });
   });
 
@@ -764,15 +786,16 @@ describe('ScheduleTaskEditorModal', () => {
 
       screen.rerender(<ScheduleTaskEditorModal {...props} visible={false} />);
       screen.rerender(<ScheduleTaskEditorModal {...props} visible />);
+      // Owner answer Q31 (1 Oct 2026): Location reopens blank, not on the first area.
       expect(['Task or milestone', 'Project', 'Location', 'Owner', 'Contractor', 'Percent Complete', 'Milestone', 'Next action', 'Notes']
         .map(label => screen.getByLabelText(label).props.value))
-        .toEqual(['', 'Lot 9', 'Lot 9 Yard', 'David', '', '0', '', '', '']);
+        .toEqual(['', 'Lot 9', '', 'David', '', '0', '', '', '']);
       expect(screen.getByRole('radio', { name: 'Task' }).props.accessibilityState).toEqual({ selected: true });
 
       fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Sweep the lot');
       fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-        taskName: 'Sweep the lot', itemType: 'Task', projectName: 'Lot 9', locationName: 'Lot 9 Yard',
+        taskName: 'Sweep the lot', itemType: 'Task', projectName: 'Lot 9', locationName: '',
         startDate: '', finishDate: '', milestone: '', owner: 'David', contractor: '',
         percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', nextAction: '',
       }));

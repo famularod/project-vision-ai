@@ -262,6 +262,7 @@ import {
   areaPointSavedMessage,
   clearWinnerMarginFeet,
   formatGpsAccuracy,
+  GPS_CLEAR_WINNER_DISTANCE_FEET,
   isConfidentlyInsideArea,
   overviewFixMaxAgeMs,
   PRECISE_LOCATION_OFF_MESSAGE,
@@ -947,7 +948,6 @@ const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
 };
 const ANALYSIS_TIMEOUT_SECONDS = 135;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
-const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
 const MAX_BACKUP_FILE_BYTES = MAX_DEVICE_BACKUP_BYTES;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
@@ -13978,6 +13978,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onInitialAddConsumed={() => { setScheduleAddGuided(false); setScheduleAddProjectName(null); }}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
+              getLocationFix={overviewLocationFixRef.current.get} // the recent fix while fresh, else a new one as a new update takes it (Q31)
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
             />
           )}
@@ -19296,6 +19297,7 @@ function ScheduleScreen({
   onInitialAddConsumed,
   projectFilter,
   defaultOwner,
+  getLocationFix,
   currentUserEmail,
 }: {
   contentStyle: StyleProp<ViewStyle>;
@@ -19336,6 +19338,7 @@ function ScheduleScreen({
   onInitialAddConsumed?: () => void;
   projectFilter?: string | null;
   defaultOwner?: string;
+  getLocationFix?: () => Promise<LocationSnapshot | null>; // Add Task's Location: the area GPS places David in (owner answer Q31)
   currentUserEmail?: string;
 }) {
   const { sizeClass } = useAppShellLayout();
@@ -19895,6 +19898,7 @@ function ScheduleScreen({
       initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
       initiallyGuided={Boolean(initialAddGuided)}
       defaultOwner={defaultOwner}
+      getLocationFix={getLocationFix}
       onClose={() => {
         setShowAdd(false);
         onInitialAddConsumed?.();

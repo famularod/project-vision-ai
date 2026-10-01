@@ -56,6 +56,13 @@ export function isConfidentlyOutsideArea(input: Readonly<{
   return margin !== null && input.distanceFeet - margin > input.radiusFeet;
 }
 
+/**
+ * The least margin by which the nearest wins outright: the nearest project
+ * on the home screen, and the area Add Task fills in (owner answer Q31,
+ * 1 Oct 2026). Moved here from App.tsx so both use the one value.
+ */
+export const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
+
 /** How much nearer the closest project must be to win outright. */
 export function clearWinnerMarginFeet(
   minimumFeet: number,
