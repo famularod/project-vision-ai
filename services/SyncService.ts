@@ -3488,6 +3488,44 @@ function fieldUpdateCopyHeldForReview(item: SyncQueueItem, conflicts: readonly S
 /** The conflicts whose Keep Cloud is sending its chosen copy now (its uploadExactQueueItem), in this launch (A4 pass 21 F1). */
 const keepCloudChoicesSending = new Set<string>();
 
+/** The conflicts whose Keep Cloud copy met a newer cloud copy while it was sent, which the conflict took (A4 pass 22 L1). */
+const keepCloudChoicesMetNewerCloudCopy = new Set<string>();
+const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Cloud was saving it.';
+
+/**
+ * Keep Cloud's copy found an iPad save newer than it (whole-app audit A4
+ * pass 22 L1): the conflict it was chosen over, while open, takes that cloud
+ * copy, as Review Conflicts' own read does. False when that conflict is gone.
+ */
+async function keepCloudChoiceMetNewerCloudCopy(
+  payload: ProjectUpdateRecordPayload,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+): Promise<boolean> {
+  const conflictId = payload.overConflict;
+  if (!conflictId || !isRecord(cloud.updateData)) return false;
+  return serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflictId)) return false;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflictId
+      ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
+      : item));
+    keepCloudChoicesMetNewerCloudCopy.add(conflictId);
+    return true;
+  });
+}
+
+/**
+ * A queued copy as a conflict's phone side: never marked as Keep Cloud's
+ * (whole-app audit A4 pass 22 L1). Keep Phone's copy built from such a side
+ * was held while its conflict was open, and never went up.
+ */
+function withoutKeepCloudMarks<TPayload extends Partial<ProjectUpdateRecordPayload>>(
+  payload: TPayload,
+): Omit<TPayload, 'keepCloudChoice' | 'absorbedPatches'> {
+  const { keepCloudChoice: _choice, absorbedPatches: _absorbed, ...rest } = payload;
+  return rest;
+}
+
 function accountChangedDuringUpload(
   uploaded: number,
   uploadedByEntity: Record<SyncEntity, number>,
@@ -4418,6 +4456,18 @@ export async function clearScheduleItemSyncConflicts(
   await clearConflictsForLocalRecord('schedule_item', itemId);
 }
 
+/**
+ * David's choice on a field update's conflict. While the conflict is open,
+ * nothing automatic sends the update (whole-app audit A4 pass 15 H1): Keep
+ * Phone sends the conflict's copy, then David's newer edit; Keep Cloud's
+ * chosen copy goes up only inside Keep Cloud's own upload (A4 pass 21 F1).
+ *
+ * Work that arrives while Keep Cloud runs is treated one way (A4 pass 22):
+ * - Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
+ *   newer cloud copy as it goes up, it records that copy in the open
+ *   conflict, nothing is sent, and David reviews again; the phone's work it
+ *   withdrew goes back.
+ */
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
@@ -4532,9 +4582,14 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
         autoUpload: false,
       }) as SyncQueueItem;
       keepCloudChoicesSending.add(conflict.id); // its copy goes in this pass only (A4 pass 21 F1)
+      keepCloudChoicesMetNewerCloudCopy.delete(conflict.id);
       const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId))
         .finally(() => keepCloudChoicesSending.delete(conflict.id));
-      if (!exact.landed) throw new Error(exact.error || 'sync_conflict_save_failed');
+      // An iPad save it met is in the conflict now: David reviews again (A4 pass 22 L1).
+      if (!exact.landed) {
+        throw new Error(keepCloudChoicesMetNewerCloudCopy.delete(conflict.id) ? 'sync_conflict_cloud_copy_changed'
+          : exact.error || 'sync_conflict_save_failed');
+      }
     } catch (error) {
       await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
       throw error;
@@ -4564,8 +4619,10 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // held in memory, it was lost when the app was killed while the kept copy
   // uploaded, or before it was queued again. One an earlier kept copy still
   // carries (queued, or recorded with this conflict) is still one. Review
-  // Conflicts shows the same edit (A4 pass 15b F1).
-  const { newerEdit: _carried, ...conflictPayload } = localPayload;
+  // Conflicts shows the same edit (A4 pass 15b F1). Never marked as Keep
+  // Cloud's copy (A4 pass 22 L1): an earlier build recorded conflicts whose
+  // phone side was that copy, and the kept copy was then held.
+  const { newerEdit: _carried, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
   const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
@@ -5965,6 +6022,15 @@ async function uploadProjectUpdateQueueItem(
       recordProjectUpdateUpload(payload.id);
       return 'uploaded';
     }
+    // Keep Cloud's own copy meeting a newer cloud copy is no new conflict
+    // (whole-app audit A4 pass 22 L1): its phone side was then that copy,
+    // still marked as Keep Cloud's, which is held, and every Keep Phone said
+    // "Conflict not resolved". The conflict it was chosen over takes the
+    // cloud's copy, and Keep Cloud asks David to review again; the copy stays
+    // queued for Keep Cloud's put-back, which takes it off by its mark.
+    if (payload.keepCloudChoice && await keepCloudChoiceMetNewerCloudCopy(payload, remoteMetadata.data)) {
+      return KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED;
+    }
 
     await recordConflict({
       id: createQueueId('project_update_conflict', new Date().toISOString()),
@@ -5974,7 +6040,7 @@ async function uploadProjectUpdateQueueItem(
       remoteChangedAt: remoteMetadata.data.updatedAt,
       reason: 'Remote update changed after the local pending change.',
       detectedAt: new Date().toISOString(),
-      localPayload: payload,
+      localPayload: withoutKeepCloudMarks(payload), // the phone's side is never Keep Cloud's copy (A4 pass 22 L1)
       remotePayload: remoteMetadata.data.updateData,
     });
 
