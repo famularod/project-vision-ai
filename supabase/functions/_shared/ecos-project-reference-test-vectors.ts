@@ -1280,6 +1280,24 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedClosed: true,
     refusedSelected: '452',
   },
+  // Audit A9 pass 14 L4: a street abbreviation alone never makes a number
+  // another project's ("400 CT cabinet", "400 RD" roof drain); with another
+  // of the name's words, or the word spelled out, it still names it.
+  ...([
+    ['Is the 400 CT cabinet set?', '400 N Main St', [SELECTED, '400 N Main St'], ['24117 - 400 Court St'], null],
+    ['Is the 400 CT cabinet set?', SELECTED, [SELECTED], ['24117 - 400 Court St'], null],
+    ['Is the 400 RD by the parapet clear?', '400 N Main St', [SELECTED, '400 N Main St', '24117 - 400 Road Paving'], [], null],
+    ['Is 400 Court St done?', '400 N Main St', [SELECTED, '400 N Main St'], ['24117 - 400 Court St'], '400 (24117 - 400 Court St)'],
+    ['Is 400 Ct St done?', '400 N Main St', [SELECTED, '400 N Main St'], ['24117 - 400 Court St'], '400 (24117 - 400 Court St)'],
+  ] as const).map(([question, projectName, knownProjectNames, closedProjectNames, refused]) => ({
+    name: `pass 14 L4: "${question}" on "${projectName}" with closed ${closedProjectNames.join(', ') || 'none'}`,
+    projectName,
+    question,
+    knownProjectNames,
+    closedProjectNames,
+    refused,
+    ...(refused ? { refusedClosed: true, refusedSelected: '400' } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

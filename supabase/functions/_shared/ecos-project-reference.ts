@@ -518,7 +518,10 @@ function nameContinuesAt(name: string, at: RegExpExecArray, before: string, afte
  * `after`, word by word outward from the number, and whether all of them do
  * (`full`: the whole name is said). The nearest word must touch the number:
  * after a space, comma or hyphen ("2375 Main"), or before it with only a
- * space, #, :, . or - between ("Tower E-2375").
+ * space, #, :, . or - between ("Tower E-2375"). Audit A9 pass 14 L4: a word
+ * matched only through a street abbreviation counts only when another of
+ * the name's words matches as written ("400 Ct St", "2375 A St."), so "Is
+ * the 400 CT cabinet set?" does not continue "24117 - 400 Court St".
  */
 function nameWordsAround(name: string, at: RegExpExecArray, before: string, after: string) {
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
@@ -528,8 +531,9 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
   const following = wordsInCommon(nameAfter, afterWords);
   const preceding = wordsInCommon(nameBefore, beforeWords);
+  const asWritten = following.count + preceding.count;
   return {
-    count: following.count + preceding.count,
+    count: asWritten > 0 ? asWritten + following.abbreviated + preceding.abbreviated : 0,
     full: following.walked === nameAfter.length && preceding.walked === nameBefore.length,
   };
 }
@@ -543,16 +547,20 @@ function wordsIn(text: string): string[] {
  * (sameNameWord). Audit A9 pass 14 L1: a function word of the name is
  * passed over when it matches but never counted, so "What is left at
  * 2375?" does not continue "Suite 300 at 2375 Main" and "Is 300 at 2375
- * Main done?" still does. `walked` counts every word matched (pass 14 L2).
+ * Main done?" still does. `walked` counts every word matched (pass 14 L2);
+ * `count` the ones written as in the name and `abbreviated` the ones that
+ * match only through a street abbreviation ("St" for "Street"; pass 14 L4).
  */
 function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
   let walked = 0;
   let count = 0;
+  let abbreviated = 0;
   while (walked < nameWords.length && walked < words.length && sameNameWord(words[walked], nameWords[walked])) {
-    if (!isFunctionWord(nameWords[walked])) count += 1;
+    if (words[walked].toLowerCase() !== nameWords[walked].toLowerCase()) abbreviated += 1;
+    else if (!isFunctionWord(nameWords[walked])) count += 1;
     walked += 1;
   }
-  return { count, walked };
+  return { count, abbreviated, walked };
 }
 
 const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to', 'a', 'an', 'by', 'with', 'from']);

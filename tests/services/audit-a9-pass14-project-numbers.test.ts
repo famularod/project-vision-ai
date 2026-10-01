@@ -142,3 +142,33 @@ describe('audit A9 pass 14 L3: a project sharing the selected one\'s shown numbe
     expect(talkAnswer('Is Kroger #452 done?', projects, [], PINE)).toBeNull();
   });
 });
+
+describe('audit A9 pass 14 L4: a street abbreviation alone never makes a number another project\'s', () => {
+  const MAIN = '400 N Main St';
+  const COURT = '24117 - 400 Court St';
+
+  it('"Is the 400 CT cabinet set?" on 400 N Main St is answered with a closed 400 Court St job (was refused as Court)', () => {
+    expect(phone('Is the 400 CT cabinet set?', [SELECTED, MAIN], [COURT], MAIN)).toBeNull();
+    expect(desktop('Is the 400 CT cabinet set?', [SELECTED, MAIN], [COURT], MAIN)).toBeNull();
+    expect(talkAnswer('Is the 400 CT cabinet set?', [SELECTED, MAIN], [COURT], MAIN)).toBeNull();
+    // On a project without 400 it is no project's number either.
+    expect(desktop('Is the 400 CT cabinet set?', [SELECTED], [COURT])).toBeNull();
+  });
+
+  it.each([
+    ['Is the 400 RD by the parapet clear?', '24117 - 400 Road Paving'],
+    ['Are the 400 PL markers set?', '24117 - 400 Place Lofts'],
+    ['Is the 400 DR flooring in?', '24117 - 400 Drive Thru'],
+  ])('"%s" (a trade abbreviation) does not name "%s"', (question, other) => {
+    expect(desktop(question, [SELECTED, MAIN, other], [], MAIN)).toBeNull();
+    expect(talkAnswer(question, [SELECTED, MAIN, other], [], MAIN)).toBeNull();
+  });
+
+  it('the word spelled out, or an abbreviation with another of the name\'s words, still names it', () => {
+    const label = '400 (24117 - 400 Court St)';
+    expect(phone('Is 400 Court St done?', [SELECTED, MAIN], [COURT], MAIN)).toBe(closedOnPhone(label, '400'));
+    expect(phone('Is 400 Court done?', [SELECTED, MAIN], [COURT], MAIN)).toBe(closedOnPhone(label, '400'));
+    expect(phone('Is 400 Ct St done?', [SELECTED, MAIN], [COURT], MAIN)).toBe(closedOnPhone(label, '400'));
+    expect(desktop('What is left at 450 Elm Street?', [SELECTED, '24117 - 450 Elm St', '450 Elm Annex'], [], '24117 - 450 Elm St')).toBeNull();
+  });
+});
