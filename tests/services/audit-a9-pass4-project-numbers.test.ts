@@ -328,8 +328,9 @@ describe('audit A9 pass 5: the five exemptions', () => {
     ['Is the run 2375\' long?', PROJECTS],
     ['Is the bearing 2,375 ksf?', [SELECTED, '375 Main Street']],
     // "2375 A or 2375 V" is refused since audit A9 pass 6 L1 (a spaced "A"
-    // before a word reads as a wing letter); "A" before punctuation is amps.
-    ['Is the service 2375 V, with a 2375 A?', PROJECTS],
+    // before a word reads as a wing letter). Since audit A9 pass 7 L5 a
+    // spaced " A" is never amps ("with a 2375 A?" was here); a glued A is.
+    ['Is the service 2375 V, with a 2375A?', PROJECTS],
     ['Is the grade 2375 m above datum?', PROJECTS],
     ['Is framing 2375% done?', PROJECTS],
     ['Is the cure at 2375°F?', PROJECTS],

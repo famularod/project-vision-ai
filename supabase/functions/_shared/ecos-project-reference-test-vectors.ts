@@ -529,12 +529,13 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
   })),
   // Audit A9 pass 6 L1: a spaced capital "A" before a word is a wing or
-  // building letter; before punctuation or the end it is amps.
+  // building letter. Since audit A9 pass 7 L5 a spaced " A" is never amps,
+  // so "Is the panel 2375 A?" (allowed, null, in pass 6) is refused too.
   ...([
     ['What is left in the 2375 A wing?', '2375'],
     ['Is the 2375 A building topped out?', '2375'],
     ['Is 2375 A or B behind?', '2375'],
-    ['Is the panel 2375 A?', null],
+    ['Is the panel 2375 A?', '2375'],
     ['Is the breaker 2375A?', null],
     ['Is the service 2375 V or 480 V?', null],
   ] as const).map(([question, refused]) => ({
@@ -716,6 +717,30 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     projectName: SELECTED,
     question,
     knownProjectNames: OWNER_PROJECTS,
+    refused,
+  })),
+  // Audit A9 pass 7 L5: a glued "A" is amps unless a letter list or a
+  // site-part word follows; a spaced " A" is never amps; "amps" and
+  // "amperes" are units.
+  ...([
+    ['Are the 2375 A, B and C wings done?', OWNER_PROJECTS, '2375'],
+    ['What is left at 2375 A?', OWNER_PROJECTS, '2375'],
+    ['What is left in the 2375A wing?', OWNER_PROJECTS, '2375'],
+    ['Are the 2375A, B and C wings done?', OWNER_PROJECTS, '2375'],
+    ['Is 2375A/B done?', OWNER_PROJECTS, '2375'],
+    ['Is 2375A & B done?', OWNER_PROJECTS, '2375'],
+    ['Is 2375A and B done?', OWNER_PROJECTS, '2375'],
+    ['Is the 2375A Tower topped out?', OWNER_PROJECTS, '2375'],
+    ['Is the panel 200 A?', [SELECTED, '200 Oak Street'], '200'],
+    ['Is the panel 200A?', [SELECTED, '200 Oak Street'], null],
+    ['Is the main 2375A, 3 phase?', OWNER_PROJECTS, null],
+    ['Is the panel 200 amps?', [SELECTED, '200 Oak Street'], null],
+    ['Is the panel 200 amperes?', [SELECTED, '200 Oak Street'], null],
+  ] as const).map(([question, knownProjectNames, refused]) => ({
+    name: `pass 7 L5: "${question}" with ${knownProjectNames.slice(1).join(', ')}`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames,
     refused,
   })),
   // Fail closed: without a usable list, today's stricter check applies exactly.

@@ -20,8 +20,9 @@
  * another known project's number names that project ("2,375" is read as
  * 2375; pass 6 L4), unless it is written as one of five things
  * (EXEMPT_PATTERNS below):
- *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or A, V, m, %, °,
- *      a feet or inch mark) right after it: "4000 psi", "2375mm", "200 bags";
+ *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or V, m, %, °, a
+ *      glued A, a feet or inch mark) right after it: "4000 psi", "2375mm",
+ *      "200 bags", "200A";
  *   2. money: "$2,375", "USD 2375", "2375 dollars";
  *   3. part of a full date or a clock time: "10/05/2026", "2026-10-05",
  *      "Oct 5, 2026", "5 Oct 2026", "0730 hrs" (a bare year is not exempt);
@@ -47,6 +48,12 @@ export const ECOS_KNOWN_PROJECT_NAMES_LIMIT = 1000;
 
 const LEGACY_IDENTIFIER_SOURCE = String.raw`\b\d{4,6}\b`;
 const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b`;
+/**
+ * A number in a question: 3-6 digits, even with letters right after them
+ * ("2375A", "2375B wing"), which used to hide the number (audit A9 pass 7 L5).
+ * Letters that are a listed unit ("2375mm", "2375A" as amps) are exempt below.
+ */
+const MENTIONED_NUMBER_SOURCE = String.raw`\b\d{3,6}(?!\d)`;
 
 /**
  * `closedProjectNames` are the closed (archived, not deleted) projects. They
@@ -96,7 +103,7 @@ export function findECOSProjectReferenceMismatch(
  * too: "Compare 200,375" names 200 and 375, and "2,375" names 375 when there
  * is a project 375 and no project 2375 (audit A9 pass 7 L2).
  */
-const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+\b`;
+const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
 
 /**
  * The 3-6 digit numbers in `text` that can name a project, in order: every
@@ -116,7 +123,7 @@ export function ecosProjectNumberMentionsAt(
   const exempt = exemptSpans(text);
   const known = new Set(projectNames.map(ecosProjectIdentifier));
   const mentions: Array<Readonly<{ number: string; start: number }>> = [];
-  const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${PROJECT_IDENTIFIER_SOURCE}`, 'g');
+  const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${MENTIONED_NUMBER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
     const start = match.index;
@@ -172,7 +179,7 @@ const MEASUREMENT_WORD_UNITS = [
   // weight
   String.raw`lbs?\.?`, 'pounds?', 'kg', 'tons?',
   // electrical and mechanical
-  'amps?', 'volts?', 'watts', 'kw', 'kva', 'kcmil', 'mcm', 'hp', 'cfm', 'btuh?', 'mbh', 'gpm',
+  'amps?', 'amperes?', 'volts?', 'watts', 'kw', 'kva', 'kcmil', 'mcm', 'hp', 'cfm', 'btuh?', 'mbh', 'gpm',
   // percent, temperature and time
   'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins', 'min',
   // counts ("units", "sheets" and "pieces" read as a project's units, drawing
@@ -180,18 +187,26 @@ const MEASUREMENT_WORD_UNITS = [
   'ea', 'bags', 'pcs',
 ];
 
+/** A word naming part of a site: after "2375A" the A is a wing or building letter. */
+const SITE_PART_WORDS = ['wing', 'building', 'bldg', 'side', 'tower', 'block', 'phase', 'unit', 'level', 'area'];
+const anyCase = (word: string) => word.replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`);
+/** After a glued A: a letter list (", B", "/B", " & B", " and B") or a site-part word. */
+const WING_LETTER_AFTER_A = String.raw`(?:\s*[,/&]\s*|\s+and\s+)[A-Z](?![A-Za-z])|\s+(?:${SITE_PART_WORDS.map(anyCase).join('|')})s?(?![A-Za-z])`;
+
 const EXEMPT_PATTERNS: readonly RegExp[] = [
   // 1. Measurements: word units, then the case-sensitive one-letter units A
   //    (amps), V (volts) and m (metres) with a space or the end after them
-  //    ("2375-A" and "2375 A/C" still name 2375). A spaced " A" is amps only
-  //    before punctuation or the end ("panel 200 A?"): before a word it is a
-  //    wing or building letter ("the 2375 A wing", "2375 A or B"; audit A9
-  //    pass 6 L1). Then %, ° and the prime marks ′ and ″ with a word or a
-  //    hyphen after them ("2375′ run"); a mark that may close a quotation
-  //    ("at 2375′?", "2375′s") is not a measurement. The quote marks ' ’ " ”
-  //    are checked in exemptSpans (FEET_QUOTE_MARK, INCH_QUOTE_MARK).
+  //    ("2375-A" and "2375 A/C" still name 2375). A is amps only glued to the
+  //    number ("2375A?", "a 200A main"), and not even then before a letter
+  //    list or a site-part word ("the 2375A wing", "2375A, B and C"); a
+  //    spaced " A" is never amps ("What is left at 2375 A?"; audit A9 pass 7
+  //    L5; write "200A" or "200 amps"). Then %, ° and the prime marks ′ and
+  //    ″ with a word or a hyphen after them ("2375′ run"); a mark that may
+  //    close a quotation ("at 2375′?", "2375′s") is not a measurement. The
+  //    quote marks ' ’ " ” are checked in exemptSpans (FEET_QUOTE_MARK,
+  //    INCH_QUOTE_MARK).
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
-  new RegExp(String.raw`${NUMBER}(?:A| ?[Vm])(?=[\s.,;:!?)]|$)|${NUMBER} A(?=[.,;:!?)]|$)`, 'g'),
+  new RegExp(String.raw`${NUMBER}(?:A(?!${WING_LETTER_AFTER_A})| ?[Vm])(?=[\s.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
   new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}[′″](?=\s[a-z0-9]|-)`, 'gi'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
@@ -361,7 +376,7 @@ export function ecosProjectIdentifier(projectName: string): string | null {
 
 /** Whether a question has any number that either rule could treat as a project number. */
 export function ecosQuestionMayNameAProject(question: string): boolean {
-  return new RegExp(PROJECT_IDENTIFIER_SOURCE).test(question);
+  return new RegExp(MENTIONED_NUMBER_SOURCE).test(question);
 }
 
 export type ECOSUnarchivedProjectRows = Readonly<{

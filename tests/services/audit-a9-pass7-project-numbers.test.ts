@@ -175,3 +175,43 @@ describe('audit A9 pass 7 L4: an inch mark inside a double quotation does not cl
     expectAllowed(question, PROJECTS);
   });
 });
+
+describe('audit A9 pass 7 L5: a spaced "A" is never amps; a glued "A" is unless a wing letter follows', () => {
+  it.each([
+    'Are the 2375 A, B and C wings done?',
+    'What is left at 2375 A?',
+    'Is the main 2375 A.',
+    'Is the main 2375 A',
+    'What is left in the 2375A wing?',
+    'What is left in the 2375A Wing?',
+    'Are the 2375A, B and C wings done?',
+    'Is 2375A/B done?',
+    'Is 2375A & B done?',
+    'Is 2375A and B done?',
+    ...['wing', 'building', 'bldg', 'side', 'tower', 'block', 'phase', 'unit', 'level', 'area', 'wings']
+      .map(word => `What is left on the 2375A ${word}?`),
+  ])('"%s" is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it('"panel 200 A?" now names project 200 (the accepted trade-off: write 200A or 200 amps)', () => {
+    expectRefusedOpen('Is the panel 200 A?', [SELECTED, '200 Oak Street'], '200', '200 Oak Street');
+    expectAllowed('Is the panel 200A?', [SELECTED, '200 Oak Street']);
+  });
+
+  it.each([
+    'Is the breaker 2375A?',
+    'Is the main 2375A.',
+    'Is the main 2375A, 3 phase?',
+    'Is the 2375A main breaker in?',
+    'Is the panel 2375 amp?',
+    'Is the panel 2375 amps?',
+    'Is the panel 2375 amperes?',
+    'Is the panel 2375 ampere?',
+    'Is the service 2375 V or 480 V?',
+  ])('"%s" is amps or volts and is allowed', question => {
+    expectAllowed(question, PROJECTS);
+    expectAllowed(question, [SELECTED], [OTHER]);
+  });
+});
