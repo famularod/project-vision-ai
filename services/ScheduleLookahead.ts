@@ -530,7 +530,8 @@ function markedMasterInEffect(by: string, documents: readonly ReferenceDocument[
  * The dates a task's lookahead note gives while `shown` is the master
  * current for its project, as Delete PDF + Items falls back (A5 pass 20 P1):
  * the latest lookahead's whose dates no master in effect replaced, else the
- * master's.
+ * master's. A mark naming a master no longer saved replaces nothing here
+ * (A5 pass 22 L1): that master's dates are gone.
  */
 function notedDatesWhileCurrent(
   overlay: ScheduleLookaheadOverlay,
@@ -539,7 +540,7 @@ function notedDatesWhileCurrent(
 ): Pick<ScheduleItem, 'startDate' | 'finishDate'> & { batchId?: string } {
   return [...overlay.lookaheads].reverse().find(entry => {
     const by = entry.datesReplacedByMaster;
-    return !by || (by !== true && !markedMasterInEffect(by, documents, shown));
+    return !by || (by !== true && (!documents.some(saved => key(saved.importBatchId) === key(by)) || !markedMasterInEffect(by, documents, shown)));
   }) || { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
 }
 
@@ -564,6 +565,21 @@ function notedDatesWhileCurrent(
  * before the mark and made current after it then (A5 pass 18 L3, A5 pass 19
  * L1), which notes that older schedule's dates as the master's. Returns the
  * tasks to save.
+ *
+ * Whole-app audit A5 pass 22 L1 (1 Oct 2026, caused by 5aba116): three
+ * shapes moved Framing onto dates no file in effect gives (at fb44926 it
+ * kept its dates). (a) Master G copied lookahead L1's dates, L2 moved
+ * Framing to 10/20, master H listed it there and marked L2; H was deleted
+ * (Delete PDF + Items, or a web upload deleted before Make Current) and F
+ * made current: the mark naming H read as "replaced", so Framing went to
+ * L1's 10/18, though L2 is the newest lookahead and newer than F. A mark
+ * naming a master no longer saved now replaces nothing here. (b) Master H,
+ * which does not list Framing, made current gave the note's master dates
+ * (G's 10/20), though L1 adds the task to H. (c) Going back to G after H
+ * copied L2 gave H's 10/20, though G lists 10/18. The note's master dates
+ * are the dates of the newest master that restated the task: they are given
+ * only when the master made current is one of the task's imports and no
+ * saved master of the task is newer than it.
  */
 export function scheduleTasksOnNotedDatesWhenCurrent({
   after,
@@ -592,6 +608,15 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
       overlay.lookaheads.some(entry => sameDates(task, entry));
     const to = notedDatesWhileCurrent(overlay, documentsAfter, is);
     if (!onNoted || sameDates(task, to) || !key(to.startDate) || !key(to.finishDate)) return [];
+    // The note's master dates are those of the newest master that restated the task: only under a master that
+    // lists the task (b) and no saved master of the task newer than it (c) (A5 pass 22 L1).
+    if (to.batchId === undefined) {
+      const imports = scheduleItemImportBatchIds(task).map(key);
+      const listsTask = imports.includes(key(is.importBatchId));
+      const newerMaster = documentsAfter.some(master => imports.includes(key(master.importBatchId)) &&
+        !scheduleDocumentAddsToMaster(master) && timeOf(master.importedAt) > timeOf(is.importedAt));
+      if (!listsTask || newerMaster) return [];
+    }
     // A lookahead's dates again only under a master older than that lookahead (Q22).
     if (to.batchId !== undefined) {
       const lookahead = documentsAfter.find(saved => key(saved.importBatchId) === key(to.batchId));
