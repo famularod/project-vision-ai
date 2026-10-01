@@ -271,9 +271,10 @@ function calendarDays(item: Pick<ScheduleItem, 'startDate' | 'finishDate'>): str
  * one twin rolled off. Now a row pairs first with a saved twin on the same
  * days (the days it shows, then, for a twin a lookahead restated, the
  * master's days its note keeps), in file order where several share the
- * days and only when as many rows as twins share them; then the one row
- * left with the one twin left. Otherwise none pair: a new row rather than
- * David's progress on another task.
+ * days and only when as many rows as twins share them; then the rest in
+ * file order when as many are left on each side (both twins moved: a slip of
+ * every date keeps David's progress on its task, Q22). Otherwise none pair:
+ * a new row rather than David's progress on another task.
  */
 function pairSameNamedTasks(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
   const pairs = new Map<ScheduleItem, ScheduleItem>();
@@ -297,7 +298,10 @@ function pairSameNamedTasks(rows: readonly ScheduleItem[], saved: readonly Sched
   pairOnDays(item => item.lookaheadOverlay
     ? calendarDays({ startDate: item.lookaheadOverlay.masterStartDate, finishDate: item.lookaheadOverlay.masterFinishDate })
     : null);
-  if (rowsLeft.length === 1 && savedLeft.length === 1) pairs.set(rowsLeft[0], savedLeft[0]);
+  // The rest pair in file order when as many are left on each side: a revised
+  // master that slips every date moves both twins, and David's progress follows
+  // them (owner answer Q22); none, when the counts differ.
+  if (rowsLeft.length === savedLeft.length) rowsLeft.forEach((row, index) => pairs.set(row, savedLeft[index]));
   return pairs;
 }
 

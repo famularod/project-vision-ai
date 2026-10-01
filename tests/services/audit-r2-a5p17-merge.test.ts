@@ -299,10 +299,13 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
     expect(shownNamed(state, 'QUALITY INSPECTION').map(item => [item.id, item.percentComplete])).toEqual([['MASTER F-1', 20], ['MASTER F-2', 50]]);
   });
 
-  it('both twins moved: neither pairs, so neither takes the other\'s progress', () => {
+  // Both twins moved (a revised master that slips every date): as many left on
+  // each side, so they pair in file order and David's 80% follows phase 1
+  // (owner answer Q22). "Neither" had hidden his progress in this everyday case.
+  it('both twins moved (every date slipped): they pair in file order, so David\'s progress follows its task', () => {
     const { merged, state } = approve(onF, G, rows(G, ['Pour slab,Alpha,Lot,10/02/2026,10/04/2026,', 'Pour slab,Alpha,Lot,10/09/2026,10/11/2026,', FRAMING]));
-    expect(merged.carriedProgressIds).toEqual([]);
-    expect(pours(state)).toEqual([['MASTER G-1', '10/02/2026', 0, []], ['MASTER G-2', '10/09/2026', 0, []]]);
+    expect(merged.carriedProgressIds.length).toBeGreaterThan(0);
+    expect(pours(state)).toEqual([['MASTER G-1', '10/02/2026', 80, ['MASTER F-1']], ['MASTER G-2', '10/09/2026', 0, ['MASTER F-2']]]);
   });
 
   it('twins each restated by a lookahead: a master repeating what it said before pairs each on the days its note keeps', () => {
