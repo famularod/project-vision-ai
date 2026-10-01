@@ -38,6 +38,9 @@
  * another project's. Without a usable project list the stricter pre-Q20 check
  * applies (fail closed). Audit A9 pass 9 L1: identifiers are compared whole
  * and upper-cased, so "2375" names "2375 Main St" and not "2375A Phase 2".
+ * Audit A9 pass 12 L1: a name whose first number is lettered has two
+ * identifiers ("480V Switchgear Upgrade 2375" is 480V and 2375; see
+ * projectIdentifiers), and either names it.
  */
 
 export type ECOSProjectReferenceMismatch = Readonly<{
@@ -60,8 +63,10 @@ const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b(?!-[A-Za-z](?![A-Za-z0-
  * display and tells "2375A" from "2375B" (audit A9 pass 8 L7). It is the
  * project's identifier when it is the first 3-6 digit number in the name:
  * "2375-B Annex Suite 300" is 2375B (audit A9 pass 11 F3; pass 8 L7 took a
- * plain number anywhere first, so it was 300). A spaced letter is not read
- * ("2375 A Street" is 2375; pass 10 L1).
+ * plain number anywhere first, so it was 300), and then the first plain
+ * number after it is one too ("2375-B Annex Suite 300" is also 300; audit
+ * A9 pass 12 L1). A spaced letter is not read ("2375 A Street" is 2375;
+ * pass 10 L1).
  */
 const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})-?([A-Za-z])(?![A-Za-z0-9])`;
 /**
@@ -90,7 +95,7 @@ export function findECOSProjectReferenceMismatch(
     return projectReferenceMismatch(
       legacy.selectedProjectIdentifier,
       legacy.referencedProjectIdentifier,
-      closedNames.some(name => ecosProjectIdentifier(name) === legacy.referencedProjectIdentifier),
+      closedNames.some(name => hasIdentifierNumber(name, legacy.referencedProjectIdentifier)),
     );
   }
 
@@ -110,19 +115,22 @@ export function findECOSProjectReferenceMismatch(
     // selected one's own "2375A" names only it (pass 8 L7; glued, and since
     // pass 10 L2 spaced or hyphen-joined too: "2375-B" on "2375-B Annex"). A
     // spaced "2375 B" or "2375-B" names 2375B too, and then also reads as 2375.
+    // Audit A9 pass 12 L1: a project may have two identifiers ("480V
+    // Switchgear Upgrade 2375" is 480V and 2375); either names it, and
+    // either is the selected one's own.
     const lettered = `${number}${letter || spacedLetter}`.toUpperCase();
-    if ((letter || spacedLetter) && lettered === selected.lettered) continue;
-    if ((letter || spacedLetter) && lettered !== selected.lettered) {
-      const letteredProject = refusal(lettered, name => fullIdentifier(name) === lettered);
+    if ((letter || spacedLetter) && hasIdentifier(projectName, lettered)) continue;
+    if (letter || spacedLetter) {
+      const letteredProject = refusal(lettered, name => hasIdentifier(name, lettered));
       if (letteredProject) return letteredProject;
     }
     // A bare number names a project numbered just that ("2375 Main St"),
     // even when the selected one is 2375A, unless it is the selected one's
     // own; with none, it names the lettered ones, unless the selected one is
     // one of them.
-    if (!selected.lettered && selected.numbers.includes(number)) continue;
-    const named = refusal(number, name => fullIdentifier(name) === number) ??
-      (selected.numbers.includes(number) ? null : refusal(number, name => ecosProjectIdentifier(name) === number));
+    if (hasIdentifier(projectName, number) || (!selected.lettered && selected.numbers.includes(number))) continue;
+    const named = refusal(number, name => hasIdentifier(name, number)) ??
+      (hasIdentifierNumber(projectName, number) ? null : refusal(number, name => hasIdentifierNumber(name, number)));
     if (named) return named;
   }
   return null;
@@ -130,17 +138,18 @@ export function findECOSProjectReferenceMismatch(
 
 /**
  * The selected project's numbers (every plain 3-6 digit number in its name,
- * as `source` reads them, or the digits of a lettered one when it comes
- * first: "2375A Main" and "2375A Main Suite 300" are 2375; audit A9 pass 11
- * F3), its lettered identifier upper-cased ("2375A", or '') and how the
- * refusal shows it ("2375A"; audit A9 pass 8 L7). A name without a number
- * has none and is shown by name (audit A9 pass 9 M1: "Harbor Office" refused
- * nothing, so another project's 2375 was answered from Harbor Office).
+ * as `source` reads them, and the digits of a lettered one when it comes
+ * first: "2375A Main" is 2375, "2375A Main Suite 300" 2375 and 300; audit A9
+ * pass 11 F3 and pass 12 L1), its lettered identifier upper-cased ("2375A",
+ * or '') and how the refusal shows it ("2375A"; audit A9 pass 8 L7). A name
+ * without a number has none and is shown by name (audit A9 pass 9 M1:
+ * "Harbor Office" refused nothing, so another project's 2375 was answered
+ * from Harbor Office).
  */
 function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; lettered: string; label: string } {
   const first = firstProjectNumber(projectName, source);
-  if (first?.letter) return { numbers: [first.digits], lettered: `${first.digits}${first.letter}`.toUpperCase(), label: `${first.digits}${first.letter}` };
   const plain = uniqueMatches(projectName, source);
+  if (first?.letter) return { numbers: [first.digits, ...plain], lettered: `${first.digits}${first.letter}`.toUpperCase(), label: `${first.digits}${first.letter}` };
   if (plain.length > 0) return { numbers: plain, lettered: '', label: plain[0] };
   return { numbers: [], lettered: '', label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
 }
@@ -157,6 +166,33 @@ function firstProjectNumber(projectName: string, source = PROJECT_IDENTIFIER_SOU
 }
 
 /**
+ * A project's identifiers, the shown one first (audit A9 pass 12 L1): the
+ * first number in its name, and when that one is lettered also the first
+ * plain 3-6 digit number after it. "480V Switchgear Upgrade 2375" is 480V
+ * and 2375 (pass 11 F3 made it 480V only, so "What is left on 2375?" was
+ * answered from another project), "Bldg 100A 2375 Main" is 100A and 2375,
+ * and "2375-B Annex Suite 300" is 2375B and 300 (when unsure, refuse: "What
+ * is left at 300?" names it). "2375 Main Suite 300" is 2375 only.
+ */
+function projectIdentifiers(projectName: string): Array<{ digits: string; letter: string }> {
+  const first = firstProjectNumber(projectName);
+  if (!first?.letter) return first ? [first] : [];
+  const plain = new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName);
+  return plain ? [first, { digits: plain[0], letter: '' }] : [first];
+}
+
+/** Whether `identifier` ("2375", "2375A", any case) is one of the project's (audit A9 pass 12 L1). */
+function hasIdentifier(projectName: string, identifier: string) {
+  const wanted = identifier.toUpperCase();
+  return projectIdentifiers(projectName).some(({ digits, letter }) => `${digits}${letter}`.toUpperCase() === wanted);
+}
+
+/** Whether `number` is the digits of one of the project's identifiers ("2375" for "2375A Main"). */
+function hasIdentifierNumber(projectName: string, number: string) {
+  return projectIdentifiers(projectName).some(({ digits }) => digits === number);
+}
+
+/**
  * A refused project as shown: its identifier as the first project writes it
  * ("2375A", also when another writes it "2375a"; audit A9 pass 11 F4: a bare
  * "2375" showed "2375", which no project is); projects with different
@@ -170,11 +206,6 @@ function numberLabel(projectNames: readonly string[], fallback: string) {
   if (labels.size === 1) return [...labels][0];
   if (distinct.length === 1) return distinct[0];
   return `${distinct.slice(0, -1).join(', ')} or ${distinct[distinct.length - 1]}`;
-}
-
-/** The identifier compared between projects: "2375", or "2375A" for "2375a Main" (audit A9 pass 9 L1). */
-function fullIdentifier(projectName: string) {
-  return ecosProjectDisplayIdentifier(projectName)?.toUpperCase() ?? '';
 }
 
 /**
@@ -214,7 +245,7 @@ export function ecosProjectNumberMentionsAt(
   projectNames: readonly string[] = [],
 ): Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string; spacedLetter: string }>> {
   const exempt = exemptSpans(text);
-  const known = new Set(projectNames.map(ecosProjectIdentifier));
+  const known = new Set(projectNames.flatMap(name => projectIdentifiers(name).map(({ digits }) => digits)));
   const mentions: Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string; spacedLetter: string }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${MENTIONED_NUMBER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
@@ -229,18 +260,18 @@ export function ecosProjectNumberMentionsAt(
     // done?") is the letter when the number and it are a known project's
     // identifier (open or closed), as a capital standing alone always is.
     const capital = spacedCapital ||
-      (capitalBeforeWord && projectNames.some(name => fullIdentifier(name) === `${number}${capitalBeforeWord}`) ? capitalBeforeWord : '');
+      (capitalBeforeWord && projectNames.some(name => hasIdentifier(name, `${number}${capitalBeforeWord}`)) ? capitalBeforeWord : '');
     // Audit A9 pass 10 L1: not a spaced capital that continues the name of a
     // project numbered just this ("2375 A?" for "2375 A Street"). A hyphen
     // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2).
     const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
-      fullIdentifier(name) === number && projectNameAroundNumber(number, '', text.slice(end), [name]))
+      hasIdentifier(name, number) && projectNameAroundNumber(number, '', text.slice(end), [name]))
       ? capital
       : '');
     if (
       exempt.some(([from, to]) => from <= start && end <= to) &&
       !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames) &&
-      !(letter && projectNames.some(name => fullIdentifier(name) === `${number}${letter}`.toUpperCase()))
+      !(letter && projectNames.some(name => hasIdentifier(name, `${number}${letter}`)))
     ) continue;
     if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, unsure: false, letter, spacedLetter });
     if (match[0].includes(',') && !known.has(number)) {
@@ -376,7 +407,7 @@ function exemptSpans(text: string): Array<readonly [number, number]> {
 function projectNameAroundNumber(number: string, before: string, after: string, projectNames: readonly string[]) {
   const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1]?.toLowerCase();
   return projectNames.some(name => {
-    if (ecosProjectIdentifier(name) !== number) return false;
+    if (!hasIdentifierNumber(name, number)) return false;
     // Where the number is in the name, with a glued letter ("2375A Main"; pass 8 L7).
     const at = new RegExp(`\\b${number}\\b`).exec(name) ?? new RegExp(`\\b${number}[A-Za-z]\\b`).exec(name);
     if (!at) return false;
@@ -402,9 +433,21 @@ function projectReferenceMismatch(
  * digits only when a letter is glued or hyphen-joined to it ("2375A Main"
  * is 2375; audit A9 pass 8 L7), if any. Since audit A9 pass 11 F3 the
  * first number counts, lettered or plain ("2375B Annex Suite 300" is 2375).
+ * A project whose first number is lettered has a second identifier (audit
+ * A9 pass 12 L1); compare numbers with ecosProjectIdentifiers.
  */
 export function ecosProjectIdentifier(projectName: string): string | null {
   return firstProjectNumber(projectName)?.digits ?? null;
+}
+
+/**
+ * Every identifier of the project, the shown one first (audit A9 pass 12
+ * L1): [{ digits: "480", letter: "V" }, { digits: "2375", letter: "" }] for
+ * "480V Switchgear Upgrade 2375", one for "2375 Main Suite 300", none for
+ * "Harbor Office". Talk matches a number against all of them.
+ */
+export function ecosProjectIdentifiers(projectName: string): Array<Readonly<{ digits: string; letter: string }>> {
+  return projectIdentifiers(projectName);
 }
 
 /**

@@ -16,7 +16,7 @@ import {
 import type { DAVEVoiceUnderstandingResponse } from './DAVEVoiceUnderstanding';
 import {
   ecosProjectDisplayIdentifier,
-  ecosProjectIdentifier,
+  ecosProjectIdentifiers,
   ecosProjectNumberExemptSpans,
   ecosProjectNumberMentionsAt,
 } from '../supabase/functions/_shared/ecos-project-reference';
@@ -217,15 +217,19 @@ function talkNamedProjects(
   };
   // A name inside a comma group ("200" in "1,200") is as unsure as the number.
   for (const occurrence of exact) add(occurrence.name, occurrence.start, true, occurrence.inCommaGroup);
-  const withKey = (key: string) => all.filter(name => talkProjectKey(name) === key.toUpperCase());
+  // Audit A9 pass 12 L1: a project is matched by any of its identifiers
+  // ("480V Switchgear Upgrade 2375" by 480V and by 2375), keyed by the first.
+  const withKey = (key: string) => all.filter(name =>
+    ecosProjectIdentifiers(name).some(({ digits, letter }) => `${digits}${letter}`.toUpperCase() === key.toUpperCase()));
+  const withDigits = (number: string, name: string) => ecosProjectIdentifiers(name).some(({ digits }) => digits === number);
   for (const { number, start, unsure, letter, spacedLetter } of numbers) {
     // "2375B" names the project written "2375B" when there is one (audit A9 pass 8 L7).
     const lettered = letter ? withKey(number + letter) : [];
     const plain = withKey(number);
     const withNumber = lettered.length > 0 ? lettered
       : plain.length > 0 ? plain
-      : ecosProjectIdentifier(selectedName) === number ? [selectedName]
-      : all.filter(name => ecosProjectIdentifier(name) === number);
+      : withDigits(number, selectedName) ? [selectedName]
+      : all.filter(name => withDigits(number, name));
     // Audit A9 pass 10 L2: a spaced or hyphen-joined letter that is a
     // project's identifier names only it, like a glued one ("2375-B" on
     // "2375-B Annex" is its own, not also 2375 Main St), as in Ask ECOS.

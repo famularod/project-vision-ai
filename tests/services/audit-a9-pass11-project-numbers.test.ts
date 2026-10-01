@@ -158,8 +158,12 @@ describe('audit A9 pass 11 F3: a project\'s number is the first number in its na
     expect(desktop('What is left at 2375?', projects, [], ANNEX)).toBe(switchOnDesktop('2375', '2375B'));
   });
 
-  it('its suite number is not its project number: "What is left at 300?" on 2321 is answered', () => {
-    expect(desktop('What is left at 300?', [SELECTED, '2375-B Annex Suite 300'])).toBeNull();
+  // Audit A9 pass 12 L1: a name whose first number is lettered keeps its
+  // first plain number as a second identifier (when unsure, refuse), so the
+  // Annex is 2375B and 300 and "What is left at 300?" on 2321 names it again,
+  // shown as 2375B (was answered). See audit-a9-pass12-project-numbers.test.ts.
+  it('its suite number is a second identifier: "What is left at 300?" on 2321 names the Annex (pass 12 L1; was answered)', () => {
+    expect(desktop('What is left at 300?', [SELECTED, '2375-B Annex Suite 300'])).toBe(switchOnDesktop('2375B'));
   });
 });
 

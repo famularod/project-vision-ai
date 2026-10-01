@@ -946,7 +946,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['What is left at 2375B?', '2375 Main St', [SELECTED, '2375 Main St', '2375B Annex Suite 300'], '2375B', '2375'],
     ['What is left at 2375?', '2375B Annex Suite 300', [SELECTED, '2375 Main St', '2375B Annex Suite 300'], '2375', '2375B'],
     ['What is left at 2375-B?', '2375-B Annex Suite 300', [SELECTED, '2375 Main St', '2375-B Annex Suite 300'], null, undefined],
-    ['What is left at 300?', SELECTED, [SELECTED, '2375-B Annex Suite 300'], null, undefined],
+    // Audit A9 pass 12 L1: its first plain number (300) is a second
+    // identifier (when unsure, refuse); was null (answered).
+    ['What is left at 300?', SELECTED, [SELECTED, '2375-B Annex Suite 300'], '2375B', undefined],
   ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
     name: `pass 11 F3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
@@ -1013,6 +1015,52 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     question: 'How thick is the slab at 2321?',
     refused: '2321',
     refusedSelected: '2375A',
+  },
+  // Audit A9 pass 12 L1: a name whose first number is lettered ("480V",
+  // "120K", "1950s", "200A", "Bldg 100A") also keeps its first plain number
+  // (the job number). Either names it on another project and either is its
+  // own; it is shown by the first.
+  ...([
+    ['What is left on 2375?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '480V', undefined],
+    ['What is left on 2376?', SELECTED, [SELECTED, '120K SF Warehouse 2376'], '120K', undefined],
+    ['What is left on 2377?', SELECTED, [SELECTED, '1950s Bungalow Remodel 2377'], '1950s', undefined],
+    ['What is left on 2378?', SELECTED, [SELECTED, '200A Service Upgrade 2378'], '200A', undefined],
+    ['What is left on 2375?', SELECTED, [SELECTED, 'Bldg 100A 2375 Main'], '100A', undefined],
+    ['Is the 480V gear in?', SELECTED, [SELECTED, '480V Switchgear Upgrade 2375'], '480V', undefined],
+    ['What is left on 2375?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], null, undefined],
+    ['Is the 480V gear in?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], null, undefined],
+    ['What is left on 2321?', '480V Switchgear Upgrade 2375', [SELECTED, '480V Switchgear Upgrade 2375'], '2321', '480V'],
+    ['Is 2377 Days Inn done?', SELECTED, [SELECTED, '1950s Remodel 2377 Days Inn'], '1950s', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 12 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 12 L1: a closed "480V Switchgear Upgrade 2375" is refused as closed by its job number',
+    projectName: SELECTED,
+    question: 'What is left on 2375?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['480V Switchgear Upgrade 2375'],
+    refused: '480V',
+    refusedClosed: true,
+  },
+  {
+    name: 'pass 12 L1: without a project list, "480V Switchgear Upgrade 2375" keeps 2375 as its own',
+    projectName: '480V Switchgear Upgrade 2375',
+    question: 'What is left on 2375?',
+    refused: null,
+  },
+  {
+    name: 'pass 12 L1: without a project list, a closed "480V Switchgear Upgrade 2375" is marked closed by its job number',
+    projectName: SELECTED,
+    question: 'What is left on 2375?',
+    closedProjectNames: ['480V Switchgear Upgrade 2375'],
+    refused: '2375',
+    refusedClosed: true,
   },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
