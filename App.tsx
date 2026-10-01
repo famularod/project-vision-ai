@@ -230,7 +230,7 @@ import { useCommittedText } from './hooks/use-committed-text';
 import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
-import { scheduleProgressRestored, scheduleProgressUndoPoint } from './services/ScheduleProgressSource';
+import { scheduleProgressUndoPoint, scheduleTalkUndo } from './services/ScheduleProgressSource';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -13402,13 +13402,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const previous = scheduleProgressUndoPoint(scheduleItemsCurrentRef.current.find(item => item.id === task.id) ?? task as unknown as ScheduleItem); // with who stated it, given back by Undo (A10 pass 5 L3)
     const changes = talkTaskAction.command.changes as Partial<ScheduleItem>;
     updateScheduleItem(task.id, changes);
+    const written = scheduleProgressUndoPoint(scheduleItemsCurrentRef.current.find(item => item.id === task.id) ?? task as unknown as ScheduleItem); // Undo only over this (A10 pass 6 L4)
     const successMessage = `${task.taskName}: ${talkTaskAction.command.changeSummary}.`;
     setTalkTaskAction(null);
     Alert.alert('Task updated', successMessage, [
       {
         text: 'Undo',
         style: 'cancel',
-        onPress: () => updateScheduleItem(task.id, scheduleProgressRestored(previous, new Date().toISOString()), undefined, true),
+        onPress: () => {
+          const undo = scheduleTalkUndo(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], task, previous, written, new Date().toISOString());
+          return undo.ok ? updateScheduleItem(undo.taskId, undo.edit, undefined, true) : Alert.alert('Not undone', undo.message);
+        },
       },
       { text: 'Done' },
     ]);

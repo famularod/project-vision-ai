@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 
 /**
  * Who confirmed progress taken from an approved schedule file over the
@@ -127,4 +128,42 @@ export function scheduleProgressRestored(point: ScheduleProgressUndoPoint, at: s
     completionVerification: point.completionVerification ?? null,
     lookaheadOverlay: point.lookaheadOverlay ?? undefined,
   };
+}
+
+const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
+
+/**
+ * The task a task id is now: the newest row a new master moved it to (by the
+ * ids a task had before, ScheduleTaskRevisions), else the task itself.
+ */
+function scheduleTaskNow(items: readonly ScheduleItem[], taskId: string): ScheduleItem | null {
+  const moved = items.filter(item => scheduleTaskEarlierIds(item).includes(taskId));
+  const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds));
+  const newest = moved.filter(item => !superseded.has(item.id));
+  return newest.length === 1 ? newest[0] : items.find(item => item.id === taskId) ?? null;
+}
+
+/**
+ * Whole-app audit A10 pass 6 L4 (30 Sep 2026): Talk's Undo put back the old
+ * progress blindly. A master that restated Roofing at 70% in place while the
+ * alert was open lost its 70% to the Undo's 30%; a master that moved Roofing
+ * left Talk's 50% on the row shown, and the Undo landed on the hidden old row.
+ * Undo now finds the task as it is now (the row a new master moved it to) and
+ * gives back the old progress (scheduleProgressRestored) only while that task
+ * still holds what Talk wrote; otherwise nothing changes, and David is told
+ * why. The lookahead note is given back only to the row Talk changed: a moved
+ * row keeps the note the master gave it.
+ */
+export function scheduleTalkUndo(
+  items: readonly ScheduleItem[],
+  task: Pick<ScheduleItem, 'id' | 'taskName'>,
+  before: ScheduleProgressUndoPoint,
+  written: ScheduleProgressUndoPoint,
+  at: string,
+): Readonly<{ ok: true; taskId: string; edit: Partial<ScheduleItem> } | { ok: false; message: string }> {
+  const now = scheduleTaskNow(items, task.id);
+  const holds = now && WRITTEN_FIELDS.every(field => (now[field] ?? null) === (written[field] ?? null));
+  if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
+  const { lookaheadOverlay, ...edit } = scheduleProgressRestored(before, at);
+  return { ok: true, taskId: now.id, edit: now.id === task.id ? { ...edit, lookaheadOverlay } : edit };
 }
