@@ -1254,6 +1254,32 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '450',
     refusedSelected: '24117',
   },
+  // Audit A9 pass 14 L3: a project sharing the selected one's shown number
+  // counts as it only for that number; its other numbers are its own.
+  ...([
+    ['Is 2375 Main St done?', '452 Pine Ave', [SELECTED, '452 Pine Ave', 'Kroger #452 - 2375 Main St', '2375 Elm St'], '2375 (Kroger #452 - 2375 Main St)', '452'],
+    ['Is 2375 Main St done?', '452 Pine Ave', [SELECTED, '452 Pine Ave', 'Store 452 at 2375 Main St', '2375 Elm St'], '2375 (Store 452 at 2375 Main St)', '452'],
+    ['What is left at 2375?', '452 Pine Ave', [SELECTED, '452 Pine Ave', 'Store 452 at 2375 Main St', '2375 Elm St'], '2375', '452'],
+    ['What is left at 452?', '452 Pine Ave', [SELECTED, '452 Pine Ave', 'Kroger #452 - 2375 Main St', '2375 Elm St'], null, undefined],
+    ['Is Kroger #452 done?', '452 Pine Ave', [SELECTED, '452 Pine Ave', 'Kroger #452 - 2375 Main St', '2375 Elm St'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 14 L3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 14 L3: a closed "Kroger #452 - 2375 Main St" is refused as closed on "452 Pine Ave"',
+    projectName: '452 Pine Ave',
+    question: 'Is 2375 Main St done?',
+    knownProjectNames: [SELECTED, '452 Pine Ave', '2375 Elm St'],
+    closedProjectNames: ['Kroger #452 - 2375 Main St'],
+    refused: '2375 (Kroger #452 - 2375 Main St)',
+    refusedClosed: true,
+    refusedSelected: '452',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

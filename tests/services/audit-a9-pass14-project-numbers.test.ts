@@ -113,3 +113,32 @@ describe('audit A9 pass 14 L2: a tie with the selected project asks which one, a
     expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_ST, '450 Elm St'], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
   });
 });
+
+describe('audit A9 pass 14 L3: a project sharing the selected one\'s shown number is its own only for that number', () => {
+  const PINE = '452 Pine Ave';
+  const KROGER = 'Kroger #452 - 2375 Main St';
+  const STORE = 'Store 452 at 2375 Main St';
+  const ELM = '2375 Elm St';
+  const KROGER_LABEL = '2375 (Kroger #452 - 2375 Main St)';
+
+  it('on 452 Pine Ave, "Is 2375 Main St done?" names the Kroger job, open or closed, in Ask ECOS and Talk (was answered)', () => {
+    expect(desktop('Is 2375 Main St done?', [SELECTED, PINE, KROGER, ELM], [], PINE)).toBe(switchOnDesktop(KROGER_LABEL, '452'));
+    expect(phone('Is 2375 Main St done?', [SELECTED, PINE, ELM], [KROGER], PINE)).toBe(closedOnPhone(KROGER_LABEL, '452'));
+    expect(talkAnswer('Is 2375 Main St done?', [SELECTED, PINE, KROGER, ELM], [], PINE)).toBe(switchOnPhone(KROGER_LABEL, '452'));
+    expect(mentionedDAVEProject('Is 2375 Main St done?', [PINE, KROGER, ELM])).toBe(KROGER);
+  });
+
+  it('with "Store 452 at 2375 Main St", "Is 2375 Main St done?" names the store and "What is left at 2375?" names 2375 Elm St', () => {
+    const projects = [SELECTED, PINE, STORE, ELM];
+    expect(desktop('Is 2375 Main St done?', projects, [], PINE)).toBe(switchOnDesktop('2375 (Store 452 at 2375 Main St)', '452'));
+    expect(desktop('What is left at 2375?', projects, [], PINE)).toBe(switchOnDesktop('2375', '452'));
+  });
+
+  it('the shared shown number itself is still the selected one\'s own (Q20)', () => {
+    const projects = [SELECTED, PINE, KROGER, ELM];
+    expect(desktop('What is left at 452?', projects, [], PINE)).toBeNull();
+    expect(desktop('Is Kroger #452 done?', projects, [], PINE)).toBeNull();
+    expect(desktop('Is 452 Pine Ave done?', projects, [], PINE)).toBeNull();
+    expect(talkAnswer('Is Kroger #452 done?', projects, [], PINE)).toBeNull();
+  });
+});

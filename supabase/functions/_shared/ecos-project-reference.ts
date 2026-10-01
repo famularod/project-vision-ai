@@ -130,9 +130,13 @@ export function findECOSProjectReferenceMismatch(
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
   const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
   // Projects shown by the selected one's number ("2375 Main St Phase 2" on
-  // "2375 Main St") count as it, as a shared number always has (Q20).
+  // "2375 Main St") count as it, as a shared number always has (Q20). Audit
+  // A9 pass 14 L3: only for that number; another number in such a name is
+  // that project's ("2375" in "Kroger #452 - 2375 Main St" on "452 Pine Ave").
   const shown = (name: string) => (ecosProjectDisplayIdentifier(name) ?? name.trim()).toUpperCase();
-  const isSelected = (name: string) => shown(name) === shown(projectName);
+  const isSelectedFor = (number: string) => (name: string) =>
+    name.trim().toUpperCase() === projectName.trim().toUpperCase() ||
+    (shown(name) === shown(projectName) && shown(projectName) === number);
   for (const mention of mentions) {
     const { number, letter, spacedLetter } = mention;
     // Audit A9 pass 13 L1: a plain number belongs to the project whose name
@@ -148,6 +152,7 @@ export function findECOSProjectReferenceMismatch(
     // Elm St"), and a name said in full beats one said in part.
     if (!letter && !spacedLetter) {
       const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames]);
+      const isSelected = isSelectedFor(number);
       const others = around.filter(name => !isSelected(name));
       const other = others.length > 0 ? refusal(number, name => others.includes(name), around.some(isSelected)) : null;
       if (other) return other;
