@@ -518,3 +518,34 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 M1: leaving while a recording is bein
     expect(props.onMemoryReady).not.toHaveBeenCalled();
   });
 });
+
+// Whole-app audit A11 pass 4 L1 (30 Sep 2026): "offline, sign-in pending"
+// voice said "Sign in before transcribing a recorded memory."
+describe('DAVEVoiceCaptureSheet A11 pass 4 L1: no signal while the sign-in waits', () => {
+  it('says no signal, names its own button, keeps the recording, and tells the service whether the sign-in waits', async () => {
+    const { NativeWorkspaceSignInPendingContext } = require('../../components/native-workspace-owner');
+    const { daveVoiceWaitingForSignalError } = require('../../services/DAVEVoiceSignalWait');
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
+    const onMemoryReady = jest.fn();
+    render(
+      <NativeWorkspaceSignInPendingContext.Provider value>
+        <DAVEVoiceCaptureSheet
+          visible projectId={PROJECT_ID} projectName="Canopy Project" candidateLocations={[]}
+          title="Record Field Note" continueLabel="Use Note"
+          onMemoryReady={onMemoryReady} onTypeInstead={jest.fn()} onCancel={jest.fn()}
+        />
+      </NativeWorkspaceSignInPendingContext.Provider>,
+    );
+    await startListening(8_000);
+    fireEvent.press(screen.getByText('Stop Recording'));
+    await screen.findByText('Replay Recording');
+    fireEvent.press(screen.getByText('Use Note'));
+
+    expect(await screen.findByText('No signal. Your recording is kept — tap Use Note when you have signal.')).toBeTruthy();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+    expect(onMemoryReady).not.toHaveBeenCalled();
+    const { signInPending } = transcription.transcribeDAVECaptureMemoryAudio.mock.calls[0][0];
+    expect(signInPending()).toBe(true);
+  });
+});

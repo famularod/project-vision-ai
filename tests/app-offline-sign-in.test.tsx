@@ -25,6 +25,17 @@ let mockDuringSecureDelete: ((key: string) => Promise<void>) | null = null;
 let mockSettingsProps: Record<string, unknown> | null = null;
 /** Keychain reads fail (the phone is locked), as in audit A2 pass 2 L1. */
 let mockFailingSecureReads = false;
+/** A voice recording on this phone (A11 pass 4 L1); null leaves the real module. */
+let mockVoiceRecordingInfo: { exists: boolean; size: number } | null = null;
+jest.mock('expo-file-system/legacy', () => {
+  const actual = jest.requireActual('expo-file-system/legacy');
+  return {
+    ...actual,
+    getInfoAsync: (...args: unknown[]) => (mockVoiceRecordingInfo
+      ? Promise.resolve(mockVoiceRecordingInfo)
+      : actual.getInfoAsync(...args)),
+  };
+});
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => true),
@@ -214,6 +225,7 @@ beforeEach(() => {
   mockDuringSecureDelete = null;
   mockSettingsProps = null;
   mockFailingSecureReads = false;
+  mockVoiceRecordingInfo = null;
   network.mode = 'offline';
   network.calls = [];
 });
@@ -774,6 +786,66 @@ describe('field updates saved while offline, sign-in pending (A4 pass 7 M1)', ()
     await expect(category({ missingReason: 'unknown' }, false, broken)).resolves.toBe('auth');
     await expect(category({ missingReason: 'expired_session' }, false, saved)).resolves.toBe('auth');
     await expect(category({ missingReason: 'storage_unavailable' }, false, saved)).resolves.toBe('auth');
+  });
+});
+
+// Whole-app audit A11 pass 4 L1 (30 Sep 2026): voice said "Sign in before
+// transcribing a recorded memory." while the workspace was open "offline,
+// sign-in pending"; the recording is kept and works once signal returns.
+describe('voice while offline, sign-in pending (A11 pass 4 L1)', () => {
+  async function withRetriesWoken<T>(work: Promise<T>): Promise<T> {
+    let done = false;
+    const settled = work.finally(() => { done = true; });
+    while (!done) {
+      wakeSleepingRetries();
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    return settled;
+  }
+
+  test('with the real lookup: no signal, the recording kept, nothing sent; a refused sign-in still asks to sign in', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl, service } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    mockVoiceRecordingInfo = { exists: true, size: 4_096 };
+    const { transcribeDAVECaptureMemoryAudio } = require('../services/DAVEVoiceTranscriptionService');
+    const { daveVoiceFailureMessage } = require('../services/DAVEVoiceSignalWait');
+    const shown = async (): Promise<string> => {
+      try {
+        await transcribeDAVECaptureMemoryAudio({
+          uri: 'file:///cache/Audio/recording-l1.m4a', projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+          projectName: 'Canopy B', candidateLocations: [], signInPending: () => mockSignInPendingRef?.current ?? false,
+        });
+      } catch (error) {
+        return daveVoiceFailureMessage(error, 'Use Note');
+      }
+      throw new Error('Expected the recording not to be sent');
+    };
+    const NO_SIGNAL = 'No signal. Your recording is kept — tap Use Note when you have signal.';
+
+    // The lookup still loading, then settled to "unknown" once auth-js gives up.
+    expect((await service.getCurrentSessionAccessToken()).data?.missingReason).toBe('auth_loading');
+    expect(await shown()).toBe(NO_SIGNAL);
+    const settled: { data?: { missingReason?: string } } = await withRetriesWoken(service.getCurrentSessionAccessToken());
+    expect(settled.data?.missingReason).toBe('unknown');
+    expect(await withRetriesWoken(shown())).toBe(NO_SIGNAL);
+
+    // Signal returns and the server refuses the sign-in: that alone asks to sign in.
+    network.mode = 'reject';
+    const realNow = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 61_000);
+    let refused = '';
+    try {
+      await rtl.act(async () => { refused = await shown(); });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(refused).toBe('Sign in before transcribing a recorded memory.');
+    await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+    // Nothing but sign-in refreshes left the phone: no recording was sent.
+    expect(network.calls.filter(call => !call.startsWith('POST /auth/v1/token'))).toEqual([]);
+    screen.unmount();
   });
 });
 

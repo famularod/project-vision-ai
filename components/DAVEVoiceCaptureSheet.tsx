@@ -21,6 +21,7 @@ import {
   View,
 } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
+import { daveVoiceFailureMessage } from '../services/DAVEVoiceSignalWait';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import {
@@ -38,6 +39,7 @@ import {
   type DAVEVoiceTaskOption,
 } from './dave-voice-task-options';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
 
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
@@ -118,6 +120,7 @@ export function DAVEVoiceCaptureSheet({
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
   const recordingFinishingRef = useRef(false);
+  const signInPendingRef = useNativeWorkspaceSignInPendingRef(); // A11 pass 4 L1
   // Whole-app audit A11 pass 4 M1: X while "Preparing…" asks first. "Keep
   // Recording for Later" stops waiting for the upload under way; its answer is
   // held for this recording only, and used by the next tap on continueLabel.
@@ -309,6 +312,7 @@ export function DAVEVoiceCaptureSheet({
         candidateLocations,
         purpose: transcriptionPurpose,
         isRequestCurrent: () => operation === transcriptionOperationRef.current,
+        signInPending: () => signInPendingRef.current,
       });
       if (operation !== transcriptionOperationRef.current) {
         const stopped = stoppedWaitingRef.current;
@@ -322,7 +326,7 @@ export function DAVEVoiceCaptureSheet({
       onMemoryReady(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
-      setError(reason instanceof Error ? reason.message : 'The recording could not be transcribed.');
+      setError(daveVoiceFailureMessage(reason, continueLabel));
     } finally {
       if (operation === transcriptionOperationRef.current) {
         preparingOperationRef.current = null;
