@@ -207,11 +207,29 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED],
     refused: null,
   },
+  // Audit A9 pass 9 M1: this vector used to pin "never refuses when the
+  // selected project name has no number", which answered another project's
+  // 2375 from Harbor Office. A name without a number has no numbers of its
+  // own, so another project's number is refused as usual, shown by name.
   {
-    name: 'never refuses when the selected project name has no number',
+    name: 'pass 9 M1: refuses another project\'s number when the selected project name has no number',
     projectName: 'Harbor Office',
     question: 'How thick is the new concrete on the north side of 2375?',
     knownProjectNames: ['Harbor Office', ...OWNER_PROJECTS],
+    refused: '2375',
+    refusedSelected: 'Harbor Office',
+  },
+  {
+    name: 'pass 9 M1: without a project list, an unnumbered selection gets the stricter check',
+    projectName: 'Harbor Office',
+    question: 'How thick is the new concrete on the north side of 2375?',
+    refused: '2375',
+    refusedSelected: 'Harbor Office',
+  },
+  {
+    name: 'pass 9 M1: without a project list, an unnumbered selection still reads no year and no 3-digit number',
+    projectName: 'Harbor Office',
+    question: 'Which of the 450 deliveries are due in 2026?',
     refused: null,
   },
   // Audit A9 pass 3 L2: one number rule with Talk. A phone number, an amount,

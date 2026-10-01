@@ -89,7 +89,6 @@ export function findECOSProjectReferenceMismatch(
   }
 
   const selectedProject = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE);
-  if (!selectedProject) return null;
   const selected = new Set(selectedProject.numbers);
   const openIdentifiers = otherProjectIdentifiers(knownNames, selected);
   const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
@@ -118,13 +117,17 @@ export function findECOSProjectReferenceMismatch(
 /**
  * The selected project's numbers (every plain 3-6 digit number in its name,
  * as `source` reads them, or else the digits of a lettered one: "2375A Main"
- * is 2375) and how the refusal shows it ("2375A"; audit A9 pass 8 L7).
+ * is 2375) and how the refusal shows it ("2375A"; audit A9 pass 8 L7). A name
+ * without a number has none and is shown by name (audit A9 pass 9 M1:
+ * "Harbor Office" refused nothing, so another project's 2375 was answered
+ * from Harbor Office).
  */
-function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; label: string } | null {
+function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; label: string } {
   const plain = uniqueMatches(projectName, source);
   if (plain.length > 0) return { numbers: plain, label: plain[0] };
   const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
-  return lettered ? { numbers: [lettered[1]], label: lettered[0] } : null;
+  if (lettered) return { numbers: [lettered[1]], label: lettered[0] };
+  return { numbers: [], label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
 }
 
 /** A refused number as shown: "2375A" when that is the one project with it, else the digits. */
@@ -423,14 +426,18 @@ export function ecosKnownProjectNamesFromRows(
   return includesSelectedProject ? Object.freeze(names) : null;
 }
 
-/** The pre-Q20 check, kept exactly for callers without a project list. */
+/**
+ * The pre-Q20 check for callers without a project list: any 4-6 digit number
+ * that is not a year (1900-2099) and not the selected project's own. Audit A9
+ * pass 9 M1: a selected project without a number ("Harbor Office") gets the
+ * same check instead of none; 3-digit numbers stay out for every selection.
+ */
 function legacyProjectReferenceMismatch(
   projectName: string,
   question: string,
 ): Readonly<{ selectedProjectIdentifier: string; referencedProjectIdentifier: string }> | null {
   // A lettered selected project ("2375A Main") counts as 2375 (audit A9 pass 8 L7).
   const selectedProject = selectedProjectNumbers(projectName, LEGACY_IDENTIFIER_SOURCE);
-  if (!selectedProject) return null;
   const selected = new Set(selectedProject.numbers);
   const referencedProjectIdentifier = uniqueMatches(question, LEGACY_IDENTIFIER_SOURCE).find(identifier => {
     if (selected.has(identifier)) return false;
