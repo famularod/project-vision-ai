@@ -1,6 +1,7 @@
 import type { ProjectUpdate, ReferenceDocument, UpdatePhoto } from '../types';
 import { daveProjectUpdateMatchesCloudReceipt } from './DAVEProjectUpdateCloudReceipt';
 import { isCloudRecoveryCopy, withFresherPhotoPreview } from './ProjectPhotoTransport';
+import { referenceDocumentCategory, referenceDocumentName } from './ReferenceDocumentSharedFields';
 
 export type DAVECloudRecoveryRecord = {
   id: string;
@@ -215,8 +216,10 @@ const DRAWING_STATUSES = new Set(['Draft', 'For Review', 'For Construction', 'As
 /**
  * The details every device shares and a person edits, as the phone's
  * normalizer reads them, so the cloud row and the phone's normalized copy of
- * it give the same answer. Current flags, the revision stamp, device paths
- * and cloud-owned index fields are not part of it.
+ * it give the same answer: a blank or unknown category reads "Other", a
+ * blank name the file name, on both sides (whole-app audit A7 pass 7 L1).
+ * Current flags, the revision stamp, device paths and cloud-owned index
+ * fields are not part of it.
  */
 export function referenceDocumentSharedDetailsFingerprint(document: ReferenceDocument): string {
   const record = document as unknown as Record<string, unknown>;
@@ -226,7 +229,8 @@ export function referenceDocumentSharedDetailsFingerprint(document: ReferenceDoc
     return /^[a-f0-9]{64}$/.test(value) ? value : null;
   };
   const details = {
-    name: text('name'), category: text('category'), notes: text('notes'),
+    name: referenceDocumentName(record.name, record.originalFileName),
+    category: referenceDocumentCategory(record.category), notes: text('notes'),
     projectId: text('projectId'), projectName: text('projectName'),
     projectNames: Array.isArray(record.projectNames)
       ? (record.projectNames as unknown[]).filter(name => typeof name === 'string' && name.trim()) : [],

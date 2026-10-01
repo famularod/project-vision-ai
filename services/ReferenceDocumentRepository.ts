@@ -18,14 +18,8 @@ import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
   resolveLegacyOwnedLocalFilePath,
 } from './OwnedLocalFileRepository';
+import { referenceDocumentCategory, referenceDocumentName } from './ReferenceDocumentSharedFields';
 
-const REFERENCE_DOCUMENT_CATEGORIES = new Set([
-  'Plans', 'Specifications', 'Permits', 'Inspection', 'Safety', 'Quality',
-  'Contract', 'Change Order', 'RFI', 'Submittal', 'Environmental',
-  'Electrical', 'Mechanical', 'Schedules', 'Schedule', 'Drawing', 'Scope',
-  'Compliance', 'Permit Card', 'RFI / Field Decision', 'Vendor Document',
-  'Report', 'Other',
-]);
 const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
 const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
@@ -44,17 +38,16 @@ export function resolveReferenceDocumentUri(uri: string) {
 export function normalizeReferenceDocument(
   value: Partial<ReferenceDocument>,
 ): ReferenceDocument {
-  const category = stringOrNull(value.category) || 'Other';
   const importedAt = typeof value.importedAt === 'string'
     ? value.importedAt
     : new Date().toISOString();
   return {
     id: stringOrNull(value.id) || createProjectId(),
-    name: stringOrNull(value.name) || stringOrNull(value.originalFileName) || 'Reference Document',
+    name: referenceDocumentName(value.name, value.originalFileName), // one rule with the shared-details record (A7 pass 7 L1)
     originalFileName: stringOrNull(value.originalFileName) || 'reference-document',
     uri: typeof value.uri === 'string' ? resolveReferenceDocumentUri(value.uri) : '',
     mimeType: stringOrNull(value.mimeType),
-    category: REFERENCE_DOCUMENT_CATEGORIES.has(category) ? category : 'Other',
+    category: referenceDocumentCategory(value.category),
     notes: typeof value.notes === 'string' ? value.notes : '',
     isCurrent: Boolean(value.isCurrent),
     importedAt,

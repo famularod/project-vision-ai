@@ -75,9 +75,9 @@ describe('a web note typed after Make Current is not overwritten by an older pho
     isCurrent: false, importedAt: '2026-09-01T00:00:00.000Z', updatedAt: SEEN_AT, drawingNumber: 'A-201', drawingRevision: 'B',
     ...extra,
   });
-  /** The phone's copy, as a refresh at 11:00 left it: merged with the cloud copy it saw. */
-  const phoneCopyAtLastLook = () => {
-    mockDocuments.set('drawing-a201', { ...drawing('Issued for permit'), cloudUpdatedAt: SEEN_AT });
+  /** The phone's copy, as a refresh at 11:00 left it: merged with the cloud copy it saw (the row as listed, `row`). */
+  const phoneCopyAtLastLook = (row: Record<string, unknown> = {}) => {
+    mockDocuments.set('drawing-a201', { ...drawing('Issued for permit'), cloudUpdatedAt: SEEN_AT, ...row });
     const cloud = normalizeReferenceDocuments([...mockDocuments.values()]);
     const [merged] = mergeDAVEReferenceDocumentRecoveryRecords({ local: [drawing('Issued for permit', { uri: 'file:///phone/A-201.pdf' })], cloud });
     return merged;
@@ -140,6 +140,43 @@ describe('a web note typed after Make Current is not overwritten by an older pho
       .toBe(referenceDocumentSharedDetailsFingerprint(normalized));
     expect(referenceDocumentSharedDetailsFingerprint({ ...normalized, notes: 'Web: revised per RFI 12' }))
       .not.toBe(referenceDocumentSharedDetailsFingerprint(normalized));
+  });
+
+  // Whole-app audit A7 pass 7 L1: the record was taken from the phone's
+  // normalized copy and compared with the row as listed; the normalizer reads
+  // a blank or unknown category as "Other" and a blank name as the file name.
+  const rowsTheNormalizerRewrites = [
+    ['a blank category', { category: '' }],
+    ['an unknown category', { category: 'Field Memo' }],
+    ['no category', { category: undefined }],
+    ['a blank name', { name: '  ' }],
+    ['no name', { name: undefined }], // (a row with neither name nor file name is not kept at all)
+  ] as const;
+
+  it.each(rowsTheNormalizerRewrites)('the record of a row with %s matches the row as listed (A7 pass 7 L1)', (_label, extra) => {
+    const row = { ...drawing('Issued for permit'), cloudUpdatedAt: SEEN_AT, ...extra };
+    const [normalized] = normalizeReferenceDocuments([row]);
+    expect(referenceDocumentSharedDetailsFingerprint(normalized)).toBe(referenceDocumentSharedDetailsFingerprint(row as ReferenceDocument));
+    expect(referenceDocumentSharedDetailsFingerprint({ ...normalized, notes: 'Web: revised per RFI 12' }))
+      .not.toBe(referenceDocumentSharedDetailsFingerprint(row as ReferenceDocument));
+  });
+
+  it.each(rowsTheNormalizerRewrites)('a row with %s: the phone note typed before Make Current still reaches the cloud (A7 pass 7 L1)', async (_label, extra) => {
+    const phoneCopy = phoneCopyAtLastLook(extra);
+    await queueReferenceDocumentRecord({ ...phoneCopy, notes: 'Phone: stamped by the city', updatedAt: TYPED_AT }, false);
+    activateOnTheWeb();
+    await uploadPendingChanges();
+    expect(mockDocuments.get('drawing-a201')).toMatchObject({ notes: 'Phone: stamped by the city', isCurrent: true });
+  });
+
+  it('a row with a blank category and a web note after Make Current: the web note still stands (A7 pass 7 L1)', async () => {
+    const phoneCopy = phoneCopyAtLastLook({ category: '' });
+    await queueReferenceDocumentRecord({ ...phoneCopy, notes: 'Phone: stamped by the city', updatedAt: TYPED_AT }, false);
+    activateOnTheWeb();
+    const row = mockDocuments.get('drawing-a201')!;
+    mockDocuments.set('drawing-a201', { ...row, notes: 'Web: revised per RFI 12', updatedAt: WEB_EDITED_AT, cloudUpdatedAt: WEB_EDITED_AT });
+    await uploadPendingChanges();
+    expect(mockDocuments.get('drawing-a201')).toMatchObject({ notes: 'Web: revised per RFI 12', isCurrent: true });
   });
 
   it('the last-seen record survives a relaunch', () => {
