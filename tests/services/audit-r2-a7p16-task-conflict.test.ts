@@ -434,3 +434,93 @@ describe('L-4: Keep Phone on a task keeps a newer phone edit still waiting (audi
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A7 pass 17 (1 Oct 2026), the task cases:
+ *
+ * L-2 After a Keep Cloud that could not finish (pass 16 L-2: its withdrawn
+ *     edits wait on the conflict), every phone edit was undone by value at
+ *     the next Keep Cloud, including a progress edit made since that never
+ *     left the phone: its status, progressSource and progressConfirmedBy
+ *     matched the web's 60%, so the cloud got 60% "Not Started" with no
+ *     manager rank (pass 16 L-1 again). While the conflict is still open,
+ *     only the fields of the edits waiting on it are undone; every edit only
+ *     when the conflict closed during this choice.
+ */
+describe('A7 pass 17 L-2: after a Keep Cloud that could not finish, a progress edit that never left the phone is not undone', () => {
+  /** Pass 16 L-2: a phone note lands during Keep Cloud, and the second read fails; the note waits on the conflict. */
+  async function keepCloudThatCouldNotFinish() {
+    const { conflict, shown } = await conflictWithWebCopy();
+    const { land, inFlight } = await newerPhoneEditOnItsWayUp();
+    mockGetScheduleItem
+      .mockImplementationOnce(async (id: string) => {
+        const answer = await mockCloud.get(id);
+        land();
+        await inFlight;
+        return answer;
+      })
+      .mockImplementationOnce(async () => mockUnreadable());
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER });
+    return { conflict, shown };
+  }
+
+  it('David sets 30% offline on the phone, then 60% on the web; Keep Cloud again keeps the 60% with its status and rank, and undoes only the note that landed', async () => {
+    const { conflict, shown } = await keepCloudThatCouldNotFinish();
+    // On weak signal David sets 30% on the phone; it waits.
+    await queueScheduleItemRecord({
+      ...phoneTask,
+      percentComplete: 30,
+      status: 'In Progress',
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-09-30T11:00:00.000Z',
+      progressConfirmedBy: 'David',
+      updatedAt: '2026-09-30T11:00:00.000Z',
+    }, false, ['percentComplete', 'status', 'progressSource', 'progressConfirmedAt', 'progressConfirmedBy', 'updatedAt']);
+    // Then he sets 60% on the web, with his manager rank.
+    const web60: ScheduleItem = {
+      ...mockCloudRows.get(phoneTask.id)!,
+      percentComplete: 60,
+      status: 'In Progress',
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-09-30T12:00:00.000Z',
+      progressConfirmedBy: 'David',
+      updatedAt: '2026-09-30T12:00:00.000Z',
+    };
+    mockCloudRows.set(phoneTask.id, web60);
+
+    // It wrote 60% back with "Not Started", without progressSource and progressConfirmedBy.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toMatchObject({ percentComplete: 60, status: 'In Progress', progressSource: 'project_manager', notes: '' });
+    expect(mockCloudRows.get(phoneTask.id)).toEqual({ ...web60, notes: shown.notes, updatedAt: shown.updatedAt });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('control: an edit that lands during this Keep Cloud (the conflict closes) is still undone with the rest', async () => {
+    const { conflict, shown } = await keepCloudThatCouldNotFinish();
+    // A progress edit on its way up when David chooses again; it lands during this choice.
+    await queueScheduleItemRecord({
+      ...phoneTask, percentComplete: 30, status: 'In Progress', updatedAt: '2026-09-30T11:00:00.000Z',
+    }, false, ['percentComplete', 'status', 'updatedAt']);
+    let land!: () => void;
+    const landing = new Promise<void>(resolve => { land = resolve; });
+    let sending!: () => void;
+    const sent = new Promise<void>(resolve => { sending = resolve; });
+    mockUpsertScheduleItem.mockImplementationOnce(async (item: ScheduleItem) => {
+      sending();
+      await landing;
+      return mockCloud.upsert(item);
+    });
+    const inFlight = uploadPendingChanges();
+    await sent;
+    landsDuringFirstRead({ land, inFlight });
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toMatchObject({ percentComplete: 0, status: 'Not Started', notes: '' });
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ percentComplete: 0, status: 'Not Started', notes: '' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});

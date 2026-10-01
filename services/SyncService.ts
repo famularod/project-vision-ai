@@ -5055,8 +5055,13 @@ export async function resolveScheduleItemSyncConflict(
     // 16 L-1). Edits found in the row by value alone were undone when none
     // had landed: a progress edit still waiting and the web's 60% share
     // status and progressSource, so the 60% went back as "Not Started".
-    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) ||
+    const closedDuringChoice =
       !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) || closedDuringChoice;
+    // Still open: only an edit waiting on the conflict can be in the row (A7
+    // pass 17 L-2). Every edit was undone by value, a progress edit that
+    // never left the phone too, and the web's 60% went back as "Not Started".
+    const editsThatMayHaveLanded = closedDuringChoice ? phoneEdits : localPayload.withdrawnEdits ?? [];
     // Read again now: an edit from another device that landed meanwhile is
     // the cloud's too.
     const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
@@ -5082,7 +5087,7 @@ export async function resolveScheduleItemSyncConflict(
       // upload under way when he chose landed it, before Keep Cloud read the
       // cloud or after. It is undone, back to the copy the screen showed
       // (A7 pass 15 L-1: only a landing between the two reads was undone).
-      const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, phoneEdits);
+      const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded);
       if (phoneFields.length === 0) {
         await clearResolvedConflict(conflict.id);
         return cloudNow;
