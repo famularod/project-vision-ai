@@ -504,13 +504,97 @@ function datesReplacedAtDelete(
     const by = entry.datesReplacedByMaster;
     if (!by) return false;
     if (by === true || !documents || !current || !shownAfter(task)) return true;
-    const master = documents.find(saved => key(saved.importBatchId) === key(by));
-    const shown = current.get(scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || ''));
-    if (!master || !shown || shown.id === master.id) return true;
-    const shownAt = timeOf(shown.importedAt);
-    const masterAt = timeOf(master.importedAt);
-    return !shownAt || !masterAt || shownAt >= masterAt;
+    return markedMasterInEffect(by, documents, current.get(scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '')));
   };
+}
+
+/**
+ * Whether the master a mark names (its import batch id) has its dates in
+ * effect while `shown` is the master current for the task's project: it is
+ * that master or older than it (A5 pass 20 P1). As before: a master no
+ * longer saved, or no master current.
+ */
+function markedMasterInEffect(by: string, documents: readonly ReferenceDocument[], shown: ReferenceDocument | undefined): boolean {
+  const master = documents.find(saved => key(saved.importBatchId) === key(by));
+  if (!master || !shown || shown.id === master.id) return true;
+  const shownAt = timeOf(shown.importedAt);
+  const masterAt = timeOf(master.importedAt);
+  return !shownAt || !masterAt || shownAt >= masterAt;
+}
+
+/**
+ * The dates a task's lookahead note gives while `shown` is the master
+ * current for its project, as Delete PDF + Items falls back (A5 pass 20 P1):
+ * the latest lookahead's whose dates no master in effect replaced, else the
+ * master's.
+ */
+function notedDatesWhileCurrent(
+  overlay: ScheduleLookaheadOverlay,
+  documents: readonly ReferenceDocument[],
+  shown: ReferenceDocument | undefined,
+): Pick<ScheduleItem, 'startDate' | 'finishDate'> & { batchId?: string } {
+  return [...overlay.lookaheads].reverse().find(entry => {
+    const by = entry.datesReplacedByMaster;
+    return !by || (by !== true && !markedMasterInEffect(by, documents, shown));
+  }) || { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+}
+
+/**
+ * Whole-app audit A5 pass 21 R1 (1 Oct 2026, caused by b98824e): master F
+ * had Framing 10/15-10/25, lookaheads L1 and L2 moved it to 10/18-10/28 and
+ * 10/20-10/30, and master G listed it on L2's dates, so G restated the task
+ * in place and marked L1's dates replaced. With F current again (Set
+ * Active), or G uploaded on the web and not yet current, deleting L2 rightly
+ * gave L1's 10/18-10/28 (L1 is newer than F). Making G current then left
+ * Framing there, though G is newer than L1 and lists 10/20-10/30, and a later
+ * master repeating G's dates read as "no change". The delete decides only at
+ * the delete; Set Active and Make Current now decide again (owner answer
+ * Q22: a newer master's dates replace older lookahead dates). A task shown
+ * after, whose lookahead note a master marked, on dates its note holds (the
+ * master's or a lookahead's), takes the dates the note gives under the
+ * master made current, as the delete reads them: the master's own dates
+ * once the master that marked them (or a newer one) is current, a
+ * lookahead's again only when a master older than that lookahead is. Dates
+ * David moved by hand, and notes no master marked, are left alone. Only for
+ * a task an import owns: a task entered by hand takes a schedule uploaded
+ * before the mark and made current after it then (A5 pass 18 L3, A5 pass 19
+ * L1), which notes that older schedule's dates as the master's. Returns the
+ * tasks to save.
+ */
+export function scheduleTasksOnNotedDatesWhenCurrent({
+  after,
+  documentsBefore,
+  documentsAfter,
+  now,
+}: Readonly<{
+  /** The tasks shown after the schedule was made current, with the activation's other changes. */
+  after: readonly ScheduleItem[];
+  documentsBefore: readonly ReferenceDocument[];
+  documentsAfter: readonly ReferenceDocument[];
+  now: string;
+}>): ScheduleItem[] {
+  const currentBefore = currentScheduleDocumentsByProject(documentsBefore);
+  const currentAfter = currentScheduleDocumentsByProject(documentsAfter);
+  return after.flatMap(task => {
+    const overlay = overlayOf(task);
+    const owned = key(task.importBatchId) || key(task.sourceDocumentId) || key(task.importedFrom);
+    if (!overlay || !owned || !overlay.lookaheads.some(entry => typeof entry.datesReplacedByMaster === 'string')) return [];
+    const project = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
+    const was = currentBefore.get(project);
+    const is = currentAfter.get(project);
+    if (!is || was?.id === is.id) return [];
+    // On dates the note holds, not dates David moved by hand.
+    const onNoted = sameDates(task, { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }) ||
+      overlay.lookaheads.some(entry => sameDates(task, entry));
+    const to = notedDatesWhileCurrent(overlay, documentsAfter, is);
+    if (!onNoted || sameDates(task, to) || !key(to.startDate) || !key(to.finishDate)) return [];
+    // A lookahead's dates again only under a master older than that lookahead (Q22).
+    if (to.batchId !== undefined) {
+      const lookahead = documentsAfter.find(saved => key(saved.importBatchId) === key(to.batchId));
+      if (!lookahead || !(timeOf(lookahead.importedAt) > timeOf(is.importedAt))) return [];
+    }
+    return [{ ...task, startDate: to.startDate, finishDate: to.finishDate, updatedAt: now }];
+  });
 }
 
 /**

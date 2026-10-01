@@ -21,6 +21,7 @@ import {
   scheduleRowRepeatsMasterBeforeLookahead,
   scheduleTaskMasterRestated,
   scheduleTaskRestatedByLookahead,
+  scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
 
 /**
@@ -624,7 +625,9 @@ function progressStatedAt(item: ScheduleItem): number {
  * hides; when the hidden task holds the manager's progress stated after the
  * shown copy's, the shown task takes it. A higher percent a file gave is
  * never lowered (A5 pass 4 #1); a manager's own older value is. Returns the
- * shown tasks to save.
+ * shown tasks to save. Given the schedules before and after, a task whose
+ * lookahead note a master marked also takes the dates the note gives under
+ * the master made current (A5 pass 21 R1, scheduleTasksOnNotedDatesWhenCurrent).
  */
 export function scheduleProgressCarriedToShownTasks({
   before,
@@ -645,7 +648,14 @@ export function scheduleProgressCarriedToShownTasks({
   const carried = progressCarried(before, after, now);
   const restated = documentsBefore && documentsAfter ? handTasksRestatedWhenCurrent(after, documentsBefore, documentsAfter, now) : [];
   const carriedIds = new Set(carried.map(item => item.id));
-  return [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
+  const saved = [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
+  if (!documentsBefore || !documentsAfter) return saved;
+  // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
+  const changed = new Map(saved.map(item => [item.id, item]));
+  scheduleTasksOnNotedDatesWhenCurrent({
+    after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
+  }).forEach(item => changed.set(item.id, item));
+  return [...changed.values()];
 }
 
 /**
