@@ -298,8 +298,8 @@ export function selectAuthoritativeScheduleItems({
  * only the copy a later import left behind: a new master that changed the
  * task's dates, or an older master made current again. The copy from the
  * newest file shows. When a file lists the same task name twice in the same
- * area those may be two tasks, so only a copy a newer file's row answers to
- * is folded (A6 pass 18).
+ * area those may be two tasks, so only a copy and a row that answers to it
+ * fold, to the newer file's (A6 pass 18, A5 pass 19 L5).
  */
 function withoutLookaheadDuplicates(
   items: readonly ScheduleItem[],
@@ -329,10 +329,18 @@ function withoutLookaheadDuplicates(
       // nothing of either slip. Twins are folded only by the link the import
       // recorded: a copy whose task a newer file's row answers to
       // (revisedFromTaskIds) is the copy that file left behind.
-      group.forEach(item => {
-        if (group.some(other => other !== item && statedAt(other) > statedAt(item) &&
-          scheduleTaskEarlierIds(other).includes(item.id.trim()))) hidden.add(item);
-      });
+      //
+      // Whole-app audit A5 pass 19 L5 (1 Oct 2026): only the copy the newer
+      // row listed was hidden. A lookahead approved between a web upload and
+      // its Make Current (or between Set Active back and forward) holds the
+      // older rows, so the upload's rows were the older file's and nothing
+      // folded: four Pour slabs. Of each linked pair, the older file's copy
+      // is hidden, as for a task listed once.
+      group.forEach(item => group.forEach(other => {
+        if (other === item || !scheduleTaskEarlierIds(other).includes(item.id.trim())) return;
+        if (statedAt(other) > statedAt(item)) hidden.add(item);
+        else if (statedAt(item) > statedAt(other)) hidden.add(other);
+      }));
       return;
     }
     const inMaster = (item: ScheduleItem) => Boolean(master && sources.get(item)?.includes(master));

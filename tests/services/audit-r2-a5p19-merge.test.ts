@@ -315,3 +315,47 @@ describe('A5 p19 L4: Microsoft Project row order survives a revision that moved 
     expect(copies(after, QI).map(([, start, , percent]) => [start, percent])).toEqual([['10/14/2026', 20], ['10/19/2026', 80]]);
   });
 });
+
+/**
+ * L5 (older gap in b41718d's fold): a lookahead approved between a web upload
+ * and its Make Current (or between Set Active back and forward) holds the old
+ * twins, which the newer upload's rows answer to. The fold hid a twin only
+ * when the newer row was the one listing the older copy, so four Pour slabs
+ * showed, on web and phone; the same flow without twins shows one.
+ */
+describe('A5 p19 L5: a lookahead between a web upload and Make Current leaves each twin shown once', () => {
+  const ONE = 'Pour slab,Alpha,Lot,10/05/2026,10/09/2026,';
+  const TWO = 'Pour slab,Alpha,Lot,10/12/2026,10/16/2026,';
+  const L = schedule('LOOKAHEAD L', SUNDAY, 'lookahead');
+  const onF = record(approve(EMPTY, F, rows(F, [ONE, TWO, FRAMING])), 'MASTER F-1', 80, '2026-09-22T15:00:00.000Z');
+  const LOOKAHEAD = ['Pour slab,Alpha,Lot,10/06/2026,10/10/2026,', 'Pour slab,Alpha,Lot,10/13/2026,10/17/2026,'];
+  const SLIPPED = ['Pour slab,Alpha,Lot,10/08/2026,10/12/2026,', 'Pour slab,Alpha,Lot,10/15/2026,10/19/2026,', FRAMING];
+  const expectLookaheadTwins = (state: State) => {
+    expect(copies(state)).toEqual([
+      ['MASTER F-1', '10/06/2026', '10/10/2026', 80],
+      ['MASTER F-2', '10/13/2026', '10/17/2026', 0],
+    ]);
+    expect(link(state, 'MASTER F-1')).toBe('MASTER F-1');
+  };
+
+  it('web: uploaded Friday, lookahead Sunday, Make Current Monday: each twin once, on the lookahead\'s dates', () => {
+    const up = upload(onF, 'alpha-master-g.csv', SLIPPED, FRIDAY);
+    const onL = approveLookahead(up.state, L, rows(L, LOOKAHEAD));
+    expectLookaheadTwins(makeCurrent(onL, up.document, MONDAY));
+    expectLookaheadTwins(setActive(onL, up.document, MONDAY));
+  });
+
+  it('phone: G approved, Set Active back to F, lookahead, Set Active G: each twin once', () => {
+    const onG = approve(onF, G, rows(G, SLIPPED));
+    const backToF = setActive(onG, F, '2026-09-26T18:00:00.000Z');
+    const onL = approveLookahead(backToF, L, rows(L, LOOKAHEAD));
+    expectLookaheadTwins(setActive(onL, G, MONDAY));
+  });
+
+  it('the same flow without twins shows one (guard)', () => {
+    const single = record(approve(EMPTY, F, rows(F, [ONE, FRAMING])), 'MASTER F-1', 80, '2026-09-22T15:00:00.000Z');
+    const up = upload(single, 'alpha-master-g.csv', [SLIPPED[0], FRAMING], FRIDAY);
+    const after = makeCurrent(approveLookahead(up.state, L, rows(L, [LOOKAHEAD[0]])), up.document, MONDAY);
+    expect(copies(after)).toEqual([['MASTER F-1', '10/06/2026', '10/10/2026', 80]]);
+  });
+});
