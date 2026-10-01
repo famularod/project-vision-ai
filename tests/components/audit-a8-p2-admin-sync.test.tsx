@@ -12,6 +12,15 @@ import { Alert } from 'react-native';
 const mockSyncStatus = { queuedChanges: 1, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 };
 const mockCalls: string[] = [];
 
+// Settings now reads this account's field notes for the Sign Out warning
+// (whole-app audit A11 pass 4 L5); none are on this phone here.
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async () => null),
+  setItem: jest.fn(async () => undefined),
+  removeItem: jest.fn(async () => undefined),
+  getAllKeys: jest.fn(async () => []),
+  multiRemove: jest.fn(async () => undefined),
+}));
 jest.mock('../../services/SupabaseService', () => ({
   getCurrentSessionAccessToken: jest.fn(async () => null),
   getSupabaseConfigurationStatus: () => ({ configured: true }),

@@ -153,6 +153,15 @@ export function clearFieldNoteDraftIfUnchanged(
   keepOnPhone(null, keptFor);
 }
 
+/**
+ * Whether this account has a field note written and not saved, on screen or
+ * kept on the phone, which a sign-out discards (A11 pass 4 L5).
+ */
+export async function unsavedFieldNoteExists(ownerKey: string): Promise<boolean> {
+  if (slot?.keptFor === ownerKey) return hasWrittenContent(slot.draft);
+  return Boolean(keptFieldNoteDraft((await readKeptDraft('field-note', ownerKey))?.value));
+}
+
 /** Account change or sign-out: nobody's unsaved note carries over, on the phone either. */
 export function forgetFieldNoteDraft() {
   void forgetKeptDrafts('field-note');

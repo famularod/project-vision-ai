@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -17,7 +17,9 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
-import { useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
+import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
+import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
+import { fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -228,6 +230,9 @@ export function AdminScreen({
   // Settings said "Sign in to enable cloud sync" with a Sign In button and no
   // Sign Out. The account is signed in here, pending its refresh.
   const workspaceSignInPending = useNativeWorkspaceSignInPending();
+  // Field notes are kept per account (none outside the workspace boundary).
+  const workspaceOwner = useContext(NativeWorkspaceOwnerContext);
+  const fieldNoteOwnerKey = workspaceOwner === undefined ? null : workspaceOwner ?? 'local-device';
   const signInPending = workspaceSignInPending && !connectionStatus?.authenticated;
   const [pendingAccountEmail, setPendingAccountEmail] = useState<string | null>(null);
   const signedInHere = Boolean(connectionStatus?.authenticated) || signInPending;
@@ -415,7 +420,7 @@ export function AdminScreen({
               <SecondaryButton
                 label={signingOut ? 'Signing out…' : 'Sign Out'}
                 icon="log-out-outline"
-                onPress={handleSignOut}
+                onPress={() => { void handleSignOut(); }}
                 disabled={signingOut}
               />
             </>
@@ -1006,16 +1011,23 @@ export function AdminScreen({
     }
   }
 
-  function handleSignOut() {
+  async function handleSignOut() {
     // Every unsynced item, not only updates still marked queued: failed
     // updates and queued task, area and document changes were left out of the
     // warning (whole-app audit A1 pass 1); so were documents whose file has
-    // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5).
+    // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5),
+    // and field notes waiting to sync, and an unsaved field note, which a
+    // sign-out discards (whole-app audit A11 pass 4 L5).
+    const [waitingFieldNotes, unsavedFieldNote] = fieldNoteOwnerKey
+      ? await Promise.all([fieldNotesWaitingToSync(fieldNoteOwnerKey), unsavedFieldNoteExists(fieldNoteOwnerKey)])
+      : [0, false];
     const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
+    const notInCloudCount = unsyncedCount + waitingFieldNotes;
+    const discarded = unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '';
     const message =
-      unsyncedCount > 0
-        ? `${unsyncedCount} item${unsyncedCount === 1 ? ' is' : 's are'} not in the cloud yet. ${unsyncedCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
-        : 'You will need to sign in again to resume cloud sync and photo intelligence.';
+      notInCloudCount > 0
+        ? `${discarded}${notInCloudCount} item${notInCloudCount === 1 ? ' is' : 's are'} not in the cloud yet. ${notInCloudCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
+        : `${discarded}You will need to sign in again to resume cloud sync and photo intelligence.`;
 
     // Owner answer Q21 (30 Sep 2026): he chooses this device or all devices.
     // Every Sign Out used to sign out his other devices too. The warning above
