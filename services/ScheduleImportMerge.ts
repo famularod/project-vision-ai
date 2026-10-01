@@ -691,9 +691,13 @@ function handTasksRestatedWhenCurrent(
     // row (10/08, his 40%); a task a file brought in keeps the lookahead's. The row now only brings the
     // note's master dates and percent up to it, as a master does under a lookahead; the task keeps what it shows.
     const madeCurrentAt = timeOf(madeCurrent.importedAt);
-    const restatedSince = madeCurrentAt > 0 && (task.lookaheadOverlay?.lookaheads || []).some(noted => documentsAfter.some(document =>
-      key(document.importBatchId) === key(noted.batchId) && timeOf(document.importedAt) > madeCurrentAt));
-    if (restatedSince) return [{ ...scheduleTaskMasterRestated(scheduleNoteTakesManagersProgress(base), row, now), updatedAt: now }];
+    const newerThanMaster = (noted: { batchId: string }) => madeCurrentAt > 0 && documentsAfter.some(document =>
+      key(document.importBatchId) === key(noted.batchId) && timeOf(document.importedAt) > madeCurrentAt);
+    const restatedSince = (task.lookaheadOverlay?.lookaheads || []).some(newerThanMaster);
+    // Only the lookaheads older than this master have their dates replaced by it (A6 pass 19 M1).
+    if (restatedSince) {
+      return [{ ...scheduleTaskMasterRestated(scheduleNoteTakesManagersProgress(base), row, now, noted => !newerThanMaster(noted)), updatedAt: now }];
+    }
     // Restated as the phone's approval restates it; a row that no longer pairs (renamed since) only drops the note.
     const { next } = mergeApprovedScheduleImportItems({
       existing: [base], imported: [row], completionMatch: () => null, mergeCompletion: item => item, approvedAt: now,

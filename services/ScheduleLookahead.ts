@@ -327,11 +327,23 @@ export function scheduleRowRepeatsMasterBeforeLookahead(
  * the percent given back stays the manager's when the manager's own stood
  * over the row's, and is the file's, confirmed at approval, when the row's
  * is higher (the file rule, A5 pass 4 #1; A5 pass 6 M2).
+ *
+ * Whole-app audit A6 pass 19 M1 (1 Oct 2026): lookahead L1 put Framing on
+ * 10/18-10/28, master G moved it to 10/23-11/02, and lookahead L2 to
+ * 10/24-11/03. Deleting L2 gave Framing L1's 10/28 back ("finish changed
+ * from 11/03 to 10/28" in the next report), and the next master repeating
+ * G's dates read as "did not change the task", so the stale dates stayed.
+ * A master that changes the task's dates now marks the lookaheads older than
+ * it (olderThanMaster: every one, for a master approved now) as replaced;
+ * deleting a later lookahead falls back only to one not replaced, else to the
+ * master's dates (owner answer Q22: a newer master's dates replace older
+ * lookahead dates).
  */
 export function scheduleTaskMasterRestated(
   task: ScheduleItem,
   row: ScheduleItem,
   approvedAt = new Date().toISOString(),
+  olderThanMaster: (entry: LookaheadEntry) => boolean = () => true,
 ): ScheduleItem {
   const overlay = overlayOf(task);
   if (!overlay) return task;
@@ -350,12 +362,19 @@ export function scheduleTaskMasterRestated(
         ...(overlay.masterStatus !== undefined ? { masterStatus: row.status } : {}),
         ...(managers ? { masterProgressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, masterProgressConfirmedAt: approvedAt } : {}),
       };
+  const datesChanged = !sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, days);
   const next: ScheduleLookaheadOverlay = {
     ...overlay,
     masterStartDate: days.startDate,
     masterFinishDate: days.finishDate,
     ...percent,
     ...(stated !== null && overlay.masterFilePercentComplete !== undefined ? { masterFilePercentComplete: stated } : {}),
+    // The lookaheads' dates this master replaced (A6 pass 19 M1).
+    ...(datesChanged ? {
+      lookaheads: overlay.lookaheads.map(entry => entry.datesReplacedByMaster || !olderThanMaster(entry)
+        ? entry
+        : { ...entry, datesReplacedByMaster: true }),
+    } : {}),
   };
   if (
     sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, days) &&
@@ -396,7 +415,8 @@ function tasksAfterLookaheadDeleted(
     const entries = overlay.lookaheads;
     const remaining = entries.filter((_, position) => position !== index);
     const top = index === entries.length - 1 && sameDates(item, entries[index]);
-    const back = remaining[remaining.length - 1] ||
+    // An earlier lookahead's dates only when no newer master replaced them (A6 pass 19 M1); else the master's.
+    const back = [...remaining].reverse().find(entry => !entry.datesReplacedByMaster) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).

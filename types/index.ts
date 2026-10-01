@@ -766,8 +766,17 @@ export type ScheduleLookaheadOverlay = {
    * Each lookahead import that restated the task, oldest first, with the
    * dates it gave and the percent it gave (null: it left progress alone;
    * missing: approved before 30 Sep 2026 audit A5 pass 5 H1, not noted).
+   * datesReplacedByMaster: a newer master changed the task's dates since
+   * this lookahead, so deleting a later lookahead never gives its dates back
+   * (whole-app audit A6 pass 19 M1); missing on an entry noted before.
    */
-  lookaheads: { batchId: string; startDate: string; finishDate: string; percentComplete?: number | null }[];
+  lookaheads: {
+    batchId: string;
+    startDate: string;
+    finishDate: string;
+    percentComplete?: number | null;
+    datesReplacedByMaster?: boolean;
+  }[];
 };
 
 export type ScheduleItem = {
