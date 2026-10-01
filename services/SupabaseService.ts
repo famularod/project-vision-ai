@@ -388,6 +388,21 @@ const AUTH_REFRESH_FAILURE_COOLDOWN_MS = 60_000;
  */
 const SIGNAL_BACK_REFRESH_WAIT_MS = AUTH_REFRESH_FAILURE_COOLDOWN_MS + 30_000;
 const SIGNAL_BACK_POLL_MS = 1_000;
+/**
+ * A refresh request this wait sent may still answer after the wait is over;
+ * it gets this long more (whole-app audit A1 pass 4 L1).
+ */
+const SENT_REFRESH_GRACE_MS = 5_000;
+/**
+ * Whole-app audit A1 pass 4 L1: whether the app is in the foreground. The
+ * wait above counted wall-clock time, so two minutes in another app used it
+ * up: Sign Out of All Devices then said it needed signal, with signal there,
+ * and Retry on the 7-day lockout showed the lockout again before opening. It
+ * now counts only polls made in the foreground, and asks nothing in the
+ * background (iOS suspends the app there; the sign-in refreshes on return).
+ * Unknown at launch counts as the foreground.
+ */
+let appInForeground = !['background', 'inactive'].includes(String(AppState.currentState));
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -646,27 +661,72 @@ function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInR
  * which joins one under way and never runs past its cooldown: while auth-js
  * answers from its last failure this waits, then asks once more. Ends
  * 'network_unavailable' only when a refresh request sent meanwhile got no
- * answer, the wait (SIGNAL_BACK_REFRESH_WAIT_MS) ran out, or nobody waits.
+ * answer, the wait (SIGNAL_BACK_REFRESH_WAIT_MS of foreground time, A1 pass 4
+ * L1) ran out, or nobody waits. In the background it pauses: on return the
+ * sign-in is asked again, and a refresh that finished meanwhile is the answer.
  */
 async function savedSignInRefreshWithSignal(
   client: SupabaseClient,
   stillWanted: () => boolean = () => true,
 ): Promise<SavedSignInRefresh> {
-  const deadline = Date.now() + SIGNAL_BACK_REFRESH_WAIT_MS;
+  const wait: ForegroundWait = { foregroundMs: 0, stillWanted };
   for (;;) {
     const sentBefore = signInRefreshRequestsSent;
-    const outcome = await beforeDeadline(savedSignInRefreshOutcome(client), deadline, UNANSWERED_REFRESH);
+    const asked = savedSignInRefreshOutcome(client);
+    let outcome = await beforeForegroundWaitOver(asked, wait);
+    // A request it sent may be about to answer: a few seconds more.
+    if (!outcome && signInRefreshRequestsSent > sentBefore && wait.stillWanted()) {
+      outcome = await beforeDeadline(asked, Date.now() + SENT_REFRESH_GRACE_MS, null);
+    }
+    if (!outcome) return UNANSWERED_REFRESH;
     if (outcome.status !== 'network_unavailable' || signInRefreshRequestsSent > sentBefore) return outcome;
     // Nothing was sent: auth-js answered from its last failure. Wait out its
-    // cooldown, or until a refresh of its own (its timer) goes out.
+    // cooldown, or until a refresh of its own (its timer) goes out; in the
+    // background, until the app is back.
     do {
-      if (Date.now() >= deadline || !stillWanted()) return UNANSWERED_REFRESH;
-      await delay(SIGNAL_BACK_POLL_MS);
+      if (foregroundWaitOver(wait)) return UNANSWERED_REFRESH;
+      await foregroundPoll(wait);
     } while (
-      Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS &&
-      signInRefreshRequestsSent === sentBefore
+      !appInForeground ||
+      (Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS &&
+        signInRefreshRequestsSent === sentBefore)
     );
   }
+}
+
+/** The wait for the sign-in, in foreground time (A1 pass 4 L1). */
+type ForegroundWait = { foregroundMs: number; readonly stillWanted: () => boolean };
+
+function foregroundWaitOver(wait: ForegroundWait): boolean {
+  return wait.foregroundMs >= SIGNAL_BACK_REFRESH_WAIT_MS || !wait.stillWanted();
+}
+
+/**
+ * One poll: a second, or less if `work` settles first. Only a whole second
+ * in the foreground counts, however long the app was suspended meanwhile.
+ */
+async function foregroundPoll(wait: ForegroundWait, work?: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const polled = await Promise.race([
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(true), SIGNAL_BACK_POLL_MS);
+    }),
+    ...(work ? [work.then(() => false, () => false)] : []),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (polled && appInForeground) wait.foregroundMs += SIGNAL_BACK_POLL_MS;
+}
+
+/** `work`'s answer, or null once the wait is over. */
+async function beforeForegroundWaitOver<T>(work: Promise<T>, wait: ForegroundWait): Promise<T | null> {
+  let settled = false;
+  let answer: T | null = null;
+  const watched = work.then(value => { answer = value; }, () => undefined).then(() => { settled = true; });
+  while (!settled) {
+    if (foregroundWaitOver(wait)) return null;
+    await foregroundPoll(wait, watched);
+  }
+  return answer;
 }
 
 function beforeDeadline<T>(work: Promise<T>, deadlineMs: number, fallback: T): Promise<T> {
@@ -3377,6 +3437,7 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
   }
 
   AppState.addEventListener('change', state => {
+    appInForeground = state === 'active';
     if (state === 'active') {
       client.auth.startAutoRefresh();
     } else {

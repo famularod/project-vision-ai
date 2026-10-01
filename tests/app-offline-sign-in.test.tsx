@@ -1309,3 +1309,123 @@ describe('A1 pass 3 review', () => {
     screen.unmount();
   });
 });
+
+/**
+ * Whole-app audit A1 pass 4 (30 Sep 2026): what David saw, end to end.
+ * L1: the wait for the sign-in (auth-js's minute of cooldown, then its own
+ * retries) counted time with the app in the background: Sign Out of All
+ * Devices, then another app for two minutes, came back to "Other devices not
+ * signed out… needs signal… Nothing was signed out" with signal there, and
+ * Retry on the 7-day lockout showed the lockout again before opening.
+ */
+describe('A1 pass 4 review', () => {
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const EXPIRED = 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.';
+  const SIGNAL_BACK = 'Signal is back — finishing sign-in…';
+  const REFRESH = 'POST /auth/v1/token?grant_type=refresh_token';
+  const HEALTH = 'GET /auth/v1/health';
+  const authCalls = (from: number) => network.calls.slice(from).filter(call => call === HEALTH || call.startsWith('POST /auth/v1/'));
+  const realNow = Date.now.bind(Date);
+  /** auth-js gives up on the refresh (its ~25 s of retries, woken at once); its minute of cooldown begins. */
+  async function refreshGivenUp(rtl: { act: (work: () => Promise<void>) => Promise<void> }) {
+    for (let round = 0, idle = 0; round < 300 && idle < 5; round += 1) {
+      await rtl.act(async () => { wakeSleepingRetries(); await pause(10); });
+      idle = mockSleepingRetries.size === 0 ? idle + 1 : 0;
+    }
+    expect(mockSleepingRetries.size).toBe(0);
+  }
+  function appStateListeners(): ((state: string) => void)[] {
+    const { AppState } = require('react-native');
+    return (AppState.addEventListener as jest.Mock).mock.calls
+      .filter(([type]) => type === 'change')
+      .map(([, listener]) => listener as (state: string) => void);
+  }
+  /**
+   * He switches to another app. iOS suspends this one: its requests get no
+   * answer until it is back. The clock moves on two minutes, past the old
+   * 90-second wait.
+   */
+  async function awayForTwoMinutes(rtl: { act: (work: () => Promise<void>) => Promise<void> }) {
+    network.mode = 'hang';
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 2 * 60_000);
+    await rtl.act(async () => {
+      appStateListeners().forEach(listener => listener('background'));
+      await pause(2_500);
+    });
+    return clock;
+  }
+  /** Back in the app, with signal. */
+  async function backWithSignal(rtl: { act: (work: () => Promise<void>) => Promise<void> }) {
+    network.mode = 'online';
+    await rtl.act(async () => {
+      releaseHungRequests();
+      appStateListeners().forEach(listener => listener('active'));
+      await pause(50);
+    });
+  }
+
+  test('L1 Sign Out of All Devices, then another app for two minutes: on return every device is signed out, not "needs signal"', async () => {
+    await saveSignIn('owner-a', 14);
+    await phoneWorkspaceOf('owner-a');
+    mockSettingsProps = settingsProps();
+    const { screen, rtl } = launch();
+    const alerts = captureAlerts();
+    let clock: jest.SpyInstance | null = null;
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(PENDING_ACCOUNT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      network.mode = 'online';
+      const from = network.calls.length;
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Sign Out')); });
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']), OPEN);
+      await rtl.act(async () => { alerts.shown[0].buttons[1].onPress?.(); await pause(50); });
+      await rtl.waitFor(() => expect(authCalls(from)).toEqual([HEALTH]), OPEN);
+
+      clock = await awayForTwoMinutes(rtl);
+      // Before: "Other devices not signed out — Signing out your other
+      // devices needs signal… Nothing was signed out." The wait now counts
+      // only time in the foreground, and asks nothing in the background.
+      expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out']);
+      expect(authCalls(from)).toEqual([HEALTH]);
+
+      await backWithSignal(rtl);
+      await rtl.waitFor(() => expect(alerts.shown.map(alert => alert.title)).toEqual(['Sign Out', 'Signed out of all devices']), { timeout: 15_000 });
+      expect(authCalls(from)).toEqual([HEALTH, REFRESH, 'POST /auth/v1/logout?scope=global']);
+      await rtl.waitFor(() => expect(screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+    } finally {
+      clock?.mockRestore();
+      alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L1 Retry on the 7-day lockout, then another app for two minutes: on return it opens, without the lockout first', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    let clock: jest.SpyInstance | null = null;
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      network.mode = 'online';
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+      await rtl.waitFor(() => expect(screen.getByText(SIGNAL_BACK)).toBeTruthy(), OPEN);
+
+      clock = await awayForTwoMinutes(rtl);
+      // Before: the lockout again ("No signal…"), then the workspace once
+      // the sign-in refreshed on return.
+      expect(screen.queryByText(EXPIRED)).toBeNull();
+      expect(screen.getByText(SIGNAL_BACK)).toBeTruthy();
+
+      await backWithSignal(rtl);
+      await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 15_000 });
+      expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+    } finally {
+      clock?.mockRestore();
+      screen.unmount();
+    }
+  });
+});
