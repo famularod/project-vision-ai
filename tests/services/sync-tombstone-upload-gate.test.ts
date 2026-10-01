@@ -387,7 +387,12 @@ describe('offline upload deletion barriers', () => {
       errors: [],
     });
 
-    expect(mockListScheduleItems).toHaveBeenCalledTimes(1);
+    // Pin changed on purpose (whole-app audit A7 pass 16 L-5): the task list
+    // is still read once for the batch, but neither task is in it, so each
+    // field edit's row is then read by its id before anything is written.
+    // This file's mock answers a by-id read from the list, so it counts here:
+    // 1 list read + 2 by-id reads.
+    expect(mockListScheduleItems).toHaveBeenCalledTimes(3);
     expect(
       mockUpsertScheduleItem.mock.calls.map(([item]) => (item as ScheduleItem).id),
     ).toEqual([newestTask.id, olderTask.id]);

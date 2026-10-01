@@ -5447,10 +5447,31 @@ async function uploadQueueItem(
     context.scheduleItemsById ??= new Map(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
-    const remote = context.scheduleItemsById.get(payload.id);
+    let remote = context.scheduleItemsById.get(payload.id);
     const changedFields = Array.isArray(payload.changedFields)
       ? payload.changedFields
       : null;
+    // A field edit's row the list missed (whole-app audit A7 pass 16 L-5):
+    // the list pages by offset, newest first, so a row edited elsewhere
+    // while it is read can be skipped, as can one past its last page. With
+    // no row the phone's whole copy went up: a notes-only edit put 0% over
+    // the web's 50%. The row is read by its id first; a read that fails
+    // leaves the edit queued, and no row means the task really has none.
+    if (!remote && changedFields) {
+      let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
+      try {
+        row = await getScheduleItem(payload.id);
+      } catch {
+        row = null;
+      }
+      if (!row?.ok || row.stubbed) {
+        return row?.error || row?.message || 'Task authority could not be checked.';
+      }
+      if (row.data) {
+        remote = row.data;
+        context.scheduleItemsById.set(payload.id, row.data);
+      }
+    }
     const authoritative = remote && changedFields
       ? {
           ...changedFields.reduce<ScheduleItem>(

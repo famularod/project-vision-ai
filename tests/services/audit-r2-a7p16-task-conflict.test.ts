@@ -25,6 +25,11 @@
  *     edit and closed the conflict, unreviewed. The queue now goes back
  *     exactly as it was before Keep Phone, as for field updates (0047547).
  *
+ * L-5 An upload of a field edit whose row the paged task list missed (the
+ *     row was edited elsewhere mid-read, or the schedule has more than 500
+ *     tasks) wrote the phone's whole copy: a notes-only edit put 0% over the
+ *     web's 50%. The row is now read by its id before anything is written.
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as audit-r2-a7p15-task-conflict-reread.test.ts does).
  */
@@ -331,5 +336,51 @@ describe('L-3: a failed Keep Phone on a task leaves the queue as it was (audit A
       .rejects.toThrow();
     await expect(getOfflineQueue()).resolves.toEqual(before);
     await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+  });
+});
+
+describe('L-5: a task field edit whose row the paged list missed is checked against the row itself (audit A7 pass 16)', () => {
+  const web50: ScheduleItem = {
+    ...phoneTask, notes: '', percentComplete: 50, status: 'In Progress', updatedAt: '2026-09-30T09:00:00.000Z',
+  };
+  /** The list misses the row: it was edited elsewhere while the pages were read, or it is past the 500th task. */
+  const listMissesTheRow = () => mockListScheduleItems.mockImplementation(async () => mockOk([otherTask(1), otherTask(2)]));
+  const queueNotesOnlyEdit = () => queueScheduleItemRecord(
+    { ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'],
+  );
+
+  it('a notes-only phone edit keeps the web\'s 50%', async () => {
+    mockCloudRows.set(phoneTask.id, web50);
+    listMissesTheRow();
+    await queueNotesOnlyEdit();
+
+    await uploadPendingChanges();
+    // It wrote the phone's whole copy: 0%, "Not Started".
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER, percentComplete: 50, status: 'In Progress' });
+    expect(mockGetScheduleItem).toHaveBeenCalledWith(phoneTask.id);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a read of the row that fails leaves the edit queued, writing nothing', async () => {
+    mockCloudRows.set(phoneTask.id, web50);
+    listMissesTheRow();
+    mockGetScheduleItem.mockImplementation(async () => mockUnreadable());
+    await queueNotesOnlyEdit();
+
+    await uploadPendingChanges();
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(web50);
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({ id: expect.stringContaining(phoneTask.id), lastError: expect.any(String) }),
+    ]);
+  });
+
+  it('control: a row that is really gone is written from the phone\'s copy, as before', async () => {
+    listMissesTheRow();
+    await queueNotesOnlyEdit();
+
+    await uploadPendingChanges();
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER, percentComplete: 0 });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 });
