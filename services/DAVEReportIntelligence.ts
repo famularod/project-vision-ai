@@ -854,20 +854,35 @@ function buildRecentChanges({
   // "Pour slab was updated." with nothing changed. A report saved before the
   // content keys lists none here, and counts as before.
   const unchangedTaskIds = new Set(reportingPeriod.unchangedTaskIds ?? []);
+  // Whole-app audit A6 pass 14 L2 (1 Oct 2026): a task whose latest activity
+  // is not the one the earlier report saved says it, whatever its time (a
+  // note made offline on the iPad before the phone's send, received after);
+  // one whose activity the earlier report saved does not say it again. Only
+  // against a report saved before these keys does the activity's time decide.
+  const newActivityTaskIds = new Set(reportingPeriod.newActivityTaskIds ?? []);
+  const sameActivityTaskIds = new Set(reportingPeriod.sameActivityTaskIds ?? []);
   const taskChanges: DAVEReportRecentChange[] = [];
   for (const truth of truths) {
     for (const task of truth.schedule) {
       const occurredAt = latestDate([task.latestActivityAt, task.updatedAt]);
+      const newActivity = newActivityTaskIds.has(task.taskId) ? clean(task.latestActivitySummary) : '';
       if (
+        !newActivity &&
         reportingPeriodStart !== null &&
         (dateValue(occurredAt) ?? 0) <= reportingPeriodStart
       ) continue;
       // A6 pass 13: an activity from before the earlier report was said
-      // there; a later stamp (a delete writing ids) does not repeat it.
-      const activity = reportingPeriodStart === null ||
-        (dateValue(task.latestActivityAt) ?? 0) > reportingPeriodStart
-        ? clean(task.latestActivitySummary)
-        : '';
+      // there; a later stamp (a delete writing ids) does not repeat it. Since
+      // A6 pass 14 L2 the activity keys decide this, and the time only
+      // against a report saved before them.
+      const activity = newActivity || (
+        reportingPeriodStart === null || (
+          !sameActivityTaskIds.has(task.taskId) &&
+          (dateValue(task.latestActivityAt) ?? 0) > reportingPeriodStart
+        )
+          ? clean(task.latestActivitySummary)
+          : ''
+      );
       if (activity) {
         taskChanges.push(Object.freeze({
           id: `report-change:${task.taskId}:activity`,

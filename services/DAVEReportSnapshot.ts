@@ -44,6 +44,14 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   contentKey?: string;
   /**
+   * The task's latest activity, as one short key (`reportTaskActivityKey`):
+   * its time and text hashed, never the text. Whole-app audit A6 pass 14 L2
+   * (1 Oct 2026): a task whose latest activity is not the one the earlier
+   * report saved says it, whatever its time. Absent on snapshots saved before
+   * then (those go by the activity's time), and ignored by builds before then.
+   */
+  activityKey?: string;
+  /**
    * When this task last changed on the device that saved the snapshot, saved
    * by A6 pass 9 M2 only (30 Sep 2026). No longer saved or read: a row's
    * update time also moves for a note or an owner change, so it could not
@@ -376,6 +384,20 @@ export type DAVEReportPeriodComparison = Readonly<{
    */
   unchangedTaskIds?: readonly string[];
   /**
+   * Every task (by its id now) paired with a task of the earlier report
+   * whose saved latest activity is not its own: the report says that
+   * activity even when its time is before the earlier report (A6 pass 14 L2:
+   * a note made offline on the other device before the send). Not listed
+   * against a task saved with no activity key.
+   */
+  newActivityTaskIds?: readonly string[];
+  /**
+   * Every task paired with a task of the earlier report whose saved latest
+   * activity is its own: that activity was there for the earlier report, so
+   * it is not said again, whatever its time (A6 pass 14 L2).
+   */
+  sameActivityTaskIds?: readonly string[];
+  /**
    * Not counted: the report this one counts from was sent by the other
    * device after this device last downloaded the tasks, so any difference
    * could be the other device's change read backwards (A6 pass 10 M1, M2).
@@ -414,6 +436,7 @@ export function buildDAVEReportSnapshot({
     approvalStatus: clean(task.approvalStatus) || null,
     estimatedScheduleImpactDays: finiteNumber(task.estimatedScheduleImpactDays),
     contentKey: reportTaskContentKey(truth.projectName, task),
+    activityKey: reportTaskActivityKey(task),
   }))).sort((left, right) =>
     normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
     normalized(left.taskName).localeCompare(normalized(right.taskName)) ||
@@ -478,6 +501,8 @@ export function compareDAVEReportSnapshots({
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
   const unchangedTaskIds = new Set<string>();
+  const newActivityTaskIds = new Set<string>();
+  const sameActivityTaskIds = new Set<string>();
 
   // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
   // whose copy in the earlier report was the newer row. A note or owner
@@ -492,6 +517,9 @@ export function compareDAVEReportSnapshots({
       continue;
     }
     if (sameContent(prior, task)) unchangedTaskIds.add(task.taskId);
+    if (typeof prior.activityKey === 'string') {
+      (prior.activityKey === task.activityKey ? sameActivityTaskIds : newActivityTaskIds).add(task.taskId);
+    }
     changes.push(...changesBetween(prior, task));
   }
 
@@ -513,6 +541,8 @@ export function compareDAVEReportSnapshots({
     changeCount: distinctChanges.length,
     changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
     unchangedTaskIds: Object.freeze([...unchangedTaskIds]),
+    newActivityTaskIds: Object.freeze([...newActivityTaskIds]),
+    sameActivityTaskIds: Object.freeze([...sameActivityTaskIds]),
   });
 }
 
@@ -531,6 +561,8 @@ export function reportPeriodWaitingForOtherDevice(period: DAVEReportPeriodCompar
     changeCount: 0,
     changedTaskIds: Object.freeze([]),
     unchangedTaskIds: Object.freeze([]),
+    newActivityTaskIds: Object.freeze([]),
+    sameActivityTaskIds: Object.freeze([]),
     waitingForOtherDevice: true,
   });
 }
@@ -651,6 +683,24 @@ function reportTaskContentKey(projectName: string, task: DAVEProjectTruth['sched
     finiteNumber(task.checklistTotal), finiteNumber(task.checklistComplete),
     finiteNumber(task.estimatedScheduleImpactDays), text(task.impactConfidence), text(task.impactNotes),
   ]))}`;
+}
+
+/** Which activity fields an activity key covers. */
+const TASK_ACTIVITY_KEY_VERSION = 'task-activity/1';
+
+/**
+ * The task's latest activity, as one key (whole-app audit A6 pass 14 L2, 1
+ * Oct 2026): its time and its text, hashed together (the text is never
+ * saved); the same key for every task with none. a1d5e2f said an activity
+ * only when its time fell after the earlier report, so a note David made on
+ * the iPad offline at 17:00, before the phone sent at 18:00 without it and
+ * received the next day, was never said, and a later edit read "Pour slab
+ * was updated." instead. Project Truth keeps no activity id, so the time and
+ * text stand for it.
+ */
+function reportTaskActivityKey(task: DAVEProjectTruth['schedule'][number]): string {
+  const at = clean(task.latestActivityAt);
+  return `${TASK_ACTIVITY_KEY_VERSION}:${contentHash(JSON.stringify([validDate(at) || at, clean(task.latestActivitySummary)]))}`;
 }
 
 /** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */
