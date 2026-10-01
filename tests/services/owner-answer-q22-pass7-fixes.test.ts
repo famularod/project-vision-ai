@@ -21,10 +21,15 @@
  *    complete") no longer raised "Possible progress is not reflected", and
  *    Project Truth dated his 40% at the delete.
  */
-import type { ReferenceDocument, ScheduleItem } from '../../types';
+import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
+import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { extractScheduleEvidence } from '../../services/PIEEvidenceFusion';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
-import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import {
+  buildPIEScheduleReconciliation,
+  selectAuthoritativeScheduleItems,
+} from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import {
@@ -32,6 +37,7 @@ import {
   scheduleItemsAfterLookaheadDeleted,
   scheduleLookaheadDeleteNote,
 } from '../../services/ScheduleLookahead';
+import { scheduleProgressJudgedAt } from '../../services/ScheduleProgressSource';
 
 jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${Math.random().toString(16).slice(2)}` }));
 
@@ -177,5 +183,61 @@ describe('A5 p7 M1: a percent David corrected never comes back as his', () => {
   it('a master at the same percent David holds changes nothing; his percent and time stay', () => {
     const again = approve(corrected(), master2, masterRows(master2, 20));
     expect(pour(again)).toMatchObject({ percentComplete: 20, progressConfirmedBy: 'David', progressConfirmedAt: CORRECTED_AT });
+  });
+});
+
+describe('A10 p5 L1: David\'s percent given back keeps the time he judged it', () => {
+  const fieldReport = (date: string): ProjectUpdate => ({
+    id: `field-${date}`, projectName: 'Alpha', date, notes: 'Pour slab is complete.', scheduleItemId: 'm-pour',
+    photos: [], recipients: { contactIds: [] },
+  } as unknown as ProjectUpdate);
+  const notReflected = (state: State, update: ProjectUpdate) => buildPIEScheduleReconciliation({
+    scheduleItems: shown(state), updates: [update], projectName: 'Alpha', now: new Date('2026-09-26T12:00:00.000Z'),
+  }).warnings.filter(warning => warning.type === 'field_progress_not_reflected' && warning.scheduleItemId === 'm-pour');
+
+  it('Delete PDF + Items: a field report of 22 Sep after his 10 Sep 40% still raises the warning; the record is dated 10 Sep', () => {
+    const after = deleteLookahead(davidThenLookahead(), lookahead);
+    // Confirmed at the delete so every device takes it back (sync); judged when David judged it.
+    expect(pour(after)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT });
+    expect(scheduleProgressJudgedAt(pour(after))).toBe(DAVID_AT);
+    expect(notReflected(after, fieldReport('2026-09-22T09:00:00.000Z'))).toHaveLength(1);
+    // A report older than his judgment is still overridden by it.
+    expect(notReflected(after, fieldReport('2026-09-05T09:00:00.000Z'))).toHaveLength(0);
+    expect(truthOf(after, 'm-pour').capturedAt).toBe(DAVID_AT);
+    const fused = extractScheduleEvidence({ projectName: 'Alpha', scheduleItems: shown(after) }).find(item => item.id === 'm-pour')!;
+    expect(fused.sources[0]).toMatchObject({ type: 'typed-update', capturedAt: DAVID_AT });
+  });
+
+  it('the floor: a second lookahead at 30% gives back his 40%, dated when he judged it', () => {
+    const floored = approve(davidThenLookahead(), lookahead2, pourRow(lookahead2, 30, '09/29/2026', '10/01/2026'));
+    expect(pour(floored)).toMatchObject({ percentComplete: 40, progressConfirmedAt: lookahead2.importedAt });
+    expect(scheduleProgressJudgedAt(pour(floored))).toBe(DAVID_AT);
+    expect(notReflected(floored, fieldReport('2026-09-22T09:00:00.000Z'))).toHaveLength(1);
+  });
+
+  it('A5 p7 M1: the note takes David\'s own time, not the time his percent was given back, when it is refreshed', () => {
+    // The floor gives back David's 40% at the second lookahead; a master then restates the task.
+    const floored = approve(davidThenLookahead(), lookahead2, pourRow(lookahead2, 30, '09/29/2026', '10/01/2026'));
+    expect(pour(floored)).toMatchObject({ percentComplete: 40, progressConfirmedBy: 'David' });
+    const restated = approve(floored, master2, masterRows(master2, 20));
+    expect(pour(restated).lookaheadOverlay).toMatchObject({
+      masterPercentComplete: 40, masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: DAVID_AT,
+    });
+  });
+
+  it('sync: a device still holding the lookahead\'s 60% takes back David\'s 40% with the time he judged it', () => {
+    const before = davidThenLookahead();
+    const after = deleteLookahead(before, lookahead);
+    // That device then edits the task's notes, so its row is the newer one; the progress is the delete's.
+    const noted = { ...pour(before), notes: 'Pump truck booked.', updatedAt: '2026-09-26T08:00:00.000Z' };
+    const [merged] = recoverDAVEScheduleRecords({ local: [noted], cloud: [pour(after)], allowCloudOnly: true });
+    expect(merged).toMatchObject({ notes: 'Pump truck booked.', percentComplete: 40, progressConfirmedBy: 'David', progressConfirmedAt: DELETED_AT });
+    expect(scheduleProgressJudgedAt(merged)).toBe(DAVID_AT);
+  });
+
+  it('a later edit by David is his newer judgment: the earlier judged time no longer applies', () => {
+    const after = deleteLookahead(davidThenLookahead(), lookahead);
+    const later = edit(after, 'm-pour', 45, '2026-09-26T08:00:00.000Z');
+    expect(scheduleProgressJudgedAt(pour(later))).toBe('2026-09-26T08:00:00.000Z');
   });
 });

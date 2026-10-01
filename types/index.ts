@@ -788,6 +788,18 @@ export type ScheduleItem = {
   progressSource?: 'project_manager' | 'schedule_import' | null;
   progressConfirmedAt?: string | null;
   progressConfirmedBy?: string | null;
+  /**
+   * When the manager judged the percent the task holds, when that percent
+   * was given back later (whole-app audit A10 pass 5 L1, 30 Sep 2026):
+   * deleting a lookahead, or a file stating less than the manager's noted
+   * percent, puts the manager's percent back confirmed at that moment
+   * (givenBackAt = progressConfirmedAt, so every device takes it back,
+   * DAVEScheduleRecovery), while judgedAt keeps when the manager said it,
+   * for weighing field reports and dating the record
+   * (scheduleProgressJudgedAt). It stands only while progressConfirmedAt is
+   * still givenBackAt: any later confirmation is a newer judgment.
+   */
+  progressJudgment?: { judgedAt: string; givenBackAt: string } | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;

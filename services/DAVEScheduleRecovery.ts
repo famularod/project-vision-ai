@@ -153,14 +153,17 @@ function mergeScheduleRevisions(
     ...(local.alsoImportedInBatchIds || []),
     ...(cloud.alsoImportedInBatchIds || []),
   ])];
+  // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
+  const { progressJudgment: _baseJudgment, ...baseRecord } = base;
   return {
-    ...base,
+    ...baseRecord,
     notes: noteSource.notes,
     status: progressSource.status,
     percentComplete: progressSource.percentComplete,
     progressSource: progressSource.progressSource,
     progressConfirmedAt: progressSource.progressConfirmedAt,
     progressConfirmedBy: progressSource.progressConfirmedBy,
+    ...(progressSource.progressJudgment ? { progressJudgment: progressSource.progressJudgment } : {}),
     completionVerification: progressSource.completionVerification,
     projectControls: mergeScheduleProjectControls(local, cloud, base),
     // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).

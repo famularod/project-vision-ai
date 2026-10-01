@@ -31,3 +31,20 @@ export function scheduleRowAsTask<T extends Pick<ScheduleItem, 'percentCompleteS
   const { percentCompleteStated: _fileRow, ...task } = row;
   return task as T;
 }
+
+/**
+ * When the progress the task holds was judged (whole-app audit A10 pass 5
+ * L1, 30 Sep 2026): the manager's own time for a percent given back later
+ * (progressJudgment), else when it was confirmed. Field reports are weighed
+ * against this, and records dated by it; sync orders copies by
+ * progressConfirmedAt.
+ */
+export function scheduleProgressJudgedAt(
+  item: Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment'>,
+): string | null {
+  const confirmedAt = item.progressConfirmedAt ?? null;
+  const judgment = item.progressJudgment;
+  return judgment && confirmedAt && judgment.givenBackAt === confirmedAt && judgment.judgedAt
+    ? judgment.judgedAt
+    : confirmedAt;
+}

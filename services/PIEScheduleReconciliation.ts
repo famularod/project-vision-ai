@@ -19,6 +19,7 @@ import {
   scheduleProgressRecordedByManager,
   scheduleProgressSetByScheduleFile,
 } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -134,7 +135,8 @@ export function scheduleCompletionOverridesFieldMatch(
     pmVerified
       ? verification?.verifiedAt || verification?.reportedAt || null
       : pmRecorded || fileSet
-        ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
+        // When the manager judged it, for a percent given back later (A10 pass 5 L1).
+        ? scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt || null
         : item.importedAt || item.createdAt || null,
   );
   const fieldAt = timestamp(match?.capturedAt || null);
@@ -151,8 +153,10 @@ export function scheduleProgressOverridesFieldMatch(
   match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
 ) {
   if (!scheduleProgressRecordedByManager(item)) return false;
+  // When the manager judged it: a percent given back by a lookahead's delete,
+  // or over a lower file, is not newer than a field report made since (A10 pass 5 L1).
   const progressAt = timestamp(
-    item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+    scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt || null,
   );
   const fieldAt = timestamp(match?.capturedAt || null);
   if (progressAt === 0 || fieldAt === 0) return true;

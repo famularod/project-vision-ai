@@ -29,6 +29,7 @@ import {
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -420,7 +421,8 @@ function buildEvidenceLedger(
       areaName: clean(item.locationName),
       taskId: item.id,
       text: `${item.taskName} ${item.milestone} ${item.notes} ${item.owner} ${item.contractor}`,
-      capturedAt: item.progressConfirmedAt || item.importedAt || item.createdAt,
+      // Dated when the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+      capturedAt: scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt,
       summary: `${item.taskName}: ${item.status}, ${item.percentComplete}% complete${item.finishDate ? `, due ${item.finishDate}` : ''}${pmProgressJudgment ? ' — project manager judgment.' : '.'}`,
       connected: Boolean(item.taskName.trim()),
       reason: item.taskName.trim()

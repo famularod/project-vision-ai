@@ -310,6 +310,7 @@ export function scheduleProgressCarriedToShownTasks({
       progressSource: hidden.progressSource ?? null,
       progressConfirmedAt: hidden.progressConfirmedAt ?? null,
       progressConfirmedBy: hidden.progressConfirmedBy ?? null,
+      ...(hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
       completionVerification: hidden.completionVerification ?? null,
       updatedAt: now,
     }];

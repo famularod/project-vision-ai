@@ -27,6 +27,7 @@ import {
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   distanceBetweenCoordinatesFeet,
   findClosestProjectArea,
@@ -556,7 +557,8 @@ export function extractScheduleEvidence({
             label: `${item.progressConfirmedBy || 'Project manager'} progress judgment`,
             recordId: item.id,
             confidence: 'high' as const,
-            capturedAt: item.progressConfirmedAt || item.createdAt,
+            // When the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+            capturedAt: scheduleProgressJudgedAt(item) || item.createdAt,
             actorId: item.progressConfirmedBy || null,
             confirmationEventId: item.progressConfirmedAt
               ? `schedule-progress-confirmation:${item.id}:${item.progressConfirmedAt}`

@@ -11,6 +11,7 @@ import {
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete, scheduleProgressRecordedByManager } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
@@ -181,7 +182,7 @@ function correlateTask(
   const authoritativeCompletionAt = verification?.status === 'pm_verified'
     ? verification.verifiedAt || verification.reportedAt || null
     : scheduleClaimsComplete
-      ? item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null
+      ? scheduleProgressJudgedAt(item) || item.importedAt || item.updatedAt || item.createdAt || null
       : null;
   const newerContradictoryFieldEvidence = Boolean(authoritativeCompletionAt) && uniqueEvidence.some(claim =>
     (claim.kind === 'field_update' || claim.kind === 'photo') &&
@@ -314,7 +315,8 @@ function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
     summary: pmJudgment
       ? `${item.progressConfirmedBy || 'Project manager'} recorded ${item.taskName} as ${item.status}, ${item.percentComplete}% complete.`
       : `${item.taskName}: ${item.status}, ${item.percentComplete}% complete.`,
-    recordedAt: item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null,
+    // When the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+    recordedAt: scheduleProgressJudgedAt(item) || item.importedAt || item.updatedAt || item.createdAt || null,
   };
 }
 

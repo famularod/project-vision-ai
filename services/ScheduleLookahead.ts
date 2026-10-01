@@ -11,6 +11,7 @@ import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
+  scheduleProgressJudgedAt,
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
@@ -130,15 +131,19 @@ function masterFilePercent(overlay: ScheduleLookaheadOverlay): number | null {
 /**
  * The noted percent's provenance, put back with it (A5 pass 6 M2). The
  * manager's is confirmed now, so every device takes it back
- * (DAVEScheduleRecovery keeps the newer confirmation). Null for a note made
- * before, which noted none.
+ * (DAVEScheduleRecovery keeps the newer confirmation), and keeps when the
+ * manager judged it (progressJudgment, A10 pass 5 L1): a field report made
+ * after that still counts against it, and the record keeps the manager's
+ * date. Null for a note made before, which noted none.
  */
 function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string): Partial<ScheduleItem> | null {
   if (overlay.masterProgressSource === undefined) return null;
+  const judgedAt = notedPercentIsManagers(overlay) ? overlay.masterProgressConfirmedAt : null;
   return {
     progressSource: overlay.masterProgressSource,
     progressConfirmedBy: overlay.masterProgressConfirmedBy ?? null,
     progressConfirmedAt: overlay.masterProgressSource === 'project_manager' ? at : overlay.masterProgressConfirmedAt ?? null,
+    ...(judgedAt && at && judgedAt !== at ? { progressJudgment: { judgedAt, givenBackAt: at } } : {}),
   };
 }
 
@@ -167,13 +172,17 @@ export function scheduleNoteTakesManagersProgress(task: ScheduleItem): ScheduleI
   return same ? task : withOverlay(task, next);
 }
 
-/** What the task states now, for the note: its percent, and who stated it when. */
+/**
+ * What the task states now, for the note: its percent, and who stated it
+ * when: the manager's own time for a percent given back earlier, never the
+ * give-back (A5 pass 7 M1, A10 pass 5 L1).
+ */
 function managersStatement(task: ScheduleItem) {
   return {
     masterPercentComplete: percentOf(task),
     masterProgressSource: task.progressSource ?? null,
     masterProgressConfirmedBy: task.progressConfirmedBy ?? null,
-    masterProgressConfirmedAt: task.progressConfirmedAt ?? null,
+    masterProgressConfirmedAt: scheduleProgressJudgedAt(task),
   };
 }
 
