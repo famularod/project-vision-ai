@@ -99,7 +99,9 @@ function FieldNotesWorkspaceContent({
   // Kept outside the screen until Save, so leaving it keeps the note
   // (whole-app audit A2 M3).
   const draftKey = `${presentation}:${ownerKey}`;
-  const [draft, updateDraft] = useFieldNoteDraft(draftKey, {
+  // On the phone it is also kept in phone storage for this account until
+  // Save (whole-app audit A11 pass 4 L3).
+  const [draft, updateDraft, draftKeptAt] = useFieldNoteDraft(draftKey, {
     text: '',
     source: 'typed',
     projectName: initialProjectName?.trim() || '',
@@ -107,7 +109,7 @@ function FieldNotesWorkspaceContent({
     actionKind: 'none',
     actionText: '',
     captureOpen: false,
-  });
+  }, presentation === 'mobile_capture' ? ownerKey : null);
   const { text, source, projectName, locationName, actionKind, actionText, captureOpen } = draft;
   const setText = (value: string) => updateDraft('text', value);
   const setSource = (value: FieldNoteSource) => updateDraft('source', value);
@@ -277,6 +279,10 @@ function FieldNotesWorkspaceContent({
     });
     onVoiceDraftConsumed?.(voiceDraft.id);
   }, [onVoiceDraftConsumed, voiceDraft]);
+
+  useEffect(() => {
+    if (draftKeptAt) setNotice({ tone: 'info', text: 'Your unsaved note was kept on this phone. Review it, then save.' });
+  }, [draftKeptAt]);
 
   // "Type Instead" closed the voice sheet and opened nothing (whole-app audit
   // A11 pass 1 F10); an unsaved note opens with its text as it is.

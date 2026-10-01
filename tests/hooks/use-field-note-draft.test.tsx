@@ -3,6 +3,15 @@
  * screen until Save, for one owner, and forgotten on an account change.
  */
 import { act, renderHook } from '@testing-library/react-native';
+// The draft is also kept in phone storage for an account (A11 pass 4 L3,
+// tests/hooks/use-field-note-draft-kept.test.tsx); these tests keep none.
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async () => null),
+  setItem: jest.fn(async () => undefined),
+  removeItem: jest.fn(async () => undefined),
+  getAllKeys: jest.fn(async () => []),
+  multiRemove: jest.fn(async () => undefined),
+}));
 import {
   clearFieldNoteDraftIfUnchanged,
   forgetFieldNoteDraft,

@@ -219,6 +219,7 @@ import {
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
 import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
+import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -13021,7 +13022,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Another account must not inherit this one's report narrative or
       // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
       if (accountChanged) forgetAllReportSessionState();
-      if (accountChanged) forgetFieldNoteDraft(); // nobody's unsaved field note carries over (audit A2 M3)
+      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); } // nobody's unsaved note or walk memory carries over (A2 M3, A11 pass 4 L3)
     });
 
     return () => {
@@ -17323,7 +17324,7 @@ function ProjectWorkspaceScreen({
   const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
   const [projectOptionsOpen, setProjectOptionsOpen] = useState(false);
-  const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const [captureDraft, setCaptureDraft] = useKeptWalkMemoryDraft(projectName); // kept until Save (A11 pass 4 L3)
   const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
   const [areaMappingOpen, setAreaMappingOpen] = useState(false);
   const areaSetupStats = useMemo(
