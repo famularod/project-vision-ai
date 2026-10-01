@@ -102,6 +102,12 @@ function sameArea(item: ScheduleItem, reference: ScheduleTaskReference): boolean
   return !area || areas.length === 0 || areas.includes(area);
 }
 
+/** The keys of the schedule a task came from: its imports, or its document for a task of no import. */
+function scheduleKeys(item: ScheduleItem): string[] {
+  const batches = scheduleItemImportBatchIds(item);
+  return batches.length > 0 ? batches.map(batch => `import:${batch}`) : [`document:${idOf(item.sourceDocumentId)}`];
+}
+
 /** The tasks of the schedule a task came from: its imports', or the tasks entered by hand. */
 function sameSchedule(own: ScheduleItem): (item: ScheduleItem) => boolean {
   const batches = scheduleItemImportBatchIds(own);
@@ -116,6 +122,12 @@ function sameSchedule(own: ScheduleItem): (item: ScheduleItem) => boolean {
  * keeps its own matching for those. With every saved task known, the stored
  * name is taken only when the update's own schedule had it once (A10 pass 6
  * L2).
+ *
+ * Whole-app audit A10 pass 7 L4 (30 Sep 2026): that check scanned every saved
+ * task for each update that fell back by name; at 3,300 saved tasks and 800
+ * such updates reconciliation, the commitment register and correlation each
+ * took several times longer. The saved tasks are now indexed once per call,
+ * by schedule and name, on the first update that needs it.
  */
 export function scheduleTaskLinks(
   items: readonly ScheduleItem[],
@@ -123,12 +135,27 @@ export function scheduleTaskLinks(
 ): (reference: ScheduleTaskReference) => ScheduleTaskLink | null {
   const knownById = new Map<string, ScheduleItem>();
   known.forEach(item => { if (idOf(item.id) && !knownById.has(idOf(item.id))) knownById.set(idOf(item.id), item); });
+  let bySchedule: Map<string, ScheduleItem[]> | null = null;
+  const inScheduleNamed = (key: string, name: string): ScheduleItem[] => {
+    if (!bySchedule) {
+      const index = new Map<string, ScheduleItem[]>();
+      known.forEach(item => {
+        const itemName = nameKey(item.taskName);
+        if (itemName) scheduleKeys(item).forEach(schedule => {
+          const entry = `${schedule}\n${itemName}`;
+          const list = index.get(entry);
+          if (list) list.push(item); else index.set(entry, [item]);
+        });
+      });
+      bySchedule = index;
+    }
+    return bySchedule.get(`${key}\n${name}`) || [];
+  };
   const nameSharedInOwnSchedule = (reference: ScheduleTaskReference, taskId: string, name: string): boolean => {
     const own = knownById.get(taskId);
     if (!own) return false;
-    const inSchedule = sameSchedule(own);
-    return known.filter(item => inSchedule(item) && nameKey(item.taskName) === name &&
-      sameProject(item, reference) && sameArea(item, reference)).length > 1;
+    const named = new Set(scheduleKeys(own).flatMap(key => inScheduleNamed(key, name)));
+    return [...named].filter(item => sameProject(item, reference) && sameArea(item, reference)).length > 1;
   };
   const byId = new Map<string, ScheduleItem>();
   const byEarlierId = new Map<string, ScheduleItem[]>();
