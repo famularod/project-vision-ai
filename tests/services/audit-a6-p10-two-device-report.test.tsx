@@ -72,6 +72,27 @@ jest.mock('../../services/SupabaseService', () => ({
     mockCloud.set(key, { snapshot: JSON.parse(JSON.stringify(row.snapshot)), deliveredAt: row.deliveredAt });
     return mockOk(null);
   }),
+  // What Settings reads, for Sync Now (A6 pass 11 L1; as in audit-a8-p2-admin-sync).
+  getCurrentSessionAccessToken: jest.fn(async () => null),
+  getSupabaseConfigurationStatus: () => ({ configured: true }),
+  getSupabaseConnectionStatus: jest.fn(async () => ({
+    configured: true, clientReady: true, authenticated: true, userEmail: 'owner@example.com',
+  })),
+  testSupabaseConnection: jest.fn(async () => ({ connected: true })),
+  subscribeToAuthStateChange: () => () => undefined,
+  readSavedSignIn: jest.fn(async () => null),
+  signIn: jest.fn(),
+  signOut: jest.fn(),
+  signUp: jest.fn(),
+}));
+// Settings › Sync Now's download, with no network (A6 pass 11 L1): each test says what comes down.
+const mockSynchronizeLocalData = jest.fn();
+jest.mock('../../services/SyncService', () => ({
+  ...jest.requireActual('../../services/SyncService'),
+  getSyncConflicts: jest.fn(async () => []),
+  getSyncStatus: jest.fn(async () => ({ queuedChanges: 0, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 })),
+  reconcileSyncConflicts: jest.fn(async () => undefined),
+  synchronizeLocalData: (...args: unknown[]) => mockSynchronizeLocalData(...args),
 }));
 
 let mockAuthority: Record<string, unknown>;
@@ -81,7 +102,7 @@ jest.mock('../../providers/PIELiveAuthorityProvider', () => ({
 }));
 jest.mock('react-native-reanimated', () => ({ getUseOfValueInStyleWarning: () => '' }));
 
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
 import { describeReportSendTime, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
@@ -99,6 +120,7 @@ import {
   registerScheduleCloudPullRequest,
 } from '../../services/ScheduleCloudPull';
 import type { ScheduleItem } from '../../types';
+import { pressSettingsSyncNow, syncNowResult } from '../fixtures/settings-sync-now';
 
 jest.setTimeout(120_000);
 const SLOW = { timeout: 30_000 } as const;
@@ -178,7 +200,11 @@ const open = (device: string, scheduleItems: ScheduleItem[]) => {
   onDevice(device);
   return mount(scheduleItems);
 };
-/** `device` downloads every task from the cloud (its refresh, or Settings › Sync Now), started `at` (now). */
+/**
+ * `device`'s background refresh downloads every task from the cloud, started
+ * `at` (now). Settings › Sync Now is run for real (`syncNow`): pass 10 stood
+ * in for it here, which hid that Sync Now recorded no download (A6 pass 11 L1).
+ */
 const downloadsTasks = async (device: string, at = new Date().toISOString()) => {
   const was = mockDevice;
   onDevice(device);
@@ -186,6 +212,19 @@ const downloadsTasks = async (device: string, at = new Date().toISOString()) => 
     await recordScheduleCloudPull(at);
   });
   onDevice(was);
+};
+
+/**
+ * Settings › Sync Now on the phone, through AdminScreen and App.tsx's own
+ * onApplyCloudRecovery (A6 pass 11 L1): `cloud` is every task that comes
+ * down, with the deletion history verified. Returns the phone's tasks after.
+ */
+const syncNow = async (scheduleItems: ScheduleItem[], cloud: ScheduleItem[]) => {
+  onDevice('phone');
+  mockSynchronizeLocalData.mockImplementation(async () => syncNowResult(cloud));
+  const phone = { scheduleItems };
+  await pressSettingsSyncNow(phone);
+  return phone.scheduleItems;
 };
 
 async function keepingPhoneMemory<T>(visit: () => Promise<T>): Promise<T> {
@@ -210,6 +249,8 @@ beforeEach(() => {
   forgetAllReportSessionState();
   forgetScheduleCloudPullSession();
   jest.spyOn(AppState, 'addEventListener').mockImplementation((() => ({ remove: () => undefined })) as never);
+  jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  mockSynchronizeLocalData.mockReset();
   onCopyReport.mockClear();
   mockAuthority = {
     state: 'ready',
@@ -369,9 +410,10 @@ describe('tasks the other device added or deleted are not reported backwards (A6
     fireEvent.changeText(input, `${input.props.value as string}\nCrane arrives Monday.`);
 
     // Off to Settings › Sync Now (nothing new comes down) and back: the edited body still says "Not counted yet".
+    // Pass 11 L1: Sync Now is run for real here; pass 10 recorded a download in its place.
     back.unmount();
-    await downloadsTasks('phone');
-    const again = mount(phonePlan);
+    const synced = await syncNow(phonePlan, phonePlan);
+    const again = mount(synced);
     await loaded();
     const changed = 'The reporting period changed after you edited this report. Discard your edits and review what changed since then before you approve.';
     expect(screen.getByText(changed)).toBeTruthy();
@@ -410,11 +452,15 @@ describe('the wait always ends once this device has downloaded the tasks (A6 pas
     // Synced two minutes ago, then reopened on the phone.
     await downloadsTasks('phone', minutesFromNow(-2));
     const reopened = withFrame(ipadPlan, { percentComplete: 60, status: 'In Progress', updatedAt: minutesFromNow(-1) });
-    await switchTabAndBack(phone, reopened);
+    const back = await switchTabAndBack(phone, reopened);
     // The phone first saw the iPad's send after that download, so it cannot tell yet.
     expect(screen.getByText(deviceBehind(sent))).toBeTruthy();
 
-    await downloadsTasks('phone');
+    // Pass 11 L1: Settings › Sync Now itself (pass 10 recorded a download in its
+    // place): the phone's reopen goes up, and every task comes back down.
+    back.unmount();
+    const synced = await syncNow(reopened, reopened);
+    mount(synced);
     await approvable();
     expect(screen.queryByText(/hasn't received/)).toBeNull();
     expect(await period()).toContain('Frame walls was reopened at 60% complete.');

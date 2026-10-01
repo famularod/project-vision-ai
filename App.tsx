@@ -14074,6 +14074,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     allowCloudOnly: true,
                   }));
                   markScheduleItemsAuthorityReady(true);
+                  void recordScheduleCloudPull(recovered.syncStartedAt); // every task, deletions verified: Reports stops waiting (A6 pass 11 L1)
                 }
                 if (failed.referenceDocuments === null) {
                   setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ // the newer copy wins, as in the refresh (A7 pass 5 L1)

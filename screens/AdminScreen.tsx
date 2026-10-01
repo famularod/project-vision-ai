@@ -96,6 +96,15 @@ const ENABLE_DEV_AUTH_SIGNUP =
 const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
 const SETTINGS_STATUS_TIMEOUT_MS = 8_000;
 const SETTINGS_SYNC_TIMEOUT = Symbol('settings_sync_timeout');
+/**
+ * What Settings › Sync Now downloaded, and when it started (whole-app audit
+ * A6 pass 11 L1, 30 Sep 2026). Sync Now recorded no download, so Reports,
+ * waiting for the other device's changes, told David to use it and kept
+ * waiting: tasks applied with a verified deletion history are now recorded as
+ * downloaded at this time.
+ */
+export type SyncNowRecovery = FullSyncResult['recovered'] & Readonly<{ syncStartedAt: string }>;
+
 /** What each Sign Out choice does, in the owner's words (owner answer Q21). */
 const SIGN_OUT_CHOICES =
   'This Device: your other devices stay signed in.\n' +
@@ -192,7 +201,7 @@ export function AdminScreen({
   failedDocumentCount: number;
   onApplyCloudConflictUpdate: (update: ProjectUpdate) => void;
   onApplyCloudConflictScheduleItem: (item: ScheduleItem) => void;
-  onApplyCloudRecovery: (recovered: FullSyncResult['recovered']) => void;
+  onApplyCloudRecovery: (recovered: SyncNowRecovery) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
 }) {
   const aiStatus = getAIConfigurationStatus();
@@ -752,6 +761,8 @@ export function AdminScreen({
   }
 
   async function handleFullSyncNow() {
+    // Every task this download brings was in the cloud by now (A6 pass 11 L1).
+    const syncStartedAt = new Date().toISOString();
     setIsSyncing(true);
     setLastFullSyncIssueCount(0);
     setSyncAttemptMessage('Preparing project data…');
@@ -782,7 +793,7 @@ export function AdminScreen({
         getSyncConflicts(),
       ]);
       setSyncStatus(nextStatus);
-      onApplyCloudRecovery(result.recovered);
+      onApplyCloudRecovery({ ...result.recovered, syncStartedAt });
       setSyncConflicts(nextConflicts);
       const documentsRemaining = documentRun.remaining(failedDocumentCountRef.current);
       setLastFullSyncIssueCount(Math.max(
