@@ -645,9 +645,11 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    */
   documentPatches?: FieldUpdateDocumentPatch[];
   /**
-   * Keep Phone's kept copy only: a newer edit saved on this phone since the
+   * Keep Phone's kept copy: a newer edit saved on this phone since the
    * conflict, queued again in the same write that takes this copy off once
    * it lands (whole-app audit A7 pass 11 L-2; see newerEditQueuedAfter).
+   * A late analysis result's patch: the edit held for conflict review it
+   * stands in front of, queued again as it was (A7 pass 14 L-2).
    */
   newerEdit?: SyncQueueItem;
   /**
@@ -2469,8 +2471,8 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
     await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
   }
   const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update);
-  const inConflict = (await getSyncConflicts())
-    .some(conflict => conflict.entity === 'project_update' && conflict.localId === update.id);
+  const conflicts = await getSyncConflicts();
+  const inConflict = Boolean(openFieldUpdateConflict(conflicts, update.id));
   const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !inConflict;
   // A late analysis result is the phone's copy's too, in a conflict (whole-
   // app audit A4 pass 14 #4): Keep Phone sends the copy recorded with the
@@ -2490,8 +2492,22 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
     const owesOwnSync = mayOweOwnSync &&
       !(waitingPatches && fieldUpdateOwesNothingBeyond(existingPayload?.updateData, [patch], update));
     const photoIds = uniquePhotoAssetIds((update.photos || []).map(photo => photo.id));
-    const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData
-      ? { ...existing, payload: { ...existingPayload, updateData: applyFieldUpdateDocumentPatches(existingPayload.updateData as object, [patch]) } }
+    const withChange = (item: SyncQueueItem): SyncQueueItem => ({ ...item, payload: {
+      ...(item.payload as ProjectUpdateRecordPayload),
+      updateData: applyFieldUpdateDocumentPatches((item.payload as ProjectUpdateRecordPayload).updateData as object, [patch]),
+    } });
+    // An edit held for conflict review (whole-app audit A7 pass 14 L-2)
+    // takes a late analysis result too, but the result also goes onto the
+    // cloud's copy now, as it does with nothing held: taken only into the
+    // held edit, it never reached the iPad while the conflict was open, and
+    // Keep Cloud, which withdraws that edit, lost it. The patch carries the
+    // held edit (newerEdit), which is queued again, as it was, once the
+    // patch lands (newerEditQueuedAfter). A later change goes into both.
+    const heldForReview = existing && !waitingPatches && existingPayload?.updateData &&
+      isFieldUpdatePhotoAnalysisPatch(patch) && fieldUpdateCopyHeldForReview(existing, conflicts) ? existing : null;
+    const carried = heldForReview ?? (waitingPatches && isRecord(existingPayload?.newerEdit) ? existingPayload!.newerEdit : null);
+    const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData && !heldForReview
+      ? withChange(existing)
       : {
           id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
           payload: {
@@ -2502,6 +2518,7 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
               pendingPhotoAssetIds: update.status === 'sent' ? []
                 : waitingPatches ? existingPayload?.pendingPhotoAssetIds || [] : photoIds,
             }),
+            ...(carried ? { newerEdit: withChange(carried) } : {}),
           },
           ...(ownerId ? { ownerId } : {}),
         };
@@ -3379,6 +3396,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 function newerEditQueuedAfter(landed: SyncQueueItem): SyncQueueItem[] {
   const newer = landed.entity === 'project_update' ? (landed.payload as Partial<ProjectUpdateRecordPayload>).newerEdit : undefined;
   if (!newer || !isRecord(newer)) return [];
+  // An edit held for review that a patch carried (A7 pass 14 L-2) keeps the
+  // time David saved it, as it was.
+  if (queuedFieldUpdateDocumentPatches(landed)) return [newer];
   const now = new Date().toISOString();
   return [{ ...newer, createdAt: now, changedAt: now }];
 }
@@ -4394,7 +4414,11 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
         ? currentCopy : cloudUpdate;
       // Archived on this phone while the archive still waits (whole-app
       // audit A7 pass 14 L-3): withdrawn with the rest, it is kept.
-      chosenCloudUpdate = withArchiveKept(withDocumentChanges(cloudNow), withdrawn) as TUpdate;
+      // And this phone's analysis results for the photos the cloud's copy
+      // shares (A7 pass 14 L-2): one taken into an edit of the phone's (the
+      // conflict's own, or one held for review) never reached the cloud.
+      chosenCloudUpdate = withArchiveKept(
+        withPhoneAnalysisResults(withDocumentChanges(cloudNow), phoneCopies), withdrawn) as TUpdate;
       queuedCloudCopy = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
         id: projectUpdateQueueItemId(conflict.localId),
         entity: 'project_update',
@@ -4493,6 +4517,35 @@ function withArchiveKept(copy: unknown, queued: readonly SyncQueueItem[], cloudC
     (item.payload as Partial<ProjectUpdateRecordPayload>).archiveOnly === true);
   if (!archive) return copy;
   return { ...copy, isArchived: true, archivedAt: (archive.payload as Partial<ProjectUpdateRecordPayload>).archivedAt || archive.changedAt };
+}
+
+/**
+ * The cloud's copy with this phone's analysis results for the photos it
+ * shares (whole-app audit A7 pass 14 L-2), as each result's own patch would
+ * have put them there: a finished result newer than the copy's (or the copy
+ * still analysing), with the analysis summary of the phone copy it came
+ * from. Keep Cloud lost a result taken into one of the phone's copies.
+ */
+function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly unknown[]): unknown {
+  if (!isRecord(copy) || !Array.isArray(copy.photos)) return copy;
+  const finishedAt = (analysis: unknown) => isRecord(analysis) && typeof analysis.status === 'string' && analysis.status !== 'analyzing'
+    ? Date.parse(typeof analysis.updatedAt === 'string' ? analysis.updatedAt : '') || 0 : null;
+  const analysisOf = (update: unknown, photoId: string) => isRecord(update) && Array.isArray(update.photos)
+    ? (update.photos as unknown[]).find(photo => isRecord(photo) && photo.id === photoId) as Record<string, unknown> | undefined
+    : undefined;
+  let next: object = copy;
+  for (const photo of copy.photos as unknown[]) {
+    if (!isRecord(photo) || typeof photo.id !== 'string') continue;
+    const photoId = photo.id;
+    const cloudFinishedAt = finishedAt(photo.photoIntelligence);
+    const newest = phoneCopies
+      .map(phone => ({ phone, at: finishedAt(analysisOf(phone, photoId)?.photoIntelligence) }))
+      .filter((candidate): candidate is { phone: unknown; at: number } => candidate.at !== null)
+      .sort((left, right) => right.at - left.at)[0];
+    if (!newest || (cloudFinishedAt !== null && newest.at <= cloudFinishedAt)) continue;
+    next = applyFieldUpdatePhotoAnalysisPatch(next, fieldUpdatePhotoAnalysisPatchFor(newest.phone as object, newest.phone as object, photoId));
+  }
+  return next;
 }
 
 /** A newer edit Keep Phone carries, archived as the copy it keeps is (A7 pass 14 L-3). */

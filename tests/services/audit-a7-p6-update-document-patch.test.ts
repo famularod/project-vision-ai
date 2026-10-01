@@ -3763,3 +3763,94 @@ describe('Keep Phone keeps an update archived during its conflict archived (audi
     expect(inCloud().isArchived ?? false).toBe(false);
   });
 });
+
+/**
+ * A7 pass 14 L-2 (exposed by 0cf5d20): a photo's analysis finished while its
+ * update was in conflict with a newer edit of David's held for review. The
+ * result was put only into that held edit (as into any edit still waiting),
+ * so it never reached the cloud's copy: the iPad showed "Analyzing" for as
+ * long as the conflict was open. Keep Cloud then withdrew the held edit and
+ * kept the cloud's copy, and the result was gone. The result now also goes
+ * onto the cloud's copy as a patch, as for an update with nothing held (the
+ * held edit takes it too and waits on), and Keep Cloud keeps this phone's
+ * results for the photos the cloud's copy shares.
+ */
+describe('a late analysis result reaches the cloud\'s copy while a newer edit waits for review (audit A7 pass 14 L-2)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  /** Sent with its photo still being analysed; edited offline; the iPad edits; reconnected, the conflict is found; then a newer edit. */
+  async function newerEditHeldWhileAnalysing() {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    return phone;
+  }
+  /** The result lands, then the automatic retry and the waiting-update sync run. */
+  async function analysisFinishesThenSyncs(phone: Device) {
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    return result;
+  }
+
+  it('the result goes onto the cloud\'s copy at once; the conflict and the held newer edit (with the result) stay for review', async () => {
+    const phone = await newerEditHeldWhileAnalysing();
+    const result = await analysisFinishesThenSyncs(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    const held = (await queuedFor())!;
+    expect(held.payload.updateData).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(held.payload.updateData as Update)).toEqual(result);
+    expect(held.payload.documentPatches).toBeUndefined(); // the whole held copy again, nothing more to send
+  });
+
+  it('then Keep Cloud: the cloud keeps the iPad\'s note with the result, and the card takes it', async () => {
+    const phone = await newerEditHeldWhileAnalysing();
+    const result = await analysisFinishesThenSyncs(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('then Keep Phone: the cloud ends with the newer edit, with the result', async () => {
+    const phone = await newerEditHeldWhileAnalysing();
+    const result = await analysisFinishesThenSyncs(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a result taken into the phone\'s edit before the conflict was found: Keep Cloud keeps it on the cloud\'s copy', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result); // taken into the waiting edit, offline
+    await phone.settle();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analyzing' });
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+  });
+});
