@@ -10,7 +10,8 @@ import {
   classifyDAVEImplementation,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
-import { scheduleProgressIsComplete, scheduleProgressRecordedByManager } from './ScheduleProgressInvariant';
+import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
@@ -112,8 +113,9 @@ function correlateTask(
 ): DAVETaskEvidenceCorrelation {
   const evidence: DAVETaskEvidenceClaim[] = [scheduleClaim(item)];
   const verification = item.completionVerification;
-  // Not a percent a schedule file set on a task the manager tracked (A10 pass 3 M1).
-  const pmScheduleJudgment = scheduleProgressRecordedByManager(item);
+  // Not a percent a schedule file set on a task the manager tracked (A10 pass 3 M1); the same
+  // judgment test as Project Truth and the other summaries (A10 pass 5 L2).
+  const pmScheduleJudgment = scheduleHasAuthoritativeProgressJudgment(item);
 
   for (const source of verification?.evidence ?? []) {
     const isPMEvidence = source.kind === 'pm_confirmation' || source.kind === 'pm_note';
@@ -300,8 +302,9 @@ function correlateTask(
 }
 
 function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
-  // A percent a schedule file set reads as the schedule's (A10 pass 3 M1).
-  const pmJudgment = scheduleProgressRecordedByManager(item);
+  // A percent a schedule file set reads as the schedule's (A10 pass 3 M1), by the test every
+  // summary uses (A10 pass 5 L2).
+  const pmJudgment = scheduleHasAuthoritativeProgressJudgment(item);
   return {
     id: `correlation:schedule:${item.id}`,
     kind: pmJudgment ? 'pm_confirmation' : 'schedule',

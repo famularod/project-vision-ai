@@ -173,6 +173,9 @@ describe('project PlainDate and Instant semantics', () => {
       priority: 'Medium',
       status: 'In Progress',
       notes: '',
+      // A task a schedule file brought in (A10 pass 5 L2): correlation now uses Project Truth's judgment
+      // test, where an in-progress task entered by hand with no progress source is the PM's judgment.
+      importedFrom: 'Project 1 schedule.csv',
       createdAt: '2026-07-16T12:00:00.000Z',
     };
     const input = {

@@ -46,6 +46,9 @@ function task(id, overrides = {}) {
     priority: 'High',
     status: 'In Progress',
     notes: '',
+    // A task a schedule file brought in (A10 pass 5 L2): correlation now uses the same judgment test as
+    // Project Truth, where an in-progress task entered by hand with no progress source is the PM's judgment.
+    importedFrom: 'Alpha schedule.csv',
     createdAt: '2026-07-01T12:00:00.000Z',
     completionVerification: null,
     ...overrides,

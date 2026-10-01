@@ -22,12 +22,14 @@
  *    Project Truth dated his 40% at the delete.
  */
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
+import { buildDAVEEvidenceCorrelations } from '../../services/DAVEEvidenceCorrelation';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { extractScheduleEvidence } from '../../services/PIEEvidenceFusion';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import {
   buildPIEScheduleReconciliation,
+  scheduleHasAuthoritativeProgressJudgment,
   selectAuthoritativeScheduleItems,
 } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
@@ -260,5 +262,46 @@ describe('A5 p7 L3: David\'s own status comes back with his percent', () => {
     expect(pour(above)).toMatchObject({ percentComplete: 50, status: 'In Progress' });
     expect(pour(above).lookaheadOverlay).toMatchObject({ masterPercentComplete: 45, masterStatus: 'Waiting' });
     expect(pour(deleteLookahead(above, lookahead2))).toMatchObject({ percentComplete: 45, status: 'Waiting', progressConfirmedBy: 'David' });
+  });
+});
+
+describe('A5 p7 L2 / A10 p5 L2: a file\'s percent on a task entered by hand is the schedule\'s', () => {
+  const handEntered = (extra: Partial<ScheduleItem> = {}) => ({
+    id: 'hand', projectName: 'Alpha', taskName: 'Punch list', locationName: 'Lot', owner: '', contractor: '', startDate: '11/01/2026',
+    finishDate: '11/05/2026', milestone: '', status: 'Not Started', percentComplete: 0, priority: 'Medium', notes: '',
+    createdAt: '2026-08-01T00:00:00.000Z', ...extra,
+  }) as ScheduleItem;
+  const punchRows = (source: ReferenceDocument, percent: number) =>
+    csvRows([HEADER, `Punch list,Alpha,Lot,11/01/2026,11/05/2026,${percent}%`], source);
+
+  it('a master stating 50% marks it as the schedule update\'s; the summaries agree it is not David\'s judgment', () => {
+    const state = approve({ items: [handEntered()], documents: [] }, master, punchRows(master, 50));
+    const hand = shown(state).find(item => item.id === 'hand')!;
+    expect(hand).toMatchObject({
+      percentComplete: 50, status: 'In Progress',
+      progressSource: 'schedule_import', progressConfirmedBy: 'Schedule update', progressConfirmedAt: master.importedAt,
+    });
+    expect(scheduleHasAuthoritativeProgressJudgment(hand)).toBe(false);
+    expect(truthOf(state, 'hand')).toMatchObject({
+      record: 'Punch list: In Progress, 50% complete.',
+      explanation: 'The schedule records in progress at 50% complete. No connected field, photo, or communication evidence is available.',
+    });
+    // The file's percent: a newer file corrects it either way.
+    const lower = approve(state, master2, punchRows(master2, 30));
+    expect(shown(lower).find(item => item.id === 'hand')).toMatchObject({ percentComplete: 30, progressSource: 'schedule_import' });
+  });
+
+  it('a task entered by hand before progress had a source, at 40%, reads as David\'s judgment in both summaries', () => {
+    const state: State = { items: [handEntered({ status: 'In Progress', percentComplete: 40 })], documents: [] };
+    expect(truthOf(state, 'hand')).toEqual({
+      record: 'Punch list: In Progress, 40% complete — project manager judgment.',
+      capturedAt: '2026-08-01T00:00:00.000Z',
+      explanation: 'A project manager recorded in progress at 40% complete. That professional judgment is the current progress evidence.',
+    });
+    const claim = buildDAVEEvidenceCorrelations({ scheduleItems: state.items }).tasks[0].evidence[0];
+    expect(claim).toMatchObject({ kind: 'pm_confirmation', authority: 'verified' });
+    // A file below it leaves it, as before (a task entered by hand counts as David's).
+    const below = approve(state, master, punchRows(master, 30));
+    expect(shown(below).find(item => item.id === 'hand')).toMatchObject({ percentComplete: 40 });
   });
 });

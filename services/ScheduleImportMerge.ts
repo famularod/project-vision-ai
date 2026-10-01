@@ -117,8 +117,16 @@ function percentOf(item: ScheduleItem): number {
 
 /**
  * The file's progress over the saved task's, or null to keep the saved
- * task's (A5 pass 4 #1). A task entered by hand counts as the manager's. A
- * row that states no percent keeps the saved task's (A5 pass 5 H1).
+ * task's (A5 pass 4 #1). A task entered by hand, with nothing saying who set
+ * its percent, counts as the manager's. A row that states no percent keeps
+ * the saved task's (A5 pass 5 H1).
+ *
+ * Whole-app audit A5 pass 7 L2 / A10 pass 5 L2 (30 Sep 2026): a file's
+ * percent on a task entered by hand was saved with no source on a task no
+ * import owns, so the summaries' fallback for older records called it the
+ * manager's judgment. It is now marked as the schedule's
+ * (schedule_import, "Schedule update", confirmed at approval, so every
+ * device's merge keeps it), and a later file may correct it either way.
  */
 function fileProgressFor(
   saved: ScheduleItem,
@@ -127,21 +135,18 @@ function fileProgressFor(
 ): Partial<ScheduleItem> | null {
   if (!scheduleRowStatesPercent(file)) return null;
   const owned = Boolean(key(saved.importBatchId) || key(saved.sourceDocumentId));
-  const managers = scheduleProgressIsManagers(saved) || !owned;
+  const managers = scheduleProgressIsManagers(saved) || (!owned && !saved.progressSource);
   const change = percentOf(file) - percentOf(saved);
   if (managers ? change <= 0 : change === 0) return null;
+  const confirmed = { progressConfirmedAt: approvedAt, progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER };
   // Taken at approval: a manager-ranked task stays manager-ranked, confirmed
   // by the approval, so every device's merge keeps the file's value.
-  return saved.progressSource === 'project_manager'
-    ? {
-        percentComplete: file.percentComplete,
-        status: file.status,
-        progressSource: 'project_manager',
-        progressConfirmedAt: approvedAt,
-        progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
-        updatedAt: approvedAt,
-      }
-    : { percentComplete: file.percentComplete, status: file.status, updatedAt: approvedAt };
+  if (saved.progressSource === 'project_manager') {
+    return { percentComplete: file.percentComplete, status: file.status, progressSource: 'project_manager', ...confirmed, updatedAt: approvedAt };
+  }
+  return owned
+    ? { percentComplete: file.percentComplete, status: file.status, updatedAt: approvedAt }
+    : { percentComplete: file.percentComplete, status: file.status, progressSource: 'schedule_import', ...confirmed, updatedAt: approvedAt };
 }
 
 function key(value: unknown): string {
