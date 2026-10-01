@@ -74,6 +74,14 @@ export class ECOSProjectQuestionError extends Error {
 }
 
 /**
+ * Audit A9 pass 3 L3 (30 Sep 2026): where the refusal is read. The desktop has
+ * a project picker above Ask ECOS; the phone answer sheet has none ("Ask
+ * Another Question" asks the same project again), so the phone says how to get
+ * to the other project instead of "Select project 2375 above".
+ */
+export type ECOSProjectRefusalWording = 'phone' | 'desktop';
+
+/**
  * knownProjectNames: the names of the signed-in user's unarchived projects. With
  * them, a number is refused only when it is another project's number (and not a
  * measurement or drawing reference). Without them the stricter pre-Q20 check
@@ -83,15 +91,23 @@ export function ecosProjectReferenceMismatchMessage(
   projectName: string,
   question: string,
   knownProjectNames?: readonly string[] | null,
+  { refusalWording = 'desktop' }: { refusalWording?: ECOSProjectRefusalWording } = {},
 ): string | null {
   const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames);
   return mismatch
-    ? projectReferenceMismatchText(mismatch.selectedProjectIdentifier, mismatch.referencedProjectIdentifier)
+    ? projectReferenceMismatchText(mismatch.selectedProjectIdentifier, mismatch.referencedProjectIdentifier, refusalWording)
     : null;
 }
 
-function projectReferenceMismatchText(selectedProjectIdentifier: string, referencedProjectIdentifier: string) {
-  return `Project ${selectedProjectIdentifier} is selected, but this question names ${referencedProjectIdentifier}. Select project ${referencedProjectIdentifier} above, then ask again.`;
+function projectReferenceMismatchText(
+  selectedProjectIdentifier: string,
+  referencedProjectIdentifier: string,
+  refusalWording: ECOSProjectRefusalWording,
+) {
+  const switchStep = refusalWording === 'phone'
+    ? `Close this, open project ${referencedProjectIdentifier}, then ask again.`
+    : `Select project ${referencedProjectIdentifier} above, then ask again.`;
+  return `Project ${selectedProjectIdentifier} is selected, but this question names ${referencedProjectIdentifier}. ${switchStep}`;
 }
 
 export async function askECOSProjectQuestion({
@@ -102,6 +118,7 @@ export async function askECOSProjectQuestion({
   conversationId,
   priorTurnId,
   knownProjectNames,
+  refusalWording = 'desktop',
 }: ECOSConversationRequest & {
   client: SupabaseClient | null;
   projectId: string | null;
@@ -109,6 +126,8 @@ export async function askECOSProjectQuestion({
   question: string;
   /** Checked here only; the server reads its own project list and never receives this. */
   knownProjectNames?: readonly string[] | null;
+  /** How a wrong-project refusal tells the owner to switch (audit A9 pass 3 L3). */
+  refusalWording?: ECOSProjectRefusalWording;
 }): Promise<ECOSProjectQuestionAnswer> {
   const cleanQuestion = question.replace(/\s+/g, ' ').trim();
   const cleanProjectName = projectName.trim();
@@ -140,7 +159,8 @@ export async function askECOSProjectQuestion({
       'Shorten the question to 1,000 characters or fewer.',
     );
   }
-  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion, knownProjectNames);
+  const refusal = { knownProjectNames, refusalWording };
+  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion, knownProjectNames, refusal);
   if (projectMismatchMessage) {
     throw new ECOSProjectQuestionError('project_reference_mismatch', projectMismatchMessage);
   }
@@ -152,7 +172,7 @@ export async function askECOSProjectQuestion({
   if (sessionError && isAuthRetryableFetchError(sessionError)) {
     throw new ECOSProjectQuestionError(
       'request_failed',
-      projectQuestionErrorMessage(0, 'request_failed', cleanProjectName, cleanQuestion, knownProjectNames, null),
+      projectQuestionErrorMessage(0, 'request_failed', cleanProjectName, cleanQuestion, refusal, null),
     );
   }
   if (sessionError || !accessToken) {
@@ -182,7 +202,7 @@ export async function askECOSProjectQuestion({
     const diagnostics = parseECOSQuestionDiagnostics(body?.diagnostics);
     throw new ECOSProjectQuestionError(
       code,
-      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, knownProjectNames, body),
+      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, refusal, body),
       diagnostics?.traceId || null,
     );
   }
@@ -360,7 +380,7 @@ function projectQuestionErrorMessage(
   code: string,
   projectName: string,
   question: string,
-  knownProjectNames: readonly string[] | null | undefined,
+  refusal: Readonly<{ knownProjectNames?: readonly string[] | null; refusalWording: ECOSProjectRefusalWording }>,
   body: Record<string, unknown> | null,
 ) {
   if (code.startsWith('conversation_') || code === 'prior_turn_id_invalid') {
@@ -393,10 +413,13 @@ function projectQuestionErrorMessage(
       const selectedIdentifier = requiredText(body?.selectedProjectIdentifier);
       const referencedIdentifier = requiredText(body?.referencedProjectIdentifier);
       if (/^\d{3,6}$/.test(selectedIdentifier) && /^\d{3,6}$/.test(referencedIdentifier)) {
-        return projectReferenceMismatchText(selectedIdentifier, referencedIdentifier);
+        return projectReferenceMismatchText(selectedIdentifier, referencedIdentifier, refusal.refusalWording);
       }
-      return ecosProjectReferenceMismatchMessage(projectName, question, knownProjectNames) ||
-        'This question names a different project. Select the correct project above, then ask again.';
+      return ecosProjectReferenceMismatchMessage(projectName, question, refusal.knownProjectNames, refusal) || (
+        refusal.refusalWording === 'phone'
+          ? 'This question names a different project. Close this, open that project, then ask again.'
+          : 'This question names a different project. Select the correct project above, then ask again.'
+      );
     }
     return 'ECOS is already reviewing that question. Wait a moment, then retry.';
   }

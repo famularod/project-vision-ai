@@ -225,4 +225,6 @@ it('checks each question against the projects the user can pick (owner answer Q2
   expect(askMock).toHaveBeenCalledTimes(1);
   expect(askMock.mock.calls[0][0]).toMatchObject({ projectId: 'p2321', question });
   expect(askMock.mock.calls[0][0].knownProjectNames).toEqual(['2321 Compliance Project', '2375 Compliance Project']);
+  // The phone answer sheet has no project picker, so it asks for phone wording (audit A9 pass 3 L3).
+  expect(askMock.mock.calls[0][0].refusalWording).toBe('phone');
 });

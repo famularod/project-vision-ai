@@ -96,6 +96,8 @@ export function useECOSProjectQuestionExperience({
         projectName: selectedProjectName,
         question: cleanQuestion,
         knownProjectNames,
+        // The answer sheet has no project picker (audit A9 pass 3 L3).
+        refusalWording: 'phone',
         ...turn.request,
       });
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;

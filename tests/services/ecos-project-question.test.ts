@@ -432,6 +432,47 @@ describe('Ask ECOS wrong-project guard (owner answer Q20)', () => {
     });
   });
 
+  // Audit A9 pass 3 L3 (30 Sep 2026): the phone answer sheet has no project
+  // picker, so the phone wording says how to reach the other project. The
+  // desktop (the default, pinned above) keeps "Select project … above".
+  it('words the phone refusal for a phone without a picker, locally and from the server', async () => {
+    const local = jest.fn();
+    await expect(askECOSProjectQuestion({
+      client: signedInClient(local),
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question: 'Is the slab at 2375 ready for inspection?',
+      knownProjectNames: OWNER_PROJECTS,
+      refusalWording: 'phone',
+    })).rejects.toMatchObject({
+      code: 'project_reference_mismatch',
+      message: 'Project 2321 is selected, but this question names 2375. Close this, open project 2375, then ask again.',
+    });
+    expect(local).not.toHaveBeenCalled();
+
+    const serverRefusal = (body: Record<string, unknown>) => signedInClient(jest.fn().mockResolvedValue({
+      data: null,
+      error: new Error('request failed'),
+      response: new Response(JSON.stringify(body), { status: 409, headers: { 'content-type': 'application/json' } }),
+    }));
+    const phoneAsk = (client: never) => askECOSProjectQuestion({
+      client,
+      projectId: 'project-2321',
+      projectName: '2321 Compliance Project',
+      question: 'What is left at 2450?',
+      knownProjectNames: OWNER_PROJECTS,
+      refusalWording: 'phone',
+    });
+    await expect(phoneAsk(serverRefusal({
+      error: 'project_reference_mismatch', selectedProjectIdentifier: '2321', referencedProjectIdentifier: '2450',
+    }))).rejects.toMatchObject({
+      message: 'Project 2321 is selected, but this question names 2450. Close this, open project 2450, then ask again.',
+    });
+    await expect(phoneAsk(serverRefusal({ error: 'project_reference_mismatch' }))).rejects.toMatchObject({
+      message: 'This question names a different project. Close this, open that project, then ask again.',
+    });
+  });
+
   it('the edge function applies the same shared rule to its own unarchived project list', () => {
     const edge = readFileSync(join(__dirname, '../../supabase/functions/ecos-ask-project/index.ts'), 'utf8');
     expect(edge).toMatch(/from "\.\.\/_shared\/ecos-project-reference\.ts"/);
