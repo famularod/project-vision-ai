@@ -99,32 +99,43 @@ export function ScheduleTaskEditorModal({
   const [status, setStatus] = useState<ScheduleStatus>('Not Started');
   const [notes, setNotes] = useState('');
   const [nextAction, setNextAction] = useState('');
-  const wasVisibleRef = useRef(false);
-  const initializedProjectRef = useRef<string | null>(null);
+  // What the form filled in for the project in view, while it is open.
+  const filledRef = useRef<{ inView: string; project: string; location: string; owner: string } | null>(null);
 
+  // Project, location and owner are filled when the form opens, and again
+  // when the project in view changes, but only in fields David has not
+  // changed since. A change to the project lists (the default project closed
+  // elsewhere, a new project at the top) changes nothing: the form kept
+  // switching project and wiping the typed location and owner. A project
+  // closed since stays in the field and Save refuses it (whole-app audit A3
+  // pass 7 L2, 30 Sep 2026).
   useEffect(() => {
     if (!visible) {
-      wasVisibleRef.current = false;
-      initializedProjectRef.current = null;
+      filledRef.current = null;
       return;
     }
 
-    const normalizedInitialProject = defaultProjectName.trim().toLowerCase();
-    const opened = !wasVisibleRef.current;
-    const initialScopeChanged =
-      initializedProjectRef.current !== normalizedInitialProject;
-    wasVisibleRef.current = true;
+    const inView = (initialProjectName || '').trim().toLowerCase();
+    const before = filledRef.current;
+    if (before && before.inView === inView) return;
 
-    if (!opened && !initialScopeChanged) return;
-
-    initializedProjectRef.current = normalizedInitialProject;
-    setProjectName(defaultProjectName);
-    setLocationName(defaultProjectAreas[0]?.name || '');
-    setOwner(defaultOwner || '');
+    const filled = {
+      inView,
+      project: defaultProjectName,
+      location: defaultProjectAreas[0]?.name || '',
+      owner: defaultOwner || '',
+    };
+    filledRef.current = filled;
+    const fill = (current: string, previous: string | undefined, next: string) =>
+      !before || current === previous ? next : current;
+    setProjectName(current => fill(current, before?.project, filled.project));
+    setLocationName(current => fill(current, before?.location, filled.location));
+    setOwner(current => fill(current, before?.owner, filled.owner));
   }, [
     defaultOwner,
     defaultProjectAreas,
     defaultProjectName,
+    initialProjectName,
     visible,
   ]);
 

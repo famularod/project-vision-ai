@@ -553,4 +553,87 @@ describe('ScheduleTaskEditorModal', () => {
       expect(screen.getByLabelText('Task or milestone').props.value).toBe('Stripe the lot');
     });
   });
+
+  // Whole-app audit A3 pass 7 L2 (30 Sep 2026): with Add Task open, closing
+  // the default project elsewhere (or adding a project, which takes the top
+  // of the list) switched the form to another project and wiped the typed
+  // location and owner: "Lot 5 | Lot 5 Yard | David", and Save filed the task
+  // under Lot 5. The form fills project, location and owner when it opens
+  // (or when the project in view changes) and never changes what David typed.
+  describe('keeps the form as filled and typed while the project lists change', () => {
+    const area = (name: string, projectName: string) => ({
+      id: `area-${name}`, name, projectName, latitude: 34, longitude: -118, radiusFeet: 250,
+    });
+    const listProps = {
+      visible: true,
+      projects: ['Main St', 'Lot 5', 'Tower B'],
+      closedProjects: [] as string[],
+      projectAreas: [area('Main St Yard', 'Main St'), area('Lot 5 Yard', 'Lot 5'), area('Tower B Yard', 'Tower B')],
+      scheduleItems: [],
+      defaultOwner: 'David',
+      onClose: jest.fn(),
+    };
+    let alert: jest.SpyInstance;
+    beforeEach(() => {
+      alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    });
+    afterEach(() => alert.mockRestore());
+
+    const form = (screen: Awaited<ReturnType<typeof render>>) => ['Task or milestone', 'Project', 'Location', 'Owner']
+      .map(label => screen.getByLabelText(label).props.value);
+
+    it('leaves a default project closed elsewhere in the field, keeps what was typed, and Save refuses it', async () => {
+      const onSubmit = jest.fn();
+      const screen = await render(<ScheduleTaskEditorModal {...listProps} onSubmit={onSubmit} />);
+      expect(form(screen)).toEqual(['', 'Main St', 'Main St Yard', 'David']);
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Stripe the lot');
+      fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
+
+      // Main St is closed on another device; the refresh keeps it on both lists.
+      screen.rerender(<ScheduleTaskEditorModal {...listProps} closedProjects={['Main St']} onSubmit={onSubmit} />);
+      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', 'Main St Yard', 'Field super']);
+
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(alert).toHaveBeenCalledWith('Project closed', 'Main St is closed. Reopen it on Overview to add tasks.');
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(form(screen)).toEqual(['Stripe the lot', 'Main St', 'Main St Yard', 'Field super']);
+    });
+
+    it('keeps the project and typed fields when a new project takes the top of the list', async () => {
+      const onSubmit = jest.fn();
+      const props = { ...listProps, projects: ['Lot 5', 'Tower B'] };
+      const screen = await render(<ScheduleTaskEditorModal {...props} onSubmit={onSubmit} />);
+      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Stripe the lot');
+      fireEvent.changeText(screen.getByLabelText('Location'), 'North gate');
+
+      screen.rerender(<ScheduleTaskEditorModal {...props} projects={['Lot 9', 'Lot 5', 'Tower B']} onSubmit={onSubmit} />);
+      expect(form(screen)).toEqual(['Stripe the lot', 'Lot 5', 'North gate', 'David']);
+
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(alert).not.toHaveBeenCalled();
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        taskName: 'Stripe the lot', projectName: 'Lot 5', locationName: 'North gate', owner: 'David',
+      }));
+    });
+
+    it('follows a new project in view only in the fields David has not changed', async () => {
+      const props = { ...listProps, initialProjectName: 'Lot 5', onSubmit: jest.fn() };
+      const screen = await render(<ScheduleTaskEditorModal {...props} />);
+      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
+      fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
+
+      screen.rerender(<ScheduleTaskEditorModal {...props} initialProjectName="Tower B" />);
+      expect(form(screen)).toEqual(['', 'Tower B', 'Tower B Yard', 'Field super']);
+    });
+
+    it('fills the form afresh each time it opens', async () => {
+      const props = { ...listProps, onSubmit: jest.fn() };
+      const screen = await render(<ScheduleTaskEditorModal {...props} />);
+      fireEvent.changeText(screen.getByLabelText('Owner'), 'Field super');
+      screen.rerender(<ScheduleTaskEditorModal {...props} visible={false} />);
+      screen.rerender(<ScheduleTaskEditorModal {...props} closedProjects={['Main St']} />);
+      expect(form(screen)).toEqual(['', 'Lot 5', 'Lot 5 Yard', 'David']);
+    });
+  });
 });
