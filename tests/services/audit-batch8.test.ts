@@ -17,7 +17,9 @@ describe('this phone’s own deletions reach the realtime applier at once', () =
     expect(app).toMatch(/async function removeReferenceDocumentEverywhere\(documentId: string\) \{\n\s+const tombstone = await recordDAVESyncTombstone\('reference_document', documentId\);\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
     expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(2);
     expect(app).toMatch(/\.then\(tombstones => \{[\s\S]{0,400}?rememberOperationalTombstones\(tombstones\);/);
-    expect(app).toMatch(/recordDAVESyncTombstone\('schedule_item', itemId\)\n\s+\.then\(tombstone => \{\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
+    // Pin changed deliberately (A10 pass 7 L5, 30 Sep 2026): a task delete records its own deletion and the
+    // hidden rows it answers to in one call, and hands them all to rememberOperationalTombstones.
+    expect(app).toMatch(/recordDAVESyncTombstones\(itemIds\.map\(recordId => \(\{ entityType: 'schedule_item' as const, recordId \}\)\)\)\n\s+\.then\(tombstones => \{\n\s+rememberOperationalTombstones\(tombstones\);/);
     expect(app).toContain('rememberOperationalTombstones(cascade.nextDAVESyncTombstones);');
     expect(app).not.toContain('operationalSyncTombstonesRef.current = nextTombstones;');
   });

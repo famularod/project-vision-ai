@@ -503,7 +503,7 @@ import {
 } from './services/DAVESyncTombstones';
 import {
   DELETED_TASK_EVIDENCE_LABEL,
-  partitionProjectUpdatesByDeletedTask,
+  partitionProjectUpdatesByDeletedTask, scheduleItemIdsDeletedWithTask,
 } from './services/DAVEDeletedTaskEvidence';
 import { createDAVEPhotoContinuityAnchor } from './services/PIEVisualContinuity';
 import { buildDAVEActionInbox } from './services/DAVEActionInbox';
@@ -11945,24 +11945,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            advanceScheduleItemSyncGeneration(itemId);
-            cancelScheduleItemTextSync(itemId);
-            void recordDAVESyncTombstone('schedule_item', itemId)
-              .then(tombstone => {
-                rememberOperationalTombstones([tombstone]);
-                return Promise.all([
-                  removeOperationalRecordFromSyncQueue('schedule_item', itemId),
-                  clearScheduleItemSyncConflicts(itemId),
-                ]);
+            const itemIds = scheduleItemIdsDeletedWithTask(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], item as unknown as import('./types').ScheduleItem, referenceDocumentsCurrentRef.current); // with the hidden rows it answers to (A10 pass 7 L5)
+            itemIds.forEach(id => { advanceScheduleItemSyncGeneration(id); cancelScheduleItemTextSync(id); });
+            void recordDAVESyncTombstones(itemIds.map(recordId => ({ entityType: 'schedule_item' as const, recordId })))
+              .then(tombstones => {
+                rememberOperationalTombstones(tombstones);
+                return Promise.all(itemIds.flatMap(id => [
+                  removeOperationalRecordFromSyncQueue('schedule_item', id),
+                  clearScheduleItemSyncConflicts(id),
+                ]));
               })
               .then(() => {
                 markScheduleItemsAuthorityReady(true);
                 scheduleItemsCurrentRef.current =
                   scheduleItemsCurrentRef.current.filter(
-                    scheduleItem => scheduleItem.id !== itemId,
+                    scheduleItem => !itemIds.includes(scheduleItem.id),
                   );
-                setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
-                dropDeletedPredecessors([itemId]);
+                setScheduleItems(prev => prev.filter(scheduleItem => !itemIds.includes(scheduleItem.id)));
+                dropDeletedPredecessors(itemIds);
               })
               .catch(() => {
                 Alert.alert(

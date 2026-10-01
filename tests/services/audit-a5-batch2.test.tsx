@@ -268,7 +268,9 @@ describe('deleting a task', () => {
   it('is wired after the task leaves the list, through the normal task update', () => {
     // Round 2 (A5 pass 3 F7): the cleanup moved into dropDeletedPredecessors, shared with
     // "Delete PDF + Items" (behaviour in audit-a5-p3-f7-batch-delete-dependencies).
-    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => scheduleItem\.id !== itemId\)\);\n\s+dropDeletedPredecessors\(\[itemId\]\);/);
+    // Pin changed deliberately (A10 pass 7 L5, 30 Sep 2026): a task delete also removes the hidden rows the
+    // task answers to (itemIds), and drops all of them from the successors' dependencies.
+    expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => !itemIds\.includes\(scheduleItem\.id\)\)\);\n\s+dropDeletedPredecessors\(itemIds\);/);
     expect(app).toMatch(/function dropDeletedPredecessors\(deletedItemIds: readonly string\[\]\) \{\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, deletedItemIds\)\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
   });
 });

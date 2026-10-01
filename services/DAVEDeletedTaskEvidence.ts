@@ -1,4 +1,5 @@
-import type { DAVESyncTombstone, ProjectUpdate, ScheduleItem } from '../types';
+import type { DAVESyncTombstone, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../types';
+import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleTaskEarlierIds, type ScheduleTaskReference } from './ScheduleTaskRevisions';
 
 export const DELETED_TASK_EVIDENCE_LABEL =
@@ -91,6 +92,28 @@ export function partitionProjectUpdatesByDeletedTask<T>(
     (historicalEvidence(readUpdate(value)) ? historical : active).push(value);
   });
   return Object.freeze({ active, historical });
+}
+
+/**
+ * Whole-app audit A10 pass 7 L5 (30 Sep 2026): a new master that moved Pour
+ * slab saved it as a new row answering to the old row's id and hid the old
+ * row. Deleting Pour slab recorded only the new row's deletion, so a field
+ * update linked to the old id stayed current evidence of a task that was
+ * gone. The ids a task delete removes: the task, and the saved hidden rows it
+ * answers to (its earlier ids), in its project. A row still shown is left.
+ */
+export function scheduleItemIdsDeletedWithTask(
+  items: readonly ScheduleItem[],
+  task: ScheduleItem,
+  documents: readonly ReferenceDocument[],
+): string[] {
+  const earlier = new Set(scheduleTaskEarlierIds(task));
+  const project = normalized(task.scheduleProjectName || task.projectName);
+  const rows = items.filter(item => item.id !== task.id && earlier.has(item.id) &&
+    normalized(item.scheduleProjectName || item.projectName) === project);
+  if (rows.length === 0) return [task.id];
+  const shown = new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id));
+  return [task.id, ...rows.filter(item => !shown.has(item.id)).map(item => item.id)];
 }
 
 function normalized(value: unknown) {
