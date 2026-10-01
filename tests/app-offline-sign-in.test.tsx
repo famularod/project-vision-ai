@@ -11,7 +11,14 @@
  * boundary. Adapted from the whole-app audit A1/A2 reviewers' proof tests.
  */
 const mockSecure = new Map<string, string>();
-const mockAsync = new Map<string, string>();
+/**
+ * This test's phone storage, a new one for each test. Each app process (a
+ * module registry) keeps the storage of the test that started it, so an
+ * earlier test's app still running (Settings' cloud status check retrying,
+ * then reading the upload queue) cannot change this test's: it quarantined
+ * this test's queued item in a whole-file run in random order.
+ */
+let mockAsync = new Map<string, string>();
 const mockWorkspaceMounts: string[] = [];
 /** Keychain entries whose removal fails (a Sign Out that cannot finish). */
 const mockFailingSecureDeletes = new Set<string>();
@@ -63,19 +70,21 @@ jest.mock('expo-secure-store', () => ({
   }),
 }));
 jest.mock('@react-native-async-storage/async-storage', () => {
+  // The storage of the test this app process belongs to (see mockAsync).
+  const store = mockAsync;
   const api = {
     getItem: async (key: string) => {
-      const value = mockAsync.get(key) ?? null;
-      if (mockDuringAsyncRead) await mockDuringAsyncRead(key);
+      const value = store.get(key) ?? null;
+      if (mockDuringAsyncRead && store === mockAsync) await mockDuringAsyncRead(key);
       return value;
     },
-    setItem: async (key: string, value: string) => { mockAsync.set(key, value); },
-    removeItem: async (key: string) => { mockAsync.delete(key); },
-    getAllKeys: async () => [...mockAsync.keys()],
-    multiGet: async (keys: string[]) => keys.map(key => [key, mockAsync.get(key) ?? null]),
-    multiSet: async (entries: [string, string][]) => { entries.forEach(([k, v]) => mockAsync.set(k, v)); },
-    multiRemove: async (keys: string[]) => { keys.forEach(k => mockAsync.delete(k)); },
-    clear: async () => mockAsync.clear(),
+    setItem: async (key: string, value: string) => { store.set(key, value); },
+    removeItem: async (key: string) => { store.delete(key); },
+    getAllKeys: async () => [...store.keys()],
+    multiGet: async (keys: string[]) => keys.map(key => [key, store.get(key) ?? null]),
+    multiSet: async (entries: [string, string][]) => { entries.forEach(([k, v]) => store.set(k, v)); },
+    multiRemove: async (keys: string[]) => { keys.forEach(k => store.delete(k)); },
+    clear: async () => store.clear(),
   };
   return { __esModule: true, default: api, ...api };
 });
@@ -251,7 +260,10 @@ beforeEach(() => {
   process.env.EXPO_PUBLIC_SUPABASE_URL = `https://${projectRef}.supabase.co`;
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = 'q13-anon-key-not-a-secret';
   mockSecure.clear();
-  mockAsync.clear();
+  // A new phone storage, and a new app process for anything this test loads
+  // before it launches one: none of an earlier test's modules is reused.
+  mockAsync = new Map();
+  jest.resetModules();
   mockWorkspaceMounts.length = 0;
   mockFailingSecureDeletes.clear();
   mockDuringAsyncRead = null;
