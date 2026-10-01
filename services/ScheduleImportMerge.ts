@@ -171,7 +171,7 @@ function fileProgressFor(
   const startedByStatus = statusStartsTask(saved, stated);
   if (!scheduleRowStatesPercent(stated) && !startedByStatus) return null;
   const file = startedByStatus ? { ...stated, percentComplete: 1, status: 'In Progress' as const } : stated;
-  const owned = Boolean(key(saved.importBatchId) || key(saved.sourceDocumentId));
+  const owned = ownedByImport(saved);
   const managers = scheduleProgressIsManagers(saved) || (!owned && !saved.progressSource);
   const change = percentOf(file) - percentOf(saved);
   if (managers ? change <= 0 : change === 0) return null;
@@ -190,9 +190,18 @@ function key(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
 }
 
-/** A task an import brought in; one entered by hand belongs to none and always shows. */
+/**
+ * A task an import brought in; one entered by hand belongs to none and always shows.
+ *
+ * Whole-app audit A5 pass 18 L1 (1 Oct 2026): a task imported before import
+ * batches and document ids, known only by the file it came from
+ * (importedFrom), counted as entered by hand: a master restated it in place
+ * on its dates, then the shown schedule hid it with its file, and Pour slab
+ * left the view with David's percent. It belongs to its file, as the shown
+ * schedule and Talk's Undo already count it.
+ */
 function ownedByImport(item: ScheduleItem): boolean {
-  return Boolean(key(item.importBatchId) || key(item.sourceDocumentId));
+  return Boolean(key(item.importBatchId) || key(item.sourceDocumentId) || key(item.importedFrom));
 }
 
 /**

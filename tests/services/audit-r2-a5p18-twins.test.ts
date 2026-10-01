@@ -330,3 +330,27 @@ describe('A5 p18 F3: a lookahead listing some of the twins restates the one it l
     ].sort((left, right) => String(left[1]).localeCompare(String(right[1]))));
   });
 });
+
+/**
+ * L1 (from 348e414): a row carrying only importedFrom (imported before batch
+ * and document ids) counted as entered by hand, so a master restated it in
+ * place on its dates; once its own file was no longer current the task was
+ * hidden, and Pour slab left the view with David's 40%.
+ */
+describe('A5 p18 L1: a task known only by the file it came from belongs to that file', () => {
+  const legacyFile = { ...schedule('legacy-master', '2026-08-01T12:00:00.000Z'), originalFileName: 'alpha-master-2025.csv', importBatchId: null } as ReferenceDocument;
+  const legacy = {
+    id: 'legacy-pour', projectName: 'Alpha', scheduleProjectName: 'Alpha', locationName: 'Lot', taskName: 'Pour slab',
+    startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: '', contractor: '', status: 'In Progress', percentComplete: 40,
+    priority: 'Medium', notes: '', progressSource: 'project_manager', progressConfirmedAt: '2026-09-10T12:00:00.000Z', progressConfirmedBy: 'David',
+    importedFrom: 'alpha-master-2025.csv', importedAt: '2026-08-01T12:00:00.000Z', createdAt: '2026-08-01T12:00:00.000Z',
+  } as ScheduleItem;
+
+  it('a master moving it shows Pour slab once, on the master\'s dates, at David\'s 40%', () => {
+    const start: State = { items: [legacy], documents: [legacyFile] };
+    expect(shownNamed(start, 'Pour slab').map(item => item.id)).toEqual(['legacy-pour']);
+    const { state } = approve(start, G, rows(G, ['Pour slab,Alpha,Lot,10/08/2026,10/12/2026,', FRAMING]));
+    expect(twins(state)).toEqual([['MASTER G-1', '10/08/2026', 40, ['legacy-pour']]]);
+    expect(link(state, 'legacy-pour')).toBe('MASTER G-1');
+  });
+});
