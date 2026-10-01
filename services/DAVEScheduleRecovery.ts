@@ -1,6 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
-import { scheduleTaskEarlierIdsOfBoth } from './ScheduleTaskRevisions';
+import { scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
   'Not Started',
@@ -235,7 +235,7 @@ function isSupersededLegacyAlias(
   const task = normalizedTask(record.taskName);
   if (!source || !task || scheduleAuthorityRank(record) > 0) return false;
 
-  const project = normalized(record.scheduleProjectName || record.projectName);
+  const project = projectKey(record);
   const area = normalized(record.locationName);
   const recordTime = scheduleTimestamp(record);
 
@@ -252,9 +252,7 @@ function isSupersededLegacyAlias(
       scheduleTimestamp(candidate) < recordTime
     ) return false;
 
-    const candidateProject = normalized(
-      candidate.scheduleProjectName || candidate.projectName,
-    );
+    const candidateProject = projectKey(candidate);
     const candidateArea = normalized(candidate.locationName);
     if (!sameImportedOccurrence(candidate, record, true)) return false;
     if (!project) return Boolean(candidateProject);
@@ -281,7 +279,7 @@ function isSupersededAssignedLegacyDuplicate(
 ) {
   if (
     !normalized(record.importedFrom) ||
-    !normalized(record.scheduleProjectName || record.projectName) ||
+    !projectKey(record) ||
     normalized(record.importBatchId) ||
     normalized(record.sourceDocumentId)
   ) return false;
@@ -296,9 +294,21 @@ function isSupersededAssignedLegacyDuplicate(
 }
 
 function sameAssignedScope(left: ScheduleItem, right: ScheduleItem) {
-  return normalized(left.scheduleProjectName || left.projectName) ===
-      normalized(right.scheduleProjectName || right.projectName) &&
+  return projectKey(left) === projectKey(right) &&
     normalized(left.locationName) === normalized(right.locationName);
+}
+
+/**
+ * The app project a row belongs to, the schedule's root only when it names
+ * none (whole-app audit round 2, A5 pass 11 M-a, 30 Sep 2026): a Microsoft
+ * Project master files Harbor North's and Harbor South's rows under one root
+ * summary row, and both keep that root as scheduleProjectName. Keyed by the
+ * root, both buildings' "Install HVAC" on the same dates were one task, so
+ * once David entered 40% on North's, South's was dropped as superseded on
+ * every device. The same key as the merge and the delete (A8 pass 9).
+ */
+function projectKey(record: ScheduleItem) {
+  return scheduleTaskProjectKey(record);
 }
 
 function sameImportedOccurrence(
@@ -334,7 +344,7 @@ function sameImportedOccurrence(
 }
 
 function isLowInformationLegacyAlias(record: ScheduleItem) {
-  return !normalized(record.scheduleProjectName || record.projectName) &&
+  return !projectKey(record) &&
     boundedPercent(record.percentComplete) === 0 && record.status === 'Not Started';
 }
 
@@ -418,7 +428,7 @@ function timestamp(value: unknown) {
 }
 
 function scheduleScopeRank(record: ScheduleItem) {
-  return Number(Boolean(normalized(record.scheduleProjectName || record.projectName))) * 2 +
+  return Number(Boolean(projectKey(record))) * 2 +
     Number(Boolean(normalized(record.locationName)));
 }
 
