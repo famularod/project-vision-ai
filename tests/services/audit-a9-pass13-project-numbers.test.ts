@@ -146,3 +146,46 @@ describe('audit A9 pass 13 L3: the selected project\'s own name continuing aroun
     expect(desktop('What is left at 2375 Main?', [SELECTED, MAIN, BLDG], [], BLDG)).toBe(switchOnDesktop('2375', '100A'));
   });
 });
+
+describe('audit A9 pass 13 L4: Talk applies the same principle', () => {
+  const SWITCHGEAR = '480V Switchgear Upgrade 2375';
+  const MAIN = '2375 Main St';
+  const ANNEX = '2375-B Annex Suite 300';
+  const SUITE = '2375 Main St Suite 300';
+  const ELM = '300 Elm';
+  const ELM_ST = '24117 - 450 Elm St';
+  const OAK = '450 Oak Ave';
+  const TWO_PROJECTS = /^This question names two projects/;
+
+  it('"What is left at 2375 Main St?" moves to 2375 Main St, not also the switchgear job (was "names two projects")', () => {
+    const projects = [SELECTED, SWITCHGEAR, MAIN];
+    expect(mentionedDAVEProject('What is left at 2375 Main St?', projects)).toBe(MAIN);
+    expect(talkAnswer('What is left at 2375 Main St?', projects)).toBe(switchOnPhone('2375'));
+  });
+
+  it('L1 in Talk: another project\'s name around the number names just that project', () => {
+    expect(talkAnswer('Is 2375 Main St done?', [SELECTED, SWITCHGEAR, MAIN], [], SWITCHGEAR)).toBe(switchOnPhone('2375', '480V'));
+    expect(talkAnswer('Is 300 Elm done?', [SELECTED, ANNEX, ELM], [], ANNEX)).toBe(switchOnPhone('300', '2375B'));
+    expect(talkAnswer('Is 300 Elm done?', [SELECTED, ANNEX], [ELM], ANNEX)).toBe(closedOnPhone('300', '2375B'));
+    expect(mentionedDAVEProject('Is 300 Elm done?', [SELECTED, ANNEX, ELM])).toBe(ELM);
+  });
+
+  it('L3 in Talk: the selected project\'s own address or full name is answered, and Talk does not move away', () => {
+    expect(talkAnswer('Is 2375 Main St Suite 300 done?', [SELECTED, SUITE, ELM], [], SUITE)).toBeNull();
+    expect(talkAnswer('What is left in Suite 300?', [SELECTED, SUITE, ELM], [], SUITE)).toBeNull();
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED, ELM_ST, OAK], [], ELM_ST)).toBeNull();
+    // Talk moved this to 450 Oak Ave and answered it there.
+    expect(mentionedDAVEProject('What is left at 450 Elm St?', [SELECTED, ELM_ST, OAK])).toBe(ELM_ST);
+  });
+
+  it('two projects whose names continue around the number: Talk asks which', () => {
+    const projects = [SELECTED, ELM_ST, '450 Elm Annex'];
+    expect(mentionedDAVEProject('What is left at 450 Elm?', projects)).toBeNull();
+    expect(talkAnswer('What is left at 450 Elm?', projects)).toMatch(TWO_PROJECTS);
+  });
+
+  it('a bare number still moves by identifier (pass 12 L1)', () => {
+    expect(mentionedDAVEProject('What is left on 2375?', [SELECTED, SWITCHGEAR])).toBe(SWITCHGEAR);
+    expect(talkAnswer('What is left on 2375?', [SELECTED, SWITCHGEAR, MAIN])).toMatch(TWO_PROJECTS);
+  });
+});

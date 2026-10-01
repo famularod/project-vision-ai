@@ -19,6 +19,7 @@ import {
   ecosProjectIdentifiers,
   ecosProjectNumberExemptSpans,
   ecosProjectNumberMentionsAt,
+  ecosProjectsAroundNumber,
 } from '../supabase/functions/_shared/ecos-project-reference';
 import { ecosProjectReferenceMismatchMessage, projectReferenceMismatchText } from './ECOSProjectRefusal';
 
@@ -222,7 +223,18 @@ function talkNamedProjects(
   const withKey = (key: string) => all.filter(name =>
     ecosProjectIdentifiers(name).some(({ digits, letter }) => `${digits}${letter}`.toUpperCase() === key.toUpperCase()));
   const withDigits = (number: string, name: string) => ecosProjectIdentifiers(name).some(({ digits }) => digits === number);
-  for (const { number, start, unsure, letter, spacedLetter } of numbers) {
+  for (const mention of numbers) {
+    const { number, start, unsure, letter, spacedLetter } = mention;
+    // Audit A9 pass 13 L4: as in Ask ECOS, a plain number belongs to the
+    // projects whose name continues around it ("What is left at 2375 Main
+    // St?" is 2375 Main St, not also "480V Switchgear Upgrade 2375"; "450 Elm
+    // St" is "24117 - 450 Elm St", not 450 Oak Ave). Two or more are each
+    // named, so Talk asks which; none falls back to the identifiers below.
+    const around = letter || spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all);
+    if (around.length > 0) {
+      for (const name of around) add(name, start, false, unsure);
+      continue;
+    }
     // "2375B" names the project written "2375B" when there is one (audit A9 pass 8 L7).
     const lettered = letter ? withKey(number + letter) : [];
     const plain = withKey(number);
