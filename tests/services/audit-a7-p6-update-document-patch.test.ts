@@ -106,6 +106,7 @@ import {
   requeueRemovedFieldUpdateDocuments,
   resetFieldUpdateSyncMemoryForTests,
   resolveProjectUpdateSyncConflict,
+  syncConflictChoiceStopReason,
   runFieldUpdateCloudSync,
   synchronizeLocalData,
   uploadPendingChanges,
@@ -1256,7 +1257,7 @@ async function chooseInSettings(phone: Device, conflict: { id: string }, resolut
     transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
-      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
+      resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
       projectUpdateCopyIsLastInCloud,
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
@@ -1756,7 +1757,7 @@ async function chooseInSettingsExpectingFailure(phone: Device, conflict: { id: s
     transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
-      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: jest.fn(), savedUpdates: phone.savedUpdatesRef.current,
+      resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: jest.fn(), savedUpdates: phone.savedUpdatesRef.current,
       projectUpdateCopyIsLastInCloud,
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
@@ -3522,7 +3523,7 @@ async function chooseInSettingsSeeing(phone: Device, conflict: { id: string }, r
     transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
-      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: (update: Update) => { seen.applied.push(update); },
+      resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: (update: Update) => { seen.applied.push(update); },
       savedUpdates: phone.savedUpdatesRef.current, projectUpdateCopyIsLastInCloud,
       getSyncConflicts, getSyncStatus: async () => null, setSyncStatus: () => undefined,
       setSyncConflicts: (conflicts: unknown[]) => { seen.conflictsShown.push(conflicts); },

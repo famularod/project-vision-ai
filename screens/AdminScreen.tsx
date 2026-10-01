@@ -71,6 +71,7 @@ import {
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
+  syncConflictChoiceStopReason,
   uploadPendingChanges,
   type MissingSyncPhoto,
   type FullSyncResult,
@@ -986,7 +987,8 @@ export function AdminScreen({
       // Deleted on another device (whole-app audit A4 pass 16 L2): its
       // conflict is closed, whichever copy was chosen, and nothing was sent.
       // It said "Conflict not resolved", and the list still showed it.
-      if (error instanceof Error && error.message === 'sync_conflict_record_deleted') {
+      const stopReason = syncConflictChoiceStopReason(error);
+      if (stopReason === 'record_deleted') {
         await showConflictsAfterChoice(conflict.entity === 'schedule_item'
           ? 'This task was deleted on another device, so the conflict is closed.'
           : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
@@ -996,7 +998,7 @@ export function AdminScreen({
       // A4 pass 16 L3, A7 pass 14 M-1): nothing was sent, and the conflict
       // now holds the copy in the cloud, which the list shows. Keep Phone had
       // put the phone's copy over an iPad edit the screen never showed.
-      if (error instanceof Error && error.message === 'sync_conflict_cloud_copy_changed') {
+      if (stopReason === 'cloud_copy_changed') {
         await getSyncConflicts().then(setSyncConflicts, () => undefined);
         Alert.alert('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.');
         return;

@@ -4651,6 +4651,19 @@ async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Prom
 }
 
 /**
+ * Why a conflict choice stopped without sending anything, for Settings to
+ * explain in plain words: the record was deleted on another device, or the
+ * cloud's copy changed since the screen showed it. Null for any other failure,
+ * which Settings reports without detail (raw errors are never shown there).
+ */
+export function syncConflictChoiceStopReason(error: unknown): 'record_deleted' | 'cloud_copy_changed' | null {
+  if (!(error instanceof Error)) return null;
+  if (error.message === 'sync_conflict_record_deleted') return 'record_deleted';
+  if (error.message === 'sync_conflict_cloud_copy_changed') return 'cloud_copy_changed';
+  return null;
+}
+
+/**
  * The newer edit Keep Phone sends after a field update conflict's own copy:
  * the update's queued whole copy when it is not the conflict's copy, or one
  * an earlier kept copy still carries (queued, or recorded with the conflict).
