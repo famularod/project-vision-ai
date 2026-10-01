@@ -296,3 +296,49 @@ describe('L1: Set Active or Make Current back to an older master carries David\'
     expect(r2.counts).toBe('0 completed; 0 open');
   });
 });
+
+describe('L2: deleting a lookahead while an older master is current keeps David\'s progress on the task shown', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const L = doc('LOOKAHEAD L', '2026-09-16T12:00:00.000Z', 'lookahead');
+  const setUp = () => {
+    let state = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,']);
+    state = approve(state, G, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,']);
+    state = approve(state, L, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+    state = record(state, named(state, 'Framing')[0].id, 50, '2026-09-17T09:00:00.000Z');
+    state = setActive(state, F, '2026-09-17T10:00:00.000Z');
+    expect(named(state, 'Framing').map(item => [item.id, item.percentComplete])).toEqual([['MASTER G-1', 50]]); // L's row still shown
+    return state;
+  };
+
+  it('Framing shows F\'s row with David\'s 50% after the delete; the report says only the date change', () => {
+    let state = setUp();
+    const r1 = send(null, state, '2026-09-17T15:00:00.000Z');
+    state = deleteWithItems(state, L, '2026-09-19T10:00:00.000Z');
+    const [framing] = named(state, 'Framing');
+    expect([framing.id, framing.finishDate, framing.percentComplete, framing.progressSource]).toEqual(['MASTER F-1', '10/25/2026', 50, 'project_manager']);
+    // Dated by when David judged it, so a later field report still counts against it.
+    expect(framing.progressJudgment?.judgedAt).toBe('2026-09-17T09:00:00.000Z');
+    expect(send(r1.sent, state, '2026-09-21T09:00:00.000Z').lines).toEqual(['Alpha: Framing finish changed from 11/01/2026 to 10/25/2026.']);
+  });
+
+  it('a higher percent F\'s file stated is not lowered to David\'s older word', () => {
+    let state = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,60']);
+    state = approve(state, G, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,']);
+    state = approve(state, L, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+    state = record(state, named(state, 'Framing')[0].id, 50, '2026-09-17T09:00:00.000Z');
+    state = setActive(state, F, '2026-09-17T10:00:00.000Z');
+    state = deleteWithItems(state, L, '2026-09-19T10:00:00.000Z');
+    expect(named(state, 'Framing').map(item => [item.id, item.percentComplete])).toEqual([['MASTER F-1', 60]]);
+  });
+
+  it('control: with G current, deleting the lookahead leaves David\'s 50% on G\'s row, shown', () => {
+    let state = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,']);
+    state = approve(state, G, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,']);
+    state = approve(state, L, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+    state = record(state, named(state, 'Framing')[0].id, 50, '2026-09-17T09:00:00.000Z');
+    state = deleteWithItems(state, L, '2026-09-19T10:00:00.000Z');
+    expect(named(state, 'Framing').map(item => [item.id, item.finishDate, item.percentComplete])).toEqual([['MASTER G-1', '10/30/2026', 50]]);
+    expect(state.items.find(item => item.id === 'MASTER F-1')!.percentComplete).toBe(0);
+  });
+});

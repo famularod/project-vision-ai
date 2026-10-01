@@ -18,7 +18,12 @@ import {
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
-import { scheduleTaskLinks, scheduleTaskProjectKey, scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
+import {
+  scheduleTaskEarlierIds,
+  scheduleTaskLinks,
+  scheduleTaskProjectKey,
+  scheduleTasksAnsweringToRemovedTasks,
+} from './ScheduleTaskRevisions';
 
 /**
  * Owner answer Q22 (30 Sep 2026): "a shorter schedule should be made to
@@ -577,7 +582,54 @@ export function scheduleItemsAfterScheduleDeleted({
   const schedules = [document, ...documents].filter(saved => saved.importBatchId && scheduleDocumentIsScheduleLike(saved) && !scheduleDocumentAddsToMaster(saved)); // when each full schedule came in (A8 pass 9 L1)
   scheduleTasksAnsweringToRemovedTasks(shown, removed, kept, schedules, progressOfRemovedRow)
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
+  progressOfRowsNowHidden(items, removed, document, documents, kept, shown.map(item => changed.get(item.id) || item))
+    .forEach(item => changed.set(item.id, { ...item, updatedAt })); // a row the delete hides gives David's newer progress (A6 pass 19 L2)
   return [...changed.values()];
+}
+
+/**
+ * Whole-app audit A6 pass 19 L2 (1 Oct 2026): master F was current again
+ * (Set Active), and lookahead L held master G's row of Framing on show, where
+ * David entered 50%. Deleting L hid G's row (kept: G holds it) and showed F's
+ * at 0%, and the report said "Framing moved from 50% to 0% complete." The
+ * hand-over above covers only removed rows. A row the delete hides, not
+ * removes, now gives David's newer progress to the row it shows in its place,
+ * as Set Active's carry does: the one row shown since the delete that it
+ * answers to, or that answers to it (revisedFromTaskIds), by the hand-over's
+ * rule (progressOfRemovedRow: his own progress judged after the row's; a
+ * file's higher percent is never lowered).
+ */
+function progressOfRowsNowHidden(
+  /** The saved tasks the delete keeps, before its changes. */
+  items: readonly ScheduleItem[],
+  removed: readonly ScheduleItem[],
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+  /** The same tasks with the delete's changes. */
+  kept: readonly ScheduleItem[],
+  /** The tasks shown after the delete, with its changes so far. */
+  shown: readonly ScheduleItem[],
+): ScheduleItem[] {
+  const removedIds = new Set(removed.map(item => item.id));
+  const shownBefore = new Set(selectAuthoritativeScheduleItems({
+    scheduleItems: [...items, ...removed],
+    scheduleDocuments: [document, ...documents],
+  }).map(item => item.id).filter(id => !removedIds.has(id)));
+  const shownAfter = new Set(shown.map(item => item.id));
+  const nowShown = shown.filter(item => !shownBefore.has(item.id));
+  const nowHidden = kept.filter(item => shownBefore.has(item.id) && !shownAfter.has(item.id));
+  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  const given = new Map<string, ScheduleItem>();
+  nowHidden.forEach(hidden => {
+    const hiddenId = hidden.id.trim();
+    const linked = nowShown.filter(item => scheduleTaskEarlierIds(hidden).includes(item.id.trim()) ||
+      scheduleTaskEarlierIds(item).includes(hiddenId));
+    if (linked.length !== 1) return;
+    const target = given.get(linked[0].id) || linked[0];
+    const progress = progressOfRemovedRow(target, hidden);
+    if (progress) given.set(target.id, { ...target, ...progress });
+  });
+  return [...given.values()];
 }
 
 /**
