@@ -871,9 +871,12 @@ export function AdminScreen({
         ]);
         setSyncStatus(nextStatus);
         setSyncConflicts(nextConflicts);
+        // An update held for conflict review is counted once, as its
+        // conflict (whole-app audit A4 pass 16; as Retry Sync, A4 pass 15b
+        // F2): its newer edit waiting in the queue was counted again.
         actualIssueCount = Math.max(
           actualIssueCount,
-          nextStatus.queuedChanges +
+          Math.max(0, nextStatus.queuedChanges - (nextStatus.heldForConflictReview || 0)) +
             nextConflicts.length +
             (nextStatus.recoveryAvailable ? 1 : 0) +
             failedDocumentCount,

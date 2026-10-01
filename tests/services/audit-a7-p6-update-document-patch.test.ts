@@ -3854,3 +3854,55 @@ describe('a late analysis result reaches the cloud\'s copy while a newer edit wa
     expect(firstPhotoAnalysis(inCloud())).toEqual(result);
   });
 });
+
+/**
+ * A4 pass 16 (recorded): when Settings › Sync Now could not finish, its
+ * message counted the items still on the phone as the queued changes plus
+ * the conflicts. An update held for conflict review is both (its newer edit
+ * waits in the queue, and its conflict is open), so one update read "2 items
+ * remain saved on this phone". It is counted once, as Retry Sync counts it
+ * (81ec965).
+ */
+describe('Sync Now that cannot finish counts an update held for conflict review once (audit A4 pass 16)', () => {
+  /** AdminScreen's own Sync Now with the full sync failing; the message it shows. */
+  async function pressSyncNowThatFails(phone: Device): Promise<string> {
+    const messages: string[] = [];
+    const { handleFullSyncNow } = evaluate<{ handleFullSyncNow: () => Promise<void> }>(
+      transpile(`${componentFunction('handleFullSyncNow', adminScreen)}\nmodule.exports = { handleFullSyncNow };`),
+      {
+        setIsSyncing: () => undefined, setLastFullSyncIssueCount: () => undefined,
+        setSyncAttemptMessage: (message: string) => { messages.push(message); }, setAdminActionSummary: () => undefined,
+        startProjectDocumentUploadRun: () => ({ remaining: () => 0 }), onRetryDocumentUploads: jest.fn(),
+        synchronizeLocalData: async () => { throw new Error('Network request failed'); },
+        localProjects: ['P'], savedUpdates: phone.savedUpdatesRef.current, projectAreas: [], scheduleItems: [], referenceDocuments: [],
+        getSyncStatus, getSyncConflicts, setSyncStatus: () => undefined, setSyncConflicts: () => undefined,
+        onApplyCloudRecovery: () => undefined, failedDocumentCountRef: { current: 0 },
+        projectDocumentsStillUploadingNotice: () => null, showMissingPhotoSyncAlert: jest.fn(),
+        // As AdminScreen counts them: its cards Waiting to Sync or failed.
+        updateSyncAttentionCount: phone.savedUpdatesRef.current.filter(update => update.status === 'queued' || update.status === 'failed').length,
+        failedDocumentCount: 0,
+      },
+    );
+    await handleFullSyncNow();
+    return messages.at(-1) || '';
+  }
+
+  it('a newer edit held for review: one item, not two', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 45 yards (saved on the phone during the conflict)' });
+    expect((await getSyncStatus()).heldForConflictReview).toBe(1);
+    expect(await pressSyncNowThatFails(phone)).toBe('Full cloud sync could not finish. 1 item remains saved on this phone.');
+  });
+
+  it('another update waiting too is still counted: two items', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 45 yards (saved on the phone during the conflict)' });
+    const other = { ...savedUpdate([], 'queued', 'u2'), notes: 'Strip forms' };
+    phone.setSavedUpdates(prev => [...prev, other]);
+    phone.render();
+    await queueProjectUpdateRecord(other, false);
+    expect(await pressSyncNowThatFails(phone)).toBe('Full cloud sync could not finish. 2 items remain saved on this phone.');
+  });
+});
