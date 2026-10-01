@@ -13940,7 +13940,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               initialFilter={scheduleEntryFilter}
               initialAddProjectName={scheduleAddProjectName}
               initialAddGuided={scheduleAddGuided}
-              onInitialAddGuidedConsumed={() => setScheduleAddGuided(false)}
+              onInitialAddConsumed={() => { setScheduleAddGuided(false); setScheduleAddProjectName(null); }}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
@@ -19247,7 +19247,7 @@ function ScheduleScreen({
   initialFilter,
   initialAddProjectName,
   initialAddGuided,
-  onInitialAddGuidedConsumed,
+  onInitialAddConsumed,
   projectFilter,
   defaultOwner,
   currentUserEmail,
@@ -19285,7 +19285,8 @@ function ScheduleScreen({
   initialFilter?: ScheduleTaskFilter;
   initialAddProjectName?: string | null;
   initialAddGuided?: boolean;
-  onInitialAddGuidedConsumed?: () => void;
+  /** Add Task closed: a later one opens on the project in view, unguided (A3 pass 9 L2/L3). */
+  onInitialAddConsumed?: () => void;
   projectFilter?: string | null;
   defaultOwner?: string;
   currentUserEmail?: string;
@@ -19848,7 +19849,7 @@ function ScheduleScreen({
       defaultOwner={defaultOwner}
       onClose={() => {
         setShowAdd(false);
-        onInitialAddGuidedConsumed?.();
+        onInitialAddConsumed?.();
       }}
       onSubmit={onAdd}
     />
