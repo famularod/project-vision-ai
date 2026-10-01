@@ -15,6 +15,13 @@
  *
  * Now the tab ends signed out: nothing stored, no session, the sign-in page
  * after a remount, and an automatic refresh has nothing to refresh.
+ *
+ * L1: while that /logout or refresh hung, every later sign-in in the tab
+ * waited the full 10 s, even after he had signed in and out there in
+ * between, and the tab ignored its own refreshes (TOKEN_REFRESHED) instead
+ * of reloading. Now a sign-in made after the 10 s that SUCCEEDS ends the
+ * wait; the hung ending's late answer neither removes that sign-in nor
+ * keeps the old one, and a sign-in that fails leaves the wait in place.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
@@ -37,6 +44,7 @@ import {
   createTabStorage,
   storeTabSignIn,
   tabHoldsSignIn,
+  tabSignIn,
   type TabCloud,
   type TabStorage,
 } from '../fixtures/browser-tabs';
@@ -88,8 +96,12 @@ jest.mock('../../services/DAVEWebSupabaseClient', () => {
   };
 });
 
+let signOutHere: () => Promise<void> = async () => undefined;
+let readAgain: () => Promise<boolean> = async () => false;
 function Probe() {
   const auth = useDesktopAuth();
+  signOutHere = () => auth.signOutOfDesktop('local');
+  readAgain = auth.refreshSnapshot;
   return (
     <View>
       <Text testID="phase">{auth.phase}</Text>
@@ -313,3 +325,99 @@ describe.each<Failure>(['mistyped', 'dropped'])(
     });
   },
 );
+
+describe('L1: a sign-in made after the wait that succeeds ends the wait (A12 pass 8)', () => {
+  const ownerChecks = () => cloud.callsFor('/rest/v1/rpc/dave_is_app_owner');
+
+  /** His sign-in, sent once the 10 s are up, works and opens the workspace. */
+  async function hisSignInWorksAfterTheWait(screen: ReturnType<typeof render>) {
+    jest.useFakeTimers({ advanceTimers: true });
+    await davidSignsInHere(screen);
+    await settle();
+    expectWaitingToSignIn(screen);
+    await act(async () => { jest.advanceTimersByTime(DESKTOP_SIGN_IN_ENDING_WAIT_MS); });
+    await waitFor(() => expect(screen.getByText('Account and Sync')).toBeTruthy());
+    await settle();
+    expect(passwordSignIns()).toHaveLength(1);
+  }
+
+  test('with /logout still hung: his own refresh reloads, and after signing out and in again he does not wait', async () => {
+    const screen = await openTab();
+    const logout = cloud.hold('logout');
+    await davidSignsOutInHisOtherTab(logout.reached);
+    await hisSignInWorksAfterTheWait(screen);
+
+    // This tab's own refresh reloads his workspace (the owner is checked again).
+    const checksBefore = ownerChecks().length;
+    await act(async () => { await thisTab.auth.refreshSession(); });
+    await settle();
+    expect(ownerChecks().length).toBeGreaterThan(checksBefore);
+
+    // He signs out here, then in again: no 10 s wait this time.
+    await act(async () => { await signOutHere(); });
+    await settle();
+    expect(text(screen, 'phase')).toBe('signed_out');
+    await davidSignsInHere(screen);
+    await settle();
+    expect(passwordSignIns()).toHaveLength(2);
+    await waitFor(() => expect(screen.getByText('Account and Sync')).toBeTruthy());
+    await settle();
+    const latest = tabSignIn(thisTabStorage);
+
+    // The hung /logout finally answers 503: his latest sign-in stays.
+    cloud.state.logout = 503;
+    await act(async () => { logout.release(); });
+    await settle();
+    expect(text(screen, 'phase')).toBe('ready');
+    expect(tabSignIn(thisTabStorage)).toEqual(latest);
+    let readOk = false;
+    await act(async () => { readOk = await readAgain(); });
+    expect(readOk).toBe(true);
+    screen.unmount();
+  });
+
+  test('hidden an hour, /logout hung: the late 503 keeps his new sign-in, never the refreshed old one', async () => {
+    const screen = await openTab();
+    anHourPasses();
+    cloud.state.logout = 503;
+    const logout = cloud.hold('logout');
+    await davidSignsOutInHisOtherTab(logout.reached);
+    const refreshedOld = tabSignIn(thisTabStorage);
+    expect(refreshedOld?.refreshToken).not.toBe('refresh:owner-1:1');
+
+    await hisSignInWorksAfterTheWait(screen);
+    const newSignIn = tabSignIn(thisTabStorage);
+    expect(newSignIn?.refreshToken).not.toBe(refreshedOld?.refreshToken);
+
+    await act(async () => { logout.release(); });
+    await settle();
+    expect(text(screen, 'phase')).toBe('ready');
+    expect(tabSignIn(thisTabStorage)).toEqual(newSignIn);
+    screen.unmount();
+  });
+
+  test('a sign-in after the wait that fails leaves the wait in place for the next one', async () => {
+    const screen = await openTab();
+    const logout = cloud.hold('logout');
+    await davidSignsOutInHisOtherTab(logout.reached);
+
+    jest.useFakeTimers({ advanceTimers: true });
+    await davidSignsInHere(screen, 'mistyped-test-password');
+    await act(async () => { jest.advanceTimersByTime(DESKTOP_SIGN_IN_ENDING_WAIT_MS); });
+    await waitFor(() => expect(text(screen, 'phase')).toBe('signed_out'));
+    expect(passwordSignIns()).toHaveLength(1);
+
+    // Still ending: the next sign-in waits again, with nothing sent yet.
+    await davidSignsInHere(screen);
+    await settle();
+    expect(text(screen, 'phase')).toBe('signing_in');
+    expect(passwordSignIns()).toHaveLength(1);
+
+    await act(async () => { logout.release(); });
+    await waitFor(() => expect(screen.getByText('Account and Sync')).toBeTruthy());
+    await settle();
+    expect(passwordSignIns()).toHaveLength(2);
+    expect(tabSignIn(thisTabStorage)?.refreshToken).not.toBe('refresh:owner-1:1');
+    screen.unmount();
+  });
+});

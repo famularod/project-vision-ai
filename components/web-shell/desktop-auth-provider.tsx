@@ -229,7 +229,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   /**
    * Set while this tab ends its sign-in because another tab of the same
    * account signed out (whole-app audit A1 pass 6 L1, 30 Sep 2026), until
-   * that ending settles (A12 pass 7 L1).
+   * that ending settles (A12 pass 7 L1) or a sign-in made here after the
+   * time limit succeeds (A12 pass 8 L1).
    */
   const endingSignInRef = useRef<DesktopSignInEnding | null>(null);
 
@@ -518,6 +519,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // The ending's guard stays on until it settles; a sign-in starting no
     // longer turns it off (A12 pass 7 L1).
     await waitForSignInToFinishEnding();
+    // Still set: the ending ran past the time limit.
+    const endingPastLimit = endingSignInRef.current;
     // The ending's SIGNED_OUT, as it settled, set the plain sign-in page
     // back; the button is busy again while this sign-in goes out.
     if (mountedRef.current) setPhase('signing_in');
@@ -528,6 +531,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         setMessage('Sign-in could not be completed. Check your email and password, then try again.');
       }
       return false;
+    }
+    // His sign-in worked: an ending past the time limit no longer holds this
+    // tab's guard. It had made every later sign-in here wait the full 10 s
+    // and ignored this tab's own refreshes until its hung request ended
+    // (A12 pass 8 L1). Its late answer leaves this sign-in be: the gateway
+    // keeps a sign-in that succeeded here (A12 pass 8 H1). A sign-in that
+    // failed leaves the guard on.
+    if (endingPastLimit && endingSignInRef.current === endingPastLimit) {
+      endingSignInRef.current = null;
     }
     return loadAuthorizedSnapshot(result.session);
   }, [forgetNotOwner, loadAuthorizedSnapshot, waitForSignInToFinishEnding]);
