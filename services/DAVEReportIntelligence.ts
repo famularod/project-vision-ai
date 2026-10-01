@@ -263,10 +263,16 @@ export function buildDAVEReportBriefing({
   const completedWork = unique(completedTasks.map(({ truth, task, line }) =>
     reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
   ).slice(0, 12);
-  const currentWork = unique(truths.flatMap(truth => truth.schedule
+  // Whole-app audit A6 pass 20 L1 (1 Oct 2026): two same-named open tasks in one area with the same status,
+  // percent and due date printed one Current Work line. They say how many, as Completed Work does (A6 pass 19 L4).
+  const currentTasks = truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
     .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
-    .map(task => reportTaskFact(truth.projectName, task, truths.length > 1))),
+    .map(task => ({ truth, task, line: clean(reportTaskFact(truth.projectName, task, truths.length > 1)) })));
+  const tasksOnCurrentLine = new Map<string, Set<string>>();
+  currentTasks.forEach(({ task, line }) => tasksOnCurrentLine.set(line, new Set([...(tasksOnCurrentLine.get(line) || []), task.taskId])));
+  const currentWork = unique(currentTasks.map(({ truth, task, line }) =>
+    reportTaskFact(truth.projectName, task, truths.length > 1, tasksOnCurrentLine.get(line)!.size)),
   ).slice(0, 12);
   const scheduleConcerns = truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
@@ -399,6 +405,8 @@ function reportTaskFact(
   projectName: string,
   task: DAVEProjectTruth['schedule'][number],
   includeProject: boolean,
+  /** How many different tasks read this same line (A6 pass 20 L1): "(2 tasks)". */
+  tasks = 1,
 ) {
   const prefix = includeProject ? `${projectName} — ` : '';
   const area = task.areaName ? ` (${task.areaName})` : '';
@@ -407,7 +415,7 @@ function reportTaskFact(
     `${boundedPercent(task.percentComplete)}% complete`,
     task.finishDate ? `due ${task.finishDate}` : '',
   ].filter(Boolean);
-  return `${prefix}${task.taskName}${area}: ${parts.join('; ')}.`;
+  return `${prefix}${task.taskName}${area}: ${parts.join('; ')}${tasks > 1 ? ` (${tasks} tasks)` : ''}.`;
 }
 
 type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) => string | null;

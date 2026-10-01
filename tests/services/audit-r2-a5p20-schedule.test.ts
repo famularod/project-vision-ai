@@ -1,14 +1,15 @@
 /**
  * Audit round 2, A5 pass 20 (1 Oct 2026): two Low findings in the schedule
- * merge (ScheduleLookahead, ScheduleImportMerge).
+ * merge (ScheduleLookahead, ScheduleImportMerge) and one in the report text
+ * (DAVEReportIntelligence).
  *
  * Owner answer Q22: a lookahead adds to the master, and file progress never
  * goes below what David entered. A newer master's dates replace older
  * lookahead dates; a lookahead newer than the master restates the task.
  *
  * Real CSV normalizer, the phone's merge, Set Active, Delete PDF + Items and
- * shown-task pick, and the web's upload plan and Make Current carry.
- * Synthetic data.
+ * shown-task pick, the web's upload plan and Make Current carry, and the
+ * Reports screen's briefing. Synthetic data.
  */
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -16,9 +17,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
+import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
+import { reportBaselineSnapshot } from '../../services/DAVEReportSnapshot';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import type { PIEReportDraft } from '../../services/PIEReporter';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
   mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks,
@@ -288,5 +293,61 @@ describe('P2: a master made current after a lookahead gives its higher percent',
     const up = upload({ items: [hand], documents: [] }, 'alpha-master-g.csv', [G_ROW('60')], FRIDAY);
     const onL = record(approve(up.state, L, [L_ROW('')], true), 'hand-pour', 80, '2026-09-27T15:00:00.000Z');
     expect(copies(makeCurrent(onL, up.document, MONDAY), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 80]]);
+  });
+});
+
+/**
+ * A6 pass 20 L1 (older, cosmetic): two same-named open tasks in one area, with
+ * the same status, percent and due date, printed one Current Work line.
+ * Completed Work and the "since" lines count them (f0c2fe8); Current Work now
+ * does too. The same task reached twice still prints once.
+ */
+describe('A6 p20 L1: Current Work counts two different tasks on one line', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const draft = {
+    id: 'draft-1', reportType: 'daily_project_update', audience: 'owner', title: 'Alpha update', subject: 'Alpha update', body: '',
+    openingLine: '', closingLine: '', executiveSummary: [], sections: [], locationGroups: [], actionItems: [], imageReferences: [], risks: [],
+    decisionsNeeded: [], confidence: 'high', reportReadiness: 'high', needsReview: false, reviewFlags: [], sourceEvidence: [],
+    constructionUnderstanding: {}, generatedAt: '2026-09-01T00:00:00.000Z',
+  } as unknown as PIEReportDraft;
+  const truthOf = (items: ScheduleItem[], now: string) => buildDAVEProjectTruth({
+    projectId: 'report:alpha', projectName: 'Alpha', updates: [], scheduleItems: items, projectAreas: [], referenceDocuments: [], now,
+  });
+  const briefingOf = (truths: ReturnType<typeof truthOf>[], items: ScheduleItem[]) => buildDAVEReportBriefing({
+    truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(null, buildDAVEReportSourceFingerprint(truths)), scheduleItems: items,
+  });
+  const withSecondPour = () => {
+    const state = approve(EMPTY, F, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Framing,Alpha,Lot,10/12/2026,10/16/2026,']);
+    const first = named(state, 'Pour slab')[0];
+    // David enters a second pour by hand in the same area, due the same day.
+    const { importBatchId: _batch, sourceDocumentId: _document, importedFrom: _from, importedAt: _at, ...hand } = first as any;
+    return { ...state, items: [...state.items, { ...hand, id: 'hand-pour-2', startDate: '10/07/2026', createdAt: '2026-09-08T09:00:00.000Z', updatedAt: '2026-09-08T09:00:00.000Z' } as ScheduleItem] };
+  };
+  const section = (body: string, title: string) => body.slice(body.indexOf(title)).split('\n\n')[0];
+
+  it('two pours: one line with "(2 tasks)", in the PM report too', () => {
+    const state = withSecondPour();
+    expect(named(state, 'Pour slab')).toHaveLength(2);
+    const briefing = briefingOf([truthOf(shown(state), '2026-09-08T15:00:00.000Z')], shown(state));
+    expect(briefing.currentWork.filter(line => line.startsWith('Pour slab'))).toEqual(['Pour slab (Lot): Not Started; 0% complete; due 10/09/2026 (2 tasks).']);
+    expect(briefing.currentWork.filter(line => line.startsWith('Framing'))).toEqual(['Framing (Lot): Not Started; 0% complete; due 10/16/2026.']);
+    expect(section(enhanceDAVEReportDraft(draft, briefing, 'project_manager').body, 'CURRENT WORK')).toContain('Pour slab (Lot): Not Started; 0% complete; due 10/09/2026 (2 tasks).');
+  });
+
+  it('different percents: two lines, no count (unchanged)', () => {
+    const state = record(withSecondPour(), 'hand-pour-2', 30, '2026-09-08T10:00:00.000Z');
+    const briefing = briefingOf([truthOf(shown(state), '2026-09-08T15:00:00.000Z')], shown(state));
+    expect(briefing.currentWork.filter(line => line.startsWith('Pour slab')).sort()).toEqual([
+      'Pour slab (Lot): In Progress; 30% complete; due 10/09/2026.',
+      'Pour slab (Lot): Not Started; 0% complete; due 10/09/2026.',
+    ]);
+  });
+
+  it('the same task reached twice prints once, with no count', () => {
+    const state = approve(EMPTY, F, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,']);
+    const truth = truthOf(shown(state), '2026-09-08T15:00:00.000Z');
+    const briefing = briefingOf([truth, truth], shown(state));
+    expect(briefing.currentWork.filter(line => line.includes('Pour slab'))).toHaveLength(1);
+    expect(briefing.currentWork.join('\n')).not.toContain('tasks)');
   });
 });
