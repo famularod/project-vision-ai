@@ -5117,17 +5117,25 @@ export async function resolveScheduleItemSyncConflict(
     cloudNow,
   );
   const queueItemId = scheduleItemQueueItemId(localItem.id);
-  await enqueuePendingChange<ScheduleItemRecordPayload>({
-    id: queueItemId,
-    entity: 'schedule_item',
-    operation: 'update',
-    payload: {
-      id: localItem.id,
-      itemData: keptItem,
-      forceLocal: true,
-    },
-    changedAt: new Date().toISOString(),
-    autoUpload: false,
+  const ownerId = currentCloudOwner().ownerId;
+  // The kept copy takes the place of what waited for the task, which is kept
+  // to put back if the choice fails (A7 pass 16 L-3, as for field updates).
+  const before = await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueItemId) ?? null;
+    if (existing?.operation === 'delete') return { nextQueue: queue, result: existing, persist: false };
+    const now = new Date().toISOString();
+    const kept: SyncQueueItem = {
+      id: queueItemId,
+      entity: 'schedule_item',
+      operation: 'update',
+      payload: { id: localItem.id, itemData: keptItem, forceLocal: true },
+      createdAt: now,
+      changedAt: now,
+      retryCount: 0,
+      lastError: null,
+      ...(ownerId ? { ownerId } : {}),
+    };
+    return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: existing };
   });
   let result = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
@@ -5148,6 +5156,20 @@ export async function resolveScheduleItemSyncConflict(
     exactOutcome !== 'uploaded' ||
     exactItemStillQueued
   ) {
+    // The queue as it was before the choice (whole-app audit A7 pass 16 L-3,
+    // as for field updates, A4 pass 16 L1): the kept copy stayed queued, and
+    // with no hold for tasks the next automatic pass wrote it over a later
+    // web edit and closed the conflict, while Settings said "Neither copy
+    // was changed". What waited for the task waits again, as it was; an edit
+    // saved since (which took the kept copy's place) stays.
+    await mutateOfflineQueue(queue => {
+      const current = queue.find(item => item.id === queueItemId);
+      if (current ? (current.payload as Partial<ScheduleItemRecordPayload>).forceLocal !== true : !before) {
+        return { nextQueue: queue, result: undefined, persist: false };
+      }
+      const others = queue.filter(item => item.id !== queueItemId);
+      return { nextQueue: before ? [...others, before] : others, result: undefined };
+    });
     throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 

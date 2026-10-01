@@ -20,6 +20,11 @@
  *     Keep Phone read the cloud), over an empty list. It now says the
  *     conflict closed, and sends nothing.
  *
+ * L-3 A failed Keep Phone on a task left its kept copy queued; with no
+ *     hold for tasks, the next automatic pass wrote it over a later web
+ *     edit and closed the conflict, unreviewed. The queue now goes back
+ *     exactly as it was before Keep Phone, as for field updates (0047547).
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as audit-r2-a7p15-task-conflict-reread.test.ts does).
  */
@@ -287,5 +292,44 @@ describe('L-6: Keep Phone on a task whose conflict closed meanwhile says so (aud
     expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ notes: NEWER });
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+describe('L-3: a failed Keep Phone on a task leaves the queue as it was (audit A7 pass 16)', () => {
+  it('the upload fails; the web then sets 70%; the next automatic pass leaves the 70% and the conflict', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    // Weak signal: the cloud refuses every write.
+    mockUpsertScheduleItem.mockImplementation(async () => mockUnreadable());
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown }))
+      .rejects.toThrow();
+    // The kept copy stayed queued.
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+
+    // The signal returns; David sets 70% on the web; an automatic pass runs.
+    mockUpsertScheduleItem.mockImplementation(mockCloud.upsert);
+    mockUpsertScheduleItem.mockClear();
+    const web70: ScheduleItem = { ...shown, percentComplete: 70, status: 'In Progress', updatedAt: '2026-09-30T12:00:00.000Z' };
+    mockCloudRows.set(phoneTask.id, web70);
+    await uploadPendingChanges();
+    // It wrote the phone's 0% over the 70% and closed the conflict.
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(web70);
+    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+  });
+
+  it('a newer phone edit was waiting: it is put back exactly as it was', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    await queueScheduleItemRecord(
+      { ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'],
+    );
+    const before = await getOfflineQueue();
+    mockUpsertScheduleItem.mockImplementation(async () => mockUnreadable());
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local', { cloudCopyShown: shown }))
+      .rejects.toThrow();
+    await expect(getOfflineQueue()).resolves.toEqual(before);
+    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
   });
 });
