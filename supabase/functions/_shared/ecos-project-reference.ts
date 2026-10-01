@@ -285,10 +285,11 @@ export function ecosProjectNumberMentionsAt(
     // project numbered just this ("2375 A?" for "2375 A Street"). A hyphen
     // letter always counts ("2375-A" is 2375A; audit A9 pass 11 F2). Audit
     // A9 pass 12 L3: with a word after the capital, the name must continue
-    // with that word too ("2375 A Phase 2" does not continue "2375 A Street").
+    // with that word too ("2375 A Phase 2" does not continue "2375 A Street";
+    // "2375 A St." does, pass 13 L2).
     const spacedLetter = hyphenLetter || (capital && !projectNames.some(name =>
       hasIdentifier(name, number) && projectNameAroundNumber(number, '', text.slice(end), [name]) &&
-      (!capitalBeforeWord || wordsAfterNumber(name, number)[1] === wordsAfterNumber(text.slice(end))[1]))
+      (!capitalBeforeWord || sameNameWord(wordsAfterNumber(text.slice(end))[1], wordsAfterNumber(name, number)[1])))
       ? capital
       : '');
     if (
@@ -469,8 +470,23 @@ function nameContinuesAt(name: string, at: RegExpExecArray, before: string, afte
   return sameNameWord(nextWord, nextNameWord) || sameNameWord(previousWord, previousNameWord);
 }
 
+/**
+ * Whether a question word is the name word, without case. Audit A9 pass 13
+ * L2: a common street word and its abbreviation are one word ("2375 A St."
+ * continues "2375 A Street"; a trailing period is never part of a word here).
+ */
 function sameNameWord(word: string | undefined, nameWord: string | undefined) {
-  return Boolean(word && nameWord && word.toLowerCase() === nameWord.toLowerCase());
+  return Boolean(word && nameWord && streetWord(word) === streetWord(nameWord));
+}
+
+const STREET_WORDS: ReadonlyMap<string, string> = new Map([
+  ['st', 'street'], ['ave', 'avenue'], ['rd', 'road'], ['blvd', 'boulevard'], ['dr', 'drive'],
+  ['ln', 'lane'], ['ct', 'court'], ['pl', 'place'], ['hwy', 'highway'], ['pkwy', 'parkway'],
+]);
+
+function streetWord(word: string) {
+  const lower = word.toLowerCase();
+  return STREET_WORDS.get(lower) ?? lower;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
 import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
+import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
 
 // Audit A9 pass 13 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -65,5 +66,40 @@ describe('audit A9 pass 13 L1: another project\'s name continuing around a numbe
     const projects = [SELECTED, MAIN, '2375 Main St Phase 2'];
     expect(desktop('Is 2375 Main St done?', projects, [], MAIN)).toBeNull();
     expect(desktop('Is 2375 Main St Phase 2 done?', projects, [], MAIN)).toBeNull();
+  });
+});
+
+describe('audit A9 pass 13 L2: a street abbreviation continues a name written in full', () => {
+  const A_STREET = '2375 A Street';
+  const PHASE = '2375A Phase 2';
+  const PROJECTS = [SELECTED, A_STREET, PHASE];
+
+  it.each(['Is 2375 A St. done?', 'Is 2375 A St done?', 'Is 2375 A street. done?'])(
+    '"%s" on 2375 A Street is its own, in Ask ECOS and Talk (was read as 2375A)',
+    question => {
+      expect(desktop(question, PROJECTS, [], A_STREET)).toBeNull();
+      expect(talkAnswer(question, PROJECTS, [], A_STREET)).toBeNull();
+    },
+  );
+
+  it('on 2321 it names 2375 A Street, and Talk moves there (was 2375A Phase 2)', () => {
+    expect(desktop('Is 2375 A St. done?', PROJECTS)).toBe(switchOnDesktop('2375'));
+    expect(mentionedDAVEProject('Is 2375 A St. done?', PROJECTS)).toBe(A_STREET);
+  });
+
+  it('on 2375A Phase 2 it names 2375 A Street (was answered as its own)', () => {
+    expect(desktop('Is 2375 A St. done?', PROJECTS, [], PHASE)).toBe(switchOnDesktop('2375', '2375A'));
+  });
+
+  it.each([
+    ['Ave', 'Avenue'], ['Rd', 'Road'], ['Blvd', 'Boulevard'], ['Dr', 'Drive'], ['Ln', 'Lane'],
+    ['Ct', 'Court'], ['Pl', 'Place'], ['Hwy', 'Highway'], ['Pkwy', 'Parkway'], ['Street', 'St'],
+  ])('"2375 B %s." continues "2375 B %s"', (written, inName) => {
+    const projects = [SELECTED, `2375 B ${inName}`, '2375B Annex'];
+    expect(desktop(`Is 2375 B ${written}. done?`, projects, [], `2375 B ${inName}`)).toBeNull();
+  });
+
+  it('another street word is still the letter: "2375 A Ave" is not 2375 A Street', () => {
+    expect(desktop('Is 2375 A Ave done?', PROJECTS, [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
   });
 });

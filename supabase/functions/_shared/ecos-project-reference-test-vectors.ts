@@ -1130,6 +1130,22 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedClosed: true,
     refusedSelected: '2375B',
   },
+  // Audit A9 pass 13 L2: a street abbreviation continues a name written in
+  // full ("2375 A St." is 2375 A Street, not 2375A).
+  ...([
+    ['Is 2375 A St. done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+    ['Is 2375 A St. done?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
+    ['Is 2375 A St. done?', '2375A Phase 2', [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', '2375A'],
+    ['Is 2375 B Pkwy done?', '2375 B Parkway', [SELECTED, '2375 B Parkway', '2375B Annex'], null, undefined],
+    ['Is 2375 A Ave done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', '2375'],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 13 L2: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
