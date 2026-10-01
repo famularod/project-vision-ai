@@ -244,6 +244,18 @@ function mergeScheduleRevisions(
  * file's percent that a master only the other copy saw restated carries no
  * time of its own: the other copy's, as before, unless it is at or below
  * David's own percent the base copy notes (Q22).
+ *
+ * Whole-app audit A5 pass 22 L2 (1 Oct 2026, from a3239e3; R2 left it
+ * open): David's 40%, then lookahead L1. On the iPad David entered 50%
+ * (10 Sep) and approved L2 at 70%; on the phone, which never saw the 50%,
+ * master G (14 Sep) listed Framing on L1's dates at 45%, over the phone's
+ * 40%, so its note kept David's rank with "Schedule update" as who confirmed
+ * it. Full Sync weighed the two by time (14 Sep after 10 Sep) and kept G's
+ * 45%, so deleting L2 showed 45% on both devices. A master's percent that
+ * stands over David's ("Schedule update") is now weighed against David's own
+ * percent on the other copy as Q22 says: only above it, whichever copy holds
+ * it (the base copy holding K's 45% over David's 50% on the other copy kept
+ * 45% too). David's own later percent still stands as before.
  */
 function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleItem['lookaheadOverlay'] {
   const own = base.lookaheadOverlay;
@@ -265,9 +277,16 @@ function lookaheadNoteOfBoth(base: ScheduleItem, other: ScheduleItem): ScheduleI
   const masterStatedUnseen = theirs.masterProgressSource !== 'project_manager' &&
     theirs.masterFilePercentComplete !== own.masterFilePercentComplete;
   const ownIsDavids = own.masterProgressSource === 'project_manager' && own.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
+  // A master's percent over David's, which keeps his rank ("Schedule update"), stands against David's own on the
+  // other copy only above it, whichever copy holds it (A5 pass 22 L2, Q22).
+  const ownPercent = boundedPercent(Number(own.masterPercentComplete));
+  const theirPercent = boundedPercent(Number(theirs.masterPercentComplete));
+  const theirsIsDavids = theirs.masterProgressSource === 'project_manager' && theirs.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
+  const theirsMastersBelowOwn = !theirsIsDavids && theirs.masterProgressSource === 'project_manager' && ownIsDavids && theirPercent <= ownPercent;
+  const ownMastersBelowTheirs = !ownIsDavids && own.masterProgressSource === 'project_manager' && theirsIsDavids && ownPercent <= theirPercent;
   const ownPercentNewer = ownAt > (scheduleProgressIsManagers(other) ? timestamp(scheduleProgressJudgedAt(other)) : 0) && (masterStatedUnseen
-    ? ownIsDavids && boundedPercent(Number(theirs.masterPercentComplete)) <= boundedPercent(Number(own.masterPercentComplete))
-    : ownAt > timestamp(theirs.masterProgressConfirmedAt));
+    ? ownIsDavids && theirPercent <= ownPercent
+    : (ownAt > timestamp(theirs.masterProgressConfirmedAt) || theirsMastersBelowOwn) && !ownMastersBelowTheirs);
   const {
     masterPercentComplete: _percent, masterStatus: _status, masterProgressSource: _source,
     masterProgressConfirmedBy: _by, masterProgressConfirmedAt: _at, ...theirMasterFile

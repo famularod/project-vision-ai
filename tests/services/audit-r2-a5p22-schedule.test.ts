@@ -19,6 +19,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { daveScheduleItemsNeedingCloudUpload, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { planDAVEWebScheduleDocumentDelete, planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
@@ -114,6 +115,20 @@ function webDelete(state: State, target: ReferenceDocument, at: string): State {
     documents: state.documents.filter(other => other.id !== document.id),
   };
 }
+
+/** David records progress by hand on the phone. */
+const record = (state: State, id: string, pct: number, at: string): State => ({
+  ...state,
+  items: state.items.map(item => item.id === id ? {
+    ...item, percentComplete: pct, status: pct >= 100 ? 'Complete' : 'In Progress', progressSource: 'project_manager',
+    progressConfirmedAt: at, progressConfirmedBy: 'David', updatedAt: at,
+  } as ScheduleItem : item),
+});
+/** Full Sync on one device against the other's copy (the cloud), and the device that syncs second. */
+const SYNCS = [
+  ['the iPad\'s Full Sync', (phone: ScheduleItem[], iPad: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: iPad, cloud: phone, allowCloudOnly: true })],
+  ['the phone\'s Full Sync', (phone: ScheduleItem[], iPad: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: phone, cloud: iPad, allowCloudOnly: true })],
+] as const;
 
 type Activate = (state: State, target: ReferenceDocument, at: string) => State;
 const HOWS: ReadonlyArray<readonly [string, Activate]> = [['phone Set Active', setActive], ['web Make Current', makeCurrent]];
@@ -239,5 +254,105 @@ describe('A5 p22 L1: Set Active / Make Current keeps an imported task on the rig
     state = deleteWithItems(state, L2, '2026-09-14T10:00:00.000Z');
     expect(copies(state, 'Framing')).toEqual([L2_DATES]);
     expect(copies(activate(state, up.document, AT), 'Framing')).toEqual([L1_DATES]);
+  });
+});
+
+/**
+ * L2 (older, caused by a3239e3; ba4c2cf left it open): both devices have
+ * David's 40% on Framing and lookahead L1. On the iPad David enters 50%
+ * (10 Sep) and approves lookahead L2 at 70% (17 Sep). On the phone, which
+ * never saw the 50%, master G (14 Sep) lists Framing on L1's dates at 45%,
+ * over the phone's 40%, so the note holds G's 45% as "Schedule update". Full
+ * Sync either way kept G's 45% on the note, by time (14 Sep is after 10 Sep),
+ * so deleting L2 showed 45% on both devices, below David's 50% (at c73ceab,
+ * 50%). Q22: a master's percent never goes below what David entered.
+ */
+describe('A5 p22 L2: Full Sync never takes a master\'s percent below David\'s onto the lookahead note', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const K = doc('MASTER K', '2026-09-11T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const L2 = doc('LOOKAHEAD L2', '2026-09-17T12:00:00.000Z', 'lookahead');
+  const SURVEY = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,';
+  let start = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', SURVEY]);
+  const framingId = named(start, 'Framing')[0].id;
+  start = record(start, framingId, 40, '2026-09-08T10:00:00.000Z');
+  start = approve(start, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+  const noteOf = (items: ScheduleItem[]) => items.find(item => item.id === framingId)!.lookaheadOverlay!;
+  const deleteL2 = (items: ScheduleItem[], documents: ReferenceDocument[]) => deleteWithItems({ items, documents }, L2, '2026-09-18T10:00:00.000Z');
+
+  /** The phone: G at 45% on L1's dates. The iPad: David's 50%, then L2 at 70%. */
+  const phone = approve(start, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,45', SURVEY]);
+  const iPad = approve(record(start, framingId, 50, '2026-09-10T10:00:00.000Z'), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70'], true);
+  const documents = [...phone.documents, L2];
+
+  it('the copies: G\'s 45% over the phone\'s 40% as "Schedule update", David\'s 50% and L2 on the iPad', () => {
+    expect(noteOf(phone.items)).toMatchObject({ masterPercentComplete: 45, masterProgressSource: 'project_manager', masterProgressConfirmedBy: 'Schedule update' });
+    expect(noteOf(iPad.items)).toMatchObject({ masterPercentComplete: 50, masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: '2026-09-10T10:00:00.000Z' });
+  });
+
+  it.each(SYNCS)('%s keeps G\'s marks and dates with David\'s 50%; deleting L2 gives 50%', (_how, sync) => {
+    const merged = sync(phone.items, iPad.items);
+    expect(noteOf(merged)).toMatchObject({
+      masterStartDate: '10/18/2026', masterFinishDate: '10/28/2026', masterFilePercentComplete: 45,
+      masterPercentComplete: 50, masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: '2026-09-10T10:00:00.000Z',
+    });
+    expect(noteOf(merged).lookaheads.map(entry => [entry.batchId, entry.datesReplacedByMaster])).toEqual([
+      ['batch-LOOKAHEAD L1', 'batch-MASTER G'], ['batch-LOOKAHEAD L2', undefined],
+    ]);
+    expect(copies(deleteL2(merged, documents), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+  });
+
+  it('what the iPad writes to the cloud keeps the 50%, and the phone\'s Full Sync after it too', () => {
+    const merged = recoverDAVEScheduleRecords({ local: iPad.items, cloud: phone.items, allowCloudOnly: true });
+    const uploaded = daveScheduleItemsNeedingCloudUpload({ local: merged, cloud: phone.items });
+    const cloudAfter = phone.items.map(item => uploaded.find(upload => upload.id === item.id) || item);
+    expect(noteOf(cloudAfter)).toMatchObject({ masterPercentComplete: 50, masterStartDate: '10/18/2026' });
+    const phoneAfter = recoverDAVEScheduleRecords({ local: phone.items, cloud: cloudAfter, allowCloudOnly: true });
+    expect(copies(deleteL2(phoneAfter, documents), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+  });
+
+  it.each(SYNCS)('unchanged: %s takes G\'s percent when it is above David\'s (G at 60%)', (_how, sync) => {
+    const phone60 = approve(start, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,60', SURVEY]);
+    const merged = sync(phone60.items, iPad.items);
+    expect(noteOf(merged)).toMatchObject({ masterPercentComplete: 60, masterProgressConfirmedBy: 'Schedule update' });
+    expect(copies(deleteL2(merged, documents), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 60]]);
+  });
+
+  it.each(SYNCS)('unchanged: %s keeps David\'s later 30% on the iPad over G\'s earlier 45%', (_how, sync) => {
+    const iPad30 = approve(record(start, framingId, 30, '2026-09-15T10:00:00.000Z'), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70'], true);
+    const merged = sync(phone.items, iPad30.items);
+    expect(noteOf(merged)).toMatchObject({ masterPercentComplete: 30, masterProgressConfirmedBy: 'David' });
+    expect(copies(deleteL2(merged, documents), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 30]]);
+  });
+
+  /**
+   * The mirror: the copy whose note holds a master's percent is the base.
+   * The iPad saw master K (11 Sep) at 45% over its 40%, then approved L2;
+   * the phone has David's 50% (10 Sep) and master G's marks. Full Sync kept
+   * K's 45% by time (at fb44926, David's 50%).
+   */
+  describe('the mirror: the base copy holds the master\'s percent', () => {
+    const iPadK = approve(approve(start, K, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,45', SURVEY]), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70'], true);
+    const phone50 = approve(record(start, framingId, 50, '2026-09-10T10:00:00.000Z'), G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,', SURVEY]);
+    const mirrorDocuments = [F, L1, { ...K, isCurrent: false } as ReferenceDocument, G, L2];
+
+    it('the copies: K\'s 45% as "Schedule update" and L2 on the iPad, David\'s 50% and G\'s marks on the phone', () => {
+      expect(noteOf(iPadK.items)).toMatchObject({ masterPercentComplete: 45, masterProgressConfirmedBy: 'Schedule update', masterProgressConfirmedAt: K.importedAt });
+      expect(noteOf(phone50.items)).toMatchObject({ masterPercentComplete: 50, masterProgressConfirmedBy: 'David' });
+    });
+
+    it.each(SYNCS)('%s keeps David\'s 50% with G\'s marks; deleting L2 gives 50%', (_how, sync) => {
+      const merged = sync(phone50.items, iPadK.items);
+      expect(noteOf(merged)).toMatchObject({ masterStartDate: '10/18/2026', masterPercentComplete: 50, masterProgressConfirmedBy: 'David' });
+      expect(copies(deleteL2(merged, mirrorDocuments), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 50]]);
+    });
+
+    it.each(SYNCS)('unchanged: %s keeps K\'s percent when it is above David\'s (K at 60%)', (_how, sync) => {
+      const iPadK60 = approve(approve(start, K, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,60', SURVEY]), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70'], true);
+      const merged = sync(phone50.items, iPadK60.items);
+      expect(noteOf(merged)).toMatchObject({ masterPercentComplete: 60, masterProgressConfirmedBy: 'Schedule update' });
+      expect(copies(deleteL2(merged, mirrorDocuments), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 60]]);
+    });
   });
 });
