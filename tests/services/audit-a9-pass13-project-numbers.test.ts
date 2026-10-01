@@ -1,6 +1,10 @@
-import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
+import { askECOSProjectQuestion, ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
 import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: jest.fn(() => '55555555-5555-4555-8555-555555555555'),
+}));
 
 // Audit A9 pass 13 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -214,5 +218,40 @@ describe('audit A9 pass 13 wording: a refusal names the number the question used
     expect(desktop('Is the 480V gear in?', [SELECTED, SWITCHGEAR])).toBe(switchOnDesktop('480V'));
     expect(desktop('What is left at 2375?', [SELECTED, '2375A Main', '2375a Annex'])).toBe(switchOnDesktop('2375A'));
     expect(desktop('What is left at 2375-B?', [SELECTED, '2375-B Annex Suite 300'])).toBe(switchOnDesktop('2375B'));
+  });
+});
+
+describe('audit A9 pass 13 nit: a server-refused number is closed by any of the project\'s identifiers', () => {
+  // The server names a number its own list matched. Here the app's closed
+  // list has "480V Switchgear Upgrade 2375", whose job number is 2375.
+  const serverRefusal = (referencedProjectIdentifier: string) => ({
+    auth: { getSession: jest.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) },
+    functions: {
+      invoke: jest.fn().mockResolvedValue({
+        data: null,
+        error: new Error('request failed'),
+        response: new Response(JSON.stringify({
+          error: 'project_reference_mismatch', selectedProjectIdentifier: '2321', referencedProjectIdentifier,
+        }), { status: 409, headers: { 'content-type': 'application/json' } }),
+      }),
+    },
+  }) as never;
+  const ask = (referencedProjectIdentifier: string) => askECOSProjectQuestion({
+    client: serverRefusal(referencedProjectIdentifier),
+    projectId: 'project-2321',
+    projectName: SELECTED,
+    question: 'What is left?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['480V Switchgear Upgrade 2375'],
+    refusalWording: 'phone',
+  });
+
+  it('a server refusal of 2375 is marked closed (was "open project 2375")', async () => {
+    await expect(ask('2375')).rejects.toMatchObject({ code: 'project_reference_mismatch', message: closedOnPhone('2375') });
+  });
+
+  it('its first number, and a number no closed project has, are unchanged', async () => {
+    await expect(ask('480')).rejects.toMatchObject({ message: closedOnPhone('480') });
+    await expect(ask('2450')).rejects.toMatchObject({ message: switchOnPhone('2450') });
   });
 });

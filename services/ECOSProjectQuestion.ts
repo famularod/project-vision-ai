@@ -10,7 +10,7 @@ import {
   parseECOSQuestionDiagnostics,
   type ECOSQuestionDiagnostics,
 } from './ECOSQuestionProtocol';
-import { ecosProjectIdentifier } from '../supabase/functions/_shared/ecos-project-reference';
+import { ecosProjectIdentifiers } from '../supabase/functions/_shared/ecos-project-reference';
 import {
   ecosProjectReferenceMismatchMessage,
   projectReferenceMismatchText,
@@ -452,10 +452,14 @@ function projectQuestionErrorMessage(
   return 'Ask ECOS could not complete the question. Try again shortly.';
 }
 
-/** Whether a number the server refused is a closed project's here and no open one's (audit A9 pass 3 L1). */
+/**
+ * Whether a number the server refused is a closed project's here and no open
+ * one's (audit A9 pass 3 L1), by any of its identifiers (audit A9 pass 13:
+ * "480V Switchgear Upgrade 2375" is 2375 too).
+ */
 function referencedProjectIsClosed(identifier: string, refusal: ECOSProjectRefusalContext) {
   const has = (names: readonly string[] | null | undefined) =>
-    (names || []).some(name => ecosProjectIdentifier(name) === identifier);
+    (names || []).some(name => ecosProjectIdentifiers(name).some(({ digits }) => digits === identifier));
   return has(refusal.closedProjectNames) && !has(refusal.knownProjectNames);
 }
 
