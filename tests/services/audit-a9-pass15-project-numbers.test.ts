@@ -140,3 +140,43 @@ describe('audit A9 pass 15 L2: projects sharing the selected job number are its 
     expect(notePreConfirmed('The gate code is 2321, tell the crew', SELECTED, [SELECTED, '2375 Main St'])).toBe(true);
   });
 });
+
+describe('audit A9 pass 15 L4: any tie between projects with different numbers asks which, with one count everywhere', () => {
+  const ELM_24117 = '24117 - 450 Elm St';
+  const ELM_23088 = '23088 - 450 Elm St';
+  const ELM_22001 = '22001 - 450 Elm St';
+  const together = (...labels: string[]) =>
+    `This question names ${labels.length === 2 ? 'two' : labels.length} projects, ${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}. `
+    + 'Which one do you mean? Ask again about just that project.';
+  const BOTH = together('450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)');
+
+  it('two closed jobs at the same address: Ask ECOS asks which, as Talk does (was "... or ... is a closed project. Reopen it")', () => {
+    expect(phone('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+  });
+
+  it('an open and a closed job at the same address: Ask ECOS asks which, as Talk does (was "open project 450 (24117 ...)")', () => {
+    expect(phone('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(mentionedDAVEProject('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBeNull();
+  });
+
+  it('a three-way tie with the selected project has one count in Ask ECOS and Talk (Ask said two, leaving out the closed job)', () => {
+    const expected = together('450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)', '450 (22001 - 450 Elm St)');
+    expect(phone('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+  });
+
+  it('a name said in full decides nothing between other projects: "450 Elm St" with a closed "23088 - 450 Elm St" asks which', () => {
+    const expected = together('450', '450 (23088 - 450 Elm St)');
+    expect(desktop('Is 450 Elm St done?', [SELECTED, '450 Elm St'], [ELM_23088])).toBe(expected);
+    expect(talkAnswer('Is 450 Elm St done?', [SELECTED, '450 Elm St'], [ELM_23088])).toBe(expected);
+  });
+
+  it('other projects sharing one number still name the open one (pass 15 L1)', () => {
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, '2375 Main St Phase 2'], ['2375 Main St'])).toBe(switchOnDesktop('2375'));
+  });
+});

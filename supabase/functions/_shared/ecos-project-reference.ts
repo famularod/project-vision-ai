@@ -60,6 +60,8 @@ export type ECOSProjectReferenceMismatch = Readonly<{
    * far around the number as another's (a tie, so unsure which is meant):
    * every project named, as shown, the selected one first ("450 (24117 - 450
    * Elm St)", "450 (23088 - 450 Elm St)"). The refusal asks which one.
+   * Audit A9 pass 15 L4: also for a tie between other projects with
+   * different numbers; each job is named once.
    */
   namedProjects?: readonly string[];
 }>;
@@ -115,16 +117,13 @@ export function findECOSProjectReferenceMismatch(
 
   const selected = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE).label;
   // The other projects `isProject` picks out, as a refusal: the open ones, or
-  // else the closed ones (a number both use is read as the open one).
-  // With `withSelected`, the selected project is named as much as they are
-  // (a tie; audit A9 pass 14 L2).
-  const refusal = (fallbackLabel: string, isProject: (name: string) => boolean, withSelected = false) => {
+  // else the closed ones (a number both use is read as the open one). With
+  // `namedProjects`, the refusal asks which of those projects is meant (a
+  // tie; audit A9 pass 14 L2 and pass 15 L4).
+  const refusal = (fallbackLabel: string, isProject: (name: string) => boolean, namedProjects?: readonly string[]) => {
     const open = knownNames.filter(isProject);
     const names = open.length > 0 ? open : closedNames.filter(isProject);
     if (names.length === 0) return null;
-    const namedProjects = withSelected
-      ? [ecosProjectNamedAs(projectName, fallbackLabel), ...numberLabels(names, fallbackLabel)]
-      : undefined;
     return projectReferenceMismatch(selected, numberLabel(names, fallbackLabel), open.length === 0, namedProjects);
   };
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
@@ -159,7 +158,18 @@ export function findECOSProjectReferenceMismatch(
       // 2375 Main St" is its own).
       const tiedWithSelected = around.some(isSelected);
       const others = around.filter(name => !isSelected(name) && !(tiedWithSelected && shown(name) === shown(projectName)));
-      const other = others.length > 0 ? refusal(number, name => others.includes(name), tiedWithSelected) : null;
+      // Audit A9 pass 15 L4: a tie with projects of another number asks
+      // which, each job named once (its open project, else its closed one),
+      // as Talk does; other projects that share one number are the open one.
+      const jobs = [...new Set(others.map(shown))];
+      const jobLabel = (job: string) => {
+        const inJob = others.filter(name => shown(name) === job);
+        return ecosProjectNamedAs(knownNames.find(name => inJob.includes(name)) ?? inJob[0], number);
+      };
+      const namedProjects = tiedWithSelected || jobs.length > 1
+        ? [...(tiedWithSelected ? [ecosProjectNamedAs(projectName, number)] : []), ...jobs.map(jobLabel)]
+        : undefined;
+      const other = others.length > 0 ? refusal(number, name => others.includes(name), namedProjects) : null;
       if (other) return other;
       if (around.length > 0) continue;
     }

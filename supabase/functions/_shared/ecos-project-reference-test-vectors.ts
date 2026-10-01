@@ -1370,6 +1370,38 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedSelected: '24117',
     refusedTogether: ['2375 (24117 - 2375 Main St Annex)', '2375 (23088 - 2375 Main St)'],
   },
+  // Audit A9 pass 15 L4: any tie between projects with different numbers
+  // asks which, each job named once, whether or not the selected project is
+  // one of them.
+  {
+    name: 'pass 15 L4: two closed jobs at "450 Elm St" tie on 2321 and the refusal asks which',
+    projectName: SELECTED,
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['24117 - 450 Elm St', '23088 - 450 Elm St'],
+    refused: '450 (24117 - 450 Elm St) or 450 (23088 - 450 Elm St)',
+    refusedClosed: true,
+    refusedTogether: ['450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)'],
+  },
+  {
+    name: 'pass 15 L4: an open and a closed job at "450 Elm St" tie on 2321 and the refusal asks which',
+    projectName: SELECTED,
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED, '24117 - 450 Elm St'],
+    closedProjectNames: ['23088 - 450 Elm St'],
+    refused: '450 (24117 - 450 Elm St)',
+    refusedTogether: ['450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)'],
+  },
+  {
+    name: 'pass 15 L4: a three-way tie with the selected job names all three, the closed one too',
+    projectName: '24117 - 450 Elm St',
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED, '24117 - 450 Elm St', '23088 - 450 Elm St'],
+    closedProjectNames: ['22001 - 450 Elm St'],
+    refused: '450 (23088 - 450 Elm St)',
+    refusedSelected: '24117',
+    refusedTogether: ['450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)', '450 (22001 - 450 Elm St)'],
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
