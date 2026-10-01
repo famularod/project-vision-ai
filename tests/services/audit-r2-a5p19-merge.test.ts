@@ -199,3 +199,42 @@ describe('A5 p19 L1: a lookahead approved after a web upload is not undone when 
     expect(copies(makeCurrent(up.state, up.document, MONDAY))).toEqual([['hand-pour', '10/08/2026', '10/12/2026', 40]]);
   });
 });
+
+/**
+ * L2 (caused by 592d8ab): a task imported before import batches and document
+ * ids, known only by the file it came from (importedFrom), now counts as the
+ * import's, so a master moving it adds a new row that answers to it. When its
+ * old file is not saved, or the new master has the same file name, the shown
+ * schedule still showed the old row too: Pour slab twice.
+ */
+describe('A5 p19 L2: an old task known only by its file name shows once after a master moves it', () => {
+  const legacy = {
+    id: 'legacy-pour', projectName: 'Alpha', scheduleProjectName: 'Alpha', locationName: 'Lot', taskName: 'Pour slab',
+    startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: '', contractor: '', status: 'In Progress', percentComplete: 40,
+    priority: 'Medium', notes: '', progressSource: 'project_manager', progressConfirmedAt: '2026-09-10T12:00:00.000Z', progressConfirmedBy: 'David',
+    importedFrom: 'alpha-master.csv', importedAt: '2026-08-01T12:00:00.000Z', createdAt: '2026-08-01T12:00:00.000Z',
+  } as ScheduleItem;
+  const MOVED = ['Pour slab,Alpha,Lot,10/08/2026,10/12/2026,', FRAMING];
+
+  it('its old file is not saved: shown once, on the master\'s dates, at David\'s 40%; reports follow', () => {
+    const state = approve({ items: [legacy], documents: [] }, G, rows(G, MOVED));
+    expect(copies(state)).toEqual([['MASTER G-1', '10/08/2026', '10/12/2026', 40]]);
+    expect(link(state, 'legacy-pour')).toBe('MASTER G-1');
+  });
+
+  it('the new master has the same file name: shown once', () => {
+    const sameName = { ...G, originalFileName: 'alpha-master.csv' } as ReferenceDocument;
+    const legacyFile = { ...schedule('legacy-master', '2026-08-01T12:00:00.000Z'), originalFileName: 'alpha-master.csv', importBatchId: null } as ReferenceDocument;
+    expect(copies(approve({ items: [legacy], documents: [] }, sameName, rows(sameName, MOVED)))).toEqual([['MASTER G-1', '10/08/2026', '10/12/2026', 40]]);
+    expect(copies(approve({ items: [legacy], documents: [legacyFile] }, sameName, rows(sameName, MOVED)))).toEqual([['MASTER G-1', '10/08/2026', '10/12/2026', 40]]);
+  });
+
+  it('a master that leaves it on its days still shows it once, and Set Active back to its saved file shows the old row (guard)', () => {
+    const legacyFile = { ...schedule('legacy-master', '2026-08-01T12:00:00.000Z'), originalFileName: 'alpha-master.csv', importBatchId: null } as ReferenceDocument;
+    const unchanged = approve({ items: [legacy], documents: [] }, G, rows(G, ['Pour slab,Alpha,Lot,10/01/2026,10/05/2026,', FRAMING]));
+    expect(copies(unchanged)).toEqual([['legacy-pour', '10/01/2026', '10/05/2026', 40]]);
+    const moved = approve({ items: [legacy], documents: [legacyFile] }, G, rows(G, MOVED));
+    const back = setActive(moved, legacyFile, MONDAY);
+    expect(copies(back)).toEqual([['legacy-pour', '10/01/2026', '10/05/2026', 40]]);
+  });
+});

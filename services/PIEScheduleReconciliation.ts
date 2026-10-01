@@ -276,10 +276,20 @@ export function selectAuthoritativeScheduleItems({
       !knownScheduleSources.has(importedFrom) ||
       activeScheduleSources.has(importedFrom);
   });
+  // Whole-app audit A5 pass 19 L2 (1 Oct 2026): a task known only by the file
+  // it came from (importedFrom: no import or document id) belongs to that
+  // file (A5 pass 18 L1), so a master that moves it saves a new row answering
+  // to it. When its file is not saved, or the new master has the same file
+  // name, the rule above still showed it: Pour slab twice. A shown row that
+  // answers to it (revisedFromTaskIds) is that task now, and it is hidden.
+  const answeredTo = new Set(selectedItems.flatMap(item => scheduleTaskEarlierIds(item)));
+  const shownItems = selectedItems.filter(item => !(
+    normalize(item.importedFrom || '') && !normalize(item.sourceDocumentId || '') &&
+    scheduleItemImportBatchIds(item).length === 0 && answeredTo.has(item.id.trim())));
 
   return dedupeScheduleItems(lookaheads.length > 0
-    ? withoutLookaheadDuplicates(selectedItems, currentByProject, containingDocuments)
-    : selectedItems);
+    ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments)
+    : shownItems);
 }
 
 /**
