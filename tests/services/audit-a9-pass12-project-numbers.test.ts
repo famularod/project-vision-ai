@@ -91,3 +91,37 @@ describe('audit A9 pass 12 L1: a name whose first number is lettered keeps its j
     expect(desktop('Is 2377 Days Inn done?', projects)).toBe(switchOnDesktop('1950s'));
   });
 });
+
+describe('audit A9 pass 12 L2: another number in the selected name is its own only when no other project is numbered that', () => {
+  const SUITE = '2375 Main St Suite 300';
+  const ELM = '300 Elm';
+
+  it('"Is 300 Elm done?" on 2375 Main St Suite 300 names 300 Elm, in Ask ECOS and Talk (was answered from Suite 300)', () => {
+    const projects = [SELECTED, SUITE, ELM];
+    expect(desktop('Is 300 Elm done?', projects, [], SUITE)).toBe(switchOnDesktop('300', '2375'));
+    expect(phone('What is left at 300?', projects, [], SUITE)).toBe(switchOnPhone('300', '2375'));
+    expect(talkAnswer('Is 300 Elm done?', projects, [], SUITE)).toBe(switchOnPhone('300', '2375'));
+  });
+
+  it('a closed 300 Elm is refused as closed, and a lettered 300A by a bare 300', () => {
+    expect(phone('What is left at 300?', [SELECTED, SUITE], [ELM], SUITE)).toBe(
+      'Project 2375 is selected, but 300 is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+    expect(desktop('What is left at 300?', [SELECTED, SUITE, '300A Wing'], [], SUITE)).toBe(switchOnDesktop('300A', '2375'));
+  });
+
+  it('with no project numbered 300, Suite 300 and its own 2375 are answered', () => {
+    const projects = [SELECTED, SUITE];
+    expect(desktop('What is left in Suite 300?', projects, [], SUITE)).toBeNull();
+    expect(desktop('What is left at 2375?', projects, [], SUITE)).toBeNull();
+    expect(talkAnswer('What is left in Suite 300?', projects, [], SUITE)).toBeNull();
+  });
+
+  it('either identifier of a lettered name stays its own (pass 12 L1): 300 on "2375-B Annex Suite 300"', () => {
+    expect(desktop('What is left at 300?', [SELECTED, '2375-B Annex Suite 300', ELM], [], '2375-B Annex Suite 300')).toBeNull();
+  });
+
+  it('without a project list the pre-Q20 check is unchanged: every number in the selected name is its own', () => {
+    expect(desktop('What is left at 3000?', undefined, undefined, '2375 Main St Suite 3000')).toBeNull();
+  });
+});

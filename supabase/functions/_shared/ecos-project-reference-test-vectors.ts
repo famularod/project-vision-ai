@@ -1062,6 +1062,32 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '2375',
     refusedClosed: true,
   },
+  // Audit A9 pass 12 L2: only the selected project's identifiers are its own;
+  // another number in its name ("Suite 300") names a project numbered that.
+  ...([
+    ['Is 300 Elm done?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300 Elm'], '300', '2375'],
+    ['What is left at 300?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300A Wing'], '300A', '2375'],
+    ['What is left in Suite 300?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300'], null, undefined],
+    ['What is left at 2375?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300 Elm'], null, undefined],
+    ['What is left at 300?', '2375-B Annex Suite 300', [SELECTED, '2375-B Annex Suite 300', '300 Elm'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 12 L2: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 12 L2: a closed 300 Elm is refused as closed on 2375 Main St Suite 300',
+    projectName: '2375 Main St Suite 300',
+    question: 'What is left at 300?',
+    knownProjectNames: [SELECTED, '2375 Main St Suite 300'],
+    closedProjectNames: ['300 Elm'],
+    refused: '300',
+    refusedClosed: true,
+    refusedSelected: '2375',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

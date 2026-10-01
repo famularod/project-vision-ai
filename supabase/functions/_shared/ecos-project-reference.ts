@@ -99,13 +99,13 @@ export function findECOSProjectReferenceMismatch(
     );
   }
 
-  const selected = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE);
+  const selected = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE).label;
   // The other projects `isProject` picks out, as a refusal: the open ones, or
   // else the closed ones (a number both use is read as the open one).
   const refusal = (fallbackLabel: string, isProject: (name: string) => boolean) => {
     const open = knownNames.filter(isProject);
     const names = open.length > 0 ? open : closedNames.filter(isProject);
-    return names.length > 0 ? projectReferenceMismatch(selected.label, numberLabel(names, fallbackLabel), open.length === 0) : null;
+    return names.length > 0 ? projectReferenceMismatch(selected, numberLabel(names, fallbackLabel), open.length === 0) : null;
   };
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
   const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
@@ -127,8 +127,10 @@ export function findECOSProjectReferenceMismatch(
     // A bare number names a project numbered just that ("2375 Main St"),
     // even when the selected one is 2375A, unless it is the selected one's
     // own; with none, it names the lettered ones, unless the selected one is
-    // one of them.
-    if (hasIdentifier(projectName, number) || (!selected.lettered && selected.numbers.includes(number))) continue;
+    // one of them. Audit A9 pass 12 L2: only the selected one's identifiers
+    // are its own; another number in its name ("Suite 300" in "2375 Main St
+    // Suite 300") names a project numbered that, and with none is answered.
+    if (hasIdentifier(projectName, number)) continue;
     const named = refusal(number, name => hasIdentifier(name, number)) ??
       (hasIdentifierNumber(projectName, number) ? null : refusal(number, name => hasIdentifierNumber(name, number)));
     if (named) return named;
@@ -137,21 +139,21 @@ export function findECOSProjectReferenceMismatch(
 }
 
 /**
- * The selected project's numbers (every plain 3-6 digit number in its name,
- * as `source` reads them, and the digits of a lettered one when it comes
- * first: "2375A Main" is 2375, "2375A Main Suite 300" 2375 and 300; audit A9
- * pass 11 F3 and pass 12 L1), its lettered identifier upper-cased ("2375A",
- * or '') and how the refusal shows it ("2375A"; audit A9 pass 8 L7). A name
- * without a number has none and is shown by name (audit A9 pass 9 M1:
- * "Harbor Office" refused nothing, so another project's 2375 was answered
- * from Harbor Office).
+ * The selected project's numbers for the pre-Q20 check (every plain number
+ * in its name, as `source` reads them, and the digits of a lettered one when
+ * it comes first: "2375A Main" is 2375, "2375A Main Suite 3000" 2375 and
+ * 3000; audit A9 pass 11 F3 and pass 12 L1; with a project list only its
+ * identifiers are its own, pass 12 L2) and how a refusal shows it ("2375A";
+ * audit A9 pass 8 L7). A name without a number has none and is shown by
+ * name (audit A9 pass 9 M1: "Harbor Office" refused nothing, so another
+ * project's 2375 was answered from Harbor Office).
  */
-function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; lettered: string; label: string } {
+function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; label: string } {
   const first = firstProjectNumber(projectName, source);
   const plain = uniqueMatches(projectName, source);
-  if (first?.letter) return { numbers: [first.digits, ...plain], lettered: `${first.digits}${first.letter}`.toUpperCase(), label: `${first.digits}${first.letter}` };
-  if (plain.length > 0) return { numbers: plain, lettered: '', label: plain[0] };
-  return { numbers: [], lettered: '', label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
+  if (first?.letter) return { numbers: [first.digits, ...plain], label: `${first.digits}${first.letter}` };
+  if (plain.length > 0) return { numbers: plain, label: plain[0] };
+  return { numbers: [], label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
 }
 
 /**
