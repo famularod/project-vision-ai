@@ -287,3 +287,79 @@ describe('Review Conflicts shows the cloud\'s copy as it is now (audit A4 pass 1
     expect(await getSyncConflicts()).toEqual([]);
   });
 });
+
+/**
+ * Whole-app audit A4 pass 17 L1 (caused by 0d82d03): on weak signal the read
+ * Review Conflicts makes when it opens is slow, so the Cloud line still shows
+ * the copy saved with the conflict when David taps Keep Phone. The read lands
+ * while "Keep Phone Copy?" is up and saves the iPad's newest copy into the
+ * conflict; the check before writing compared the cloud with that saved copy,
+ * found no change, and sent the phone's copy over an iPad note the screen
+ * never showed. A choice now carries the cloud copy its row showed, and the
+ * check compares the cloud with that.
+ */
+describe('a choice made before the open-time read lands is checked against the copy the screen showed (audit A4 pass 17 L1)', () => {
+  const IPAD_SECOND_NOTE = 'Pour moved to Wednesday (typed on the iPad again)';
+  const cloudLine = () => screen.getByText(/^Cloud: /).props.children.join('');
+  /** Weak signal: the next read of the cloud's copy (the one Review Conflicts makes when it opens) waits until released. */
+  function holdNextCloudRead() {
+    const reads = (jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock })
+      .getProjectUpdateSyncMetadata;
+    const read = reads.getMockImplementation()!;
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    reads.mockImplementationOnce(async (id: string) => { await released; return read(id); });
+    return release;
+  }
+  /** Review Conflicts opened with its read held; David taps a choice; the read lands while its confirmation is up. */
+  async function chooseWhileTheReadIsSlow(choice: 'Keep Phone' | 'Keep Cloud', cloudLineAfterRead: string) {
+    const release = holdNextCloudRead();
+    await openReviewConflicts();
+    await act(async () => { await new Promise(resolve => setImmediate(resolve)); });
+    expect(cloudLine()).toBe(`Cloud: ${DAY} · 0 photos · ${IPAD_NOTE}`); // what David sees when he taps
+    fireEvent.press(screen.getByText(choice));
+    const confirmation = lastConfirmation();
+    await act(async () => { release(); });
+    await waitFor(() => expect(cloudLine()).toBe(cloudLineAfterRead));
+    return confirmation;
+  }
+
+  it.each(['Keep Phone', 'Keep Cloud'] as const)('the iPad edited again: %s, confirmed after the read lands, sends nothing and says the cloud copy changed', async choice => {
+    await offlineEditInConflictWithIPad();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    mockCloud.set('u1', { updatedAt: new Date().toISOString(), updateData: { ...sent, notes: IPAD_SECOND_NOTE } });
+    const onApplyCloudConflictUpdate = renderSettings(offlineEdit);
+    const { proceed } = await chooseWhileTheReadIsSlow(choice, `Cloud: ${DAY} · 0 photos · ${IPAD_SECOND_NOTE}`);
+    const cloudBefore = JSON.stringify(mockCloud.get('u1'));
+    const [conflictBefore] = await getSyncConflicts();
+    const { saveProjectUpdate } = jest.requireMock('../../services/SupabaseService') as { saveProjectUpdate: jest.Mock };
+    const writes = saveProjectUpdate.mock.calls.length;
+
+    await act(async () => { proceed(); });
+    await waitFor(() => expect(Alert.alert).toHaveBeenLastCalledWith('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.'));
+    // It sent the phone's copy over the iPad's second note (Keep Phone), or
+    // kept a cloud copy the screen never showed (Keep Cloud), and closed the conflict.
+    expect(saveProjectUpdate.mock.calls.length).toBe(writes);
+    expect(JSON.stringify(mockCloud.get('u1'))).toBe(cloudBefore);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({
+      id: conflictBefore.id,
+      remotePayload: expect.objectContaining({ notes: IPAD_SECOND_NOTE }),
+      localPayload: expect.objectContaining({ updateData: expect.objectContaining({ notes: OFFLINE_EDIT }) }),
+    })]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(onApplyCloudConflictUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText('Review Cloud Conflicts')).toBeTruthy();
+    expect(cloudLine()).toBe(`Cloud: ${DAY} · 0 photos · ${IPAD_SECOND_NOTE}`);
+  });
+
+  it('control: nothing changed in the cloud; Keep Phone confirmed after the read lands sends the phone\'s copy', async () => {
+    await offlineEditInConflictWithIPad();
+    renderSettings(offlineEdit);
+    const { proceed } = await chooseWhileTheReadIsSlow('Keep Phone', `Cloud: ${DAY} · 0 photos · ${IPAD_NOTE}`);
+    await act(async () => { proceed(); });
+    await waitFor(() => expect(screen.queryByText('Review Cloud Conflicts')).toBeNull());
+    expect(inCloud()).toMatchObject({ notes: OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(Alert.alert).not.toHaveBeenCalledWith('Cloud copy changed', expect.anything());
+  });
+});

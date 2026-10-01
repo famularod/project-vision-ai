@@ -4351,6 +4351,12 @@ export async function clearScheduleItemSyncConflicts(
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
+  /**
+   * The cloud copy Review Conflicts showed when David chose (whole-app audit
+   * A4 pass 17 L1): the check below compares the cloud with it. Without it,
+   * the copy saved with the conflict, as before.
+   */
+  { cloudCopyShown }: { cloudCopyShown?: unknown } = {},
 ): Promise<TUpdate> {
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
@@ -4373,12 +4379,16 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // showed, and Keep Cloud ended with it. When it changed, the conflict is
   // saved again with it, and nothing is sent: David reviews it again. A copy
   // that cannot be read changes nothing either. Keep Cloud's own first read
-  // (A4 pass 11 O1, pass 12 L1).
+  // (A4 pass 11 O1, pass 12 L1). Compared with the copy the screen showed
+  // (A4 pass 17 L1): on weak signal Review Conflicts' own read could land
+  // while "Keep Phone Copy?" was up and save the iPad's newest copy into the
+  // conflict, which then passed this check unseen.
   const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
   if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
   const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
   const phoneCopies = phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue());
-  if (await recordCloudCopyIfChangedSinceConflict(conflict, current.data, phoneCopies, withDocumentChanges)) {
+  if (await recordCloudCopyIfChangedSinceConflict(conflict, current.data, phoneCopies, withDocumentChanges,
+    cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown)) {
     throw new Error('sync_conflict_cloud_copy_changed');
   }
 
@@ -4581,12 +4591,15 @@ function phoneCopiesOfFieldUpdateInConflict(conflict: SyncConflict, queue: reado
  * onto the cloud's copy during a conflict, an archive (carried by either
  * choice), or one of this phone's own copies (a retry that reached the
  * cloud). `cloud`: the cloud's row as read now; none, no change.
+ * `seen`: the cloud copy the screen showed (A4 pass 17 L1), by default the
+ * one saved with the conflict.
  */
 async function recordCloudCopyIfChangedSinceConflict(
   conflict: SyncConflict,
   cloud: { updatedAt?: string | null; updateData?: unknown } | null | undefined,
   phoneCopies: readonly unknown[],
   withDocumentChanges: (copy: unknown) => unknown,
+  seen: unknown = conflict.remotePayload,
 ): Promise<boolean> {
   const cloudCopy = cloud?.updateData;
   if (!isRecord(cloudCopy)) return false;
@@ -4595,7 +4608,7 @@ async function recordCloudCopyIfChangedSinceConflict(
     const { isArchived: _isArchived, archivedAt: _archivedAt, ...rest } = withoutPhotoAnalysis(copy) as Record<string, unknown>;
     return withDocumentChanges(rest);
   };
-  if (sameProjectUpdateContent(shown(conflict.remotePayload), shown(cloudCopy) as ProjectUpdate, { retryStampsAside: true })) return false;
+  if (sameProjectUpdateContent(shown(seen), shown(cloudCopy) as ProjectUpdate, { retryStampsAside: true })) return false;
   if (phoneCopies.some(copy => sameProjectUpdateContent(copy, cloudCopy as unknown as ProjectUpdate, { retryStampsAside: true }))) {
     return false;
   }

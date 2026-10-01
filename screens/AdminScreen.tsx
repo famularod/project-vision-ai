@@ -963,9 +963,13 @@ export function AdminScreen({
         );
         onApplyCloudConflictScheduleItem(resolvedItem);
       } else {
+        // Checked against the cloud copy this row showed when David chose
+        // (whole-app audit A4 pass 17 L1), not one the open-time read saved
+        // into the conflict while "Keep Phone Copy?" was up.
         const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
           conflict.id,
           resolution,
+          { cloudCopyShown: conflict.remotePayload },
         );
         // Either choice is now the cloud's copy, with nothing more queued for
         // it: the phone shows it as sent. Keep Phone left the card failed,
