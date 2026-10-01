@@ -690,29 +690,28 @@ function fractionValue(value: string): number | null {
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
 }
 
-/** A plain number with a decimal point strictly between 0 and 1: "0.4", ".25". */
-function strictFraction(value: string): boolean {
-  const number = fractionValue(value);
-  return number !== null && number > 0 && number < 1 && value.includes('.');
-}
-
 /**
  * Whether a percent column is written as fractions of 1 (whole-app audit A5
  * pass 6 L2, 30 Sep 2026): a spreadsheet's percent cell exports as 0.4, and
- * read as a stated 0%. A column reads as fractions when it has a fraction
- * strictly between 0 and 1 ("0.4") and every number in it is a plain one
- * from 0 to 1; then 1, 1.0 and 0 are 100% and 0%. Elsewhere a 0–1 decimal is
- * still a fraction (0.4 is 40%), and 1 or 1.0 stays 1%, as before. A cell
- * with a % sign is a percent.
+ * read as a stated 0%.
+ *
+ * Whole-app audit A5 pass 7 L1 (30 Sep 2026): the rule decided cell by cell
+ * in a mixed column ("0.5, 75" read 50% and 75%, though 0.5 may be half a
+ * percent; "0.4, 1, 40%" read the 1 as 1%; "0, 1" read a done task as 1%).
+ * The column decides now. Cells with a % sign are percents and say nothing
+ * about the rest; when every other number is a plain one from 0 to 1, the
+ * column is fractions: 0.4 is 40%, 1 and 1.0 are 100%, 0 is 0%. A column
+ * with any number above 1 is percents throughout: 0.5 there is half a
+ * percent, read as the percent column reads it (0%), never as 50%.
  */
 function percentColumnReadsAsFractions(values: readonly string[]): boolean {
-  const numbers = values.filter(value => /\d/.test(value));
-  return numbers.some(strictFraction) && numbers.every(value => fractionValue(value) !== null);
+  const numbers = values.filter(value => /\d/.test(value) && !value.includes('%'));
+  return numbers.length > 0 && numbers.every(value => fractionValue(value) !== null);
 }
 
 function normalizePercent(value: string, status: ScheduleStatus, fractions = false) {
   const fraction = fractionValue(value);
-  if (fraction !== null && (fractions || strictFraction(value))) return clamp(Math.round(fraction * 100), 0, 100);
+  if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
   const match = value.match(/(\d{1,3})\s*%?/);
 
   if (match) return clamp(Number(match[1]), 0, 100);

@@ -26,7 +26,7 @@ import { buildDAVEEvidenceCorrelations } from '../../services/DAVEEvidenceCorrel
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { extractScheduleEvidence } from '../../services/PIEEvidenceFusion';
-import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import {
   buildPIEScheduleReconciliation,
   scheduleHasAuthoritativeProgressJudgment,
@@ -303,5 +303,45 @@ describe('A5 p7 L2 / A10 p5 L2: a file\'s percent on a task entered by hand is t
     // A file below it leaves it, as before (a task entered by hand counts as David's).
     const below = approve(state, master, punchRows(master, 30));
     expect(shown(below).find(item => item.id === 'hand')).toMatchObject({ percentComplete: 40 });
+  });
+});
+
+describe('A5 p7 L1: a percent column is read as fractions or as percents as a whole', () => {
+  const percents = (lines: string[]) => csvRows([HEADER, ...lines.map((value, index) => `Task ${index + 1},Alpha,Lot,10/01/2026,10/03/2026,${value}`)], lookahead)
+    .map(row => row.percentComplete);
+
+  it('0–1 numbers only (cells with a % sign aside): fractions, so 1 and 1.00 are 100%', () => {
+    expect(percents(['0', '1'])).toEqual([0, 100]);
+    expect(percents(['0.00', '1.00'])).toEqual([0, 100]);
+    expect(percents(['0.4', '1', '40%'])).toEqual([40, 100, 40]);
+  });
+
+  it('0–1 decimals mixed with numbers above 1: percents, and 0.5 is not read as 50%', () => {
+    expect(percents(['0.5', '75'])).toEqual([0, 75]);
+    expect(percents(['0.4', '1', '45'])).toEqual([0, 1, 45]);
+  });
+
+  it('Microsoft Project rows the same way', () => {
+    const rows = normalizeMicrosoftProjectPdfRows({
+      contents: [
+        'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete',
+        '1\tAlpha\t0\t60 days\t09/01/2026\t12/15/2026\t0',
+        '2\tPour slab\t1\t3 days\t10/01/2026\t10/03/2026\t0.5',
+        '3\tRoofing\t1\t10 days\t12/01/2026\t12/15/2026\t75',
+        '4\tPaint\t1\t10 days\t12/01/2026\t12/15/2026\t1',
+      ].join('\n'),
+      sourceName: 'Alpha.pdf', projects: ['Alpha'], now: new Date(APPROVED),
+    });
+    expect(rows.map(row => [row.taskName, row.percentComplete])).toEqual([['Pour slab', 0], ['Roofing', 75], ['Paint', 1]]);
+    const done = normalizeMicrosoftProjectPdfRows({
+      contents: [
+        'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete',
+        '1\tAlpha\t0\t60 days\t09/01/2026\t12/15/2026\t0',
+        '2\tPour slab\t1\t3 days\t10/01/2026\t10/03/2026\t1',
+        '3\tRoofing\t1\t10 days\t12/01/2026\t12/15/2026\t0',
+      ].join('\n'),
+      sourceName: 'Alpha.pdf', projects: ['Alpha'], now: new Date(APPROVED),
+    });
+    expect(done.map(row => [row.taskName, row.percentComplete])).toEqual([['Pour slab', 100], ['Roofing', 0]]);
   });
 });

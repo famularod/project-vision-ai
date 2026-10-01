@@ -385,10 +385,12 @@ describe('A5 p6 L2: a percent written as a fraction reads as that share of 100',
     ]);
   });
 
-  it('a column of whole percents keeps today\'s reading: 1 and 1.0 are 1%; a 0–1 decimal alone is still a fraction', () => {
+  it('a column of whole percents keeps today\'s reading: 1 and 1.0 are 1%; a 0–1 decimal there is a percent too', () => {
+    // A5 pass 7 L1: the column decides, not the cell. With 45 in it the column is percents, so 0.4 is
+    // under half a percent (0%), as "0.5%" is, not 40%.
     expect(percents(['1.0', '1', '45', '0.4', '50%', '0.5%', ''])).toEqual([
       [1, 'In Progress', undefined], [1, 'In Progress', undefined], [45, 'In Progress', undefined],
-      [40, 'In Progress', undefined], [50, 'In Progress', undefined], [0, 'Not Started', undefined], [0, 'Not Started', false],
+      [0, 'Not Started', undefined], [50, 'In Progress', undefined], [0, 'Not Started', undefined], [0, 'Not Started', false],
     ]);
   });
 
