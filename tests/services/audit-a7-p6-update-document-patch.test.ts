@@ -2558,6 +2558,8 @@ function appRetryQueuedUpdate(phone: Device) {
       runFieldUpdateCloudSync, markMissingPhotosUnavailable: (update: Update) => update,
       removeMissingPhotosFromSyncQueue: async () => undefined, persistSavedUpdateImmediately: async () => true,
       withPhoneAnalysisResults, // Send keeps the card's finished results (A4 pass 21 F2)
+      // and this device's document upload state (A4 pass 22 L4)
+      withDeviceDocumentUploadState, projectDocumentsCurrentRef: phone.projectDocumentsCurrentRef,
     },
   ).retryQueuedUpdate;
 }
@@ -5055,5 +5057,38 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
     expect(firstPhotoAnalysis(inCloud())).toEqual(newer);
     expect(firstPhotoAnalysis(phone.saved())).toEqual(newer);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 22 L4 (from 19bc2da): "Send your version?" over a
+ * conflict starts from the copy the question opened on once a refresh has put
+ * the iPad's copy on the card. A document upload that finished while the
+ * question was up was not in that copy: Send put the document back as failed
+ * in the cloud, while this phone said it was uploaded, and nothing repaired it.
+ * Send now takes this device's upload state for the documents in David's copy,
+ * as a refresh does (withDeviceDocumentUploadState).
+ */
+describe('"Send your version?" keeps a document upload that finished while the question was up (audit A4 pass 22 L4)', () => {
+  it('a refresh put the iPad\'s copy on the card: the cloud and the card read it uploaded', async () => {
+    const { phone, persistDocuments } = await phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed' })]);
+    const cardWhenAsked = phone.saved()!; // the render the question opened on
+    await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+    await phone.settle();
+    persistDocuments();
+    await uploadPendingChanges(); // its patch goes onto the cloud's copy
+    expect(inCloud().documents?.[0]).toMatchObject({ status: 'uploaded' });
+    await refresh(phone);
+    expect(phone.saved()?.notes).toBe(IPAD_NOTE); // the cloud's copy is on the card
+    await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true }); // Send
+    phone.render();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(inCloud().documents?.[0]).toMatchObject({ id: 'permit', status: 'uploaded' });
+    expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
+    expect(phone.saved()?.documents?.[0]).toMatchObject({ id: 'permit', status: 'uploaded' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
   });
 });
