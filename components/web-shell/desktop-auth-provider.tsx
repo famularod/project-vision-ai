@@ -19,8 +19,10 @@ import {
   DAVEWebDocumentMutationError,
   DAVEWebTaskMutationError,
   daveWebSupabaseGateway,
+  type DAVEWebSignInResult,
   type DAVEWebSignOutScope,
   type DAVEWebStorageBucket,
+  type DAVEWebTabSignOutOutcome,
 } from '../../services/DAVEWebSupabaseClient';
 import {
   scheduleItemForCloud,
@@ -233,6 +235,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
    * time limit succeeds (A12 pass 8 L1).
    */
   const endingSignInRef = useRef<DesktopSignInEnding | null>(null);
+  /**
+   * Sign-ins here that have not answered yet, from the moment one is chosen
+   * (its wait for an ending included) until the cloud answers it (A12 pass
+   * 10 L1).
+   */
+  const signInsAwaitingAnswerRef = useRef(0);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -255,6 +263,16 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setMessage(notOwner ? notOwner.message : null);
     setPhase(notOwner ? 'unauthorized' : nextPhase);
   }, []);
+
+  /**
+   * This tab's sign-in ended: the sign-in page. While a sign-in here awaits
+   * its answer, the button stays busy and that sign-in's own result decides
+   * what shows: an ending starting or settling then had shown "Sign in
+   * securely" while his request was still out (A12 pass 10 L1).
+   */
+  const showSignInEnded = useCallback(() => {
+    clearSessionView(signInsAwaitingAnswerRef.current > 0 ? 'signing_in' : 'signed_out');
+  }, [clearSessionView]);
 
   /** A new sign-in: the earlier "not the owner" no longer applies. */
   const forgetNotOwner = useCallback(() => {
@@ -447,7 +465,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       // or its sign-in expiring, removes the stored sign-in first.
       if (event === 'SIGNED_OUT' && daveWebSupabaseGateway.storedSignInUserId()) return;
       if (event === 'SIGNED_OUT' || !session) {
-        clearSessionView();
+        showSignInEnded();
         return;
       }
       // auth-js also passes every other tab's refresh to this tab, with that
@@ -479,7 +497,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         notOwnerSignOutTimerRef.current = null;
       }
     };
-  }, [clearSessionView, loadAuthorizedSnapshot]);
+  }, [clearSessionView, loadAuthorizedSnapshot, showSignInEnded]);
 
   /**
    * A sign-in waits, at most DESKTOP_SIGN_IN_ENDING_WAIT_MS, for this tab's
@@ -516,15 +534,21 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       setPhase('signing_in');
       setMessage(null);
     }
-    // The ending's guard stays on until it settles; a sign-in starting no
-    // longer turns it off (A12 pass 7 L1).
-    await waitForSignInToFinishEnding();
-    // Still set: the ending ran past the time limit.
-    const endingPastLimit = endingSignInRef.current;
-    // The ending's SIGNED_OUT, as it settled, set the plain sign-in page
-    // back; the button is busy again while this sign-in goes out.
-    if (mountedRef.current) setPhase('signing_in');
-    const result = await daveWebSupabaseGateway.signIn(email.trim(), password);
+    signInsAwaitingAnswerRef.current += 1;
+    let endingPastLimit: DesktopSignInEnding | null;
+    let result: DAVEWebSignInResult;
+    try {
+      // The ending's guard stays on until it settles; a sign-in starting no
+      // longer turns it off (A12 pass 7 L1).
+      await waitForSignInToFinishEnding();
+      // Still set: the ending ran past the time limit.
+      endingPastLimit = endingSignInRef.current;
+      // The button is busy while this sign-in goes out.
+      if (mountedRef.current) setPhase('signing_in');
+      result = await daveWebSupabaseGateway.signIn(email.trim(), password);
+    } finally {
+      signInsAwaitingAnswerRef.current -= 1;
+    }
     if (!result.ok || !result.session) {
       if (mountedRef.current) {
         setPhase('signed_out');
@@ -535,9 +559,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // His sign-in worked: an ending past the time limit no longer holds this
     // tab's guard. It had made every later sign-in here wait the full 10 s
     // and ignored this tab's own refreshes until its hung request ended
-    // (A12 pass 8 L1). Its late answer leaves this sign-in be: the gateway
-    // keeps a sign-in of another session than the one it ends (A12 pass 9).
-    // A sign-in that failed leaves the guard on.
+    // (A12 pass 8 L1). A late /logout that fails leaves this sign-in be: the
+    // gateway keeps a sign-in of another session than the one it ends (A12
+    // pass 9). One that succeeds still removes it: auth-js then deletes
+    // whatever this tab holds (`_removeSession`), with SIGNED_OUT, and the
+    // tab shows the sign-in page. A sign-in that failed leaves the guard on.
     if (endingPastLimit && endingSignInRef.current === endingPastLimit) {
       endingSignInRef.current = null;
     }
@@ -590,21 +616,24 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         signInMadeDuring: false,
       };
       endingSignInRef.current = ending;
-      clearSessionView();
+      showSignInEnded();
       ending.settled = daveWebSupabaseGateway.signOutThisTabToo(userId)
-        .catch(() => undefined)
-        .then(() => {
+        .catch((): DAVEWebTabSignOutOutcome => 'ended')
+        .then(outcome => {
           if (endingSignInRef.current !== ending) return;
           endingSignInRef.current = null;
-          // A sign-in made here meanwhile shows its own outcome.
-          if (!ending.signInMadeDuring) clearSessionView();
+          // A sign-in made here meanwhile shows its own outcome: one that
+          // waited on this ending, or one it kept. An ending started while
+          // his sign-in was out had shown the sign-in page as it kept his
+          // new sign-in, the workspace open on it (A12 pass 10 L1).
+          if (outcome !== 'kept' && !ending.signInMadeDuring) showSignInEnded();
         });
     };
     return () => {
       signOutChannelRef.current = null;
       channel.close();
     };
-  }, [clearSessionView]);
+  }, [showSignInEnded]);
 
   const refreshSnapshot = useCallback(async () => {
     const status = await daveWebSupabaseGateway.getSessionStatus();

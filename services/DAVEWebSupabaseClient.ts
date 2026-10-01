@@ -116,6 +116,13 @@ export class DAVEWebAuthorizationError extends Error {
  */
 export type DAVEWebSignOutScope = 'local' | 'global';
 
+/**
+ * What a tab's sign-out because another tab signed out left in this tab
+ * (whole-app audit A12 pass 10 L1): 'ended', no sign-in; 'kept', a sign-in
+ * of another session or account, left as it is.
+ */
+export type DAVEWebTabSignOutOutcome = 'ended' | 'kept';
+
 /** Sign out of all devices could not reach the cloud; nothing was signed out. */
 export class DAVEWebSignOutNeedsConnectionError extends Error {
   constructor() {
@@ -509,11 +516,17 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
      * reload opened his projects with no password (L1); and his new
      * sign-in, once auth-js refreshed it, was deleted with no SIGNED_OUT
      * (L2).
+     *
+     * It says what it left (A12 pass 10 L1), and the tab's page follows
+     * that: a second ending, started while his sign-in here was out, had
+     * shown the sign-in page as it settled, though it had kept his new
+     * sign-in and the workspace was open on it.
      */
-    async signOutThisTabToo(userId: string): Promise<void> {
-      if (!client || !userId) return;
+    async signOutThisTabToo(userId: string): Promise<DAVEWebTabSignOutOutcome> {
+      if (!client) return 'ended';
       const ending = browserTabStoredSignIn();
-      if (!ending || ending.userId !== userId) return;
+      if (!ending) return 'ended';
+      if (!userId || ending.userId !== userId) return 'kept';
       try {
         await client.auth.signOut({ scope: 'local' });
       } catch {
@@ -525,9 +538,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         ending.sessionId !== null &&
         (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
       // A sign-in made here meanwhile is kept, with what it has read.
-      if (anotherSignIn) return;
+      if (anotherSignIn) return 'kept';
       if (stored) forgetBrowserTabSignIn();
       forgetSignedInReads();
+      return 'ended';
     },
 
     async loadAuthorizedRows(

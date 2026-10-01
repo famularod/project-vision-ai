@@ -96,8 +96,11 @@ async function signedInHere({ expired = false, sessionId }: {
   await client.auth.initialize();
 }
 
-/** Whether the ending has settled within a moment. */
-async function settlesNow(ending: Promise<void>) {
+/**
+ * Whether the ending has settled within a moment. It now also says what it
+ * left, 'ended' or 'kept' (A12 pass 10 L1); only its settling counts here.
+ */
+async function settlesNow(ending: Promise<unknown>) {
   return Promise.race([
     ending.then(() => 'settled' as const),
     new Promise<'still waiting'>(resolve => setTimeout(() => resolve('still waiting'), 100)),

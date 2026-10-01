@@ -153,11 +153,13 @@ beforeEach(() => {
   mockedGateway.subscribeToAuthorizedOperationalChanges.mockResolvedValue(() => undefined);
   mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
   mockedGateway.storedSignInUserId.mockImplementation(() => storedHere);
+  // It says what it left in this tab, as the gateway does (A12 pass 10 L1).
   mockedGateway.signOutThisTabToo.mockImplementation(async (userId: string) => {
-    if (storedHere !== userId) return;
+    if (storedHere !== userId) return storedHere ? 'kept' : 'ended';
     // auth-js removes the stored sign-in, then tells this tab.
     storedHere = null;
     authListener('SIGNED_OUT', null);
+    return 'ended';
   });
   mockedGateway.signOut.mockImplementation(async () => {
     storedHere = null;

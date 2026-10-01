@@ -116,7 +116,8 @@ describe('signOutThisTabToo (A12 pass 5 L2)', () => {
   test('the server cannot be reached: the sign-in still leaves this tab, and nothing throws', async () => {
     storeSignIn('owner-1');
     cloud.logout = 'network';
-    await expect(tabGateway().signOutThisTabToo('owner-1')).resolves.toBeUndefined();
+    // It says what it left (A12 pass 10 L1): no sign-in here.
+    await expect(tabGateway().signOutThisTabToo('owner-1')).resolves.toBe('ended');
     expect(logoutCalls()).toEqual(['POST /auth/v1/logout?scope=local']);
     expect(sessionState.has(STORED_KEY)).toBe(false);
   });
