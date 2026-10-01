@@ -32,6 +32,7 @@ import {
 import { SCHEDULE_UPDATE_PROGRESS_CONFIRMER } from '../../services/ScheduleProgressSource';
 import { scheduleTaskLinks } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
+import { formatCalendarDate, parseFlexibleDate } from '../../utils/date';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
 
@@ -339,5 +340,43 @@ describe('A5 p17 M2: same-named tasks pair by their calendar days first', () => 
       ['MASTER F-1', '10/01/2026', 90],
       ['MASTER F-2', '10/08/2026', 50],
     ]);
+  });
+});
+
+/**
+ * L1: a CSV whose dates carry a weekday ("Thu 12/31/26", "Mon 1/4/27", as
+ * Microsoft Project exports them) came in with every row's dates blank: the
+ * shared date parser (parseFlexibleDate) took no weekday. The review flagged
+ * the rows, but approval saved them with no dates. The parser now takes a
+ * weekday's own names in front of a date; every other form parses as before.
+ */
+describe('A5 p17 L1: a CSV date written with a weekday comes in', () => {
+  const day = (value: string) => {
+    const parsed = parseFlexibleDate(value);
+    return parsed ? formatCalendarDate(parsed) : null;
+  };
+
+  it('reads a weekday in front of a date, in the forms schedules write it', () => {
+    expect(['Thu 12/31/26', 'Mon 1/4/27', 'Tues 10/6/26', 'Thu. 10/8/2026', 'wed 2026-10-07', 'Monday, October 5, 2026', 'Fri, Oct 9, 2026'].map(day))
+      .toEqual(['12/31/2026', '01/04/2027', '10/06/2026', '10/08/2026', '10/07/2026', '10/05/2026', '10/09/2026']);
+  });
+
+  it('every other form parses as before, and text that is not a weekday still names no day', () => {
+    expect(['07/31/2026', '7/31/26', '2026-07-31', 'Jul 24, 2026', '24 Jul 2026'].map(day))
+      .toEqual(['07/31/2026', '07/31/2026', '07/31/2026', '07/24/2026', '07/24/2026']);
+    expect(['', 'Mon', 'TBD', 'Monitor 1/4/27', 'Sun Valley 10/5/26', 'Phase 2', 'Mon 13/45/26', '13/45/2026'].map(day))
+      .toEqual([null, null, null, null, null, null, null, null]);
+  });
+
+  it('the CSV normalizer keeps the dates, the review does not flag them, and approval saves them', () => {
+    const W = schedule('WEEKDAYS', '2026-09-30T12:00:00.000Z');
+    const result = normalizeScheduleImport({
+      contents: ['Task,Project,Area,Start,Finish,Percent Complete', 'Pour slab,Alpha,Lot,Thu 12/31/26,Mon 1/4/27,0'].join('\n'),
+      sourceName: W.originalFileName, mimeType: 'text/csv', projects: ['Alpha'], projectAreas: [], now: new Date(W.importedAt),
+    });
+    expect(result.items.map(item => [item.startDate, item.finishDate])).toEqual([['12/31/2026', '01/04/2027']]);
+    expect(result.reviewItems.flatMap(item => item.correctionFields)).not.toContain('Dates');
+    const { state } = approve(EMPTY, W, rows(W, ['Pour slab,Alpha,Lot,Thu 12/31/26,Mon 1/4/27,0']));
+    expect(shownNamed(state, 'Pour slab').map(item => [item.startDate, item.finishDate])).toEqual([['12/31/2026', '01/04/2027']]);
   });
 });
