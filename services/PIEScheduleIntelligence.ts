@@ -709,13 +709,20 @@ function fractionValue(value: string): number | null {
  * 0%, and "99.6" was cut to 99%. A percent cell's number is now read whole
  * and rounded as the progress rule rounds it (reconcileScheduleProgress):
  * ".5" and "0.5" are 1%, ".25" is 0%, "99.6" is 100%.
+ *
+ * Whole-app audit A5 pass 9 L5 (30 Sep 2026): a cell with no number read 0,
+ * so a row with Status "In Progress" and a blank or missing % Complete read
+ * Not Started at 0%. Such a cell is no number now (null), and the progress
+ * rule decides by the status: In Progress 1%, Complete 100%. A row with no
+ * number still states no percent (percentStated), so it never changes a
+ * saved task's percent.
  */
 function percentColumnReadsAsFractions(values: readonly string[]): boolean {
   const numbers = values.filter(value => /\d/.test(value) && !value.includes('%'));
   return numbers.length > 0 && numbers.every(value => fractionValue(value) !== null);
 }
 
-function normalizePercent(value: string, status: ScheduleStatus, fractions = false) {
+function normalizePercent(value: string, status: ScheduleStatus, fractions = false): number | null {
   const fraction = fractionValue(value);
   if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
   const match = value.match(/(\d*\.\d+|\d+)/);
@@ -723,7 +730,7 @@ function normalizePercent(value: string, status: ScheduleStatus, fractions = fal
   if (match) return clamp(Math.round(Number(match[1])), 0, 100);
   if (status === 'Complete') return 100;
 
-  return 0;
+  return null;
 }
 
 function normalizeDate(value: string) {
@@ -1169,7 +1176,7 @@ export function normalizeMicrosoftProjectPdfRows({
       duration: parseDuration(cell(cells, header, ['duration'], 3)),
       startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
       finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
-      percentComplete: normalizePercent(percentCell, 'Not Started', percentFractions),
+      percentComplete: normalizePercent(percentCell, 'Not Started', percentFractions) ?? 0, // no status column here
       percentStated: percentStated(percentCell, 'Not Started'),
       notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
     };
