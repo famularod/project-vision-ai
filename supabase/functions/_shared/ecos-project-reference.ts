@@ -142,10 +142,17 @@ function selectedProjectNumbers(projectName: string, source: string): { numbers:
   return { numbers: [], lettered: '', label: ecosProjectDisplayIdentifier(projectName) ?? projectName.trim() };
 }
 
-/** A refused project as shown: its identifier as written ("2375A") when they all write it alike, else `fallback`. */
+/**
+ * A refused project as shown: its identifier as written ("2375A") when they
+ * all write it alike, else `fallback`; projects with different identifiers
+ * are each named ("2375A or 2375B" for a bare "2375"; audit A9 pass 10).
+ */
 function numberLabel(projectNames: readonly string[], fallback: string) {
   const labels = new Set(projectNames.map(name => ecosProjectDisplayIdentifier(name) ?? fallback));
-  return labels.size === 1 ? [...labels][0] : fallback;
+  const distinct = [...new Map([...labels].map(label => [label.toUpperCase(), label])).values()];
+  if (labels.size === 1) return [...labels][0];
+  if (distinct.length === 1) return fallback;
+  return `${distinct.slice(0, -1).join(', ')} or ${distinct[distinct.length - 1]}`;
 }
 
 /** The identifier compared between projects: "2375", or "2375A" for "2375a Main" (audit A9 pass 9 L1). */

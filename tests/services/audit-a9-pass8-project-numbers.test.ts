@@ -422,7 +422,9 @@ describe('audit A9 pass 8 L7: a project number with one letter glued to it ("237
   });
 
   it('two projects 2375A and 2375B share 2375: a bare "2375" refuses as ambiguous and Talk does not move', () => {
-    expect(desktop('What is left at 2375?', [SELECTED, A, B])).toBe(switchOnDesktop('2375'));
+    // Audit A9 pass 10 (b): the refusal names both projects (was "names 2375",
+    // and no project is called 2375).
+    expect(desktop('What is left at 2375?', [SELECTED, A, B])).toBe(switchOnDesktop('2375A or 2375B'));
     expect(mentionedDAVEProject('What is left at 2375?', [SELECTED, A, B])).toBeNull();
     // Audit A9 pass 9 L1: Talk keys projects by the whole identifier, so 2375A
     // and 2375B are two projects there and Talk asks which (was "names 2375").

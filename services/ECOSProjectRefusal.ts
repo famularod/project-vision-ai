@@ -57,8 +57,9 @@ export function projectReferenceMismatchText(
   referencedProjectClosed: boolean,
   refusalWording: ECOSProjectRefusalWording,
 ) {
+  // A name that starts with "Project" is not shown as "Project Project Phoenix" (audit A9 pass 10).
   const selected = selectedProjectIdentifier
-    ? `Project ${selectedProjectIdentifier} is selected, but`
+    ? `${/^project\b/i.test(selectedProjectIdentifier) ? '' : 'Project '}${selectedProjectIdentifier} is selected, but`
     : 'No project is selected, and';
   if (referencedProjectClosed) {
     // A closed project is not offered anywhere until it is reopened, and only

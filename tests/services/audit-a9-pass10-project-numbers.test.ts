@@ -173,3 +173,34 @@ describe('audit A9 pass 10 L3: a closed one-word project name after in/and/vs/di
     },
   );
 });
+
+describe('audit A9 pass 10 cosmetics: the refusal wording', () => {
+  it('(a) a selected name starting with "Project" is not "Project Project ..."', () => {
+    const PHOENIX = 'Project Phoenix';
+    const projects = [PHOENIX, SELECTED, '2375 Compliance Project'];
+    expect(desktop('What is left at 2375?', projects, [], PHOENIX)).toBe(
+      'Project Phoenix is selected, but this question names 2375. Select project 2375 above, then ask again.',
+    );
+    expect(phone('What is left at 2375?', [PHOENIX], ['2375 Compliance Project'], PHOENIX)).toBe(
+      'Project Phoenix is selected, but 2375 is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+  });
+
+  it('(b) a bare "2375" with 2375A and 2375B names both, not a project 2375 that does not exist', () => {
+    const OFFICE = 'Harbor Office';
+    const projects = [OFFICE, '2375A Main', '2375B Main'];
+    expect(phone('What is left at 2375?', projects, [], OFFICE)).toBe(
+      'Project Harbor Office is selected, but this question names 2375A or 2375B. Close this, open project 2375A or 2375B, then ask again.',
+    );
+    expect(desktop('What is left at 2375?', [SELECTED, '2375A Main', '2375B Main', '2375C Main'])).toBe(
+      'Project 2321 is selected, but this question names 2375A, 2375B or 2375C. Select project 2375A, 2375B or 2375C above, then ask again.',
+    );
+    expect(findECOSProjectReferenceMismatch(OFFICE, 'What is left at 2375?', [OFFICE], ['2375A Main', '2375b Annex'])).toEqual({
+      selectedProjectIdentifier: OFFICE,
+      referencedProjectIdentifier: '2375A or 2375b',
+      referencedProjectClosed: true,
+    });
+    // One identifier written two ways is still one project number.
+    expect(desktop('What is left at 2375A?', [SELECTED, '2375A Main', '2375a Annex'])).toBe(switchOnDesktop('2375A'));
+  });
+});

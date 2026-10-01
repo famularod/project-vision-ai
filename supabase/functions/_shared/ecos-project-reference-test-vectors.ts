@@ -836,7 +836,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
   ...([
     ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
     ['Is 2375A done?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
-    ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375', undefined],
+    // Audit A9 pass 10 (b): both are named (was '2375', which no project is called).
+    ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375A or 2375B', undefined],
     ['What is left at 2375B?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375B', undefined],
     ['What is left at 2375A?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], null, undefined],
     ['What is left at 2375?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], null, undefined],
