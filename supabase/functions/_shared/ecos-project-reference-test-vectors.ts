@@ -838,6 +838,26 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 9 L1: identifiers are compared whole and upper-cased, so
+  // "2375" is not "2375A". A bare number names a project numbered just that,
+  // even with 2375A selected; the selected one's own "2375A" (and its digits
+  // when no project is numbered just 2375) is never refused; a spaced
+  // "2375 B" or "2375-B" names 2375B.
+  ...([
+    ['What is left at 2375?', '2375A Phase 2', [SELECTED, '2375A Phase 2', '2375 Main St'], '2375', '2375A'],
+    ['What is left at 2375A?', '2375A Phase 2', [SELECTED, '2375A Phase 2', '2375 Main St'], null, undefined],
+    ['What is left at 2375?', '2375 Main St', [SELECTED, '2375A Phase 2', '2375 Main St'], null, undefined],
+    ['What is left at 2375A?', '2375 Main St', [SELECTED, '2375A Phase 2', '2375 Main St'], '2375A', '2375'],
+    ['What is left at 2375 B?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], '2375B', '2375A'],
+    ['What is left at 2375-B?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375B', undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 9 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
   {
     name: 'pass 8 L7: a closed lettered project is refused with its letter, marked closed',
     projectName: SELECTED,

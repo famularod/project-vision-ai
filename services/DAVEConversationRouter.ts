@@ -148,7 +148,7 @@ function openProjectNamed(project: TalkNamedProject) {
 
 type TalkNamedProject = {
   key: string;
-  /** The project number ("2375A" when that is the one project with it), or the name of a project without one. */
+  /** The project number ("2375A"), or the name of a project without one. */
   label: string;
   /** Open projects with this key, and those of them named in full. */
   open: string[];
@@ -173,11 +173,16 @@ type TalkNamedProject = {
  * that share a number are one project here, keyed by that number.
  * Audit A9 pass 8 L5: a closed project's name of one word ("Main", "Harbor")
  * counts only when it is named as the project (closedNameNamesProject).
+ * Audit A9 pass 9 L1: the number is compared whole ("2375" is not "2375A"),
+ * as in Ask ECOS. A bare "2375" names the project numbered just 2375; with
+ * none, the `selectedName` 2375A (its own digits), or else every lettered
+ * 2375. "2375 B" names 2375B as well as 2375.
  */
 function talkNamedProjects(
   transcript: string,
   openNames: readonly string[],
   closedNames: readonly string[],
+  selectedName = '',
 ): TalkNamedProject[] {
   const open = uniqueNames(openNames);
   const openKeys = new Set(open.map(normalize));
@@ -198,10 +203,8 @@ function talkNamedProjects(
   const named = new Map<string, TalkNamedProject>();
   const add = (name: string, at: number, inFull: boolean, unsure: boolean) => {
     const key = talkProjectKey(name);
-    const label = ecosProjectDisplayIdentifier(name) ?? name;
+    const label = key.startsWith('name:') ? name : key;
     const project = named.get(key) ?? { key, label, open: [], exactOpen: [], at, unsure };
-    // "2375A Main" and "2375B Main" are one project 2375 here, shown as 2375.
-    if (project.label !== label) project.label = ecosProjectIdentifier(name) ?? project.label;
     project.at = Math.min(project.at, at);
     project.unsure = project.unsure && unsure;
     const isOpen = openKeys.has(normalize(name));
@@ -211,13 +214,17 @@ function talkNamedProjects(
   };
   // A name inside a comma group ("200" in "1,200") is as unsure as the number.
   for (const occurrence of exact) add(occurrence.name, occurrence.start, true, occurrence.inCommaGroup);
-  for (const { number, start, unsure, letter } of numbers) {
+  const withKey = (key: string) => all.filter(name => talkProjectKey(name) === key.toUpperCase());
+  for (const { number, start, unsure, letter, spacedLetter } of numbers) {
     // "2375B" names the project written "2375B" when there is one (audit A9 pass 8 L7).
-    const lettered = letter
-      ? all.filter(name => ecosProjectDisplayIdentifier(name)?.toUpperCase() === `${number}${letter}`.toUpperCase())
-      : [];
-    const withNumber = lettered.length > 0 ? lettered : all.filter(name => ecosProjectIdentifier(name) === number);
-    for (const name of withNumber) add(name, start, false, unsure);
+    const lettered = letter ? withKey(number + letter) : [];
+    const plain = withKey(number);
+    const withNumber = lettered.length > 0 ? lettered
+      : plain.length > 0 ? plain
+      : ecosProjectIdentifier(selectedName) === number ? [selectedName]
+      : all.filter(name => ecosProjectIdentifier(name) === number);
+    const spaced = spacedLetter ? withKey(number + spacedLetter) : [];
+    for (const name of [...withNumber, ...spaced]) add(name, start, false, unsure);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
 }
@@ -243,9 +250,12 @@ function inCommaGroup(text: string, start: number, end: number) {
   return /\d,$/.test(text.slice(0, start)) || /^,\d{3}(?!\d)/.test(text.slice(end));
 }
 
-/** One key per project: its number, or its name when it has none (projects sharing a number are one). */
+/**
+ * One key per project: its whole number upper-cased ("2375", "2375A"; audit
+ * A9 pass 9 L1), or its name when it has none (projects sharing a number are one).
+ */
 function talkProjectKey(name: string) {
-  return ecosProjectIdentifier(name) ?? `name:${normalize(name)}`;
+  return ecosProjectDisplayIdentifier(name)?.toUpperCase() ?? `name:${normalize(name)}`;
 }
 
 /** [start, end) of each whole-word occurrence of `name` in `text`, without case. */
@@ -287,7 +297,7 @@ export function talkProjectQuestionRefusal(
   projectNames: readonly string[],
   closedProjectNames: readonly string[] = [],
 ): string | null {
-  const named = talkNamedProjects(question, projectNames, closedProjectNames);
+  const named = talkNamedProjects(question, projectNames, closedProjectNames, selectedProjectName.trim());
   if (named.length >= 2) {
     const labels = named.map(project => project.label);
     const count = labels.length === 2 ? 'two' : String(labels.length);
@@ -345,7 +355,7 @@ export function buildDAVETalkMemoryDraft({
   voiceResult?: DAVEVoiceUnderstandingResponse;
 }): DAVECaptureMemory {
   const projectKey = talkProjectKey(projectName);
-  const namesAnotherProject = talkNamedProjects(transcript, projectNames || [], closedProjectNames || [])
+  const namesAnotherProject = talkNamedProjects(transcript, projectNames || [], closedProjectNames || [], projectName)
     .some(project => project.key !== projectKey);
   const needsProjectChoice = switchedProject || namesAnotherProject;
   const location = switchedProject ? null : voiceResult?.understanding.recommendedLocation;
