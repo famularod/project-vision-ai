@@ -13419,7 +13419,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         text: 'Undo',
         style: 'cancel',
         onPress: () => {
-          const undo = scheduleTalkUndo(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], task, previous, written, new Date().toISOString());
+          const undo = scheduleTalkUndo(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], task, previous, written, new Date().toISOString(), selectAuthoritativeScheduleItems({ scheduleItems: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], scheduleDocuments: referenceDocumentsCurrentRef.current })); // the row Talk changed while shown (A10 pass 8 L2)
           return undo.ok ? updateScheduleItem(undo.taskId, undo.edit, undefined, true) : Alert.alert('Not undone', undo.message);
         },
       },

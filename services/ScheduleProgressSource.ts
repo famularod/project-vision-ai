@@ -148,8 +148,15 @@ const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progress
 /**
  * The task a task id is now: the newest row a new master moved it to (by the
  * ids a task had before, ScheduleTaskRevisions), else the task itself.
+ *
+ * Whole-app audit A10 pass 8 L2 (30 Sep 2026): after Make Current back to
+ * the old master, Talk changed the old row (shown), and Undo always refused:
+ * it found the hidden newer row that answers to it, which does not hold what
+ * Talk wrote. With the tasks shown known, the row Talk changed decides while
+ * it is shown; the earlier ids are followed only when it no longer is.
  */
-function scheduleTaskNow(items: readonly ScheduleItem[], taskId: string): ScheduleItem | null {
+function scheduleTaskNow(items: readonly ScheduleItem[], taskId: string, shown?: readonly ScheduleItem[]): ScheduleItem | null {
+  if (shown?.some(item => item.id === taskId)) return items.find(item => item.id === taskId) ?? null;
   const moved = items.filter(item => scheduleTaskEarlierIds(item).includes(taskId));
   const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds));
   const newest = moved.filter(item => !superseded.has(item.id));
@@ -173,8 +180,10 @@ export function scheduleTalkUndo(
   before: ScheduleProgressUndoPoint,
   written: ScheduleProgressUndoPoint,
   at: string,
+  /** The tasks shown now (A10 pass 8 L2); without them, the newest row first, as before. */
+  shown?: readonly ScheduleItem[],
 ): Readonly<{ ok: true; taskId: string; edit: Partial<ScheduleItem> } | { ok: false; message: string }> {
-  const now = scheduleTaskNow(items, task.id);
+  const now = scheduleTaskNow(items, task.id, shown);
   const holds = now && WRITTEN_FIELDS.every(field => (now[field] ?? null) === (written[field] ?? null));
   if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
   const { lookaheadOverlay, ...edit } = scheduleProgressRestored(before, at);

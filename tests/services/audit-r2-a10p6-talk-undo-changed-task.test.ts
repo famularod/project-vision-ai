@@ -21,6 +21,8 @@ import type { ScheduleItem } from '../../types';
 import { mergeApprovedScheduleImportItems } from '../../services/ScheduleImportMerge';
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import * as progressSource from '../../services/ScheduleProgressSource';
+import { schedulesOfSavedTasks } from '../fixtures/saved-schedules';
+import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 
 const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
 function slice(from: string, to: string) {
@@ -42,6 +44,10 @@ function phoneWith(items: ScheduleItem[]) {
   const state = { talkTaskAction: null as unknown };
   const deps: Record<string, unknown> = {
     scheduleItemsCurrentRef: ref,
+    // Pin changed deliberately (A10 pass 8 L2, 30 Sep 2026): Undo asks which tasks are shown now, from the
+    // schedules saved, so the compiled confirm needs them; one current schedule per import, the newest shown.
+    referenceDocumentsCurrentRef: { get current() { return schedulesOfSavedTasks(ref.current); } },
+    selectAuthoritativeScheduleItems,
     withProjectControlsEditMerged: (_current: ScheduleItem, next: Partial<ScheduleItem>) => next,
     reconcileScheduleProgressEdit,
     normalizeScheduleItem: (value: ScheduleItem) => ({ ...value }),
