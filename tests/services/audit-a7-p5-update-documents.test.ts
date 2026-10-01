@@ -89,6 +89,7 @@ import {
   uploadedProjectDocumentToShare,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
+  cloudCopyShownOnDevice,
   documentsUploadedAfterCloudCopy,
   fieldUpdatesToResendForDocument,
   withDeviceDocumentUploadState,
@@ -235,7 +236,7 @@ function refresh(device: Device, rows: Array<ReturnType<typeof row>>) {
       normalizeStartupArray, normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord,
       savedUpdatesRef: device.savedUpdatesRef, projectDocumentsCurrentRef: device.projectDocumentsCurrentRef,
       resolveProjectPhotoUri: A.resolveProjectPhotoUri, preserveLocalPhotoTransport, withLatestLocalPhotoTransport,
-      withDeviceDocumentUploadState, hydrateProjectUpdatePhotoPreviews, getOfflineQueue: device.isPhone ? getOfflineQueue : async () => [],
+      withDeviceDocumentUploadState, cloudCopyShownOnDevice, hydrateProjectUpdatePhotoPreviews, getOfflineQueue: device.isPhone ? getOfflineQueue : async () => [],
       documentsUploadedAfterCloudCopy, resendUpdatesListingDocument: device.resendUpdatesListingDocument,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,

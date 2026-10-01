@@ -17,7 +17,7 @@ import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision
 import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
-import { withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
+import { cloudCopyShownOnDevice, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { queuedDocumentPatchesForUpdate } from './FieldUpdateDocumentPatch';
 import { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
 import type { DeletedUpdateTombstone } from './updateService';
@@ -213,9 +213,10 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
         options.localPhotoUri,
       );
       // The row as a receipt; as the copy shown, with the document changes
-      // still waiting to go up (whole-app audit A7 pass 6 M1).
+      // still waiting to go up (whole-app audit A7 pass 6 M1), read as sent:
+      // the row's 'queued' made a Sent update "Waiting to Sync" (pass 9 L1).
       const receipt = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.());
-      const cloudCopy = withDeviceDocumentUploadState(deviceCopy, options.deviceDocuments?.(), latestQueue, removedDocuments);
+      const cloudCopy = cloudCopyShownOnDevice(deviceCopy, options.deviceDocuments?.(), latestQueue, removedDocuments);
       const onlyDocumentChangesWait = Boolean(queuedDocumentPatchesForUpdate(latestQueue, previewReady.id));
       let deletedUpdates = fresh.deletedUpdates;
       if (previewReady.isArchived) {

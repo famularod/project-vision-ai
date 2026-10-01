@@ -98,9 +98,11 @@ import {
   cloudPhotoPreviewIsFresh,
   projectUpdateUploadedSince,
   loadRemovedFieldUpdateDocuments,
+  projectUpdateCopyIsLastInCloud,
   queueProjectUpdateDocumentChange,
   queueProjectUpdateRecord,
   requeueRemovedFieldUpdateDocuments,
+  resetFieldUpdateSyncMemoryForTests,
   resolveProjectUpdateSyncConflict,
   runFieldUpdateCloudSync,
   uploadPendingChanges,
@@ -126,6 +128,7 @@ import {
   uploadedProjectDocumentToShare,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
+  cloudCopyShownOnDevice,
   documentsUploadedAfterCloudCopy,
   fieldUpdatesToResendForDocument,
   withDeviceDocumentUploadState,
@@ -171,21 +174,22 @@ function blockAfter(marker: string): string {
   throw new Error('unbalanced block');
 }
 
-/** A function of the App component (two-space indent), brace-matched. */
-function componentFunction(name: string): string {
-  const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(app);
-  if (!match) throw new Error(`App.tsx has no component function ${name}`);
-  const open = app.indexOf(' {\n', match.index) + 1;
+/** A function of the App component (two-space indent), brace-matched; or of another screen's. */
+function componentFunction(name: string, source = app): string {
+  const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(source);
+  if (!match) throw new Error(`no component function ${name}`);
+  const open = source.indexOf(' {\n', match.index) + 1;
   let depth = 0;
-  for (let index = open; index < app.length; index += 1) {
-    if (app[index] === '{') depth += 1;
-    if (app[index] === '}') {
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] === '}') {
       depth -= 1;
-      if (depth === 0) return app.slice(match.index + 3, index + 1);
+      if (depth === 0) return source.slice(match.index + 3, index + 1);
     }
   }
   throw new Error('unbalanced function');
 }
+const adminScreen = fs.readFileSync(path.resolve(__dirname, '../../screens/AdminScreen.tsx'), 'utf8');
 
 function evaluate<T>(js: string, deps: Record<string, unknown>): T {
   const mod = { exports: {} as T };
@@ -277,7 +281,7 @@ function refresh(device: Device, own: Record<string, unknown> = {}) {
       normalizeStartupArray, normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord,
       savedUpdatesRef: device.savedUpdatesRef, projectDocumentsCurrentRef: device.projectDocumentsCurrentRef,
       resolveProjectPhotoUri: A.resolveProjectPhotoUri, preserveLocalPhotoTransport, withLatestLocalPhotoTransport,
-      withDeviceDocumentUploadState, hydrateProjectUpdatePhotoPreviews, getOfflineQueue,
+      withDeviceDocumentUploadState, cloudCopyShownOnDevice, hydrateProjectUpdatePhotoPreviews, getOfflineQueue,
       documentsUploadedAfterCloudCopy, resendUpdatesListingDocument: device.resendUpdatesListingDocument,
       deletedUpdateTombstonesRef: { current: [] }, buildUpdateTombstone: A.buildUpdateTombstone,
       upsertDeletedUpdateTombstone: A.upsertDeletedUpdateTombstone, hasMatchingQueuedProjectUpdateRevision,
@@ -345,7 +349,7 @@ function device(documents: Doc[], saved: Update[], options: {
     retryProjectDocumentUpload: (documentId: string) => Promise<boolean | undefined>;
     deleteProjectDocument: (documentId: string) => void;
     resendUpdatesListingDocument: (documentId: string, change: (update: Update) => Update) => void;
-  }>(transpile([...names.map(componentFunction), `module.exports = { ${names.join(', ')} };`].join('\n')), deps);
+  }>(transpile([...names.map(name => componentFunction(name)), `module.exports = { ${names.join(', ')} };`].join('\n')), deps);
   const render = () => {
     projectDocumentsCurrentRef.current = documentsState;
     savedUpdatesRef.current = savedState;
@@ -382,6 +386,10 @@ async function syncWaitingUpdate(phone: Device, id = 'u1') {
 beforeEach(() => {
   mockStorage.clear();
   mockCloud.clear();
+  // What a launch holds in memory (the copy each update last put in the
+  // cloud, the documents re-sent) starts empty in each test: none depends on
+  // the one before it (A7 pass 9).
+  resetFieldUpdateSyncMemoryForTests();
   noteSignedInOwner('owner-a');
   (listProjectUpdates as jest.Mock).mockReset();
   (createPhotoSignedUrl as jest.Mock).mockReset();
@@ -1194,5 +1202,276 @@ describe('a document change on a sent update that failed to upload shows on its 
     mockStorage.clear();
     await queueProjectUpdateRecord({ ...savedUpdate([uploaded('survey')], 'queued'), notes: 'Pour, 40 yards' }, false);
     expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1', queued + 600_000)).toEqual({ shown: false, shownAt: null });
+  });
+});
+
+/**
+ * A7 pass 9 L1, with A4 pass 11 L1: the "Waiting to Sync" or failed status
+ * of an update can be stale, its own record already in the cloud. A document
+ * change then took it for an edit whose queue write was lost (A7 pass 8 L1)
+ * and sent the phone's whole older copy, stamped now, over the iPad's newer
+ * note, with no conflict raised:
+ * (a) its record went up in a background upload pass whose realtime echo
+ *     arrived while it was still queued, and was ignored;
+ * (a2) Keep Phone left the card failed;
+ * (b) a refresh or a realtime echo while a document change waited turned a
+ *     Sent update into "Waiting to Sync" (the cloud row's 'queued').
+ */
+const IPAD_SECOND_NOTE = 'Pour moved to Wednesday (typed on the iPad again)';
+/** The iPad's edit lands now; this phone's next write is later still. */
+async function iPadEditsNow(note: string, id = 'u1') {
+  putInCloud({ ...inCloud(id), notes: note }, new Date().toISOString());
+  await new Promise(resolve => setTimeout(resolve, 5));
+}
+/** The realtime echo of the next save arrives while its record is still queued, and is ignored. */
+function echoWhileStillQueued(phone: Device) {
+  const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+  const seen: Array<Update | undefined> = [];
+  (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: { id: string }) => {
+    const result = await save(params);
+    seen.push(await realtimeEcho(phone, params.id));
+    return result;
+  });
+  return seen;
+}
+/** Keep Phone or Keep Cloud in Settings: AdminScreen's own resolveConflict, then the App's own handler for the chosen copy. */
+async function chooseInSettings(phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud') {
+  const applyChosen = evaluate<(update: Update) => void>(
+    transpile(`module.exports = function (update) ${blockAfter('onApplyCloudConflictUpdate={update => {')}`),
+    {
+      normalizeStoredUpdateRecord: A.normalizeStoredUpdateRecord, setSavedUpdates: phone.setSavedUpdates,
+      mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones, deletedUpdateTombstonesRef: { current: [] },
+    },
+  );
+  const alerts: string[] = [];
+  const { resolveConflict } = evaluate<{ resolveConflict: (conflict: unknown, resolution: string) => Promise<void> }>(
+    transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
+    {
+      setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
+      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
+      projectUpdateCopyIsLastInCloud,
+      getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
+      setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
+      Alert: { alert: (title: string) => { alerts.push(title); } },
+    },
+  );
+  await resolveConflict((await getSyncConflicts()).find(item => item.id === conflict.id), resolution);
+  phone.render();
+  expect(alerts).toEqual([]);
+}
+
+describe('a stale "Waiting to Sync" or failed status does not send the phone\'s older copy over the iPad\'s note (audit A7 pass 9 L1)', () => {
+  it.each([
+    ['the upload run lands first', true],
+    ['the waiting-update sync stages it first', false],
+  ])('X1c: its record went up in a background pass whose echo was ignored; the iPad edits; a document comes off: the iPad keeps its note, the phone shows it, Sent (%s)', async (_label, uploadFirst) => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    const edited = { ...sent, notes: EDIT, status: 'queued' };
+    const phone = device([uploaded('permit'), uploaded('survey')], [edited]);
+    await queueProjectUpdateRecord(edited, false);
+    const echoes = echoWhileStillQueued(phone);
+    await uploadPendingChanges(); // a background pass
+    expect(echoes).toEqual([expect.objectContaining({ notes: EDIT, status: 'queued' })]); // ignored: still queued then
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(await getOfflineQueue()).toEqual([]);
+
+    await iPadEditsNow(IPAD_NOTE);
+    // It still appears to owe its own sync, so the echo leaves its content.
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: EDIT, status: 'queued' });
+
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    if (uploadFirst) await uploadPendingChanges();
+    await syncWaitingUpdate(phone); // the waiting-update sync it asked for
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    const shown = await realtimeEcho(phone);
+    expect(shown).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(documentIds(shown)).toEqual(['survey']);
+  });
+
+  it('X2: Keep Phone, then the iPad edits again and this phone misses it; a document comes off the card Keep Phone left failed: the iPad keeps its note', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local'); // the card stays failed, as an earlier build left it
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(phone.saved()?.status).toBe('failed');
+
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('X2: Keep Phone in Settings shows the kept copy as Sent; after a relaunch a document change still goes up as a patch', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
+    expect(A.updateNeedsAutomaticSyncRetry(phone.saved()!)).toBe(false);
+
+    resetFieldUpdateSyncMemoryForTests(); // a relaunch: nothing held in memory
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
+  });
+
+  it('Keep Phone in Settings after a document came off during the conflict: Sent, without the document', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
+    expect(documentIds(phone.saved())).toEqual(['survey']);
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('Keep Phone in Settings leaves a newer edit made on the phone since the conflict as it is: it still owes its own sync', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    const newer = { ...phone.saved()!, notes: 'Pour, 45 yards (typed on the phone after the conflict)' };
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? newer : update));
+    phone.render();
+    await chooseInSettings(phone, conflict, 'keep_local');
+    expect(phone.saved()).toMatchObject({ notes: newer.notes, status: 'failed' });
+    // A document change then sends that edit whole: it was never sent.
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toBeUndefined();
+  });
+
+  it('a failed update with a photo, its record since sent by a background pass: a document taken off reaches the iPad on its own, without a Retry', async () => {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    const photo = { id: 'photo-failed', uri: 'file:///phone/Documents/project-photos/failed.jpg', caption: '', createdAt: SENT_AT };
+    const sent = { ...savedUpdate([uploaded('permit'), uploaded('survey')]), photos: [photo] };
+    putInCloud(sent);
+    const edited = { ...sent, notes: EDIT, status: 'queued' };
+    const phone = device([uploaded('permit'), uploaded('survey')], [edited]);
+    (saveProjectUpdate as jest.Mock).mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'permission denied for table project_updates' });
+    await syncWaitingUpdate(phone); // the photo is checked; the save is refused
+    expect((await queuedFor())!.payload.pendingPhotoAssetIds).toEqual([]);
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...update, status: 'failed' } : update));
+    phone.render();
+    await uploadPendingChanges(); // a background pass sends it; this phone misses its echo
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(phone.saved()?.status).toBe('failed');
+
+    await iPadEditsNow(IPAD_NOTE);
+    await phone.deleteFromThisDevice('permit');
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']); // the iPad sees it
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it.each([
+    ['the phone\'s sync runs first (P1r, F1-A)', 'sync'],
+    ['the removal uploads first (F1-B)', 'upload'],
+  ])('a refresh while a removal waits keeps the update Sent; the iPad edits again: its second edit stays (%s)', async (_label, first) => {
+    const { phone } = await phoneTakesPermitOff();
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(documentIds(phone.saved())).toEqual(['survey']);
+    expect(A.updateNeedsAutomaticSyncRetry(phone.saved()!)).toBe(false); // no waiting-update sync follows
+
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    if (first === 'sync') await syncWaitingUpdate(phone); // a sync attempt, had one run
+    else await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
+  });
+
+  it('F2: a realtime echo of the iPad\'s edit while a removal waits keeps the update Sent; the iPad edits again: its second edit stays', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    const shown = await realtimeEcho(phone);
+    expect(shown).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(documentIds(shown)).toEqual(['survey']);
+
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('F3: the iPad\'s older copy lists the document again; the refresh takes it off again as a patch, and the iPad\'s next edit stays', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    const phone = device([uploaded('permit'), uploaded('survey')], [sent]);
+    await phone.deleteFromThisDevice('permit');
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+
+    // The iPad, offline since before the delete, sends its own edit of its older copy.
+    putInCloud({ ...sent, notes: IPAD_NOTE }, new Date().toISOString());
+    await refresh(phone);
+    await phone.settle();
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('G1: an update in conflict; a document comes off; the iPad\'s edit echoes: the conflict stays, with the phone\'s note for Keep Phone', async () => {
+    const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await phone.deleteFromThisDevice('permit');
+    persistDocuments();
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    await realtimeEcho(phone);
+    if (A.updateNeedsAutomaticSyncRetry(phone.saved()!)) await syncWaitingUpdate(phone); // as the App's waiting-update sync would
+    await uploadPendingChanges();
+
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({
+      localId: 'u1',
+      localPayload: expect.objectContaining({ updateData: expect.objectContaining({ notes: PHONE_NOTE }) }),
+    })]);
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('the lost-queue-write protection holds when the copy in the cloud is known: an edit beyond it still goes up whole', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    const phone = device([uploaded('permit'), uploaded('survey')], [sent]);
+    await queueProjectUpdateRecord(sent, false);
+    await uploadPendingChanges(); // this device's copy is in the cloud, and known to be
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...update, notes: EDIT, status: 'queued' } : update));
+    phone.render(); // its queue write lost
+    await phone.deleteFromThisDevice('permit');
+    expect((await queuedFor())!.payload.documentPatches).toBeUndefined();
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('a second document change on an update whose first went up as a patch, its status still stale: a patch again', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey'), uploaded('plan')]);
+    putInCloud(sent);
+    const edited = { ...sent, notes: EDIT, status: 'queued' };
+    const phone = device([uploaded('permit'), uploaded('survey'), uploaded('plan')], [edited]);
+    await queueProjectUpdateRecord(edited, false);
+    await uploadPendingChanges();
+    await iPadEditsNow(IPAD_NOTE);
+    await phone.deleteFromThisDevice('permit');
+    await phone.deleteFromThisDevice('plan');
+    expect((await queuedFor())!.payload.documentPatches).toEqual([
+      { documentId: 'permit', remove: true }, { documentId: 'plan', remove: true },
+    ]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
   });
 });

@@ -62,6 +62,7 @@ import {
 import {
   getSyncConflicts,
   getSyncStatus,
+  projectUpdateCopyIsLastInCloud,
   reconcileSyncConflicts,
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
@@ -878,7 +879,13 @@ export function AdminScreen({
           conflict.id,
           resolution,
         );
-        if (resolution === 'keep_cloud') {
+        // Either choice is now the cloud's copy, with nothing more queued for
+        // it: the phone shows it as sent. Keep Phone left the card failed,
+        // and a document change then sent the phone's whole copy over a newer
+        // iPad edit (whole-app audit A7 pass 9 L1). A newer edit made on the
+        // phone since the conflict stays as it is: it still owes its own sync.
+        const phoneCopy = savedUpdates.find(update => update.id === conflict.localId);
+        if (resolution === 'keep_cloud' || !phoneCopy || projectUpdateCopyIsLastInCloud(phoneCopy)) {
           onApplyCloudConflictUpdate(resolvedUpdate);
         }
       }

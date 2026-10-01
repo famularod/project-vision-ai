@@ -73,6 +73,25 @@ export function withDeviceDocumentUploadState<TUpdate extends object>(
   return changed ? { ...update, documents: nextDocuments } : update;
 }
 
+/**
+ * The cloud's copy of a field update, shown on this device in place of its
+ * own (a refresh, a realtime echo): withDeviceDocumentUploadState with the
+ * queue, read as sent (whole-app audit A7 pass 9 L1). This device holds
+ * nothing unsent for it then: nothing is queued for it but document changes.
+ * Rows carry the 'queued' status verbatim, and with a document change waiting
+ * the copy no longer matched the row, so a Sent update read "Waiting to
+ * Sync"; its next sync attempt, or the next document change, then sent it
+ * whole, stamped now, over the iPad's newer note.
+ */
+export function cloudCopyShownOnDevice<TUpdate extends object>(
+  cloudCopy: TUpdate,
+  deviceDocuments: readonly UpdateDocument[] | null | undefined,
+  queue: readonly SyncQueueItem[],
+  removed?: RemovedFieldUpdateDocuments,
+): TUpdate {
+  return { ...withDeviceDocumentUploadState(cloudCopy, deviceDocuments, queue, removed), status: 'sent' };
+}
+
 /** The update without the document; the same object when it did not list it. */
 export function withoutFieldUpdateDocument<TUpdate extends object>(
   update: TUpdate,
@@ -148,6 +167,11 @@ export function documentsUploadedAfterCloudCopy(
 }
 
 const resentThisLaunch = new Set<string>();
+
+/** Test support: a relaunch forgets the documents it re-sent. */
+export function resetDocumentsResentThisLaunchForTests(): void {
+  resentThisLaunch.clear();
+}
 
 function uploadState(document: Record<string, unknown>): string {
   return JSON.stringify(FIELD_UPDATE_DOCUMENT_UPLOAD_STATE_FIELDS.map(field => document[field] ?? null));

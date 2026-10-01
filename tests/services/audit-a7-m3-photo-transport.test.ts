@@ -63,7 +63,7 @@ import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery'
 import { hasMatchingQueuedProjectUpdateRevision } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
-import { documentsUploadedAfterCloudCopy, withDeviceDocumentUploadState } from '../../services/FieldUpdateDocumentUploadState';
+import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, withDeviceDocumentUploadState } from '../../services/FieldUpdateDocumentUploadState';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
 import { withStoredPhotoComparisonCap } from '../../services/PhotoAssessment';
 import {
@@ -219,6 +219,7 @@ function refreshDeps(
       setDeletedUpdateTombstones: () => undefined, setSavedUpdates: () => undefined,
       // A7 pass 5 M1: attached documents' upload state is this device's own; no documents here.
       withDeviceDocumentUploadState, documentsUploadedAfterCloudCopy, projectDocumentsCurrentRef: { current: [] },
+      cloudCopyShownOnDevice, // A7 pass 9 L1: the cloud's copy shown in place of the phone's reads sent
       resendUpdatesListingDocument: jest.fn(),
       // A7 pass 6 M1: no document was taken off an update here.
       loadRemovedFieldUpdateDocuments: async () => new Set<string>(), requeueRemovedFieldUpdateDocuments: async () => 0,

@@ -87,7 +87,7 @@ import {
   type RemovedFieldUpdateDocuments,
 } from './FieldUpdateDocumentPatch';
 import { loadRemovedFieldUpdateDocuments, recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
-import { withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
+import { resetDocumentsResentThisLaunchForTests, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
 
 export { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
@@ -2363,6 +2363,13 @@ export async function queueProjectUpdateRecord<TUpdate extends {
  * waiting for its photos (A7 pass 8 L1): its edit's queue write was lost, and
  * the patch, once landed, stood for that edit, which was never sent. An
  * update in conflict keeps its copy for review: only the patch goes up.
+ *
+ * That status can be stale (A7 pass 9 L1): the update's own record went up in
+ * a background pass whose echo was ignored, or Keep Phone wrote it. When the
+ * copy this device last put in the cloud, or the copy a waiting patch was
+ * made on, with this change is this copy, the update owes nothing more: only
+ * the patch goes up, as for a sent update. Sending the whole copy, stamped
+ * now, put the phone's older note over the iPad's newer one.
  */
 export async function queueProjectUpdateDocumentChange<TUpdate extends {
   id: string;
@@ -2373,11 +2380,13 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
   photos?: ReadonlyArray<{ id: string }>;
   documents?: ReadonlyArray<{ id: string }> | null;
 }>(update: TUpdate, documentId: string): Promise<void> {
+  const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const patch = fieldUpdateDocumentPatchFor(update, documentId);
   if (patch.remove) await recordRemovedFieldUpdateDocument(update.id, documentId).catch(() => undefined);
-  const owesOwnSync = fieldUpdateOwesOwnSync(update.status) && !(await getSyncConflicts())
+  const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update);
+  const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !(await getSyncConflicts())
     .some(conflict => conflict.entity === 'project_update' && conflict.localId === update.id);
   const queueId = projectUpdateQueueItemId(update.id);
   const now = new Date().toISOString();
@@ -2389,6 +2398,8 @@ export async function queueProjectUpdateDocumentChange<TUpdate extends {
       return { nextQueue: queue, result: undefined, persist: false };
     }
     const waitingPatches = queuedFieldUpdateDocumentPatches(existing);
+    const owesOwnSync = mayOweOwnSync &&
+      !(waitingPatches && fieldUpdateOwesNothingBeyond(existingPayload?.updateData, [patch], update));
     const photoIds = uniquePhotoAssetIds((update.photos || []).map(photo => photo.id));
     const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData
       ? { ...existing, payload: { ...existingPayload, updateData: applyFieldUpdateDocumentPatches(existingPayload.updateData as object, [patch]) } }
@@ -2525,8 +2536,9 @@ function projectUpdateQueueItemId(updateId: string) {
  *   stays.
  * - a waiting patch stays only while this copy owes nothing beyond it: it
  *   reads sent, or it is the patch's copy, a Retry's stamps aside (A7 pass
- *   8 L1). Otherwise this copy goes up whole: an edit whose queue write was
- *   lost after the document change was never sent.
+ *   8 L1; the same test as a document change makes, A7 pass 9 L1). Otherwise
+ *   this copy goes up whole: an edit whose queue write was lost after the
+ *   document change was never sent.
  * The item left in the queue; null when nothing was written.
  */
 async function writeStagedProjectUpdateRecord(
@@ -2546,7 +2558,7 @@ async function writeStagedProjectUpdateRecord(
     if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
     if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(update)) return unchanged;
     const patch = Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(update.status) ||
-      sameProjectUpdateContent((existing!.payload as ProjectUpdateRecordPayload).updateData, update, { retryStampsAside: true }));
+      fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], update));
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
@@ -5010,9 +5022,33 @@ function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   return Boolean(sent) && sameProjectUpdateContent(sent, update);
 }
 
+/**
+ * Whether this copy of a field update is, in content, the one this device
+ * last put in the cloud (its documents' upload state and a Retry's stamps
+ * aside): as Keep Phone leaves it (whole-app audit A7 pass 9 L1).
+ */
+export function projectUpdateCopyIsLastInCloud(update: ProjectUpdate): boolean {
+  return fieldUpdateOwesNothingBeyond(projectUpdateLastVersionInCloud.get(update.id), [], update);
+}
+
 /** A field update still owing its own sync: "Waiting to Sync", or failed (A7 pass 8 L1). */
 function fieldUpdateOwesOwnSync(status: unknown): boolean {
   return status === 'queued' || status === 'failed';
+}
+
+/**
+ * A field update that owes nothing beyond these document changes (whole-app
+ * audit A7 pass 9 L1): `base` (a copy this device put in the cloud, or the
+ * copy a waiting patch was made on) with them is this copy, a Retry's send
+ * stamps aside. Whatever its status says, its own record has been sent.
+ */
+function fieldUpdateOwesNothingBeyond(
+  base: unknown,
+  patches: readonly FieldUpdateDocumentPatch[],
+  update: object,
+): boolean {
+  return Boolean(base) && typeof base === 'object' && sameProjectUpdateContent(
+    applyFieldUpdateDocumentPatches(base as object, patches), update as ProjectUpdate, { retryStampsAside: true });
 }
 
 /**
@@ -5028,6 +5064,18 @@ function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retrySt
     return rest as never;
   };
   return sameFieldUpdateSyncGeneration(content(left), content(right));
+}
+
+/**
+ * Test support: forget what this launch holds in memory about field updates
+ * (the copies in the cloud, the uploads, the documents re-sent), as a
+ * relaunch does, so no test depends on the one before it.
+ */
+export function resetFieldUpdateSyncMemoryForTests(): void {
+  projectUpdateLastVersionInCloud.clear();
+  projectUpdateUploadedAt.clear();
+  removedDocumentsRequeuedThisLaunch.clear();
+  resetDocumentsResentThisLaunchForTests();
 }
 
 function recordProjectUpdateUpload(updateId: string) {

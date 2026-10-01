@@ -409,7 +409,7 @@ import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRun
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
-import { documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
+import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
   fieldUpdateLifecycleLabel,
@@ -6324,7 +6324,7 @@ useEffect(() => {
           return cloudUpdate &&
             !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue) &&
             !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
-            ? withDeviceDocumentUploadState(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current, pendingQueue, removedDocuments) // this device's upload state and waiting document changes (A7 pass 5 M1, pass 6 M1)
+            ? cloudCopyShownOnDevice(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current, pendingQueue, removedDocuments) // this device's upload state and waiting document changes (A7 pass 5 M1, pass 6 M1), as sent (pass 9 L1)
             : localUpdate;
         });
         const mergedUpdates = mergeSavedUpdatesWithTombstones({
