@@ -1963,7 +1963,8 @@ describe('Keep Phone keeps a newer phone edit still waiting in the queue (audit 
  * waiting-update sync leaves an update in conflict for Settings (or Retry).
  */
 /** The waiting-update sync, as the App runs it: its own hydrateQueuedUpdatesPass and missing-photo repair, compiled from App.tsx. */
-async function waitingUpdateSync(phone: Device) {
+/** `gate`: what the pass waits on after it read the cards, before its first send (a slow sign-in check; A4 pass 19 M1). */
+async function waitingUpdateSync(phone: Device, gate?: Promise<void>) {
   const { runAutomaticSyncQueue, shouldPersistAutomaticSyncOutcome } = jest.requireActual('../../services/AutomaticSyncState');
   const { hydrateQueuedUpdatesPass } = evaluate<{ hydrateQueuedUpdatesPass: () => Promise<void> }>(
     transpile([componentFunction('syncFieldUpdateWithMissingPhotoRepair'), componentFunction('hydrateQueuedUpdatesPass'),
@@ -1971,7 +1972,10 @@ async function waitingUpdateSync(phone: Device) {
     {
       savedUpdatesRef: phone.savedUpdatesRef, updateNeedsAutomaticSyncRetry: A.updateNeedsAutomaticSyncRetry,
       directSyncIsRecent: () => false, queuedHydrationDeferredRerun: { current: null },
-      getCurrentSessionAccessToken: async () => ({ ok: true, data: { status: 'token_present' } }),
+      getCurrentSessionAccessToken: async () => {
+        if (gate) await gate;
+        return { ok: true, data: { status: 'token_present' } };
+      },
       runAutomaticSyncQueue, shouldPersistAutomaticSyncOutcome, runFieldUpdateCloudSync,
       buildSyncDiagnosticsFromUpload: (result: { uploaded: number; errors: string[]; failureCategory?: string | null }) => ({
         lastSyncResult: result.uploaded > 0 && result.errors.length === 0 ? 'success' : 'failed',
@@ -3925,6 +3929,20 @@ describe('Sync Now that cannot finish counts an update held for conflict review 
   });
 });
 
+/** Settings' Retry callback as the App wires it (onRetryUpdateSync, the App's own retryQueuedUpdate); `settled` waits for its calls. */
+function settingsRetryCallback(phone: Device) {
+  const wiring = /onRetryUpdateSync=\{(.+)\}\n/.exec(app)![1];
+  const retry = evaluate<(...args: unknown[]) => Promise<unknown>>(
+    transpile(`module.exports = ${wiring};`), { retryQueuedUpdate: appRetryQueuedUpdate(phone) });
+  const calls: Array<Promise<unknown>> = [];
+  const onRetryUpdateSync = jest.fn((...args: unknown[]) => {
+    const call = retry(...args);
+    calls.push(call);
+    return call;
+  });
+  return { onRetryUpdateSync, settled: async () => { await Promise.all(calls); phone.render(); } };
+}
+
 /**
  * Whole-app audit A4 pass 17 L2 (914d361 incomplete; 01f4638 regressed the
  * newer-edit case): the iPad archived an update in conflict on the phone.
@@ -3971,19 +3989,6 @@ describe('Keep Phone\'s archive is not undone by the waiting-update sync (audit 
     putInCloud({ ...inCloud(), isArchived: true, archivedAt }, archivedAt);
     await new Promise(resolve => setTimeout(resolve, 5));
     return { phone, archivedAt };
-  }
-  /** Settings' Retry callback as the App wires it (onRetryUpdateSync, the App's own retryQueuedUpdate); `settled` waits for its calls. */
-  function settingsRetryCallback(phone: Device) {
-    const wiring = /onRetryUpdateSync=\{(.+)\}\n/.exec(app)![1];
-    const retry = evaluate<(...args: unknown[]) => Promise<unknown>>(
-      transpile(`module.exports = ${wiring};`), { retryQueuedUpdate: appRetryQueuedUpdate(phone) });
-    const calls: Array<Promise<unknown>> = [];
-    const onRetryUpdateSync = jest.fn((...args: unknown[]) => {
-      const call = retry(...args);
-      calls.push(call);
-      return call;
-    });
-    return { onRetryUpdateSync, settled: async () => { await Promise.all(calls); phone.render(); } };
   }
   /** Hidden as an archive hides it: the App lists only cards not archived (activeSavedUpdates), and a refresh drops one the cloud reads archived. */
   async function hiddenOnTheCard(phone: Device) {
@@ -4147,6 +4152,101 @@ describe('after Keep Phone, Settings sends the newer edit as the card is now (au
     expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
     expect(inCloud()).toMatchObject({ notes: NEWER });
     expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 19 M1 (older): Keep Cloud was undone by a
+ * waiting-update sync that was already running. The pass read the cards
+ * when it started; while it uploaded another update's photo on weak signal,
+ * David tapped Keep Cloud. The pass then reached this update with the card
+ * it had read, found no conflict open any more, and sent the discarded copy
+ * whole, stamped now, over the copy he kept: no conflict, no notice, and the
+ * cloud and the iPad read the discarded edit. Keep Phone too: a photo
+ * analysis that finished during the choice went up, then the pass sent the
+ * card without it. The pass now reads each card again just before it sends
+ * it, and skips one that no longer waits to sync.
+ */
+describe('Keep Cloud is not undone by a waiting-update sync already running (audit A4 pass 19 M1)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const otherPhoto = { id: 'photo-p19-other', uri: 'file:///phone/Documents/project-photos/p19-other.jpg', caption: '', createdAt: SENT_AT };
+  const notInCloudYet = { ok: false, configured: true, stubbed: false, error: 'Object not found', status: 404 };
+  let upload: jest.SpyInstance | undefined;
+  afterEach(() => {
+    upload?.mockRestore();
+    upload = undefined;
+    fileSystemMock().getInfoAsync.mockImplementation(async () => ({ exists: false }));
+  });
+
+  it.each(['a newer edit held for review', 'no newer edit'])('with %s: Keep Cloud while the pass uploads another update\'s photo; the cloud and the card keep the cloud\'s copy', async kind => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    if (kind === 'a newer edit held for review') {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await appSaveSync(phone)(await editAndSave(phone, { notes: NEWER }));
+      expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'queued' });
+    }
+    // Another update waits on its photo, listed first: the pass reaches it first.
+    const other = { ...savedUpdate([], 'queued', 'uA'), photos: [otherPhoto] };
+    phone.setSavedUpdates(prev => [other, ...prev]);
+    phone.render();
+    await queueProjectUpdateRecord(other as never, false);
+    (createPhotoSignedUrl as jest.Mock).mockImplementation(async (path: string) => String(path).includes(otherPhoto.id) ? notInCloudYet : signedUrl);
+    fileSystemMock().getInfoAsync.mockImplementation(async (uri: string) => uri === otherPhoto.uri ? { exists: true, size: 4096 } : { exists: false });
+    let signalReturns!: () => void;
+    const weakSignal = new Promise<void>(resolve => { signalReturns = resolve; });
+    upload = jest.spyOn(supabaseMock() as { uploadPhoto: (...args: unknown[]) => Promise<unknown> }, 'uploadPhoto')
+      .mockImplementation(async () => { await weakSignal; return { ok: true, configured: true, stubbed: false, data: { path: 'uploaded' } }; });
+    const pass = waitingUpdateSync(phone); // reads both cards now
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(upload).toHaveBeenCalled(); // on the other update's photo
+    await chooseInSettings(phone, (await getSyncConflicts()).find(conflict => conflict.localId === 'u1')!, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    signalReturns();
+    await pass;
+    await uploadPendingChanges();
+    expect(mockCloud.has('uA')).toBe(true); // the other update still went up
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('Keep Phone: a photo analysis that finished during the choice is not sent away by a pass that read the card before it', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    let signInChecked!: () => void;
+    const slowSignInCheck = new Promise<void>(resolve => { signInChecked = resolve; });
+    const pass = waitingUpdateSync(phone, slowSignInCheck); // reads the card now, without the result
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+    const result = finishedAnalysis();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync, async () => {
+      lateAnalysisFinishes(phone, result);
+      await phone.settle();
+    });
+    await settled();
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    signInChecked();
+    await pass;
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    await refresh(phone);
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
     expect(await getSyncConflicts()).toEqual([]);
   });
 });

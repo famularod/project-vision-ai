@@ -8189,7 +8189,12 @@ useEffect(() => {
       return;
     }
 
-    await runAutomaticSyncQueue(queuedUpdates, async update => {
+    await runAutomaticSyncQueue(queuedUpdates, async ({ id }) => {
+        // The card as it is now (whole-app audit A4 pass 19 M1): Keep Cloud
+        // or Keep Phone may have settled it while this pass sent another's
+        // photos, and the copy read at the start went up over the one kept.
+        const update = savedUpdatesRef.current.find(item => item.id === id);
+        if (!update || !updateNeedsAutomaticSyncRetry(update)) return;
         const attemptStartedAt = new Date().toISOString();
         const {
           syncResult,
