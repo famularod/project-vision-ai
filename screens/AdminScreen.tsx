@@ -1049,6 +1049,16 @@ export function AdminScreen({
         Alert.alert('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.');
         return;
       }
+      // A task's Keep Cloud wrote the cloud copy back and the cloud did not
+      // answer (whole-app audit A7 pass 16 L-2): the write may have landed,
+      // so it does not say "Neither copy was changed". The conflict stays.
+      if (stopReason === 'save_unconfirmed') {
+        Alert.alert(
+          'Conflict not resolved',
+          'The cloud did not confirm the change, so it may or may not have been saved. The conflict is still open — check the cloud connection and choose again.',
+        );
+        return;
+      }
       Alert.alert(
         'Conflict not resolved',
         'Neither copy was changed. Check the cloud connection and try again.',

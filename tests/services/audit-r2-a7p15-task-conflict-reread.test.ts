@@ -277,9 +277,14 @@ describe('L-1: Keep Cloud on a task never ends with the phone edit David chose t
     await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
       .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
     expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1); // the phone's own upload; Keep Cloud wrote nothing
-    // David's choice left nothing: the conflict and the phone's waiting edit are as they were.
-    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
-    await expect(getOfflineQueue()).resolves.toEqual(queued);
+    // David's choice left nothing: the conflict is as it was. Pin changed on
+    // purpose (audit A7 pass 16 L-2): the phone's withdrawn edit waits on the
+    // conflict, not on the queue, where the next automatic pass sent it and
+    // closed the conflict.
+    await expect(getSyncConflicts()).resolves.toEqual([{
+      ...conflict, localPayload: { ...(conflict.localPayload as object), withdrawnEdits: queued },
+    }]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
 
     await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
       .resolves.toEqual(shown);

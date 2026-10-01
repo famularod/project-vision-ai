@@ -689,6 +689,14 @@ type ScheduleItemRecordPayload = {
   changedFields?: Array<keyof ScheduleItem>;
   /** Explicit conflict resolution may intentionally replace the cloud copy. */
   forceLocal?: boolean;
+  /**
+   * On a task's conflict only (whole-app audit A7 pass 16 L-2): this phone's
+   * edits of the task that a Keep Cloud which could not finish took off the
+   * queue, one of which landed during that choice. They wait here, not on
+   * the queue, where the next automatic pass sent the edit David chose to
+   * discard; a later Keep Cloud undoes the one that landed.
+   */
+  withdrawnEdits?: SyncQueueItem[];
 };
 
 type ReferenceDocumentRecordPayload = {
@@ -4689,10 +4697,14 @@ async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Prom
  * cloud's copy changed since the screen showed it. Null for any other failure,
  * which Settings reports without detail (raw errors are never shown there).
  */
-export function syncConflictChoiceStopReason(error: unknown): 'record_deleted' | 'cloud_copy_changed' | null {
+export function syncConflictChoiceStopReason(
+  error: unknown,
+): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | null {
   if (!(error instanceof Error)) return null;
   if (error.message === 'sync_conflict_record_deleted') return 'record_deleted';
   if (error.message === 'sync_conflict_cloud_copy_changed') return 'cloud_copy_changed';
+  // A task's Keep Cloud wrote and the cloud did not answer (A7 pass 16 L-2).
+  if (error.message === 'sync_conflict_save_unconfirmed') return 'save_unconfirmed';
   return null;
 }
 
@@ -4929,30 +4941,23 @@ function withdrawScheduleItemFromSyncQueue(itemId: string): Promise<SyncQueueIte
 }
 
 /**
- * A task's conflict and this phone's waiting edits put back as they were
- * before Keep Cloud (whole-app audit A7 pass 15 L-1), when it stops without
- * keeping a copy: the edits it withdrew, or that an upload already under way
- * took off the queue as it landed, wait again, with any made since; the
- * conflict, which that landing closed, is saved again.
+ * A task's conflict put back as it was before Keep Cloud (whole-app audit A7
+ * pass 15 L-1), when it stops without keeping a copy after an edit of this
+ * phone's landed: the conflict, which that landing closed, is saved again.
+ * The edits it withdrew, or that an upload already under way took off the
+ * queue as it landed, wait on the conflict, oldest first (A7 pass 16 L-2):
+ * put back on the queue, the next automatic pass sent them (tasks have no
+ * hold), undoing the choice. An edit made since stays queued, as any is.
  */
 async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonly SyncQueueItem[]): Promise<void> {
-  const queueItemId = scheduleItemQueueItemId(conflict.localId);
   const unique = edits.filter((edit, index) =>
     edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
-  if (unique.length > 0) {
-    await mutateOfflineQueue(queue => ({
-      nextQueue: [
-        ...queue.filter(item => item.id !== queueItemId),
-        [...unique, ...queue.filter(item => item.id === queueItemId)]
-          .reduce((older, newer) => mergeScheduleItemQueueChangeScope(older, newer)),
-      ],
-      result: undefined,
-    }));
-  }
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
-    if (conflicts.some(item => item.entity === conflict.entity && item.localId === conflict.localId)) return;
-    await writeSyncConflicts([...conflicts, conflict]);
+    const open = conflicts.find(item => item.entity === conflict.entity && item.localId === conflict.localId);
+    const base = open ?? conflict;
+    const saved = { ...base, localPayload: { ...(base.localPayload as ScheduleItemRecordPayload), withdrawnEdits: unique } };
+    await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved]);
   });
 }
 
@@ -5012,7 +5017,8 @@ export async function resolveScheduleItemSyncConflict(
     const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
     withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
-    const phoneEdits = [...waitingEdits, ...withdrawn];
+    // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
+    const phoneEdits = [...localPayload.withdrawnEdits ?? [], ...waitingEdits, ...withdrawn];
     try {
       // Read again now: an edit from another device that landed meanwhile is
       // the cloud's too.
@@ -5043,11 +5049,13 @@ export async function resolveScheduleItemSyncConflict(
         return cloudNow;
       }
       const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
-      const restore = await upsertScheduleItem(restored);
-      if (!restore.ok || restore.stubbed) {
-        throw new Error(
-          restore.error || restore.message || 'sync_conflict_save_failed',
-        );
+      // A write that fails may still have landed (its answer lost on weak
+      // signal), so Settings does not say "Neither copy was changed" (A7
+      // pass 16 L-2). Chosen again, Keep Cloud finds the restore there, or
+      // writes it.
+      const restore = await upsertScheduleItem(restored).catch(() => null);
+      if (!restore?.ok || restore.stubbed) {
+        throw new Error('sync_conflict_save_unconfirmed');
       }
       await clearResolvedConflict(conflict.id);
       return restored;

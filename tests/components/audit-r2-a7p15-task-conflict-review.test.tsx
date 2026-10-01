@@ -75,7 +75,15 @@ jest.mock('../../services/DAVECloudMaintenanceBudget', () => ({
 
 import { AdminScreen } from '../../screens/AdminScreen';
 import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
-import { clearResolvedConflict, getOfflineQueue, getSyncConflicts, runScheduleItemCloudSync } from '../../services/SyncService';
+import { getScheduleItem, upsertScheduleItem } from '../../services/SupabaseService';
+import {
+  clearResolvedConflict,
+  getOfflineQueue,
+  getSyncConflicts,
+  queueScheduleItemRecord,
+  runScheduleItemCloudSync,
+  uploadPendingChanges,
+} from '../../services/SyncService';
 
 const realFetch = global.fetch;
 beforeAll(() => {
@@ -210,5 +218,66 @@ describe('Review Conflicts shows a task\'s cloud copy as it is now (audit A7 pas
     expect(inCloud()).toMatchObject({ percentComplete: 0, notes: phoneTask.notes });
     expect(onApplyCloudConflictScheduleItem).toHaveBeenCalledWith(expect.objectContaining({ notes: phoneTask.notes }));
     expect(await getSyncConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A7 pass 16 L-2 (1 Oct 2026): a task's Keep Cloud put the
+ * screen's copy back over a discarded phone edit that had landed, and the
+ * cloud's answer was lost on weak signal. Settings said "Neither copy was
+ * changed" though the cloud held the restore.
+ */
+describe('Keep Cloud on a task whose write the cloud does not confirm (audit A7 pass 16 L-2)', () => {
+  const NEWER = 'Pump truck moved to Friday (a newer phone edit)';
+  const ok = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
+  const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+
+  it('says the change may or may not have been saved, not "Neither copy was changed"', async () => {
+    await offlineEditInConflictWithWeb();
+    const shownCloud = { ...inCloud() };
+    renderSettings();
+    await openReviewConflicts();
+    await waitFor(() => expect(getScheduleItem).toHaveBeenCalledTimes(1)); // the open-time read
+    await waitFor(() => expect(cloudLine()).toBe(CLOUD_0));
+
+    // A newer phone note is on its way up when David chooses.
+    let land!: () => void;
+    const landing = new Promise<void>(resolve => { land = resolve; });
+    let inFlight!: Promise<unknown>;
+    await act(async () => {
+      await queueScheduleItemRecord({ ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt']);
+      let sending!: () => void;
+      const sent = new Promise<void>(resolve => { sending = resolve; });
+      jest.mocked(upsertScheduleItem).mockImplementationOnce(async item => {
+        sending();
+        await landing;
+        mockTasks.set(item.id, copy(item));
+        return ok(item) as never;
+      });
+      inFlight = uploadPendingChanges();
+      await sent;
+    });
+    // It lands as Keep Cloud first reads the row; Keep Cloud's restore then
+    // reaches the cloud, and its answer is lost.
+    jest.mocked(getScheduleItem).mockImplementationOnce(async id => {
+      land();
+      await inFlight;
+      return ok(copy(mockTasks.get(id)!)) as never;
+    });
+    jest.mocked(upsertScheduleItem).mockImplementationOnce(async item => {
+      mockTasks.set(item.id, copy(item));
+      return { ok: false, configured: true, stubbed: false, data: null, error: 'Network request failed' } as never;
+    });
+
+    fireEvent.press(screen.getByText('Keep Cloud'));
+    await act(async () => { proceedWithLastConfirmation(); });
+    await waitFor(() => expect(Alert.alert).toHaveBeenLastCalledWith(
+      'Conflict not resolved',
+      'The cloud did not confirm the change, so it may or may not have been saved. The conflict is still open — check the cloud connection and choose again.',
+    ));
+    expect(inCloud()).toEqual(shownCloud); // the restore did land
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(await getOfflineQueue()).toEqual([]);
+    await waitFor(() => expect(screen.getByText('Keep Cloud')).toBeTruthy());
   });
 });
