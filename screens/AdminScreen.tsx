@@ -20,7 +20,7 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
-import { fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
+import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -1020,20 +1020,21 @@ export function AdminScreen({
     // and field notes waiting to sync, and an unsaved field note, which a
     // sign-out discards (whole-app audit A11 pass 4 L5); and an unsaved
     // Project Walk memory, which it discards too (A11 pass 5 L3).
-    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory] = fieldNoteOwnerKey
+    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview] = fieldNoteOwnerKey
       ? await Promise.all([
           fieldNotesWaitingToSync(fieldNoteOwnerKey),
           unsavedFieldNoteExists(fieldNoteOwnerKey),
           unsavedWalkMemoryExists(fieldNoteOwnerKey),
+          fieldNotesNeedingReview(fieldNoteOwnerKey),
         ])
-      : [0, false, false];
+      : [0, false, false, 0];
     const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
     const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
       (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
     const message =
       notInCloudCount > 0
-        ? `${discarded}${notInCloudCount} item${notInCloudCount === 1 ? ' is' : 's are'} not in the cloud yet. ${notInCloudCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`
+        ? `${discarded}${notInCloudCount} item${notInCloudCount === 1 ? ' is' : 's are'} not in the cloud yet. ${notInCloudCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account.${fieldNotesForReview > 0 ? ' Field notes marked Review needed wait for your choice in Field Notes.' : ''} Sign out anyway?`
         : `${discarded}You will need to sign in again to resume cloud sync and photo intelligence.`;
 
     // Owner answer Q21 (30 Sep 2026): he chooses this device or all devices.

@@ -8,6 +8,19 @@ import { localFieldNoteRepository } from './FieldNoteRepository';
  * Notes the cloud refused as a conflict ("Review needed") are counted too
  * (whole-app audit A11 pass 5 L3): they are still only on this phone.
  */
+/**
+ * Field notes marked "Review needed" (whole-app audit A11 pass 6 L1): they
+ * are counted above, but they do not sync after sign-in on their own; they
+ * wait for Keep my version or Use cloud version in Field Notes.
+ */
+export async function fieldNotesNeedingReview(ownerKey: string): Promise<number> {
+  try {
+    return (await localFieldNoteRepository.list(ownerKey)).filter(note => note.syncState === 'conflict').length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function fieldNotesWaitingToSync(ownerKey: string): Promise<number> {
   try {
     return (await localFieldNoteRepository.list(ownerKey))

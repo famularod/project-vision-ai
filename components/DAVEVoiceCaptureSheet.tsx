@@ -367,7 +367,8 @@ export function DAVEVoiceCaptureSheet({
     }
     preparingOperationRef.current = null;
     setIsTranscribing(false);
-    setNotice(`Stopped waiting. The recording is kept here. Tap ${continueLabel} to try again.`);
+    // Kept in this sheet only, while the app stays open (A11 pass 6 L2).
+    setNotice(`Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
   }
 
   async function transcribe() {

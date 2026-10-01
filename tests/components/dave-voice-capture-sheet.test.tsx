@@ -491,7 +491,7 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 M1: leaving while a recording is bein
     expect(screen.queryByText('Preparing…')).toBeNull();
     expect(screen.getByText('Recording ready')).toBeTruthy();
     expect(screen.getByText('Replay Recording')).toBeTruthy();
-    expect(screen.getByText('Stopped waiting. The recording is kept here. Tap Continue to try again.')).toBeTruthy();
+    expect(screen.getByText('Stopped waiting. The recording is kept here while Vitruvius stays open. Tap Continue to try again.')).toBeTruthy();
     expect(props.onCancel).not.toHaveBeenCalled();
     expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
 
@@ -565,7 +565,7 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 L1: no signal while the sign-in waits
     await screen.findByText('Replay Recording');
     fireEvent.press(screen.getByText('Use Note'));
 
-    expect(await screen.findByText('No signal. Your recording is kept — tap Use Note when you have signal.')).toBeTruthy();
+    expect(await screen.findByText('No signal. Your recording is kept while Vitruvius stays open — tap Use Note when you have signal.')).toBeTruthy();
     expect(screen.getByText('Recording ready')).toBeTruthy();
     expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
     expect(onMemoryReady).not.toHaveBeenCalled();
@@ -644,7 +644,7 @@ describe('DAVEVoiceCaptureSheet A11 pass 5 L2: the project changes while a recor
 
     expect(screen.queryByText('Preparing…')).toBeNull();
     expect(screen.getByText('Recording ready')).toBeTruthy();
-    expect(screen.getByText('Stopped waiting. The recording is kept here. Tap Continue to try again.')).toBeTruthy();
+    expect(screen.getByText('Stopped waiting. The recording is kept here while Vitruvius stays open. Tap Continue to try again.')).toBeTruthy();
     expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
 

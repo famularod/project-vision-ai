@@ -832,7 +832,7 @@ describe('voice while offline, sign-in pending (A11 pass 4 L1)', () => {
       }
       throw new Error('Expected the recording not to be sent');
     };
-    const NO_SIGNAL = 'No signal. Your recording is kept — tap Use Note when you have signal.';
+    const NO_SIGNAL = 'No signal. Your recording is kept while Vitruvius stays open — tap Use Note when you have signal.';
 
     // The lookup still loading, then settled to "unknown" once auth-js gives up.
     expect((await service.getCurrentSessionAccessToken()).data?.missingReason).toBe('auth_loading');

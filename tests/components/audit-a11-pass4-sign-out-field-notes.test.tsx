@@ -224,6 +224,7 @@ describe('Sign Out names an unsaved Project Walk memory and counts field notes n
       'Changed on another device.',
     ));
     const message = await signOutWarning(renderSettings());
-    expect(message).toBe(`5 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
+    // A11 pass 6 L1: a note marked Review needed waits for his choice, not for sign-in.
+    expect(message).toBe(`5 items are not in the cloud yet. ${TAIL} Field notes marked Review needed wait for your choice in Field Notes. Sign out anyway?`);
   });
 });

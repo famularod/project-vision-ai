@@ -11,7 +11,7 @@
 const WAITING_FOR_SIGNAL = 'DAVEVoiceWaitingForSignal';
 
 export function daveVoiceWaitingForSignalError(): Error {
-  const error = new Error('No signal. Your recording is kept. Try again when you have signal.');
+  const error = new Error('No signal. Your recording is kept while Vitruvius stays open. Try again when you have signal.');
   error.name = WAITING_FOR_SIGNAL;
   return error;
 }
@@ -19,7 +19,8 @@ export function daveVoiceWaitingForSignalError(): Error {
 /** What the voice sheet shows for a failure, naming its own retry button. */
 export function daveVoiceFailureMessage(reason: unknown, retryLabel: string): string {
   if (reason instanceof Error && reason.name === WAITING_FOR_SIGNAL) {
-    return `No signal. Your recording is kept — tap ${retryLabel} when you have signal.`;
+    // Kept in this sheet only: iOS closing the app loses it (A11 pass 6 L2).
+    return `No signal. Your recording is kept while Vitruvius stays open — tap ${retryLabel} when you have signal.`;
   }
   return reason instanceof Error ? reason.message : 'The recording could not be transcribed.';
 }

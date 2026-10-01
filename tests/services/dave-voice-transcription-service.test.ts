@@ -240,7 +240,7 @@ describe('voice while the sign-in waits for signal (A11 pass 4 L1)', () => {
     const error = await failure(voice(pending));
     expect(error.message).not.toMatch(/sign in/i);
     expect(daveVoiceFailureMessage(error, 'Use Note'))
-      .toBe('No signal. Your recording is kept — tap Use Note when you have signal.');
+      .toBe('No signal. Your recording is kept while Vitruvius stays open — tap Use Note when you have signal.');
     expect(mockUploadAsync).not.toHaveBeenCalled();
   });
 
