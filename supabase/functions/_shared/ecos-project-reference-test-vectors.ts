@@ -955,6 +955,24 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 11 F4: one identifier written in two cases is shown as the
+  // first project writes it, not as a bare number no project has.
+  {
+    name: 'pass 11 F4: a bare 2375 with "2375A Main" and "2375a Annex" names 2375A',
+    projectName: SELECTED,
+    question: 'What is left at 2375?',
+    knownProjectNames: [SELECTED, '2375A Main', '2375a Annex'],
+    refused: '2375A',
+  },
+  {
+    name: 'pass 11 F4: the same, closed, names 2375A marked closed',
+    projectName: SELECTED,
+    question: 'What is left at 2375?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2375A Main', '2375a Annex'],
+    refused: '2375A',
+    refusedClosed: true,
+  },
   {
     name: 'pass 11 F1: a closed lettered project named by a spaced capital before a word is refused as closed',
     projectName: '2375 Main St',

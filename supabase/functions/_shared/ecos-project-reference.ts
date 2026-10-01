@@ -157,15 +157,18 @@ function firstProjectNumber(projectName: string, source = PROJECT_IDENTIFIER_SOU
 }
 
 /**
- * A refused project as shown: its identifier as written ("2375A") when they
- * all write it alike, else `fallback`; projects with different identifiers
- * are each named ("2375A or 2375B" for a bare "2375"; audit A9 pass 10).
+ * A refused project as shown: its identifier as the first project writes it
+ * ("2375A", also when another writes it "2375a"; audit A9 pass 11 F4: a bare
+ * "2375" showed "2375", which no project is); projects with different
+ * identifiers are each named ("2375A or 2375B" for a bare "2375"; audit A9
+ * pass 10).
  */
 function numberLabel(projectNames: readonly string[], fallback: string) {
   const labels = new Set(projectNames.map(name => ecosProjectDisplayIdentifier(name) ?? fallback));
-  const distinct = [...new Map([...labels].map(label => [label.toUpperCase(), label])).values()];
+  const distinct = [...labels].filter((label, index, all) =>
+    all.findIndex(other => other.toUpperCase() === label.toUpperCase()) === index);
   if (labels.size === 1) return [...labels][0];
-  if (distinct.length === 1) return fallback;
+  if (distinct.length === 1) return distinct[0];
   return `${distinct.slice(0, -1).join(', ')} or ${distinct[distinct.length - 1]}`;
 }
 

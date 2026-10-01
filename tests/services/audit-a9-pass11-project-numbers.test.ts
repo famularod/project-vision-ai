@@ -162,3 +162,20 @@ describe('audit A9 pass 11 F3: a project\'s number is the first number in its na
     expect(desktop('What is left at 300?', [SELECTED, '2375-B Annex Suite 300'])).toBeNull();
   });
 });
+
+describe('audit A9 pass 11 F4: one identifier written in two cases is shown as a project has it', () => {
+  const PROJECTS = [SELECTED, '2375A Main', '2375a Annex'];
+
+  it('a bare "2375" names 2375A, not a project 2375 that does not exist', () => {
+    expect(desktop('What is left at 2375?', PROJECTS)).toBe(switchOnDesktop('2375A'));
+    expect(phone('What is left at 2375?', PROJECTS)).toBe(switchOnPhone('2375A'));
+    expect(phone('What is left at 2375?', [SELECTED], ['2375A Main', '2375a Annex'])).toBe(
+      'Project 2321 is selected, but 2375A is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+  });
+
+  it('"2375A" and "2375a" in a question still name 2375A', () => {
+    expect(desktop('What is left at 2375A?', PROJECTS)).toBe(switchOnDesktop('2375A'));
+    expect(desktop('What is left at 2375a?', PROJECTS)).toBe(switchOnDesktop('2375A'));
+  });
+});
