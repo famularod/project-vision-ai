@@ -276,10 +276,19 @@ export function scheduleTaskLinks(
     // same unique name (A5 pass 14 L1: "0 activities matched field
     // evidence"). The schedule of each saved row that lists it now stands in
     // for the twin guard: a name shared there still links to nothing.
+    //
+    // Whole-app audit A5 pass 15 L1 (1 Oct 2026, caused by d80184c): those
+    // rows stood in for the twin guard but not for the project filter, which
+    // still read the deleted row's saved row (none), and with none the shared
+    // Microsoft Project root matched any building: a web-filed North report
+    // on a deleted North row linked to South's ROOF DRAINS. They now stand in
+    // for the project filter too.
     const owners = saved ? [saved] : knownListing(taskId);
     const name = nameKey(reference.scheduleTaskName);
     const named = name && !owners.some(own => nameSharedInOwnSchedule(reference, own, name))
-      ? (byName.get(name) || []).filter(item => sameProject(item, reference, saved) && sameArea(item, reference))
+      ? (byName.get(name) || []).filter(item => (owners.length > 0
+        ? owners.every(own => sameProject(item, reference, own))
+        : sameProject(item, reference)) && sameArea(item, reference))
       : [];
     return named.length === 1 ? { item: named[0], basis: 'stored_task_name' } : null;
   };
