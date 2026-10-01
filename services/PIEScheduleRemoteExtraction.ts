@@ -191,6 +191,8 @@ export function scheduleItemsFromRemoteExtractorPayload(
       contractor: '',
       durationDays: null,
       percentComplete: progress.percentComplete,
+      // No percent and no Complete status states no progress (whole-app audit A5 pass 5 H1).
+      ...(reportedPercent === null && status !== 'Complete' ? { percentCompleteStated: false } : {}),
       progressSource: 'schedule_import',
       progressConfirmedAt: null,
       progressConfirmedBy: null,

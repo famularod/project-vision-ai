@@ -670,6 +670,16 @@ function normalizePriority(value: string, finishDate: string): SchedulePriority 
   return 'Medium';
 }
 
+/**
+ * Whether a row states its progress (whole-app audit A5 pass 5 H1, 30 Sep
+ * 2026): a number in its percent cell, or a Complete status (100%). A file
+ * with no % Complete column, or a blank cell, states nothing: it read as 0%
+ * Not Started and took a master task's 60% to 0%.
+ */
+function percentStated(value: string, status: ScheduleStatus) {
+  return /\d/.test(value) || status === 'Complete';
+}
+
 function normalizePercent(value: string, status: ScheduleStatus) {
   const match = value.match(/(\d{1,3})\s*%?/);
 
@@ -1109,6 +1119,7 @@ export function normalizeMicrosoftProjectPdfRows({
   const importedAt = now.toISOString();
   const rows = lines.slice(1).map((line, index) => {
     const cells = line.split('\t').map(value => value.trim());
+    const percentCell = cell(cells, header, ['percent complete', '% complete'], 6);
     return {
       activityId: cell(cells, header, ['id', 'activity id'], 0),
       sourceWbsCode: cell(cells, header, ['wbs', 'wbs code', 'outline number'], -1),
@@ -1118,10 +1129,8 @@ export function normalizeMicrosoftProjectPdfRows({
       duration: parseDuration(cell(cells, header, ['duration'], 3)),
       startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
       finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
-      percentComplete: normalizePercent(
-        cell(cells, header, ['percent complete', '% complete'], 6),
-        'Not Started',
-      ),
+      percentComplete: normalizePercent(percentCell, 'Not Started'),
+      percentStated: percentStated(percentCell, 'Not Started'),
       notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
     };
   }).filter(row => row.taskName && row.finishDate);
@@ -1205,6 +1214,7 @@ export function normalizeMicrosoftProjectPdfRows({
       durationDays: row.duration,
       wbsCode: row.sourceWbsCode || null,
       percentComplete,
+      ...(row.percentStated ? {} : { percentCompleteStated: false }),
       priority: normalizePriority('', row.finishDate),
       status,
       notes: explicitScheduleNote(row.notes),
@@ -1224,8 +1234,10 @@ function scheduleItemFromNormalizedTask(
   task: Omit<PIENormalizedScheduleTask, 'sourceItem'>,
   sourceName: string,
   importedAt: string,
+  percentCompleteStated = true,
 ): ScheduleItem {
   return {
+    ...(percentCompleteStated ? {} : { percentCompleteStated: false }),
     id: task.id,
     projectName: task.project,
     locationName: task.area,
@@ -1392,10 +1404,8 @@ export function normalizeScheduleImport({
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
       const milestone = cell(cells, headers, ['milestone'], 5);
-      const parsedPercent = normalizePercent(
-        cell(cells, headers, ['percent complete', '% complete', 'progress'], 11),
-        parsedStatus,
-      );
+      const percentCell = cell(cells, headers, ['percent complete', '% complete', 'progress'], 11);
+      const parsedPercent = normalizePercent(percentCell, parsedStatus);
       const progress = reconcileScheduleProgress(parsedStatus, parsedPercent);
       const { status, percentComplete } = progress;
       const floatValue = parseDuration(
@@ -1450,7 +1460,7 @@ export function normalizeScheduleImport({
         confidence: confidenceFromScore(confidenceScore),
       };
 
-      return scheduleItemFromNormalizedTask(baseTask, sourceName, importedAt);
+      return scheduleItemFromNormalizedTask(baseTask, sourceName, importedAt, percentStated(percentCell, parsedStatus));
     })
     .filter((item): item is ScheduleItem => Boolean(item));
   // Unstructured PDF text is often emitted as one visual fragment per line.

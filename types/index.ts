@@ -727,8 +727,12 @@ export type ScheduleLookaheadOverlay = {
   masterStartDate: string;
   masterFinishDate: string;
   masterPercentComplete: number;
-  /** Each lookahead import that restated the task, oldest first, with the dates it gave. */
-  lookaheads: { batchId: string; startDate: string; finishDate: string }[];
+  /**
+   * Each lookahead import that restated the task, oldest first, with the
+   * dates it gave and the percent it gave (null: it left progress alone;
+   * missing: approved before 30 Sep 2026 audit A5 pass 5 H1, not noted).
+   */
+  lookaheads: { batchId: string; startDate: string; finishDate: string; percentComplete?: number | null }[];
 };
 
 export type ScheduleItem = {
@@ -758,6 +762,13 @@ export type ScheduleItem = {
   baselineStartDate?: string | null;
   baselineFinishDate?: string | null;
   percentComplete: number;
+  /**
+   * An imported row only (whole-app audit A5 pass 5 H1, 30 Sep 2026): false
+   * when its file stated no percent for it (no % Complete column, or a blank
+   * cell), so approving it leaves the task's progress alone. Missing means
+   * stated, as for every row read before. Never kept on a saved task.
+   */
+  percentCompleteStated?: boolean | null;
   progressSource?: 'project_manager' | 'schedule_import' | null;
   progressConfirmedAt?: string | null;
   progressConfirmedBy?: string | null;

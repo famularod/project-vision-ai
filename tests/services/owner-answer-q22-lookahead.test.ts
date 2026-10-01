@@ -231,14 +231,16 @@ describe('deleting a lookahead removes only its added tasks and its overlay', ()
 
   it('the master\'s task comes back on its own dates; the lookahead-only task goes; the delete question says so', () => {
     const { items, documents } = withLookahead();
+    // Pin updated (whole-app audit A5 pass 5 L1 + H1, 30 Sep 2026): the question counts only tasks that go back,
+    // never calls them master tasks, and says progress goes back too: the lookahead's 40% goes with it.
     expect(scheduleLookaheadDeleteNote(items, lookahead)).toBe(
-      ' Delete PDF + Items also puts the 1 master task this lookahead updated back on the master schedule\'s dates.');
+      ' Delete PDF + Items also puts back the earlier dates and progress of 1 task this lookahead changed.');
     const after = deleteLookahead(items, documents, lookahead);
     expect(after.removed).toEqual(['Alpha 3 Week Lookahead-rebar']);
     expect(after.restored).toEqual(['m-pour']);
     expect(view(after.items, after.documents)).toEqual([
       'm-beta Beta sitework 10/01/2026-10/30/2026 0%',
-      'm-pour Pour slab 10/01/2026-10/03/2026 40%',
+      'm-pour Pour slab 10/01/2026-10/03/2026 0%',
       'm-roof Roofing 12/01/2026-12/15/2026 0%',
     ]);
     expect(after.items.find(item => item.id === 'm-pour')).not.toHaveProperty('lookaheadOverlay');
@@ -257,17 +259,18 @@ describe('deleting a lookahead removes only its added tasks and its overlay', ()
     const lookahead2 = schedule('Alpha lookahead week 40', ['Alpha'], '2026-09-27T12:00:00.000Z', { scheduleRole: 'lookahead' });
     const both = approve(first.items, first.documents, lookahead2, lookaheadRows(lookahead2, ['09/29/2026', '10/01/2026', 50]));
     expect(view(both.items, both.documents).filter(line => line.includes('Pour slab'))).toEqual(['m-pour Pour slab 09/29/2026-10/01/2026 50%']);
-    // Deleting the newer goes back to the older lookahead's dates.
+    // Deleting the newer goes back to the older lookahead's dates, and (pin updated, audit A5 pass 5 H1) its 40%.
     const withoutNewer = deleteLookahead(both.items, both.documents, lookahead2);
-    expect(view(withoutNewer.items, withoutNewer.documents).filter(line => line.includes('Pour slab'))).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 50%']);
+    expect(view(withoutNewer.items, withoutNewer.documents).filter(line => line.includes('Pour slab'))).toEqual(['m-pour Pour slab 09/28/2026-09/30/2026 40%']);
     // Deleting the older keeps the newer's dates, then deleting the newer gives the master's.
     const withoutOlder = deleteLookahead(both.items, both.documents, lookahead);
     expect(view(withoutOlder.items, withoutOlder.documents).filter(line => /Pour|Rebar/.test(line))).toEqual([
       'Alpha 3 Week Lookahead-rebar Rebar inspection 09/25/2026-09/25/2026 0%',
       'm-pour Pour slab 09/29/2026-10/01/2026 50%',
     ]);
+    // Pin updated (audit A5 pass 5 H1): with neither lookahead, the master's dates and its 0%.
     const neither = deleteLookahead(withoutOlder.items, withoutOlder.documents, lookahead2);
-    expect(view(neither.items, neither.documents).filter(line => /Pour|Rebar/.test(line))).toEqual(['m-pour Pour slab 10/01/2026-10/03/2026 50%']);
+    expect(view(neither.items, neither.documents).filter(line => /Pour|Rebar/.test(line))).toEqual(['m-pour Pour slab 10/01/2026-10/03/2026 0%']);
   });
 });
 
@@ -575,15 +578,30 @@ describe('App.tsx, compiled: approving a lookahead and deleting it (owner answer
       scheduleItemSyncWarningsRef: { current: new Set<string>() }, updateScheduleItem: noop,
     });
     deleteScheduleDocument(lookahead.id);
-    expect(alert.message).toContain('Delete PDF + Items also puts the 1 master task this lookahead updated back on the master schedule\'s dates.');
+    // Pin updated (whole-app audit A5 pass 5 L1 + H1, 30 Sep 2026): the count and words of the question, and the 40% goes back to 0%.
+    expect(alert.message).toContain('Delete PDF + Items also puts back the earlier dates and progress of 1 task this lookahead changed.');
     alert.buttons.find(button => button.text === 'Delete PDF + Items')?.onPress?.();
     await new Promise(resolve => setImmediate(resolve));
     expect(view(scheduleItemsCurrentRef.current, [master])).toEqual([
       'm-beta Beta sitework 10/01/2026-10/30/2026 0%',
-      'm-pour Pour slab 10/01/2026-10/03/2026 40%',
+      'm-pour Pour slab 10/01/2026-10/03/2026 0%',
       'm-roof Roofing 12/01/2026-12/15/2026 0%',
     ]);
-    expect(synced.map(item => [item.id, item.startDate, item.finishDate])).toEqual([['m-pour', '10/01/2026', '10/03/2026']]);
+    expect(synced.map(item => [item.id, item.startDate, item.finishDate, item.percentComplete])).toEqual([['m-pour', '10/01/2026', '10/03/2026', 0]]);
+  });
+
+  it('the delete question leaves out a task the delete removes (whole-app audit A5 pass 5 L1)', () => {
+    // The master was deleted with "Delete PDF Only": Pour slab is now only in the lookahead, so Delete PDF + Items removes it.
+    const { items, documents } = withLookahead();
+    const withoutMaster = documents.filter(document => document.id !== master.id);
+    const messages: string[] = [];
+    const { deleteScheduleDocument } = compile<{ deleteScheduleDocument: (id: string) => void }>(['deleteScheduleDocument'], {
+      referenceDocuments: withoutMaster, scheduleItems: items,
+      scheduleItemsOnlyInImportBatch, scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleDocumentIsScheduleLike,
+      scheduleLookaheadDeleteNote, Alert: { alert: (_title: string, message: string) => { messages.push(message); } },
+    });
+    deleteScheduleDocument(lookahead.id);
+    expect(messages).toEqual(['Alpha 3 Week Lookahead will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming.']);
   });
 
   it('the phone labels a lookahead by its role in Schedule Sources', () => {

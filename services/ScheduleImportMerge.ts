@@ -2,6 +2,13 @@ import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import { selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import {
+  SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleProgressIsManagers,
+  scheduleRowAsTask,
+  scheduleRowStatesPercent,
+} from './ScheduleProgressSource';
 import {
   scheduleRowRepeatsMasterBeforeLookahead,
   scheduleTaskMasterRestated,
@@ -56,6 +63,16 @@ import {
  * master said before the lookahead leaves the lookahead's dates, and a
  * repeated percent leaves the lookahead's progress; one that changed the
  * task is the newer file, as before.
+ *
+ * Whole-app audit A5 pass 5 (30 Sep 2026): a file that states no percent for
+ * a row (a contractor's lookahead with Task, Project, Area, Start, Finish,
+ * Owner) said 0% Not Started, and took a master task's file progress of 60%
+ * to 0%. Such a row now leaves progress alone, for a full schedule too (a
+ * task on new dates keeps the progress it had); a stated 0% is still the
+ * scheduler's (H1). A lookahead row with no area, or no parent project where
+ * the master's rows name one, pairs with the one same-named task of its
+ * project, never with either of two (M1). Dates compare by calendar day, so
+ * 2026-10-05 (web) and 10/05/2026 (files) are the same day (A12 M2).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -70,21 +87,7 @@ export type ScheduleImportMergeResult = Readonly<{
   overlaidIds: readonly string[];
 }>;
 
-/**
- * Who confirmed progress taken from an approved schedule file over the
- * manager's (A5 pass 4 #1). Such a task keeps the manager's rank, so a device
- * still holding the older manager value cannot win it back in a merge
- * (DAVEScheduleRecovery), but its progress is the file's: the next file may
- * correct it either way.
- */
-export const SCHEDULE_UPDATE_PROGRESS_CONFIRMER = 'Schedule update';
-
-/** Progress the project manager recorded or verified, not taken from a schedule file. */
-export function scheduleProgressIsManagers(item: ScheduleItem): boolean {
-  if (item.completionVerification?.status === 'pm_verified') return true;
-  return item.progressSource === 'project_manager' &&
-    item.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
-}
+export { SCHEDULE_UPDATE_PROGRESS_CONFIRMER, scheduleProgressIsManagers };
 
 function percentOf(item: ScheduleItem): number {
   const value = Number(item.percentComplete);
@@ -93,13 +96,15 @@ function percentOf(item: ScheduleItem): number {
 
 /**
  * The file's progress over the saved task's, or null to keep the saved
- * task's (A5 pass 4 #1). A task entered by hand counts as the manager's.
+ * task's (A5 pass 4 #1). A task entered by hand counts as the manager's. A
+ * row that states no percent keeps the saved task's (A5 pass 5 H1).
  */
 function fileProgressFor(
   saved: ScheduleItem,
   file: ScheduleItem,
   approvedAt: string,
 ): Partial<ScheduleItem> | null {
+  if (!scheduleRowStatesPercent(file)) return null;
   const owned = Boolean(key(saved.importBatchId) || key(saved.sourceDocumentId));
   const managers = scheduleProgressIsManagers(saved) || !owned;
   const change = percentOf(file) - percentOf(saved);
@@ -133,18 +138,26 @@ function sameArea(existing: ScheduleItem, imported: ScheduleItem): boolean {
   return !existingArea || existingArea === key(imported.locationName);
 }
 
-/** Name, project and area; a row's ID, number and WBS renumber on an insert. */
-function sameTask(existing: ScheduleItem, imported: ScheduleItem): boolean {
+/**
+ * Name, project and area; a row's ID, number and WBS renumber on an insert.
+ * Loosely, for a lookahead (A5 pass 5 M1): a row with no area matches a task
+ * in any area, and a row with no parent project matches a task of its
+ * project filed under a parent.
+ */
+function sameTask(existing: ScheduleItem, imported: ScheduleItem, vague = false): boolean {
   if (key(existing.taskName) !== key(imported.taskName)) return false;
-  if (key(existing.scheduleProjectName || existing.projectName) !== key(imported.scheduleProjectName || imported.projectName)) return false;
-  return sameArea(existing, imported);
+  const project = key(imported.scheduleProjectName || imported.projectName);
+  const sameProject = key(existing.scheduleProjectName || existing.projectName) === project ||
+    (vague && !key(imported.scheduleProjectName) && Boolean(project) && key(existing.projectName) === project);
+  if (!sameProject) return false;
+  return sameArea(existing, imported) || (vague && !key(imported.locationName));
 }
 
-/** The same task on the same dates: unchanged by the revision. */
+/** The same task on the same calendar days: unchanged by the revision. */
 function unchangedTask(existing: ScheduleItem, imported: ScheduleItem): boolean {
   return sameTask(existing, imported) &&
-    key(existing.startDate) === key(imported.startDate) &&
-    key(existing.finishDate) === key(imported.finishDate);
+    sameScheduleCalendarDay(existing.startDate, imported.startDate) &&
+    sameScheduleCalendarDay(existing.finishDate, imported.finishDate);
 }
 
 function inImport(item: ScheduleItem, importBatchId: string | null | undefined): boolean {
@@ -165,27 +178,33 @@ function inFileOrder(items: readonly ScheduleItem[]): ScheduleItem[] {
  * already saved, by name, project and area. Same-named rows pair in file
  * order, and only when the file and the saved schedule have as many of them
  * and no saved row could be either of two tasks (an empty saved area
- * matches every area); never by ID.
+ * matches every area); never by ID. A lookahead row with no area or parent
+ * project pairs loosely, with a single task only (A5 pass 5 M1).
  */
 function pairTaskRevisions(
   existing: readonly ScheduleItem[],
   imported: readonly ScheduleItem[],
   isCurrent: (item: ScheduleItem) => boolean,
+  lookahead = false,
 ): Map<ScheduleItem, ScheduleItem> {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
     const group = [item.taskName, item.scheduleProjectName || item.projectName, item.locationName, item.importBatchId].map(key).join('|');
     groups.set(group, [...(groups.get(group) || []), item]);
   });
-  const candidates = [...groups.values()].map(rows => ({
-    rows,
-    saved: existing.filter(item => (isCurrent(item) || inImport(item, rows[0].importBatchId)) && sameTask(item, rows[0])),
-  }));
+  const candidates = [...groups.values()].map(rows => {
+    const eligible = existing.filter(item => isCurrent(item) || inImport(item, rows[0].importBatchId));
+    const strict = eligible.filter(item => sameTask(item, rows[0]));
+    const saved = lookahead ? eligible.filter(item => sameTask(item, rows[0], true)) : strict;
+    // A lookahead row matched only loosely pairs with the one task it can be, never with either of two.
+    return { rows, saved, vague: saved.length !== strict.length };
+  });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   candidates
-    .filter(({ rows, saved }) => rows.length === saved.length && saved.every(item => groupCount.get(item.id) === 1))
+    .filter(({ rows, saved, vague }) => rows.length === saved.length && (!vague || saved.length === 1) &&
+      saved.every(item => groupCount.get(item.id) === 1))
     .forEach(({ rows, saved }) => {
       const savedInOrder = inFileOrder(saved);
       inFileOrder(rows).forEach((row, index) => pairs.set(row, savedInOrder[index]));
@@ -327,7 +346,7 @@ export function mergeApprovedScheduleImportItems({
   const carriedProgressIds: string[] = [];
   const fileProgressIds: string[] = [];
   const overlaidIds: string[] = [];
-  const pairs = pairTaskRevisions(existing, imported, isCurrent);
+  const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
 
@@ -353,8 +372,10 @@ export function mergeApprovedScheduleImportItems({
       const batchId = typeof importedItem.importBatchId === 'string' ? importedItem.importBatchId.trim() : '';
       if (batchId && scheduleItemImportBatchIds(target).map(key).includes(key(batchId))) return;
       const fileProgress = fileProgressFor(target, importedItem, approvedAt);
+      // The lookahead notes the percent it gave, so deleting it can give the master's back (A5 pass 5 H1).
+      const givenPercent = fileProgress ? Math.min(100, Math.max(0, Number(importedItem.percentComplete) || 0)) : null;
       next = next.map(item => item.id === target.id
-        ? { ...scheduleTaskRestatedByLookahead(item, importedItem, approvedAt), ...(fileProgress || {}) }
+        ? { ...scheduleTaskRestatedByLookahead(item, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
         : item);
       overlaidIds.push(target.id);
       if (fileProgress) fileProgressIds.push(target.id);
@@ -424,8 +445,22 @@ export function mergeApprovedScheduleImportItems({
       carriedProgressIds.push(importedItem.id);
       return;
     }
+    if (paired && !scheduleRowStatesPercent(importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
+      // The file states no percent: the task on its new dates keeps the progress it had (A5 pass 5 H1).
+      additions.push({
+        ...importedItem,
+        percentComplete: paired.percentComplete,
+        status: paired.status,
+        progressSource: paired.progressSource ?? null,
+        progressConfirmedAt: paired.progressConfirmedAt ?? null,
+        progressConfirmedBy: paired.progressConfirmedBy ?? null,
+        completionVerification: paired.completionVerification ?? null,
+      });
+      carriedProgressIds.push(importedItem.id);
+      return;
+    }
     additions.push(importedItem);
   });
 
-  return { next, additions, rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };
+  return { next, additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };
 }
