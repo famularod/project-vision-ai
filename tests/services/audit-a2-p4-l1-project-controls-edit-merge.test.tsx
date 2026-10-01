@@ -25,6 +25,7 @@ import {
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import {
   mergeProjectControlsEdit,
+  mergeProjectControlsRevisions,
   normalizeProjectControls,
   reviseProjectControls,
   withProjectControlsEditMerged,
@@ -303,14 +304,47 @@ describe('mergeProjectControlsEdit: an edit built on an older copy over the copy
     expect(mergeProjectControlsEdit(held, editOf(base, { assignee: 'Maria' })).assignee).toBe('Maria');
   });
 
-  it('a field changed on another device later than the edit keeps that value (same rule as the cloud merge)', () => {
+  // Changed deliberately (whole-app audit A2 pass 5 L3, 30 Sep 2026): this
+  // pinned 'Ann', and the field went on showing the 'Maria' that was not
+  // saved. On the phone a field the edit stamped itself now takes the edit's
+  // value; the cloud's later-stamp rule still decides at upload.
+  it('a field the edit changed takes the edit\'s value on the phone even when another device stamped it later; the cloud merge still keeps the later one', () => {
     const held = reviseProjectControls({
       current: base,
       patch: { assignee: 'Ann' },
       actor: 'Ann (iPad)',
       now: new Date(Date.now() + 60_000).toISOString(),
     });
-    expect(mergeProjectControlsEdit(held, editOf(base, { assignee: 'Maria' })).assignee).toBe('Ann');
+    const edit = editOf(base, { assignee: 'Maria' });
+    const merged = mergeProjectControlsEdit(held, edit);
+    expect(merged.assignee).toBe('Maria');
+    expect(merged.fieldRevisions?.assignee).toEqual(edit.fieldRevisions?.assignee);
+    expect(mergeProjectControlsRevisions(merged, held).assignee).toBe('Ann');
+  });
+
+  it('a stored copy passed whole (as Verify Complete sends the task) is not taken as a fresh edit', () => {
+    // The copy the phone stored after David's last edit: its newest stamp is
+    // his, so it looks like that edit, but it was not made just now.
+    const stored = normalizeProjectControls(editOf(base, { assignee: 'Maria' }));
+    const held = reviseProjectControls({
+      current: stored,
+      patch: { assignee: 'Ann' },
+      actor: 'Ann (iPad)',
+      now: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(mergeProjectControlsEdit(held, stored).assignee).toBe('Ann');
+  });
+
+  it('a field the edit did not change keeps the other device\'s value even when its clock is ahead', () => {
+    const held = reviseProjectControls({
+      current: base,
+      patch: { approvalStatus: 'Approved' },
+      actor: 'Ann (iPad)',
+      now: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const merged = mergeProjectControlsEdit(held, editOf(base, { assignee: 'Maria' }));
+    expect(merged).toMatchObject({ assignee: 'Maria', approvalStatus: 'Approved', referenceNumber: 'SUB-014' });
+    expect(merged.fieldRevisions?.approvalStatus).toEqual(held.fieldRevisions?.approvalStatus);
   });
 
   it('a field neither copy stamped (written by an older build) keeps the copy held now', () => {
@@ -329,5 +363,60 @@ describe('mergeProjectControlsEdit: an edit built on an older copy over the copy
       assignee: 'Maria',
       approvalStatus: 'Approved',
     });
+  });
+});
+
+/**
+ * Whole-app audit A2 pass 5 L3 (30 Sep 2026): with another device's clock
+ * ahead, a typed Project controls field kept showing text that was not
+ * saved. The iPad changed "Assigned to" to Ann a moment ago in its own time;
+ * David typed Maria on the phone and left the field. The merge kept Ann (the
+ * later stamp), the saved value did not change, so the box went on showing
+ * Maria, and leaving it again unchanged saved nothing. A field David's edit
+ * stamped now takes his value on the phone, so the box shows what was saved.
+ */
+describe('a typed Project controls field shows what the phone saved when another device\'s clock is ahead (audit A2 pass 5 L3)', () => {
+  beforeEach(() => noteSignedInOwner('owner-a'));
+
+  function aheadOnIPad(item: ScheduleItem, patch: Partial<ProjectControls>): ScheduleItem {
+    return {
+      ...item,
+      projectControls: reviseProjectControls({
+        current: item.projectControls,
+        patch,
+        actor: 'Ann (iPad)',
+        // A moment ago in the iPad's time, which runs ahead of the phone.
+        now: new Date(Date.now() + 2 * 60_000).toISOString(),
+      }),
+    };
+  }
+
+  it('Maria typed over Ann is what the phone saves, shows and queues', () => {
+    const fromIPad = aheadOnIPad(TASK, { assignee: 'Ann' });
+    const harness = appTaskUpdate([fromIPad]);
+    const view = render(<Row item={fromIPad} open update={harness.updateScheduleItem} />);
+    fireEvent.press(view.getByRole('button', { name: /Project controls/i }));
+    expect(view.getByPlaceholderText('Person responsible').props.value).toBe('Ann');
+
+    const assignee = view.getByPlaceholderText('Person responsible');
+    fireEvent(assignee, 'focus');
+    fireEvent.changeText(assignee, 'Maria');
+    fireEvent(assignee, 'blur');
+    // App's render shows what it saved.
+    view.rerender(<Row item={harness.shown()[0]} open update={harness.updateScheduleItem} />);
+
+    expect(harness.alerts).toEqual([]);
+    const saved = harness.scheduleItemsCurrentRef.current[0].projectControls;
+    expect(saved).toMatchObject({ assignee: 'Maria', referenceNumber: 'SUB-014', updatedBy: 'David' });
+    expect(view.getByPlaceholderText('Person responsible').props.value).toBe(saved?.assignee);
+    expect(harness.queued.map(item => item.projectControls?.assignee)).toEqual(['Maria']);
+  });
+
+  it('another field the iPad changed with its clock ahead stays as the iPad left it', () => {
+    const fromIPad = aheadOnIPad(TASK, { trade: 'XYZ Rebar' });
+    const harness = typeThenNewerCopyClosesTheRow(TASK, fromIPad);
+    const saved = harness.scheduleItemsCurrentRef.current[0].projectControls;
+    expect(saved).toMatchObject({ assignee: 'Maria', trade: 'XYZ Rebar', referenceNumber: 'SUB-014' });
+    expect(saved?.fieldRevisions?.trade).toEqual(fromIPad.projectControls?.fieldRevisions?.trade);
   });
 });

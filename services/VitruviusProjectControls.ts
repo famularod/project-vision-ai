@@ -151,6 +151,14 @@ export function normalizeProjectControls(value: unknown): ProjectControls {
   };
 }
 
+/**
+ * The fields each edit made here changed (reviseProjectControls), kept beside
+ * the edit object only: never stored or sent, so a stored copy passed whole
+ * (Verify Complete sends the task as shown) is never taken as a fresh edit
+ * by mergeProjectControlsEdit (whole-app audit A2 pass 5 L3).
+ */
+const fieldsStampedByEdit = new WeakMap<ProjectControls, ReadonlySet<ProjectControlDataField>>();
+
 export function reviseProjectControls({
   current,
   patch,
@@ -168,11 +176,13 @@ export function reviseProjectControls({
   const nextFieldRevisions = {
     ...(normalizedCurrent.fieldRevisions || {}),
   };
+  const stamped = new Set<ProjectControlDataField>();
   PROJECT_CONTROL_DATA_FIELDS.forEach(field => {
     if (
       Object.prototype.hasOwnProperty.call(patch, field) &&
       JSON.stringify(patch[field]) !== JSON.stringify(normalizedCurrent[field])
     ) {
+      stamped.add(field);
       nextFieldRevisions[field] = {
         revision: (normalizedCurrent.fieldRevisions?.[field]?.revision || 0) + 1,
         updatedAt: now,
@@ -191,7 +201,7 @@ export function reviseProjectControls({
   // Mobile editors persist on every keystroke. Preserve the exact text while a
   // person is typing so entering a space does not collapse words together.
   // Hydration still trims persisted values through normalizeProjectControls.
-  return {
+  const revised: ProjectControls = {
     ...next,
     ...(typeof patch.assignee === 'string' ? { assignee: patch.assignee } : {}),
     ...(typeof patch.trade === 'string' ? { trade: patch.trade } : {}),
@@ -203,6 +213,8 @@ export function reviseProjectControls({
       : {}),
     ...(typeof patch.impactNotes === 'string' ? { impactNotes: patch.impactNotes } : {}),
   };
+  fieldsStampedByEdit.set(revised, stamped);
+  return revised;
 }
 
 /**
@@ -273,10 +285,15 @@ export function mergeProjectControlsRevisions(
  * device's change arrives in the render that takes the task out of view, that
  * copy is older (whole-app audit A2 pass 4 L1, 30 Sep 2026: Approval and
  * Trade went back, and a closed RFI refused the typed text). A field takes
- * the edit's value only where the edit stamped it later than the held copy,
- * the rule of mergeProjectControlsRevisions; every other field keeps the held
- * copy, including fields neither copy stamped, since an edit stamps every
- * field it changes. With nothing newer held, the edit is returned as is.
+ * the edit's value where the edit stamped it itself (an edit made on this
+ * phone just now) or stamped it later than the held copy; every other field
+ * keeps the held copy, including fields neither copy stamped, since an edit
+ * stamps every field it changes. A field the edit stamped itself wins on the
+ * phone even when another device, its clock ahead, stamped it later: the
+ * merge kept that value and the field went on showing the unsaved text
+ * (whole-app audit A2 pass 5 L3). The cloud's later-stamp rule
+ * (mergeProjectControlsRevisions) still decides at upload. With nothing
+ * newer held, the edit is returned as is.
  */
 export function mergeProjectControlsEdit(
   heldValue: ProjectControls | null | undefined,
@@ -284,10 +301,12 @@ export function mergeProjectControlsEdit(
 ): ProjectControls {
   const held = normalizeProjectControls(heldValue);
   const incoming = normalizeProjectControls(edit);
+  const stampedHere = fieldsStampedByEdit.get(edit);
   const keptFields = PROJECT_CONTROL_DATA_FIELDS.filter(field => {
     const editRevision = incoming.fieldRevisions?.[field];
     const heldRevision = held.fieldRevisions?.[field];
     const editChangedField = editRevision !== undefined && (
+      stampedHere?.has(field) === true ||
       !heldRevision ||
       compareFieldRevisionAuthority(editRevision, heldRevision) > 0
     );
