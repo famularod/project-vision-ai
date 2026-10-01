@@ -179,23 +179,36 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * master saved before the earlier ids were kept (79f49d3) does not answer to
  * the removed id, so its field updates read as evidence of a deleted task.
  * Before the deletions are recorded, each removed task's id goes onto the one
- * task shown after the delete with its name, project and area, when the
- * removed tasks hold no other task by that name there either (never a guess
+ * task shown after the delete with its name, project and area (never a guess
  * between two). The tasks to save, with the ids added; none for a removed
  * task some task shown already answers to.
+ *
+ * Whole-app audit A8 pass 8 L1 (30 Sep 2026): old master F had two "Pour
+ * slab" tasks; the new master kept phase 2 on its dates (so its row carries
+ * F's import too) and dropped phase 1. Deleting F wrote phase 1's id onto
+ * phase 2, its sibling, and phase 1's field report then warned "Field
+ * progress may be ahead of the schedule" on phase 2. The id now never goes
+ * onto a row that shares an import with the removed task (a task of the same
+ * schedule, not a revision of it), and only when the removed task's name was
+ * unique in its own schedule, counting the rows the delete keeps (kept) as
+ * well as those it removes.
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
   removed: readonly ScheduleItem[],
+  /** Every saved task the delete keeps, hidden ones included. */
+  kept: readonly ScheduleItem[] = [],
 ): ScheduleItem[] {
   const answered = new Set(shown.flatMap(item => [idOf(item.id), ...scheduleTaskEarlierIds(item)]));
   const added = new Map<ScheduleItem, string[]>();
   removed.forEach(gone => {
     const goneId = idOf(gone.id);
     if (!goneId || answered.has(goneId)) return;
+    const inSchedule = sameSchedule(gone);
     const matches = shown.filter(item => sameRemovedTask(item, gone));
-    if (matches.length !== 1) return;
-    if (removed.filter(other => sameRemovedTask(matches[0], other)).length !== 1) return;
+    if (matches.length !== 1 || inSchedule(matches[0])) return;
+    const ownRows = new Set([...kept, ...removed].filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
+    if (ownRows.size !== 1) return;
     added.set(matches[0], [...(added.get(matches[0]) || []), goneId]);
   });
   return [...added.entries()].map(([item, ids]) => ({

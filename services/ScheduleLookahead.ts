@@ -459,7 +459,7 @@ export function scheduleItemsAfterScheduleDeleted({
     scheduleItems: items.map(item => changed.get(item.id) || item),
     scheduleDocuments: [...documents],
   });
-  scheduleTasksAnsweringToRemovedTasks(shown, removed).forEach(item => changed.set(item.id, { ...item, updatedAt }));
+  scheduleTasksAnsweringToRemovedTasks(shown, removed, items).forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1)
   return [...changed.values()];
 }
 
