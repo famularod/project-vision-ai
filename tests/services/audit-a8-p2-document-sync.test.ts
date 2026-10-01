@@ -30,6 +30,7 @@ import {
   projectDocumentsAwaitingUpload,
   projectDocumentsDueForUploadRetry,
   projectDocumentUploadAttemptsAfterFailure,
+  uploadedProjectDocumentToShare,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createProjectDocumentSharedRecordSyncLifecycle,
@@ -123,6 +124,8 @@ function uploader(documents: PhoneDocument[], upload: (document: PhoneDocument) 
     projectDocumentUploadAttemptsAfterFailure,
     // Audit A8 pass 3 M3 (landed after this test): the upload stops once another account signs in.
     bindProjectDocumentUploadToAccount,
+    // Audit A8 pass 4 L4 (landed after this test): the document is read again from the list before it is shared.
+    uploadedProjectDocumentToShare,
     // Audit A7 pass 5 M1 (landed after this test): a finished upload sends each sent update listing it again.
     resendUpdatesListingDocument: jest.fn(), withDeviceDocumentUploadState: (update: unknown) => update,
   };

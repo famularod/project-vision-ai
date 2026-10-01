@@ -29,6 +29,7 @@ import {
   bindProjectDocumentUploadToAccount,
   createProjectDocumentUploadRetryRunner,
   projectDocumentUploadAttemptsAfterFailure,
+  uploadedProjectDocumentToShare,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createOwnedLocalFileManifest,
@@ -118,6 +119,7 @@ function phone(documents: PhoneDocument[], upload: (onProgress: (progress: numbe
       alerts.push({ title, buttons });
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount,
+    uploadedProjectDocumentToShare, // audit A8 pass 4 L4: read again from the list before it is shared
     // deleteProjectDocument
     isComplianceSensitiveProjectDocument: () => false, findSharedReferenceDocumentForProjectDocument: () => null,
     referenceDocumentsCurrentRef: { current: [] }, projectDocumentSharedRecordSync: { cancel: jest.fn() },

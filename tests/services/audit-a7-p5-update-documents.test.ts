@@ -86,6 +86,7 @@ import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
 import {
   bindProjectDocumentUploadToAccount,
   projectDocumentUploadAttemptsAfterFailure,
+  uploadedProjectDocumentToShare,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   documentsUploadedAfterCloudCopy,
@@ -291,6 +292,7 @@ function device(documents: Doc[], saved: Update[], options: {
       alerts.push({ title, message, buttons });
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount,
+    uploadedProjectDocumentToShare, // audit A8 pass 4 L4: read again from the list before it is shared
     isComplianceSensitiveProjectDocument: () => Boolean(options.sensitive),
     findSharedReferenceDocumentForProjectDocument: () => options.sharedRecord ?? null,
     referenceDocumentsCurrentRef: { current: options.sharedRecord ? [options.sharedRecord] : [] },

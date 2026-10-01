@@ -406,7 +406,7 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
-import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure } from './services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -6957,6 +6957,7 @@ useEffect(() => {
 
   async function publishUploadedProjectDocument(
     document: ProjectDocument,
+    sameAccount: () => boolean,
   ) {
     const ownedRecord = document.ownedFileId
       ? parseOwnedLocalFileManifest(document.ownedFileManifest)
@@ -6974,26 +6975,18 @@ useEffect(() => {
         updatedAt: document.updatedAt,
       }),
     );
-    const nextReferenceDocuments = [
-      sharedDocument,
-      ...referenceDocumentsCurrentRef.current.filter(
-        item => item.id !== sharedDocument.id,
-      ),
-    ];
-
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
-    setReferenceDocuments(nextReferenceDocuments);
-
     const linkedDocument = updateDocumentEverywhere(document.id, current => ({
       ...current,
       referenceDocumentId: sharedDocument.id,
     }));
-    if (linkedDocument) {
-      await persistProjectDocumentsImmediately(
-        projectDocumentsCurrentRef.current,
-      );
-    }
+    if (!linkedDocument) return; // no longer listed: nothing shared (whole-app audit A8 pass 4 L4)
+    await persistProjectDocumentsImmediately(projectDocumentsCurrentRef.current);
+    // Read again after the save: a delete, an archive or another account's sign-in meanwhile shares and queues nothing (A8 pass 4 L4).
+    if (!uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, document.id, sameAccount, operationalSyncTombstonesRef.current)) return;
+    const nextReferenceDocuments = [sharedDocument, ...referenceDocumentsCurrentRef.current.filter(item => item.id !== sharedDocument.id)];
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
+    setReferenceDocuments(nextReferenceDocuments);
     await queueReferenceDocumentRecord(sharedDocument);
   }
 
@@ -7095,9 +7088,10 @@ useEffect(() => {
         return false;
       }
 
-      if (completedDocument && !completedDocument.isArchived && sameAccount()) { // archived while it uploaded: not shared (whole-app audit A8 pass 2 #4)
+      const toShare = uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, documentId, sameAccount); // as listed after the save: deleted or archived meanwhile, not shared (A8 pass 2 #4, pass 4 L4)
+      if (toShare) {
         try {
-          await publishUploadedProjectDocument(completedDocument);
+          await publishUploadedProjectDocument(toShare, sameAccount);
         } catch {
           if (providedDocument) {
             Alert.alert(

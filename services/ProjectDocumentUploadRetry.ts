@@ -105,6 +105,30 @@ export function bindProjectDocumentUploadToAccount(): () => boolean {
 }
 
 /**
+ * The uploaded document as the list holds it now, while its shared copy may
+ * still go to the other devices: still listed, not archived, its shared copy
+ * not deleted everywhere, and the account that began the upload still signed
+ * in. A finished upload saves the list before it shares: it shared the copy
+ * it held from before the save, so a delete or an archive landing during the
+ * save still sent the document to the iPad and the web, and a sign-in to
+ * another account during it filed the copy under that account (whole-app
+ * audit A8 pass 4 L4). Read again after each save, immediately before the
+ * copy is queued.
+ */
+export function uploadedProjectDocumentToShare<T extends Pick<UploadRetryDocument, 'id' | 'isArchived'> & Readonly<{ referenceDocumentId?: string | null }>>(
+  documents: readonly T[],
+  documentId: string,
+  sameAccount: () => boolean,
+  tombstones: readonly Readonly<{ entityType: string; recordId: string }>[] = [],
+): T | null {
+  const listed = documents.find(document => document.id === documentId);
+  if (!listed || listed.isArchived || !sameAccount()) return null;
+  const sharedId = (listed.referenceDocumentId || listed.id).trim().toLowerCase();
+  return tombstones.some(tombstone => tombstone.entityType === 'reference_document' &&
+    tombstone.recordId.trim().toLowerCase() === sharedId) ? null : listed;
+}
+
+/**
  * Uploads the documents that are due, one at a time. A run already in
  * flight is shared rather than started twice. The upload is called with the
  * document id only: without the document itself it shows no alert, so a
