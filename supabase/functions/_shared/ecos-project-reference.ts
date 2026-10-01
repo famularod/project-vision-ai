@@ -593,7 +593,7 @@ function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
   let abbreviated = 0;
   while (walked < nameWords.length && walked < words.length && sameNameWord(words[walked], nameWords[walked])) {
     if (words[walked].toLowerCase() !== nameWords[walked].toLowerCase()) abbreviated += 1;
-    else if (!isFunctionWord(nameWords[walked])) count += 1;
+    else if (!isFunctionWord(nameWords[walked], words[walked])) count += 1;
     walked += 1;
   }
   return { count, abbreviated, walked };
@@ -601,9 +601,13 @@ function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
 
 const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to', 'a', 'an', 'by', 'with', 'from']);
 
-/** A function word in a name; a capital A is a letter, as in "2375 A Street" (audit A9 pass 10 L1). */
-function isFunctionWord(nameWord: string) {
-  return nameWord !== 'A' && FUNCTION_WORDS.has(nameWord.toLowerCase());
+/**
+ * A function word in a name; a capital A is a letter, as in "2375 A Street"
+ * (audit A9 pass 10 L1), when the question writes it as a capital too
+ * (audit A9 pass 15 L5: "Is 450 a priority?" does not continue "450 A Street").
+ */
+function isFunctionWord(nameWord: string, word: string) {
+  return !(nameWord === 'A' && word === 'A') && FUNCTION_WORDS.has(nameWord.toLowerCase());
 }
 
 /**

@@ -1402,6 +1402,20 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedSelected: '24117',
     refusedTogether: ['450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)', '450 (22001 - 450 Elm St)'],
   },
+  // Audit A9 pass 15 L5: the word "a" is not the capital A of a name; a
+  // capital "A" still is.
+  ...([
+    ['Is 450 a priority this week?', null],
+    ['What is left at 450 A Street?', '450 (24117 - 450 A Street)'],
+    ['What is left at 450 A?', '450 (24117 - 450 A Street)'],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 15 L5: "${question}" on "450 Elm St" with 24117 - 450 A Street`,
+    projectName: '450 Elm St',
+    question,
+    knownProjectNames: [SELECTED, '450 Elm St', '24117 - 450 A Street'],
+    refused,
+    ...(refused ? { refusedSelected: '450' } : {}),
+  })),
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

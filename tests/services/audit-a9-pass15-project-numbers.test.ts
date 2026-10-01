@@ -180,3 +180,22 @@ describe('audit A9 pass 15 L4: any tie between projects with different numbers a
     expect(desktop('What is left at 2375 Main St?', [SELECTED, '2375 Main St Phase 2'], ['2375 Main St'])).toBe(switchOnDesktop('2375'));
   });
 });
+
+describe('audit A9 pass 15 L5: the word "a" is not the capital A of a name', () => {
+  const ELM = '450 Elm St';
+  const A_STREET = '24117 - 450 A Street';
+  const PROJECTS = [SELECTED, ELM, A_STREET];
+
+  it('on 450 Elm St, "Is 450 a priority this week?" is its own, and Talk stays (was "names 450 (24117 - 450 A Street)")', () => {
+    expect(phone('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(desktop('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(talkAnswer('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(mentionedDAVEProject('Is 450 a priority this week?', PROJECTS)).toBe(ELM);
+  });
+
+  it('a capital A, or "a Street" with the next name word, still continues "450 A Street"', () => {
+    expect(desktop('What is left at 450 A Street?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+    expect(desktop('What is left at 450 A?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+    expect(desktop('What is left at 450 a Street?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+  });
+});
