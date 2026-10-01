@@ -1,8 +1,9 @@
 /**
- * Audit round 2, A5 pass 21 (1 Oct 2026): Low findings in the schedule merge,
- * each caused by the previous round's fixes. R1 (b98824e): Set Active / Make
- * Current (ScheduleImportMerge, ScheduleLookahead). R2 (a3239e3): Full Sync's
- * merge (DAVEScheduleRecovery).
+ * Audit round 2, A5 pass 21 (1 Oct 2026): three Low findings in the schedule
+ * merge, each caused by the previous round's fixes: R1 (b98824e) in Set
+ * Active / Make Current (ScheduleImportMerge, ScheduleLookahead), R2
+ * (a3239e3) in Full Sync's merge (DAVEScheduleRecovery), R3 (9efa666) in
+ * Make Current for a task entered by hand (ScheduleImportMerge).
  *
  * Owner answer Q22: a lookahead adds to the master, and file progress never
  * goes below what David entered. A newer master's dates replace older
@@ -21,6 +22,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { daveScheduleItemsNeedingCloudUpload, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
@@ -285,5 +287,77 @@ describe('R2: Full Sync keeps David\'s newer percent on the lookahead note', () 
       masterStartDate: '10/18/2026', masterPercentComplete: 70, masterProgressConfirmedBy: 'David', masterFilePercentComplete: 60,
     });
     expect(copies(deleteL2(merged), 'Framing')).toEqual([['10/18/2026', '10/28/2026', 70]]);
+  });
+});
+
+/**
+ * R3 (Low, caused by 9efa666 for hand tasks): David's hand-entered Pour slab
+ * at 40%; master G uploaded on the web Friday at 60%, left not current;
+ * lookahead L on Sunday states 30% (floored at David's 40%). Making G
+ * current gave G's 60%, though the newer lookahead stated a percent (at
+ * c73ceab, 40%). The note recorded only a percent the lookahead gave, so it
+ * could not tell "no % column" from "stated a percent at or below David's".
+ */
+describe('R3: a newer lookahead that stated a percent at or below David\'s keeps an older master\'s higher percent off', () => {
+  const hand = buildDAVEWebScheduleItem({
+    id: 'hand-pour', now: '2026-09-20T15:00:00.000Z', actor: 'David',
+    draft: {
+      itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+      startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: 'Crew A', contractor: '', percentComplete: '40',
+      priority: 'Medium', status: 'In Progress', notes: 'Pump booked', nextAction: '', activityMessage: '',
+    },
+  }) as unknown as ScheduleItem;
+  const FRIDAY = '2026-09-25T12:00:00.000Z';
+  const L = doc('LOOKAHEAD L', '2026-09-27T12:00:00.000Z', 'lookahead');
+  const MONDAY = '2026-09-28T12:00:00.000Z';
+  const G_ROW = (percent: string) => `Pour slab,Alpha,Lot,10/08/2026,10/12/2026,${percent}`;
+  const L_ROW = (percent: string) => `Pour slab,Alpha,Lot,10/14/2026,10/18/2026,${percent}`;
+  const onL = (gPercent: string, lPercent: string) => {
+    const up = upload({ items: [hand], documents: [] }, 'alpha-master-g.csv', [G_ROW(gPercent)], FRIDAY);
+    return { state: approve(up.state, L, [L_ROW(lPercent)], true), G: up.document };
+  };
+  const web = (state: State, document: ReferenceDocument) => makeCurrent(state, document, MONDAY);
+  const phone = (state: State, document: ReferenceDocument) => setActive(state, document, MONDAY);
+
+  it('the lookahead notes that its row stated a percent, though it gave none', () => {
+    const { state } = onL('60', '30');
+    expect(state.items.find(item => item.id === 'hand-pour')!.lookaheadOverlay!.lookaheads).toEqual([
+      expect.objectContaining({ batchId: 'batch-LOOKAHEAD L', percentComplete: null, percentStated: true }),
+    ]);
+    expect(onL('60', '').state.items.find(item => item.id === 'hand-pour')!.lookaheadOverlay!.lookaheads[0]).not.toHaveProperty('percentStated');
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s of G after L stated 30%: David\'s 40% stays', (_how, current) => {
+    const { state, G } = onL('60', '30');
+    const after = current(state, G);
+    expect(copies(after, 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 40]]);
+    expect(copies(deleteWithItems(after, L, '2026-09-30T12:00:00.000Z'), 'Pour slab')).toEqual([['10/08/2026', '10/12/2026', 40]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('%s of G after L stated 40% (David\'s): 40% stays', (_how, current) => {
+    const { state, G } = onL('60', '40');
+    expect(copies(current(state, G), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 40]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('unchanged: %s of G after L with no % column gives G\'s 60% (A5 pass 20 P2)', (_how, current) => {
+    const { state, G } = onL('60', '');
+    expect(copies(current(state, G), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 60]]);
+  });
+
+  it.each([['web Make Current', web], ['phone Set Active', phone]] as const)('unchanged: %s of G after L stated 50%: 50%', (_how, current) => {
+    const { state, G } = onL('60', '50');
+    expect(copies(current(state, G), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 50]]);
+  });
+
+  it('unchanged: a note saved before, with no word on whether the row stated a percent, reads as before (60%)', () => {
+    const { state, G } = onL('60', '30');
+    const old: State = {
+      ...state,
+      items: state.items.map(item => item.lookaheadOverlay ? {
+        ...item,
+        lookaheadOverlay: { ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(({ percentStated: _stated, ...entry }) => entry) },
+      } : item),
+    };
+    expect(copies(web(old, G), 'Pour slab')).toEqual([['10/14/2026', '10/18/2026', 60]]);
   });
 });

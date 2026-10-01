@@ -287,7 +287,11 @@ export function scheduleTaskRestatedByLookahead(
     }),
     lookaheads: [
       ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)),
-      { batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent },
+      {
+        batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent,
+        // Its row stated a percent it did not give (at or below David's own): still a newer word (A5 pass 21 R3).
+        ...(givenPercent === null && scheduleRowStatesPercent(row) ? { percentStated: true as const } : {}),
+      },
     ],
   };
   return withOverlay({

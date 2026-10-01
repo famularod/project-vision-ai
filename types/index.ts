@@ -772,6 +772,10 @@ export type ScheduleLookaheadOverlay = {
    * import batch id of the master that changed them (whole-app audit A5 pass
    * 20 P1): they stay replaced only while that master, or one newer, is
    * current; true on an entry marked before, replaced whatever is current.
+   * percentStated: true when the lookahead's row stated a percent but it gave
+   * none (at or below David's own, Q22), a newer word than an older master's
+   * percent (whole-app audit A5 pass 21 R3); missing otherwise, and on an
+   * entry noted before.
    */
   lookaheads: {
     batchId: string;
@@ -779,6 +783,7 @@ export type ScheduleLookaheadOverlay = {
     finishDate: string;
     percentComplete?: number | null;
     datesReplacedByMaster?: boolean | string;
+    percentStated?: true;
   }[];
 };
 

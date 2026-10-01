@@ -734,7 +734,9 @@ function handTasksRestatedWhenCurrent(
       // master's percent applies as at approval (only above David's, Q22), unless a newer word stands: a
       // lookahead newer than it that stated a percent (one noted before 30 Sep, unknown, counts as stated), or
       // David's own percent judged after it was uploaded.
-      const statedSince = (task.lookaheadOverlay?.lookaheads || []).some(noted => newerThanMaster(noted) && noted.percentComplete !== null) ||
+      // Whole-app audit A5 pass 21 R3 (1 Oct 2026): a lookahead stating 30% under David's 40% gave none, so its
+      // note read as "no % column" and G's older 60% applied; its row stating a percent counts (percentStated).
+      const statedSince = (task.lookaheadOverlay?.lookaheads || []).some(noted => newerThanMaster(noted) && (noted.percentComplete !== null || noted.percentStated === true)) ||
         (scheduleProgressIsManagers(target) && timeOf(scheduleProgressJudgedAt(target)) > madeCurrentAt);
       const fileProgress = statedSince ? null : scheduleFileProgressAboveManagers(target, fileProgressFor(target, row, now), now);
       return [{ ...scheduleTaskMasterRestated(target, row, now, noted => !newerThanMaster(noted)), ...(fileProgress || {}), updatedAt: now }];
