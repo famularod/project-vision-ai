@@ -4262,7 +4262,7 @@ function DocumentManagementWorkspace({
       await auth.updateDocument({ ...document, ...next } as DAVEWebReferenceDocument);
       setNotice({
         tone: 'good',
-        text: document.isCurrent
+        text: documentInEffect(document)
           ? `“${document.name}” document details were updated. The current ECOS source now uses the revised information.`
           : `“${document.name}” document details were updated. Review ECOS readiness before making it current.`,
       });
@@ -4536,7 +4536,11 @@ function DocumentManagementWorkspace({
             <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.name}”?</Text>
             <Text style={styles.dataDetail}>Imported {formatDateTime(deleteCandidate.importedAt)}.</Text>
             {protectedCurrentDocument ? (
-              <Text style={styles.errorText}>This is the current project schedule and is protected. Make a replacement schedule current before deleting this version.</Text>
+              <Text style={styles.errorText}>
+                {scheduleDocumentAddsToMaster(deleteCandidate)
+                  ? "This lookahead adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back."
+                  : 'This is the current project schedule and is protected. Make a replacement schedule current before deleting this version.'}
+              </Text>
             ) : (
               <Text style={styles.dataMeta}>
                 {currentEvidenceDocument
@@ -4562,7 +4566,11 @@ function DocumentManagementWorkspace({
               disabled={deleting}
               accessibilityRole="button"
             >
-              <Text style={styles.secondaryButtonText}>{protectedCurrentDocument ? 'Keep Current Document' : 'Cancel'}</Text>
+              <Text style={styles.secondaryButtonText}>
+                {!protectedCurrentDocument
+                  ? 'Cancel'
+                  : scheduleDocumentAddsToMaster(deleteCandidate) ? 'Keep Lookahead' : 'Keep Current Document'}
+              </Text>
             </Pressable>
             {!protectedCurrentDocument ? (
               <Pressable
@@ -4651,7 +4659,9 @@ function DocumentManagementWorkspace({
           <View style={styles.documentGroups}>
             <DocumentGroup
               title="Current schedule"
-              detail="The schedule currently used for project planning. It is protected from deletion."
+              detail={visibleGroups.currentSchedule.some(scheduleDocumentAddsToMaster)
+                ? 'The schedule currently used for project planning. It is protected from deletion. A lookahead that adds to it is deleted on the iPhone or iPad.'
+                : 'The schedule currently used for project planning. It is protected from deletion.'}
               documents={visibleGroups.currentSchedule}
               emptyText="No current schedule matches this view."
               selectedDocumentId={selectedDocumentId}
@@ -4821,7 +4831,7 @@ function DocumentList({
               <View style={styles.documentListStatus}>
                 <StatusBadge
                   label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
-                  tone={document.isCurrent ? 'good' : 'neutral'}
+                  tone={documentInEffect(document) ? 'good' : 'neutral'}
                 />
                 <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
               </View>
@@ -4957,7 +4967,7 @@ function DocumentDetailsPanel({
       <View style={styles.taskDetailsBadges}>
         <StatusBadge
           label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
-          tone={document.isCurrent ? 'good' : 'neutral'}
+          tone={documentInEffect(document) ? 'good' : 'neutral'}
         />
         <StatusBadge label={document.category} tone="neutral" />
       </View>
@@ -5052,7 +5062,8 @@ function DocumentDetailsPanel({
           <Text key={item} style={styles.taskDetailsSectionText}>• {item}</Text>
         ))}
       </View>
-      {(!document.isCurrent || !isSchedule) && onSaveDetails ? (
+      {/* A lookahead stays one: changing its category ended its role and let it be deleted without putting the master's dates back (A12 pass 3 L2). */}
+      {(!documentInEffect(document) || !isSchedule) && onSaveDetails ? (
         <DocumentECOSDetailsEditor
           document={document}
           projects={projects}
@@ -5100,7 +5111,9 @@ function DocumentDetailsPanel({
           <View style={styles.documentProtectedNotice}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.success} />
             <Text style={styles.documentProtectedText}>
-              Current schedule · protected from deletion
+              {scheduleDocumentAddsToMaster(document)
+                ? LOOKAHEAD_DELETION_NOTICE
+                : 'Current schedule · protected from deletion'}
             </Text>
           </View>
         ) : null}
@@ -6748,8 +6761,24 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
   return `${names.length} projects · ${names.join(' + ')}`;
 }
 
+/**
+ * Current, or a lookahead, which is in effect by its role whatever its flag:
+ * the cloud's activation of a master clears that flag (owner answer Q22).
+ */
+function documentInEffect(document: DAVEWebReferenceDocument): boolean {
+  return document.isCurrent || scheduleDocumentAddsToMaster(document);
+}
+
+/**
+ * Where a lookahead is deleted, until the owner decides whether a newer one
+ * replaces an older (Q25): the web keeps it, and the phone's or iPad's
+ * Delete PDF + Items also puts back the master's dates (A12 pass 3 A8-L2).
+ */
+const LOOKAHEAD_DELETION_NOTICE =
+  "Lookahead · adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back.";
+
 function documentStatusKind(document: DAVEWebReferenceDocument): Exclude<DocumentStatusFilter, 'all'> {
-  if (document.isCurrent || scheduleDocumentAddsToMaster(document)) return 'current'; // a lookahead is in effect by its role (owner answer Q22)
+  if (documentInEffect(document)) return 'current'; // a lookahead is in effect by its role (owner answer Q22)
   return scheduleDocumentIsScheduleLike(document) ? 'prior' : 'other';
 }
 

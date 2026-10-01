@@ -79,7 +79,11 @@ describe('Vitruvius web workspace design contract', () => {
   });
 
   it('allows current project documents to edit and persist drawing metadata', () => {
-    expect(shell).toContain('{(!document.isCurrent || !isSchedule) && onSaveDetails ? (');
+    // Updated 30 Sep 2026 (whole-app audit A12 pass 3 L2): a lookahead is in
+    // effect by its role whatever its current flag (owner answer Q22), so its
+    // details editor is hidden like the current schedule's; current non-schedule
+    // documents still edit their details.
+    expect(shell).toContain('{(!documentInEffect(document) || !isSchedule) && onSaveDetails ? (');
     expect(shell).toContain('>Edit Project Document Details</Text>');
     expect(shell).toContain('label="Discipline" value={discipline} onChangeText={setDiscipline}');
     expect(shell).toContain('drawingDiscipline: drawing ? discipline.trim() || null : null');
