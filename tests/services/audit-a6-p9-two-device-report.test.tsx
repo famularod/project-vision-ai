@@ -401,7 +401,10 @@ describe('"already sent" is said on opening Reports, not only when an approval w
     relaunched.unmount();
 
     // The iPad's send of the next report, also without an id, is the other device's.
+    // Pin changed in A6 pass 11 L3: the phone's send without an id is the other
+    // install's on the iPad too, so the iPad downloads the tasks first.
     const ipadSent = await keepingPhoneMemory(async () => {
+      await downloadsTasks('ipad');
       const ipad = open('ipad', tower(2));
       await approveAndSend();
       const sent = local('ipad') as DAVEReportSnapshot;

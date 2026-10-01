@@ -163,12 +163,39 @@ export async function saveDAVEReportSnapshot(
 }
 
 let senderIdCreation: Promise<string> | null = null;
+/**
+ * The id read from (or made in) the Keychain this app session (whole-app
+ * audit A6 pass 11 L3, 30 Sep 2026). The Keychain item can be read only while
+ * the device is unlocked: an iPad locked as its share sheet closed sent
+ * without an id, and the phone, never waiting on such a send, read the
+ * iPad's completion backwards again. Opening Reports reads the id; a send
+ * made while the Keychain cannot be read uses the one read then.
+ */
+let senderIdThisSession: string | null = null;
+
+/** Test seam: a new app session has read no sender id yet. */
+export function forgetReportSenderIdSession(): void {
+  senderIdThisSession = null;
+}
+
+/** The Keychain's id, kept for the session; while it cannot be read, the one read earlier this session. */
+async function readKeychainSenderId(keychain: SenderIdKeychain): Promise<string | null> {
+  try {
+    const id = await keychain.read();
+    if (id) senderIdThisSession = id;
+    return id;
+  } catch (error) {
+    if (senderIdThisSession) return senderIdThisSession;
+    throw error;
+  }
+}
 
 /**
  * This install's report sender id, made the first time this device sends a
  * report (A6 pass 9 L2), kept in the Keychain on this device only (pass 10
- * L3). It rejects when the Keychain cannot be read (the device locked): the
- * send then goes without an id, as before pass 9, rather than with a second one.
+ * L3). While the Keychain cannot be read (the device locked) it is the id
+ * read earlier this app session (pass 11 L3); with none read, it rejects:
+ * the send then goes without an id rather than with a second one.
  */
 export async function reportSenderId(
   storage: SnapshotStorage = AsyncStorage,
@@ -177,13 +204,13 @@ export async function reportSenderId(
   // Two sends at once make one id.
   senderIdCreation ??= (async () => {
     if (await keychain.available().catch(() => false)) {
-      const kept = await keychain.read();
+      const kept = await readKeychainSenderId(keychain);
       if (kept) return kept;
       // The id pass 9 kept in app storage moves here once, then leaves app storage.
       const earlier = await storage.getItem(SENDER_ID_KEY);
       const id = earlier || randomSenderId();
       await keychain.write(id);
-      if (await keychain.read() === id) {
+      if (await readKeychainSenderId(keychain) === id) {
         if (earlier) await storage.removeItem?.(SENDER_ID_KEY);
         return id;
       }
@@ -202,7 +229,7 @@ export async function reportSenderId(
 /** This install's sender id if it has one, without making one: the Keychain's, else the one in app storage. */
 async function savedReportSenderId(storage: SnapshotStorage, keychain: SenderIdKeychain): Promise<string | null> {
   if (await keychain.available().catch(() => false)) {
-    const kept = await keychain.read();
+    const kept = await readKeychainSenderId(keychain);
     if (kept) return kept;
   }
   return storage.getItem(SENDER_ID_KEY);
@@ -214,7 +241,9 @@ async function savedReportSenderId(storage: SnapshotStorage, keychain: SenderIdK
  * by the sender id the send carries, or, for a report sent before sends
  * carried one, by this device's own saved copy of that send (only the device
  * that sent a report saves it marked sent). An approval not yet sent, or a
- * report saved before sends were recorded, is not a send.
+ * report saved before sends were recorded, is not a send. Whatever the send,
+ * this install's id is read, so it is kept for the app session (A6 pass 11
+ * L3): opening Reports reads it before any send.
  */
 export async function reportSnapshotSentHere(
   snapshot: DAVEReportSnapshot | null | undefined,
@@ -222,7 +251,8 @@ export async function reportSnapshotSentHere(
   keychain: SenderIdKeychain = deviceKeychain,
 ): Promise<boolean> {
   if (!snapshot || typeof snapshot.deliveredAt !== 'string') return false;
-  if (snapshot.sentBy) return snapshot.sentBy === await savedReportSenderId(storage, keychain);
+  const here = await savedReportSenderId(storage, keychain).catch(() => null);
+  if (snapshot.sentBy) return snapshot.sentBy === here;
   if (!snapshot.reportFormat) return false;
   const own = await loadLocalDAVEReportSnapshot(snapshot.scopeKey, snapshot.reportFormat, storage);
   return own?.deliveredAt === snapshot.deliveredAt && own.sourceFingerprint === snapshot.sourceFingerprint;

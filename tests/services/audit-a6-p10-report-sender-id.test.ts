@@ -133,7 +133,9 @@ describe('L3: the report sender id is kept in the Keychain, on this device only'
     const storage = appStorage();
     const id = await reportSenderId(storage);
     mockKeychainLocked = true;
-    await expect(reportSenderId(storage)).rejects.toThrow();
+    // Pin changed in A6 pass 11 L3: the id read earlier this app session is
+    // used while locked (pass 10 sent without one); still no second id.
+    await expect(reportSenderId(storage)).resolves.toBe(id);
     expect(storage.values.size).toBe(0);
     mockKeychainLocked = false;
     expect(await reportSenderId(storage)).toBe(id);

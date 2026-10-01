@@ -99,11 +99,16 @@ describe('the device-level rule (M1, M2, L2)', () => {
     expect(behind({ period: ahead, pulledAt: '2026-09-30T14:00:00.000Z' })).toBeNull();
   });
 
-  it('never behind on its own send, on the same facts as the send, or on a send without a sender id', () => {
+  it('never behind on its own send or on the same facts as the send', () => {
     expect(behind({ ownSends: new Set([SENT]) })).toBeNull();
     expect(behind({ currentFingerprint: ipadSent.sourceFingerprint })).toBeNull();
+    // Pin changed in A6 pass 11 L3: a send without a sender id was never
+    // waited on, so an iPad that could not read its Keychain at send turned
+    // the rule off here. It is now the other install's unless it is one of
+    // this device's own sends (known by its send time).
     const { sentBy: _sentBy, ...withoutId } = ipadSent;
-    expect(behind({ period: withoutId as DAVEReportSnapshot })).toBeNull();
+    expect(behind({ period: withoutId as DAVEReportSnapshot })).toBe(withoutId);
+    expect(behind({ period: withoutId as DAVEReportSnapshot, ownSends: new Set([SENT]) })).toBeNull();
     expect(behind({ period: null })).toBeNull();
   });
 

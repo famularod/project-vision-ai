@@ -266,8 +266,15 @@ export function reportPeriodSend(snapshot: DAVEReportSnapshot | null | undefined
  * after the send (`pulledAt` later than the send time), or, whatever the
  * other device's clock said, at or after this app session first saw the send
  * (`seenAt`, this device's clock). So it never waits once such a download
- * has landed, and Settings › Sync Now always ends it. A send without a sender
- * id (before A6 pass 9) or the same facts as this device has never waits.
+ * has landed, and Settings › Sync Now always ends it. A send with the same
+ * facts as this device has never waits.
+ *
+ * Whole-app audit A6 pass 11 L3 (30 Sep 2026): a send without a sender id
+ * never waited either, so an iPad that could not read its Keychain at send
+ * turned the rule off on the phone. A send with no id (one made while the
+ * Keychain could not be read, or by a build before A6 pass 9) that is not one
+ * of `ownSends` (this device knows its own by their send time) is now taken
+ * for the other install's: at worst this device waits for a download.
  */
 export function otherDeviceSendNotReceived({
   period,
@@ -285,7 +292,7 @@ export function otherDeviceSendNotReceived({
   seenAt?: string | null;
 }): DAVEReportSnapshot | null {
   const send = reportPeriodSend(period);
-  if (!send?.sentBy || typeof send.deliveredAt !== 'string' || ownSends.has(send.deliveredAt)) return null;
+  if (typeof send?.deliveredAt !== 'string' || ownSends.has(send.deliveredAt)) return null;
   if (send.sourceFingerprint === currentFingerprint) return null;
   const pulled = Date.parse(pulledAt ?? '');
   if (Number.isNaN(pulled)) return send;

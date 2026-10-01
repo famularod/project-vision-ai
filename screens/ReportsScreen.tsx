@@ -387,8 +387,9 @@ export function ReportsScreen({
   // Until this device has downloaded the tasks since that send, "since the
   // last report" is not counted and approval waits.
   const periodSend = snapshotScopeLoaded ? reportPeriodSend(previousReportSnapshot) : null;
-  const periodSendKey = periodSend?.sentBy && typeof periodSend.deliveredAt === 'string'
-    ? `${periodSend.sentBy}|${periodSend.deliveredAt}`
+  // A send without a sender id is keyed by its time alone (A6 pass 11 L3).
+  const periodSendKey = typeof periodSend?.deliveredAt === 'string'
+    ? `${periodSend.sentBy ?? ''}|${periodSend.deliveredAt}`
     : null;
   const periodSendSeenAt = useMemo(
     () => (periodSendKey ? reportSendFirstSeenAt(periodSendKey) : null),
@@ -577,7 +578,7 @@ export function ReportsScreen({
   // While waiting, the app is asked to download the tasks now (its refresh;
   // Settings › Sync Now does the same), again on each return to the app.
   const behindSendKey = reportDeviceBehindSend
-    ? `${reportDeviceBehindSend.sentBy}|${reportDeviceBehindSend.deliveredAt}`
+    ? `${reportDeviceBehindSend.sentBy ?? ''}|${reportDeviceBehindSend.deliveredAt}`
     : null;
   useEffect(() => {
     if (behindSendKey) requestScheduleCloudPull();
