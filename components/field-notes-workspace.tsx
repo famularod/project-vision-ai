@@ -140,6 +140,21 @@ function FieldNotesWorkspaceContent({
     return Array.from(byName.values());
   }, [projectRecords, projects]);
 
+  // A new note is offered open projects only: closing a project only adds it
+  // to the archived list, so closed (and deleted) projects were offered too
+  // (whole-app audit A11 pass 4 L2). One the note already names stays, shown
+  // as closed, and keeps its id when saved.
+  const draftProjectOptions = useMemo(() => {
+    const open = new Set(projects.map(normalized));
+    const offered = projectOptions
+      .filter(option => open.has(normalized(option.name)))
+      .map(option => ({ ...option, closed: false }));
+    const named = projectName.trim();
+    if (!named || offered.some(option => normalized(option.name) === normalized(named))) return offered;
+    const own = projectOptions.find(option => normalized(option.name) === normalized(named));
+    return [...offered, { id: own?.id ?? null, name: own?.name ?? named, closed: true }];
+  }, [projectName, projectOptions, projects]);
+
   // The note being edited keeps its own project even when it is closed and so
   // missing from the chips; saving a text edit cleared it and synced the
   // change (whole-app audit A11 pass 1 F5, 30 Sep 2026).
@@ -566,10 +581,10 @@ function FieldNotesWorkspaceContent({
               selected={!projectName}
               onPress={() => setProjectName('')}
             />
-            {projectOptions.map(project => (
+            {draftProjectOptions.map(project => (
               <ChoiceChip
                 key={project.id || project.name}
-                label={project.name}
+                label={project.closed ? `${project.name} (closed)` : project.name}
                 selected={normalized(projectName) === normalized(project.name)}
                 onPress={() => setProjectName(project.name)}
               />
