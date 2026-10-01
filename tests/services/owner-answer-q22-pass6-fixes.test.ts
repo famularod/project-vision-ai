@@ -25,11 +25,15 @@
  *    Area column.
  * A5 p6 L2 A CSV percent written as a fraction ("0.4", as a spreadsheet's
  *    percent cell exports) was read as a stated 0%.
+ * A10 p4 (residual) The fallback for records older than progress provenance
+ *    called an untouched schedule-file task below 100% the project manager's
+ *    judgment, and rows marked schedule_import too.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { buildDAVEActionInbox } from '../../services/DAVEActionInbox';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { normalizeMicrosoftProjectPdfRows, normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
-import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import { scheduleHasAuthoritativeProgressJudgment, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import {
@@ -404,5 +408,45 @@ describe('A5 p6 L2: a percent written as a fraction reads as that share of 100',
     const state = approve({ items: masterItems(20), documents: [master] }, lookahead,
       csvRows([HEADER, 'Pour slab,Alpha,Lot,09/28/2026,09/30/2026,0.4'], lookahead));
     expect(pour(state)).toMatchObject({ percentComplete: 40, status: 'In Progress' });
+  });
+});
+
+describe('A10 p4: a schedule file\'s percent reads as the schedule\'s, never as the manager\'s judgment', () => {
+  const truthRecord = (state: State, id: string) => {
+    const truth = buildDAVEProjectTruth({
+      projectId: 'project-alpha', projectName: 'Alpha', updates: [], scheduleItems: shown(state),
+      referenceDocuments: state.documents, now: '2026-09-26T12:00:00.000Z',
+    });
+    return truth.evidence.records.find(value => value.id === `schedule:${id}`)!.summary.replace(/, due [0-9/]+/, '');
+  };
+  const inboxAction = (state: State, id: string) => buildDAVEActionInbox({ scheduleItems: shown(state), now: new Date('2026-12-20T12:00:00.000Z') })
+    .items.find(item => item.scheduleItemId === id)!.requestedAction;
+
+  it('a master task David never touched, at 30%, and one a lookahead raised to 60%, are the schedule\'s', () => {
+    const state: State = { items: masterItems(20), documents: [master] };
+    const roof = shown(state).find(item => item.id === 'm-roof')!;
+    expect(roof).toMatchObject({ status: 'In Progress', percentComplete: 30 });
+    expect(roof.progressSource ?? null).toBeNull();
+    expect(scheduleHasAuthoritativeProgressJudgment(roof)).toBe(false);
+    expect(truthRecord(state, 'm-roof')).toBe('Roofing: In Progress, 30% complete.');
+    expect(inboxAction(state, 'm-roof')).toBe('Confirm current field status and the next accountable step.');
+    // Marked as the import's.
+    expect(scheduleHasAuthoritativeProgressJudgment({ ...roof, progressSource: 'schedule_import' })).toBe(false);
+
+    const raised = approve(state, lookahead, pourRow(lookahead, 60));
+    expect(pour(raised)).toMatchObject({ percentComplete: 60, status: 'In Progress' });
+    expect(pour(raised).progressSource ?? null).toBeNull();
+    expect(truthRecord(raised, 'm-pour')).toBe('Pour slab: In Progress, 60% complete.');
+  });
+
+  it('David\'s own percent is his judgment, and so is a task entered by hand before progress was recorded with who set it', () => {
+    const state: State = { items: byDavid(masterItems(20), 'm-roof', 30), documents: [master] };
+    expect(truthRecord(state, 'm-roof')).toBe('Roofing: In Progress, 30% complete — project manager judgment.');
+    expect(inboxAction(state, 'm-roof')).toBe('Set the recovery date and next accountable step while preserving the project manager progress judgment.');
+    const handEntered = {
+      id: 'hand', projectName: 'Alpha', taskName: 'Punch list', locationName: 'Lot', owner: '', contractor: '', startDate: '11/01/2026',
+      finishDate: '11/05/2026', milestone: '', status: 'In Progress', percentComplete: 40, priority: 'Medium', notes: '', createdAt: '2026-08-01T00:00:00.000Z',
+    } as ScheduleItem;
+    expect(scheduleHasAuthoritativeProgressJudgment(handEntered)).toBe(true);
   });
 });

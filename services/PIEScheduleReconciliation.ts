@@ -87,10 +87,22 @@ export function scheduleHasAuthoritativeProgressJudgment(item: ScheduleItem) {
   // A percent an approved schedule file set is the scheduler's, and the task
   // says so; it is not the manager's judgment (A10 pass 3 M1).
   if (scheduleProgressSetByScheduleFile(item)) return false;
+  // A task a schedule file brought in, or marked as the import's, holds the
+  // file's percent until the manager records one (whole-app audit A10 pass
+  // 4, 30 Sep 2026): an untouched master task at 30%, or one a lookahead
+  // raised, read as the manager's judgment.
+  if (item.progressSource === 'schedule_import' || scheduleItemHasImportRecord(item)) return false;
 
   // Older records did not preserve progress provenance. A saved in-progress
-  // percentage is still an explicit professional judgment, not a DAVE guess.
+  // percentage on a task entered by hand is still an explicit professional
+  // judgment, not a DAVE guess.
   return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
+}
+
+/** Whether a schedule file brought the task in: its import, source document or file. */
+function scheduleItemHasImportRecord(item: ScheduleItem) {
+  return scheduleItemImportBatchIds(item).length > 0 ||
+    Boolean(normalize(item.sourceDocumentId || '') || normalize(item.importedFrom || ''));
 }
 
 /**

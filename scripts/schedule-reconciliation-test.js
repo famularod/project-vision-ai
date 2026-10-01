@@ -532,12 +532,16 @@ assert(
   'A PM-entered progress percentage is authoritative and must not require separate field evidence.',
 );
 
+// Pin updated (whole-app audit A10 pass 4, 30 Sep 2026): the legacy fallback trusts only a task entered
+// by hand; a task a schedule file brought in holds the file's percent, which still needs field evidence.
 const legacyPmProgressJudgment = buildPIEScheduleReconciliation({
   scheduleItems: [schedule({
     id: 'legacy-pm-progress',
     finishDate: '2026-07-10',
     status: 'In Progress',
     percentComplete: 10,
+    importedFrom: null,
+    importedAt: null,
   })],
   updates: [],
   projectName: 'Building 2375',
@@ -546,6 +550,16 @@ const legacyPmProgressJudgment = buildPIEScheduleReconciliation({
 assert(
   !legacyPmProgressJudgment.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
   'A legacy saved in-progress percentage must remain trusted even before provenance fields existed.',
+);
+const legacyFileProgress = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({ id: 'legacy-file-progress', finishDate: '2026-07-10', status: 'In Progress', percentComplete: 10 })],
+  updates: [],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  legacyFileProgress.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
+  'A schedule file\'s in-progress percentage is the schedule\'s, not the manager\'s judgment: it still asks for field evidence.',
 );
 
 const unrelated = buildPIEScheduleReconciliation({

@@ -73,18 +73,25 @@ describe('atomic evidence provenance (audit P1-02)', () => {
   });
 
   it('does not fabricate a confirmation event for legacy progress', () => {
+    // Pin updated (whole-app audit A10 pass 4, 30 Sep 2026): the legacy fallback now counts only a task
+    // entered by hand as the manager's judgment, so the legacy task here has no import record. The same
+    // task brought in by a schedule file holds the file's percent: no manager source at all.
+    const legacy = { progressSource: null, progressConfirmedAt: null, progressConfirmedBy: null };
     const evidence = extractScheduleEvidence({
       projectName: '2375 Compliance Project',
-      scheduleItems: [scheduleItem({
-        progressSource: null,
-        progressConfirmedAt: null,
-        progressConfirmedBy: null,
-      })],
+      scheduleItems: [scheduleItem({ ...legacy, importedFrom: null, importedAt: null })],
     });
     const source = evidence[0].sources.find(item => item.type === 'typed-update');
 
+    expect(source).toBeDefined();
     expect(source?.provenance.actorId).toBeNull();
     expect(source?.provenance.confirmationEventId).toBeNull();
+
+    const imported = extractScheduleEvidence({
+      projectName: '2375 Compliance Project',
+      scheduleItems: [scheduleItem(legacy)],
+    });
+    expect(imported[0].sources.find(item => item.type === 'typed-update')).toBeUndefined();
   });
 
   it('keeps photo and note provenance separate without inventing an actor', () => {
