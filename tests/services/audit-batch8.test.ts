@@ -28,7 +28,9 @@ describe('the sign-out warning counts every unsynced item', () => {
     // Round 2 (A8 pass 1 F5): documents whose file has not uploaded count too;
     // pendingSyncCount already includes them.
     expect(admin).toContain('const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);');
-    expect(admin).toContain('on this phone and sync after you sign in here again with this account. Sign out anyway?');
+    // A11 pass 6 L1: notes marked Review needed get their own sentence before "Sign out anyway?".
+    expect(admin).toContain('on this phone and sync after you sign in here again with this account.');
+    expect(admin).toContain("' Field notes marked Review needed wait for your choice in Field Notes.' : ''} Sign out anyway?");
     expect(admin).not.toContain("savedUpdates.filter(update => update.status === 'queued').length;\n    const message");
   });
 });
