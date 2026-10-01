@@ -441,12 +441,58 @@ export function scheduleItemsAfterLookaheadDeleted(
   return tasksAfterLookaheadDeleted(items, document, updatedAt).map(entry => entry.item);
 }
 
+function timeOf(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** When a task's progress was last stated, as Set Active's carry dates it (ScheduleImportMerge). */
+function progressStatedAt(item: ScheduleItem): number {
+  const verification = item.completionVerification;
+  return Math.max(
+    timeOf(scheduleProgressJudgedAt(item)),
+    verification?.status === 'pm_verified' ? timeOf(verification.verifiedAt || verification.reportedAt) : 0,
+    scheduleProgressIsManagers(item) ? 0 : timeOf(item.importedAt || item.createdAt),
+  );
+}
+
+/**
+ * Whole-app audit A5 pass 11 M-b (30 Sep 2026): deleting master M with its
+ * items took the row M saved for a task it moved, and David's 70% on it, and
+ * F's row of the task came back at his older 40% on every device. The row a
+ * removed row replaced now takes its progress when that progress is David's
+ * own (not a file's) and was judged after the row's, by Set Active's rule
+ * (scheduleProgressCarriedToShownTasks: a file's higher percent is never
+ * lowered). It is confirmed at the delete, so every device takes it
+ * (DAVEScheduleRecovery keeps the newer confirmation), with David's own time
+ * kept as when it was judged (progressJudgment), so a field report made after
+ * it still counts against it.
+ */
+function progressOfRemovedRow(task: ScheduleItem, removed: ScheduleItem, at: string): Partial<ScheduleItem> | null {
+  if (!scheduleProgressIsManagers(removed)) return null;
+  const judgedAt = scheduleProgressJudgedAt(removed);
+  if (timeOf(judgedAt) <= progressStatedAt(task)) return null;
+  if (!scheduleProgressIsManagers(task) && percentOf(removed) < percentOf(task)) return null;
+  if (percentOf(removed) === percentOf(task) && removed.status === task.status) return null;
+  return {
+    percentComplete: removed.percentComplete,
+    status: removed.status,
+    progressSource: removed.progressSource ?? null,
+    progressConfirmedBy: removed.progressConfirmedBy ?? null,
+    progressConfirmedAt: at,
+    progressJudgment: judgedAt && judgedAt !== at ? { judgedAt, givenBackAt: at } : undefined,
+    completionVerification: removed.completionVerification ?? null,
+  };
+}
+
 /**
  * Every task "Delete PDF + Items" saves besides those it removes: the tasks a
  * deleted lookahead restated, given back (scheduleItemsAfterLookaheadDeleted),
  * and the task shown after the delete that each removed task was, answering
  * to the removed id (whole-app audit A10 pass 6 M1,
- * scheduleTasksAnsweringToRemovedTasks), so its field updates stay current.
+ * scheduleTasksAnsweringToRemovedTasks), so its field updates stay current;
+ * the row a removed row replaced also takes David's newer progress from it
+ * (A5 pass 11 M-b).
  */
 export function scheduleItemsAfterScheduleDeleted({
   items,
@@ -465,12 +511,14 @@ export function scheduleItemsAfterScheduleDeleted({
   updatedAt?: string;
 }>): ScheduleItem[] {
   const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
+  const kept = items.map(item => changed.get(item.id) || item);
   const shown = selectAuthoritativeScheduleItems({
-    scheduleItems: items.map(item => changed.get(item.id) || item),
+    scheduleItems: kept,
     scheduleDocuments: [...documents],
   });
   const schedules = [document, ...documents].filter(saved => saved.importBatchId && scheduleDocumentIsScheduleLike(saved) && !scheduleDocumentAddsToMaster(saved)); // when each full schedule came in (A8 pass 9 L1)
-  scheduleTasksAnsweringToRemovedTasks(shown, removed, items, schedules).forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1)
+  scheduleTasksAnsweringToRemovedTasks(shown, removed, kept, schedules, (task, gone) => progressOfRemovedRow(task, gone, updatedAt))
+    .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b)
   return [...changed.values()];
 }
 
