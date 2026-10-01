@@ -56,6 +56,60 @@ export const supabaseSecureAuthStorage = {
   },
 };
 
+/** Every entry this adapter keeps in this tab's storage. */
+function storedAuthKeys(storage: Storage): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(KEY_PREFIX)) keys.push(key);
+  }
+  return keys;
+}
+
+/** The account a stored Supabase session belongs to, or null. */
+function storedSessionUserId(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const session = JSON.parse(raw) as unknown;
+    if (!session || typeof session !== 'object') return null;
+    const { access_token: accessToken, user } = session as {
+      access_token?: unknown;
+      user?: unknown;
+    };
+    if (typeof accessToken !== 'string' || !user || typeof user !== 'object') return null;
+    const id = (user as { id?: unknown }).id;
+    return typeof id === 'string' && id.trim() ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The account this tab's own stored sign-in belongs to, read from this tab's
+ * storage without asking the cloud; null when it holds none. Other tabs
+ * keep their own sign-ins, so a sign-out in another tab is acted on only
+ * when it was this same account's (whole-app audit A12 pass 5 L2).
+ */
+export function browserTabSignInUserId(): string | null {
+  const storage = browserSessionStorage();
+  if (!storage) return null;
+  for (const key of storedAuthKeys(storage)) {
+    const userId = storedSessionUserId(storage.getItem(key));
+    if (userId) return userId;
+  }
+  return null;
+}
+
+/**
+ * Removes this tab's stored sign-in when the cloud could not be told
+ * (A12 pass 5 L2): the sign-in still leaves this tab.
+ */
+export function forgetBrowserTabSignIn(): void {
+  const storage = browserSessionStorage();
+  if (!storage) return;
+  storedAuthKeys(storage).forEach(key => storage.removeItem(key));
+}
+
 /** Test-only parity with the native adapter. */
 export function resetAuthStorageAvailabilityForTests(): void {
   // Availability is checked for every operation so browser privacy-mode changes

@@ -357,7 +357,7 @@ function DesktopSessionGate() {
           </>
         )}
         <Text style={styles.sessionNote}>
-          The session is limited to this browser tab and is removed when the tab closes or you sign out.
+          The session is limited to this browser tab and is removed when the tab closes. Signing out in any tab signs out every Vitruvius tab in this browser.
         </Text>
       </View>
     </ScrollView>
@@ -6069,6 +6069,8 @@ function ReportWorkspace({
  * Owner answer Q21 (30 Sep 2026): Sign out asks which devices. Every sign-out
  * used to end the iPhone's and iPad's sign-ins as well. Signing out every
  * device needs the cloud; without it nothing is signed out and he is told.
+ * Either choice signs out every tab of his account in this browser (whole-app
+ * audit A12 pass 5 L2), which the This Computer line says.
  */
 function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
@@ -6096,7 +6098,7 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
     <View style={styles.deleteConfirm} accessibilityRole="alert">
       <View style={styles.dataGrow}>
         <Text style={styles.deleteConfirmTitle}>Sign out of which devices?</Text>
-        <Text style={styles.dataMeta}>This Computer: your iPhone and iPad stay signed in.</Text>
+        <Text style={styles.dataMeta}>This Computer: every Vitruvius tab in this browser is signed out. Your iPhone and iPad stay signed in.</Text>
         <Text style={styles.dataMeta}>
           All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.
         </Text>

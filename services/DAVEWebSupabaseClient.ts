@@ -21,7 +21,11 @@ import {
   type DAVEWebReportRecord,
   type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
-import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
+import {
+  browserTabSignInUserId,
+  forgetBrowserTabSignIn,
+  supabaseSecureAuthStorage,
+} from './SupabaseAuthStorage.web';
 import {
   chunkSupabaseFilterValues,
   paginateSupabaseCollection,
@@ -251,6 +255,17 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     authorizationInFlight = null;
   }
 
+  /** Nothing read for the signed-out account is kept. */
+  function forgetSignedInReads() {
+    invalidateAuthorization();
+    cachedRowsOwnerId = null;
+    cachedAuthorizedRows = null;
+    documentCoverageSummaryCache.clear();
+    artifactPathOwnerId = null;
+    authorizedPhotoPaths = new Set<string>();
+    authorizedDocumentPaths = new Set<string>();
+  }
+
   async function requireAuthorizedOwnerCached(): Promise<string> {
     if (
       authorizationCache &&
@@ -448,13 +463,41 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         throw new DAVEWebSignOutNeedsConnectionError();
       }
       if (error) throw new Error('The desktop session could not be closed.');
-      invalidateAuthorization();
-      cachedRowsOwnerId = null;
-      cachedAuthorizedRows = null;
-      documentCoverageSummaryCache.clear();
-      artifactPathOwnerId = null;
-      authorizedPhotoPaths = new Set<string>();
-      authorizedDocumentPaths = new Set<string>();
+      forgetSignedInReads();
+    },
+
+    /**
+     * The account this tab's own stored sign-in belongs to, without asking
+     * the cloud; null when this tab holds none (whole-app audit A12 pass 5
+     * L2). auth-js tells every tab of the browser about any tab's
+     * SIGNED_OUT without saying whose it was.
+     */
+    storedSignInUserId(): string | null {
+      if (!client) return null;
+      return browserTabSignInUserId();
+    },
+
+    /**
+     * Another tab of this browser signed this same account out of this
+     * computer (or of all devices): this tab's own sign-in ends too, so
+     * "Sign Out of This Computer" signs out every tab, and a reload does not
+     * show his projects again (whole-app audit A12 pass 5 L2, 30 Sep 2026).
+     * Ended on the server when it can be reached, and taken out of this
+     * tab's storage either way. Another account's sign-in is left alone,
+     * and a tab holding none sends nothing, so tabs never answer each
+     * other's sign-outs back and forth. Never throws.
+     */
+    async signOutThisTabToo(userId: string): Promise<void> {
+      if (!client || !userId || browserTabSignInUserId() !== userId) return;
+      let ended = false;
+      try {
+        const { error } = await client.auth.signOut({ scope: 'local' });
+        ended = !error;
+      } catch {
+        ended = false;
+      }
+      if (!ended || browserTabSignInUserId() !== null) forgetBrowserTabSignIn();
+      forgetSignedInReads();
     },
 
     async loadAuthorizedRows(

@@ -99,7 +99,11 @@ function openSignOutChoice() {
 test('Sign out asks which devices and says what each choice does', () => {
   const screen = openSignOutChoice();
   expect(screen.getByText('Sign out of which devices?')).toBeTruthy();
-  expect(screen.getByText('This Computer: your iPhone and iPad stay signed in.')).toBeTruthy();
+  // Changed 30 Sep 2026 (whole-app audit A12 pass 5 L2): This Computer now
+  // also says it signs out every tab in this browser, as it now does.
+  expect(screen.getByText(
+    'This Computer: every Vitruvius tab in this browser is signed out. Your iPhone and iPad stay signed in.',
+  )).toBeTruthy();
   expect(screen.getByText(
     'All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.',
   )).toBeTruthy();

@@ -156,6 +156,24 @@ type DesktopAuthContextValue = Readonly<{
 }>;
 
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
+
+/**
+ * The tabs of this browser tell each other which account signed out of this
+ * computer (whole-app audit A12 pass 5 L2, 30 Sep 2026). Each tab keeps its
+ * own sign-in; auth-js passes every tab's SIGNED_OUT to the others without
+ * saying whose it was.
+ */
+export const DESKTOP_SIGN_OUT_CHANNEL_NAME = 'vitruvius-desktop-sign-out-v1';
+const SIGNED_OUT_OF_THIS_COMPUTER = 'signed-out-of-this-computer';
+
+/** The account another tab says signed out of this computer, or null. */
+function signedOutUserId(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const { type, userId } = data as { type?: unknown; userId?: unknown };
+  return type === SIGNED_OUT_OF_THIS_COMPUTER && typeof userId === 'string' && userId.trim()
+    ? userId
+    : null;
+}
 const AUTOMATIC_REFRESH_WAITING_MESSAGE =
   'Automatic cloud refresh is waiting. Your current workspace remains available.';
 const WORKSPACE_UNAVAILABLE_MESSAGE =
@@ -181,6 +199,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const loadSequenceRef = useRef(0);
   const snapshotRef = useRef<DAVEWebReadOnlySnapshot | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const signOutChannelRef = useRef<BroadcastChannel | null>(null);
   const backgroundRefreshRef = useRef<Promise<void> | null>(null);
   const pendingBackgroundCollectionsRef = useRef<Set<DAVEOperationalCollectionName>>(new Set());
   const pendingFullBackgroundRefreshRef = useRef(false);
@@ -391,6 +410,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       // start-up check above decides that view; a real sign-out arrives as
       // SIGNED_OUT (A12 pass 3 L1).
       if (event === 'INITIAL_SESSION' && !session) return;
+      // auth-js tells every tab of the browser about any tab's SIGNED_OUT,
+      // without saying whose. While this tab still holds its own sign-in the
+      // event was another tab's: a non-owner's automatic sign-out had dropped
+      // the owner's working tab to the sign-in page, its typing lost, though
+      // its own sign-in was still there (A1 pass 5, 30 Sep 2026). Another tab
+      // of this account that signs out says so on the sign-out channel, and
+      // this tab's sign-in ends then (A12 pass 5 L2). A tab's own sign-out,
+      // or its sign-in expiring, removes the stored sign-in first.
+      if (event === 'SIGNED_OUT' && daveWebSupabaseGateway.storedSignInUserId()) return;
       if (event === 'SIGNED_OUT' || !session) {
         clearSessionView();
         return;
@@ -433,8 +461,46 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   }, [forgetNotOwner, loadAuthorizedSnapshot]);
 
   const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
+    const userId = daveWebSupabaseGateway.storedSignInUserId();
     await daveWebSupabaseGateway.signOut(scope);
     clearSessionView();
+    // Every other tab of this account in this browser signs out too, so
+    // "This Computer" is this computer's browser, not this one tab: the
+    // other tabs had gone to the sign-in page while still signed in, and a
+    // reload showed his projects again (whole-app audit A12 pass 5 L2).
+    // Only a sign-out he chose says so; the automatic not-owner sign-out
+    // does not.
+    if (userId) {
+      try {
+        signOutChannelRef.current?.postMessage({ type: SIGNED_OUT_OF_THIS_COMPUTER, userId });
+      } catch {
+        // A closed channel: the other tabs end their sign-ins when they next check.
+      }
+    }
+  }, [clearSessionView]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    let channel: BroadcastChannel;
+    try {
+      channel = new BroadcastChannel(DESKTOP_SIGN_OUT_CHANNEL_NAME);
+    } catch {
+      return;
+    }
+    signOutChannelRef.current = channel;
+    channel.onmessage = event => {
+      const userId = signedOutUserId(event.data);
+      // Another account's sign-out, or one that does not say whose, leaves
+      // this tab as it is (A1 pass 5).
+      if (!userId || daveWebSupabaseGateway.storedSignInUserId() !== userId) return;
+      // Nothing is shown without a confirmed owner while the sign-in ends.
+      clearSessionView();
+      void daveWebSupabaseGateway.signOutThisTabToo(userId).catch(() => undefined);
+    };
+    return () => {
+      signOutChannelRef.current = null;
+      channel.close();
+    };
   }, [clearSessionView]);
 
   const refreshSnapshot = useCallback(async () => {

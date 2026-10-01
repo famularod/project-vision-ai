@@ -65,6 +65,11 @@ jest.mock('../../services/DAVEWebSupabaseClient', () => {
       subscribeToAuthorizedOperationalChanges: jest.fn(),
       runAuthorizedMaintenance: jest.fn(),
       signOut: jest.fn(),
+      // Whole-app audit A12 pass 5 L2 (30 Sep 2026): a SIGNED_OUT is this
+      // tab's only once its own stored sign-in has gone, as auth-js removes
+      // it before telling the page; none is held here when one arrives.
+      storedSignInUserId: jest.fn(() => null),
+      signOutThisTabToo: jest.fn(),
     },
   };
 });
