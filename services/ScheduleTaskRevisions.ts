@@ -160,6 +160,19 @@ function sameSchedule(own: ScheduleItem): (item: ScheduleItem) => boolean {
  * evidence". Linking only went forward. Now, after that, the update's saved
  * row is looked up: when a row it lists as earlier is shown, in its app
  * project, the update links to the newest of those (earlier_task_id).
+ *
+ * Whole-app audit A10 pass 10 L1 (1 Oct 2026): master A had two "Pour slab"
+ * tasks; master B moved phase 1 and a report was filed on B's row; after Make
+ * Current back to A, corrected master D moved phase 1 again from A's row (the
+ * import pairs only with the rows shown), so D's row recorded A's, not B's.
+ * The report linked to no task and Home said D's phase 1 "lacks recent field
+ * evidence": no shown row listed B's row, and A's row was hidden. Now, after
+ * that, the update also links to the one task shown, in its app project,
+ * that answers to a row the saved row replaced (D's lists A's). For a row
+ * deleted since (Delete PDF + Items on B while C, whose row lists B's, was
+ * current, then Make Current back to A), the saved rows that list it stand
+ * in: the one task shown that is one of them or a row they replaced, or that
+ * answers to one. Never a guess between two.
  */
 export function scheduleTaskLinks(
   items: readonly ScheduleItem[],
@@ -198,6 +211,29 @@ export function scheduleTaskLinks(
     const name = nameKey(item.taskName);
     if (name) byName.set(name, [...(byName.get(name) || []), item]);
   });
+  // The saved rows that list a task id as earlier (A10 pass 10 L1), indexed on first use.
+  const knownListing = (taskId: string): ScheduleItem[] => {
+    if (!knownIndex.byEarlierId) {
+      const index = new Map<string, ScheduleItem[]>();
+      known.forEach(item => scheduleTaskEarlierIds(item).forEach(id => {
+        const list = index.get(id);
+        if (list) list.push(item); else index.set(id, [item]);
+      }));
+      knownIndex.byEarlierId = index;
+    }
+    return knownIndex.byEarlierId.get(taskId) || [];
+  };
+  // The tasks shown, in each saved row's app project, that are the row or a row it replaced, or answer to one.
+  const shownAnsweringTo = (rows: readonly ScheduleItem[]): ScheduleItem[] => {
+    const found = new Set<ScheduleItem>();
+    rows.forEach(row => {
+      const project = scheduleTaskProjectKey(row);
+      [idOf(row.id), ...scheduleTaskEarlierIds(row)].forEach(id => [byId.get(id), ...(byEarlierId.get(id) || [])].forEach(item => {
+        if (item && scheduleTaskProjectKey(item) === project) found.add(item);
+      }));
+    });
+    return [...found];
+  };
   return reference => {
     const taskId = idOf(reference.scheduleItemId);
     if (!taskId) return null;
@@ -212,6 +248,9 @@ export function scheduleTaskLinks(
         .filter((item): item is ScheduleItem => Boolean(item) && scheduleTaskProjectKey(item!) === scheduleTaskProjectKey(saved))
       : [];
     if (replaced.length > 0) return { item: replaced[replaced.length - 1], basis: 'earlier_task_id' };
+    // The one task shown on another branch of the chain (A10 pass 10 L1).
+    const branched = shownAnsweringTo(saved ? [saved] : knownListing(taskId));
+    if (branched.length === 1) return { item: branched[0], basis: 'earlier_task_id' };
     const name = nameKey(reference.scheduleTaskName);
     const named = name && !nameSharedInOwnSchedule(reference, taskId, name)
       ? (byName.get(name) || []).filter(item => sameProject(item, reference) && sameArea(item, reference))
@@ -220,7 +259,12 @@ export function scheduleTaskLinks(
   };
 }
 
-type SavedTaskIndex = { byId: Map<string, ScheduleItem>; bySchedule: Map<string, ScheduleItem[]> | null };
+type SavedTaskIndex = {
+  byId: Map<string, ScheduleItem>;
+  bySchedule: Map<string, ScheduleItem[]> | null;
+  /** The saved rows by each earlier id they list (A10 pass 10 L1). */
+  byEarlierId: Map<string, ScheduleItem[]> | null;
+};
 const savedTaskIndexes = new WeakMap<readonly ScheduleItem[], SavedTaskIndex>();
 
 /**
@@ -237,7 +281,7 @@ function savedTaskIndexOf(known: readonly ScheduleItem[]): SavedTaskIndex {
     const id = idOf(item.id);
     if (id && !byId.has(id)) byId.set(id, item);
   });
-  const index: SavedTaskIndex = { byId, bySchedule: null };
+  const index: SavedTaskIndex = { byId, bySchedule: null, byEarlierId: null };
   if (known.length > 0) savedTaskIndexes.set(known, index);
   return index;
 }
