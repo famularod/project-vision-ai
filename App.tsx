@@ -35,7 +35,7 @@ import {
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
-  uploadPendingChanges, withPhoneAnalysisResults,
+  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
   type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -7678,8 +7678,10 @@ useEffect(() => {
 
   function applyFieldUpdateSyncResultIfCurrent(
     attemptedUpdate: ProjectUpdate,
-    syncResult: ProjectUpdate,
+    sent: ProjectUpdate,
   ) {
+    // Sent with the results that went up (whole-app audit A4 pass 27 L2).
+    const syncResult = sent.status === 'sent' ? withAnalysisResultsLastInCloud(sent) : sent;
     const reconciliation = reconcileFieldUpdateSyncResult(
       savedUpdatesRef.current,
       attemptedUpdate,

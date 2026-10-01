@@ -3047,7 +3047,13 @@ export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
   { overConflict = false }: FieldUpdateSyncChoice = {},
 ): Promise<StagedProjectUpdateSync> {
-  const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
+  const conflict = openFieldUpdateConflict(await getSyncConflicts(), update.id);
+  // Sent over the conflict ("Send your version?"), with the cloud copy's
+  // photo results that stand over its own (A4 pass 27 L3): the phone's
+  // failed result went over the iPad's retried, Confirmed one.
+  const withCloudPaths = projectUpdateWithCloudPhotoPaths(update);
+  const cloudRecoverableUpdate = conflict && overConflict
+    ? withPhoneAnalysisResults(withCloudPaths, [conflict.remotePayload]) as ProjectUpdate : withCloudPaths;
   const owner = currentCloudOwner();
   // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
   // see writeStagedProjectUpdateRecord. While a conflict is open for the
@@ -3060,7 +3066,6 @@ export async function stageProjectUpdateForSync(
   // David's offline edit in it. Keep Phone sends a newer edit saved since
   // (A7 pass 11 L-2), its photos checked here once the conflict is settled.
   // Only a Retry David confirmed sends this copy over the conflict.
-  const conflict = openFieldUpdateConflict(await getSyncConflicts(), update.id);
   const conflicted = Boolean(conflict);
   const heldForConflictReview = conflicted && !overConflict;
   const sentOverConflict = conflict && overConflict ? conflict.id : undefined;
@@ -6329,16 +6334,40 @@ function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
 }
 
 /**
+ * The copy with the archive and the photo results of the copy this device
+ * last put in the cloud, where those stand over its own
+ * (photoAnalysisResultStands; A4 pass 27 L1).
+ */
+function withSentCopysStandingParts(update: ProjectUpdate, sent: ProjectUpdate | undefined): unknown {
+  return withPhoneAnalysisResults(withArchiveKept(update, [], sent), sent ? [sent] : []);
+}
+
+/**
+ * The card as a sync attempt leaves it (whole-app audit A4 pass 27 L2): with
+ * the photo results of the copy this device last put in the cloud where they
+ * stand over its own. A sync attempt keeps a result its queued copy holds
+ * (withQueuedAnalysisResults), and the card read Sent with "Retry needed"
+ * while the cloud held the iPad's Confirmed result.
+ */
+export function withAnalysisResultsLastInCloud<TUpdate extends ProjectUpdate>(update: TUpdate): TUpdate {
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  return sent ? withPhoneAnalysisResults(update, [sent]) as TUpdate : update;
+}
+
+/**
  * Whether this copy of a field update is, in content, the one this device
  * last put in the cloud (its documents' upload state and a Retry's stamps
  * aside): as Keep Phone leaves it (whole-app audit A7 pass 9 L1). An archive
  * that copy carries and this one does not is aside too (A4 pass 17 L2): the
  * card is not archived when Keep Phone keeps an archive made on the iPad,
  * and Settings took it for a newer edit, which left it Waiting to Sync.
+ * So is a photo result it holds that stands over this one's (A4 pass 27
+ * L1): Keep Phone sent the iPad's Confirmed result, Settings took the card's
+ * failed one for a newer edit and sent the card whole over it.
  */
 export function projectUpdateCopyIsLastInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
-  return fieldUpdateOwesNothingBeyond(sent, [], withArchiveKept(update, [], sent) as object);
+  return fieldUpdateOwesNothingBeyond(sent, [], withSentCopysStandingParts(update, sent) as object);
 }
 
 /** A field update still owing its own sync: "Waiting to Sync", or failed (A7 pass 8 L1). */

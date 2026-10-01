@@ -112,6 +112,7 @@ import {
   stageProjectUpdateForSync,
   synchronizeLocalData,
   uploadPendingChanges,
+  withAnalysisResultsLastInCloud,
   withPhoneAnalysisResults,
 } from '../../services/SyncService';
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
@@ -1978,6 +1979,15 @@ describe('Keep Phone keeps a newer phone edit still waiting in the queue (audit 
 /** `gate`: what the pass waits on after it read the cards, before its first send (a slow sign-in check; A4 pass 19 M1). */
 async function waitingUpdateSync(phone: Device, gate?: Promise<void>) {
   const { runAutomaticSyncQueue, shouldPersistAutomaticSyncOutcome } = jest.requireActual('../../services/AutomaticSyncState');
+  // The App's own applyFieldUpdateSyncResultIfCurrent (A4 pass 27 L2: a Sent card shows the results that went up).
+  const { applyFieldUpdateSyncResultIfCurrent } = evaluate<{ applyFieldUpdateSyncResultIfCurrent: (attempted: Update, next: Update) => unknown }>(
+    transpile([componentFunction('applyFieldUpdateSyncResultIfCurrent'), 'module.exports = { applyFieldUpdateSyncResultIfCurrent };'].join('\n')),
+    {
+      reconcileFieldUpdateSyncResult, savedUpdatesRef: phone.savedUpdatesRef, setSavedUpdates: phone.setSavedUpdates,
+      mergeSavedUpdatesWithTombstones: A.mergeSavedUpdatesWithTombstones, deletedUpdateTombstonesRef: { current: [] },
+      withAnalysisResultsLastInCloud,
+    },
+  );
   const { hydrateQueuedUpdatesPass } = evaluate<{ hydrateQueuedUpdatesPass: () => Promise<void> }>(
     transpile([componentFunction('syncFieldUpdateWithMissingPhotoRepair'), componentFunction('hydrateQueuedUpdatesPass'),
       'module.exports = { hydrateQueuedUpdatesPass };'].join('\n')),
@@ -1994,9 +2004,7 @@ async function waitingUpdateSync(phone: Device, gate?: Promise<void>) {
         lastSyncFailureCategory: result.uploaded > 0 && result.errors.length === 0 ? null : result.failureCategory ?? 'unknown',
       }),
       statusForSyncDiagnostics: (diagnostics: { lastSyncResult: string }) => diagnostics.lastSyncResult === 'success' ? 'sent' : 'failed',
-      applyFieldUpdateSyncResultIfCurrent: (attempted: Update, next: Update) => {
-        phone.setSavedUpdates(prev => prev.map(update => update.id === attempted.id ? next : update));
-      },
+      applyFieldUpdateSyncResultIfCurrent,
     },
   );
   await hydrateQueuedUpdatesPass();
@@ -2560,6 +2568,7 @@ function appRetryQueuedUpdate(phone: Device) {
       runFieldUpdateCloudSync, markMissingPhotosUnavailable: (update: Update) => update,
       removeMissingPhotosFromSyncQueue: async () => undefined, persistSavedUpdateImmediately: async () => true,
       withPhoneAnalysisResults, // Send keeps the card's finished results (A4 pass 21 F2)
+      withAnalysisResultsLastInCloud, // and a Sent card shows the results that went up (A4 pass 27 L2)
       // and this device's document upload state (A4 pass 22 L4)
       withDeviceDocumentUploadState, projectDocumentsCurrentRef: phone.projectDocumentsCurrentRef,
     },
@@ -5537,7 +5546,14 @@ describe('which result stands: finished over failed, then the later, then the la
     await phone.settle();
     const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_SECOND_NOTE);
     await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_local', IPAD_SECOND_NOTE);
-    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    // Settings' real Retry callback (A4 pass 27 L1): the card's older result is no newer edit, so nothing sends the card.
+    const settings = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', settings.onRetryUpdateSync);
+    await settings.settled();
+    expect(settings.onRetryUpdateSync).not.toHaveBeenCalled();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
     await uploadPendingChanges();
     await waitingUpdateSync(phone);
     await uploadPendingChanges();
@@ -5559,9 +5575,16 @@ describe('which result stands: finished over failed, then the later, then the la
     await phone.settle();
     const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_SECOND_NOTE);
     await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_local', IPAD_SECOND_NOTE);
-    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    // Settings' real Retry callback sends the newer edit; the card shows the result that went up (A4 pass 27 L2).
+    const settings = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', settings.onRetryUpdateSync);
+    await settings.settled();
     await uploadPendingChanges();
     await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad); // before any refresh
     await uploadPendingChanges();
     await refresh(phone);
     expect(inCloud()).toMatchObject({ notes: NEWER });
@@ -5580,7 +5603,11 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(firstPhotoAnalysis(inCloud())).toEqual(result);
     const marked = await iPadSaves(confirmed(result), IPAD_SECOND_NOTE); // the same result, reviewed
     await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_local', IPAD_SECOND_NOTE);
-    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    const settings = settingsRetryCallback(phone);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', settings.onRetryUpdateSync);
+    await settings.settled();
+    expect(settings.onRetryUpdateSync).not.toHaveBeenCalled();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(marked);
     await uploadPendingChanges();
     await waitingUpdateSync(phone);
     await uploadPendingChanges();
@@ -5588,5 +5615,39 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
     expect(firstPhotoAnalysis(inCloud())).toEqual(marked);
     expect(firstPhotoAnalysis(phone.saved())).toEqual(marked);
+  });
+
+  it('an iPad note saved just after Keep Phone lands stays: nothing sends the card over it (A4 pass 27 L1)', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    await iPadSaves(confirmed(finishedAnalysis()), IPAD_SECOND_NOTE);
+    await reviewAgainAfterIPadEdit((await getSyncConflicts())[0].id, 'keep_local', IPAD_SECOND_NOTE);
+    const settings = settingsRetryCallback(phone);
+    const LATER_IPAD_NOTE = 'Pour moved to Thursday (typed on the iPad just after)';
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', settings.onRetryUpdateSync,
+      async () => { await iPadEditsNow(LATER_IPAD_NOTE); });
+    await settings.settled();
+    expect(settings.onRetryUpdateSync).not.toHaveBeenCalled();
+    expect(inCloud()).toMatchObject({ notes: LATER_IPAD_NOTE });
+  });
+
+  it('"Send your version?": the phone\'s note goes over the iPad\'s, with the iPad\'s Confirmed result (A4 pass 27 L3)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT }); // offline
+    lateAnalysisFinishes(phone, failedAnalysis()); // into the waiting edit
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_NOTE);
+    await uploadPendingChanges(); // back online: the conflict
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    await appRetryQueuedUpdate(phone)(phone.saved()!, { overConflict: true }); // David answered "Send your version"
+    phone.render();
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    expect(await getSyncConflicts()).toEqual([]);
   });
 });
