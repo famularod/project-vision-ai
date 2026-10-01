@@ -16,7 +16,8 @@
  * Now the row a master saves for a task it moved carries the task's note,
  * brought up to what the master says (its dates, and its percent when it
  * states one), as the same task left on its dates keeps it; and the delete
- * counts and gives back only the tasks shown. Synthetic data.
+ * question counts only the tasks shown. (A5 pass 9 L1: the delete itself
+ * gives back the hidden old row too.) Synthetic data.
  */
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -124,21 +125,25 @@ describe('A5 p8 L3 (a): a task a master moved keeps its lookahead note, so delet
     expect(deleted.question).toContain('also puts back the earlier progress of 1 task this lookahead changed.');
     expect(pour(deleted.after)).toMatchObject({ id: task.id, percentComplete: back, startDate: '10/05/2026' });
     expect(pour(deleted.after)).not.toHaveProperty('lookaheadOverlay');
-    // Only the task shown is saved; the hidden old row is left as it was.
-    expect(deleted.saved.map(item => item.id)).toEqual([task.id]);
+    // Pin changed deliberately (A5 pass 9 L1, 30 Sep 2026): this asserted the hidden old row was left as it
+    // was. It kept the lookahead's dates and 60%, which came back when the new master was deleted; every row
+    // the lookahead restated is now given back, so the hidden old row is saved too.
+    expect(deleted.saved.map(item => item.id)).toEqual([task.id, oldId]);
   });
 });
 
 describe('A5 p8 L3 (b): the delete counts and gives back only the tasks shown', () => {
-  it('a master that moved the task and stated its own 30%: nothing shown goes back, so the question says nothing and nothing is saved', () => {
+  // Pin changed deliberately (A5 pass 9 L1, 30 Sep 2026): the question still counts only the tasks shown,
+  // but the hidden old row is no longer left on the lookahead's dates and percent: it is given back too.
+  it('a master that moved the task and stated its own 30%: nothing shown goes back, so the question says nothing; the hidden old row is given back', () => {
     const moved = movedBy(raised(true), PERCENT, 'Pour slab,Alpha,Lot,10/05/2026,10/07/2026,30%');
     const hidden = moved.items.find(item => item.taskName === 'Pour slab' && item.importBatchId === master.importBatchId)!;
     expect(hidden.lookaheadOverlay).toBeDefined();
     expect(shown(moved).some(item => item.id === hidden.id)).toBe(false);
     const deleted = deleteLookahead(moved);
     expect(deleted.question).toBe('');
-    expect(deleted.saved.some(item => item.id === hidden.id)).toBe(false);
-    expect(deleted.after.items.find(item => item.id === hidden.id)).toBe(hidden);
+    expect(deleted.saved.map(item => item.id)).toContain(hidden.id);
+    expect(deleted.after.items.find(item => item.id === hidden.id)).toMatchObject({ percentComplete: 40, startDate: '10/01/2026' });
   });
 
   it('the phone\'s delete question passes the saved schedules', () => {
