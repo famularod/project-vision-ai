@@ -47,6 +47,10 @@ const MAX_RECORDING_SECONDS = 180;
 const RECORDING_LIMIT_TOLERANCE_MS = 2_000;
 const INTERRUPTED_RECORDING_NOTICE =
   'Recording stopped when the phone was locked or a call came in. Replay it, then use it or record again.';
+// The limit stopped a dictation with no word (whole-app audit A11 pass 4 L4).
+const RECORDING_LIMIT_NOTICE = 'Stopped at the 3-minute limit. Anything after 3:00 was not recorded.';
+const RECORDING_LIMIT_WARNING = 'Less than 15 seconds left. Recording stops at 3:00.';
+const RECORDING_LIMIT_WARNING_MS = (MAX_RECORDING_SECONDS - 15) * 1_000;
 
 export function DAVEVoiceCaptureSheet({
   visible,
@@ -214,9 +218,9 @@ export function DAVEVoiceCaptureSheet({
       setError('The recording stopped when the phone was locked or a call came in, and it could not be saved. Record again or type instead.');
       return;
     }
-    if (duration < MAX_RECORDING_SECONDS * 1_000 - RECORDING_LIMIT_TOLERANCE_MS) {
-      setNotice(INTERRUPTED_RECORDING_NOTICE);
-    }
+    setNotice(duration < MAX_RECORDING_SECONDS * 1_000 - RECORDING_LIMIT_TOLERANCE_MS
+      ? INTERRUPTED_RECORDING_NOTICE
+      : RECORDING_LIMIT_NOTICE);
   }
 
   async function startRecording() {
@@ -650,6 +654,9 @@ export function DAVEVoiceCaptureSheet({
           <View style={[styles.recorderCard, recorderState.isRecording && styles.recorderCardActive]}>
             <Text style={styles.timer}>{formatDuration(elapsed)}</Text>
             <Text style={styles.recordingLimit}>Up to 3 minutes</Text>
+            {recorderState.isRecording && recorderState.durationMillis >= RECORDING_LIMIT_WARNING_MS ? (
+              <Text style={styles.limitWarning} accessibilityLiveRegion="polite">{RECORDING_LIMIT_WARNING}</Text>
+            ) : null}
             {recordingUri && !recorderState.isRecording ? <DAVERecordingPlayback uri={recordingUri} /> : null}
           </View>
 
@@ -785,6 +792,7 @@ const styles = StyleSheet.create({
   recorderCardActive: { borderColor: colors.danger, backgroundColor: '#FFF7F7' },
   timer: { color: colors.text, fontSize: 38, fontWeight: '800', fontVariant: ['tabular-nums'] },
   recordingLimit: { color: colors.mutedText, fontSize: 12, marginTop: 4 },
+  limitWarning: { color: colors.danger, fontSize: 14, fontWeight: '800', lineHeight: 20, marginTop: spacing.sm, textAlign: 'center' },
   playbackButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: spacing.md, paddingHorizontal: spacing.md },
   recordButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   buttonDisabled: { opacity: 0.45 },

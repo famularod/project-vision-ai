@@ -88,6 +88,8 @@ const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 const INTERRUPTED_NOTICE =
   'Recording stopped when the phone was locked or a call came in. Replay it, then use it or record again.';
 const OFFLINE_ERROR = 'This device is offline. Reconnect, then retry this recording or type instead. (VOICE-OFFLINE)';
+const LIMIT_NOTICE = 'Stopped at the 3-minute limit. Anything after 3:00 was not recorded.';
+const LIMIT_WARNING = 'Less than 15 seconds left. Recording stops at 3:00.';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -273,6 +275,28 @@ describe('DAVEVoiceCaptureSheet F1: a phone lock or call mid-dictation', () => {
     expect(await screen.findByText('Replay Recording')).toBeTruthy();
     expect(recorder.stop).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(INTERRUPTED_NOTICE)).toBeNull();
+    // Pin changed deliberately (whole-app audit A11 pass 4 L4): the limit used
+    // to stop the recording with no word at all; it now says so.
+    expect(screen.getByText(LIMIT_NOTICE)).toBeTruthy();
+  });
+
+  it('warns near the 3-minute limit, and not before (A11 pass 4 L4)', async () => {
+    renderSheet();
+    await startListening(150_000);
+    expect(screen.queryByText(LIMIT_WARNING)).toBeNull();
+
+    await act(async () => { store.set({ durationMillis: 165_000 }); });
+    expect(screen.getByText(LIMIT_WARNING)).toBeTruthy();
+    await act(async () => { store.set({ durationMillis: 172_400 }); });
+    expect(screen.getByText(LIMIT_WARNING)).toBeTruthy();
+  });
+
+  it('a lock or call is never reported as the 3-minute limit (A11 pass 4 L4)', async () => {
+    renderSheet();
+    await startListening(60_000);
+    await act(async () => { store.set({ isRecording: false, durationMillis: 60_000 }); });
+    expect(await screen.findByText(INTERRUPTED_NOTICE)).toBeTruthy();
+    expect(screen.queryByText(LIMIT_NOTICE)).toBeNull();
   });
 
   it("keeps the owner's own Stop & Continue: one stop, then the recording is transcribed", async () => {
