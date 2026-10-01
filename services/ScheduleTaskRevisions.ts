@@ -251,6 +251,13 @@ export function scheduleTaskLinks(
     // The one task shown on another branch of the chain (A10 pass 10 L1).
     const branched = shownAnsweringTo(saved ? [saved] : knownListing(taskId));
     if (branched.length === 1) return { item: branched[0], basis: 'earlier_task_id' };
+    // A deleted row that a saved row still lists answers only through that
+    // chain, never by name (whole-app audit A8 pass 12 L1): once fd00285
+    // wrote the deleted row's id onto the old master's hidden row, the
+    // report stayed current, and with the deleted row gone the twin guard
+    // could not see that its schedule had two tasks of that name, so a phase
+    // 1 report landed on phase 2.
+    if (!saved && knownListing(taskId).length > 0) return null;
     const name = nameKey(reference.scheduleTaskName);
     const named = name && !nameSharedInOwnSchedule(reference, taskId, name)
       ? (byName.get(name) || []).filter(item => sameProject(item, reference) && sameArea(item, reference))
