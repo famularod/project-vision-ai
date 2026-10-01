@@ -2788,16 +2788,23 @@ export async function stageProjectUpdateForSync(
   const owner = currentCloudOwner();
   // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
   // see writeStagedProjectUpdateRecord. An update in conflict keeps its own
-  // copy for review, and is sent whole when retried. The waiting-update sync
-  // and Sync Now (`automatic`: not a choice made for this update) leave it for
-  // Keep Phone, Keep Cloud or Retry (A4 pass 13 M1, G2): they sent it whole,
-  // over the iPad's newer edit, and the conflict was gone, a silent Keep Phone.
-  const conflicted = (await getSyncConflicts()).some(conflict =>
-    conflict.entity === 'project_update' && conflict.localId === update.id);
-  const heldForConflictReview = conflicted && automatic;
+  // copy for review, and is sent whole when retried. The waiting-update sync,
+  // Sync Now and Retry Sync (`automatic`: not a choice made for this update)
+  // leave it for Keep Phone, Keep Cloud or Retry (A4 pass 13 M1, G2, A7 pass
+  // 12 M-1): they sent it whole, over the iPad's newer edit, and the conflict
+  // was gone, a silent Keep Phone.
+  const conflict = (await getSyncConflicts()).find(item =>
+    item.entity === 'project_update' && item.localId === update.id);
+  const conflicted = Boolean(conflict);
+  // Only the conflict's own copy (A7 pass 12 L-1). A newer edit saved since,
+  // waiting on its photos, was held too, and only staging checks them: it
+  // never went up. It is staged as any edit is, with the time it was saved,
+  // and the upload's conflict check still keeps a later iPad edit.
+  const conflictsOwnCopy = Boolean(conflict) && await isConflictsOwnProjectUpdateCopy(conflict!, update);
+  const heldForConflictReview = conflictsOwnCopy && automatic;
   const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(
     cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id),
-    { lastVersionInCloud: !conflicted, overConflict: conflicted });
+    { lastVersionInCloud: !conflicted, overConflict: conflictsOwnCopy });
   const nothingToSend = heldForConflictReview ||
     (!staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate));
   const photoAttempt = await uploadUpdatePhotosForSync(
@@ -4327,6 +4334,20 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * Whether this copy of an update in conflict is the conflict's own copy, as
+ * Keep Phone sends it (isNewerQueuedPhoneEdit): the copy recorded with the
+ * conflict with the document changes made since, a Retry's stamps aside, and
+ * a late photo analysis result aside too, which is not an edit (A4 pass 13
+ * G1). Anything else is an edit saved since (A7 pass 12 L-1).
+ */
+async function isConflictsOwnProjectUpdateCopy(conflict: SyncConflict, update: ProjectUpdate): Promise<boolean> {
+  const conflictCopy = (await withDocumentChangesSinceConflict(conflict.localId))(
+    (conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData);
+  return sameProjectUpdateContent(withoutPhotoAnalysis(conflictCopy), withoutPhotoAnalysis(update) as ProjectUpdate,
+    { retryStampsAside: true });
 }
 
 /** A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4). */
