@@ -1,12 +1,16 @@
+// rule simplified A9 pass 5: when unsure, refuse
 import { findECOSProjectReferenceMismatch } from '../../services/ECOSProjectQuestion';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
 import { ecosProjectNumberMentions } from '../../supabase/functions/_shared/ecos-project-reference';
 
-// Audit A9 pass 3 L2 (30 Sep 2026): Ask ECOS knew fewer units and reference
-// words than Talk, and neither knew phone numbers, so with 2375 another project
-// "555-2375", "$2375 invoice", "2375 mm", "RFI 2375", "unit 2375" or "2375 Main
-// Street" were refused, and with "450 Harrison" a project, "450 kcmil" was too.
-// Talk and Ask ECOS now share one number rule. Synthetic project names.
+// Audit A9 pass 3 L2 (30 Sep 2026): Talk and Ask ECOS share one number rule.
+// Pass 3 also let reference words ("RFI", "unit", "suite"...) and street
+// addresses through; audit A9 pass 5 dropped those exemptions because each
+// round found new questions they answered from the wrong project. With 2375
+// another project, "RFI 2375", "unit 2375" or "2375 Main Street" now ask
+// David to switch (a tap) instead of risking the wrong project's answer.
+// Measurements, money, dates, phone numbers and spec/sheet IDs stay allowed.
+// Synthetic project names.
 
 const SELECTED = '2321 Compliance Project';
 const OTHER = '2375 Compliance Project';
@@ -18,6 +22,10 @@ const NOT_PROJECT_2375 = [
   'Was the $2375 invoice for the rebar paid?',
   'Is the new slab 2375 mm thick?',
   'Is the main service a 2375 amp service?',
+];
+// Allowed by pass 3, refused since pass 5: a reference word or a street name
+// does not stop 2375 from being the other project.
+const NOW_NAMES_PROJECT_2375 = [
   'Which finish goes in rooms 2375 and 2376?',
   'What did RFI 2375 say about the embeds?',
   'Is the kitchen in unit 2375 finished?',
@@ -43,7 +51,7 @@ const NAMES_PROJECT_2375 = [
   'What is overdue on job 2375?',
 ];
 
-describe('audit A9 pass 3 L2: one number rule for Talk and Ask ECOS', () => {
+describe('audit A9 pass 3 L2: one number rule for Talk and Ask ECOS (simplified in pass 5)', () => {
   it.each(NOT_PROJECT_2375)('Ask ECOS asks "%s" for 2321 and Talk keeps the note on 2321', question => {
     expect(findECOSProjectReferenceMismatch(SELECTED, question, PROJECTS)).toBeNull();
     expect(mentionedDAVEProject(question, PROJECTS)).toBeNull();
@@ -54,17 +62,19 @@ describe('audit A9 pass 3 L2: one number rule for Talk and Ask ECOS', () => {
     expect(mentionedDAVEProject(question, THREE_DIGIT_PROJECTS)).toBeNull();
   });
 
-  it.each(NAMES_PROJECT_2375)('"%s" still names 2375 on both sides', question => {
+  it.each([...NAMES_PROJECT_2375, ...NOW_NAMES_PROJECT_2375])('"%s" names 2375 on both sides', question => {
     expect(findECOSProjectReferenceMismatch(SELECTED, question, PROJECTS)?.referencedProjectIdentifier).toBe('2375');
     expect(mentionedDAVEProject(question, PROJECTS)).toBe(OTHER);
   });
 
-  it('a street address that is itself the other project still names it', () => {
+  it('a street address names the project with that number, whatever the street', () => {
     const projects = [SELECTED, '1105 Oak Street'];
     expect(findECOSProjectReferenceMismatch(SELECTED, 'What is left at 1105 Oak Street?', projects)?.referencedProjectIdentifier)
       .toBe('1105');
     expect(ecosProjectNumberMentions('Deliver to 1105 Oak Street', projects)).toEqual(['1105']);
-    expect(ecosProjectNumberMentions('Deliver to 1105 Oak Street', PROJECTS)).toEqual([]);
+    expect(ecosProjectNumberMentions('Deliver to 1105 Oak Street', PROJECTS)).toEqual(['1105']);
+    // 1105 is no project here, so nothing is refused.
+    expect(findECOSProjectReferenceMismatch(SELECTED, 'Deliver to 1105 Oak Street', PROJECTS)).toBeNull();
   });
 
   it('an ordinary lower-case phrase after the number is not read as a street', () => {

@@ -117,8 +117,10 @@ export function mentionedDAVEProject(
   });
   if (exact) return exact;
 
-  // Audit A9 pass 3 L2: the same number rule as Ask ECOS, so a phone number,
-  // "RFI 2375", "unit 2375" or "2375 Main Street" does not move the note either.
+  // Audit A9 pass 3 L2: the same number rule as Ask ECOS. Since pass 5 (when
+  // unsure, refuse) only a measurement, money, a date or time, a phone number
+  // or a spec/sheet ID keeps a project's number from moving the note; "RFI
+  // 2375" or "2375 Main Street" moves it to project 2375 for confirmation.
   const numbers = new Set(ecosProjectNumberMentions(transcript, projectNames));
   const numberMatches = projectNames.filter(project => {
     const number = ecosProjectIdentifier(project);

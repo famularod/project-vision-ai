@@ -1,9 +1,16 @@
+// rule simplified A9 pass 5: when unsure, refuse
 /**
  * Owner answer Q20 (30 Sep 2026; audit A9 pass 1 #2) test vectors for the Ask
  * ECOS wrong-project guard. The app's jest suite
  * (tests/services/ecos-project-question.test.ts) and the edge function's Deno
  * suite (ecos-project-reference.test.ts) both run every vector, so the two
  * sides are checked against one list. Synthetic project names.
+ *
+ * Audit A9 pass 5: another project's number is refused unless it is written as
+ * a measurement with a listed unit, money, a full date or clock time, a phone
+ * number, or a spec section or sheet ID. Reference words ("room", "RFI",
+ * "El."), street names, years and closed 3-digit counts no longer exempt it;
+ * the vectors that pinned those exemptions now expect a refusal.
  */
 
 export type ECOSProjectReferenceVector = Readonly<{
@@ -40,9 +47,16 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: null,
   },
   {
-    name: 'a year is not another project even when a project is named after it',
+    name: 'a bare year names a project numbered after it (pass 5: no year exemption outside a full date)',
     projectName: SELECTED,
     question: 'Which deliveries are due in 2026?',
+    knownProjectNames: [...OWNER_PROJECTS, '2026 Fit-Out'],
+    refused: '2026',
+  },
+  {
+    name: 'a full date is not a project numbered after its year',
+    projectName: SELECTED,
+    question: 'Which deliveries are due on Oct 5, 2026?',
     knownProjectNames: [...OWNER_PROJECTS, '2026 Fit-Out'],
     refused: null,
   },
@@ -89,8 +103,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused: null,
   },
-  // The same five, where each number is also another project's number: the
-  // unit or reference word still marks it as a measurement or drawing reference.
+  // The same five, where each number is also another project's number: a unit
+  // or a spec section written as such is exempt; a reference word (pass 5) is not.
   {
     name: 'allows 4000 psi even when project 4000 exists',
     projectName: SELECTED,
@@ -99,14 +113,14 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: null,
   },
   {
-    name: 'allows Rm. 1105 even when project 1105 exists',
+    name: 'refuses Rm. 1105 when project 1105 exists (pass 5)',
     projectName: SELECTED,
     question: 'What finish is scheduled for Rm. 1105?',
     knownProjectNames: [...OWNER_PROJECTS, '1105 Oak Street'],
-    refused: null,
+    refused: '1105',
   },
   {
-    name: 'allows section 079200 even when project 079200 exists',
+    name: 'allows section 079200 even when project 079200 exists (six digits starting with 0)',
     projectName: SELECTED,
     question: 'Which sealant does Section 079200 require?',
     knownProjectNames: [...OWNER_PROJECTS, '079200 Envelope Study'],
@@ -120,11 +134,11 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: null,
   },
   {
-    name: 'allows El. 1250 even when project 1250 exists',
+    name: 'refuses El. 1250 when project 1250 exists (pass 5)',
     projectName: SELECTED,
     question: 'What is at El. 1250 on the east wall?',
     knownProjectNames: [...OWNER_PROJECTS, '1250 Harbor Road'],
-    refused: null,
+    refused: '1250',
   },
   // Owner-requested cases.
   {
@@ -148,14 +162,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused: '2375',
   },
-  // Other units and reference words from the rule.
+  // Other units from the rule; reference words no longer exempt (pass 5).
   {
-    name: 'allows the other units and reference words',
+    name: 'allows the other units',
     projectName: SELECTED,
-    question: 'Check 2375 ksi, 2375 lbs, 2375 CFM, 2375 SF, 2375 LF, 2375 gal, 2375%, 2375 sq ft, door 2375, grid 2375, level 2375, detail 2375 and sheet #2375.',
+    question: 'Check 2375 ksi, 2375 lbs, 2375 CFM, 2375 SF, 2375 LF, 2375 gal, 2375%, 2375 sq ft, 2375 kVA and 2375 hp.',
     knownProjectNames: OWNER_PROJECTS,
     refused: null,
   },
+  ...['door 2375', 'grid 2375', 'level 2375', 'detail 2375', 'sheet #2375'].map(reference => ({
+    name: `refuses "${reference}" when 2375 is another project (pass 5)`,
+    projectName: SELECTED,
+    question: `Check ${reference}.`,
+    knownProjectNames: OWNER_PROJECTS,
+    refused: '2375',
+  })),
   {
     name: 'refuses a bare project number after allowed measurements',
     projectName: SELECTED,
@@ -192,25 +213,13 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: null,
   },
   // Audit A9 pass 3 L2: one number rule with Talk. A phone number, an amount,
-  // a measurement, a paperwork or room reference or a street address is not
-  // project 2375; naming the project still is.
+  // a measurement or a date is not project 2375; naming the project still is.
   ...[
     'Call the super at 555-2375 about the pour.',
     'Call the super at (415) 555-2375 about the pour.',
     'Was the $2375 invoice for the rebar paid?',
     'Is the new slab 2375 mm thick?',
     'Is the main service a 2375 amp service?',
-    'Which finish goes in rooms 2375 and 2376?',
-    'What did RFI 2375 say about the embeds?',
-    'What did RFI #2375 say about the embeds?',
-    'Is the kitchen in unit 2375 finished?',
-    'Was submittal 2375 approved?',
-    'What does keynote 2375 call for?',
-    'Who is moving into suite 2375?',
-    'What is on sheet 2375?',
-    'Which wall type is detail 2375?',
-    'When is the delivery to 2375 Main Street?',
-    'When is the delivery to 2375 N. Harbor Blvd?',
     'Was the inspection on 9/30/2375 passed?',
   ].map(question => ({
     name: `allows "${question}" when 2375 is another project`,
@@ -231,6 +240,27 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     question,
     knownProjectNames: [...OWNER_PROJECTS, '450 Harrison', '200 Oak Street', '208 Pine', '120 Elm', '100 Main Street', '480 Bay'],
     refused: null,
+  })),
+  // Pass 3 allowed these as paperwork or room references or street addresses;
+  // pass 5 refuses them (when unsure, refuse).
+  ...[
+    'Which finish goes in rooms 2375 and 2376?',
+    'What did RFI 2375 say about the embeds?',
+    'What did RFI #2375 say about the embeds?',
+    'Is the kitchen in unit 2375 finished?',
+    'Was submittal 2375 approved?',
+    'What does keynote 2375 call for?',
+    'Who is moving into suite 2375?',
+    'What is on sheet 2375?',
+    'Which wall type is detail 2375?',
+    'When is the delivery to 2375 Main Street?',
+    'When is the delivery to 2375 N. Harbor Blvd?',
+  ].map(question => ({
+    name: `refuses "${question}" when 2375 is another project (pass 5)`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
+    refused: '2375',
   })),
   ...([
     ['What was the slab thickness at 2375?', '2375'],
@@ -256,7 +286,7 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '1105',
   },
   {
-    name: 'a reference word followed by the other project\'s name is still refused',
+    name: 'a reference word followed by the other project\'s name is refused',
     projectName: SELECTED,
     question: 'Which RFIs are open at unit 2375 Compliance?',
     knownProjectNames: OWNER_PROJECTS,
@@ -348,9 +378,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: ['2375 Harbor Blvd', SELECTED],
     refused: null,
   },
-  // Audit A9 pass 4 L2: a reference word labels only the number right after
-  // it; a plural only a real list; "invoice" and "permit" only with "#", "no."
-  // or "number".
+  // Audit A9 pass 4 L2 and pass 5: a reference word, a list or a range does
+  // not exempt another project's number.
   ...[
     'Did we invoice 2375 yet?',
     'Any open items 2375?',
@@ -375,19 +404,26 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     'Was invoice #2375 paid?',
     'Was invoice no. 2375 paid?',
     'Was permit number 2375 issued?',
+    // Audit A9 pass 5 review.
+    'Compare the drawings from 2375 and 2321',
+    'Do the specs from 2321 and 2375 match?',
+    'Copy the submittals from 2321 to 2375?',
+    'Are the RFIs from 2375 and 2380 answered?',
   ].map(question => ({
-    name: `allows "${question}" when 2375 is another project`,
+    name: `refuses "${question}" when 2375 is another project (pass 5)`,
     projectName: SELECTED,
     question,
     knownProjectNames: OWNER_PROJECTS,
-    refused: null,
+    refused: '2375',
   })),
-  // Audit A9 pass 4 L3: a closed 3-digit project is refused only when it is
-  // named as the project; days, hours, linear feet and sqft are measurements.
+  // Audit A9 pass 4 L3 and pass 5: a closed project's number is refused like
+  // an open one's; days, hours, bags, linear feet and sqft are measurements.
   ...([
     ['Did the 200 bags of grout arrive?', '200 Oak Street'],
+    ['Is the crane rented for 200 days?', '200 Oak Street'],
     ['What is due in the next 120 days?', '120 Elm'],
     ['Did the crew log 120 hours this week?', '120 Elm'],
+    ['Did the 2375 bags of grout arrive?', '2375 Compliance Project'],
   ] as const).map(([question, closed]) => ({
     name: `allows "${question}" when "${closed}" is closed`,
     projectName: SELECTED,
@@ -403,7 +439,13 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Is the rebar for 200 on site?', '200 Oak Street', '200'],
     ['What is open on the 200 job?', '200 Oak Street', '200'],
     ['Is 120 Elm closed out?', '120 Elm', '120'],
-    ['Did the 2375 bags of grout arrive?', '2375 Compliance Project', '2375'],
+    ['Did the 2375 cartons of grout arrive?', '2375 Compliance Project', '2375'],
+    // Audit A9 pass 5 review.
+    ['What is overdue on 200?', '200 Oak Street', '200'],
+    ['Is 200 done?', '200 Oak Street', '200'],
+    ['How did #200 finish?', '200 Oak Street', '200'],
+    ['Pull the closeout docs from 200', '200 Oak Street', '200'],
+    ['What is left at 2375 Days Inn?', '2375 Days Inn Renovation', '2375'],
   ] as const).map(([question, closed, refused]) => ({
     name: `refuses "${question}" as the closed project "${closed}"`,
     projectName: SELECTED,
@@ -414,11 +456,18 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedClosed: true,
   })),
   {
-    name: 'an open 3-digit project is still named by a bare count (when unsure, refuse)',
+    name: 'an open 3-digit project is named by a count without a listed unit (when unsure, refuse)',
+    projectName: SELECTED,
+    question: 'Did the 200 cartons of grout arrive?',
+    knownProjectNames: [SELECTED, '200 Oak Street'],
+    refused: '200',
+  },
+  {
+    name: 'an open 3-digit project is not named by a count with a listed unit',
     projectName: SELECTED,
     question: 'Did the 200 bags of grout arrive?',
     knownProjectNames: [SELECTED, '200 Oak Street'],
-    refused: '200',
+    refused: null,
   },
   ...[
     'Is the trench 2375 linear feet?',
@@ -429,6 +478,38 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     projectName: SELECTED,
     question,
     knownProjectNames: OWNER_PROJECTS,
+    refused: null,
+  })),
+  // Audit A9 pass 5: the project's own next name word beats a unit, and a
+  // year is exempt only inside a full date.
+  ...([
+    ['What is left at 2375 Days Inn?', '2375 Days Inn Renovation', '2375'],
+    ['Is the float 2375 days?', '2375 Days Inn Renovation', '2375'],
+    ['What is overdue on project 2050?', '2050 Harbor Blvd', '2050'],
+  ] as const).map(([question, project, refused]) => ({
+    name: `refuses "${question}" when the other project is "${project}"`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED, project],
+    refused,
+  })),
+  // Audit A9 pass 5: the five exemptions.
+  ...([
+    ['What strength is the 4000 psi concrete?', '4000 Warehouse'],
+    ['Is the new slab 2375 mm thick?', '2375 Compliance Project'],
+    ['Is the crane rented for 200 days?', '200 Oak Street'],
+    ['Was the $2,375 change order approved?', '2375 Compliance Project'],
+    ['Was the inspection on 10/05/2026 passed?', '2026 Fit-Out'],
+    ['Call the super at 555-2375.', '2375 Compliance Project'],
+    ['Which sealant does spec 03 30 00 call for?', '2375 Compliance Project'],
+    ['What is on sheet A-201?', '201 Market Street'],
+    ['Is the run 2375\' long?', '2375 Compliance Project'],
+    ['Was the $2,375 change order approved?', '375 Main Street'],
+  ] as const).map(([question, project]) => ({
+    name: `allows "${question}" when "${project}" is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: [SELECTED, project],
     refused: null,
   })),
   // Fail closed: without a usable list, today's stricter check applies exactly.

@@ -89,8 +89,9 @@ type ECOSProjectRefusalContext = Readonly<{
 
 /**
  * knownProjectNames: the names of the signed-in user's unarchived projects. With
- * them, a number is refused only when it is another project's number (and not a
- * measurement or drawing reference). Without them the stricter pre-Q20 check
+ * them, a number is refused only when it is another project's number (and not
+ * written as a measurement, money, a date, a phone number or a spec/sheet ID;
+ * audit A9 pass 5). Without them the stricter pre-Q20 check
  * applies unchanged. closedProjectNames: closed (archived, not deleted)
  * projects, whose numbers are refused as closed (audit A9 pass 3 L1).
  */

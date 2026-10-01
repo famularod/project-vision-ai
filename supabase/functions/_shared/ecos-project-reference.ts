@@ -1,19 +1,36 @@
 /**
- * Ask ECOS wrong-project guard, shared by the app (services/ECOSProjectQuestion.ts)
- * and the ecos-ask-project edge function so both sides apply one rule. No imports
- * and no I/O: the edge function reads the project list and passes it in.
+ * Ask ECOS wrong-project guard, shared by the app (services/ECOSProjectQuestion.ts,
+ * and Talk through services/DAVEConversationRouter.ts) and the repo copy of the
+ * ecos-ask-project edge function. No imports and no I/O: callers pass the
+ * project lists in.
  *
- * Owner answer Q20 (30 Sep 2026; audit A9 pass 1 #2): the guard used to refuse
- * any 4-6 digit number that was not the selected project's own number or a year,
- * so "4000 psi", "room 1105", "section 079200", "12000 BTU" and "elevation 1250"
- * were refused as if they named another project. A number is now refused only
- * when it is another known project's identifier (the first 3-6 digit number in
- * that project's name), and not even then when a unit follows it or a drawing
- * reference word comes before it. Without a usable project list the old, stricter
- * check still applies (fail closed).
+ * Owner answer Q20 (30 Sep 2026): a question that names ANOTHER known project's
+ * number (open, or closed but not deleted; 3-6 digits) is refused and David is
+ * told to switch; the selected project's own number is never refused. The live
+ * edge function does not check numbers, so this check is the only guard.
  *
- * Audit A9 pass 3 L2 (30 Sep 2026): which numbers can name a project is now one
- * rule with Talk (ecosProjectNumberMentions below).
+ * Audit A9 pass 5 (30 Sep 2026): rule simplified, when unsure, refuse. Passes
+ * 1-4 let numbers through after reference words ("RFI", "unit", "room"...),
+ * in plural lists and from/to ranges, before street names, as years, and as
+ * closed 3-digit counts; every review then found a question those exemptions
+ * answered from the wrong project ("Compare the drawings from 2375 and 2321",
+ * "Is 200 done?" with 200 closed). A wrong refusal costs David a tap; a missed
+ * one answers from the wrong project. Now every 3-6 digit number that is
+ * another known project's number names that project, unless it is written as
+ * one of five things (EXEMPT_PATTERNS below):
+ *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or A, V, m, %, °,
+ *      a feet or inch mark) right after it: "4000 psi", "2375mm", "200 bags";
+ *   2. money: "$2,375", "USD 2375", "2375 dollars";
+ *   3. part of a full date or a clock time: "10/05/2026", "2026-10-05",
+ *      "Oct 5, 2026", "5 Oct 2026", "0730 hrs" (a bare year is not exempt);
+ *   4. a phone number: "555-2375", "(415) 555-2375", "415.555.2375";
+ *   5. a spec section or sheet written as such: "03 30 00", "033000", "A-201".
+ * Even then, the project's own next (or previous) name word next to the
+ * number names the project: "2375 Days Inn" for "2375 Days Inn Renovation".
+ * So "RFI 2375", "unit 2375", "rooms 2375 and 2376", "invoice 2375", "#2375",
+ * "2375 Main Street" and "in 2026" are refused when that number is also
+ * another project's. Without a usable project list the stricter pre-Q20 check
+ * applies (fail closed).
  */
 
 export type ECOSProjectReferenceMismatch = Readonly<{
@@ -30,10 +47,9 @@ const LEGACY_IDENTIFIER_SOURCE = String.raw`\b\d{4,6}\b`;
 const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b`;
 
 /**
- * Audit A9 pass 3 L1 (30 Sep 2026): `closedProjectNames` are the closed
- * (archived, not deleted) projects. They are not in the pickable list, so before
- * this "What was the slab thickness at 2375?" was sent to 2321 when 2375 was
- * closed. Their numbers are refused too, marked closed so the refusal can say so.
+ * `closedProjectNames` are the closed (archived, not deleted) projects. They
+ * are not in the pickable list, but their numbers are refused too, marked
+ * closed so the refusal can say so (audit A9 pass 3 L1).
  */
 export function findECOSProjectReferenceMismatch(
   projectName: string,
@@ -59,39 +75,137 @@ export function findECOSProjectReferenceMismatch(
   const selected = new Set(selectedIdentifiers);
   const openIdentifiers = otherProjectIdentifiers(knownNames, selected);
   const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
-  if (openIdentifiers.size === 0 && closedIdentifiers.size === 0) return null;
-
-  for (const mention of projectNumberMentions(question, [...knownNames, ...closedNames])) {
-    const identifier = mention.number;
+  for (const identifier of ecosProjectNumberMentions(question, [...knownNames, ...closedNames])) {
     const open = openIdentifiers.has(identifier);
-    if (!open && !closedIdentifiers.has(identifier)) continue;
-    // A year stays a year, as in the check before Q20 ("due in 2026").
-    if (/^(?:19|20)\d\d$/.test(identifier)) continue;
-    // Audit A9 pass 4 L3: a closed 3-digit number only when it is named as the project.
-    if (!open && identifier.length === 3 && !namesClosedProject(mention, closedNames)) continue;
     // A number both an open and a closed project use is read as the open one.
-    return projectReferenceMismatch(selectedIdentifiers[0], identifier, !open);
+    if (open || closedIdentifiers.has(identifier)) {
+      return projectReferenceMismatch(selectedIdentifiers[0], identifier, !open);
+    }
   }
   return null;
 }
 
-/*
- * Audit A9 pass 4 L3 (30 Sep 2026): with "200 Oak Street" closed, "Did the 200
- * bags of grout arrive?" was refused and David was told to reopen project 200.
- * A 3-digit number is often a count, and a closed project is not one David is
- * working in, so a closed 3-digit project's number is refused only when it is
- * named as the project: its own name word follows ("200 Oak St") or comes
- * before it, "project", "job", "at" or "for" comes before it ("job no. 200",
- * "at 200"), or "job" or "project" follows it ("the 200 job"). An open project's
- * number and a closed 4-6 digit number are refused as before.
+/**
+ * The 3-6 digit numbers in `text` that can name a project, in order: every
+ * one, except a number written as a measurement, money, a date or time, a
+ * phone number, or a spec section or sheet, and not even then when the
+ * project's own name continues around it (see the header).
  */
-const PROJECT_WORD_BEFORE_NUMBER = /\b(?:project|job|at|for)\s*(?:(?:no|number)\.?\s*)?[:#]?\s*$/i;
-const PROJECT_WORD_AFTER_NUMBER = /^\s+(?:project|job)\b/i;
+export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
+  const exempt = exemptSpans(text);
+  const mentions: string[] = [];
+  const pattern = new RegExp(PROJECT_IDENTIFIER_SOURCE, 'g');
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const number = match[0];
+    const start = match.index;
+    const end = start + number.length;
+    if (
+      !exempt.some(([from, to]) => from <= start && end <= to) ||
+      projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
+    ) {
+      mentions.push(number);
+    }
+  }
+  return mentions;
+}
 
-function namesClosedProject({ number, before, after }: ProjectNumberMention, closedNames: readonly string[]) {
-  return projectNameAroundNumber(number, before, after, closedNames) ||
-    PROJECT_WORD_BEFORE_NUMBER.test(before) ||
-    PROJECT_WORD_AFTER_NUMBER.test(after);
+const NUMBER = String.raw`\b(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
+const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+
+/**
+ * Exemption 1, the fixed unit list (matched without case). A word unit may
+ * follow the number directly, after one space or after a hyphen ("4000-psi").
+ * Left out on purpose because they read as English after a project number:
+ * a bare "in" ("Is 2375 in progress?"; write "in." or "inches") and "each"
+ * ("2375 each week"). The singular "unit", "bag" and "sheet" are left out too
+ * ("2375 unit 4"). Beyond the owner's list, ksi, psf, kips, foot, yards,
+ * cubic feet, gallons, cfm, btu(h), gpm and percent are kept from the earlier
+ * rule; none reads as English after a project number.
+ */
+const MEASUREMENT_WORD_UNITS = [
+  // pressure and load
+  'psi', 'ksi', 'psf', 'ksf', 'kips?',
+  // length
+  'mm', 'cm', String.raw`in\.`, 'inch(?:es)?', String.raw`ft\.?`, 'feet', 'foot', 'lf',
+  String.raw`(?:lineal|linear)\s(?:feet|foot|ft\.?)`, String.raw`yds?\.?`, 'yards?',
+  // area
+  'sf', String.raw`sq\.?\s?ft\.?`, 'sqft', String.raw`square\s(?:feet|foot)`, 'sy',
+  // volume
+  'cy', String.raw`c\.y\.`, String.raw`cubic\s(?:yards?|feet|foot)`, String.raw`gal\.?`, 'gallons?',
+  // weight
+  String.raw`lbs?\.?`, 'pounds?', 'kg', 'tons?',
+  // electrical and mechanical
+  'amps?', 'volts?', 'kw', 'kva', 'kcmil', 'hp', 'cfm', 'btuh?', 'gpm',
+  // percent, temperature and time
+  'percent', 'degrees?', 'days?', 'weeks?', 'months?', 'hours?', 'hrs?', 'minutes', 'mins',
+  // counts
+  'ea', 'bags', 'units', 'sheets',
+];
+
+const EXEMPT_PATTERNS: readonly RegExp[] = [
+  // 1. Measurements: word units, then the case-sensitive one-letter units A
+  //    (amps), V (volts) and m (metres) with a space or the end after them
+  //    ("2375-A" and "2375 A/C" still name 2375), then %, ° and feet or inch
+  //    marks with a word or a hyphen after them ("2375' run", "12'-6\""); a
+  //    mark that may close a quotation ("at 2375'?", "'2375' job", "2375's")
+  //    is not a measurement.
+  new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
+  new RegExp(String.raw`${NUMBER} ?[AVm](?=[\s.,;:!?)]|$)`, 'g'),
+  new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
+  new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}['"’”′″](?=\s[a-z0-9]|-)`, 'gi'),
+  // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
+  new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
+  // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",
+  //    "Oct 5, 2026", "5th October 2026", "7:30", "0730 hrs". A bare year
+  //    ("due in 2026") is not exempt.
+  new RegExp([
+    String.raw`\b\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2})\b`,
+    String.raw`\b\d{4}[/.-]\d{1,2}[/.-]\d{1,2}\b`,
+    `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
+    `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+\\d{4}\\b`,
+    String.raw`\b(?:[01]?\d|2[0-3]):[0-5]\d\b`,
+    String.raw`\b(?:[01]\d|2[0-3])[0-5]\d\s?(?:hrs?|hours)\b`,
+  ].join('|'), 'gi'),
+  // 4. Phone numbers: "555-2375", "415-555-2375", "(415) 555-2375", "415.555.2375".
+  /(?:\(\d{3}\)\s?|\b\d{3}-)?\b\d{3}-\d{4}\b|\b\d{3}\.\d{3}\.\d{4}\b/g,
+  // 5. Spec sections and sheets: "03 30 00"; "033000" (six digits starting
+  //    with 0: a later division such as "260519" also looks like a year-coded
+  //    job number, so it is not exempt; write "26 05 19"); one or two capital
+  //    letters, an optional hyphen and the digits with no space: "A-201",
+  //    "S201", "E-2375" ("RFI-2375" and "a-201" still name the number).
+  /\b\d{2} \d{2} \d{2}\b|\b0\d{5}\b|\b[A-Z]{1,2}-?\d{3,6}\b/g,
+];
+
+/** The [start, end) spans of `text` written as one of the five exemptions. */
+function exemptSpans(text: string): Array<readonly [number, number]> {
+  const spans: Array<readonly [number, number]> = [];
+  for (const source of EXEMPT_PATTERNS) {
+    const pattern = new RegExp(source.source, source.flags);
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  return spans;
+}
+
+/**
+ * Whether the project named by this number continues around it: its next name
+ * word follows the number ("2375 Days Inn" for "2375 Days Inn Renovation",
+ * checked before any exemption, so a unit that is the project's own name word
+ * does not hide it) or its previous name word comes before it ("Tower E-2375").
+ */
+function projectNameAroundNumber(number: string, before: string, after: string, projectNames: readonly string[]) {
+  const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1]?.toLowerCase();
+  return projectNames.some(name => {
+    if (ecosProjectIdentifier(name) !== number) return false;
+    const index = name.search(new RegExp(`\\b${number}\\b`));
+    const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(index + number.length))?.[1]?.toLowerCase();
+    const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, index))?.[1];
+    return Boolean(
+      (nextNameWord && nextWord === nextNameWord) ||
+      (previousNameWord && new RegExp(`\\b${previousNameWord}[\\s#:.-]*$`, 'i').test(before)),
+    );
+  });
 }
 
 function otherProjectIdentifiers(projectNames: readonly string[], selected: ReadonlySet<string>): Set<string> {
@@ -108,210 +222,6 @@ function projectReferenceMismatch(
   referencedProjectClosed: boolean,
 ): ECOSProjectReferenceMismatch {
   return Object.freeze({ selectedProjectIdentifier, referencedProjectIdentifier, referencedProjectClosed });
-}
-
-/*
- * Audit A9 pass 3 L2 (30 Sep 2026): which numbers in a question or a Talk note
- * can name a project. One rule for Ask ECOS (above) and Talk
- * (services/DAVEConversationRouter.ts mentionedDAVEProject); before, Ask ECOS
- * knew fewer units than Talk and neither knew phone numbers, so "555-2375",
- * "$2375 invoice", "2375 mm", "RFI 2375", "unit 2375" or "2375 Main Street"
- * were refused as project 2375, and "450 kcmil", "200 amp" or "208 V" as a
- * 3-digit project.
- */
-
-const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
-const DATE_SOURCE = [
-  String.raw`\b\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}\b`,
-  `\\b${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
-  `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH},?\\s+\\d{4}\\b`,
-].join('|');
-// "$2375", "$ 2,375.50".
-const DOLLAR_SOURCE = String.raw`\$\s?\d[\d,]*(?:\.\d+)?`;
-// "555-2375", "415-555-2375", "(415) 555-2375", "415.555.2375".
-const PHONE_SOURCE = String.raw`(?:\(\d{3}\)\s*|\b\d{3}[-.\s])?\b\d{3}[-.]\d{4}\b`;
-// A measurement or amount: "4000 psi", "2,375 ft", "95%", "450 kcmil", "208 V", "100 cubic yards".
-// Audit A9 pass 4 L3: also "2375 linear feet", "2375 sqft" and "120 days".
-const QUANTITY_SOURCE = String.raw`\b\d[\d,]*(?:\.\d+)?\s*-?\s*(?:%|°|(?:percent|linear\s+(?:feet|foot|ft)|sqft|days?|weeks?|months?|hours?|hrs?|feet|foot|ft|lf|sf|sq|square|cubic|cy|inches|inch|yards?|yds?|meters?|metres?|mm|cm|lbs?|pounds?|tons?|kips?|gallons?|gal|gpm|psi|ksi|psf|plf|amps?|amperes?|volts?|v|kv|kw|kwh|kva|watts?|hp|hz|btuh?|mbh|cfm|kcmil|mcm|awg|dollars?|pieces|pcs|degrees?)\b)`;
-const NOT_A_PROJECT_NUMBER_SOURCE = [DATE_SOURCE, DOLLAR_SOURCE, PHONE_SOURCE, QUANTITY_SOURCE]
-  .map(source => `(?:${source})`)
-  .join('|');
-
-// A drawing, building or paperwork reference, not a project: "room 1105",
-// "Rm. 1105", "rooms 2375 and 2376", "RFI #2375", "unit 2375", "sheet #2375".
-//
-// Audit A9 pass 4 L2 (30 Sep 2026): with 2375 another project, "Did we invoice
-// 2375 yet?", "Open RFIs 2375?", "Copy submittal 14 to 2375?" or "Did RFI 12
-// and 2375 close?" were not refused, because any reference word, plural or
-// verb, also covered numbers carried over "and", "or" or "to". Now:
-// - a singular word labels only the number right after it (optionally after
-//   "#", "no." or "number"): "RFI 2375", "unit 2375", "sheet no. 2375";
-// - a plural word labels only a real list of two or more numbers: "rooms 2375
-//   and 2376", "RFIs 12, 13 and 14", "rooms 2370 through 2375"; "to" joins a
-//   list only in a range started with "from" ("rooms from 2370 to 2375");
-// - "invoice" and "permit", which are also verbs, label a number only with
-//   "#", "no." or "number": "invoice #2375", "permit no. 2375".
-const SINGLE_REFERENCE_WORDS = [
-  'room', 'rm', 'unit', 'apt', 'apartment', 'suite', 'ste', 'rfi', 'submittal', 'keynote', 'sheet', 'detail',
-  'section', 'door', 'elevation', 'elev', 'el', 'grid', 'level', 'spec', 'drawing', 'dwg', 'asi', 'pco',
-  'bulletin', 'item',
-].join('|');
-const LIST_REFERENCE_WORDS = [
-  'rooms', 'units', 'apartments', 'suites', 'rfis', 'submittals', 'keynotes', 'sheets', 'details', 'sections',
-  'doors', 'elevations', 'grids', 'levels', 'specs', 'drawings', 'dwgs', 'asis', 'pcos', 'bulletins', 'items',
-].join('|');
-const MARKED_REFERENCE_WORDS = ['invoices?', 'permits?'].join('|');
-const SINGLE_REFERENCE_BEFORE_NUMBER = new RegExp(
-  String.raw`\b(?:${SINGLE_REFERENCE_WORDS})\.?\s*(?:(?:no|number)\.?\s*)?[:#-]?\s*$`,
-  'i',
-);
-const MARKED_REFERENCE_BEFORE_NUMBER = new RegExp(
-  String.raw`\b(?:${MARKED_REFERENCE_WORDS})\.?\s*(?:#|(?:no|number)\.?\s*#?)\s*$`,
-  'i',
-);
-const REFERENCE_LIST_ITEM = String.raw`#?[a-z]{0,3}[-.]?\d+[a-z]?`;
-const REFERENCE_LIST_SEPARATOR = String.raw`(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or|through|thru)\s+|\s*[&-]\s*)`;
-const REFERENCE_RANGE_SEPARATOR = String.raw`(?:${REFERENCE_LIST_SEPARATOR}|\s+to\s+)`;
-// Group 1 holds the list items before the number; empty when it is the first.
-const REFERENCE_LIST_BEFORE_NUMBER = new RegExp(
-  String.raw`\b(?:${LIST_REFERENCE_WORDS})\.?\s*(?:(?:nos?|numbers?)\.?\s*)?[:#-]?\s*` +
-    String.raw`((?:${REFERENCE_LIST_ITEM}${REFERENCE_LIST_SEPARATOR})*)#?$`,
-  'i',
-);
-const REFERENCE_RANGE_BEFORE_NUMBER = new RegExp(
-  String.raw`\b(?:${LIST_REFERENCE_WORDS})\s+from\s+((?:${REFERENCE_LIST_ITEM}${REFERENCE_RANGE_SEPARATOR})*)#?$`,
-  'i',
-);
-const REFERENCE_LIST_CONTINUES = new RegExp(String.raw`^${REFERENCE_LIST_SEPARATOR}${REFERENCE_LIST_ITEM}\b`, 'i');
-const REFERENCE_RANGE_CONTINUES = new RegExp(String.raw`^${REFERENCE_RANGE_SEPARATOR}${REFERENCE_LIST_ITEM}\b`, 'i');
-
-// A street address: "2375 Main Street", "2375 N. Harbor Blvd". The street name
-// is capitalized and is not an ordinary word, so "2375 by the service road"
-// and "did 2375 take place" still name project 2375.
-const STREET_WORD_SOURCE = String.raw`(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|way|court|ct|place|pl|parkway|pkwy|highway|hwy|terrace|circle|plaza)`;
-const STREET_ADDRESS_AFTER_NUMBER = new RegExp(
-  String.raw`^\s+(?:(?:n|s|e|w|ne|nw|se|sw|north|south|east|west)\.?\s+)?((?:[a-z0-9][a-z0-9'.-]*\s+){1,3})` +
-    String.raw`${STREET_WORD_SOURCE}\b`,
-  'i',
-);
-// Audit A9 pass 4 L1: a project whose name is itself an address ("2375 Harbor Blvd").
-const ADDRESS_PROJECT_NAME = new RegExp(String.raw`\b${STREET_WORD_SOURCE}\b`, 'i');
-// How a project name's next word may be written: direction words are skipped
-// and street words and directions are compared in one spelling, so "2375 N.
-// Harbor Blvd" and "2375 Harbor Boulevard" both name "2375 Harbor Blvd".
-const DIRECTION_SPELLINGS: ReadonlyMap<string, string> = new Map(Object.entries({
-  n: 'north', north: 'north', s: 'south', south: 'south', e: 'east', east: 'east', w: 'west', west: 'west',
-  ne: 'northeast', northeast: 'northeast', nw: 'northwest', northwest: 'northwest',
-  se: 'southeast', southeast: 'southeast', sw: 'southwest', southwest: 'southwest',
-}));
-const DIRECTIONS: ReadonlySet<string> = new Set(DIRECTION_SPELLINGS.values());
-const STREET_WORD_SPELLINGS: ReadonlyMap<string, string> = new Map(Object.entries({
-  st: 'street', str: 'street', street: 'street', ave: 'avenue', av: 'avenue', avenue: 'avenue',
-  blvd: 'boulevard', boulevard: 'boulevard', rd: 'road', road: 'road', dr: 'drive', drive: 'drive',
-  ln: 'lane', lane: 'lane', ct: 'court', court: 'court', pl: 'place', place: 'place',
-  pkwy: 'parkway', parkway: 'parkway', hwy: 'highway', highway: 'highway',
-}));
-const NOT_A_STREET_NAME = new Set([
-  'a', 'an', 'the', 'at', 'by', 'on', 'in', 'of', 'to', 'for', 'from', 'near', 'with', 'and', 'or', 'is', 'are',
-  'was', 'were', 'be', 'been', 'this', 'that', 'these', 'those', 'it', 'its', 'their', 'his', 'her', 'our', 'my',
-  'your', 'which', 'what', 'where', 'when', 'how', 'off', 'into', 'onto', 'along', 'across', 'behind', 'past',
-  'over', 'under', 'up', 'down', 'out', 'side', 'all', 'any', 'each', 'every', 'either', 'other', 'same', 'no',
-  'not', 'job', 'project', 'site', 'crew', 'has', 'have', 'had', 'do', 'does', 'did', 'will', 'can', 'take',
-  'took', 'taken', 'takes', 'taking',
-]);
-
-/**
- * The 3-6 digit numbers in `text` that can name a project, in order: not part
- * of a date, dollar amount, phone number or measurement, not a room, unit,
- * RFI, submittal, keynote, suite, sheet or detail reference, and not a street
- * address. A number followed or preceded by the rest of one of `projectNames`
- * ("2375 Compliance", "2375 Main Street" when that is a project) always can.
- *
- * Audit A9 pass 4 L1 (30 Sep 2026): with project "2375 Harbor Blvd", "2375 N.
- * Harbor Blvd" was read as a street address and not the project, because only
- * the word right after the number was compared with the name. A number that
- * belongs to a project whose name is an address is never let through as a
- * street address, and the name is matched past direction words and street
- * abbreviations.
- */
-export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
-  return projectNumberMentions(text, projectNames).map(mention => mention.number);
-}
-
-type ProjectNumberMention = Readonly<{ number: string; before: string; after: string }>;
-
-function projectNumberMentions(text: string, projectNames: readonly string[]): ProjectNumberMention[] {
-  const blanked = text.replace(new RegExp(NOT_A_PROJECT_NUMBER_SOURCE, 'gi'), match => ' '.repeat(match.length));
-  const addressProjectNumbers = new Set(
-    projectNames.filter(name => ADDRESS_PROJECT_NAME.test(name)).map(ecosProjectIdentifier),
-  );
-  const mentions: ProjectNumberMention[] = [];
-  const pattern = new RegExp(PROJECT_IDENTIFIER_SOURCE, 'g');
-  for (let match = pattern.exec(blanked); match; match = pattern.exec(blanked)) {
-    const number = match[0];
-    const before = blanked.slice(0, match.index);
-    const after = blanked.slice(match.index + number.length);
-    if (
-      projectNameAroundNumber(number, before, after, projectNames) ||
-      (!referenceWordLabelsNumber(before, after) &&
-        (addressProjectNumbers.has(number) || !streetAddressAfterNumber(after)))
-    ) {
-      mentions.push({ number, before, after });
-    }
-  }
-  return mentions;
-}
-
-/** Whether a room, RFI, sheet or other reference word labels this number (audit A9 pass 4 L2). */
-function referenceWordLabelsNumber(before: string, after: string) {
-  if (SINGLE_REFERENCE_BEFORE_NUMBER.test(before) || MARKED_REFERENCE_BEFORE_NUMBER.test(before)) return true;
-  const list = REFERENCE_LIST_BEFORE_NUMBER.exec(before);
-  if (list && (list[1] || REFERENCE_LIST_CONTINUES.test(after))) return true;
-  const range = REFERENCE_RANGE_BEFORE_NUMBER.exec(before);
-  return Boolean(range && (range[1] || REFERENCE_RANGE_CONTINUES.test(after)));
-}
-
-function streetAddressAfterNumber(after: string) {
-  const match = STREET_ADDRESS_AFTER_NUMBER.exec(after);
-  return Boolean(match && match[1].trim().split(/\s+/).every(word =>
-    /^[A-Z0-9]/.test(word) && !NOT_A_STREET_NAME.has(word.toLowerCase().replace(/[^a-z0-9]+$/, ''))));
-}
-
-/** Whether the word after (or before) the number is the next word of a project named by that number. */
-function projectNameAroundNumber(number: string, before: string, after: string, projectNames: readonly string[]) {
-  return projectNames.some(name => {
-    const index = ecosProjectIdentifier(name) === number ? name.search(new RegExp(`\\b${number}\\b`)) : -1;
-    if (index < 0) return false;
-    const nextWord = nameWordKey(leadingWords(name.slice(index + number.length)));
-    const previousWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, index))?.[1];
-    return Boolean(
-      (nextWord && /^[\s,-]/.test(after) && nameWordCandidates(leadingWords(after)).includes(nextWord)) ||
-      (previousWord && new RegExp(`\\b${previousWord}[\\s#:.-]*$`, 'i').test(before)),
-    );
-  });
-}
-
-/** The first few words of `text`, lower-case, with one spelling for street words and directions. */
-function leadingWords(text: string): string[] {
-  return (text.match(/[a-z0-9]+/gi) || []).slice(0, 4).map(word => {
-    const lower = word.toLowerCase();
-    return DIRECTION_SPELLINGS.get(lower) ?? STREET_WORD_SPELLINGS.get(lower) ?? lower;
-  });
-}
-
-/** A project name's next word: the first word that is not a direction, or the direction when that is all there is. */
-function nameWordKey(words: readonly string[]): string | undefined {
-  return words.find(word => !isDirection(word)) ?? words[0];
-}
-
-/** The words after a number that can be a project name's next word: the leading directions and the word after them. */
-function nameWordCandidates(words: readonly string[]): string[] {
-  const firstWord = words.findIndex(word => !isDirection(word));
-  return firstWord < 0 ? [...words] : words.slice(0, firstWord + 1);
-}
-
-function isDirection(word: string) {
-  return DIRECTIONS.has(word);
 }
 
 /** The project's identifier: the first 3-6 digit number in its name, if any. */

@@ -41,9 +41,12 @@ describe('audit A9 pass 3 L1: a closed project\'s number is refused again', () =
       referencedProjectIdentifier: '2375',
       referencedProjectClosed: true,
     });
-    // A measurement or reference is still not the closed project.
+    // A measurement is still not the closed project.
     expect(findECOSProjectReferenceMismatch(SELECTED, 'Is 2375 psi enough?', [SELECTED], [CLOSED])).toBeNull();
-    expect(findECOSProjectReferenceMismatch(SELECTED, 'What did RFI 2375 say?', [SELECTED], [CLOSED])).toBeNull();
+    // Audit A9 pass 5 (rule simplified: when unsure, refuse): a reference word
+    // no longer exempts the number, so "RFI 2375" names closed project 2375.
+    expect(findECOSProjectReferenceMismatch(SELECTED, 'What did RFI 2375 say?', [SELECTED], [CLOSED])?.referencedProjectClosed)
+      .toBe(true);
   });
 
   it('the phone says the project is closed and where to reopen it, before any cloud request', async () => {
