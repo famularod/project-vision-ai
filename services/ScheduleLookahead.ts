@@ -156,6 +156,15 @@ function notedPercentEnteredByHand(overlay: ScheduleLookaheadOverlay, task: Sche
  * percent counts as the manager's (one entered by hand with no source
  * included); the manager's keeps when it was judged, for one entered by hand
  * the date the summaries gave it (importedAt, else createdAt).
+ *
+ * Whole-app audit A5 pass 9 L3 (30 Sep 2026): Talk's Undo had left the
+ * lookahead's 60% manager-rank (project_manager, confirmed by "Schedule
+ * update", b03042f), and the delete gave back the master's 20% with the
+ * file's own source, which ranks below it: the upload's merge and Full Sync
+ * took the Undo's 60% back. When the task's percent is manager-rank, the
+ * noted percent keeps that rank: a file's comes back as project_manager,
+ * confirmed by "Schedule update" at the delete (still the file's for the
+ * summaries), and one entered by hand as the manager's.
  */
 function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string, task?: ScheduleItem): Partial<ScheduleItem> | null {
   if (overlay.masterProgressSource === undefined) return null;
@@ -165,9 +174,10 @@ function notedProvenance(overlay: ScheduleLookaheadOverlay, at: string, task?: S
   const judgedAt = notedPercentIsManagers(overlay) ? overlay.masterProgressConfirmedAt
     : byHand ? overlay.masterProgressConfirmedAt || task?.importedAt || task?.createdAt || null
       : overlay.masterProgressSource !== 'project_manager' && confirmedNow ? overlay.masterProgressConfirmedAt : null;
+  const keepsRank = task?.progressSource === 'project_manager' && overlay.masterProgressSource !== 'project_manager';
   return {
-    progressSource: overlay.masterProgressSource,
-    progressConfirmedBy: overlay.masterProgressConfirmedBy ?? null,
+    progressSource: keepsRank ? 'project_manager' : overlay.masterProgressSource,
+    progressConfirmedBy: keepsRank && !byHand ? SCHEDULE_UPDATE_PROGRESS_CONFIRMER : overlay.masterProgressConfirmedBy ?? null,
     progressConfirmedAt: confirmedNow ? at : overlay.masterProgressConfirmedAt ?? null,
     ...(judgedAt && at && judgedAt !== at ? { progressJudgment: { judgedAt, givenBackAt: at } } : {}),
   };
