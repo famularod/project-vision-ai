@@ -603,6 +603,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    * (whole-app audit A7 pass 6 M1).
    */
   documentPatches?: FieldUpdateDocumentPatch[];
+  /**
+   * Keep Phone's kept copy only: a newer edit saved on this phone since the
+   * conflict, queued again in the same write that takes this copy off once
+   * it lands (whole-app audit A7 pass 11 L-2; see newerEditQueuedAfter).
+   */
+  newerEdit?: SyncQueueItem;
 };
 
 type ProjectUpdateDeletePayload = {
@@ -3181,8 +3187,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       const attempted = attemptedItemsById.get(item.id);
       if (!attempted || !sameQueueRevision(item, attempted)) return [item];
       if (resolvedIds.has(item.id)) {
-        if (itemOutcomes[item.id] === 'uploaded') noteProjectUpdateVersionInCloud(item);
-        return [];
+        if (itemOutcomes[item.id] !== 'uploaded') return [];
+        noteProjectUpdateVersionInCloud(item);
+        return newerEditQueuedAfter(item);
       }
       return [retriedItemsById.get(item.id) ?? item];
     });
@@ -3226,6 +3233,19 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     errors,
     heldErrorCount,
   };
+}
+
+/**
+ * The newer edit Keep Phone's kept copy carries, queued in the write that
+ * takes the landed copy off (whole-app audit A7 pass 11 L-2): the queue on
+ * disk always holds it. Stamped now, after the kept copy, so it goes up
+ * next; its photos still wait as they did.
+ */
+function newerEditQueuedAfter(landed: SyncQueueItem): SyncQueueItem[] {
+  const newer = landed.entity === 'project_update' ? (landed.payload as Partial<ProjectUpdateRecordPayload>).newerEdit : undefined;
+  if (!newer || !isRecord(newer)) return [];
+  const now = new Date().toISOString();
+  return [{ ...newer, createdAt: now, changedAt: now }];
 }
 
 function accountChangedDuringUpload(
@@ -4241,31 +4261,34 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // was put over it, and once that went up a refresh before the waiting-
   // update sync showed it as Sent; the newer edit was lost. It is put back:
   // as it was when the choice fails ("Neither copy was changed"), and after
-  // the kept copy when it lands, so it goes up next.
-  const newerEdit = (await getOfflineQueue()).find(item =>
-    item.id === queueItemId && isNewerQueuedPhoneEdit(item, localUpdateData)) ?? null;
-  const written = await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
-    id: `project-update-${localPayload.id}`,
-    entity: 'project_update',
-    operation: 'update',
-    payload: { ...localPayload, updateData: localUpdateData },
-    changedAt: new Date().toISOString(),
-    autoUpload: false,
+  // the kept copy when it lands, so it goes up next. It travels in the kept
+  // copy's own record, written in the same queue write (A7 pass 11 L-2):
+  // held in memory, it was lost when the app was killed while the kept copy
+  // uploaded, or before it was queued again. One an earlier kept copy still
+  // carries (queued, or recorded with this conflict) is still one.
+  const { newerEdit: carried, ...conflictPayload } = localPayload;
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  const { written, newerEdit } = await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueItemId);
+    const queuedCarried = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.newerEdit;
+    const newer = [existing, queuedCarried, carried].find((item): item is SyncQueueItem =>
+      isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, localUpdateData)) ?? null;
+    const kept: SyncQueueItem = {
+      id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
+      payload: { ...conflictPayload, updateData: localUpdateData, ...(newer ? { newerEdit: newer } : {}) },
+      createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
+    };
+    const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
+    return { nextQueue, result: { written: kept, newerEdit: newer }, persist: nextQueue !== queue };
   });
-  const exact = await uploadExactQueueItem(queueItemId);
+  const exact = await uploadExactQueueItem(queueItemId, written);
   if (!exact.landed) {
-    if (newerEdit) await putBackNewerQueuedPhoneEdit(newerEdit, written as SyncQueueItem);
+    if (newerEdit) await putBackNewerQueuedPhoneEdit(newerEdit, written);
     throw new Error(exact.error || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
-  if (newerEdit) {
-    const now = new Date().toISOString();
-    await enqueuePendingChange({
-      ...newerEdit, createdAt: now, changedAt: now, autoUpload: false,
-      keepExisting: existing => existing, // queued meanwhile: newer still
-    });
-  }
   return localUpdateData;
 }
 
@@ -4318,13 +4341,19 @@ async function withDocumentChangesSinceConflict(updateId: string): Promise<(copy
  * after they had in fact written the chosen copy). One more pass when an
  * older in-flight upload missed the item, as for tasks.
  */
-async function uploadExactQueueItem(queueItemId: string): Promise<{ landed: boolean; error: string | null }> {
+async function uploadExactQueueItem(
+  queueItemId: string,
+  /** The record written, when what replaces it once it lands is not it (Keep Phone's newer edit, A7 pass 11 L-2). */
+  written?: SyncQueueItem,
+): Promise<{ landed: boolean; error: string | null }> {
+  const stillQueued = async () => (await getOfflineQueue()).find(item =>
+    item.id === queueItemId && (!written || sameStagedProjectUpdateRecord(item, written)));
   let result = await uploadPendingChanges();
-  let remaining = (await getOfflineQueue()).find(item => item.id === queueItemId);
+  let remaining = await stillQueued();
   let outcome = result.itemOutcomes?.[queueItemId];
   if (remaining && (!outcome || outcome === 'uploaded')) {
     result = await uploadPendingChanges();
-    remaining = (await getOfflineQueue()).find(item => item.id === queueItemId);
+    remaining = await stillQueued();
     outcome = result.itemOutcomes?.[queueItemId];
   }
   const landed = outcome === 'uploaded' && !remaining;

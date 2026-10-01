@@ -2101,3 +2101,83 @@ describe('Keep Cloud whose save fails leaves the phone\'s waiting work as it was
     expect(await getSyncConflicts()).toHaveLength(1);
   });
 });
+
+/**
+ * A7 pass 11 L-2: Keep Phone put the conflict's copy over a newer edit still
+ * waiting in the queue, and kept that edit only in memory: it put it back
+ * on a failure, or queued it again after the kept copy landed. Killed in
+ * either window, the queue on disk held only the older copy; after a
+ * relaunch the upload pass sent it, a refresh before the waiting-update
+ * sync showed it on the card as Sent, and nothing sent the newer edit.
+ */
+describe('Keep Phone keeps the newer phone edit on disk while it runs (audit A7 pass 11 L-2)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const CONFLICTS_KEY = 'projectVisionAI.syncConflicts.v1';
+  const asyncStorage = () => (jest.requireMock('@react-native-async-storage/async-storage') as { default: { setItem: jest.Mock } }).default;
+
+  /** A relaunch with only what was on disk, then an upload pass and a refresh before the waiting-update sync. */
+  async function relaunchFrom(onDisk: Map<string, string>, phone: Device) {
+    mockStorage.clear();
+    onDisk.forEach((value, key) => mockStorage.set(key, value));
+    resetFieldUpdateSyncMemoryForTests();
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(await getSyncConflicts()).toEqual([]);
+  }
+
+  it('killed while the kept copy uploads: the newer edit still reaches the card and the cloud', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    let onDisk: Map<string, string> | undefined;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async () => {
+      onDisk = new Map(mockStorage); // the app is killed here: nothing after reaches the disk
+      return { ok: false, configured: true, stubbed: false, error: 'Network request failed' };
+    });
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local').catch(() => undefined);
+    await relaunchFrom(onDisk!, phone);
+  });
+
+  it('killed once the kept copy landed and the conflict was cleared: the same', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    const setItem = asyncStorage().setItem.getMockImplementation()!;
+    let onDisk: Map<string, string> | undefined;
+    asyncStorage().setItem.mockImplementation(async (key: string, value: string) => {
+      await setItem(key, value);
+      if (key === CONFLICTS_KEY && value === '[]') onDisk = new Map(mockStorage); // the last such write before Keep Phone returns
+    });
+    try {
+      await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local');
+    } finally {
+      asyncStorage().setItem.mockImplementation(setItem);
+    }
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    await relaunchFrom(onDisk!, phone);
+  });
+
+  it('killed while the kept copy uploads, then Keep Phone again after the relaunch: the newer edit still follows it', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await editAndSave(phone, { notes: NEWER });
+    let onDisk: Map<string, string> | undefined;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async () => {
+      onDisk = new Map(mockStorage);
+      return { ok: false, configured: true, stubbed: false, error: 'Network request failed' };
+    });
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local').catch(() => undefined);
+    mockStorage.clear();
+    onDisk!.forEach((value, key) => mockStorage.set(key, value));
+    resetFieldUpdateSyncMemoryForTests();
+
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: PHONE_NOTE });
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+  });
+});
