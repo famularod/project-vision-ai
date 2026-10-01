@@ -4168,7 +4168,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     await removeProjectUpdateFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
     await removeProjectUpdateFromSyncQueue(conflict.localId);
-    const currentCopy = current.data?.updateData;
+    // And read again now (A4 pass 13 L1): an iPad save that landed while
+    // this phone's work was withdrawn and that upload pass ran went under
+    // the copy read before it. The first read stays the check that the
+    // cloud can be reached, and stands in when this one fails.
+    const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
     const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
       sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
       ? currentCopy : cloudUpdate;

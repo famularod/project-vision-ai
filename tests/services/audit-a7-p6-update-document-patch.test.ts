@@ -2009,3 +2009,45 @@ describe('a phone edit saved offline does not go over a newer iPad edit (audit A
     expect(await getSyncConflicts()).toHaveLength(1);
   });
 });
+
+/**
+ * A4 pass 13 L1: Keep Cloud read the cloud's copy before it withdrew this
+ * phone's waiting work and ran its own upload pass, then wrote the copy it
+ * had read: an iPad save that landed during that pass was overwritten.
+ */
+describe('Keep Cloud keeps an iPad save that lands while it runs (audit A4 pass 13 L1)', () => {
+  const IPAD_THIRD_NOTE = 'Pour moved to Thursday (saved on the iPad during Keep Cloud)';
+  const cloudReads = () => (jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock })
+    .getProjectUpdateSyncMetadata;
+  /** The iPad saves again just after Keep Cloud's first read of the cloud. */
+  function iPadSavesAfterTheFirstRead() {
+    const read = cloudReads().getMockImplementation()!;
+    cloudReads().mockImplementationOnce(async (id: string) => {
+      const first = await read(id);
+      putInCloud({ ...inCloud(id), notes: IPAD_THIRD_NOTE }, new Date().toISOString());
+      return first;
+    });
+  }
+
+  it('the iPad\'s save stays in the cloud and comes to the phone', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    iPadSavesAfterTheFirstRead();
+    await chooseInSettings(phone, conflict, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_THIRD_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_THIRD_NOTE, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('the second read fails: the first read\'s copy is written, as before', async () => {
+    const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+    await iPadEditsNow(IPAD_SECOND_NOTE);
+    const read = cloudReads().getMockImplementation()!;
+    cloudReads()
+      .mockImplementationOnce(read)
+      .mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'Network request failed' });
+    await chooseInSettings(phone, conflict, 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
+  });
+});
