@@ -357,14 +357,23 @@ export function scheduleProgressCarriedToShownTasks({
     if (progressStatedAt(hidden) <= progressStatedAt(shown)) return [];
     if (!scheduleProgressIsManagers(shown) && percentOf(hidden) < percentOf(shown)) return [];
     if (percentOf(hidden) === percentOf(shown) && hidden.status === shown.status) return [];
+    // Whole-app audit A5 pass 11 L-1 (30 Sep 2026): sync orders copies by
+    // progressConfirmedAt (DAVEScheduleRecovery). The shown row given David's
+    // older 40% back at a lookahead delete (28 Sep) took his newer 70% with
+    // its own older stamp (27 Sep), so the next sync kept the cloud's 40%.
+    // Confirmed now, with when David judged it kept (progressJudgment).
+    const restamped = timeOf(hidden.progressConfirmedAt) < timeOf(shown.progressConfirmedAt);
+    const judgedAt = scheduleProgressJudgedAt(hidden);
     return [{
       ...shown,
       percentComplete: hidden.percentComplete,
       status: hidden.status,
       progressSource: hidden.progressSource ?? null,
-      progressConfirmedAt: hidden.progressConfirmedAt ?? null,
+      progressConfirmedAt: restamped ? now : hidden.progressConfirmedAt ?? null,
       progressConfirmedBy: hidden.progressConfirmedBy ?? null,
-      ...(hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
+      ...(restamped
+        ? { progressJudgment: judgedAt && judgedAt !== now ? { judgedAt, givenBackAt: now } : undefined }
+        : hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
       completionVerification: hidden.completionVerification ?? null,
       updatedAt: now,
     }];
