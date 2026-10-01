@@ -190,9 +190,11 @@ function talkNamedProjects(
   const all = [...open, ...closed];
   const exempt = ecosProjectNumberExemptSpans(transcript);
   const closedSet = new Set(closed);
+  // Audit A9 pass 9 L3: a task update counts a closed name anywhere.
+  const taskUpdate = classifyDAVEConversation(transcript).intent === 'task_update';
   const occurrences = all.flatMap(name => nameOccurrences(transcript, name)
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
-    .filter(([start, end]) => !closedSet.has(name) || closedNameNamesProject(name, transcript, start, end))
+    .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, transcript, start, end))
     .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
   // "Oak Street" names one project even when another is called "Oak".
   const exact = occurrences.filter(occurrence => !occurrences.some(other =>
@@ -233,15 +235,19 @@ function talkNamedProjects(
  * Audit A9 pass 8 L5: whether a closed project's name found at text[start,
  * end) names that project. A closed project named "Main" refused "Is the main
  * electrical done?". A name of two or more words counts wherever it is named
- * in full; a one-word name only with "project", "job", "at" or "for" before
- * it ("at Harbor", "project Main") or "project" or "job" after it ("the Harbor
- * project"), as for the closed 3-digit numbers in audit A9 pass 4 L3. Its
- * number, if it has one, still names it (talkNamedProjects reads numbers
+ * in full; a one-word name only with "project", "job", "at", "for", "on",
+ * "of", "about", "to", "from" or "with" before it ("at Harbor", "status of
+ * Harbor"; audit A9 pass 9 L3 added the last six), at the start or right
+ * after "how", "is", "what's" or "status" ("Harbor is behind?", "How is
+ * Harbor going?"; pass 9 L3), or with "project" or "job" after it ("the
+ * Harbor project"), as for the closed 3-digit numbers in audit A9 pass 4 L3.
+ * Its number, if it has one, still names it (talkNamedProjects reads numbers
  * separately). Open projects are matched by name anywhere, as before.
  */
 function closedNameNamesProject(name: string, text: string, start: number, end: number) {
   if (normalize(name).split(' ').length > 1) return true;
-  return /\b(?:project|job|at|for)\s*(?:(?:no|number)\.?\s*)?[:#]?\s*$/i.test(text.slice(0, start)) ||
+  return /(?:^|\b(?:project|job|at|for|on|of|about|to|from|with|how|is|what['’]?s|status)\s*(?:(?:no|number)\.?\s*)?[:#]?)\s*$/i
+    .test(text.slice(0, start)) ||
     /^\s+(?:project|job)\b/i.test(text.slice(end));
 }
 

@@ -284,3 +284,47 @@ describe('audit A9 pass 9 L2: "PM" after a number is not read as a clock time', 
     expect(mentionedDAVEProject(question, [SELECTED, project])).toBeNull();
   });
 });
+
+describe('audit A9 pass 9 L3: a closed one-word project name after on/of/about/to/from/with, or as the subject, names it', () => {
+  const talkReopen = (closed: string) =>
+    `Project 2321 is selected, but ${closed} is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.`;
+
+  it.each([
+    'What is left on Harbor?',
+    "What's the status of Harbor?",
+    'What’s the status of Harbor?',
+    'How is Harbor going?',
+    'Harbor is behind schedule?',
+    'Is Harbor done?',
+    'What do we know about Harbor?',
+    'Did the crane go to Harbor?',
+    'Did the crane come back from Harbor?',
+    'Are we done with Harbor?',
+  ])('"%s" with Harbor closed is refused in Talk', question => {
+    expect(mentionedDAVEProject(question, PROJECTS, ['Harbor'])).toBeNull();
+    expect(talkAnswer(question, PROJECTS, ['Harbor'])).toBe(talkReopen('Harbor'));
+  });
+
+  it.each([
+    'Is the harbor crane down?',
+    'Is the main electrical done?',
+    'Did the crew finish the main line at the harbor side?',
+  ])('"%s" with Harbor and Main closed is still answered', question => {
+    expect(talkAnswer(question, PROJECTS, ['Harbor', 'Main'])).toBeNull();
+  });
+
+  it('a Talk task update counts a closed one-word name anywhere', async () => {
+    expect(talkAnswer('Mark Harbor framing complete', PROJECTS, ['Harbor'])).toBe(talkReopen('Harbor'));
+    // Accepted: an everyday word that is a closed project's name is refused in a task update.
+    expect(talkAnswer('Mark main electrical complete', PROJECTS, ['Main'])).toBe(talkReopen('Main'));
+    const tasks: Task[] = [{ id: 'task-2321', projectName: SELECTED, taskName: 'Framing' }];
+    const h = talkHarness(PROJECTS, ['Harbor'], SELECTED, tasks);
+    await h.handleTalkInput('Mark Harbor framing complete');
+    expect(h.alert).toHaveBeenCalledWith('One detail needed', talkReopen('Harbor'));
+    expect(h.taskActions).toEqual([]);
+  });
+
+  it('a note keeps the earlier rule: the everyday word alone is pre-confirmed', () => {
+    expect(noteDraft('The main electrical is done.', SELECTED, PROJECTS, ['Main']).recommendedProject.confirmed).toBe(true);
+  });
+});
