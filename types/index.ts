@@ -768,14 +768,17 @@ export type ScheduleLookaheadOverlay = {
    * missing: approved before 30 Sep 2026 audit A5 pass 5 H1, not noted).
    * datesReplacedByMaster: a newer master changed the task's dates since
    * this lookahead, so deleting a later lookahead never gives its dates back
-   * (whole-app audit A6 pass 19 M1); missing on an entry noted before.
+   * (whole-app audit A6 pass 19 M1); missing on an entry noted before. The
+   * import batch id of the master that changed them (whole-app audit A5 pass
+   * 20 P1): they stay replaced only while that master, or one newer, is
+   * current; true on an entry marked before, replaced whatever is current.
    */
   lookaheads: {
     batchId: string;
     startDate: string;
     finishDate: string;
     percentComplete?: number | null;
-    datesReplacedByMaster?: boolean;
+    datesReplacedByMaster?: boolean | string;
   }[];
 };
 

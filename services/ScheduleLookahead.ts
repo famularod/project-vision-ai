@@ -343,6 +343,14 @@ export function scheduleRowRepeatsMasterBeforeLookahead(
  * deleting a later lookahead falls back only to one not replaced, else to the
  * master's dates (owner answer Q22: a newer master's dates replace older
  * lookahead dates).
+ *
+ * Whole-app audit A5 pass 20 P1 (1 Oct 2026): the mark said only "replaced".
+ * Master G put Framing on lookahead L2's dates and marked L1; David made
+ * master F current again and deleted L2, and Framing stayed on G's dates,
+ * though G was not current and L1 is newer than F (the same for G uploaded
+ * on the web and never made current). The mark is now the import batch id of
+ * the master that changed the dates (the row's), and the delete counts it
+ * only while that master, or one newer, is current (datesReplacedAtDelete).
  */
 export function scheduleTaskMasterRestated(
   task: ScheduleItem,
@@ -368,6 +376,8 @@ export function scheduleTaskMasterRestated(
         ...(managers ? { masterProgressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, masterProgressConfirmedAt: approvedAt } : {}),
       };
   const datesChanged = !sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, days);
+  // Which master replaced them (A5 pass 20 P1); a row with no import says only that one did, as before.
+  const replacedBy = (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '') || true;
   const next: ScheduleLookaheadOverlay = {
     ...overlay,
     masterStartDate: days.startDate,
@@ -378,7 +388,7 @@ export function scheduleTaskMasterRestated(
     ...(datesChanged ? {
       lookaheads: overlay.lookaheads.map(entry => entry.datesReplacedByMaster || !olderThanMaster(entry)
         ? entry
-        : { ...entry, datesReplacedByMaster: true }),
+        : { ...entry, datesReplacedByMaster: replacedBy }),
     } : {}),
   };
   if (
@@ -410,9 +420,12 @@ function tasksAfterLookaheadDeleted(
   items: readonly ScheduleItem[],
   document: ReferenceDocument,
   updatedAt: string,
+  /** The schedules saved after the delete, when known (A5 pass 20 P1). */
+  documents?: readonly ReferenceDocument[],
 ): LookaheadDeleted[] {
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
+  const replaced = datesReplacedAtDelete(items, documents);
   return items.flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
@@ -421,7 +434,8 @@ function tasksAfterLookaheadDeleted(
     const remaining = entries.filter((_, position) => position !== index);
     const top = index === entries.length - 1 && sameDates(item, entries[index]);
     // An earlier lookahead's dates only when no newer master replaced them (A6 pass 19 M1); else the master's.
-    const back = [...remaining].reverse().find(entry => !entry.datesReplacedByMaster) ||
+    // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
+    const back = [...remaining].reverse().find(entry => !replaced(entry, item)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
@@ -460,6 +474,46 @@ function tasksAfterLookaheadDeleted(
 }
 
 /**
+ * Whether a lookahead's dates still stand replaced by a master when a later
+ * lookahead is deleted (whole-app audit A5 pass 20 P1, 1 Oct 2026): while the
+ * master that replaced them is the one current for the task's project, or a
+ * master newer than it is (owner answer Q22: a newer master's dates replace
+ * older lookahead dates). An older master made current again (Set Active,
+ * Make Current), or a master uploaded on the web and never made current,
+ * leaves the lookahead's dates in effect. Only for a task shown after the
+ * delete: a row the current master hides shows again only when one of its
+ * own masters is made current, so it reads the mark as before. As before
+ * (A6 pass 19 M1): a mark that names no master (true), one whose master is
+ * no longer saved, the schedules not given, or no master current for the
+ * project.
+ */
+function datesReplacedAtDelete(
+  items: readonly ScheduleItem[],
+  documents?: readonly ReferenceDocument[],
+): (entry: LookaheadEntry, task: ScheduleItem) => boolean {
+  const current = documents ? currentScheduleDocumentsByProject(documents) : null;
+  let shownIds: Set<string> | null = null;
+  const shownAfter = (task: ScheduleItem) => {
+    shownIds ||= new Set(selectAuthoritativeScheduleItems({
+      scheduleItems: [...items],
+      scheduleDocuments: [...(documents || [])],
+    }).map(item => item.id));
+    return shownIds.has(task.id);
+  };
+  return (entry, task) => {
+    const by = entry.datesReplacedByMaster;
+    if (!by) return false;
+    if (by === true || !documents || !current || !shownAfter(task)) return true;
+    const master = documents.find(saved => key(saved.importBatchId) === key(by));
+    const shown = current.get(scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || ''));
+    if (!master || !shown || shown.id === master.id) return true;
+    const shownAt = timeOf(shown.importedAt);
+    const masterAt = timeOf(master.importedAt);
+    return !shownAt || !masterAt || shownAt >= masterAt;
+  };
+}
+
+/**
  * When a percent a lookahead's delete gives back is confirmed (whole-app
  * audit A5 pass 12 K2, 1 Oct 2026). It was confirmed at the delete, and sync
  * orders David's percents by that confirmation: Master 20%, David 40% (10
@@ -490,8 +544,10 @@ export function scheduleItemsAfterLookaheadDeleted(
   items: readonly ScheduleItem[],
   document: ReferenceDocument,
   updatedAt = new Date().toISOString(),
+  /** The schedules saved after the delete: which master is current (A5 pass 20 P1). */
+  documents?: readonly ReferenceDocument[],
 ): ScheduleItem[] {
-  return tasksAfterLookaheadDeleted(items, document, updatedAt).map(entry => entry.item);
+  return tasksAfterLookaheadDeleted(items, document, updatedAt, documents).map(entry => entry.item);
 }
 
 function timeOf(value: string | null | undefined): number {
@@ -573,7 +629,7 @@ export function scheduleItemsAfterScheduleDeleted({
   documents: readonly ReferenceDocument[];
   updatedAt?: string;
 }>): ScheduleItem[] {
-  const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
+  const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
   const kept = items.map(item => changed.get(item.id) || item);
   const shown = selectAuthoritativeScheduleItems({
     scheduleItems: kept,
@@ -700,13 +756,15 @@ export function scheduleLookaheadDeleteNote(
   if (!scheduleDocumentAddsToMaster(document)) return '';
   const removedIds = new Set(removed.map(item => item.id));
   const kept = items.filter(item => !removedIds.has(item.id));
-  const shown = documents
+  const after = documents?.filter(saved => saved.id !== document.id);
+  const shown = after
     ? new Set(selectAuthoritativeScheduleItems({
       scheduleItems: kept,
-      scheduleDocuments: documents.filter(saved => saved.id !== document.id),
+      scheduleDocuments: after,
     }).map(item => item.id))
     : null;
-  const back = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '')
+  // Which master is current after the delete, as the delete reads it (A5 pass 20 P1).
+  const back = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after)
     .filter(entry => entry.datesBack || entry.percentBack);
   if (back.length === 0) return '';
   const dates = back.filter(entry => entry.datesBack).length;
