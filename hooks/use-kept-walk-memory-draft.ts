@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useSyncExternalStore } from 'react';
 
 import { NativeWorkspaceOwnerContext } from '../components/native-workspace-owner';
-import type { DAVECaptureMemory } from '../services/DAVECaptureMemory';
+import type { DAVECaptureMemory, DAVECaptureRecommendation } from '../services/DAVECaptureMemory';
 import { normalizeConfirmedMemory } from '../services/DAVECaptureMemoryRepository';
 import { forgetKeptDrafts, keepDraft, readKeptDraft } from '../services/KeptDraftStore';
 
@@ -70,19 +70,38 @@ export function forgetKeptWalkMemoryDrafts() {
 /**
  * A kept memory read back from the phone, or null. It is checked as a
  * confirmed memory would be before saving, then returned as the draft it is.
+ * Its project and location suggestions are checked as if confirmed and come
+ * back as they were: Project Walk keeps a suggested location unconfirmed, and
+ * that check dropped every such memory (A2 pass 5 L1, 30 Sep 2026), so
+ * Confirm Memory now opens with it and still asks for the location.
  */
 function keptWalkMemory(value: unknown): DAVECaptureMemory | null {
   if (!value || typeof value !== 'object') return null;
   const memory = value as DAVECaptureMemory;
   if (memory.status !== 'draft') return null;
+  const asConfirmed = (suggestion: unknown) =>
+    suggestion && typeof suggestion === 'object' ? { ...suggestion, confirmed: true } : suggestion;
+  const asKept = (checked: DAVECaptureRecommendation, kept: unknown): DAVECaptureRecommendation => ({
+    ...checked,
+    confirmed: Boolean(checked.value && (kept as { confirmed?: unknown } | null)?.confirmed === true),
+  });
   try {
     const checked = normalizeConfirmedMemory({
       ...memory,
+      recommendedProject: asConfirmed(memory.recommendedProject),
+      recommendedLocation: asConfirmed(memory.recommendedLocation),
       status: 'confirmed',
       confirmedAt: memory.createdAt,
       cancelledAt: null,
     });
-    return { ...checked, status: 'draft', confirmedAt: null, cancelledAt: null };
+    return {
+      ...checked,
+      recommendedProject: asKept(checked.recommendedProject, memory.recommendedProject),
+      recommendedLocation: asKept(checked.recommendedLocation, memory.recommendedLocation),
+      status: 'draft',
+      confirmedAt: null,
+      cancelledAt: null,
+    };
   } catch {
     return null;
   }
