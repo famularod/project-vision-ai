@@ -218,16 +218,24 @@ describe('audit A9 pass 7 L5: a spaced "A" is never amps; a glued "A" is unless 
     expectRefusedClosed(question, OTHER, '2375');
   });
 
-  it('"panel 200 A?" now names project 200 (the accepted trade-off: write 200A or 200 amps)', () => {
+  it('"panel 200 A?" now names project 200 (the accepted trade-off: write 200 amps)', () => {
     expectRefusedOpen('Is the panel 200 A?', [SELECTED, '200 Oak Street'], '200', '200 Oak Street');
-    expectAllowed('Is the panel 200A?', [SELECTED, '200 Oak Street']);
+    // Audit A9 pass 9 L5: a glued A is never amps either (was allowed).
+    expectRefusedOpen('Is the panel 200A?', [SELECTED, '200 Oak Street'], '200', '200 Oak Street');
   });
 
   it.each([
+    // Audit A9 pass 9 L5: allowed as amps until then; a glued A is never amps.
     'Is the breaker 2375A?',
     'Is the main 2375A.',
     'Is the main 2375A, 3 phase?',
     'Is the 2375A main breaker in?',
+  ])('"%s" names 2375 since pass 9 L5', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+    expectRefusedClosed(question, OTHER, '2375');
+  });
+
+  it.each([
     'Is the panel 2375 amp?',
     'Is the panel 2375 amps?',
     'Is the panel 2375 amperes?',

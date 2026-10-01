@@ -350,3 +350,34 @@ describe('audit A9 pass 9 L4: in a feet-inch pair the inches are one or two digi
     expect(mentionedDAVEProject(question, PROJECTS)).toBeNull();
   });
 });
+
+describe('audit A9 pass 9 L5: a glued "A" after a project\'s number is never amps', () => {
+  const A_STREET = '2375 A Street';
+  const PHASE = '2375A Phase 2';
+
+  it('"Is 2375A done?" names "2375 A Street"', () => {
+    expect(desktop('Is 2375A done?', [SELECTED, A_STREET])).toBe(switchOnDesktop('2375'));
+    expect(mentionedDAVEProject('Is 2375A done?', [SELECTED, A_STREET])).toBe(A_STREET);
+    expect(desktop('Is 2375A done?', [SELECTED], [A_STREET])).toBe(
+      'Project 2321 is selected, but 2375 is a closed project. Reopen it in the Vitruvius iPhone or iPad app, then select it above and ask again.',
+    );
+  });
+
+  it('"2375 A Street" and "2375A Phase 2" do not collide: a glued "2375A" names 2375A', () => {
+    expect(desktop('Is 2375A done?', [SELECTED, A_STREET, PHASE])).toBe(switchOnDesktop('2375A'));
+    expect(mentionedDAVEProject('Is 2375A done?', [SELECTED, A_STREET, PHASE])).toBe(PHASE);
+    expect(desktop('Is 2375A done?', [SELECTED, A_STREET, PHASE], [], PHASE)).toBeNull();
+    expect(desktop('Is 2375A done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
+    expect(desktop('Is 2375 done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBeNull();
+    // Accepted: "2375 A" reads as 2375A too, so it is refused on 2375 A Street while 2375A Phase 2 exists.
+    expect(desktop('Is 2375 A Street done?', [SELECTED, A_STREET, PHASE], [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
+  });
+
+  it('amps after a project\'s number are written as a word; "200A" names the project (accepted)', () => {
+    expect(desktop('Is the breaker 200A?', [SELECTED, '200 Oak Street'])).toBe(switchOnDesktop('200'));
+    expect(desktop('Is the breaker 200 amps?', [SELECTED, '200 Oak Street'])).toBeNull();
+    expect(desktop('Is the breaker 200 amp?', [SELECTED, '200 Oak Street'])).toBeNull();
+    // A number that is no project's is never refused, glued A or not.
+    expect(desktop('Is the breaker 400A?', [SELECTED, '200 Oak Street'])).toBeNull();
+  });
+});

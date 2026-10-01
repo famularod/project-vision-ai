@@ -417,8 +417,8 @@ describe('audit A9 pass 8 L7: a project number with one letter glued to it ("237
     expect(phone('What is left at 2375A?', [SELECTED], [A])).toBe(reopenOnPhone('2375A'));
   });
 
-  it('"2375A" is still amps when no project is lettered', () => {
-    expect(phone('Is the breaker 2375A?', PROJECTS)).toBeNull();
+  it('"2375A" names 2375 when no project is lettered (audit A9 pass 9 L5: a glued A is never amps; was allowed)', () => {
+    expect(phone('Is the breaker 2375A?', PROJECTS)).toBe(switchOnPhone('2375'));
   });
 
   it('two projects 2375A and 2375B share 2375: a bare "2375" refuses as ambiguous and Talk does not move', () => {

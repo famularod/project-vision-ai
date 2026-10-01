@@ -91,7 +91,7 @@ describe('audit A9 pass 6 L1: a spaced capital "A" before a word is not amps', (
     'Is the service 2375 A or 2375 V?',
     // Audit A9 pass 7 L5: a spaced " A" is never amps, so these four, allowed
     // here as amps before punctuation or the end until then, are refused too
-    // (the accepted trade-off; "200A" and "200 amps" stay amps).
+    // (the accepted trade-off; "200 amps" stays amps, and "200A" did until pass 9 L5).
     'Is the main 2375 A.',
     'Is the main 2375 A, 3 phase?',
     'Is the main 2375 A',
@@ -103,11 +103,19 @@ describe('audit A9 pass 6 L1: a spaced capital "A" before a word is not amps', (
     expectRefusedOpen('Is the panel 200 A?', [SELECTED, '200 Oak Street'], '200', '200 Oak Street');
   });
 
+  // Audit A9 pass 9 L5: a glued A is never amps ("Is 2375A done?" hid the
+  // project "2375 A Street"), so these four, allowed here until then, are
+  // refused: the accepted trade-off; write "200 amps".
   it.each([
-    ['Is the panel 200A?', [SELECTED, '200 Oak Street']],
-    ['Is the main 2375A.', PROJECTS],
-    ['Is the main 2375A, 3 phase?', PROJECTS],
-    ['Is the main breaker 2375A?', PROJECTS],
+    ['Is the panel 200A?', [SELECTED, '200 Oak Street'], '200', '200 Oak Street'],
+    ['Is the main 2375A.', PROJECTS, '2375', OTHER],
+    ['Is the main 2375A, 3 phase?', PROJECTS, '2375', OTHER],
+    ['Is the main breaker 2375A?', PROJECTS, '2375', OTHER],
+  ] as const)('"%s" names the project since pass 9 L5', (question, projects, number, project) => {
+    expectRefusedOpen(question, projects, number, project);
+  });
+
+  it.each([
     ['Is the service 208 V or 480 V?', [SELECTED, '208 Pine', '480 Bay']],
     ['Is the service 2375 V or 480 V?', PROJECTS],
   ] as const)('"%s" is amps or volts and is allowed', (question, projects) => {

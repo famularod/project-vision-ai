@@ -556,7 +556,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Is the 2375 A building topped out?', '2375'],
     ['Is 2375 A or B behind?', '2375'],
     ['Is the panel 2375 A?', '2375'],
-    ['Is the breaker 2375A?', null],
+    // Pass 9 L5: a glued A is never amps, so this flips to refused.
+    ['Is the breaker 2375A?', '2375'],
     ['Is the service 2375 V or 480 V?', null],
   ] as const).map(([question, refused]) => ({
     name: `pass 6 L1: "${question}" when 2375 is another project`,
@@ -760,8 +761,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Is 2375A and B done?', OWNER_PROJECTS, '2375'],
     ['Is the 2375A Tower topped out?', OWNER_PROJECTS, '2375'],
     ['Is the panel 200 A?', [SELECTED, '200 Oak Street'], '200'],
-    ['Is the panel 200A?', [SELECTED, '200 Oak Street'], null],
-    ['Is the main 2375A, 3 phase?', OWNER_PROJECTS, null],
+    // Pass 9 L5: a glued A is never amps, so these two flip to refused.
+    ['Is the panel 200A?', [SELECTED, '200 Oak Street'], '200'],
+    ['Is the main 2375A, 3 phase?', OWNER_PROJECTS, '2375'],
     ['Is the panel 200 amps?', [SELECTED, '200 Oak Street'], null],
     ['Is the panel 200 amperes?', [SELECTED, '200 Oak Street'], null],
   ] as const).map(([question, knownProjectNames, refused]) => ({
@@ -829,8 +831,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
   })),
   // Audit A9 pass 8 L7: "2375A Main" is project 2375, shown as 2375A. A bare
   // "2375" names both 2375A and 2375B; "2375B" names 2375B Main only; the
-  // selected project's own "2375A" or "2375" is never refused; "2375A" is
-  // amps only when no project is written that way.
+  // selected project's own "2375A" or "2375" is never refused; "2375A" was
+  // amps only when no project is written that way (until pass 9 L5).
   ...([
     ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
     ['Is 2375A done?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
@@ -840,7 +842,8 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['What is left at 2375?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], null, undefined],
     ['What is left at 2375B?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], '2375B', '2375A'],
     ['What is left at 2321?', '2375A Main', [SELECTED, '2375A Main'], '2321', '2375A'],
-    ['Is the breaker 2375A?', SELECTED, OWNER_PROJECTS, null, undefined],
+    // Pass 9 L5: a glued A is never amps, so this flips to refused.
+    ['Is the breaker 2375A?', SELECTED, OWNER_PROJECTS, '2375', undefined],
   ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
     name: `pass 8 L7: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
@@ -863,6 +866,21 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['What is left at 2375-B?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375B', undefined],
   ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
     name: `pass 9 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  // Audit A9 pass 9 L5: a glued A is never amps, so "Is 2375A done?" names
+  // "2375 A Street" (project 2375), or "2375A Phase 2" when that exists.
+  ...([
+    ['Is 2375A done?', SELECTED, [SELECTED, '2375 A Street'], '2375', undefined],
+    ['Is 2375A done?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375A', undefined],
+    ['Is 2375A done?', '2375 A Street', [SELECTED, '2375 A Street'], null, undefined],
+    ['Is the breaker 400A?', SELECTED, OWNER_PROJECTS, null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 9 L5: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
     projectName,
     question,
     knownProjectNames,

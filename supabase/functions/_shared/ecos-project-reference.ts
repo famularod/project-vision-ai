@@ -21,9 +21,10 @@
  * 2375; pass 6 L4), unless it is written as one of five things
  * (EXEMPT_PATTERNS below):
  *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or V, m, %, °, a
- *      glued A, a prime mark) right after it, or a feet-inch pair with both
- *      marks: "4000 psi", "2375mm", "200 bags", "200A", "12'-6\"" (a lone
- *      ' or " is not a measurement; audit A9 pass 8);
+ *      prime mark) right after it, or a feet-inch pair with both marks:
+ *      "4000 psi", "2375mm", "200 bags", "200 amps", "12'-6\"" (a lone ' or "
+ *      is not a measurement; audit A9 pass 8; since pass 9 L5 a glued "200A"
+ *      is not amps);
  *   2. money: "$2,375", "USD 2375", "2375 dollars";
  *   3. part of a full date or a clock time: "10/05/2026", "2026-10-05",
  *      "Oct 5, 2026", "5 Oct 2026", "7:30am", "0730 hrs" (a bare year, and
@@ -61,7 +62,7 @@ const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})([A-Za-z])(?![A-Za-z0-9
 /**
  * A number in a question: 3-6 digits, even with letters right after them
  * ("2375A", "2375B wing"), which used to hide the number (audit A9 pass 7 L5).
- * Letters that are a listed unit ("2375mm", "2375A" as amps) are exempt below.
+ * Letters that are a listed unit ("2375mm", "2375V") are exempt below.
  */
 const MENTIONED_NUMBER_SOURCE = String.raw`\b\d{3,6}(?!\d)`;
 
@@ -174,7 +175,7 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
  * comma group ("1,200" read as 200). Ask ECOS refuses it like any other; Talk
  * asks instead of moving to it (audit A9 pass 8 L2). `letter`: one letter
  * glued after the number ("2375B"), or ''. A number and letter that are a
- * project's identifier ("2375A" for "2375A Main") are never read as amps or
+ * project's identifier ("2375V" for "2375V Main") are never read as volts or
  * another exemption (audit A9 pass 8 L7). `spacedLetter`: else one letter
  * after a space or hyphen ("2375 B", "2375-B"), or '' (audit A9 pass 9 L1).
  */
@@ -254,22 +255,17 @@ const MEASUREMENT_WORD_UNITS = [
   'ea', 'bags', 'pcs',
 ];
 
-/** A word naming part of a site: after "2375A" the A is a wing or building letter. */
-const SITE_PART_WORDS = ['wing', 'building', 'bldg', 'side', 'tower', 'block', 'phase', 'unit', 'level', 'area'];
-const anyCase = (word: string) => word.replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`);
-/** After a glued A: a letter list (", B", "/B", " & B", " and B") or a site-part word. */
-const WING_LETTER_AFTER_A = String.raw`(?:\s*[,/&]\s*|\s+and\s+)[A-Z](?![A-Za-z])|\s+(?:${SITE_PART_WORDS.map(anyCase).join('|')})s?(?![A-Za-z])`;
-
 const EXEMPT_PATTERNS: readonly RegExp[] = [
-  // 1. Measurements: word units, then the case-sensitive one-letter units A
-  //    (amps), V (volts) and m (metres) with a space or the end after them
-  //    ("2375-A" and "2375 A/C" still name 2375). A is amps only glued to the
-  //    number ("2375A?", "a 200A main"), and not even then before a letter
-  //    list or a site-part word ("the 2375A wing", "2375A, B and C"); a
-  //    spaced " A" is never amps ("What is left at 2375 A?"; audit A9 pass 7
-  //    L5; write "200A" or "200 amps"). Then %, ° and the prime marks ′ and
-  //    ″ with a word or a hyphen after them ("2375′ run"); a mark that may
-  //    close a quotation ("at 2375′?", "2375′s") is not a measurement. Then a
+  // 1. Measurements: word units, then the case-sensitive one-letter units V
+  //    (volts) and m (metres) with a space or the end after them. A letter A
+  //    is never amps (write "200 amps"): audit A9 passes 7 L5, 8 L7 and 9 L5
+  //    each found a project the glued-A reading hid ("the 2375A wing",
+  //    "2375A Main", "Is 2375A done?" for "2375 A Street"), so it was
+  //    removed: "Is the breaker 200A?" now names project 200 when there is
+  //    one, and a number that is no project's is never refused anyway. Then
+  //    %, ° and the prime marks ′ and ″ with a word or a hyphen after them
+  //    ("2375′ run"); a mark that may close a quotation ("at 2375′?",
+  //    "2375′s") is not a measurement. Then a
   //    feet-inch pair with both marks, straight, curly or prime: "12'-6\"",
   //    "12' 6\"", "12'6\"", "12’-6”", "12′-6″", with one or two digits of
   //    inches ("12' 2375\"" names 2375; audit A9 pass 9 L4). Audit A9 pass
@@ -277,7 +273,7 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    "2375\"" or "2375'" names the project (four passes of quotation
   //    tracking each left a quotation misread; write "2375 in." or "2375 ft").
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
-  new RegExp(String.raw`${NUMBER}(?:A(?!${WING_LETTER_AFTER_A})| ?[Vm])(?=[\s.,;:!?)]|$)`, 'g'),
+  new RegExp(String.raw`${NUMBER} ?[Vm](?=[\s.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
   new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}[′″](?=\s[a-z0-9]|-)`, 'gi'),
   new RegExp(String.raw`${NUMBER}['’′]\s?-?\s?\d{1,2}(?:\.\d+)?["”″]`, 'g'),
