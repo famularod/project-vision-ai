@@ -893,7 +893,9 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
   // the name of a project numbered just that ("2375 A Street").
   ...([
     ['Is 2375 a priority this week?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], null, undefined],
-    ['Is 2375 A priority this week?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], null, undefined],
+    // Audit A9 pass 11 F1: a capital with a word after it that makes a
+    // project's identifier is the letter again (was null: answered).
+    ['Is 2375 A priority this week?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], '2375A', '2375'],
     ['What is left at 2375 A?', '2375 Main St', [SELECTED, '2375 Main St', '2375A Phase 2'], '2375A', '2375'],
     ['What is left on 2375 A Street?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
     ['What is left on 2375 A?', SELECTED, [SELECTED, '2375 A Street', '2375A Phase 2'], '2375', undefined],
@@ -905,6 +907,34 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 11 F1: a spaced capital with a word after it is the letter
+  // when the number and it are a known project's identifier (open or
+  // closed), unless it continues a plain project's own name.
+  ...([
+    ['Is 2375 B done?', '2375 Main St', [SELECTED, '2375 Main St', '2375B Annex'], '2375B', '2375'],
+    ['What is left on 2375 B wing?', SELECTED, [SELECTED, '2375 Main St', '2375B Annex'], '2375B', undefined],
+    ['Did 2375 B pass inspection?', '2375B Annex', [SELECTED, '2375 Main St', '2375B Annex'], null, undefined],
+    ['Is 2375 B done?', '2375 Main St', [SELECTED, '2375 Main St'], null, undefined],
+    ['Is 2375 b done?', '2375 Main St', [SELECTED, '2375 Main St', '2375B Annex'], null, undefined],
+    ['Is 2375 A Street done?', '2375 A Street', [SELECTED, '2375 A Street', '2375A Phase 2'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 11 F1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 11 F1: a closed lettered project named by a spaced capital before a word is refused as closed',
+    projectName: '2375 Main St',
+    question: 'Is 2375 B done?',
+    knownProjectNames: [SELECTED, '2375 Main St'],
+    closedProjectNames: ['2375B Annex'],
+    refused: '2375B',
+    refusedClosed: true,
+    refusedSelected: '2375',
+  },
   // Audit A9 pass 10 L2: a hyphen-joined letter in a project name is part of
   // its identifier ("2375-B Annex" is 2375B), as in a question.
   ...([

@@ -41,7 +41,11 @@ describe('audit A9 pass 10 L1: a spaced letter is part of the number only as a c
   const PHASE = '2375A Phase 2';
   const A_STREET = '2375 A Street';
 
-  it.each(['Is 2375 a priority this week?', 'Is 2375 A priority this week?', 'Is 2375 a.k.a. Main done?'])(
+  // Audit A9 pass 11 F1: a capital with a word after it is the letter again
+  // when the number and it are a project's identifier, so "Is 2375 A priority
+  // this week?" (capital A) left this list: it names 2375A Phase 2 (see
+  // audit-a9-pass11-project-numbers.test.ts). Lower-case "a" is still a word.
+  it.each(['Is 2375 a priority this week?', 'Is 2375 a.k.a. Main done?'])(
     '"%s" on 2375 Main St, with 2375A Phase 2, is answered in Ask ECOS and Talk',
     question => {
       expect(desktop(question, [SELECTED, MAIN, PHASE], [], MAIN)).toBeNull();
@@ -127,9 +131,10 @@ describe('audit A9 pass 10 L2: a hyphen-joined letter in a project name is part 
     },
   );
 
-  it('accepted: a spaced capital with a word after it is a word (L1), so "Is 2375 B done?" on the Annex names 2375 Main St', () => {
-    expect(desktop('Is 2375 B done?', PROJECTS, [], ANNEX)).toBe(switchOnDesktop('2375', '2375B'));
-  });
+  // Audit A9 pass 11 F1: the accepted pin "Is 2375 B done?" on the Annex
+  // names 2375 Main St was removed: a capital with a word after it is the
+  // letter when it makes a project's identifier, so the Annex's own question
+  // is answered there (see audit-a9-pass11-project-numbers.test.ts).
 
   it('on 2321, a bare "2375" names 2375 Main St, or the Annex when there is no plain 2375', () => {
     expect(desktop('What is left at 2375?', PROJECTS)).toBe(switchOnDesktop('2375'));

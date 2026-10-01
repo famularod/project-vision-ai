@@ -184,9 +184,12 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+(?!\d)`;
  * after a hyphen ("2375-B"), or one capital after a space standing alone
  * (the end, punctuation or a space and a non-letter after it: "2375 B?",
  * "2375 B 2nd floor"), or '' (audit A9 pass 9 L1). Audit A9 pass 10 L1: a
- * lower-case or followed letter is a word ("Is 2375 a priority?", "2375 A
- * Street"), and a letter that continues the name of a project numbered just
- * this ("2375 A?" for "2375 A Street") is that project's, so neither is one.
+ * lower-case letter is a word ("Is 2375 a priority?"), and a letter that
+ * continues the name of a project numbered just this ("2375 A?" for "2375 A
+ * Street") is that project's, so neither is one. Audit A9 pass 11 F1: a
+ * capital with a word after it is one only when the number and it are a
+ * known project's identifier ("Is 2375 B done?" with "2375B Annex"; else
+ * "Is 2375 A priority?" is a word).
  */
 export function ecosProjectNumberMentionsAt(
   text: string,
@@ -200,15 +203,20 @@ export function ecosProjectNumberMentionsAt(
     const number = match[0].replace(/,/g, '');
     const start = match.index;
     const end = start + match[0].length;
-    const [, letter = '', hyphenLetter = '', spacedCapital = ''] = match[0].includes(',')
+    const [, letter = '', hyphenLetter = '', spacedCapital = '', capitalBeforeWord = ''] = match[0].includes(',')
       ? []
-      : /^(?:([A-Za-z])(?![A-Za-z0-9])|-([A-Za-z])(?![A-Za-z0-9])| ([A-Z])(?=$|[^A-Za-z0-9\s]|\s+(?:[^A-Za-z\s]|$)))/
+      : /^(?:([A-Za-z])(?![A-Za-z0-9])|-([A-Za-z])(?![A-Za-z0-9])| ([A-Z])(?=$|[^A-Za-z0-9\s]|\s+(?:[^A-Za-z\s]|$))| ([A-Z])(?=\s+[A-Za-z]))/
         .exec(text.slice(end)) ?? [];
+    // Audit A9 pass 11 F1: a capital with a word after it ("Is 2375 B
+    // done?") is the letter when the number and it are a known project's
+    // identifier (open or closed), as a capital standing alone always is.
+    const capital = spacedCapital ||
+      (capitalBeforeWord && projectNames.some(name => fullIdentifier(name) === `${number}${capitalBeforeWord}`) ? capitalBeforeWord : '');
     // Audit A9 pass 10 L1: not a letter that continues the name of a project
     // numbered just this ("2375 A?" for "2375 A Street").
-    const spacedLetter = (hyphenLetter || spacedCapital) && !projectNames.some(name =>
+    const spacedLetter = (hyphenLetter || capital) && !projectNames.some(name =>
       fullIdentifier(name) === number && projectNameAroundNumber(number, '', text.slice(end), [name]))
-      ? hyphenLetter || spacedCapital
+      ? hyphenLetter || capital
       : '';
     if (
       exempt.some(([from, to]) => from <= start && end <= to) &&

@@ -245,9 +245,11 @@ describe('audit A9 pass 9 L1: identifiers are compared whole, so "2375" is not "
   it('a note about "2375" on 2375A, with no project plain 2375, stays pre-confirmed on 2375A', () => {
     expect(noteDraft('Crew at 2375 left early.', A, LETTERED).recommendedProject.confirmed).toBe(true);
     expect(noteDraft('Crew at 2375-B left early.', A, LETTERED).recommendedProject.confirmed).toBe(false);
-    // Audit A9 pass 10 L1 (accepted): a spaced capital with a word after it
-    // is a word ("2375 A priority"), so "2375 B left" is 2375A's own 2375.
-    expect(noteDraft('Crew at 2375 B left early.', A, LETTERED).recommendedProject.confirmed).toBe(true);
+    // Audit A9 pass 11 F1: a spaced capital with a word after it is the
+    // letter when it makes a project's identifier, so "2375 B left" names
+    // 2375B Main and the note is no longer pre-confirmed on 2375A (pass 10
+    // L1 had accepted it as 2375A's own 2375).
+    expect(noteDraft('Crew at 2375 B left early.', A, LETTERED).recommendedProject.confirmed).toBe(false);
   });
 
   it('"Mark 2375 framing complete" on 2375A offers 2375 Main St\'s task', async () => {
