@@ -94,3 +94,27 @@ describe('audit A9 pass 6 L1: a spaced capital "A" is amps only before punctuati
     expectAllowed(question, projects);
   });
 });
+
+describe('audit A9 pass 6 L2: a closing quote after a number is not an inch mark', () => {
+  it.each([
+    'The super wrote "delivered to 2375" this morning, right?',
+    'The super wrote “delivered to 2375” this morning, right?',
+    'Did he say "the pour at 2375" went fine?',
+    'He said "ok" then wrote "send it to 2375" again?',
+  ])('%s is refused and Talk moves to 2375', question => {
+    expectRefusedOpen(question, PROJECTS, '2375', OTHER);
+  });
+
+  it.each([
+    // No quote is open before the mark: an inch mark.
+    'Is the pipe 2375" long?',
+    'Is the pipe 2375” long?',
+    'Is the 6" pipe 2375" long?',
+    'He said "ok" and the pipe is 2375" long?',
+    // A feet-inch pair is a measurement even inside a quotation.
+    'He wrote "set the sleeve at 12\'-2375" above grade" today?',
+    'He wrote "set the sleeve at 12\' 2375" above grade" today?',
+  ])('%s is a measurement and is allowed', question => {
+    expectAllowed(question, PROJECTS);
+  });
+});

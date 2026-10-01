@@ -152,11 +152,12 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    wing or building letter ("the 2375 A wing", "2375 A or B"; audit A9
   //    pass 6 L1). Then %, ° and feet or inch marks with a word or a hyphen
   //    after them ("2375' run", "12'-6\""); a mark that may close a quotation
-  //    ("at 2375'?", "'2375' job", "2375's") is not a measurement.
+  //    ("at 2375'?", "'2375' job", "2375's") is not a measurement. A double
+  //    quote mark (" or ”) is checked in exemptSpans (INCH_QUOTE_MARK).
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
   new RegExp(String.raw`${NUMBER}(?:A| ?[Vm])(?=[\s.,;:!?)]|$)|${NUMBER} A(?=[.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
-  new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}['"’”′″](?=\s[a-z0-9]|-)`, 'gi'),
+  new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}['’′″](?=\s[a-z0-9]|-)`, 'gi'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
   new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
   // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",
@@ -180,12 +181,48 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   /\b\d{2} \d{2} \d{2}\b|\b0\d{5}\b|\b[A-Z]{1,2}-?\d{3,6}\b/g,
 ];
 
+/**
+ * A number with " or ” after it and a word or a hyphen next. It is an inch
+ * mark only in a feet-inch pair ("12'-6\"", "12' 6\"") or when no double
+ * quotation is open before the number; otherwise it closes the quotation
+ * ('The super wrote "delivered to 2375" this morning'; audit A9 pass 6 L2).
+ */
+const INCH_QUOTE_MARK = new RegExp(String.raw`${NUMBER}["”](?=\s[a-z0-9]|-)`, 'gi');
+
+function inchQuoteMarkIsMeasurement(before: string) {
+  if (/\d['’′]\s?-?\s?$/.test(before)) return true;
+  return !/['"‘“’”′″]$/.test(before) && !doubleQuotationOpen(before);
+}
+
+/**
+ * Whether a double quotation opened in `text` is still open at its end: “
+ * opens and ” closes; a straight " closes an open quotation, and opens one
+ * only after the start, a space or punctuation (after a digit or a letter it
+ * is an inch mark or a stray mark: 'the 6" pipe').
+ */
+function doubleQuotationOpen(text: string) {
+  let open = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '“') open = true;
+    else if (character === '”') open = false;
+    else if (character === '"') open = open ? false : !/[a-z0-9]/i.test(text[index - 1] ?? '');
+  }
+  return open;
+}
+
 /** The [start, end) spans of `text` written as one of the five exemptions. */
 function exemptSpans(text: string): Array<readonly [number, number]> {
   const spans: Array<readonly [number, number]> = [];
   for (const source of EXEMPT_PATTERNS) {
     const pattern = new RegExp(source.source, source.flags);
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  const inchMark = new RegExp(INCH_QUOTE_MARK.source, INCH_QUOTE_MARK.flags);
+  for (let match = inchMark.exec(text); match; match = inchMark.exec(text)) {
+    if (inchQuoteMarkIsMeasurement(text.slice(0, match.index))) {
       spans.push([match.index, match.index + match[0].length]);
     }
   }
