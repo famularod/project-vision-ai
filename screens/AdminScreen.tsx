@@ -19,6 +19,7 @@ import {
 import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
+import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
 import { fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
@@ -1017,13 +1018,19 @@ export function AdminScreen({
     // warning (whole-app audit A1 pass 1); so were documents whose file has
     // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5),
     // and field notes waiting to sync, and an unsaved field note, which a
-    // sign-out discards (whole-app audit A11 pass 4 L5).
-    const [waitingFieldNotes, unsavedFieldNote] = fieldNoteOwnerKey
-      ? await Promise.all([fieldNotesWaitingToSync(fieldNoteOwnerKey), unsavedFieldNoteExists(fieldNoteOwnerKey)])
-      : [0, false];
+    // sign-out discards (whole-app audit A11 pass 4 L5); and an unsaved
+    // Project Walk memory, which it discards too (A11 pass 5 L3).
+    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory] = fieldNoteOwnerKey
+      ? await Promise.all([
+          fieldNotesWaitingToSync(fieldNoteOwnerKey),
+          unsavedFieldNoteExists(fieldNoteOwnerKey),
+          unsavedWalkMemoryExists(fieldNoteOwnerKey),
+        ])
+      : [0, false, false];
     const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
-    const discarded = unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '';
+    const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
+      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         ? `${discarded}${notInCloudCount} item${notInCloudCount === 1 ? ' is' : 's are'} not in the cloud yet. ${notInCloudCount === 1 ? 'It stays' : 'They stay'} on this phone and sync after you sign in here again with this account. Sign out anyway?`

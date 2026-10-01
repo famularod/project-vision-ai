@@ -76,6 +76,18 @@ export async function readKeptDraft(
   }
 }
 
+/**
+ * The scopes (for a walk memory, the project) with a draft of this kind kept
+ * for this account, for the Sign Out warning (whole-app audit A11 pass 5 L3).
+ */
+export async function keptDraftScopes(kind: KeptDraftKind, ownerKey: string): Promise<string[]> {
+  const prefix = `${keptDraftKey(kind, ownerKey)}/`;
+  const keys = await enqueue(() => AsyncStorage.getAllKeys());
+  return (keys ?? [])
+    .filter(key => key.startsWith(prefix))
+    .map(key => decodeURIComponent(key.slice(prefix.length)));
+}
+
 /** Account change or sign-out: every account's kept drafts of this kind go. */
 export function forgetKeptDrafts(kind: KeptDraftKind): Promise<void> {
   generations.set(kind, (generations.get(kind) ?? 0) + 1);

@@ -45,7 +45,9 @@ jest.mock('../../services/SyncService', () => ({
 
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
 import { forgetFieldNoteDraft, useFieldNoteDraft } from '../../hooks/use-field-note-draft';
-import { createFieldNote, localFieldNoteRepository, markFieldNoteSynced } from '../../services/FieldNoteRepository';
+import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from '../../hooks/use-kept-walk-memory-draft';
+import { createCaptureMemory } from '../../services/DAVECaptureMemory';
+import { createFieldNote, localFieldNoteRepository, markFieldNoteConflict, markFieldNoteSynced } from '../../services/FieldNoteRepository';
 import { AdminScreen } from '../../screens/AdminScreen';
 
 const OWNER = 'owner-l5';
@@ -151,5 +153,77 @@ describe('Sign Out names waiting field notes and an unsaved one (A11 pass 4 L5)'
     await keepDraft('field-note', OWNER, '', { text: 'Crack in the east wall' });
     const message = await signOutWarning(renderSettings('owner-other'));
     expect(message).toBe(`3 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
+  });
+});
+
+/**
+ * Whole-app audit A11 pass 5 L3 (30 Sep 2026): the Sign Out warning named an
+ * unsaved field note but not an unsaved Project Walk memory, which a
+ * sign-out also deletes (forgetKeptWalkMemoryDrafts); and field notes the
+ * cloud refused as a conflict ("Review needed") were not counted, though
+ * they too are still only on this phone. Synthetic data only.
+ */
+describe('Sign Out names an unsaved Project Walk memory and counts field notes needing review (A11 pass 5 L3)', () => {
+  const WALK_UNSAVED = 'The Project Walk memory you have not saved will be discarded.';
+  const walkMemory = (id: string) => createCaptureMemory({
+    id,
+    transcript: 'Drywall crew finishes Friday.',
+    transcriptSourceRecordId: `voice-transcription:${id}`,
+    createdAt: '2026-09-30T12:00:00.000Z',
+    recommendedProject: { value: 'Alpha', confidence: 'high', confirmed: true },
+    fields: { generalMemory: 'Drywall crew finishes Friday.' },
+  });
+
+  beforeEach(() => {
+    mockPhone.clear();
+    jest.requireMock('../../services/SyncService').getSyncStatus.mockResolvedValue(
+      { queuedChanges: 1, conflicts: 0, recoveryAvailable: false, recoveryCopies: 0 },
+    );
+    jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    cleanup();
+    forgetFieldNoteDraft();
+    forgetKeptWalkMemoryDrafts();
+    jest.restoreAllMocks();
+  });
+
+  it('a memory kept on the phone from before the app closed is named, after an unsaved field note', async () => {
+    const { keepDraft } = require('../../services/KeptDraftStore');
+    await keepDraft('walk-memory', OWNER, 'Alpha', walkMemory('memory-kept'));
+    await keepDraft('field-note', OWNER, '', { text: 'Crack in the east wall' });
+    const message = await signOutWarning(renderSettings());
+    expect(message).toBe(`${UNSAVED} ${WALK_UNSAVED} 3 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
+  });
+
+  it('a memory waiting on Confirm Memory on screen is named', async () => {
+    let keep: (memory: ReturnType<typeof walkMemory>) => void = () => undefined;
+    function MemoryOnScreen() {
+      const [, setDraft] = useKeptWalkMemoryDraft('Alpha');
+      keep = setDraft;
+      return null;
+    }
+    const screen = renderSettings(OWNER, { extra: <MemoryOnScreen /> });
+    await act(async () => { keep(walkMemory('memory-on-screen')); });
+    const message = await signOutWarning(screen);
+    expect(message).toBe(`${WALK_UNSAVED} 3 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
+  });
+
+  it("another account's memory, or an unreadable one, is not named", async () => {
+    const { keepDraft } = require('../../services/KeptDraftStore');
+    await keepDraft('walk-memory', 'owner-other', 'Alpha', walkMemory('memory-other'));
+    await keepDraft('walk-memory', OWNER, 'Beta', { id: 'memory-broken' });
+    const message = await signOutWarning(renderSettings());
+    expect(message).toBe(`3 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
+  });
+
+  it('field notes needing review are counted with those waiting to sync', async () => {
+    await noteWaitingToSync('note-waiting');
+    await localFieldNoteRepository.save(OWNER, markFieldNoteConflict(
+      createFieldNote({ id: 'note-review', text: 'Fence repaired.', now: '2026-09-30T12:00:00.000Z' }),
+      'Changed on another device.',
+    ));
+    const message = await signOutWarning(renderSettings());
+    expect(message).toBe(`5 items are not in the cloud yet. ${TAIL} Sign out anyway?`);
   });
 });

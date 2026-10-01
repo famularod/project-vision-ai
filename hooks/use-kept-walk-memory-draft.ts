@@ -3,7 +3,7 @@ import { useCallback, useContext, useEffect, useSyncExternalStore } from 'react'
 import { NativeWorkspaceOwnerContext } from '../components/native-workspace-owner';
 import type { DAVECaptureMemory, DAVECaptureRecommendation } from '../services/DAVECaptureMemory';
 import { normalizeConfirmedMemory } from '../services/DAVECaptureMemoryRepository';
-import { forgetKeptDrafts, keepDraft, readKeptDraft } from '../services/KeptDraftStore';
+import { forgetKeptDrafts, keepDraft, keptDraftScopes, readKeptDraft } from '../services/KeptDraftStore';
 
 /**
  * The Project Walk memory waiting on Confirm Memory, kept until Save or
@@ -57,6 +57,19 @@ export function useKeptWalkMemoryDraft(
   }, [owner, projectName, slotKey]);
 
   return [draft, setDraft];
+}
+
+/**
+ * Whether this account has a Project Walk memory not yet saved, on screen or
+ * kept on the phone, which a sign-out discards (whole-app audit A11 pass 5
+ * L3: the Sign Out warning named only an unsaved field note).
+ */
+export async function unsavedWalkMemoryExists(ownerKey: string): Promise<boolean> {
+  if ([...drafts.keys()].some(slotKey => JSON.parse(slotKey)[0] === ownerKey)) return true;
+  for (const projectName of await keptDraftScopes('walk-memory', ownerKey)) {
+    if (keptWalkMemory((await readKeptDraft('walk-memory', ownerKey, projectName))?.value)) return true;
+  }
+  return false;
 }
 
 /** Account change or sign-out: no unconfirmed memory carries over. */
