@@ -332,6 +332,17 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * row it replaced even when that row is hidden (the newest the delete keeps,
  * in its project), and that row takes the progress progressGivenBack gives
  * (the caller's rule: David's own, judged later, ScheduleLookahead).
+ *
+ * Whole-app audit A8 pass 11 L1 (1 Oct 2026): after Make Current back to F,
+ * corrected master N moved Pour slab again from F's row A (the import pairs
+ * only with the rows shown), so N's row Y recorded A, not M's row X. Deleting
+ * M then gave X's id only to the hidden A, and deleting F too took A: the
+ * field report on X became "Historical evidence — linked task was deleted."
+ * When no task shown is a row the removed row replaced, its id (and progress,
+ * by the same rule) now also goes onto the newest task shown, in its project,
+ * that answers to one of them (Y lists A). And a removed row a task shown
+ * already answers to hands that task its own earlier ids (deleting F gives Y
+ * the X that A recorded).
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
@@ -348,26 +359,49 @@ export function scheduleTasksAnsweringToRemovedTasks(
   const leftOutBetween = scheduleLeftTaskOut(saved, schedules);
   const shownById = new Map(shown.map(item => [idOf(item.id), item]));
   const keptById = new Map(kept.map(item => [idOf(item.id), item]));
+  // The tasks shown by each earlier id they list (A8 pass 11 L1).
+  const shownByEarlierId = new Map<string, ScheduleItem[]>();
+  shown.forEach(item => scheduleTaskEarlierIds(item).forEach(id => shownByEarlierId.set(id, [...(shownByEarlierId.get(id) || []), item])));
   // By name and project, built once (A8 pass 9 L3: every removed row was compared with every task).
   const shownNamed = indexByNameAndProject(shown);
   const savedNamed = indexByNameAndProject(saved);
   const added = new Map<ScheduleItem, string[]>();
   const given = new Map<ScheduleItem, Partial<ScheduleItem>>();
-  const add = (item: ScheduleItem, id: string) => added.set(item, [...(added.get(item) || []), id]);
+  const add = (item: ScheduleItem, ...ids: string[]) => added.set(item, [...(added.get(item) || []), ...ids]);
+  const giveBack = (item: ScheduleItem, gone: ScheduleItem) => {
+    const progress = progressGivenBack({ ...item, ...given.get(item) }, gone);
+    if (progress) given.set(item, { ...given.get(item), ...progress });
+  };
   removed.forEach(gone => {
     const goneId = idOf(gone.id);
-    if (!goneId || answered.has(goneId)) return;
-    // The row the removed row itself replaced, in its project: the newest shown (A8 pass 9 L2), else the
-    // newest the delete keeps hidden (its master was retired: Set Active shows it again, A5 pass 11 M-b).
+    if (!goneId) return;
     const inProject = (item: ScheduleItem | undefined): item is ScheduleItem =>
       Boolean(item) && scheduleTaskProjectKey(item!) === scheduleTaskProjectKey(gone);
     const earlierIds = scheduleTaskEarlierIds(gone);
+    if (answered.has(goneId)) {
+      // The task shown that answers to it also takes the rows it replaced (A8 pass 11 L1): deleting F after
+      // M gives N's row the M row F's hidden row recorded.
+      const answering = newestOf((shownByEarlierId.get(goneId) || []).filter(inProject));
+      const listed = new Set(answering ? [idOf(answering.id), ...scheduleTaskEarlierIds(answering), ...(added.get(answering) || [])] : []);
+      const missing = earlierIds.filter(id => !listed.has(id) && !shownById.has(id));
+      if (answering && missing.length > 0) add(answering, ...missing);
+      return;
+    }
+    // The row the removed row itself replaced, in its project: the newest shown (A8 pass 9 L2), else the
+    // newest the delete keeps hidden (its master was retired: Set Active shows it again, A5 pass 11 M-b).
     const earlier = earlierIds.map(id => shownById.get(id)).filter(inProject);
     const replaced = earlier.length > 0 ? earlier[earlier.length - 1] : earlierIds.map(id => keptById.get(id)).filter(inProject).pop();
-    if (replaced) {
-      add(replaced, goneId);
-      const progress = progressGivenBack({ ...replaced, ...given.get(replaced) }, gone);
-      if (progress) given.set(replaced, { ...given.get(replaced), ...progress });
+    // With none of those shown, the newest task shown that answers to one of them too (A8 pass 11 L1: a
+    // master imported after Make Current back moved the task again from the row shown then).
+    const answering = earlier.length > 0
+      ? undefined
+      : newestOf([...new Set(earlierIds.flatMap(id => shownByEarlierId.get(id) || []))].filter(inProject));
+    if (replaced || answering) {
+      [replaced, answering].forEach(item => {
+        if (!item) return;
+        add(item, goneId);
+        giveBack(item, gone);
+      });
       return;
     }
     const inSchedule = sameSchedule(gone);
@@ -384,6 +418,15 @@ export function scheduleTasksAnsweringToRemovedTasks(
     ...given.get(item),
     revisedFromTaskIds: scheduleTaskEarlierIds({ id: item.id, revisedFromTaskIds: [...ids, ...scheduleTaskEarlierIds(item)] }),
   }));
+}
+
+/** The newest of some tasks, by when each came in (the later one on a tie); undefined for none. */
+function newestOf(items: readonly ScheduleItem[]): ScheduleItem | undefined {
+  const cameAt = (item: ScheduleItem) => {
+    const at = Date.parse(item.importedAt || item.createdAt || '');
+    return Number.isFinite(at) ? at : 0;
+  };
+  return items.reduce<ScheduleItem | undefined>((newest, item) => (!newest || cameAt(item) >= cameAt(newest) ? item : newest), undefined);
 }
 
 function nameAndProject(item: ScheduleItem): string {
