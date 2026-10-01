@@ -241,6 +241,12 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * and the task's first (schedules) left the task out: the task came in where
  * the import would have paired it. With either import's date unknown, as
  * before.
+ *
+ * Whole-app audit A8 pass 9 L2 (30 Sep 2026): deleting the newer master M
+ * brought F back, and F had two Pour slabs, so M's moved row's id went
+ * nowhere, though that row names which of F's rows it was (its earlier ids):
+ * its updates became history. A removed row's id now goes first onto the
+ * task shown it answers to, in its project (the newest, if two are shown).
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
@@ -252,10 +258,19 @@ export function scheduleTasksAnsweringToRemovedTasks(
 ): ScheduleItem[] {
   const answered = new Set(shown.flatMap(item => [idOf(item.id), ...scheduleTaskEarlierIds(item)]));
   const leftOutBetween = scheduleLeftTaskOut([...kept, ...removed], schedules);
+  const shownById = new Map(shown.map(item => [idOf(item.id), item]));
   const added = new Map<ScheduleItem, string[]>();
+  const add = (item: ScheduleItem, id: string) => added.set(item, [...(added.get(item) || []), id]);
   removed.forEach(gone => {
     const goneId = idOf(gone.id);
     if (!goneId || answered.has(goneId)) return;
+    // The task shown the removed row itself answers to (A8 pass 9 L2).
+    const earlier = scheduleTaskEarlierIds(gone).map(id => shownById.get(id))
+      .filter((item): item is ScheduleItem => Boolean(item) && scheduleTaskProjectKey(item!) === scheduleTaskProjectKey(gone));
+    if (earlier.length > 0) {
+      add(earlier[earlier.length - 1], goneId);
+      return;
+    }
     const inSchedule = sameSchedule(gone);
     const matches = shown.filter(item => sameRemovedTask(item, gone));
     if (matches.length !== 1 || inSchedule(matches[0])) return;
@@ -263,7 +278,7 @@ export function scheduleTasksAnsweringToRemovedTasks(
     if (scheduleItemImportBatchIds(matches[0]).length === 0 || leftOutBetween(gone, matches[0])) return;
     const ownRows = new Set([...kept, ...removed].filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
     if (ownRows.size !== 1) return;
-    added.set(matches[0], [...(added.get(matches[0]) || []), goneId]);
+    add(matches[0], goneId);
   });
   return [...added.entries()].map(([item, ids]) => ({
     ...item,
