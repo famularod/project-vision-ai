@@ -11610,7 +11610,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[])}`,
+      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {

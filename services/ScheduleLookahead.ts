@@ -351,14 +351,26 @@ export function scheduleTaskMasterRestated(
 
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
 
+/**
+ * Whole-app audit A5 pass 8 L3 (30 Sep 2026): after a master moved a task a
+ * lookahead restated, the delete counted, rewrote and synced the hidden old
+ * row, and the question promised "the earlier dates and progress of 1 task"
+ * while nothing shown changed. With the schedules saved, only the tasks
+ * shown are given back (the row a master moved the task to carries its note,
+ * ScheduleImportMerge).
+ */
 function tasksAfterLookaheadDeleted(
   items: readonly ScheduleItem[],
   document: ReferenceDocument,
   updatedAt: string,
+  documents?: readonly ReferenceDocument[],
 ): LookaheadDeleted[] {
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
-  return items.flatMap(item => {
+  const shown = documents
+    ? new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id))
+    : null;
+  return items.filter(item => !shown || shown.has(item.id)).flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
     if (!overlay || index < 0) return [];
@@ -413,8 +425,10 @@ export function scheduleItemsAfterLookaheadDeleted(
   items: readonly ScheduleItem[],
   document: ReferenceDocument,
   updatedAt = new Date().toISOString(),
+  /** The schedules saved: only the tasks they show are given back (A5 pass 8 L3). */
+  documents?: readonly ReferenceDocument[],
 ): ScheduleItem[] {
-  return tasksAfterLookaheadDeleted(items, document, updatedAt).map(entry => entry.item);
+  return tasksAfterLookaheadDeleted(items, document, updatedAt, documents).map(entry => entry.item);
 }
 
 /**
@@ -440,7 +454,7 @@ export function scheduleItemsAfterScheduleDeleted({
   documents: readonly ReferenceDocument[];
   updatedAt?: string;
 }>): ScheduleItem[] {
-  const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt).map(item => [item.id, item]));
+  const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item]));
   const shown = selectAuthoritativeScheduleItems({
     scheduleItems: items.map(item => changed.get(item.id) || item),
     scheduleDocuments: [...documents],
@@ -461,10 +475,15 @@ export function scheduleLookaheadDeleteNote(
   items: readonly ScheduleItem[],
   document: ReferenceDocument,
   removed: readonly ScheduleItem[] = [],
+  /** The schedules saved: only the tasks shown are counted (A5 pass 8 L3). */
+  documents?: readonly ReferenceDocument[],
 ): string {
   if (!scheduleDocumentAddsToMaster(document)) return '';
   const removedIds = new Set(removed.map(item => item.id));
-  const back = tasksAfterLookaheadDeleted(items.filter(item => !removedIds.has(item.id)), document, '')
+  const shown = documents
+    ? new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id))
+    : null;
+  const back = tasksAfterLookaheadDeleted(items.filter(item => !removedIds.has(item.id) && (!shown || shown.has(item.id))), document, '')
     .filter(entry => entry.datesBack || entry.percentBack);
   if (back.length === 0) return '';
   const dates = back.filter(entry => entry.datesBack).length;

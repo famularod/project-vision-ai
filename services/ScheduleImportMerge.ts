@@ -101,6 +101,13 @@ import {
  * matched no task shown. The new row now keeps the ids the task had before
  * (revisedFromTaskIds, carried forward: A→B→C keeps A and B), and the
  * summaries resolve an update's task through them (ScheduleTaskRevisions).
+ *
+ * Whole-app audit A5 pass 8 L3 (30 Sep 2026): that new row left the task's
+ * lookahead note on the hidden old row, so deleting the lookahead gave the
+ * moved task nothing back (60% stayed where the task left on its dates went
+ * back to David's 40%). The new row now carries the note, brought up to what
+ * the new master says (scheduleTaskMasterRestated), as the task left on its
+ * dates keeps it.
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -428,8 +435,12 @@ export function mergeApprovedScheduleImportItems({
       ? (unchangedTask(paired, importedItem) || repeated.dates ? paired : undefined)
       : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
-    // A task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1).
-    const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id ? scheduleTaskRevisedFrom(row, paired) : row;
+    // A task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
+    // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
+    const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
+    const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
+      ? scheduleTaskRevisedFrom(note ? { ...row, lookaheadOverlay: note } : row, paired)
+      : row;
     if (duplicate) {
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import
