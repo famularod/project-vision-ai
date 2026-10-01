@@ -2682,3 +2682,140 @@ describe('a newer edit saved during a conflict still goes up (audit A7 pass 12 L
     expect(await getOfflineQueue()).toEqual([]);
   });
 });
+
+/** A photo still being analysed when its update was sent, and a result for it (as in the A4 pass 13 G1 tests). */
+const analyzingPhoto = { id: 'photo-p12', uri: 'file:///phone/Documents/project-photos/p12.jpg', caption: '', createdAt: SENT_AT,
+  photoIntelligence: { status: 'analyzing', updatedAt: SENT_AT } };
+const finishedAnalysis = () => ({ status: 'analysis_complete', updatedAt: new Date().toISOString(),
+  currentObservation: 'Rebar mat placed at column C4', additions: ['Rebar mat'] });
+const firstPhotoAnalysis = (update: Update | undefined) => (update?.photos as Array<{ photoIntelligence?: unknown }>)[0].photoIntelligence;
+/** The App's own applyPhotoIntelligenceResult, compiled from App.tsx, on the phone's state: the result lands. */
+function lateAnalysisFinishes(phone: Device, result: Record<string, unknown>, photoId = analyzingPhoto.id) {
+  const { applyPhotoIntelligenceResult } = evaluate<{
+    applyPhotoIntelligenceResult: (projectId: string, updateId: string, photoId: string, result: unknown) => void;
+  }>(
+    transpile([componentFunction('applyPhotoIntelligenceResult'), 'module.exports = { applyPhotoIntelligenceResult };'].join('\n')),
+    {
+      authorityProjectId: () => 'p-key',
+      summarizePIEStatusForUpdate: (update: Update) => (update.photos as Array<{ photoIntelligence?: { status?: string } }>)
+        .every(photo => photo.photoIntelligence?.status === 'analysis_complete')
+        ? { status: 'complete', summary: 'Possible changes found' }
+        : { status: 'analyzing', summary: 'Checking photos' },
+      setDraft: () => undefined, setSavedUpdates: phone.setSavedUpdates, savedUpdatesRef: phone.savedUpdatesRef,
+      upsertSavedUpdateUnlessDeleted: (update: Update) => {
+        phone.setSavedUpdates(prev => prev.map(item => item.id === update.id ? update : item));
+        phone.render();
+      },
+      queueProjectUpdateRecord, queueProjectUpdatePhotoAnalysis,
+      requestQueuedUpdateSync: phone.requestQueuedUpdateSync, requestPendingChangesUpload: phone.requestPendingChangesUpload,
+    },
+  );
+  applyPhotoIntelligenceResult('p-key', 'u1', photoId, result);
+}
+
+/**
+ * A4 pass 14 #3 (A7 pass 12): a patch upload (a late photo analysis result,
+ * a document change) stamps the cloud's row with the time it went up, and a
+ * whole-copy edit carries the time David saved it (A4 pass 13 M1). An edit
+ * saved while this phone's own patch was going up read older than the
+ * cloud's copy, and a conflict was shown: nothing lost, but a false
+ * conflict. When the only change in the cloud since the edit is this phone's
+ * own patch, the edit now goes up, with the patch, and no conflict.
+ */
+describe('this phone\'s own patch landing after an edit is not a conflict (audit A4 pass 14 #3)', () => {
+  const NEWER = 'Pour, 45 yards (saved while the result was going up)';
+  /** Sent, its card bound to the cloud project (as a refresh leaves it), its photo's analysis still running. */
+  async function sentAndAnalyzing() {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? { ...update, projectId: CLOUD_PROJECT_ID } : update));
+    phone.render();
+    return phone;
+  }
+  /** David saves an edit while the upload pass that sends this phone's patch reads the cloud's copy. */
+  function editWhileThePatchGoesUp(phone: Device, change: Partial<Update>, iPadFirst?: string) {
+    const reads = supabaseMock().getProjectUpdateSyncMetadata as jest.Mock;
+    const read = reads.getMockImplementation()!;
+    reads.mockImplementationOnce(async (id: string) => {
+      if (iPadFirst) await iPadEditsNow(iPadFirst); // and the iPad's edit landed before the edit
+      const current = await read(id);
+      await editAndSave(phone, change);
+      await new Promise(resolve => setTimeout(resolve, 5)); // the patch is stamped after the edit was saved
+      return current;
+    });
+  }
+  async function reconnected(phone: Device) {
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+  }
+
+  it('#3 (late analysis): the edit goes up with the result, and no conflict is shown', async () => {
+    const phone = await sentAndAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    editWhileThePatchGoesUp(phone, { notes: NEWER });
+    await uploadPendingChanges(); // the result lands, after the edit was saved
+    expect(inCloud()).toMatchObject({ notes: 'Pour', pieStatus: 'complete' });
+    await reconnected(phone);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+  });
+
+  it('#3 (document change): the edit goes up with the document taken off, and no conflict is shown', async () => {
+    const sent = { ...savedUpdate([uploaded('permit'), uploaded('survey')]), projectId: CLOUD_PROJECT_ID };
+    putInCloud(sent);
+    const phone = device([uploaded('permit'), uploaded('survey')], [sent]);
+    await phone.deleteFromThisDevice('permit');
+    editWhileThePatchGoesUp(phone, { notes: NEWER });
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    await reconnected(phone);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+  });
+
+  it('an iPad edit the patch went onto, saved before this edit, is no conflict either: the newer save goes up, as before', async () => {
+    const phone = await sentAndAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    editWhileThePatchGoesUp(phone, { notes: NEWER }, IPAD_NOTE);
+    await uploadPendingChanges();
+    await reconnected(phone);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+  });
+
+  it('an iPad edit that lands after the patch is still a conflict, and the iPad keeps its note', async () => {
+    const phone = await sentAndAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    editWhileThePatchGoesUp(phone, { notes: NEWER });
+    await uploadPendingChanges();
+    await iPadEditsNow(IPAD_NOTE);
+    await reconnected(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+
+  it('an iPad edit the patch went onto, saved after this edit, is still a conflict', async () => {
+    const phone = await sentAndAnalyzing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    const reads = supabaseMock().getProjectUpdateSyncMetadata as jest.Mock;
+    const read = reads.getMockImplementation()!;
+    reads.mockImplementationOnce(async (id: string) => {
+      await editAndSave(phone, { notes: NEWER });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await iPadEditsNow(IPAD_NOTE); // after the edit, before the patch goes onto the cloud's copy
+      return read(id);
+    });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    await reconnected(phone);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+});

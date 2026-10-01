@@ -5172,8 +5172,15 @@ async function uploadProjectUpdateQueueItem(
     return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
   }
 
+  // Newer in the cloud only by this device's own patches, which went onto a
+  // copy no newer than this edit (whole-app audit A4 pass 14 #3): no conflict.
+  // The edit goes up with them, stamped as the cloud's copy is.
+  const ownPatchesSinceEdit = !patchedCloudCopy && remoteMetadata.ok && remoteMetadata.data?.updatedAt
+    ? ownProjectUpdatePatchesSince(payload.id, remoteMetadata.data, item.changedAt)
+    : null;
   if (
     !patchedCloudCopy &&
+    !ownPatchesSinceEdit &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
@@ -5211,8 +5218,10 @@ async function uploadProjectUpdateQueueItem(
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
-    updateData: payload.updateData,
-    updatedAt: item.changedAt,
+    updateData: ownPatchesSinceEdit
+      ? applyFieldUpdateDocumentPatches(payload.updateData as object, ownPatchesSinceEdit.patches) as unknown
+      : payload.updateData,
+    updatedAt: ownPatchesSinceEdit ? ownPatchesSinceEdit.at : item.changedAt,
   };
   const result = await saveProjectUpdate({ id: payload.id, ...record });
 
@@ -5220,6 +5229,10 @@ async function uploadProjectUpdateQueueItem(
     // A retry after a conflict put the phone's copy in the cloud: that
     // conflict is settled, as when the cloud already matched (audit A4 pass 5).
     if (!documentPatches) await clearConflictsForLocalRecord('project_update', payload.id);
+    if (cloudCopy && patchedCloudCopy) {
+      noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || []);
+    }
+    else projectUpdatePatchesLanded.delete(payload.id);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
@@ -5227,6 +5240,58 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/**
+ * This device's own patches (a document change, a late photo analysis
+ * result) that went up onto an update's cloud copy (whole-app audit A4 pass
+ * 14 #3): the cloud's time on the copy they went onto (`onto`), and the
+ * copy the last of them left, with its time (`at`). A patch stamps the
+ * cloud's row with the time it went up, and an edit keeps the time David
+ * saved it (A4 pass 13 M1): an edit saved while a patch went up read older
+ * than the cloud's copy, and a conflict was shown. While the cloud's copy is
+ * still the one they left (its time and content), and the copy they went
+ * onto is no newer than the edit, the edit goes up with them. Held in
+ * memory: after a relaunch such an edit shows the conflict, as before;
+ * nothing is lost.
+ */
+const projectUpdatePatchesLanded = new Map<string, {
+  onto: string; at: string; copy: unknown; patches: FieldUpdateDocumentPatch[];
+}>();
+
+function noteProjectUpdatePatchesLanded(
+  updateId: string,
+  onto: string | null | undefined,
+  left: { updatedAt: string; updateData: unknown },
+  patches: readonly FieldUpdateDocumentPatch[],
+): void {
+  const earlier = projectUpdatePatchesLanded.get(updateId);
+  if (!onto || !Number.isFinite(Date.parse(onto))) {
+    projectUpdatePatchesLanded.delete(updateId);
+    return;
+  }
+  // One after another: the first went onto the copy before them all.
+  const chained = earlier && sameCloudTime(earlier.at, onto);
+  projectUpdatePatchesLanded.set(updateId, {
+    onto: chained ? earlier.onto : onto, at: left.updatedAt, copy: left.updateData,
+    patches: [...(chained ? earlier.patches : []), ...patches],
+  });
+}
+
+/** This device's own patches, when they are all the cloud's copy holds that is newer than an edit saved at `changedAt`. */
+function ownProjectUpdatePatchesSince(
+  updateId: string,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+  changedAt: string,
+) {
+  const landed = projectUpdatePatchesLanded.get(updateId);
+  return landed && cloud.updatedAt && sameCloudTime(landed.at, cloud.updatedAt) &&
+    projectUpdatePayloadsMatch(landed.copy, cloud.updateData) && !isRemoteNewer(landed.onto, changedAt) ? landed : null;
+}
+
+function sameCloudTime(left: string, right: string): boolean {
+  const leftTime = Date.parse(left);
+  return Number.isFinite(leftTime) && leftTime === Date.parse(right);
 }
 
 /**
@@ -5314,6 +5379,7 @@ function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retrySt
 export function resetFieldUpdateSyncMemoryForTests(): void {
   projectUpdateLastVersionInCloud.clear();
   projectUpdateUploadedAt.clear();
+  projectUpdatePatchesLanded.clear();
   removedDocumentsRequeuedThisLaunch.clear();
   resetDocumentsResentThisLaunchForTests();
 }
