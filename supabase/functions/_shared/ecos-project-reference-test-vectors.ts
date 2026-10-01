@@ -1146,6 +1146,34 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refusedSelected ? { refusedSelected } : {}),
   })),
+  // Audit A9 pass 13 L3: the selected project's own name continuing around a
+  // number (its address or full name) makes the number its own.
+  ...([
+    ['Is 2375 Main St Suite 300 done?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300 Elm'], null, undefined],
+    ['What is left in Suite 300?', '2375 Main St Suite 300', [SELECTED, '2375 Main St Suite 300', '300 Elm'], null, undefined],
+    ['What is left at 450 Elm St?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Oak Ave'], null, undefined],
+    ['What is left at 450 Oak Ave?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Oak Ave'], '450', '24117'],
+    ['What is left at 450 Elm?', '24117 - 450 Elm St', [SELECTED, '24117 - 450 Elm St', '450 Elm Annex'], '450', '24117'],
+    // The name that continues furthest around the number owns it.
+    ['Is 2375 Main St done?', '2375 Main St', [SELECTED, '2375 Main St', 'Bldg 100A 2375 Main'], null, undefined],
+    ['Is 1950s Remodel 2377 Days Inn done?', '1950s Remodel 2377 Days Inn', [SELECTED, '1950s Remodel 2377 Days Inn', '2377 Days Inn Renovation'], null, undefined],
+    ['What is left at 2375 Main?', 'Bldg 100A 2375 Main', [SELECTED, '2375 Main St', 'Bldg 100A 2375 Main'], '2375', '100A'],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 13 L3: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 13 L3: with 450 Oak Ave closed, "What is left at 450 Elm St?" is still its own on "24117 - 450 Elm St"',
+    projectName: '24117 - 450 Elm St',
+    question: 'What is left at 450 Elm St?',
+    knownProjectNames: [SELECTED, '24117 - 450 Elm St'],
+    closedProjectNames: ['450 Oak Ave'],
+    refused: null,
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

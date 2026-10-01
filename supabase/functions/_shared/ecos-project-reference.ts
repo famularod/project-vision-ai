@@ -41,6 +41,12 @@
  * Audit A9 pass 12 L1: a name whose first number is lettered has two
  * identifiers ("480V Switchgear Upgrade 2375" is 480V and 2375; see
  * projectIdentifiers), and either names it.
+ * Audit A9 pass 13: before those identifier rules, a plain number belongs
+ * to the project whose name continues furthest around it in the question
+ * (see ecosProjectsAroundNumber), when exactly one does: "Is 300 Elm done?"
+ * names 300 Elm on "2375-B Annex Suite 300", and "Suite 300" is that
+ * project's own. A tie is refused as ambiguous; no name around it falls
+ * back to the identifier rules.
  */
 
 export type ECOSProjectReferenceMismatch = Readonly<{
@@ -116,15 +122,19 @@ export function findECOSProjectReferenceMismatch(
   for (const mention of mentions) {
     const { number, letter, spacedLetter } = mention;
     // Audit A9 pass 13 L1: a plain number belongs to the project whose name
-    // continues around it ("Is 300 Elm done?" names 300 Elm, even on
-    // "2375-B Annex Suite 300", whose 300 it also is). When another
-    // project's name does, it names that one (with the selected one's too,
-    // it is ambiguous: when unsure, refuse).
+    // continues furthest around it ("Is 300 Elm done?" names 300 Elm, even
+    // on "2375-B Annex Suite 300", whose 300 it also is). When another
+    // project's name does, it names that one (tied with the selected one's,
+    // it is ambiguous: when unsure, refuse). L3: when only the selected
+    // one's does, it is its own, identifier or not ("Suite 300" on "2375
+    // Main St Suite 300", "450 Elm St" on "24117 - 450 Elm St", and "2375
+    // Main St" on that project with "Bldg 100A 2375 Main").
     if (!letter && !spacedLetter) {
-      const others = ecosProjectsAroundNumber(question, mention, [...knownNames, ...closedNames])
-        .filter(name => !isSelected(name));
-      const around = others.length > 0 ? refusal(number, name => others.includes(name)) : null;
-      if (around) return around;
+      const around = ecosProjectsAroundNumber(question, mention, [projectName, ...knownNames, ...closedNames]);
+      const others = around.filter(name => !isSelected(name));
+      const other = others.length > 0 ? refusal(number, name => others.includes(name)) : null;
+      if (other) return other;
+      if (around.length > 0) continue;
     }
     // Identifiers are compared whole and upper-cased: "2375" is not "2375A"
     // (audit A9 pass 9 L1). "2375B" names the project written "2375B"; the
@@ -144,8 +154,9 @@ export function findECOSProjectReferenceMismatch(
     // even when the selected one is 2375A, unless it is the selected one's
     // own; with none, it names the lettered ones, unless the selected one is
     // one of them. Audit A9 pass 12 L2: only the selected one's identifiers
-    // are its own; another number in its name ("Suite 300" in "2375 Main St
-    // Suite 300") names a project numbered that, and with none is answered.
+    // are its own; another number in its name ("What is left at 300?" on
+    // "2375 Main St Suite 300") names a project numbered that, and with none
+    // is answered (with its name around it, it is its own: pass 13 L3).
     if (hasIdentifier(projectName, number)) continue;
     const named = refusal(number, name => hasIdentifier(name, number)) ??
       (hasIdentifierNumber(projectName, number) ? null : refusal(number, name => hasIdentifierNumber(name, number)));
@@ -440,13 +451,16 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
 }
 
 /**
- * Audit A9 pass 13: the projects whose name continues around the plain
- * number at text[start, end). The name has the number as a word of its own
- * (identifier or not, so "450" in "24117 - 450 Elm St"; not "2375A" or
+ * Audit A9 pass 13: the projects whose name continues furthest around the
+ * plain number at text[start, end). The name has the number as a word of its
+ * own (identifier or not, so "450" in "24117 - 450 Elm St"; not "2375A" or
  * "2375-B"), and its next name word follows the number in `text` or its
  * previous name word comes before it: "Is 300 Elm done?" for "300 Elm",
- * "Suite 300" for "2375 Main St Suite 300". A number belongs to the project
- * whose name continues around it, when exactly one does.
+ * "Suite 300" for "2375 Main St Suite 300". How far is counted in name words,
+ * outward from the number on both sides, so "Is 2375 Main St done?" is
+ * "2375 Main St" (two words) and not also "Bldg 100A 2375 Main" (one). A
+ * number belongs to the project whose name continues furthest around it,
+ * when exactly one does; more than one is ambiguous.
  */
 export function ecosProjectsAroundNumber(
   text: string,
@@ -454,20 +468,42 @@ export function ecosProjectsAroundNumber(
   projectNames: readonly string[],
 ): string[] {
   const plain = new RegExp(String.raw`(?<![A-Za-z0-9])${number}(?![A-Za-z0-9]|-[A-Za-z](?![A-Za-z0-9]))`);
-  return projectNames.filter(name => {
+  const reach = projectNames.map(name => {
     const at = plain.exec(name);
-    return Boolean(at) && nameContinuesAt(name, at!, text.slice(0, start), text.slice(end));
+    return at ? nameWordsAround(name, at, text.slice(0, start), text.slice(end)) : 0;
   });
+  const furthest = Math.max(0, ...reach);
+  return furthest > 0 ? projectNames.filter((_, index) => reach[index] === furthest) : [];
 }
 
-/** Whether the name around name[at] continues in `before` or `after` (one word either side). */
+/** Whether the name around name[at] continues in `before` or `after`. */
 function nameContinuesAt(name: string, at: RegExpExecArray, before: string, after: string) {
-  const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1];
-  const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(at.index + at[0].length))?.[1];
-  // The last 64 characters are enough for one word and keep the match linear.
-  const previousWord = /([a-z0-9]+)[\s#:.-]*$/i.exec(before.slice(-64))?.[1];
-  const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, at.index))?.[1];
-  return sameNameWord(nextWord, nextNameWord) || sameNameWord(previousWord, previousNameWord);
+  return nameWordsAround(name, at, before, after) > 0;
+}
+
+/**
+ * How many of the name's words around name[at] continue in `before` and
+ * `after`, word by word outward from the number. The nearest word must touch
+ * the number: after a space, comma or hyphen ("2375 Main"), or before it with
+ * only a space, #, :, . or - between ("Tower E-2375").
+ */
+function nameWordsAround(name: string, at: RegExpExecArray, before: string, after: string) {
+  const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
+  // The last 64 characters are enough to test the end and keep the match linear.
+  const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
+  return wordsInCommon(wordsIn(name.slice(at.index + at[0].length)), afterWords) +
+    wordsInCommon(wordsIn(name.slice(0, at.index)).reverse(), beforeWords);
+}
+
+function wordsIn(text: string): string[] {
+  return text.match(/[a-z0-9]+/gi) ?? [];
+}
+
+/** How many words the two lists share from the start, as name words (sameNameWord). */
+function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
+  let count = 0;
+  while (count < nameWords.length && count < words.length && sameNameWord(words[count], nameWords[count])) count += 1;
+  return count;
 }
 
 /**

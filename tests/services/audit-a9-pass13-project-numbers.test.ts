@@ -103,3 +103,46 @@ describe('audit A9 pass 13 L2: a street abbreviation continues a name written in
     expect(desktop('Is 2375 A Ave done?', PROJECTS, [], A_STREET)).toBe(switchOnDesktop('2375A', '2375'));
   });
 });
+
+describe('audit A9 pass 13 L3: the selected project\'s own name continuing around a number makes it its own', () => {
+  const SUITE = '2375 Main St Suite 300';
+  const ELM = '300 Elm';
+  const ELM_ST = '24117 - 450 Elm St';
+  const OAK = '450 Oak Ave';
+
+  it('"Is 2375 Main St Suite 300 done?" on that project, with 300 Elm, is answered (was refused)', () => {
+    expect(desktop('Is 2375 Main St Suite 300 done?', [SELECTED, SUITE, ELM], [], SUITE)).toBeNull();
+    expect(desktop('What is left in Suite 300?', [SELECTED, SUITE, ELM], [], SUITE)).toBeNull();
+    expect(desktop('What is left in Suite 300?', [SELECTED, SUITE], [ELM], SUITE)).toBeNull();
+  });
+
+  it('"What is left at 450 Elm St?" on "24117 - 450 Elm St", with 450 Oak Ave open or closed, is answered (was refused)', () => {
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_ST, OAK], [], ELM_ST)).toBeNull();
+    expect(desktop('What is left at 450 Elm Street?', [SELECTED, ELM_ST, OAK], [], ELM_ST)).toBeNull();
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_ST], [OAK], ELM_ST)).toBeNull();
+  });
+
+  it('another project\'s name, or a bare number, still names the other project', () => {
+    expect(desktop('Is 300 Elm done?', [SELECTED, SUITE, ELM], [], SUITE)).toBe(switchOnDesktop('300', '2375'));
+    expect(desktop('What is left at 450 Oak Ave?', [SELECTED, ELM_ST, OAK], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+    expect(desktop('What is left at 450?', [SELECTED, ELM_ST, OAK], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+  });
+
+  it('when another project\'s name continues as far around it, it is ambiguous and refused', () => {
+    expect(desktop('What is left at 450 Elm?', [SELECTED, ELM_ST, '450 Elm Annex'], [], ELM_ST)).toBe(switchOnDesktop('450', '24117'));
+  });
+
+  it('the name that continues furthest owns it: the selected one\'s full name is not refused for a shorter match', () => {
+    const MAIN = '2375 Main St';
+    const BLDG = 'Bldg 100A 2375 Main';
+    const REMODEL = '1950s Remodel 2377 Days Inn';
+    const RENOVATION = '2377 Days Inn Renovation';
+    expect(desktop('Is 2375 Main St done?', [SELECTED, MAIN, BLDG], [], MAIN)).toBeNull();
+    expect(desktop('Is Bldg 100A 2375 Main done?', [SELECTED, MAIN, BLDG], [], BLDG)).toBeNull();
+    expect(desktop('Is 1950s Remodel 2377 Days Inn done?', [SELECTED, REMODEL, RENOVATION], [], REMODEL)).toBeNull();
+    expect(desktop('Is 2377 Days Inn Renovation done?', [SELECTED, REMODEL, RENOVATION], [], RENOVATION)).toBeNull();
+    // Further for the other project names it; as far is ambiguous.
+    expect(desktop('Is Bldg 100A 2375 Main St done?', [SELECTED, MAIN, BLDG], [], MAIN)).toMatch(/this question names /);
+    expect(desktop('What is left at 2375 Main?', [SELECTED, MAIN, BLDG], [], BLDG)).toBe(switchOnDesktop('2375', '100A'));
+  });
+});
