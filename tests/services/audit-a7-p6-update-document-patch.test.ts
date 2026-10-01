@@ -90,6 +90,7 @@ jest.mock('../../services/DAVECloudMaintenanceBudget', () => ({
 }));
 
 import { createPhotoSignedUrl, listProjectUpdates, saveProjectUpdate } from '../../services/SupabaseService';
+import { fieldUpdateDocumentChangeWaiting } from '../../services/FieldUpdateDocumentChangeNotice';
 import {
   getOfflineQueue,
   getSyncConflicts,
@@ -1163,5 +1164,35 @@ describe('Keep Cloud takes a finished upload still waiting to go up (audit A4 pa
     expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
     expect(inCloud().documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
     expect(chosen.documents).toEqual([expect.objectContaining({ id: 'permit', status: 'uploaded' })]);
+  });
+});
+
+describe('a document change on a sent update that failed to upload shows on its card (audit A7 pass 8 L2)', () => {
+  it('the patch upload is refused: the update still reads Sent, and its card says the document change waits; gone once it uploads', async () => {
+    const { phone } = await phoneTakesPermitOff();
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1').shown).toBe(false); // just queued
+
+    (saveProjectUpdate as jest.Mock).mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'permission denied for table project_updates' });
+    await uploadPendingChanges();
+    expect(phone.saved()?.status).toBe('sent');
+    expect((await queuedFor())!.lastError).toBeTruthy();
+    expect(documentIds(inCloud())).toEqual(['permit', 'survey']); // the iPad still lists it
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1')).toMatchObject({ shown: true });
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u2')).toEqual({ shown: false, shownAt: null });
+
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1')).toEqual({ shown: false, shownAt: null });
+  });
+
+  it('a patch still waiting after two minutes shows too; the update\'s own waiting record does not (it reads Waiting to Sync)', async () => {
+    await phoneTakesPermitOff();
+    const queued = Date.parse((await queuedFor())!.createdAt);
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1', queued + 119_000).shown).toBe(false);
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1', queued + 120_000).shown).toBe(true);
+
+    mockStorage.clear();
+    await queueProjectUpdateRecord({ ...savedUpdate([uploaded('survey')], 'queued'), notes: 'Pour, 40 yards' }, false);
+    expect(fieldUpdateDocumentChangeWaiting(await getOfflineQueue(), 'u1', queued + 600_000)).toEqual({ shown: false, shownAt: null });
   });
 });

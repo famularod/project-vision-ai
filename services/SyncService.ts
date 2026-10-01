@@ -1082,6 +1082,27 @@ async function persistVerifiedOfflineQueue(
   await offlineQueueRecoveryTransaction.commit([
     { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value },
   ]);
+  offlineQueueListeners.forEach(listener => {
+    try {
+      listener(queue);
+    } catch {
+      // A screen's listener never fails a queue write.
+    }
+  });
+}
+
+const offlineQueueListeners = new Set<(queue: readonly SyncQueueItem[]) => void>();
+
+/**
+ * Called with the queue each time this device writes it (whole-app audit A7
+ * pass 8 L2): a field update's card says when its document change is still
+ * waiting to sync. The unsubscribe function.
+ */
+export function subscribeToOfflineQueue(listener: (queue: readonly SyncQueueItem[]) => void): () => void {
+  offlineQueueListeners.add(listener);
+  return () => {
+    offlineQueueListeners.delete(listener);
+  };
 }
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {

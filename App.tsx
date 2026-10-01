@@ -181,6 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
+import { FieldUpdateDocumentChangeNotice } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -19091,6 +19092,7 @@ function UpdateHistoryCard({
           <Text style={styles.updateCardMetaDot}>•</Text>
           <Text style={styles.updateCardTime}>{relativeUpdateTimestamp(update.date)}</Text>
         </View>
+        <FieldUpdateDocumentChangeNotice updateId={update.id} />
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
