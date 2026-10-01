@@ -84,6 +84,9 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
 }
 
+/** A task value as the cloud keeps it, key order aside (a conflict choice compares copies so). */
+export const canonicalScheduleItemJson = canonicalJson;
+
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(entry => canonicalValue(entry));

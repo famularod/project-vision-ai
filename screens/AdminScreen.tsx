@@ -961,9 +961,13 @@ export function AdminScreen({
 
     try {
       if (conflict.entity === 'schedule_item') {
+        // A task's choice too is checked against the cloud copy its row
+        // showed (whole-app audit A7 pass 15): Keep Cloud puts that copy back
+        // over an edit of this phone's it discards that landed meanwhile.
         const resolvedItem = await resolveScheduleItemSyncConflict(
           conflict.id,
           resolution,
+          { cloudCopyShown: conflict.remotePayload },
         );
         onApplyCloudConflictScheduleItem(resolvedItem);
       } else {

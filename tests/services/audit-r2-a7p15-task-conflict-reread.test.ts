@@ -8,6 +8,15 @@
  *     false "This task was deleted on another device". The task's row is now
  *     read by its id; no row is a deletion, a failed read is not.
  *
+ * L-1 Keep Cloud put the cloud's copy back only when the conflict closed AND
+ *     the row changed between its two reads. A phone upload already under
+ *     way that landed before the first read (A), or between the reads when
+ *     the second read failed (B), left the edit David chose to discard in the
+ *     cloud and on the phone, and Settings said "Cloud conflicts resolved."
+ *     The cloud's row is now compared with the phone's waiting edits: one
+ *     that landed is undone, back to the cloud copy the screen showed; a read
+ *     that fails when it is needed reports the failure and changes nothing.
+ *
  * Runs the real SyncService queue, upload and conflict store; the cloud is a
  * mocked row per task (as sync-tombstone-upload-gate.test.ts does).
  */
@@ -65,6 +74,7 @@ import {
   queueScheduleItemRecord,
   resolveScheduleItemSyncConflict,
   runScheduleItemCloudSync,
+  uploadPendingChanges,
 } from '../../services/SyncService';
 
 const phoneTask: ScheduleItem = {
@@ -173,5 +183,111 @@ describe('L-2: Keep Cloud judges "deleted on another device" from the task\'s ow
     expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
     await expect(getSyncConflicts()).resolves.toEqual([conflict]);
     await expect(getOfflineQueue()).resolves.toEqual(queued);
+  });
+});
+
+describe('L-1: Keep Cloud on a task never ends with the phone edit David chose to discard (audit A7 pass 15)', () => {
+  const NEWER = 'A newer phone edit, which Keep Cloud discards.';
+
+  /** A newer phone edit is on its way up when David chooses; its upload lands when `land` is called. */
+  async function newerPhoneEditOnItsWayUp() {
+    await queueScheduleItemRecord(
+      { ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'],
+    );
+    let land!: () => void;
+    const landing = new Promise<void>(resolve => { land = resolve; });
+    let sending!: () => void;
+    const sent = new Promise<void>(resolve => { sending = resolve; });
+    mockUpsertScheduleItem.mockImplementationOnce(async (item: ScheduleItem) => {
+      sending();
+      await landing;
+      return mockCloud.upsert(item);
+    });
+    const inFlight = uploadPendingChanges();
+    await sent;
+    return { land, inFlight };
+  }
+
+  it('A: the edit lands before Keep Cloud first reads the cloud: the cloud copy the screen showed goes back', async () => {
+    const conflict = await conflictWithWebCopy();
+    const shown = conflict.remotePayload as ScheduleItem;
+    const { land, inFlight } = await newerPhoneEditOnItsWayUp();
+    // The phone's upload lands, and finishes, just before Keep Cloud reads the cloud.
+    mockGetScheduleItem.mockImplementationOnce(async (id: string) => {
+      land();
+      await inFlight;
+      return mockCloud.get(id);
+    });
+
+    // It ended with the discarded edit, in the cloud and on the phone, and
+    // Settings said "Cloud conflicts resolved."
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toEqual(shown);
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2);
+    expect(mockUpsertScheduleItem.mock.calls[0][0]).toMatchObject({ notes: NEWER });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('A, after another device\'s edit the screen showed: only the phone\'s edit is undone', async () => {
+    const conflict = await conflictWithWebCopy();
+    const shown = webEnters50(conflict); // Review Conflicts showed it ("Cloud: In Progress · 50%")
+    const { land, inFlight } = await newerPhoneEditOnItsWayUp();
+    mockGetScheduleItem.mockImplementationOnce(async (id: string) => {
+      land();
+      await inFlight;
+      return mockCloud.get(id);
+    });
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toEqual(shown);
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('B: the edit lands between Keep Cloud\'s reads and the second read fails: no success is reported and nothing is changed; chosen again, the screen\'s copy goes back', async () => {
+    const conflict = await conflictWithWebCopy();
+    const shown = conflict.remotePayload as ScheduleItem;
+    const { land, inFlight } = await newerPhoneEditOnItsWayUp();
+    const queued = await getOfflineQueue();
+    // Keep Cloud reads the cloud before the edit lands; it lands, and that
+    // upload finishes, before Keep Cloud goes on; then the signal drops.
+    mockGetScheduleItem
+      .mockImplementationOnce(async (id: string) => {
+        const answer = await mockCloud.get(id);
+        land();
+        await inFlight;
+        return answer;
+      })
+      .mockImplementationOnce(async () => mockUnreadable());
+
+    // It said the conflict was resolved, with the first read, while the cloud
+    // kept the discarded edit.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1); // the phone's own upload; Keep Cloud wrote nothing
+    // David's choice left nothing: the conflict and the phone's waiting edit are as they were.
+    await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+    await expect(getOfflineQueue()).resolves.toEqual(queued);
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toEqual(shown);
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('control: no phone edit landed; the web\'s 50% is kept, with no write', async () => {
+    const conflict = await conflictWithWebCopy();
+    await queueScheduleItemRecord(
+      { ...phoneTask, notes: NEWER, updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'],
+    );
+    const current = webEnters50(conflict);
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(current);
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 });

@@ -76,6 +76,7 @@ import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
 import { withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import {
   applyFieldUpdateDocumentPatches,
@@ -4794,16 +4795,118 @@ async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | 
   return cloud.data ?? null;
 }
 
+/**
+ * The fields of a task's cloud row that hold one of this phone's waiting
+ * edits and not the copy the screen showed (whole-app audit A7 pass 15 L-1):
+ * of each edit's own fields (every field of a whole copy), those where the
+ * row has the edit's value. Identity, stamps, earlier task ids and import
+ * memberships aside.
+ */
+function taskFieldsHoldingPhoneEdits(
+  row: ScheduleItem,
+  shown: unknown,
+  edits: readonly SyncQueueItem[],
+): string[] {
+  return [...new Set(edits.flatMap(edit => {
+    const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+    if (edit.entity !== 'schedule_item' || edit.operation === 'delete' || !isRecord(payload.itemData)) return [];
+    const fields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : Object.keys(payload.itemData);
+    return fields.filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) &&
+      taskFieldValue(row, field) === taskFieldValue(payload.itemData, field) &&
+      taskFieldValue(row, field) !== taskFieldValue(shown, field));
+  }))];
+}
+
+/** Identity, stamps, and the ids Keep Phone keeps from both copies: no edit of David's (whole-app audit A7 pass 15). */
+const TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK: ReadonlySet<string> = new Set([
+  'id', 'projectId', 'updatedAt', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds',
+]);
+
+/** One field of a task copy, as compared: key order aside, and a missing field reads as null. */
+function taskFieldValue(item: unknown, field: string): string {
+  const value = isRecord(item) ? item[field] : undefined;
+  return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
+}
+
+/**
+ * The task's cloud row with this phone's landed edits undone (whole-app audit
+ * A7 pass 15 L-1): each such field, and the row's stamp, back to the cloud's
+ * value before the edit landed (`before`, Keep Cloud's first read), or, when
+ * that already held it, to the copy the screen showed.
+ */
+function withPhoneEditsUndone(row: ScheduleItem, fields: readonly string[], before: ScheduleItem, shown: unknown): ScheduleItem {
+  const next: Record<string, unknown> = { ...row };
+  [...fields, 'updatedAt'].forEach(field => {
+    const source: unknown = taskFieldValue(before, field) !== taskFieldValue(row, field) ? before : shown;
+    const value = isRecord(source) ? source[field] : undefined;
+    if (value === undefined) delete next[field];
+    else next[field] = value;
+  });
+  return next as ScheduleItem;
+}
+
+/** Takes a task's waiting edits off the queue; the edits taken. */
+function withdrawScheduleItemFromSyncQueue(itemId: string): Promise<SyncQueueItem[]> {
+  const queueItemId = scheduleItemQueueItemId(itemId);
+  return mutateOfflineQueue(queue => {
+    const withdrawn = queue.filter(item => item.id === queueItemId);
+    return {
+      nextQueue: queue.filter(item => item.id !== queueItemId),
+      result: withdrawn,
+      persist: withdrawn.length > 0,
+    };
+  });
+}
+
+/**
+ * A task's conflict and this phone's waiting edits put back as they were
+ * before Keep Cloud (whole-app audit A7 pass 15 L-1), when it stops without
+ * keeping a copy: the edits it withdrew, or that an upload already under way
+ * took off the queue as it landed, wait again, with any made since; the
+ * conflict, which that landing closed, is saved again.
+ */
+async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonly SyncQueueItem[]): Promise<void> {
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  const unique = edits.filter((edit, index) =>
+    edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
+  if (unique.length > 0) {
+    await mutateOfflineQueue(queue => ({
+      nextQueue: [
+        ...queue.filter(item => item.id !== queueItemId),
+        [...unique, ...queue.filter(item => item.id === queueItemId)]
+          .reduce((older, newer) => mergeScheduleItemQueueChangeScope(older, newer)),
+      ],
+      result: undefined,
+    }));
+  }
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (conflicts.some(item => item.entity === conflict.entity && item.localId === conflict.localId)) return;
+    await writeSyncConflicts([...conflicts, conflict]);
+  });
+}
+
 export async function resolveScheduleItemSyncConflict(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
+  /**
+   * The cloud copy Review Conflicts showed when David chose (whole-app audit
+   * A7 pass 15, as for field updates, A4 pass 17 L1); without it, the copy
+   * saved with the conflict.
+   */
+  { cloudCopyShown }: { cloudCopyShown?: unknown } = {},
 ): Promise<ScheduleItem> {
+  // This phone's waiting edits of the task, before anything else: an upload
+  // already under way takes one off the queue once it has landed it.
+  const queueAtChoice = await getOfflineQueue();
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
 
   if (!conflict || conflict.entity !== 'schedule_item') {
     throw new Error('sync_conflict_not_found');
   }
+  const shown = cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown;
+  const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
   const tombstoneSync = await synchronizeDAVESyncTombstones();
   if (!tombstoneSync.cloudAuthoritative) {
@@ -4836,41 +4939,54 @@ export async function resolveScheduleItemSyncConflict(
     }
     // Remove both the conflict-era edit and any newer queued local revision,
     // around any upload of this phone's already under way.
-    await removeOperationalRecordFromSyncQueue(
-      'schedule_item',
-      conflict.localId,
-    );
+    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
-    await removeOperationalRecordFromSyncQueue(
-      'schedule_item',
-      conflict.localId,
-    );
-    // Read again now: an edit from another device that landed meanwhile is the
-    // cloud's too. The first read stands in when this one fails.
-    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
-    if (reread === null) {
-      await clearScheduleItemSyncConflicts(conflict.localId);
-      throw new Error('sync_conflict_record_deleted');
-    }
-    const cloudNow = reread ?? cloudItem;
-    // The cloud already holds its own copy, so nothing is written back, unless
-    // an upload of this phone's, under way when David chose, landed a phone
-    // edit he discarded since the first read (its landing closes the
-    // conflict): the copy read before it goes back.
-    const phoneEditLanded = !(await getSyncConflicts()).some(item =>
-      item.entity === 'schedule_item' && item.localId === conflict.localId);
-    if (phoneEditLanded && JSON.stringify(cloudNow) !== JSON.stringify(cloudItem)) {
-      const restore = await upsertScheduleItem(cloudItem);
+    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
+    const phoneEdits = [...waitingEdits, ...withdrawn];
+    try {
+      // Read again now: an edit from another device that landed meanwhile is
+      // the cloud's too.
+      const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+      if (reread === null) {
+        await clearScheduleItemSyncConflicts(conflict.localId);
+        throw new Error('sync_conflict_record_deleted');
+      }
+      // The first read stands in when this one fails, unless an edit of this
+      // phone's may be in the cloud (whole-app audit A7 pass 15 L-1): one
+      // landed during the choice (its landing closes the conflict), or the
+      // first read holds one. Then nothing is decided, and nothing changes.
+      if (reread === undefined && (
+        !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId) ||
+        taskFieldsHoldingPhoneEdits(cloudItem, shown, phoneEdits).length > 0
+      )) {
+        throw new Error('sync_conflict_cloud_copy_unreadable');
+      }
+      const cloudNow = reread ?? cloudItem;
+      // The cloud already holds its own copy, so nothing is written back,
+      // unless it holds an edit of this phone's that David discarded: an
+      // upload under way when he chose landed it, before Keep Cloud read the
+      // cloud or after. It is undone, back to the copy the screen showed
+      // (A7 pass 15 L-1: only a landing between the two reads was undone).
+      const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, phoneEdits);
+      if (phoneFields.length === 0) {
+        await clearResolvedConflict(conflict.id);
+        return cloudNow;
+      }
+      const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
+      const restore = await upsertScheduleItem(restored);
       if (!restore.ok || restore.stubbed) {
         throw new Error(
           restore.error || restore.message || 'sync_conflict_save_failed',
         );
       }
       await clearResolvedConflict(conflict.id);
-      return cloudItem;
+      return restored;
+    } catch (error) {
+      if (!(error instanceof Error && error.message === 'sync_conflict_record_deleted')) {
+        await putBackTaskConflictAsItWas(conflict, phoneEdits);
+      }
+      throw error;
     }
-    await clearResolvedConflict(conflict.id);
-    return cloudNow;
   }
 
   if (!localItem || typeof localItem.id !== 'string') {
