@@ -47,9 +47,18 @@ function notify() {
   listeners.forEach(listener => listener());
 }
 
+/**
+ * Accounts whose kept note the phone has answered for since launch. Until it
+ * has, nothing is written or removed there for that account: tapping Type
+ * field note before slow storage answered removed the kept note (whole-app
+ * audit A2 pass 5 L2, 30 Sep 2026). What was written meanwhile is kept when
+ * it answers.
+ */
+const phoneAnswered = new Set<string>();
+
 /** A written note is kept on the phone; one with nothing written is removed. */
 function keepOnPhone(kept: typeof slot, keptFor: string | null = kept?.keptFor ?? null) {
-  if (!keptFor) return;
+  if (!keptFor || !phoneAnswered.has(keptFor)) return;
   void keepDraft('field-note', keptFor, '', kept && hasWrittenContent(kept.draft) ? kept.draft : null);
 }
 
@@ -73,12 +82,17 @@ export function useFieldNoteDraft(
       notify();
     }
     let current = true;
-    if (keptFor && !slot) {
+    if (keptFor && (!slot || !phoneAnswered.has(keptFor))) {
       void readKeptDraft('field-note', keptFor).then(kept => {
+        phoneAnswered.add(keptFor);
         const draft = keptFieldNoteDraft(kept?.value);
-        if (!current || !kept || !draft || slot) return;
-        slot = { key, draft: { ...draft, captureOpen: true }, keptFor, keptAt: kept.keptAt };
-        notify();
+        // The kept note comes back unless something is written on screen.
+        if (current && kept && draft && (!slot || (slot.key === key && !hasWrittenContent(slot.draft)))) {
+          slot = { key, draft: { ...draft, captureOpen: true }, keptFor, keptAt: kept.keptAt };
+          notify();
+        } else if (slot?.keptFor === keptFor) {
+          keepOnPhone(slot);
+        }
       });
     }
     // Leaving with nothing written starts the next visit fresh, so a saved
@@ -158,7 +172,9 @@ export function clearFieldNoteDraftIfUnchanged(
  * kept on the phone, which a sign-out discards (A11 pass 4 L5).
  */
 export async function unsavedFieldNoteExists(ownerKey: string): Promise<boolean> {
-  if (slot?.keptFor === ownerKey) return hasWrittenContent(slot.draft);
+  if (slot?.keptFor === ownerKey && (hasWrittenContent(slot.draft) || phoneAnswered.has(ownerKey))) {
+    return hasWrittenContent(slot.draft);
+  }
   return Boolean(keptFieldNoteDraft((await readKeptDraft('field-note', ownerKey))?.value));
 }
 
