@@ -2812,39 +2812,82 @@ async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<Syn
  * copy has changed, as Settings says. That work had been lost (a newer
  * edit, a document change), and the cloud copy went up later and cleared
  * the conflict. Work queued since is newer, and stays.
+ *
+ * Exactly as it was (A4 pass 22 L2, L3), for each update: the latest whole
+ * copy withdrawn goes back as it was (phoneWorkToPutBack), and every change
+ * taken in after it goes on top, oldest first, as any such change does
+ * (queueProjectUpdatePatch). Only the later withdrawal of an id went back: a
+ * document upload or analysis finishing in Keep Cloud's first upload pass,
+ * after David's newer edit was withdrawn, went back alone, and Keep Phone
+ * then sent his older edit. And a copy a killed app left went after this
+ * one's, so its older analysis result won.
  */
 async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueItem[], queued: SyncQueueItem | null): Promise<void> {
   const chosenFor = (queued?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict;
-  const { back, dropped } = await mutateOfflineQueue(queue => {
+  const plans = await mutateOfflineQueue(queue => {
     // Keep Cloud's copy goes by its mark (whole-app audit A4 pass 21 F1),
     // whatever it took in meanwhile: changed by a document upload or an
     // analysis result, it stayed, and the phone's work was not put back.
     const chosen = queued ? queue.find(item => item.id === queued.id && isKeepCloudChoice(item, chosenFor)) : undefined;
     const kept = queue.filter(item => item !== chosen);
     const queuedIds = new Set(kept.map(item => item.id));
-    // The later withdrawal of an id holds the newer work. None of it goes
-    // over the conflict now without a new choice (A4 pass 15 H1). A copy an
-    // earlier Keep Cloud left (a kill) is not the phone's work: dropped.
-    const restored = [...new Map(withdrawn.filter(item => !isKeepCloudChoice(item))
-      .map(item => [item.id, withoutChoiceOverConflict(item)])).values()]
-      .filter(item => !queuedIds.has(item.id));
+    // None of it goes over the conflict now without a new choice (A4 pass
+    // 15 H1). A copy an earlier Keep Cloud left (a kill) is not the phone's
+    // work: only what it took in goes back.
+    const taken = [...withdrawn, ...(chosen ? [chosen] : [])];
+    const plans = [...new Set(taken.map(item => item.id))]
+      .map(id => phoneWorkToPutBack(taken.filter(item => item.id === id)));
+    const restored = plans.flatMap(plan => plan.restore && !queuedIds.has(plan.restore.id)
+      ? [withoutChoiceOverConflict(plan.restore)] : []);
     return {
       nextQueue: [...kept, ...restored],
-      result: { back: restored, dropped: [...(chosen ? [chosen] : []), ...withdrawn.filter(item => isKeepCloudChoice(item))] },
+      result: plans,
       persist: kept.length !== queue.length || restored.length > 0,
     };
   });
-  // What a copy dropped took in goes onto the phone's work put back, as any
-  // such change does (queueProjectUpdatePatch): an analysis result in a patch
-  // on the cloud's copy that carries the held edit (A7 pass 14 L-2), a
-  // document change into the held edit.
-  for (const copy of dropped) {
-    const card = [...back.filter(item => item.id === copy.id), copy]
-      .map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).updateData).find(isRecord);
-    for (const patch of (copy.payload as Partial<ProjectUpdateRecordPayload>).absorbedPatches ?? []) {
-      if (card) await queueProjectUpdatePatch(card as unknown as PatchedProjectUpdate, patch);
-    }
+  // The changes go onto the phone's work put back, as any such change does
+  // (queueProjectUpdatePatch): an analysis result in a patch on the cloud's
+  // copy that carries the held edit (A7 pass 14 L-2), a document change into
+  // the held edit. Oldest first: a later result for a photo wins.
+  for (const plan of plans) {
+    if (!isRecord(plan.card)) continue;
+    for (const patch of plan.changes) await queueProjectUpdatePatch(plan.card as unknown as PatchedProjectUpdate, patch);
   }
+}
+
+/**
+ * What a failed Keep Cloud puts back for one update (whole-app audit A4 pass
+ * 22 L2, L3), from what it took, oldest first, its own copy last:
+ * - `restore`, as it was: the latest whole copy (or archive) of the phone's,
+ *   which holds what came before it. With none, the first item taken when it
+ *   is the phone's: a patch item, which may carry a held edit (newerEdit).
+ * - `changes`, every change taken in after it, oldest first: a patch item's
+ *   patches, and what a Keep Cloud copy took in (one a killed app left
+ *   before this one's).
+ * - `card`: the copy those changes are made on.
+ */
+function phoneWorkToPutBack(taken: readonly SyncQueueItem[]): {
+  restore: SyncQueueItem | null; changes: FieldUpdateDocumentPatch[]; card: unknown;
+} {
+  const phoneWork = (item: SyncQueueItem) => !isKeepCloudChoice(item);
+  const lastWhole = taken.map(item => phoneWork(item) && !queuedFieldUpdateDocumentPatches(item)).lastIndexOf(true);
+  const at = lastWhole >= 0 ? lastWhole : taken[0] && phoneWork(taken[0]) ? 0 : -1;
+  const restore = at >= 0 ? taken[at] : null;
+  const newestFirst = [...taken].reverse();
+  const card = [restore, ...newestFirst.filter(phoneWork), ...newestFirst]
+    .map(item => (item?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData).find(isRecord);
+  return { restore, changes: changesTakenIn(taken.slice(at + 1)), card };
+}
+
+/**
+ * The changes queued work took in, oldest first (whole-app audit A4 pass
+ * 22): a patch item's patches (a document change, a late analysis result),
+ * and what a Keep Cloud copy took in while it was queued (absorbedPatches).
+ */
+function changesTakenIn(items: readonly SyncQueueItem[]): FieldUpdateDocumentPatch[] {
+  return items.flatMap(item => isKeepCloudChoice(item)
+    ? (item.payload as Partial<ProjectUpdateRecordPayload>).absorbedPatches ?? []
+    : queuedFieldUpdateDocumentPatches(item) ?? []);
 }
 
 /** Keep Cloud's chosen copy (A7 pass 17 L-1), over this conflict when one is named. */
@@ -4463,6 +4506,10 @@ export async function clearScheduleItemSyncConflicts(
  * chosen copy goes up only inside Keep Cloud's own upload (A4 pass 21 F1).
  *
  * Work that arrives while Keep Cloud runs is treated one way (A4 pass 22):
+ * - Patch items (a document change, an analysis result) Keep Cloud took, and
+ *   the changes its own queued copy took in, go onto the restored phone work
+ *   when it fails, oldest first, through queueProjectUpdatePatch.
+ * - The latest whole phone copy it took is always what the put-back restores.
  * - Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
  *   newer cloud copy as it goes up, it records that copy in the open
  *   conflict, nothing is sent, and David reviews again; the phone's work it

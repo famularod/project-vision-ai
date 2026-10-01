@@ -4820,6 +4820,10 @@ describe('"Send your version?" keeps a photo analysis that finished while the qu
  *    uploaded recorded a new conflict whose phone side was that copy, still
  *    marked as Keep Cloud's; it was held, so every Keep Phone then said
  *    "Conflict not resolved".
+ * L2: a document upload or analysis finishing in Keep Cloud's first upload
+ *    pass, then a Keep Cloud that failed: only that change was put back, not
+ *    David's newer edit, which Keep Phone then lost everywhere.
+ * L3: a result Keep Cloud's copy took in before a kill won over a newer one.
  */
 describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pass 22, A7 pass 19)', () => {
   const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
@@ -4892,6 +4896,32 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     expect(await getOfflineQueue()).toEqual([]);
     await refresh(phone);
   }
+  /** Sent while its photo was being analysed; edited offline; the iPad edits; the conflict is found. */
+  async function offlineEditInConflictWhileAnalysing() {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    return { phone, persistDocuments: () => undefined };
+  }
+  /** The change that finishes while Keep Cloud runs: a photo analysis result, or the permit's upload. */
+  function changeFinishes(what: 'a photo analysis' | 'a document upload', phone: Device, persistDocuments: () => void, result: Record<string, unknown>) {
+    return async () => {
+      if (what === 'a photo analysis') lateAnalysisFinishes(phone, result);
+      else await expect(phone.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+      await phone.settle();
+      persistDocuments();
+    };
+  }
+  const inConflictFor = (what: 'a photo analysis' | 'a document upload') => what === 'a photo analysis'
+    ? offlineEditInConflictWhileAnalysing()
+    : phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed' })]);
+  /** The change, on a copy: the result on its photo, or the permit uploaded. */
+  function expectChange(what: 'a photo analysis' | 'a document upload', copy: Update | undefined, result: Record<string, unknown>) {
+    if (what === 'a photo analysis') {
+      expect(copy).toMatchObject({ pieStatus: 'complete' });
+      expect(firstPhotoAnalysis(copy)).toEqual(result);
+    } else {
+      expect(copy?.documents?.[0]).toMatchObject({ id: 'permit', status: 'uploaded' });
+    }
+  }
 
   it.each(['keep_local', 'keep_cloud'] as const)('L1: the iPad saves while Keep Cloud\'s copy uploads: "review again" with the iPad\'s newest copy, nothing sent; then %s ends right everywhere', async resolution => {
     const phone = await offlineEditInConflictWithIPad([]);
@@ -4942,5 +4972,57 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     await keepPhone(phone);
     expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
     expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+  });
+
+  it.each(['a photo analysis', 'a document upload'] as const)('L2: %s finishes in Keep Cloud\'s first upload pass and Keep Cloud fails: David\'s newer edit goes back with it; after a refresh, Keep Phone ends with both everywhere', async what => {
+    const { phone, persistDocuments } = await inConflictFor(what);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    const ran = whileKeepCloudRuns('first pass', changeFinishes(what, phone, persistDocuments, result), { weak: true });
+    expect(await chooseInSettingsExpectingFailure(phone, (await getSyncConflicts())[0], 'keep_cloud')).toEqual(['Conflict not resolved']);
+    expect(ran()).toBe(true);
+    expect(await keepCloudCopyQueued()).toBe(false);
+    expect(await phoneSide()).toBe(NEWER);
+    signalReturns();
+    await automaticSyncsLeaveItForReview(phone);
+    await refresh(phone);
+    expect(await phoneSide()).toBe(NEWER);
+    await keepPhone(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expectChange(what, inCloud(), result);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expectChange(what, phone.saved(), result);
+  });
+
+  it('L3: a result Keep Cloud\'s copy took in before the app was killed does not win over a newer one the next, failing, Keep Cloud took in', async () => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    const older = { ...finishedAnalysis(), currentObservation: 'Older result' };
+    let disk = new Map<string, string>();
+    whileKeepCloudRuns('its upload', async () => {
+      lateAnalysisFinishes(phone, older);
+      await phone.settle();
+      disk = new Map(mockStorage); // killed here: what Keep Cloud does next never happened
+    }, { weak: true });
+    expect(await chooseInSettingsExpectingFailure(phone, (await getSyncConflicts())[0], 'keep_cloud')).toEqual(['Conflict not resolved']);
+    mockStorage.clear();
+    disk.forEach((value, key) => mockStorage.set(key, value));
+    resetFieldUpdateSyncMemoryForTests();
+    expect(await keepCloudCopyQueued()).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const newer = { ...finishedAnalysis(), currentObservation: 'Newer result' };
+    const ran = whileKeepCloudRuns('its upload', async () => {
+      lateAnalysisFinishes(phone, newer);
+      await phone.settle();
+    }, { weak: true });
+    expect(await chooseInSettingsExpectingFailure(phone, (await getSyncConflicts())[0], 'keep_cloud')).toEqual(['Conflict not resolved']);
+    expect(ran()).toBe(true);
+    signalReturns();
+    await automaticSyncsLeaveItForReview(phone);
+    expect(firstPhotoAnalysis(inCloud())).toEqual(newer);
+    await keepPhone(phone);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(newer);
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(newer);
   });
 });
