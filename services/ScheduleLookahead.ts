@@ -313,6 +313,17 @@ export function scheduleTaskRestatedByLookahead(
  * compared is the master file's own, and a percent at or below the
  * manager's noted one changes nothing either: the manager's stood over it
  * (A5 pass 6 M2).
+ *
+ * Whole-app audit A5 recorded Low (the b98824e remainder, 1 Oct 2026):
+ * master G listed Framing on lookahead L2's 10/20, so the note's master
+ * dates became G's and the older lookaheads were marked replaced. With F
+ * current again and L2 deleted, Framing rightly showed L1's 10/18; a newer
+ * master H listing G's 10/20 then read as a repeat, and Framing stayed on
+ * L1's dates though H is newer than L1. The noted dates are what the master
+ * said before a lookahead only when no master replaced that lookahead's
+ * dates since: a task shown on a lookahead's dates that a master marked
+ * replaced (and not on the noted dates) is no repeat, and the row's dates
+ * are the newer master's word (owner answer Q22).
  */
 export function scheduleRowRepeatsMasterBeforeLookahead(
   task: ScheduleItem,
@@ -320,7 +331,11 @@ export function scheduleRowRepeatsMasterBeforeLookahead(
 ): { dates: boolean; percent: boolean } {
   const overlay = overlayOf(task);
   if (!overlay) return { dates: false, percent: false };
-  const dates = sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, row);
+  const noted = { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+  // On a lookahead's dates a master marked replaced, the noted dates came after that lookahead: no repeat (A5 recorded Low).
+  const onReplacedLookahead = !sameDates(task, noted) &&
+    Boolean([...overlay.lookaheads].reverse().find(entry => sameDates(task, entry))?.datesReplacedByMaster);
+  const dates = sameDates(noted, row) && !onReplacedLookahead;
   const stated = scheduleRowStatesPercent(row) ? percentOf(row) : null;
   const repeats = stated !== null && (
     stated === masterFilePercent(overlay) ||

@@ -26,6 +26,7 @@ import {
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 type State = { items: ScheduleItem[]; documents: ReferenceDocument[] };
 const EMPTY: State = { items: [], documents: [] };
@@ -223,5 +224,92 @@ describe('R-a: the lookahead delete reads a deleted master\'s marks as Set Activ
     let state = approve(EMPTY, F, [F_ROW, SURVEY]);
     state = approve(approve(approve(state, L1, [L1_ROW], true), L2, [L2_ROW], true), G, [L2_ROW, SURVEY]);
     expect(copies(deleteWithItems(state, L2, '2026-09-14T10:00:00.000Z'), 'Framing')).toEqual([L2_DATES]);
+  });
+});
+
+/**
+ * R-b (Low, the b98824e remainder; right at c73ceab): master F, lookaheads L1
+ * (10/18) and L2 (10/20), master G listing Framing on L2's dates (it marks the
+ * lookaheads replaced). With F current again (Set Active), deleting L2 rightly
+ * gives L1's 10/18 (L1 is newer than F, G not current). A newer master H
+ * listing G's 10/20 then read as "no change": the row matched the note's
+ * master dates, G's, while the task showed L1's, so Framing stayed on 10/18
+ * though H is newer than L1 (Q22: a newer master's dates replace older
+ * lookahead dates).
+ */
+describe('R-b: a newer master listing the noted dates while the task shows a lookahead\'s they replaced is not a repeat', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const L2 = doc('LOOKAHEAD L2', '2026-09-11T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', '2026-09-13T12:00:00.000Z');
+  const H = doc('MASTER H', '2026-09-16T12:00:00.000Z');
+  const AT = '2026-09-17T10:00:00.000Z';
+
+  describe('a task an import owns', () => {
+    /** F, L1, L2, G on L2's dates; F current again, L2 deleted: L1's 10/18. */
+    const underF = () => {
+      let state = approve(EMPTY, F, [F_ROW, SURVEY]);
+      state = approve(approve(state, L1, [L1_ROW], true), L2, [L2_ROW], true);
+      state = setActive(approve(state, G, [L2_ROW, SURVEY]), F, '2026-09-14T10:00:00.000Z');
+      state = deleteWithItems(state, L2, '2026-09-15T10:00:00.000Z');
+      expect(copies(state, 'Framing')).toEqual([L1_DATES]);
+      return state;
+    };
+
+    it('approved on the phone, H on G\'s 10/20 gives 10/20-10/30; deleting L1 after keeps it', () => {
+      const state = approve(underF(), H, [L2_ROW, SURVEY]);
+      expect(copies(state, 'Framing')).toEqual([L2_DATES]);
+      expect(copies(deleteWithItems(state, L1, '2026-09-18T10:00:00.000Z'), 'Framing')).toEqual([L2_DATES]);
+    });
+
+    it.each(HOWS)('unchanged: uploaded on the web, H leaves 10/18 until it is current; then %s of H gives 10/20', (_how, activate) => {
+      const up = upload(underF(), 'alpha-master-h.csv', [L2_ROW, SURVEY], H.importedAt as string);
+      expect(copies(up.state, 'Framing')).toEqual([L1_DATES]);
+      expect(copies(activate(up.state, up.document, AT), 'Framing')).toEqual([L2_DATES]);
+    });
+
+    it('unchanged: a newer master repeating the master\'s dates from before an unmarked lookahead leaves the lookahead\'s (Q22)', () => {
+      const state = approve(approve(EMPTY, F, [F_ROW, SURVEY]), L1, [L1_ROW], true);
+      expect(copies(approve(state, H, [F_ROW, SURVEY]), 'Framing')).toEqual([L1_DATES]);
+    });
+
+    it('unchanged: a newer master repeating G where G copied the lookahead the task shows changes nothing', () => {
+      let state = approve(approve(EMPTY, F, [F_ROW, SURVEY]), L1, [L1_ROW], true);
+      state = approve(approve(state, G, [L1_ROW, SURVEY]), H, [L1_ROW, SURVEY]);
+      expect(copies(state, 'Framing')).toEqual([L1_DATES]);
+    });
+  });
+
+  describe('a task David entered by hand', () => {
+    const hand = buildDAVEWebScheduleItem({
+      id: 'hand-pour', now: '2026-09-06T15:00:00.000Z', actor: 'David',
+      draft: {
+        itemType: 'Task', taskName: 'Pour slab', projectName: 'Alpha', projectId: 'alpha', locationName: 'Lot',
+        startDate: '10/01/2026', finishDate: '10/05/2026', milestone: '', owner: 'Crew A', contractor: '', percentComplete: '40',
+        priority: 'Medium', status: 'In Progress', notes: 'Pump booked', nextAction: '', activityMessage: '',
+      },
+    }) as unknown as ScheduleItem;
+    const pour = (start: string, finish: string) => `Pour slab,Alpha,Lot,${start},${finish},`;
+    /** F on David's dates, L1 (10/03), L2 (10/05), G on L2's dates; F current again, L2 deleted: L1's 10/03. */
+    const underF = () => {
+      let state = approve({ items: [hand], documents: [] }, F, [pour('10/01/2026', '10/05/2026'), SURVEY]);
+      state = approve(approve(state, L1, [pour('10/03/2026', '10/07/2026')], true), L2, [pour('10/05/2026', '10/09/2026')], true);
+      state = setActive(approve(state, G, [pour('10/05/2026', '10/09/2026'), SURVEY]), F, '2026-09-14T10:00:00.000Z');
+      state = deleteWithItems(state, L2, '2026-09-15T10:00:00.000Z');
+      expect(copies(state, 'Pour slab')).toEqual([['10/03/2026', '10/07/2026', 40]]);
+      return state;
+    };
+
+    it('approved on the phone, H on G\'s 10/05 restates it there, in place, with David\'s 40%', () => {
+      const state = approve(underF(), H, [pour('10/05/2026', '10/09/2026'), SURVEY]);
+      expect(copies(state, 'Pour slab')).toEqual([['10/05/2026', '10/09/2026', 40]]);
+      expect(named(state, 'Pour slab')[0]).toMatchObject({ id: 'hand-pour', owner: 'Crew A', notes: 'Pump booked' });
+    });
+
+    it.each(HOWS)('uploaded on the web, then %s of H: 10/05-10/09 with David\'s 40%', (_how, activate) => {
+      const up = upload(underF(), 'alpha-master-h.csv', [pour('10/05/2026', '10/09/2026'), SURVEY], H.importedAt as string);
+      expect(copies(up.state, 'Pour slab')).toEqual([['10/03/2026', '10/07/2026', 40]]);
+      expect(copies(activate(up.state, up.document, AT), 'Pour slab')).toEqual([['10/05/2026', '10/09/2026', 40]]);
+    });
   });
 });
