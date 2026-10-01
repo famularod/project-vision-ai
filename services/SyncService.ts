@@ -2495,7 +2495,14 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
   if (!isFieldUpdatePhotoAnalysisPatch(patch) && patch.remove) {
     await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
   }
-  const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update);
+  // A photo result the copy last put in the cloud holds and that stands over
+  // the card's is no change of the card's (A4 pass 30 L1), as in
+  // projectUpdateVersionIsInCloud: a photo re-analysing made the card read
+  // as owing its own sync, so another result or a document change sent the
+  // whole card, stamped now, with "analyzing", over an iPad note.
+  const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update) ||
+    fieldUpdateOwesNothingBeyond(lastInCloud, [patch], applyFieldUpdateDocumentPatches(
+      withSentCopysStandingParts(update as unknown as ProjectUpdate, lastInCloud) as object, [patch]));
   const conflicts = await getSyncConflicts();
   const inConflict = Boolean(openFieldUpdateConflict(conflicts, update.id));
   const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !inConflict;

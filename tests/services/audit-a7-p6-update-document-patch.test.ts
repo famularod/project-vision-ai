@@ -5715,6 +5715,37 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ status: 'analyzing' });
   });
 
+  it('two photos re-run mid-send and B lands first: B goes up as a patch, A keeps its result in the cloud, and an iPad note stays (A4 pass 30 L1)', async () => {
+    const photoB = { id: 'photo-p30-b', uri: 'file:///phone/Documents/project-photos/p30-b.jpg', caption: '', createdAt: SENT_AT,
+      photoIntelligence: { status: 'analyzing', updatedAt: SENT_AT } };
+    const phone = await sentThroughTheApp([analyzingPhoto, photoB]);
+    const failedA = failedAnalysis();
+    lateAnalysisFinishes(phone, failedA);
+    lateAnalysisFinishes(phone, failedAnalysis(), photoB.id);
+    await phone.settle();
+    await uploadPendingChanges(); // both failed results go up as patches
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 41 yards' }); // Waiting to Sync
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => {
+      lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() }); // Retry on A, mid-upload
+      lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() }, photoB.id); // and on B
+      await phone.settle();
+      return save(params);
+    });
+    await waitingUpdateSync(phone); // the record reached the cloud, but the card changed under it
+    const LATER_IPAD_NOTE = 'Pour moved to Thursday (typed on the iPad just after)';
+    await iPadEditsNow(LATER_IPAD_NOTE);
+    const resultB = finishedAnalysis();
+    lateAnalysisFinishes(phone, resultB, photoB.id); // B lands first
+    await phone.settle();
+    expect((await queuedFor())?.payload).toMatchObject({ documentPatches: [expect.objectContaining({ photoId: photoB.id })] });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: LATER_IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(failedA);
+    expect((inCloud().photos as Array<{ photoIntelligence?: unknown }>)[1].photoIntelligence).toEqual(resultB);
+  });
+
   it('"Send your version?": the phone\'s note goes over the iPad\'s, with the iPad\'s Confirmed result (A4 pass 27 L3)', async () => {
     const phone = await sentThroughTheApp([analyzingPhoto]);
     await new Promise(resolve => setTimeout(resolve, 5));
