@@ -12,7 +12,11 @@ import {
 import { findDAVETaskCandidates } from '../../services/DAVETaskConversation';
 import { buildProjectIntelligence } from '../../services/DAVEIntelligence';
 import { createTalkSession } from '../../hooks/use-talk-session';
-import { ecosProjectNumberExemptSpans } from '../../supabase/functions/_shared/ecos-project-reference';
+import {
+  ecosProjectIdentifier,
+  ecosProjectNumberExemptSpans,
+  findECOSProjectReferenceMismatch,
+} from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 8 (30 Sep 2026): owner answer Q20 refuses a question that
 // names another known project's number (open or closed, not deleted) and
@@ -386,5 +390,62 @@ describe('audit A9 pass 8 L6: a Talk task update naming another project Talk doe
     expect(h.taskActions).toHaveLength(1);
     expect(h.taskActions[0].projectName).toBe(project);
     expect(h.taskActions[0].candidates.map(task => task.id)).toEqual([taskId]);
+  });
+});
+
+describe('audit A9 pass 8 L7: a project number with one letter glued to it ("2375A Main")', () => {
+  const A = '2375A Main';
+  const B = '2375B Main';
+
+  it('the identifier is the leading digits, with the letter kept for display', () => {
+    expect(ecosProjectIdentifier(A)).toBe('2375');
+    expect(ecosProjectIdentifier('2375a Main')).toBe('2375');
+    expect(ecosProjectIdentifier('2375AB Main')).toBeNull();
+    // A name with a plain number keeps it.
+    expect(ecosProjectIdentifier('Building 2375 Phase 2B')).toBe('2375');
+    expect(ecosProjectIdentifier(SELECTED)).toBe('2321');
+  });
+
+  it('elsewhere, a mention of it is refused, shown with its letter', () => {
+    expect(desktop('What is left at 2375?', [SELECTED, A])).toBe(switchOnDesktop('2375A'));
+    expect(phone('Is 2375A done?', [SELECTED, A])).toBe(switchOnPhone('2375A'));
+    expect(mentionedDAVEProject('What is left at 2375?', [SELECTED, A])).toBe(A);
+    expect(phone('What is left at 2375A?', [SELECTED], [A])).toBe(reopenOnPhone('2375A'));
+  });
+
+  it('"2375A" is still amps when no project is lettered', () => {
+    expect(phone('Is the breaker 2375A?', PROJECTS)).toBeNull();
+  });
+
+  it('two projects 2375A and 2375B share 2375: a bare "2375" refuses as ambiguous and Talk does not move', () => {
+    expect(desktop('What is left at 2375?', [SELECTED, A, B])).toBe(switchOnDesktop('2375'));
+    expect(mentionedDAVEProject('What is left at 2375?', [SELECTED, A, B])).toBeNull();
+    expect(talkAnswer('What is left at 2375?', [SELECTED, A, B])).toBe(switchOnPhone('2375'));
+  });
+
+  it('"2375B" names 2375B Main, and Talk moves there', () => {
+    expect(desktop('What is left at 2375B?', [SELECTED, A, B])).toBe(switchOnDesktop('2375B'));
+    expect(mentionedDAVEProject('What is left at 2375B?', [SELECTED, A, B])).toBe(B);
+  });
+
+  it('with 2375A Main selected, its own "2375A" or "2375" is never refused', () => {
+    for (const question of ['What is left at 2375A?', 'What is left at 2375?', 'Is the 2375A wing done?']) {
+      expect(phone(question, [SELECTED, A, B], [], A)).toBeNull();
+      expect(desktop(question, [SELECTED, A, B], [], A)).toBeNull();
+      expect(talkAnswer(question, [SELECTED, A, B], [], A)).toBeNull();
+    }
+  });
+
+  it('with 2375A Main selected, "2375B" and other projects are refused', () => {
+    expect(desktop('What is left at 2375B?', [SELECTED, A, B], [], A)).toBe(switchOnDesktop('2375B', '2375A'));
+    expect(desktop('What is left at 2321?', [SELECTED, A, B], [], A)).toBe(switchOnDesktop('2321', '2375A'));
+    expect(talkAnswer('Compare 2375B and 2321', [SELECTED, A, B], [], A)).toBe(
+      'This question names two projects, 2375B and 2321. Which one do you mean? Ask again about just that project.',
+    );
+  });
+
+  it('without a project list, the stricter check applies to a lettered selected project', () => {
+    expect(findECOSProjectReferenceMismatch(A, 'How thick is the slab at 2321?')?.referencedProjectIdentifier).toBe('2321');
+    expect(findECOSProjectReferenceMismatch(A, 'How thick is the slab at 2375?')).toBeNull();
   });
 });

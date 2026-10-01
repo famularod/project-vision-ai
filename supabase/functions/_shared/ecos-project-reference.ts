@@ -51,6 +51,13 @@ export const ECOS_KNOWN_PROJECT_NAMES_LIMIT = 1000;
 const LEGACY_IDENTIFIER_SOURCE = String.raw`\b\d{4,6}\b`;
 const PROJECT_IDENTIFIER_SOURCE = String.raw`\b\d{3,6}\b`;
 /**
+ * A project number with one letter glued to it ("2375A Main"). It is the
+ * project's identifier only when the name has no plain 3-6 digit number: the
+ * digits name the project, and the letter is kept for display and tells
+ * "2375A" from "2375B" (audit A9 pass 8 L7).
+ */
+const LETTERED_IDENTIFIER_SOURCE = String.raw`\b(\d{3,6})([A-Za-z])(?![A-Za-z0-9])`;
+/**
  * A number in a question: 3-6 digits, even with letters right after them
  * ("2375A", "2375B wing"), which used to hide the number (audit A9 pass 7 L5).
  * Letters that are a listed unit ("2375mm", "2375A" as amps) are exempt below.
@@ -81,20 +88,55 @@ export function findECOSProjectReferenceMismatch(
     );
   }
 
-  const selectedIdentifiers = uniqueMatches(projectName, PROJECT_IDENTIFIER_SOURCE);
-  if (selectedIdentifiers.length === 0) return null;
-  const selected = new Set(selectedIdentifiers);
+  const selectedProject = selectedProjectNumbers(projectName, PROJECT_IDENTIFIER_SOURCE);
+  if (!selectedProject) return null;
+  const selected = new Set(selectedProject.numbers);
   const openIdentifiers = otherProjectIdentifiers(knownNames, selected);
   const closedIdentifiers = otherProjectIdentifiers(closedNames, selected);
   // The selected project is passed too, so its own "2,321" is read whole (pass 7 L2).
-  for (const identifier of ecosProjectNumberMentions(question, [projectName, ...knownNames, ...closedNames])) {
-    const open = openIdentifiers.has(identifier);
+  const mentions = ecosProjectNumberMentionsAt(question, [projectName, ...knownNames, ...closedNames]);
+  for (const { number, letter } of mentions) {
+    // "2375B" names a project written "2375B"; the selected one's is its own (pass 8 L7).
+    if (letter) {
+      const named = (name: string) => sameDisplayIdentifier(name, number + letter);
+      if (named(projectName)) continue;
+      const open = knownNames.find(named);
+      const closed = closedNames.find(named);
+      if (open || closed) {
+        return projectReferenceMismatch(selectedProject.label, ecosProjectDisplayIdentifier(open ?? closed ?? '') ?? number, !open);
+      }
+    }
+    const open = openIdentifiers.has(number);
     // A number both an open and a closed project use is read as the open one.
-    if (open || closedIdentifiers.has(identifier)) {
-      return projectReferenceMismatch(selectedIdentifiers[0], identifier, !open);
+    if (open || closedIdentifiers.has(number)) {
+      return projectReferenceMismatch(selectedProject.label, numberLabel(number, open ? knownNames : closedNames), !open);
     }
   }
   return null;
+}
+
+/**
+ * The selected project's numbers (every plain 3-6 digit number in its name,
+ * as `source` reads them, or else the digits of a lettered one: "2375A Main"
+ * is 2375) and how the refusal shows it ("2375A"; audit A9 pass 8 L7).
+ */
+function selectedProjectNumbers(projectName: string, source: string): { numbers: string[]; label: string } | null {
+  const plain = uniqueMatches(projectName, source);
+  if (plain.length > 0) return { numbers: plain, label: plain[0] };
+  const lettered = new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName);
+  return lettered ? { numbers: [lettered[1]], label: lettered[0] } : null;
+}
+
+/** A refused number as shown: "2375A" when that is the one project with it, else the digits. */
+function numberLabel(number: string, projectNames: readonly string[]) {
+  const labels = new Set(projectNames
+    .filter(name => ecosProjectIdentifier(name) === number)
+    .map(name => ecosProjectDisplayIdentifier(name) ?? number));
+  return labels.size === 1 ? [...labels][0] : number;
+}
+
+function sameDisplayIdentifier(projectName: string, identifier: string) {
+  return ecosProjectDisplayIdentifier(projectName)?.toUpperCase() === identifier.toUpperCase();
 }
 
 /**
@@ -121,29 +163,34 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
  * ecosProjectNumberMentions with where each number starts in `text` (Talk
  * orders projects by it). `unsure`: the number was found only by splitting a
  * comma group ("1,200" read as 200). Ask ECOS refuses it like any other; Talk
- * asks instead of moving to it (audit A9 pass 8 L2).
+ * asks instead of moving to it (audit A9 pass 8 L2). `letter`: one letter
+ * glued after the number ("2375B"), or ''. A number and letter that are a
+ * project's identifier ("2375A" for "2375A Main") are never read as amps or
+ * another exemption (audit A9 pass 8 L7).
  */
 export function ecosProjectNumberMentionsAt(
   text: string,
   projectNames: readonly string[] = [],
-): Array<Readonly<{ number: string; start: number; unsure: boolean }>> {
+): Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string }>> {
   const exempt = exemptSpans(text);
   const known = new Set(projectNames.map(ecosProjectIdentifier));
-  const mentions: Array<Readonly<{ number: string; start: number; unsure: boolean }>> = [];
+  const mentions: Array<Readonly<{ number: string; start: number; unsure: boolean; letter: string }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${MENTIONED_NUMBER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
     const start = match.index;
     const end = start + match[0].length;
+    const letter = match[0].includes(',') ? '' : /^([A-Za-z])(?![A-Za-z0-9])/.exec(text.slice(end))?.[1] ?? '';
     if (
       exempt.some(([from, to]) => from <= start && end <= to) &&
-      !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
+      !projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames) &&
+      !(letter && projectNames.some(name => sameDisplayIdentifier(name, number + letter)))
     ) continue;
-    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, unsure: false });
+    if (/^\d{3,6}$/.test(number)) mentions.push({ number, start, unsure: false, letter });
     if (match[0].includes(',') && !known.has(number)) {
       let partStart = start;
       for (const part of match[0].split(',')) {
-        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart, unsure: true });
+        if (/^\d{3,6}$/.test(part)) mentions.push({ number: part, start: partStart, unsure: true, letter: '' });
         partStart += part.length + 1;
       }
     }
@@ -279,9 +326,11 @@ function projectNameAroundNumber(number: string, before: string, after: string, 
   const nextWord = /^[\s,-]+([a-z0-9]+)/i.exec(after)?.[1]?.toLowerCase();
   return projectNames.some(name => {
     if (ecosProjectIdentifier(name) !== number) return false;
-    const index = name.search(new RegExp(`\\b${number}\\b`));
-    const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(index + number.length))?.[1]?.toLowerCase();
-    const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, index))?.[1];
+    // Where the number is in the name, with a glued letter ("2375A Main"; pass 8 L7).
+    const at = new RegExp(`\\b${number}\\b`).exec(name) ?? new RegExp(`\\b${number}[A-Za-z]\\b`).exec(name);
+    if (!at) return false;
+    const nextNameWord = /^[^a-z0-9]*([a-z0-9]+)/i.exec(name.slice(at.index + at[0].length))?.[1]?.toLowerCase();
+    const previousNameWord = /([a-z0-9]+)[^a-z0-9]*$/i.exec(name.slice(0, at.index))?.[1];
     return Boolean(
       (nextNameWord && nextWord === nextNameWord) ||
       (previousNameWord && new RegExp(`\\b${previousNameWord}[\\s#:.-]*$`, 'i').test(before)),
@@ -305,9 +354,20 @@ function projectReferenceMismatch(
   return Object.freeze({ selectedProjectIdentifier, referencedProjectIdentifier, referencedProjectClosed });
 }
 
-/** The project's identifier: the first 3-6 digit number in its name, if any. */
+/**
+ * The project's identifier: the first 3-6 digit number in its name, or else
+ * the digits of a number with one letter glued to it ("2375A Main" is 2375;
+ * audit A9 pass 8 L7), if any.
+ */
 export function ecosProjectIdentifier(projectName: string): string | null {
-  return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ?? null;
+  return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ??
+    new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName)?.[1] ?? null;
+}
+
+/** The identifier as the name writes it, letter included ("2375A"), for display (audit A9 pass 8 L7). */
+export function ecosProjectDisplayIdentifier(projectName: string): string | null {
+  return new RegExp(PROJECT_IDENTIFIER_SOURCE).exec(projectName)?.[0] ??
+    new RegExp(LETTERED_IDENTIFIER_SOURCE).exec(projectName)?.[0] ?? null;
 }
 
 /** Whether a question has any number that either rule could treat as a project number. */
@@ -368,16 +428,17 @@ function legacyProjectReferenceMismatch(
   projectName: string,
   question: string,
 ): Readonly<{ selectedProjectIdentifier: string; referencedProjectIdentifier: string }> | null {
-  const selectedIdentifiers = uniqueMatches(projectName, LEGACY_IDENTIFIER_SOURCE);
-  if (selectedIdentifiers.length === 0) return null;
-  const selected = new Set(selectedIdentifiers);
+  // A lettered selected project ("2375A Main") counts as 2375 (audit A9 pass 8 L7).
+  const selectedProject = selectedProjectNumbers(projectName, LEGACY_IDENTIFIER_SOURCE);
+  if (!selectedProject) return null;
+  const selected = new Set(selectedProject.numbers);
   const referencedProjectIdentifier = uniqueMatches(question, LEGACY_IDENTIFIER_SOURCE).find(identifier => {
     if (selected.has(identifier)) return false;
     const numericIdentifier = Number(identifier);
     return numericIdentifier < 1900 || numericIdentifier > 2099;
   });
   return referencedProjectIdentifier ? {
-    selectedProjectIdentifier: selectedIdentifiers[0],
+    selectedProjectIdentifier: selectedProject.label,
     referencedProjectIdentifier,
   } : null;
 }

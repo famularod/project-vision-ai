@@ -25,6 +25,8 @@ export type ECOSProjectReferenceVector = Readonly<{
   refused: string | null;
   /** Whether the refused number is only a closed project's; false when omitted. */
   refusedClosed?: boolean;
+  /** The selected project's identifier in a refusal; '2321' when omitted (audit A9 pass 8 L7). */
+  refusedSelected?: string;
 }>;
 
 const SELECTED = '2321 Compliance Project';
@@ -796,6 +798,44 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: [SELECTED, project],
     refused,
   })),
+  // Audit A9 pass 8 L7: "2375A Main" is project 2375, shown as 2375A. A bare
+  // "2375" names both 2375A and 2375B; "2375B" names 2375B Main only; the
+  // selected project's own "2375A" or "2375" is never refused; "2375A" is
+  // amps only when no project is written that way.
+  ...([
+    ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
+    ['Is 2375A done?', SELECTED, [SELECTED, '2375A Main'], '2375A', undefined],
+    ['What is left at 2375?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375', undefined],
+    ['What is left at 2375B?', SELECTED, [SELECTED, '2375A Main', '2375B Main'], '2375B', undefined],
+    ['What is left at 2375A?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], null, undefined],
+    ['What is left at 2375?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], null, undefined],
+    ['What is left at 2375B?', '2375A Main', [SELECTED, '2375A Main', '2375B Main'], '2375B', '2375A'],
+    ['What is left at 2321?', '2375A Main', [SELECTED, '2375A Main'], '2321', '2375A'],
+    ['Is the breaker 2375A?', SELECTED, OWNER_PROJECTS, null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 8 L7: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 8 L7: a closed lettered project is refused with its letter, marked closed',
+    projectName: SELECTED,
+    question: 'What is left at 2375A?',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['2375A Main'],
+    refused: '2375A',
+    refusedClosed: true,
+  },
+  {
+    name: 'pass 8 L7: without a project list, a lettered selected project still refuses another number',
+    projectName: '2375A Main',
+    question: 'How thick is the slab at 2321?',
+    refused: '2321',
+    refusedSelected: '2375A',
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',

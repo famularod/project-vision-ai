@@ -15,6 +15,7 @@ import {
 } from './DAVETaskConversation';
 import type { DAVEVoiceUnderstandingResponse } from './DAVEVoiceUnderstanding';
 import {
+  ecosProjectDisplayIdentifier,
   ecosProjectIdentifier,
   ecosProjectNumberExemptSpans,
   ecosProjectNumberMentionsAt,
@@ -147,7 +148,7 @@ function openProjectNamed(project: TalkNamedProject) {
 
 type TalkNamedProject = {
   key: string;
-  /** The project number, or the name of a project without one. */
+  /** The project number ("2375A" when that is the one project with it), or the name of a project without one. */
   label: string;
   /** Open projects with this key, and those of them named in full. */
   open: string[];
@@ -197,7 +198,10 @@ function talkNamedProjects(
   const named = new Map<string, TalkNamedProject>();
   const add = (name: string, at: number, inFull: boolean, unsure: boolean) => {
     const key = talkProjectKey(name);
-    const project = named.get(key) ?? { key, label: ecosProjectIdentifier(name) ?? name, open: [], exactOpen: [], at, unsure };
+    const label = ecosProjectDisplayIdentifier(name) ?? name;
+    const project = named.get(key) ?? { key, label, open: [], exactOpen: [], at, unsure };
+    // "2375A Main" and "2375B Main" are one project 2375 here, shown as 2375.
+    if (project.label !== label) project.label = ecosProjectIdentifier(name) ?? project.label;
     project.at = Math.min(project.at, at);
     project.unsure = project.unsure && unsure;
     const isOpen = openKeys.has(normalize(name));
@@ -207,8 +211,13 @@ function talkNamedProjects(
   };
   // A name inside a comma group ("200" in "1,200") is as unsure as the number.
   for (const occurrence of exact) add(occurrence.name, occurrence.start, true, occurrence.inCommaGroup);
-  for (const { number, start, unsure } of numbers) {
-    for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false, unsure);
+  for (const { number, start, unsure, letter } of numbers) {
+    // "2375B" names the project written "2375B" when there is one (audit A9 pass 8 L7).
+    const lettered = letter
+      ? all.filter(name => ecosProjectDisplayIdentifier(name)?.toUpperCase() === `${number}${letter}`.toUpperCase())
+      : [];
+    const withNumber = lettered.length > 0 ? lettered : all.filter(name => ecosProjectIdentifier(name) === number);
+    for (const name of withNumber) add(name, start, false, unsure);
   }
   return [...named.values()].sort((a, b) => a.at - b.at);
 }
@@ -296,7 +305,7 @@ export function talkProjectQuestionRefusal(
   const selected = selectedProjectName.trim();
   if (!project || (selected && project.key === talkProjectKey(selected))) return null;
   return projectReferenceMismatchText(
-    ecosProjectIdentifier(selected) ?? selected,
+    ecosProjectDisplayIdentifier(selected) ?? selected,
     project.label,
     project.open.length === 0,
     'phone',

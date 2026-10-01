@@ -19,7 +19,7 @@ for (const vector of ECOS_PROJECT_REFERENCE_VECTORS) {
     );
     assertEquals(mismatch?.referencedProjectIdentifier ?? null, vector.refused);
     if (vector.refused) assertEquals(mismatch?.referencedProjectClosed, vector.refusedClosed ?? false);
-    if (vector.refused) assertEquals(mismatch?.selectedProjectIdentifier, "2321");
+    if (vector.refused) assertEquals(mismatch?.selectedProjectIdentifier, vector.refusedSelected ?? "2321");
     // Only a question with a 3-6 digit number is ever refused, so the edge
     // function can skip the project read for every other question.
     if (vector.refused) assertEquals(ecosQuestionMayNameAProject(vector.question), true);
