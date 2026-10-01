@@ -467,13 +467,23 @@ function progressStatedAt(item: ScheduleItem): number {
  * (DAVEScheduleRecovery keeps the newer confirmation), with David's own time
  * kept as when it was judged (progressJudgment), so a field report made after
  * it still counts against it.
+ *
+ * Whole-app audit A5 pass 12 L (1 Oct 2026): confirmed at the delete, it
+ * outranked a later entry on another device. David entered 70% on M's row
+ * (27 Sep), then on the web made F current and corrected F's row to 50% (28
+ * Sep); a phone not synced since the 27th deleted M with its items (30 Sep),
+ * and its 70%, stamped the 30th, won the upload's merge over the 50%. It is
+ * now confirmed 1 ms after the later of the row's own confirmation and the
+ * removed row's: newer than every older copy of the row, never than a later
+ * entry made elsewhere.
  */
-function progressOfRemovedRow(task: ScheduleItem, removed: ScheduleItem, at: string): Partial<ScheduleItem> | null {
+function progressOfRemovedRow(task: ScheduleItem, removed: ScheduleItem): Partial<ScheduleItem> | null {
   if (!scheduleProgressIsManagers(removed)) return null;
   const judgedAt = scheduleProgressJudgedAt(removed);
   if (timeOf(judgedAt) <= progressStatedAt(task)) return null;
   if (!scheduleProgressIsManagers(task) && percentOf(removed) < percentOf(task)) return null;
   if (percentOf(removed) === percentOf(task) && removed.status === task.status) return null;
+  const at = new Date(Math.max(timeOf(task.progressConfirmedAt), timeOf(removed.progressConfirmedAt)) + 1).toISOString();
   return {
     percentComplete: removed.percentComplete,
     status: removed.status,
@@ -517,8 +527,8 @@ export function scheduleItemsAfterScheduleDeleted({
     scheduleDocuments: [...documents],
   });
   const schedules = [document, ...documents].filter(saved => saved.importBatchId && scheduleDocumentIsScheduleLike(saved) && !scheduleDocumentAddsToMaster(saved)); // when each full schedule came in (A8 pass 9 L1)
-  scheduleTasksAnsweringToRemovedTasks(shown, removed, kept, schedules, (task, gone) => progressOfRemovedRow(task, gone, updatedAt))
-    .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b)
+  scheduleTasksAnsweringToRemovedTasks(shown, removed, kept, schedules, progressOfRemovedRow)
+    .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   return [...changed.values()];
 }
 

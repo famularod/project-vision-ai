@@ -19,10 +19,11 @@
  *
  * Now the row a removed row replaced takes its id even when hidden, and,
  * when the removed row's progress is David's (not a file's) and was judged
- * later than that row's, its progress too, by Set Active's rule, confirmed at
- * the delete with David's own time kept as when it was judged
- * (progressJudgment), so every device takes it and a later field report
- * still counts against it. The phone and the web share the delete helper.
+ * later than that row's, its progress too, by Set Active's rule, confirmed
+ * (since A5 pass 12 L) 1 ms after the later of the two rows' confirmations,
+ * with David's own time kept as when it was judged (progressJudgment), so
+ * every device holding an older copy takes it and a later field report still
+ * counts against it. The phone and the web share the delete helper.
  * These tests run the real merge, activation, delete and Set Active helpers
  * and the web's snapshot and delete plan. Synthetic data.
  */
@@ -128,9 +129,12 @@ const report70: ProjectUpdate = {
   selectedAreaName: 'Lot',
 } as ProjectUpdate;
 const SET_ACTIVE_AT = '2026-09-28T13:00:00.000Z';
+// Confirmed 1 ms after David's 70% on M's row, no longer at the delete (A5 pass 12 L: a delete-time
+// stamp outranked a later entry on another device); still newer than F's row's 40% (10 Sep).
+const HANDED_AT = '2026-09-27T15:00:00.001Z';
 const HELD_70 = {
   percentComplete: 70, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David',
-  progressConfirmedAt: DELETED_AT, progressJudgment: { judgedAt: DAVID_MOVED_AT, givenBackAt: DELETED_AT },
+  progressConfirmedAt: HANDED_AT, progressJudgment: { judgedAt: DAVID_MOVED_AT, givenBackAt: HANDED_AT },
 };
 
 describe('A5 p11 M-b: deleting the newer master keeps David\'s progress on the task it moved', () => {
@@ -143,7 +147,7 @@ describe('A5 p11 M-b: deleting the newer master keeps David\'s progress on the t
     expect(row(judgedOnM, fPour.id)).toMatchObject({ percentComplete: 40, progressConfirmedAt: DAVID_FIRST_AT });
   });
 
-  it('after the delete, F\'s hidden Pour slab row holds David\'s 70% (confirmed at the delete, judged when he entered it) and answers to M\'s row', () => {
+  it('after the delete, F\'s hidden Pour slab row holds David\'s 70% (confirmed just after it, judged when he entered it) and answers to M\'s row', () => {
     const deleted = deleteWithItems(judgedOnM, M);
     expect(deleted.removed.map(item => item.id)).toEqual([mPour.id]);
     expect(shown(deleted)).toEqual([]); // F is retired: Set Active F is the advice (A8 pass 6 L1)
@@ -181,7 +185,7 @@ describe('A5 p11 M-b: deleting the newer master keeps David\'s progress on the t
     const deleted = deleteWithItems(judgedOnM, M);
     const cloud = judgedOnM.items.filter(item => item.id !== mPour.id);
     const recovered = recoverDAVEScheduleRecords({ local: deleted.items, cloud, deletedIds: [mPour.id], allowCloudOnly: true });
-    expect(recovered.find(item => item.id === fPour.id)).toMatchObject({ percentComplete: 70, progressConfirmedAt: DELETED_AT });
+    expect(recovered.find(item => item.id === fPour.id)).toMatchObject({ percentComplete: 70, progressConfirmedAt: HANDED_AT }); // A5 pass 12 L
     expect(daveScheduleItemsNeedingCloudUpload({ local: deleted.items, cloud, deletedIds: [mPour.id] }).find(item => item.id === fPour.id))
       .toMatchObject({ percentComplete: 70 });
     // And another device holding the older 40% takes the 70% from the cloud.
@@ -220,5 +224,70 @@ describe('A5 p11 M-b: deleting the newer master keeps David\'s progress on the t
     const beta = { ...mPour, id: 'beta-moved', projectName: 'Beta', scheduleProjectName: 'Beta' } as ScheduleItem;
     const kept = judgedOnM.items.filter(item => item.id !== mPour.id);
     expect(scheduleItemsAfterScheduleDeleted({ items: kept, removed: [beta], document: M, documents: [F], updatedAt: DELETED_AT })).toEqual([]);
+  });
+});
+
+/**
+ * Audit round 2, A5 pass 12 L (1 Oct 2026, caused by fd00285): the hand-over
+ * was confirmed at the delete, and sync orders progress by that confirmation.
+ * David entered 70% on M's row (27 Sep); on the web he made F current (the
+ * carry gave F's row 70%) and corrected it to 50% (28 Sep). A phone that had
+ * not synced since the 27th then deleted M with its items (30 Sep): F's row
+ * took 70% stamped the 30th, and the upload's merge took it over the 50% on
+ * every device. The hand-over is now confirmed 1 ms after the later of the
+ * row's own confirmation and the removed row's: newer than every older copy
+ * of the row, never than a later entry on another device.
+ */
+describe('A5 p12 L: an offline phone\'s delete never overwrites a newer percent entered on another device', () => {
+  const WEB_MAKE_CURRENT_AT = '2026-09-28T10:00:00.000Z';
+  const WEB_50_AT = '2026-09-28T14:00:00.000Z';
+  const PHONE_DELETED_AT = '2026-09-30T09:00:00.000Z';
+  // The cloud after the web: F current, F's row carried to 70% at Make Current, then corrected to 50%.
+  const onWeb = setActive(judgedOnM, F, WEB_MAKE_CURRENT_AT);
+  const cloud = entered(onWeb, fPour.id, 50, WEB_50_AT).items;
+  /** The phone, still on the 27th (M current), deletes M with its items on the 30th. */
+  function phoneDelete() {
+    const removed = scheduleItemsOnlyInImportBatch(judgedOnM.items, M, judgedOnM.documents.filter(scheduleDocumentIsScheduleLike));
+    const removedIds = new Set(removed.map(item => item.id));
+    const kept = judgedOnM.items.filter(item => !removedIds.has(item.id));
+    const saved = new Map(scheduleItemsAfterScheduleDeleted({
+      items: kept, removed, document: M, documents: judgedOnM.documents.filter(other => other.id !== M.id), updatedAt: PHONE_DELETED_AT,
+    }).map(item => [item.id, item]));
+    return kept.map(item => saved.get(item.id) || item);
+  }
+
+  it('the scenario: the web holds 50% on F\'s row, confirmed after the 70% the phone holds on M\'s', () => {
+    expect(row(onWeb, fPour.id)).toMatchObject({ percentComplete: 70 });
+    expect(cloud.find(item => item.id === fPour.id)).toMatchObject({ percentComplete: 50, progressConfirmedAt: WEB_50_AT });
+  });
+
+  it('the hand-over is confirmed 1 ms after the removed row\'s 70%, with David\'s time kept as when it was judged', () => {
+    expect(phoneDelete().find(item => item.id === fPour.id)).toMatchObject({
+      percentComplete: 70, progressConfirmedAt: '2026-09-27T15:00:00.001Z',
+      progressJudgment: { judgedAt: DAVID_MOVED_AT, givenBackAt: '2026-09-27T15:00:00.001Z' },
+      revisedFromTaskIds: [mPour.id], updatedAt: PHONE_DELETED_AT,
+    });
+  });
+
+  it('after sync every device holds the web\'s 50%, and F\'s row still answers to M\'s', () => {
+    const local = phoneDelete();
+    const upload = daveScheduleItemsNeedingCloudUpload({ local, cloud, deletedIds: [mPour.id] }).find(item => item.id === fPour.id);
+    expect(upload).toMatchObject({ percentComplete: 50, progressConfirmedAt: WEB_50_AT, revisedFromTaskIds: [mPour.id] });
+    const phone = recoverDAVEScheduleRecords({ local, cloud, deletedIds: [mPour.id], allowCloudOnly: true });
+    expect(phone.find(item => item.id === fPour.id)).toMatchObject({ percentComplete: 50, revisedFromTaskIds: [mPour.id] });
+    const otherDevice = recoverDAVEScheduleRecords({ local: cloud, cloud: [...upload ? [upload] : [], ...cloud.filter(item => item.id !== fPour.id)], deletedIds: [mPour.id], allowCloudOnly: true });
+    expect(otherDevice.find(item => item.id === fPour.id)).toMatchObject({ percentComplete: 50 });
+  });
+
+  it('a later percent on the receiving row moves the stamp past it: F\'s own confirmation after M\'s judgment', () => {
+    // F's row confirmed (a file's percent re-confirmed, say) after David judged M's: the stamp follows the later.
+    const laterF = { ...judgedOnM, items: judgedOnM.items.map(item => item.id === fPour.id
+      ? { ...item, progressConfirmedAt: '2026-09-27T16:00:00.000Z', progressJudgment: { judgedAt: DAVID_FIRST_AT, givenBackAt: '2026-09-27T16:00:00.000Z' } } as ScheduleItem
+      : item) };
+    const removed = laterF.items.filter(item => item.id === mPour.id);
+    const [handed] = scheduleItemsAfterScheduleDeleted({
+      items: laterF.items.filter(item => item.id !== mPour.id), removed, document: M, documents: [F], updatedAt: PHONE_DELETED_AT,
+    });
+    expect(handed).toMatchObject({ id: fPour.id, percentComplete: 70, progressConfirmedAt: '2026-09-27T16:00:00.001Z' });
   });
 });
