@@ -10,6 +10,7 @@ import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } 
 import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleProgressCarriedFrom,
   scheduleProgressIsManagers,
   scheduleProgressJudgedAt,
   scheduleRowAsTask,
@@ -593,26 +594,6 @@ function timeOf(value: string | null | undefined): number {
 }
 
 /**
- * When a task's progress was last stated: by the manager, or by the file it
- * came from.
- *
- * Whole-app audit A5 pass 10 M1 (30 Sep 2026): deleting a lookahead gives a
- * hidden old row David's earlier 40% back, confirmed at the delete with his
- * own time kept as when it was judged (progressJudgment). Dated by its
- * confirmation, it looked newer than the 70% David entered on the row a new
- * master moved the task to, so Set Active showed 40% and wrote it over 70%.
- * Progress is dated by when it was judged (scheduleProgressJudgedAt).
- */
-function progressStatedAt(item: ScheduleItem): number {
-  const verification = item.completionVerification;
-  return Math.max(
-    timeOf(scheduleProgressJudgedAt(item)),
-    verification?.status === 'pm_verified' ? timeOf(verification.verifiedAt || verification.reportedAt) : 0,
-    scheduleProgressIsManagers(item) ? 0 : timeOf(item.importedAt || item.createdAt),
-  );
-}
-
-/**
  * Whole-app audit A5 pass 4 #3 (30 Sep 2026): a revised schedule uploaded on
  * the web takes the manager's progress when it is uploaded; Make Current,
  * days later, only changes which schedule is current. Progress recorded in
@@ -758,38 +739,8 @@ function progressCarried(before: readonly ScheduleItem[], after: readonly Schedu
   const pairs = pairTaskRevisions(nowHidden, nowShown, () => true, false, false);
   return nowShown.flatMap(shown => {
     const hidden = pairs.get(shown);
-    if (!hidden || !scheduleProgressIsManagers(hidden)) return [];
-    if (progressStatedAt(hidden) <= progressStatedAt(shown)) return [];
-    if (!scheduleProgressIsManagers(shown) && percentOf(hidden) < percentOf(shown)) return [];
-    if (percentOf(hidden) === percentOf(shown) && hidden.status === shown.status) return [];
-    // Whole-app audit A5 pass 11 L-1 (30 Sep 2026): sync orders copies by
-    // progressConfirmedAt (DAVEScheduleRecovery). The shown row given David's
-    // older 40% back at a lookahead delete (28 Sep) took his newer 70% with
-    // its own older stamp (27 Sep), so the next sync kept the cloud's 40%.
-    // Confirmed again, with when David judged it kept (progressJudgment).
-    //
-    // Whole-app audit A5 pass 12 L (1 Oct 2026): confirmed at the Set Active,
-    // a device that had not caught up, repeating Set Active at 11:00, beat
-    // the 50% David entered at 10:00 on the iPad's carried row. Confirmed 1 ms
-    // after the later of the two rows' own confirmations instead: newer than
-    // the copies it replaces, never newer than a percent entered since.
-    const restampedAt = timeOf(hidden.progressConfirmedAt) < timeOf(shown.progressConfirmedAt)
-      ? new Date(Math.max(timeOf(hidden.progressConfirmedAt), timeOf(shown.progressConfirmedAt)) + 1).toISOString()
-      : null;
-    const judgedAt = scheduleProgressJudgedAt(hidden);
-    return [{
-      ...shown,
-      percentComplete: hidden.percentComplete,
-      status: hidden.status,
-      progressSource: hidden.progressSource ?? null,
-      progressConfirmedAt: restampedAt ?? hidden.progressConfirmedAt ?? null,
-      progressConfirmedBy: hidden.progressConfirmedBy ?? null,
-      ...(restampedAt
-        ? { progressJudgment: judgedAt && judgedAt !== restampedAt ? { judgedAt, givenBackAt: restampedAt } : undefined }
-        : hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
-      completionVerification: hidden.completionVerification ?? null,
-      updatedAt: now,
-    }];
+    const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
+    return carried ? [carried] : [];
   });
 }
 

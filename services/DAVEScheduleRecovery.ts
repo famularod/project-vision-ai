@@ -1,8 +1,13 @@
 import type { ScheduleItem } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
-import { scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
-import { laterScheduleImportSourceRow } from './ScheduleImportProvenance';
-import { SCHEDULE_UPDATE_PROGRESS_CONFIRMER, scheduleProgressIsManagers, scheduleProgressJudgedAt } from './ScheduleProgressSource';
+import { scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import {
+  SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleProgressCarriedFrom,
+  scheduleProgressIsManagers,
+  scheduleProgressJudgedAt,
+} from './ScheduleProgressSource';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
   'Not Started',
@@ -129,7 +134,54 @@ export function recoverDAVEScheduleRecords({
     }
     combined.set(id, mergeScheduleRevisions(record, cloudRecord));
   });
-  return reconcileDAVEScheduleRecords([...combined.values()]);
+  return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]));
+}
+
+/**
+ * Whole-app audit A6 pass 22 M1 (1 Oct 2026, older): master F was current on
+ * both devices; the phone approved master G, which moved Framing to new
+ * dates, so Framing got a new row answering to the old one
+ * (revisedFromTaskIds) and the old row was hidden. The iPad, offline since
+ * before G, had David's 30% on the row it showed, the old one. After Full
+ * Sync both devices showed Framing at 0%, Not Started, and the report said
+ * only that the finish changed: the 30% stayed on the hidden old row. Set
+ * Active and Make Current carry progress from the row a schedule hides to
+ * the row it shows (ScheduleImportMerge), but Full Sync had no carry. The
+ * newest row that answers to a row holding David's own percent now takes it
+ * by the same rule (scheduleProgressCarriedFrom): only when it was stated
+ * after the newest row's, never lowering a higher percent a file gave (a
+ * newer lookahead's percent stands), confirmed as that rule confirms it, so
+ * a second Full Sync either way changes nothing. A newest row no file has
+ * restated since its own import (the 30% entered before G, not yet synced)
+ * is weighed as that import weighs a percent of David's: its file's percent
+ * stands only above his, whenever he entered it.
+ */
+function progressCarriedToRevisedTasks(records: ScheduleItem[]): ScheduleItem[] {
+  const answering = new Map<string, ScheduleItem[]>();
+  records.forEach(record => scheduleTaskEarlierIds(record).forEach(id => {
+    const key = normalized(id);
+    answering.set(key, [...(answering.get(key) || []), record]);
+  }));
+  if (answering.size === 0) return records;
+  // Each row's latest David percent from the rows it answers to (it alone, as the newest row of the task).
+  const from = new Map<ScheduleItem, ScheduleItem>();
+  records.forEach(earlier => {
+    const moved = scheduleProgressIsManagers(earlier) ? answering.get(normalized(earlier.id)) : undefined;
+    if (!moved) return;
+    const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
+    const newest = moved.filter(record => !superseded.has(normalized(record.id)));
+    if (newest.length !== 1) return;
+    const taken = from.get(newest[0]);
+    if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(newest[0], earlier);
+  });
+  if (from.size === 0) return records;
+  const now = new Date().toISOString();
+  return records.map(record => {
+    const earlier = from.get(record);
+    // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
+    const untouched = scheduleItemImportBatchIds(record).length <= 1 && !record.lookaheadOverlay;
+    return (earlier && scheduleProgressCarriedFrom(earlier, record, now, { fileProgressDated: !untouched })) || record;
+  });
 }
 
 /**

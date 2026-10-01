@@ -143,6 +143,86 @@ export function scheduleProgressRestored(point: ScheduleProgressUndoPoint, at: s
   };
 }
 
+function timeOf(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function percentOf(item: Pick<ScheduleItem, 'percentComplete'>): number {
+  const value = Number(item.percentComplete);
+  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+}
+
+/**
+ * When a task's progress was last stated: by the manager, or by the file it
+ * came from.
+ *
+ * Whole-app audit A5 pass 10 M1 (30 Sep 2026): deleting a lookahead gives a
+ * hidden old row David's earlier 40% back, confirmed at the delete with his
+ * own time kept as when it was judged (progressJudgment). Dated by its
+ * confirmation, it looked newer than the 70% David entered on the row a new
+ * master moved the task to, so Set Active showed 40% and wrote it over 70%.
+ * Progress is dated by when it was judged (scheduleProgressJudgedAt).
+ */
+function progressStatedAt(item: ScheduleItem, fileProgressDated = true): number {
+  const verification = item.completionVerification;
+  return Math.max(
+    timeOf(scheduleProgressJudgedAt(item)),
+    verification?.status === 'pm_verified' ? timeOf(verification.verifiedAt || verification.reportedAt) : 0,
+    scheduleProgressIsManagers(item) || !fileProgressDated ? 0 : timeOf(item.importedAt || item.createdAt),
+  );
+}
+
+/**
+ * The shown task with the progress of the task it replaces, or null to keep
+ * its own (whole-app audit A5 pass 4 #3, moved here from ScheduleImportMerge
+ * for Full Sync, A6 pass 22 M1): only the manager's own progress, stated
+ * after the shown task's; a higher percent a file gave is never lowered
+ * (A5 pass 4 #1); a manager's own older value is. Full Sync (A6 pass 22 M1)
+ * does not date a file's percent no one confirmed by its import: the device
+ * that imported it did not know the manager's percent on the other device,
+ * and a file's percent never goes below the manager's (owner answer Q22).
+ */
+export function scheduleProgressCarriedFrom(
+  hidden: ScheduleItem,
+  shown: ScheduleItem,
+  now: string,
+  { fileProgressDated = true }: Readonly<{ fileProgressDated?: boolean }> = {},
+): ScheduleItem | null {
+  if (!scheduleProgressIsManagers(hidden)) return null;
+  if (progressStatedAt(hidden) <= progressStatedAt(shown, fileProgressDated)) return null;
+  if (!scheduleProgressIsManagers(shown) && percentOf(hidden) < percentOf(shown)) return null;
+  if (percentOf(hidden) === percentOf(shown) && hidden.status === shown.status) return null;
+  // Whole-app audit A5 pass 11 L-1 (30 Sep 2026): sync orders copies by
+  // progressConfirmedAt (DAVEScheduleRecovery). The shown row given David's
+  // older 40% back at a lookahead delete (28 Sep) took his newer 70% with
+  // its own older stamp (27 Sep), so the next sync kept the cloud's 40%.
+  // Confirmed again, with when David judged it kept (progressJudgment).
+  //
+  // Whole-app audit A5 pass 12 L (1 Oct 2026): confirmed at the Set Active,
+  // a device that had not caught up, repeating Set Active at 11:00, beat
+  // the 50% David entered at 10:00 on the iPad's carried row. Confirmed 1 ms
+  // after the later of the two rows' own confirmations instead: newer than
+  // the copies it replaces, never newer than a percent entered since.
+  const restampedAt = timeOf(hidden.progressConfirmedAt) < timeOf(shown.progressConfirmedAt)
+    ? new Date(Math.max(timeOf(hidden.progressConfirmedAt), timeOf(shown.progressConfirmedAt)) + 1).toISOString()
+    : null;
+  const judgedAt = scheduleProgressJudgedAt(hidden);
+  return {
+    ...shown,
+    percentComplete: hidden.percentComplete,
+    status: hidden.status,
+    progressSource: hidden.progressSource ?? null,
+    progressConfirmedAt: restampedAt ?? hidden.progressConfirmedAt ?? null,
+    progressConfirmedBy: hidden.progressConfirmedBy ?? null,
+    ...(restampedAt
+      ? { progressJudgment: judgedAt && judgedAt !== restampedAt ? { judgedAt, givenBackAt: restampedAt } : undefined }
+      : hidden.progressJudgment ? { progressJudgment: hidden.progressJudgment } : {}),
+    completionVerification: hidden.completionVerification ?? null,
+    updatedAt: now,
+  };
+}
+
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
 
 /**

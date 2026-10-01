@@ -356,3 +356,106 @@ describe('A5 p22 L2: Full Sync never takes a master\'s percent below David\'s on
     });
   });
 });
+
+/** A device's Full Sync with the cloud: the merge, then its rows that change the cloud's go up. */
+function fullSync(local: ScheduleItem[], cloud: ScheduleItem[]): { device: ScheduleItem[]; cloud: ScheduleItem[] } {
+  const device = recoverDAVEScheduleRecords({ local, cloud, allowCloudOnly: true });
+  const uploaded = daveScheduleItemsNeedingCloudUpload({ local: device, cloud });
+  const byId = new Map(cloud.map(item => [item.id, item]));
+  uploaded.forEach(item => byId.set(item.id, item));
+  return { device, cloud: [...byId.values()] };
+}
+
+/**
+ * A6 pass 22 M1 (Medium, older): master F current on both devices. The phone
+ * approves master G, which moves Framing to 10/22-11/01: a new row answers
+ * to the old one (revisedFromTaskIds) and the old one is hidden. The iPad,
+ * offline since before G, has David's 30% on the row it shows, the old one
+ * (entered after G, or before it but not yet synced). After Full Sync both
+ * devices showed Framing at 0%, Not Started; the 30% stayed on the hidden
+ * old row, and Set Active G again did not bring it (the carry runs only when
+ * the current schedule changes). Same at fb44926.
+ */
+describe('A6 p22 M1: Full Sync carries David\'s percent from the row a new master moved to the row shown', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const G = doc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const SURVEY = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,';
+  const SYNC_AT = '2026-09-15T09:00:00.000Z';
+  beforeEach(() => { jest.useFakeTimers({ now: Date.parse(SYNC_AT) }); });
+  afterEach(() => { jest.useRealTimers(); });
+  const start = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', SURVEY]);
+  const oldId = named(start, 'Framing')[0].id;
+  const phoneWith = (lines: string[]) => approve(start, G, lines);
+  const phone = phoneWith(['Framing,Alpha,Lot,10/22/2026,11/01/2026,', SURVEY]);
+  const newId = named(phone, 'Framing')[0].id;
+  const documents = phone.documents;
+  const ENTRIES = [['after the phone approved G', '2026-09-14T14:00:00.000Z'], ['before G, not yet synced', '2026-09-14T10:00:00.000Z']] as const;
+  const shownOf = (items: ScheduleItem[]) => copies({ items, documents }, 'Framing');
+
+  it('the copies: G\'s new row answers to the old one; the iPad\'s 30% is on the old row', () => {
+    expect(newId).not.toBe(oldId);
+    expect(phone.items.find(item => item.id === newId)!.revisedFromTaskIds).toEqual([oldId]);
+    expect(copies(record(start, oldId, 30, ENTRIES[0][1]), 'Framing')).toEqual([['10/15/2026', '10/25/2026', 30]]);
+  });
+
+  it.each(ENTRIES.flatMap(([when, at]) => SYNCS.map(([how, sync]) => [`${when}, ${how}`, at, sync] as const)))('%s: G\'s row shows David\'s 30%', (_how, at, sync) => {
+    const merged = sync(phone.items, record(start, oldId, 30, at).items);
+    expect(shownOf(merged)).toEqual([['10/22/2026', '11/01/2026', 30]]);
+    expect(merged.find(item => item.id === newId)).toMatchObject({
+      status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: at,
+    });
+  });
+
+  it.each([['the iPad syncs first', 'ipad'], ['the phone syncs first', 'phone']] as const)('%s: both devices and the cloud show 30%, and syncing again changes nothing', (_how, first) => {
+    const iPad = record(start, oldId, 30, ENTRIES[0][1]);
+    // The phone is online: its G is in the cloud before either Full Sync.
+    let cloud = phone.items;
+    let phoneItems = phone.items;
+    let iPadItems = iPad.items;
+    const round = () => {
+      (first === 'ipad' ? ['ipad', 'phone'] : ['phone', 'ipad']).forEach(device => {
+        const synced = fullSync(device === 'ipad' ? iPadItems : phoneItems, cloud);
+        cloud = synced.cloud;
+        if (device === 'ipad') iPadItems = synced.device; else phoneItems = synced.device;
+      });
+    };
+    round();
+    round();
+    expect(shownOf(phoneItems)).toEqual([['10/22/2026', '11/01/2026', 30]]);
+    expect(shownOf(iPadItems)).toEqual([['10/22/2026', '11/01/2026', 30]]);
+    expect(shownOf(cloud)).toEqual([['10/22/2026', '11/01/2026', 30]]);
+    const settled = { phone: phoneItems, iPad: iPadItems, cloud };
+    round();
+    expect({ phone: phoneItems, iPad: iPadItems, cloud }).toEqual(settled);
+    expect(fullSync(phoneItems, cloud).device).toEqual(phoneItems);
+  });
+
+  it('unchanged: David\'s later percent on G\'s row stays', () => {
+    const phone50 = record(phone, newId, 50, '2026-09-14T16:00:00.000Z');
+    SYNCS.forEach(([, sync]) => expect(shownOf(sync(phone50.items, record(start, oldId, 30, ENTRIES[0][1]).items))).toEqual([['10/22/2026', '11/01/2026', 50]]));
+  });
+
+  it('unchanged: a higher percent G states is never lowered', () => {
+    const phone60 = phoneWith(['Framing,Alpha,Lot,10/22/2026,11/01/2026,60', SURVEY]);
+    SYNCS.forEach(([, sync]) => expect(shownOf(sync(phone60.items, record(start, oldId, 30, ENTRIES[0][1]).items))).toEqual([['10/22/2026', '11/01/2026', 60]]));
+  });
+
+  it('as on one device: a percent G stated above David\'s, then lowered by a lookahead on the phone, stays the lookahead\'s', () => {
+    // David's 70% on the iPad before G; G states 80% (above it), then lookahead L lowers G's row to 40%.
+    const L = doc('LOOKAHEAD L', '2026-09-14T18:00:00.000Z', 'lookahead');
+    const phoneL = approve(phoneWith(['Framing,Alpha,Lot,10/22/2026,11/01/2026,80', SURVEY]), L, ['Framing,Alpha,Lot,10/24/2026,11/03/2026,40'], true);
+    const iPad70 = record(start, oldId, 70, ENTRIES[1][1]);
+    let oneDevice = record(start, oldId, 70, ENTRIES[1][1]);
+    oneDevice = approve(approve(oneDevice, G, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,80', SURVEY]), L, ['Framing,Alpha,Lot,10/24/2026,11/03/2026,40'], true);
+    expect(copies(oneDevice, 'Framing')).toEqual([['10/24/2026', '11/03/2026', 40]]);
+    SYNCS.forEach(([, sync]) => expect(copies({ items: sync(phoneL.items, iPad70.items), documents: phoneL.documents }, 'Framing'))
+      .toEqual([['10/24/2026', '11/03/2026', 40]]));
+  });
+
+  it('unchanged: a newer lookahead\'s percent on G\'s row still restates it', () => {
+    const L = doc('LOOKAHEAD L', '2026-09-14T18:00:00.000Z', 'lookahead');
+    const phoneL = approve(phone, L, ['Framing,Alpha,Lot,10/24/2026,11/03/2026,60'], true);
+    SYNCS.forEach(([, sync]) => expect(copies({ items: sync(phoneL.items, record(start, oldId, 30, ENTRIES[0][1]).items), documents: phoneL.documents }, 'Framing'))
+      .toEqual([['10/24/2026', '11/03/2026', 60]]));
+  });
+});
