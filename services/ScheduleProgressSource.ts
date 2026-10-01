@@ -66,6 +66,8 @@ export type ScheduleProgressUndoPoint = Readonly<Pick<ScheduleItem,
   | 'importBatchId'
   | 'sourceDocumentId'
   | 'importedFrom'
+  | 'importedAt'
+  | 'createdAt'
 >>;
 
 /**
@@ -89,6 +91,9 @@ export function scheduleProgressUndoPoint(task: ScheduleItem): ScheduleProgressU
     importBatchId: task.importBatchId ?? null,
     sourceDocumentId: task.sourceDocumentId ?? null,
     importedFrom: task.importedFrom ?? null,
+    // When a percent entered by hand with no source was stated (A10 pass 7 L3).
+    importedAt: task.importedAt ?? null,
+    createdAt: task.createdAt,
   };
 }
 
@@ -111,13 +116,21 @@ export function scheduleProgressUndoPoint(task: ScheduleItem): ScheduleProgressU
  * as the schedule's. A percent on a task entered by hand with nothing saying
  * who set it counts as the manager's (as the import and the summaries count
  * it) and comes back as the manager's, confirmed at the Undo.
+ *
+ * Whole-app audit A10 pass 7 L3 (30 Sep 2026): such a task came back judged
+ * at the Undo, so a field report made before the Undo (29 Sep: "Pour slab is
+ * complete") no longer counted against its 40% and the warning went away. It
+ * now keeps when its percent was stated, as deleting a lookahead gives it back
+ * (ScheduleLookahead): its confirmation time, else when it was imported, else
+ * when it was created.
  */
 export function scheduleProgressRestored(point: ScheduleProgressUndoPoint, at: string): Partial<ScheduleItem> {
   const fromFile = point.progressSource === 'schedule_import' || (point.progressSource !== 'project_manager' &&
     [point.importBatchId, point.sourceDocumentId, point.importedFrom].some(value => typeof value === 'string' && value.trim()));
+  const byHand = !point.progressSource && !fromFile;
   const judgedAt = point.progressSource === 'project_manager' && point.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER
     ? scheduleProgressJudgedAt(point)
-    : null;
+    : byHand ? point.progressConfirmedAt || point.importedAt || point.createdAt || null : null;
   return {
     status: point.status,
     percentComplete: point.percentComplete,
