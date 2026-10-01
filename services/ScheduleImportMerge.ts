@@ -179,17 +179,26 @@ function sameArea(existing: ScheduleItem, imported: ScheduleItem): boolean {
 }
 
 /**
+ * The app project a row belongs to, the schedule's root only when it names
+ * none (whole-app audit round 2, A8 pass 9 review, 30 Sep 2026): a Microsoft
+ * Project master files Harbor North's and Harbor South's rows under one root
+ * summary row ("PLZ 2400 Harbor Project"), and the merge paired them by the
+ * root, so South's new Pour slab took North's 90% and answered to North's row.
+ */
+function projectKey(item: ScheduleItem): string {
+  return key(item.projectName || item.scheduleProjectName);
+}
+
+/**
  * Name, project and area; a row's ID, number and WBS renumber on an insert.
  * Loosely, for a lookahead (A5 pass 5 M1): a row with no area matches a task
- * in any area, and a row with no parent project matches a task of its
- * project filed under a parent.
+ * in any area. The project is the app project, never another project under
+ * the same root (A8 pass 9 review).
  */
 function sameTask(existing: ScheduleItem, imported: ScheduleItem, vague = false): boolean {
   if (key(existing.taskName) !== key(imported.taskName)) return false;
-  const project = key(imported.scheduleProjectName || imported.projectName);
-  const sameProject = key(existing.scheduleProjectName || existing.projectName) === project ||
-    (vague && !key(imported.scheduleProjectName) && Boolean(project) && key(existing.projectName) === project);
-  if (!sameProject) return false;
+  const project = projectKey(imported);
+  if (!project || projectKey(existing) !== project) return false;
   return sameArea(existing, imported) || (vague && !key(imported.locationName));
 }
 
@@ -229,7 +238,7 @@ function pairTaskRevisions(
 ): Map<ScheduleItem, ScheduleItem> {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
-    const group = [item.taskName, item.scheduleProjectName || item.projectName, item.locationName, item.importBatchId].map(key).join('|');
+    const group = [item.taskName, projectKey(item), item.locationName, item.importBatchId].map(key).join('|');
     groups.set(group, [...(groups.get(group) || []), item]);
   });
   const candidates = [...groups.values()].map(rows => {
