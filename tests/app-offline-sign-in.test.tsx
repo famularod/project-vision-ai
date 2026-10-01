@@ -136,6 +136,8 @@ const network = {
   mode: 'offline' as Mode,
   calls: [] as string[],
   hung: [] as (() => void)[],
+  /** The server's clock, when a test sets the phone's clock wrong (A1 pass 4 L3); else the phone's. */
+  serverClock: null as (() => number) | null,
 };
 function releaseHungRequests() {
   network.hung.splice(0).forEach(release => release());
@@ -162,7 +164,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
     if (network.mode === 'token503') return json(503, { message: 'Service Unavailable' });
     const token = JSON.parse(init?.body || '{}').refresh_token as string;
     const owner = token.replace(/^refresh-/, '');
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor((network.serverClock ?? (() => Date.now()))() / 1000);
     return json(200, {
       access_token: `access-${owner}-2`, refresh_token: `refresh-${owner}`, token_type: 'bearer',
       expires_in: HOUR, expires_at: now + HOUR, user: userFor(owner),
@@ -235,6 +237,7 @@ beforeEach(() => {
   mockVoiceRecordingInfo = null;
   network.mode = 'offline';
   network.calls = [];
+  network.serverClock = null;
 });
 afterEach(async () => {
   // Every refresh auth-js is still retrying ends here: its next attempt runs
@@ -1326,6 +1329,9 @@ describe('A1 pass 3 review', () => {
  * Retry on the 7-day lockout showed the lockout again before opening.
  * L2: an auth-server outage (health answers, the token endpoint 503) read as
  * "Signal is back — finishing sign-in…", then "No signal…".
+ * L3: the clock set back into the saved token's last hour opened the
+ * workspace fully signed in: no "offline, sign-in pending", no 7 days, and
+ * no check against the time this phone had already seen.
  */
 describe('A1 pass 4 review', () => {
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1541,5 +1547,94 @@ describe('A1 pass 4 review', () => {
       alerts.spy.mockRestore();
       screen.unmount();
     }
+  });
+
+  /**
+   * Opened offline (the time seen is kept), then the clock set back two days:
+   * the saved token, last refreshed two days and 30 minutes ago, looks 30
+   * minutes old and valid, so auth-js never refreshes it.
+   */
+  async function openedOfflineThenClockSetBack() {
+    await saveSignIn('owner-a', 2 * 24 + 0.5);
+    await phoneWorkspaceOf('owner-a');
+    const first = launch();
+    await first.rtl.waitFor(() => expect(first.screen.getByText('Offline, sign-in pending')).toBeTruthy(), OPEN);
+    await first.rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(true), OPEN);
+    const seenAtMs = Number(mockAsync.get(TIME_SEEN('owner-a')));
+    // That launch's refresh gives up before the next launch.
+    await refreshGivenUp(first.rtl);
+    first.screen.unmount();
+    await client?.auth.stopAutoRefresh();
+    mockWorkspaceMounts.length = 0;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - 2 * 24 * HOUR * 1000);
+    return { seenAtMs, clock };
+  }
+
+  test('L3 the clock set back into the saved token\'s last hour, no signal: the clock lockout, not a full sign-in', async () => {
+    const { seenAtMs, clock } = await openedOfflineThenClockSetBack();
+    try {
+      const from = network.calls.length;
+      const second = launch();
+      // Before: "WORKSPACE OPEN owner-a", fully signed in, no pending marker.
+      await second.rtl.waitFor(() => expect(second.screen.getByText('Workspace protection needs attention')).toBeTruthy(), OPEN);
+      expect(second.screen.getByText(clockMessage(seenAtMs))).toBeTruthy();
+      await second.rtl.act(async () => { await pause(300); });
+      expect(mockWorkspaceMounts).toEqual([]);
+      // The server's time was asked for (a real refresh), and there was no signal.
+      expect(authCalls(from)).toContain(REFRESH);
+      // Locked, not signed out.
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBe('owner-a');
+      second.screen.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('L3 the clock set back into the saved token\'s last hour, with signal: the server\'s refresh decides, and it opens normally', async () => {
+    const { clock } = await openedOfflineThenClockSetBack();
+    try {
+      network.mode = 'online';
+      network.serverClock = realNow;
+      const from = network.calls.length;
+      const second = launch();
+      await second.rtl.waitFor(() => expect(second.screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+      expect(second.screen.queryByText('Offline, sign-in pending')).toBeNull();
+      // Before: opened on the phone's word, with no refresh.
+      expect(authCalls(from)).toEqual([REFRESH]);
+      // The server answered: its token's time bounds the clock again.
+      await second.rtl.waitFor(() => expect(mockAsync.has(TIME_SEEN('owner-a'))).toBe(false), OPEN);
+      expect((await require('../services/SupabaseService').readSavedSignIn())?.lastRefreshedAtMs)
+        .toBeGreaterThan(Date.now() + 24 * HOUR * 1000);
+      second.screen.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('L3 the clock set back, with signal, and the server refuses the sign-in: signed out, as any refusal (owner answer Q13)', async () => {
+    const { clock } = await openedOfflineThenClockSetBack();
+    try {
+      network.mode = 'reject';
+      const second = launch();
+      await second.rtl.waitFor(() => expect(second.screen.getByText(/^Sign in to /)).toBeTruthy(), OPEN);
+      expect(mockWorkspaceMounts).toEqual([]);
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(false);
+      expect(mockAsync.get(namespaced('owner-a', UPDATES))).toContain('update-owner-a');
+      second.screen.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('L3 a right clock never locks: a valid token with an earlier time seen opens at once with no signal, and nothing is sent', async () => {
+    await saveSignIn('owner-a', 0.5);
+    await phoneWorkspaceOf('owner-a');
+    mockAsync.set(TIME_SEEN('owner-a'), String(Date.now() - HOUR * 1000));
+    const { screen, rtl } = launch();
+    await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), OPEN);
+    expect(screen.queryByText('Offline, sign-in pending')).toBeNull();
+    expect(network.calls.filter(call => call.startsWith('POST /auth/v1/token'))).toEqual([]);
+    screen.unmount();
   });
 });

@@ -11,7 +11,9 @@ import { ownerWorkspaceAuthDecision } from './OwnerWorkspaceAuthDecision';
 import { AppState } from 'react-native';
 import {
   createClient,
+  isAuthRefreshDiscardedError,
   isAuthRetryableFetchError,
+  isAuthSessionMissingError,
   type Session,
   type SupabaseClient,
   type User,
@@ -629,6 +631,11 @@ export type SavedSignInRefreshOptions = Readonly<{
   onSignalBack?: () => void;
   /** False once nobody waits for the answer: the wait for the sign-in ends. */
   stillWanted?: () => boolean;
+  /**
+   * Whole-app audit A1 pass 4 L3: refresh through the server even a token
+   * valid by the phone's clock, whose clock is not trusted.
+   */
+  askServer?: boolean;
 }>;
 
 const UNANSWERED_REFRESH: SavedSignInRefresh = Object.freeze({ status: 'network_unavailable' });
@@ -674,9 +681,12 @@ export async function awaitSavedSignInRefresh(
     notify(SIGN_IN_SERVER_NOT_ANSWERING);
   }
   signInRefreshFailureWaiters.add(notify);
+  const ask = options.askServer
+    ? () => savedSignInServerRefreshOutcome(client)
+    : () => savedSignInRefreshOutcome(client);
   let outcome: SavedSignInRefresh;
   try {
-    outcome = await Promise.race([savedSignInRefreshOutcome(client), refreshFailed]);
+    outcome = await Promise.race([ask(), refreshFailed]);
   } finally {
     signInRefreshFailureWaiters.delete(notify);
   }
@@ -685,7 +695,7 @@ export async function awaitSavedSignInRefresh(
   }
   if (!stillWanted() || !(await authServerReachable()) || !stillWanted()) return outcome;
   options.onSignalBack?.();
-  return savedSignInRefreshWithSignal(client, stillWanted);
+  return savedSignInRefreshWithSignal(client, stillWanted, ask);
 }
 
 /** The saved sign-in as auth-js has it: getSession refreshes an expired one. */
@@ -693,6 +703,30 @@ function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInR
   return client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
     if (isSignInServerNotAnswering(error)) return SIGN_IN_SERVER_NOT_ANSWERING;
     if (error) return isAuthRetryableFetchError(error) ? UNANSWERED_REFRESH : { status: 'rejected' };
+    const ownerId = data.session?.user?.id;
+    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
+  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+}
+
+/**
+ * Whole-app audit A1 pass 4 L3: the saved sign-in refreshed through the
+ * server even though its token is valid by the phone's clock, which is not
+ * trusted (it is earlier than a time this phone already saw): the server's
+ * answer decides. auth-js keeps a session whose token is valid by that clock
+ * when the server refuses its refresh, so a refusal here ends it on this
+ * phone, as auth-js ends any other refused sign-in (owner answer Q13).
+ */
+function savedSignInServerRefreshOutcome(client: SupabaseClient): Promise<SavedSignInRefresh> {
+  return client.auth.refreshSession().then(async ({ data, error }): Promise<SavedSignInRefresh> => {
+    if (isSignInServerNotAnswering(error)) return SIGN_IN_SERVER_NOT_ANSWERING;
+    if (isAuthRetryableFetchError(error)) return UNANSWERED_REFRESH;
+    // Gone meanwhile (a sign-out): nothing left to end.
+    if (isAuthSessionMissingError(error) || isAuthRefreshDiscardedError(error)) return { status: 'signed_out' };
+    if (error) {
+      const saved = await readSavedSession().catch(() => null);
+      if (saved) await signOutOnThisPhone(saved.refreshToken);
+      return { status: 'rejected' };
+    }
     const ownerId = data.session?.user?.id;
     return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
   }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
@@ -710,12 +744,13 @@ function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInR
 async function savedSignInRefreshWithSignal(
   client: SupabaseClient,
   stillWanted: () => boolean = () => true,
+  ask: () => Promise<SavedSignInRefresh> = () => savedSignInRefreshOutcome(client),
 ): Promise<SavedSignInRefresh> {
   const wait: ForegroundWait = { foregroundMs: 0, stillWanted };
   for (;;) {
     const sentBefore = signInRefreshRequestsSent;
     // A 5xx ends the wait at once: no "Signal is back" past it (A1 pass 4 L2).
-    const asked = untilServerNotAnswering(savedSignInRefreshOutcome(client));
+    const asked = untilServerNotAnswering(ask());
     let outcome = await beforeForegroundWaitOver(asked, wait);
     // A request it sent may be about to answer: a few seconds more.
     if (!outcome && signInRefreshRequestsSent > sentBefore && wait.stillWanted()) {

@@ -37,9 +37,11 @@ import {
   offlineSignInGraceRefusal,
   offlineSignInRefusalMessage,
   readLatestTimeSeen,
+  savedSignInClockSetBack,
   SIGN_IN_SERVER_NOT_ANSWERING_MESSAGE,
   watchOfflineSignInGrace,
   workspaceOwnerAfterFailedLookup,
+  workspaceOwnerWithClockSetBack,
 } from '../../services/OfflineSignInGrace';
 
 const NOW = Date.parse('2026-09-30T12:00:00.000Z');
@@ -495,5 +497,49 @@ describe('whole-app audit A1 pass 4 (30 Sep 2026)', () => {
     mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'network_unavailable' });
     mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 8 * DAY));
     await expect(workspaceOwnerAfterFailedLookup(async () => 'owner-a', () => NOW)).resolves.toEqual({ refused: 'expired' });
+  });
+
+  it('L3 a clock earlier than a trusted time already seen, or than the token\'s last refresh, is set back; a right clock never is', async () => {
+    // A token refreshed 30 minutes ago, valid by the phone's clock.
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 30 * MINUTE));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBeNull();
+    // A time seen earlier than now (the clock is right): not set back.
+    mockPhone.set(TIME_SEEN, String(NOW - HOUR));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBeNull();
+    // Seen two days later than the clock says now: set back.
+    mockPhone.set(TIME_SEEN, String(NOW + 2 * DAY));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBe(NOW + 2 * DAY);
+    // Ordinary drift is allowed.
+    mockPhone.set(TIME_SEEN, String(NOW + 4 * MINUTE));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBeNull();
+    // A kept time beyond the trust cap after the last refresh is not trusted (A1 pass 3 L2).
+    mockPhone.set(TIME_SEEN, String(NOW + 8 * DAY));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBeNull();
+    // The sign-in cannot be read: the kept time, as it is.
+    mockReadSavedSignIn.mockRejectedValue(new Error('User interaction is not allowed.'));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBe(NOW + 8 * DAY);
+    // No kept time, and the clock before the token's own last refresh.
+    mockPhone.clear();
+    mockReadSavedSignIn.mockReset();
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', -DAY));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBe(NOW + DAY);
+    // Another account's kept time says nothing about this one.
+    mockReadSavedSignIn.mockResolvedValue(saved('owner-a', 30 * MINUTE));
+    mockPhone.set('@vitruvius/offline-sign-in/latest-time-seen/v1/owner-b', String(NOW + 2 * DAY));
+    await expect(savedSignInClockSetBack('owner-a', () => NOW)).resolves.toBeNull();
+  });
+
+  it('L3 with the clock set back the server decides: answered opens, refused signs out, no answer is the clock lockout', async () => {
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'signed_in', ownerId: 'owner-a' });
+    await expect(workspaceOwnerWithClockSetBack(NOW + 2 * DAY, OFFLINE_LOOKUP_TIMEOUT_MS, { noAnswerMark: 2 }))
+      .resolves.toEqual({ ownerId: 'owner-a', signInPending: false });
+    // A real refresh, even of a token valid by the phone's clock.
+    expect(mockAwaitSavedSignInRefresh.mock.calls[0][0]).toMatchObject({ askServer: true, noAnswerMark: 2 });
+    mockAwaitSavedSignInRefresh.mockResolvedValue({ status: 'rejected' });
+    await expect(workspaceOwnerWithClockSetBack(NOW + 2 * DAY)).resolves.toEqual({ ownerId: null, signInPending: false });
+    for (const status of ['network_unavailable', 'server_unavailable', 'unreadable']) {
+      mockAwaitSavedSignInRefresh.mockResolvedValue({ status });
+      await expect(workspaceOwnerWithClockSetBack(NOW + 2 * DAY)).resolves.toEqual({ refused: 'clock', seenAtMs: NOW + 2 * DAY });
+    }
   });
 });

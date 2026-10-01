@@ -273,6 +273,51 @@ export async function workspaceOwnerAfterFailedLookup(
 }
 
 /**
+ * Whole-app audit A1 pass 4 L3: the time this phone already saw that its
+ * clock is now earlier than (beyond the drift allowance), or null. auth-js
+ * uses a saved token that is valid by the phone's clock without asking the
+ * server, so a clock set back into the token's last hour opened the
+ * workspace fully signed in: no "offline, sign-in pending", no 7 days, and
+ * the kept time unchecked (only the failed-lookup path checked it). Checked
+ * as there: the token's last refresh, and a kept time trusted for it. A right
+ * clock is never earlier than either (a time is kept only as seen here, and
+ * a refresh the server answers clears it).
+ */
+export async function savedSignInClockSetBack(
+  ownerId: string,
+  now: () => number = Date.now,
+): Promise<number | null> {
+  const [saved, latestTimeSeenMs] = await Promise.all([
+    // A sign-in that cannot be read leaves the kept time to decide.
+    Promise.resolve().then(() => readSavedSignIn()).catch(() => null),
+    readLatestTimeSeen(ownerId),
+  ]);
+  const lastRefreshedAtMs = saved?.ownerId === ownerId ? saved.lastRefreshedAtMs : null;
+  return clockRefusal(now(), lastRefreshedAtMs, latestTimeSeenMs)?.seenAtMs ?? null;
+}
+
+/**
+ * A1 pass 4 L3: with the clock set back, the saved sign-in is not opened on
+ * the phone's word. A real refresh asks the server, whose time decides: it
+ * answers, and the workspace opens as on any refreshed sign-in; it refuses,
+ * and the phone is signed out (owner answer Q13); no answer (or the server
+ * not answering), and the same clock lockout as with an expired token.
+ */
+export async function workspaceOwnerWithClockSetBack(
+  seenAtMs: number,
+  timeoutMs: number = OFFLINE_LOOKUP_TIMEOUT_MS,
+  refreshOptions: SavedSignInRefreshOptions = {},
+): Promise<
+  | Readonly<{ ownerId: string | null; signInPending: false }>
+  | Readonly<{ refused: 'clock'; seenAtMs: number }>
+> {
+  const refresh = await savedSignInRefreshWithin(timeoutMs, { ...refreshOptions, askServer: true });
+  if (refresh.status === 'signed_in') return { ownerId: refresh.ownerId, signInPending: false };
+  if (refresh.status === 'rejected' || refresh.status === 'signed_out') return { ownerId: null, signInPending: false };
+  return { refused: 'clock', seenAtMs };
+}
+
+/**
  * The refresh's outcome, or no signal after `timeoutMs` (a captive portal).
  * A1 pass 3 L1: once signal is back the sign-in is waited for, not cut at
  * `timeoutMs`; and once this has answered, signal found later is not
