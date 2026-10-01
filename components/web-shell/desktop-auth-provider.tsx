@@ -183,6 +183,19 @@ const WORKSPACE_UNAVAILABLE_MESSAGE =
  * then every minute while the tab is visible (audit round 2 follow-up).
  */
 export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
+/**
+ * The longest a sign-in waits for this tab's sign-in to finish ending
+ * (whole-app audit A12 pass 7 L1, 30 Sep 2026).
+ */
+export const DESKTOP_SIGN_IN_ENDING_WAIT_MS = 10_000;
+
+/** This tab ending its sign-in because another tab signed out. */
+type DesktopSignInEnding = {
+  /** Settles once the ending has, either way. */
+  settled: Promise<void>;
+  /** A sign-in was made here during it: its settling leaves the view be. */
+  signInMadeDuring: boolean;
+};
 
 export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<DesktopAuthPhase>('checking');
@@ -215,9 +228,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const notOwnerSignOutRunningRef = useRef(false);
   /**
    * Set while this tab ends its sign-in because another tab of the same
-   * account signed out (whole-app audit A1 pass 6 L1, 30 Sep 2026).
+   * account signed out (whole-app audit A1 pass 6 L1, 30 Sep 2026), until
+   * that ending settles (A12 pass 7 L1).
    */
-  const endingSignInRef = useRef<object | null>(null);
+  const endingSignInRef = useRef<DesktopSignInEnding | null>(null);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -466,14 +480,47 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     };
   }, [clearSessionView, loadAuthorizedSnapshot]);
 
+  /**
+   * A sign-in waits, at most DESKTOP_SIGN_IN_ENDING_WAIT_MS, for this tab's
+   * sign-in to finish ending (A12 pass 7 L1). auth-js does not hold a
+   * sign-in back while it signs out: a late /logout removed the new
+   * sign-in, a refresh thrown away made the ending delete it, and a
+   * mistyped password had turned the ending's guard off, so its refresh
+   * loaded the workspace as the sign-in was wiped. The ending's settling
+   * leaves the view to this sign-in.
+   */
+  const waitForSignInToFinishEnding = useCallback(async () => {
+    let ending = endingSignInRef.current;
+    if (!ending) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeUp = new Promise<'time-up'>(resolve => {
+      timer = setTimeout(() => resolve('time-up'), DESKTOP_SIGN_IN_ENDING_WAIT_MS);
+    });
+    try {
+      while (ending) {
+        const current: DesktopSignInEnding = ending;
+        current.signInMadeDuring = true;
+        const outcome = await Promise.race([current.settled.then(() => 'settled' as const), timeUp]);
+        if (outcome === 'time-up') return;
+        ending = endingSignInRef.current === current ? null : endingSignInRef.current;
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }, []);
+
   const signInWithPassword = useCallback(async (email: string, password: string) => {
     forgetNotOwner();
-    // A new sign-in here: an earlier ending that settles later leaves it be.
-    endingSignInRef.current = null;
     if (mountedRef.current) {
       setPhase('signing_in');
       setMessage(null);
     }
+    // The ending's guard stays on until it settles; a sign-in starting no
+    // longer turns it off (A12 pass 7 L1).
+    await waitForSignInToFinishEnding();
+    // The ending's SIGNED_OUT, as it settled, set the plain sign-in page
+    // back; the button is busy again while this sign-in goes out.
+    if (mountedRef.current) setPhase('signing_in');
     const result = await daveWebSupabaseGateway.signIn(email.trim(), password);
     if (!result.ok || !result.session) {
       if (mountedRef.current) {
@@ -483,7 +530,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       return false;
     }
     return loadAuthorizedSnapshot(result.session);
-  }, [forgetNotOwner, loadAuthorizedSnapshot]);
+  }, [forgetNotOwner, loadAuthorizedSnapshot, waitForSignInToFinishEnding]);
 
   const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
     const userId = daveWebSupabaseGateway.storedSignInUserId();
@@ -523,16 +570,22 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       if (!userId || daveWebSupabaseGateway.storedSignInUserId() !== userId) return;
       // Nothing is shown without a confirmed owner while the sign-in ends,
       // and, ended or not on the server, this tab then shows the sign-in
-      // page (A1 pass 6 L1); its stored sign-in is gone either way.
-      const ending = {};
+      // page (A1 pass 6 L1); its stored sign-in is gone either way. Its
+      // promise is kept so a sign-in here waits for it, and the guard is
+      // cleared only when it settles (A12 pass 7 L1).
+      const ending: DesktopSignInEnding = {
+        settled: Promise.resolve(),
+        signInMadeDuring: false,
+      };
       endingSignInRef.current = ending;
       clearSessionView();
-      void daveWebSupabaseGateway.signOutThisTabToo(userId)
+      ending.settled = daveWebSupabaseGateway.signOutThisTabToo(userId)
         .catch(() => undefined)
-        .finally(() => {
+        .then(() => {
           if (endingSignInRef.current !== ending) return;
           endingSignInRef.current = null;
-          clearSessionView();
+          // A sign-in made here meanwhile shows its own outcome.
+          if (!ending.signInMadeDuring) clearSessionView();
         });
     };
     return () => {

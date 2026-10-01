@@ -13,7 +13,7 @@
  * acts on nothing but SIGNED_OUT, and once that ending has settled, either
  * way, it shows the sign-in page.
  */
-import type { Session, SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Text, View } from 'react-native';
 
@@ -26,6 +26,7 @@ import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-on
 import { createDAVEWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { supabaseSecureAuthStorage } from '../../services/SupabaseAuthStorage.web';
 import {
+  TAB_TEST_PASSWORD,
   closeTabClient,
   createTabClient,
   createTabCloud,
@@ -235,29 +236,36 @@ describe('a hidden tab whose sign-in expired, when David signs out in another ta
     screen.unmount();
   });
 
-  test('a sign-in made here before the ending settles is not cleared when it does', async () => {
+  // Re-pinned for A12 pass 7 L1 (30 Sep 2026). This test had replaced both
+  // signOutThisTabToo and signIn with stand-ins, so it could not see that
+  // auth-js lets a sign-in through while it signs out: the late /logout then
+  // removed the new sign-in. It now runs on the real client and cloud, and
+  // the sign-in waits, with the button busy, until the ending has settled.
+  test('a sign-in made here before the ending settles is kept when it does (real client)', async () => {
     const screen = await openHiddenTab();
-    let settleEnding: () => void = () => undefined;
-    const { data } = await thisTab.auth.getSession();
-    mockThisTabGateway = {
-      ...mockThisTabGateway,
-      // The other tab's sign-out takes a long time to reach the server here.
-      signOutThisTabToo: () => new Promise<void>(resolve => { settleEnding = resolve; }),
-      signIn: async () => ({ ok: true, session: data.session as Session }),
-    };
+    anHourPasses();
+    const logout = cloud.hold('logout');
 
-    await act(async () => { await davidSignsOutInHisOtherTab(); });
+    await act(async () => {
+      await davidSignsOutInHisOtherTab();
+      await logout.reached;
+    });
     await waitFor(() => expect(screen.getByLabelText('Password')).toBeTruthy());
     fireEvent.changeText(screen.getByLabelText('Email'), 'owner@example.com');
-    fireEvent.changeText(screen.getByLabelText('Password'), 'synthetic-test-password');
-    fireEvent.press(screen.getByText('Sign in securely'));
-    await waitFor(() => expect(screen.getByText('Account and Sync')).toBeTruthy());
+    fireEvent.changeText(screen.getByLabelText('Password'), TAB_TEST_PASSWORD);
+    await act(async () => { fireEvent.press(screen.getByText('Sign in securely')); });
+    await settle();
+    expect(text(screen, 'phase')).toBe('signing_in');
+    expect(cloud.callsFor('/auth/v1/token?grant_type=password')).toHaveLength(0);
 
-    await act(async () => { settleEnding(); });
+    await act(async () => { logout.release(); });
+    await waitFor(() => expect(screen.getByText('Account and Sync')).toBeTruthy());
     await settle();
 
     expect(screen.getByText('Account and Sync')).toBeTruthy();
     expect(text(screen, 'phase')).toBe('ready');
+    expect(cloud.callsFor('/auth/v1/token?grant_type=password')).toHaveLength(1);
+    expect(tabHoldsSignIn(thisTabStorage)).toBe(true);
     screen.unmount();
   });
 });

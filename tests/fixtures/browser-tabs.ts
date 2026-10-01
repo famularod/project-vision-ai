@@ -7,7 +7,10 @@
  *
  * The cloud is a captured fetch: the account a request is for comes from
  * its own access token, so a request shows whose sign-in it carried. Only
- * 'owner-1' passes the owner check. Nothing reaches the network.
+ * 'owner-1' passes the owner check. Nothing reaches the network. A password
+ * sign-in works with TAB_TEST_PASSWORD (a synthetic test value), and a test
+ * can hold the next /logout, refresh or password sign-in to make it slow
+ * (A12 pass 7 L1).
  *
  * A test needs `document` defined (auth-js opens the channel only in a
  * browser) and Node's BroadcastChannel, and must call closeTabClient on
@@ -23,6 +26,8 @@ export const TAB_ACCOUNTS: Readonly<Record<string, Readonly<{ email: string; own
   'owner-1': { email: 'owner@example.com', owner: true },
   'visitor-1': { email: 'visitor@example.com', owner: false },
 };
+/** The password every test account signs in with; synthetic, not a secret. */
+export const TAB_TEST_PASSWORD = 'synthetic-test-password';
 
 /** A tab's sessionStorage. */
 export function createTabStorage() {
@@ -77,12 +82,30 @@ export function tabHoldsSignIn(storage: TabStorage): boolean {
   return storage.getItem(`${WEB_KEY_PREFIX}${TAB_STORAGE_KEY}`) !== null;
 }
 
+/** Which sign-in a tab holds: its account and refresh token, or null. */
+export function tabSignIn(storage: TabStorage): Readonly<{ userId: string; refreshToken: string }> | null {
+  const raw = storage.getItem(`${WEB_KEY_PREFIX}${TAB_STORAGE_KEY}`);
+  if (!raw) return null;
+  const session = JSON.parse(raw) as { refresh_token: string; user: { id: string } };
+  return { userId: session.user.id, refreshToken: session.refresh_token };
+}
+
 type CloudCall = Readonly<{ method: string; path: string; userId: string | null }>;
+type HeldCall = 'logout' | 'refresh' | 'password';
 
 export function createTabCloud() {
   const calls: CloudCall[] = [];
   let generation = 1;
   const state = { logout: 'ok' as 'ok' | 503 };
+  const holds = new Map<HeldCall, Readonly<{ arrived: () => void; released: Promise<void> }>>();
+  /** A held call waits here until the test releases it. */
+  const waitIfHeld = async (kind: HeldCall) => {
+    const held = holds.get(kind);
+    if (!held) return;
+    holds.delete(kind);
+    held.arrived();
+    await held.released;
+  };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' },
@@ -100,7 +123,19 @@ export function createTabCloud() {
       const body = JSON.parse(String(init?.body ?? '{}')) as { refresh_token?: string };
       const userId = tokenUser(body.refresh_token);
       calls.push({ method, path: '/auth/v1/token?grant_type=refresh_token', userId });
+      await waitIfHeld('refresh');
       if (!userId) return json(400, { code: 'refresh_token_not_found', message: 'Invalid Refresh Token' });
+      generation += 1;
+      return json(200, sessionFor(userId, generation, Math.floor(Date.now() / 1000) + 3600));
+    }
+    if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'password') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { email?: string; password?: string };
+      const userId = Object.keys(TAB_ACCOUNTS).find(id => TAB_ACCOUNTS[id].email === body.email) ?? null;
+      calls.push({ method, path: '/auth/v1/token?grant_type=password', userId });
+      await waitIfHeld('password');
+      if (!userId || body.password !== TAB_TEST_PASSWORD) {
+        return json(400, { code: 'invalid_credentials', message: 'Invalid login credentials' });
+      }
       generation += 1;
       return json(200, sessionFor(userId, generation, Math.floor(Date.now() / 1000) + 3600));
     }
@@ -112,6 +147,7 @@ export function createTabCloud() {
         : json(401, { code: 'bad_jwt', message: 'invalid JWT' });
     }
     if (url.pathname === '/auth/v1/logout') {
+      await waitIfHeld('logout');
       if (state.logout === 503) return json(503, { message: 'Service Unavailable' });
       return new Response(null, { status: 204 });
     }
@@ -128,6 +164,19 @@ export function createTabCloud() {
     fetch,
     /** Every call that went out with a sign-in, by path. */
     callsFor: (path: string) => calls.filter(call => call.path.startsWith(path)),
+    /**
+     * The next /logout, refresh or password sign-in is slow: once it has
+     * arrived it waits until `release` (what it then answers follows
+     * `state` at that time).
+     */
+    hold(kind: HeldCall) {
+      let arrived: () => void = () => undefined;
+      let release: () => void = () => undefined;
+      const reached = new Promise<void>(resolve => { arrived = resolve; });
+      const released = new Promise<void>(resolve => { release = resolve; });
+      holds.set(kind, { arrived, released });
+      return { reached, release };
+    },
   };
 }
 export type TabCloud = ReturnType<typeof createTabCloud>;

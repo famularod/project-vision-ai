@@ -66,22 +66,42 @@ function storedAuthKeys(storage: Storage): string[] {
   return keys;
 }
 
-/** The account a stored Supabase session belongs to, or null. */
-function storedSessionUserId(raw: string | null): string | null {
+/** Which sign-in this tab holds: whose, and which one (A12 pass 7 L1). */
+export type BrowserTabStoredSignIn = Readonly<{ userId: string; refreshToken: string | null }>;
+
+/** The account a stored Supabase session belongs to, and its refresh token. */
+function storedSession(raw: string | null): BrowserTabStoredSignIn | null {
   if (!raw) return null;
   try {
     const session = JSON.parse(raw) as unknown;
     if (!session || typeof session !== 'object') return null;
-    const { access_token: accessToken, user } = session as {
+    const { access_token: accessToken, refresh_token: refreshToken, user } = session as {
       access_token?: unknown;
+      refresh_token?: unknown;
       user?: unknown;
     };
     if (typeof accessToken !== 'string' || !user || typeof user !== 'object') return null;
     const id = (user as { id?: unknown }).id;
-    return typeof id === 'string' && id.trim() ? id : null;
+    if (typeof id !== 'string' || !id.trim()) return null;
+    return { userId: id, refreshToken: typeof refreshToken === 'string' ? refreshToken : null };
   } catch {
     return null;
   }
+}
+
+/**
+ * This tab's own stored sign-in, read from this tab's storage without asking
+ * the cloud; null when it holds none. Its refresh token tells one sign-in of
+ * an account from a later one (whole-app audit A12 pass 7 L1).
+ */
+export function browserTabStoredSignIn(): BrowserTabStoredSignIn | null {
+  const storage = browserSessionStorage();
+  if (!storage) return null;
+  for (const key of storedAuthKeys(storage)) {
+    const signIn = storedSession(storage.getItem(key));
+    if (signIn) return signIn;
+  }
+  return null;
 }
 
 /**
@@ -91,13 +111,7 @@ function storedSessionUserId(raw: string | null): string | null {
  * when it was this same account's (whole-app audit A12 pass 5 L2).
  */
 export function browserTabSignInUserId(): string | null {
-  const storage = browserSessionStorage();
-  if (!storage) return null;
-  for (const key of storedAuthKeys(storage)) {
-    const userId = storedSessionUserId(storage.getItem(key));
-    if (userId) return userId;
-  }
-  return null;
+  return browserTabStoredSignIn()?.userId ?? null;
 }
 
 /**

@@ -23,6 +23,7 @@ import {
 } from './DAVEWebOperations';
 import {
   browserTabSignInUserId,
+  browserTabStoredSignIn,
   forgetBrowserTabSignIn,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
@@ -217,6 +218,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     summary: ECOSDocumentCoverageSummary;
   }>>();
   const realtimeSatisfiedCollections = new Set<DAVEOperationalCollectionName>();
+  /**
+   * Sign-ins made in this tab: those under way now, and those that may have
+   * stored a sign-in (A12 pass 7 L1). Ending this tab's sign-in tells its
+   * own refresh from a sign-in David made meanwhile by these.
+   */
+  let signInsUnderway = 0;
+  let signInsStored = 0;
 
   function cacheAcknowledgedScheduleItem(
     item: ScheduleItem,
@@ -450,9 +458,19 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
 
     async signIn(email: string, password: string): Promise<DAVEWebSignInResult> {
       if (!client) return { ok: false, session: null };
-      const { data, error } = await client.auth.signInWithPassword({ email, password });
-      if (error || !data.session) return { ok: false, session: null };
-      return { ok: true, session: data.session };
+      signInsUnderway += 1;
+      let stored = true;
+      try {
+        const { data, error } = await client.auth.signInWithPassword({ email, password });
+        if (error || !data.session) {
+          stored = false;
+          return { ok: false, session: null };
+        }
+        return { ok: true, session: data.session };
+      } finally {
+        signInsUnderway -= 1;
+        if (stored) signInsStored += 1;
+      }
     },
 
     /** This computer only unless 'global' is asked for (owner answer Q21). */
@@ -488,17 +506,35 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
      * tab's storage either way. Another account's sign-in is left alone,
      * and a tab holding none sends nothing, so tabs never answer each
      * other's sign-outs back and forth. Never throws.
+     *
+     * Only the sign-in being ended is taken out (A12 pass 7 L1). auth-js
+     * does not hold a sign-in back while it signs out, and when it could
+     * not finish (it threw its refresh away because storage changed, or
+     * /logout answered 503) this had deleted whatever this tab held by
+     * then: a sign-in David had just made here, with no SIGNED_OUT, so his
+     * workspace stayed with no sign-in behind it. It is still the one
+     * being ended while it is the same account with the same refresh
+     * token, or with the token auth-js's own refresh here rotated it to
+     * (no sign-in here since could have stored one).
      */
     async signOutThisTabToo(userId: string): Promise<void> {
-      if (!client || !userId || browserTabSignInUserId() !== userId) return;
-      let ended = false;
+      if (!client || !userId) return;
+      const ending = browserTabStoredSignIn();
+      if (!ending || ending.userId !== userId) return;
+      const signInsStoredBefore = signInsStored;
       try {
-        const { error } = await client.auth.signOut({ scope: 'local' });
-        ended = !error;
+        await client.auth.signOut({ scope: 'local' });
       } catch {
-        ended = false;
+        // Whatever auth-js left in storage is looked at below.
       }
-      if (!ended || browserTabSignInUserId() !== null) forgetBrowserTabSignIn();
+      const stored = browserTabStoredSignIn();
+      const stillTheOneBeingEnded = stored !== null &&
+        stored.userId === ending.userId &&
+        (stored.refreshToken === ending.refreshToken ||
+          (signInsUnderway === 0 && signInsStored === signInsStoredBefore));
+      // A sign-in made here meanwhile is kept, with what it has read.
+      if (stored && !stillTheOneBeingEnded) return;
+      if (stored) forgetBrowserTabSignIn();
       forgetSignedInReads();
     },
 
