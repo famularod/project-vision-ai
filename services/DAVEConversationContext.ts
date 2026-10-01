@@ -1,6 +1,6 @@
 import { askDAVE, routeDAVEAskIntent, type DAVEAskAnswer, type DAVEAskEvidence } from './DAVEAsk';
 import type { DAVEAskConversationEntry } from './DAVEAskConversation';
-import { classifyDAVEConversationIntent } from './DAVEConversationRouter';
+import { classifyDAVEConversationIntent, talkProjectQuestionRefusal } from './DAVEConversationRouter';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 
 export type DAVEConversationFollowUpKind =
@@ -37,14 +37,32 @@ export function resolveDAVEConversationContext({
   projectId,
   now = new Date(),
   maxAgeDays = 30,
+  projectName,
+  projectNames,
+  closedProjectNames,
 }: {
   transcript: string;
   history: readonly DAVEAskConversationEntry[];
   projectId: string;
   now?: Date;
   maxAgeDays?: number;
+  /** Talk's project (after any move), the open projects and the closed (archived, not deleted) ones. */
+  projectName?: string;
+  projectNames?: readonly string[] | null;
+  closedProjectNames?: readonly string[] | null;
 }): DAVEConversationContextResolution {
   const originalQuestion = clean(transcript);
+  // Audit A9 pass 6 L6: a question naming two projects, or a project Talk did
+  // not move to (a closed one), is not answered from this project, whether it
+  // is new or a follow-up ("What about 200?"). Talk asks instead, in the
+  // "One detail needed" alert; a note is not checked here.
+  const projectRefusal = projectName && projectNames && classifyDAVEConversationIntent(originalQuestion) === 'ask'
+    ? talkProjectQuestionRefusal(originalQuestion, projectName, projectNames, closedProjectNames || [])
+    : null;
+  if (projectRefusal) {
+    return resolution('ambiguous_follow_up', originalQuestion, projectRefusal, null, null,
+      'The question names another project, so it is not answered from this one.');
+  }
   const projectHistory = history.filter(entry => entry.projectId === projectId);
   const latest = latestEntry(projectHistory.filter(entry => recentEnough(entry.createdAt, now, maxAgeDays)));
   const dependence = contextDependence(originalQuestion, Boolean(latest));

@@ -1,6 +1,17 @@
 // rule simplified A9 pass 5: when unsure, refuse
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectQuestion';
-import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import {
+  answerDAVEConversationContext,
+  askECOSQuestionForTalk,
+  resolveDAVEConversationContext,
+} from '../../services/DAVEConversationContext';
+import {
+  buildDAVETalkMemoryDraft,
+  mentionedDAVEProject,
+  routeDAVEConversation,
+} from '../../services/DAVEConversationRouter';
+import { buildProjectIntelligence } from '../../services/DAVEIntelligence';
+import { createTalkSession } from '../../hooks/use-talk-session';
 import { ecosProjectNumberMentions } from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Audit A9 pass 6 (30 Sep 2026): owner answer Q20 refuses a question that
@@ -214,5 +225,260 @@ describe('audit A9 pass 6 L5: units the earlier rule knew are measurements again
     const number = project.split(' ')[0];
     expectRefusedOpen(question, [SELECTED, project], number, project);
     expectRefusedClosed(question, project, number);
+  });
+});
+
+const intelligenceFor = (projectName: string) => buildProjectIntelligence({
+  projectId: `project-${projectName}`,
+  projectName,
+  now: '2026-09-30T12:00:00.000Z',
+  updates: [],
+  documents: [],
+  scheduleItems: [],
+} as unknown as Parameters<typeof buildProjectIntelligence>[0]);
+
+/**
+ * What Talk says instead of answering, with `selected` in Talk (null: it
+ * answers). App.tsx shows it in the "One detail needed" alert.
+ */
+function talkAnswer(question: string, open: readonly string[], closed: readonly string[] = [], selected = SELECTED) {
+  expect(routeDAVEConversation({ transcript: question, intelligence: intelligenceFor(selected) }).intent).toBe('ask');
+  const context = resolveDAVEConversationContext({
+    transcript: question,
+    history: [],
+    projectId: `project-${selected}`,
+    projectName: selected,
+    projectNames: open,
+    closedProjectNames: closed,
+  });
+  return context.status === 'ambiguous_follow_up' ? context.effectiveQuestion : null;
+}
+
+const twoProjects = (first: string, second: string) =>
+  `This question names two projects, ${first} and ${second}. Which one do you mean? Ask again about just that project.`;
+
+describe('audit A9 pass 6 L6a: a Talk question naming two projects is not answered from the selected one', () => {
+  const ANNEX = '2380 Harbor Annex';
+  const THREE = [SELECTED, OTHER, ANNEX];
+
+  it.each([
+    ['Compare 2375 and 2380', THREE, '2375', '2380'],
+    ['Compare 2375 and 2380?', THREE, '2375', '2380'],
+    ['Compare 2321 and 2375', PROJECTS, '2321', '2375'],
+    ['Compare 2321 and 2375?', PROJECTS, '2321', '2375'],
+    ['Do the specs from 2321 and 2375 match?', PROJECTS, '2321', '2375'],
+    ['Is 2375 Compliance Project behind 2380 Harbor Annex?', THREE, '2375', '2380'],
+  ] as const)('"%s" asks which project and does not switch', (question, projects, first, second) => {
+    expect(mentionedDAVEProject(question, projects)).toBeNull();
+    expect(talkAnswer(question, projects)).toBe(twoProjects(first, second));
+  });
+
+  it('a note naming two projects still moves, for confirmation, to the one named in full', () => {
+    const MAIN = '100 Main Street';
+    expect(mentionedDAVEProject('Framing at 100 Main Street is done, 2375 is next', [SELECTED, MAIN, OTHER])).toBe(MAIN);
+    expect(mentionedDAVEProject('Delivered to Oak Street today', ['Oak', 'Oak Street'])).toBe('Oak Street');
+  });
+
+  it('three projects are listed', () => {
+    expect(talkAnswer('Compare 2321, 2375 and 2380?', THREE)).toBe(
+      'This question names 3 projects, 2321, 2375 and 2380. Which one do you mean? Ask again about just that project.',
+    );
+  });
+
+  it.each([
+    // One project named: Talk moves to it and answers from it.
+    ['What is left at 2375?', OTHER],
+    ['Compare 2375 and 2400?', OTHER],
+    ['Compare the 2375 mm slab to 2380?', ANNEX],
+  ])('"%s" names one project and Talk answers from it', (question, project) => {
+    expect(mentionedDAVEProject(question, THREE)).toBe(project);
+    expect(talkAnswer(question, THREE, [], project)).toBeNull();
+  });
+
+  it('a question about the selected project alone is answered', () => {
+    expect(talkAnswer('What is left at 2321?', THREE)).toBeNull();
+    expect(talkAnswer('Is 2321 behind?', [SELECTED, '2321 Annex', OTHER])).toBeNull();
+  });
+});
+
+describe('audit A9 pass 6 L6b: Talk knows closed projects and refuses them in the closed wording', () => {
+  const OAK = '200 Oak Street';
+  const talkReopen = (number: string) =>
+    `Project 2321 is selected, but ${number} is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.`;
+
+  it.each([
+    ['Is 200 done?', OAK, '200'],
+    ['What is overdue on 200?', OAK, '200'],
+    ['What was the slab thickness at 2375?', OTHER, '2375'],
+  ])('"%s" with "%s" closed is refused and Talk does not switch', (question, closed, number) => {
+    expect(mentionedDAVEProject(question, [SELECTED], [closed])).toBeNull();
+    expect(talkAnswer(question, [SELECTED], [closed])).toBe(talkReopen(number));
+  });
+
+  it.each([
+    'Did the 200 bags of grout arrive?',
+    'Is the crane rented for 200 days?',
+  ])('"%s" is a measurement with 200 closed and is answered', question => {
+    expect(mentionedDAVEProject(question, [SELECTED], [OAK])).toBeNull();
+    expect(talkAnswer(question, [SELECTED], [OAK])).toBeNull();
+  });
+
+  it('an open and a closed project in one question names two projects (no switch)', () => {
+    expect(mentionedDAVEProject('Is 2375 or 200 behind?', PROJECTS, [OAK])).toBeNull();
+    expect(talkAnswer('Is 2375 or 200 behind?', PROJECTS, [OAK])).toBe(twoProjects('2375', '200'));
+  });
+
+  it('a number an open and a closed project share is read as the open one', () => {
+    expect(mentionedDAVEProject('What is left at 2375?', PROJECTS, ['2375 Old Phase'])).toBe(OTHER);
+  });
+});
+
+describe('audit A9 pass 6 L6c: a project named just a number is not matched inside an exempt span', () => {
+  const BARE = '2375';
+  const BARE_PROJECTS = [SELECTED, BARE];
+
+  it.each([
+    'Is the slab 2375 sqft?',
+    'Call 555-2375 about the pour.',
+    'Was the $2375 invoice paid?',
+    'Is the main service 2375 amps?',
+  ])('"%s" keeps Talk on 2321', question => {
+    expect(mentionedDAVEProject(question, BARE_PROJECTS)).toBeNull();
+    expect(desktop(question, BARE_PROJECTS)).toBeNull();
+  });
+
+  it('a date or a sheet ID does not match a project named by its year or number', () => {
+    expect(mentionedDAVEProject('Was the inspection on 9/30/2026 passed?', [SELECTED, '2026'])).toBeNull();
+    expect(mentionedDAVEProject('What is on sheet A-201?', [SELECTED, '201'])).toBeNull();
+  });
+
+  it.each([
+    'What is left at 2375?',
+    'Is 2375 done?',
+    'Is the slab at 2375 poured?',
+  ])('"%s" names project "2375" and Talk moves to it', question => {
+    expect(mentionedDAVEProject(question, BARE_PROJECTS)).toBe(BARE);
+    expect(desktop(question, BARE_PROJECTS)).toBe(switchOnDesktop('2375'));
+  });
+});
+
+// App.tsx's own handleTalkInput, compiled from the source with the real Talk
+// services (as in audit-a9-pass2-talk-session.test.ts), so the closed project
+// list really reaches Talk.
+const fs = jest.requireActual('fs') as typeof import('fs');
+const path = jest.requireActual('path') as typeof import('path');
+const ts = jest.requireActual('typescript') as typeof import('typescript');
+const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+
+function appFunction(name: string): string {
+  const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(app);
+  if (!match) throw new Error(`App.tsx has no function ${name}`);
+  const start = match.index + 1;
+  const open = app.indexOf(' {\n', start) + 1;
+  let depth = 0;
+  for (let index = open; index < app.length; index += 1) {
+    if (app[index] === '{') depth += 1;
+    if (app[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return app.slice(start, index + 1);
+    }
+  }
+  throw new Error(`unbalanced function ${name}`);
+}
+
+function talkHarness(open: readonly string[], closed: readonly string[]) {
+  const projectNames: string[] = [];
+  const shown: Array<{ projectName: string; answer: { answer: string } } | null> = [];
+  const alert = jest.fn();
+  const deps: Record<string, unknown> = {
+    setTalkAnswer: (value: { projectName: string; answer: { answer: string } } | null) => shown.push(value),
+    Alert: { alert },
+    talkSession: createTalkSession(),
+    talkHistoryPersistence: { append: async () => undefined },
+    mentionedDAVEProject,
+    reportAvailableProjectNames: open,
+    ecosProjectQuestion: { closedProjectNames: closed },
+    talkProjectName: SELECTED,
+    talkTaskId: null,
+    authorityProjectId: (name: string) => `project-${name}`,
+    uid: () => 'id-1',
+    resolveDAVEConversationContext,
+    answerDAVEConversationContext,
+    askECOSQuestionForTalk,
+    routeDAVEConversation,
+    buildDAVETalkMemoryDraft,
+    loadECOSTalkReferenceDocuments: async () => [],
+    getSupabaseClient: () => ({}),
+    referenceDocuments: [],
+    projectIntelligenceForTalk: intelligenceFor,
+    reportTalkAnswerPersistenceFailure: jest.fn(),
+    setTalkProjectName: (name: string) => projectNames.push(name),
+    setTalkTaskId: jest.fn(),
+    setTalkVoiceOpen: jest.fn(),
+    setTalkTypedOpen: jest.fn(),
+    setTalkCaptureDraft: jest.fn(),
+  };
+  const js = ts.transpileModule(
+    [appFunction('persistTalkAnswer'), appFunction('handleTalkInput'), 'module.exports = { handleTalkInput };'].join('\n'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
+  ).outputText;
+  const mod = { exports: {} as { handleTalkInput: (transcript: string) => Promise<void> } };
+  new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
+  return { handleTalkInput: mod.exports.handleTalkInput, projectNames, shown, alert };
+}
+
+describe('audit A9 pass 6 L6: App.tsx Talk', () => {
+  const ANNEX = '2380 Harbor Annex';
+
+  it('a closed project named in Talk is refused in the closed wording, on 2321, with no answer', async () => {
+    const h = talkHarness([SELECTED, OTHER], ['200 Oak Street']);
+    await h.handleTalkInput('Is 200 done?');
+    expect(h.projectNames).toEqual([SELECTED]);
+    expect(h.alert).toHaveBeenCalledWith(
+      'One detail needed',
+      'Project 2321 is selected, but 200 is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+    expect(h.shown).toEqual([]);
+  });
+
+  it.each(['Compare 2375 and 2380', 'Compare 2375 and 2380?'])(
+    '"%s" asks which project, does not switch and does not answer',
+    async question => {
+      const h = talkHarness([SELECTED, OTHER, ANNEX], []);
+      await h.handleTalkInput(question);
+      expect(h.projectNames).toEqual([SELECTED]);
+      expect(h.alert).toHaveBeenCalledWith('One detail needed', twoProjects('2375', '2380'));
+      expect(h.shown).toEqual([]);
+    },
+  );
+
+  it('a follow-up naming two projects or a closed one is not answered from the earlier 2321 answer', async () => {
+    const h = talkHarness([SELECTED, OTHER, ANNEX], ['200 Oak Street']);
+    await h.handleTalkInput('What is overdue?');
+    expect(h.shown).toHaveLength(1);
+    await h.handleTalkInput('What about 2375 and 2380?');
+    expect(h.alert).toHaveBeenLastCalledWith('One detail needed', twoProjects('2375', '2380'));
+    await h.handleTalkInput('And at 200?');
+    expect(h.alert).toHaveBeenLastCalledWith(
+      'One detail needed',
+      'Project 2321 is selected, but 200 is a closed project. Reopen it under Archived Projects on the Overview tab, then ask there.',
+    );
+    expect(h.shown).toHaveLength(1);
+    expect(h.projectNames.every(name => name === SELECTED)).toBe(true);
+  });
+
+  it('a question naming one other project still moves Talk to it and is answered', async () => {
+    const h = talkHarness([SELECTED, OTHER], ['200 Oak Street']);
+    await h.handleTalkInput('What is left at 2375?');
+    expect(h.projectNames).toEqual([OTHER]);
+    expect(h.alert).not.toHaveBeenCalled();
+    expect(h.shown.at(-1)?.projectName).toBe(OTHER);
+  });
+
+  it('a measurement with a closed 3-digit project is answered on 2321', async () => {
+    const h = talkHarness([SELECTED, OTHER], ['200 Oak Street']);
+    await h.handleTalkInput('Did the 200 bags of grout arrive?');
+    expect(h.alert).not.toHaveBeenCalled();
+    expect(h.shown.at(-1)?.projectName).toBe(SELECTED);
   });
 });

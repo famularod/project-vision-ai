@@ -16,8 +16,10 @@ import {
 import type { DAVEVoiceUnderstandingResponse } from './DAVEVoiceUnderstanding';
 import {
   ecosProjectIdentifier,
-  ecosProjectNumberMentions,
+  ecosProjectNumberExemptSpans,
+  ecosProjectNumberMentionsAt,
 } from '../supabase/functions/_shared/ecos-project-reference';
+import { ecosProjectReferenceMismatchMessage } from './ECOSProjectRefusal';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -102,31 +104,142 @@ export function classifyDAVEConversationIntent(transcript: string): DAVEConversa
   return classifyDAVEConversation(transcript).intent;
 }
 
+/**
+ * The open project a Talk question or note moves to, or null to stay: no
+ * project is named, or the one named is closed (audit A9 pass 6 L6b; Talk
+ * then refuses a question in the closed wording, see
+ * talkProjectQuestionRefusal).
+ * A question naming two different projects stays too (L6a: Talk asks which);
+ * a note naming two keeps the earlier rule and moves, for confirmation, to an
+ * open project named in full. The selected project itself may be returned;
+ * that is no move.
+ */
 export function mentionedDAVEProject(
   transcript: string,
   projectNames: readonly string[],
+  closedProjectNames: readonly string[] | null = [],
 ) {
-  // Whole-app audit A11 pass 1 F6 (30 Sep 2026): a name matches whole words
-  // only ("Oak" is not in "Oakland"), and a number that is a quantity, an
-  // amount or part of a date ("2375 feet", "$2375", "9/30/2026") is not
-  // read as a project number. A bare number ("What changed at 2375?") still is.
-  const searchable = ` ${normalize(transcript)} `;
-  const exact = projectNames.find(project => {
-    const name = normalize(project);
-    return Boolean(name) && searchable.includes(` ${name} `);
-  });
-  if (exact) return exact;
+  const named = talkNamedProjects(transcript, projectNames, closedProjectNames || []);
+  if (named.length === 0) return null;
+  if (named.length > 1) {
+    if (classifyDAVEConversation(transcript).intent === 'ask') return null;
+    return projectNames.find(name => named.some(project => project.exactOpen.includes(name))) ?? null;
+  }
+  const [project] = named;
+  // Prefer the open project named in full; then the one open project with
+  // that number (a number an open and a closed project share is the open one).
+  if (project.exactOpen.length === 1) return project.exactOpen[0];
+  return project.open.length === 1 ? project.open[0] : null;
+}
 
-  // Audit A9 pass 3 L2: the same number rule as Ask ECOS. Since pass 5 (when
-  // unsure, refuse) only a measurement, money, a date or time, a phone number
-  // or a spec/sheet ID keeps a project's number from moving the note; "RFI
-  // 2375" or "2375 Main Street" moves it to project 2375 for confirmation.
-  const numbers = new Set(ecosProjectNumberMentions(transcript, projectNames));
-  const numberMatches = projectNames.filter(project => {
-    const number = ecosProjectIdentifier(project);
-    return Boolean(number && numbers.has(number));
+type TalkNamedProject = {
+  key: string;
+  /** The project number, or the name of a project without one. */
+  label: string;
+  /** Open projects with this key, and those of them named in full. */
+  open: string[];
+  exactOpen: string[];
+  /** Where the transcript first names it. */
+  at: number;
+};
+
+/**
+ * The different projects a Talk transcript names, in the order first found.
+ * Whole-app audit A11 pass 1 F6 (30 Sep 2026): a name matches whole words
+ * only ("Oak" is not in "Oakland"), and a number that is a quantity, an
+ * amount or part of a date ("2375 feet", "$2375", "9/30/2026") is not read
+ * as a project number. A bare number ("What changed at 2375?") still is.
+ * Audit A9 pass 3 L2: the same number rule as Ask ECOS; since pass 5 (when
+ * unsure, refuse) only a measurement, money, a date or time, a phone number
+ * or a spec/sheet ID keeps a project's number from naming it. Audit A9 pass 6
+ * L6c: a project named just a number ("2375") is not matched by name inside
+ * those spans either ("Is the slab 2375 sqft?", "Call 555-2375"). Projects
+ * that share a number are one project here, keyed by that number.
+ */
+function talkNamedProjects(
+  transcript: string,
+  openNames: readonly string[],
+  closedNames: readonly string[],
+): TalkNamedProject[] {
+  const open = uniqueNames(openNames);
+  const openKeys = new Set(open.map(normalize));
+  const closed = uniqueNames(closedNames).filter(name => !openKeys.has(normalize(name)));
+  const all = [...open, ...closed];
+  const exempt = ecosProjectNumberExemptSpans(transcript);
+  const occurrences = all.flatMap(name => nameOccurrences(transcript, name)
+    .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
+    .map(([start, end]) => ({ name, start, end })));
+  // "Oak Street" names one project even when another is called "Oak".
+  const exact = occurrences.filter(occurrence => !occurrences.some(other =>
+    other.end - other.start > occurrence.end - occurrence.start &&
+    other.start <= occurrence.start && occurrence.end <= other.end));
+  const numbers = ecosProjectNumberMentionsAt(transcript, all);
+
+  const named = new Map<string, TalkNamedProject>();
+  const add = (name: string, at: number, inFull: boolean) => {
+    const identifier = ecosProjectIdentifier(name);
+    const key = identifier ?? `name:${normalize(name)}`;
+    const project = named.get(key) ?? { key, label: identifier ?? name, open: [], exactOpen: [], at };
+    project.at = Math.min(project.at, at);
+    const isOpen = openKeys.has(normalize(name));
+    if (isOpen && !project.open.includes(name)) project.open.push(name);
+    if (isOpen && inFull && !project.exactOpen.includes(name)) project.exactOpen.push(name);
+    named.set(key, project);
+  };
+  for (const occurrence of exact) add(occurrence.name, occurrence.start, true);
+  for (const { number, start } of numbers) {
+    for (const name of all) if (ecosProjectIdentifier(name) === number) add(name, start, false);
+  }
+  return [...named.values()].sort((a, b) => a.at - b.at);
+}
+
+/** [start, end) of each whole-word occurrence of `name` in `text`, without case. */
+function nameOccurrences(text: string, name: string): Array<readonly [number, number]> {
+  const words = normalize(name).split(' ').filter(Boolean);
+  if (words.length === 0) return [];
+  const pattern = new RegExp(`(?<![A-Za-z0-9])${words.join('[^A-Za-z0-9]+')}(?![A-Za-z0-9])`, 'gi');
+  const found: Array<readonly [number, number]> = [];
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    found.push([match.index, match.index + match[0].length]);
+  }
+  return found;
+}
+
+function uniqueNames(names: readonly string[]) {
+  const seen = new Set<string>();
+  return names.map(name => (typeof name === 'string' ? name.trim() : '')).filter(name => {
+    const key = normalize(name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
-  return numberMatches.length === 1 ? numberMatches[0] : null;
+}
+
+/**
+ * What Talk says instead of answering a question that names another project
+ * (audit A9 pass 6 L6): two or more different projects are named, so it asks
+ * which (no switch); or the one named is another project Talk did not move
+ * to, such as a closed one, in Ask ECOS's phone wording ("... is a closed
+ * project. Reopen it under Archived Projects ..."). Null to answer. Talk
+ * shows it through resolveDAVEConversationContext, before any answer.
+ */
+export function talkProjectQuestionRefusal(
+  question: string,
+  selectedProjectName: string,
+  projectNames: readonly string[],
+  closedProjectNames: readonly string[] = [],
+): string | null {
+  const named = talkNamedProjects(question, projectNames, closedProjectNames);
+  if (named.length >= 2) {
+    const labels = named.map(project => project.label);
+    const count = labels.length === 2 ? 'two' : String(labels.length);
+    const list = `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+    return `This question names ${count} projects, ${list}. Which one do you mean? Ask again about just that project.`;
+  }
+  return ecosProjectReferenceMismatchMessage(selectedProjectName, question, projectNames, {
+    closedProjectNames,
+    refusalWording: 'phone',
+  });
 }
 
 /**
@@ -205,7 +318,7 @@ function navigationTargetFor(value: string): DAVEConversationNavigationTarget | 
 function looksLikeQuestion(value: string) {
   const text = normalize(value);
   return value.trim().endsWith('?') ||
-    /^(?:what|why|how|when|where|which|who|is|are|was|were|do|does|did|can|could|should|would|tell me|summarize|explain)\b/.test(text);
+    /^(?:what|why|how|when|where|which|who|is|are|was|were|do|does|did|can|could|should|would|tell me|summarize|explain|compare)\b/.test(text);
 }
 
 function memoryIntentFor(value: string): {

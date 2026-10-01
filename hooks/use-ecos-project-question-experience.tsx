@@ -228,5 +228,6 @@ export function useECOSProjectQuestionExperience({
     dismissResult();
   }, [dismissResult]);
 
-  return { open, close, askFor, canAskFor, sheets };
+  // Talk refuses a question naming a closed project with the same list (audit A9 pass 6 L6b).
+  return { open, close, askFor, canAskFor, sheets, closedProjectNames };
 }

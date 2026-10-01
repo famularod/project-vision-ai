@@ -13274,7 +13274,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   ) {
     const mentionedProject = mentionedDAVEProject(
       transcript,
-      reportAvailableProjectNames,
+      reportAvailableProjectNames, ecosProjectQuestion.closedProjectNames, // closed names too (audit A9 pass 6 L6b)
     );
     const projectName = mentionedProject || talkProjectName;
     const taskContextId = mentionedProject && mentionedProject !== talkProjectName
@@ -13284,7 +13284,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // Only answers given since Talk was opened; saved history is not read back (audit A9 pass 2 F1).
     const history = talkSession.history();
     const context = resolveDAVEConversationContext({
-      transcript,
+      transcript, projectName, projectNames: reportAvailableProjectNames, closedProjectNames: ecosProjectQuestion.closedProjectNames,
       history,
       projectId,
     });

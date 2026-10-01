@@ -1,6 +1,7 @@
 /**
- * Ask ECOS wrong-project guard, shared by the app (services/ECOSProjectQuestion.ts,
- * and Talk through services/DAVEConversationRouter.ts) and the repo copy of the
+ * Ask ECOS wrong-project guard, shared by the app (services/ECOSProjectRefusal.ts
+ * for Ask ECOS and Talk, and Talk's project matching in
+ * services/DAVEConversationRouter.ts) and the repo copy of the
  * ecos-ask-project edge function. No imports and no I/O: callers pass the
  * project lists in.
  *
@@ -100,8 +101,16 @@ const GROUPED_NUMBER_SOURCE = String.raw`\b\d{1,3}(?:,\d{3})+\b`;
  * project's own name continues around it (see the header).
  */
 export function ecosProjectNumberMentions(text: string, projectNames: readonly string[] = []): string[] {
+  return ecosProjectNumberMentionsAt(text, projectNames).map(mention => mention.number);
+}
+
+/** ecosProjectNumberMentions with where each number starts in `text` (Talk orders projects by it). */
+export function ecosProjectNumberMentionsAt(
+  text: string,
+  projectNames: readonly string[] = [],
+): Array<Readonly<{ number: string; start: number }>> {
   const exempt = exemptSpans(text);
-  const mentions: string[] = [];
+  const mentions: Array<Readonly<{ number: string; start: number }>> = [];
   const pattern = new RegExp(`${GROUPED_NUMBER_SOURCE}|${PROJECT_IDENTIFIER_SOURCE}`, 'g');
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const number = match[0].replace(/,/g, '');
@@ -112,7 +121,7 @@ export function ecosProjectNumberMentions(text: string, projectNames: readonly s
       !exempt.some(([from, to]) => from <= start && end <= to) ||
       projectNameAroundNumber(number, text.slice(0, start), text.slice(end), projectNames)
     ) {
-      mentions.push(number);
+      mentions.push({ number, start });
     }
   }
   return mentions;
@@ -225,7 +234,15 @@ function doubleQuotationOpen(text: string) {
   return open;
 }
 
-/** The [start, end) spans of `text` written as one of the five exemptions. */
+/**
+ * The [start, end) spans of `text` written as one of the five exemptions.
+ * Talk uses them so a project named just a number ("2375") is not matched
+ * by name inside "2375 sqft" or "555-2375" (audit A9 pass 6 L6c).
+ */
+export function ecosProjectNumberExemptSpans(text: string): Array<readonly [number, number]> {
+  return exemptSpans(text);
+}
+
 function exemptSpans(text: string): Array<readonly [number, number]> {
   const spans: Array<readonly [number, number]> = [];
   for (const source of EXEMPT_PATTERNS) {
