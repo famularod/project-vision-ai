@@ -37,6 +37,7 @@ import {
   scheduleItemsVisibleBeforeImport,
   scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
+import { scheduleItemsAfterLookaheadDeleted } from '../../services/ScheduleLookahead';
 import { scheduleTaskLinks } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
@@ -352,5 +353,34 @@ describe('A5 p18 L1: a task known only by the file it came from belongs to that 
     const { state } = approve(start, G, rows(G, ['Pour slab,Alpha,Lot,10/08/2026,10/12/2026,', FRAMING]));
     expect(twins(state)).toEqual([['MASTER G-1', '10/08/2026', 40, ['legacy-pour']]]);
     expect(link(state, 'legacy-pour')).toBe('MASTER G-1');
+  });
+});
+
+/**
+ * L2 (from 348e414): a master row with blank dates wrote blank master dates
+ * into a lookahead's note, so deleting the lookahead gave the task blank
+ * dates.
+ */
+describe('A5 p18 L2: a master row with no dates leaves the lookahead note\'s master dates', () => {
+  const L = schedule('LOOKAHEAD L', '2026-09-24T12:00:00.000Z', 'lookahead');
+  const noted = {
+    id: 'hand-pour', projectName: 'Alpha', scheduleProjectName: 'Alpha', locationName: 'Lot', taskName: 'Pour slab',
+    startDate: '10/03/2026', finishDate: '10/07/2026', milestone: '', owner: '', contractor: '', status: 'In Progress', percentComplete: 40,
+    priority: 'Medium', notes: '', progressSource: 'project_manager', progressConfirmedAt: '2026-09-18T15:00:00.000Z', progressConfirmedBy: 'David',
+    createdAt: '2026-09-15T12:00:00.000Z', updatedAt: '2026-09-24T12:00:00.000Z',
+    lookaheadOverlay: {
+      masterStartDate: '10/01/2026', masterFinishDate: '10/05/2026', masterPercentComplete: 40, masterStatus: 'In Progress',
+      masterProgressSource: 'project_manager', masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: '2026-09-18T15:00:00.000Z',
+      masterFilePercentComplete: null, lookaheads: [{ batchId: L.importBatchId, startDate: '10/03/2026', finishDate: '10/07/2026', percentComplete: null }],
+    },
+  } as ScheduleItem;
+
+  it('the note keeps 10/01-10/05 (the percent it states is noted), and deleting the lookahead gives those dates back', () => {
+    const { state } = approve({ items: [noted], documents: [L] }, F, rows(F, ['Pour slab,Alpha,Lot,,,70']));
+    const task = state.items.find(item => item.id === 'hand-pour')!;
+    expect(task.lookaheadOverlay).toMatchObject({ masterStartDate: '10/01/2026', masterFinishDate: '10/05/2026', masterPercentComplete: 70 });
+    expect([task.startDate, task.finishDate]).toEqual(['10/03/2026', '10/07/2026']);
+    const back = scheduleItemsAfterLookaheadDeleted(state.items, L, '2026-09-30T12:00:00.000Z').find(item => item.id === 'hand-pour')!;
+    expect([back.startDate, back.finishDate]).toEqual(['10/01/2026', '10/05/2026']);
   });
 });

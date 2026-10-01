@@ -335,6 +335,13 @@ export function scheduleTaskMasterRestated(
 ): ScheduleItem {
   const overlay = overlayOf(task);
   if (!overlay) return task;
+  // Whole-app audit A5 pass 18 L2 (1 Oct 2026): a master row with blank dates
+  // noted blank master dates, so deleting the lookahead gave the task none. A
+  // date the row leaves blank says nothing: the note keeps the master's.
+  const days = {
+    startDate: key(row.startDate) ? row.startDate : overlay.masterStartDate,
+    finishDate: key(row.finishDate) ? row.finishDate : overlay.masterFinishDate,
+  };
   const stated = scheduleRowStatesPercent(row) ? percentOf(row) : null;
   const managers = notedPercentIsManagers(overlay);
   const percent = stated === null || (managers && stated <= overlay.masterPercentComplete) ? {}
@@ -345,13 +352,13 @@ export function scheduleTaskMasterRestated(
       };
   const next: ScheduleLookaheadOverlay = {
     ...overlay,
-    masterStartDate: row.startDate,
-    masterFinishDate: row.finishDate,
+    masterStartDate: days.startDate,
+    masterFinishDate: days.finishDate,
     ...percent,
     ...(stated !== null && overlay.masterFilePercentComplete !== undefined ? { masterFilePercentComplete: stated } : {}),
   };
   if (
-    sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, row) &&
+    sameDates({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }, days) &&
     next.masterPercentComplete === overlay.masterPercentComplete &&
     next.masterStatus === overlay.masterStatus &&
     next.masterProgressConfirmedBy === overlay.masterProgressConfirmedBy &&
