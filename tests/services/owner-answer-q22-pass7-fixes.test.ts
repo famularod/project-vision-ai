@@ -317,7 +317,8 @@ describe('A5 p7 L1: a percent column is read as fractions or as percents as a wh
   });
 
   it('0–1 decimals mixed with numbers above 1: percents, and 0.5 is not read as 50%', () => {
-    expect(percents(['0.5', '75'])).toEqual([0, 75]);
+    // Pin updated (A5 pass 8 L4): half a percent rounds as the progress rule rounds it, to 1% (it was cut to 0%).
+    expect(percents(['0.5', '75'])).toEqual([1, 75]);
     expect(percents(['0.4', '1', '45'])).toEqual([0, 1, 45]);
   });
 
@@ -332,7 +333,8 @@ describe('A5 p7 L1: a percent column is read as fractions or as percents as a wh
       ].join('\n'),
       sourceName: 'Alpha.pdf', projects: ['Alpha'], now: new Date(APPROVED),
     });
-    expect(rows.map(row => [row.taskName, row.percentComplete])).toEqual([['Pour slab', 0], ['Roofing', 75], ['Paint', 1]]);
+    // Pin updated (A5 pass 8 L4): 0.5 rounds to 1%, as the progress rule rounds it.
+    expect(rows.map(row => [row.taskName, row.percentComplete])).toEqual([['Pour slab', 1], ['Roofing', 75], ['Paint', 1]]);
     const done = normalizeMicrosoftProjectPdfRows({
       contents: [
         'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete',

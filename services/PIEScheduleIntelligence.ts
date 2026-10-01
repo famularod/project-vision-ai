@@ -702,7 +702,13 @@ function fractionValue(value: string): number | null {
  * about the rest; when every other number is a plain one from 0 to 1, the
  * column is fractions: 0.4 is 40%, 1 and 1.0 are 100%, 0 is 0%. A column
  * with any number above 1 is percents throughout: 0.5 there is half a
- * percent, read as the percent column reads it (0%), never as 50%.
+ * percent, read as the percent column reads it, never as 50%.
+ *
+ * Whole-app audit A5 pass 8 L4 (30 Sep 2026): the percent reading took the
+ * first digits it found, so ".5" read 5% and ".25" read 25% where "0.5" read
+ * 0%, and "99.6" was cut to 99%. A percent cell's number is now read whole
+ * and rounded as the progress rule rounds it (reconcileScheduleProgress):
+ * ".5" and "0.5" are 1%, ".25" is 0%, "99.6" is 100%.
  */
 function percentColumnReadsAsFractions(values: readonly string[]): boolean {
   const numbers = values.filter(value => /\d/.test(value) && !value.includes('%'));
@@ -712,9 +718,9 @@ function percentColumnReadsAsFractions(values: readonly string[]): boolean {
 function normalizePercent(value: string, status: ScheduleStatus, fractions = false) {
   const fraction = fractionValue(value);
   if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
-  const match = value.match(/(\d{1,3})\s*%?/);
+  const match = value.match(/(\d*\.\d+|\d+)/);
 
-  if (match) return clamp(Number(match[1]), 0, 100);
+  if (match) return clamp(Math.round(Number(match[1])), 0, 100);
   if (status === 'Complete') return 100;
 
   return 0;
