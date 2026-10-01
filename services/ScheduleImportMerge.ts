@@ -464,9 +464,14 @@ function pairSameNamedTasks(
   if (rows.length === 1 && saved.length === 1) return new Map([[rows[0], saved[0]]]);
   if (lookahead) return pairByNearestDays(rows, saved);
   if (rows.length === saved.length) return pairAsMany(rows, saved, inFile);
+  // Whole-app audit A5 pass 19 L3 (1 Oct 2026): every row on a different saved twin's exact days pairs by
+  // its days first. Leaving out a twin only a lookahead added ran before, so a master that dropped phase 1
+  // and listed phases 2 and 3 on their days gave phase 1's 100% to phase 2, and 10/29 showed twice.
+  const onSameDays = pairOnSameDays(rows, saved, inFile);
+  if (onSameDays.size === rows.length) return onSameDays;
   const statedByMaster = saved.filter(item => !addedByLookahead(item));
   if (statedByMaster.length === rows.length && statedByMaster.length < saved.length) return pairAsMany(rows, statedByMaster, inFile);
-  return pairOnSameDays(rows, saved, inFile);
+  return onSameDays;
 }
 
 /** As many rows as twins (a master's, or Set Active's): see pairSameNamedTasks. */

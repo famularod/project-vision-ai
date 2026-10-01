@@ -238,3 +238,36 @@ describe('A5 p19 L2: an old task known only by its file name shows once after a 
     expect(copies(back)).toEqual([['legacy-pour', '10/01/2026', '10/05/2026', 40]]);
   });
 });
+
+/**
+ * L3 (caused by 7663b54): master F has phase 1 at 100% and phase 2; a rolling
+ * lookahead adds phase 3 on 10/29; master G drops phase 1 and lists phases 2
+ * and 3 on their exact days. The shortcut that leaves out a twin only a
+ * lookahead added (to even the counts) ran before any same-day pairing: phase
+ * 2 took phase 1's 100% and 10/29 showed twice.
+ */
+describe('A5 p19 L3: rows on a different saved twin\'s exact days pair by days before the count shortcut', () => {
+  const L = schedule('LOOKAHEAD L', '2026-09-24T12:00:00.000Z', 'lookahead');
+  const PHASE_2 = 'Pour slab,Alpha,Lot,10/22/2026,10/24/2026,';
+  const PHASE_3 = 'Pour slab,Alpha,Lot,10/29/2026,10/31/2026,';
+  const onF = record(approve(EMPTY, F, rows(F, ['Pour slab,Alpha,Lot,10/01/2026,10/03/2026,', PHASE_2, FRAMING])), 'MASTER F-1', 100, '2026-09-22T15:00:00.000Z');
+
+  it('the lookahead lists phases 2 and 3: G\'s phase 2 stays at 0%, 10/29 shows once', () => {
+    const rolling = approveLookahead(onF, L, rows(L, [PHASE_2, PHASE_3]));
+    const state = approve(rolling, G, rows(G, [PHASE_2, PHASE_3, FRAMING]));
+    expect(copies(state).map(([id, start, , percent]) => [id, start, percent])).toEqual([
+      ['MASTER F-2', '10/22/2026', 0],
+      ['LOOKAHEAD L-2', '10/29/2026', 0],
+    ]);
+  });
+
+  it('rows that land on no twin\'s days still leave out the lookahead\'s own twin (A5 p18 F3, unchanged guard)', () => {
+    const rolling = approveLookahead(onF, L, rows(L, [PHASE_2, PHASE_3]));
+    const state = approve(rolling, G, rows(G, ['Pour slab,Alpha,Lot,10/03/2026,10/05/2026,', 'Pour slab,Alpha,Lot,10/23/2026,10/25/2026,', FRAMING]));
+    expect(copies(state).map(([id, start, , percent]) => [id, start, percent])).toEqual([
+      ['MASTER G-1', '10/03/2026', 100],
+      ['MASTER G-2', '10/23/2026', 0],
+      ['LOOKAHEAD L-2', '10/29/2026', 0],
+    ]);
+  });
+});
