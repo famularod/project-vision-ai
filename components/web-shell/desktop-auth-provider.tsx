@@ -475,17 +475,20 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const userId = daveWebSupabaseGateway.storedSignInUserId();
     await daveWebSupabaseGateway.signOut(scope);
     clearSessionView();
-    // Every other tab of this account in this browser signs out too, so
+    // The other tabs of this account open in this browser sign out too, so
     // "This Computer" is this computer's browser, not this one tab: the
     // other tabs had gone to the sign-in page while still signed in, and a
     // reload showed his projects again (whole-app audit A12 pass 5 L2).
     // Only a sign-out he chose says so; the automatic not-owner sign-out
-    // does not.
+    // does not. Only tabs running now hear it: a tab closed or asleep
+    // (Chrome's Memory Saver, Reopen Closed Tab) keeps its sign-in, as the
+    // sign-out choice and the sign-in page say (A12 pass 6 L2).
     if (userId) {
       try {
         signOutChannelRef.current?.postMessage({ type: SIGNED_OUT_OF_THIS_COMPUTER, userId });
       } catch {
-        // A closed channel: the other tabs end their sign-ins when they next check.
+        // A closed channel: the other tabs are not told, and keep their
+        // sign-ins until they sign out there (A12 pass 6 L2).
       }
     }
   }, [clearSessionView]);

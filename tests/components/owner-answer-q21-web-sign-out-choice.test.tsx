@@ -100,10 +100,14 @@ test('Sign out asks which devices and says what each choice does', () => {
   const screen = openSignOutChoice();
   expect(screen.getByText('Sign out of which devices?')).toBeTruthy();
   // Changed 30 Sep 2026 (whole-app audit A12 pass 5 L2): This Computer now
-  // also says it signs out every tab in this browser, as it now does.
+  // also says it signs out the other tabs in this browser, as it now does.
+  // Changed again 30 Sep 2026 (A12 pass 6 L2): only the tabs open and
+  // running hear it; a tab closed or asleep then (Chrome's Memory Saver,
+  // Reopen Closed Tab) keeps its sign-in, so it no longer says "every tab".
   expect(screen.getByText(
-    'This Computer: every Vitruvius tab in this browser is signed out. Your iPhone and iPad stay signed in.',
+    'This Computer: the Vitruvius tabs open in this browser are signed out. Your iPhone and iPad stay signed in. A tab closed or asleep now may still be signed in when you reopen it; sign out there too.',
   )).toBeTruthy();
+  expect(screen.queryByText(/every Vitruvius tab/)).toBeNull();
   expect(screen.getByText(
     'All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.',
   )).toBeTruthy();
@@ -153,4 +157,19 @@ test('a sign-out that did not finish says so instead of nothing', async () => {
   await waitFor(() => expect(screen.getByText(
     'Sign out did not finish. Check the internet connection and try again.',
   )).toBeTruthy());
+});
+
+test('the sign-in page says the same about the other tabs (A12 pass 6 L2)', () => {
+  const ready = { phase: mockAuth.phase, snapshot: mockAuth.snapshot, userEmail: mockAuth.userEmail };
+  Object.assign(mockAuth, { phase: 'signed_out', snapshot: null, userEmail: null });
+  try {
+    const screen = render(<DesktopReadOnlyShell page="settings" />);
+    expect(screen.getByLabelText('Password')).toBeTruthy();
+    expect(screen.getByText(
+      'The session is limited to this browser tab. Signing out in any tab signs out the Vitruvius tabs open in this browser; a tab closed or asleep at that moment may still be signed in when you reopen it, so sign out there too.',
+    )).toBeTruthy();
+    expect(screen.queryByText(/every Vitruvius tab/)).toBeNull();
+  } finally {
+    Object.assign(mockAuth, ready);
+  }
 });

@@ -356,8 +356,9 @@ function DesktopSessionGate() {
             </Pressable>
           </>
         )}
+        {/* Only the tabs open then hear a sign-out (whole-app audit A12 pass 6 L2, 30 Sep 2026). */}
         <Text style={styles.sessionNote}>
-          The session is limited to this browser tab and is removed when the tab closes. Signing out in any tab signs out every Vitruvius tab in this browser.
+          The session is limited to this browser tab. Signing out in any tab signs out the Vitruvius tabs open in this browser; a tab closed or asleep at that moment may still be signed in when you reopen it, so sign out there too.
         </Text>
       </View>
     </ScrollView>
@@ -6069,8 +6070,10 @@ function ReportWorkspace({
  * Owner answer Q21 (30 Sep 2026): Sign out asks which devices. Every sign-out
  * used to end the iPhone's and iPad's sign-ins as well. Signing out every
  * device needs the cloud; without it nothing is signed out and he is told.
- * Either choice signs out every tab of his account in this browser (whole-app
- * audit A12 pass 5 L2), which the This Computer line says.
+ * Either choice signs out the other tabs of his account open in this browser
+ * (whole-app audit A12 pass 5 L2). Only tabs running then hear it: a tab
+ * closed or asleep (Chrome's Memory Saver, Reopen Closed Tab) keeps its
+ * sign-in, which the This Computer line now says (A12 pass 6 L2).
  */
 function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
@@ -6098,7 +6101,7 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
     <View style={styles.deleteConfirm} accessibilityRole="alert">
       <View style={styles.dataGrow}>
         <Text style={styles.deleteConfirmTitle}>Sign out of which devices?</Text>
-        <Text style={styles.dataMeta}>This Computer: every Vitruvius tab in this browser is signed out. Your iPhone and iPad stay signed in.</Text>
+        <Text style={styles.dataMeta}>This Computer: the Vitruvius tabs open in this browser are signed out. Your iPhone and iPad stay signed in. A tab closed or asleep now may still be signed in when you reopen it; sign out there too.</Text>
         <Text style={styles.dataMeta}>
           All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.
         </Text>

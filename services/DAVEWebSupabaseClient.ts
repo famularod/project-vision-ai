@@ -480,8 +480,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     /**
      * Another tab of this browser signed this same account out of this
      * computer (or of all devices): this tab's own sign-in ends too, so
-     * "Sign Out of This Computer" signs out every tab, and a reload does not
-     * show his projects again (whole-app audit A12 pass 5 L2, 30 Sep 2026).
+     * "Sign Out of This Computer" signs out the tabs open and running then,
+     * and a reload does not show his projects again (whole-app audit A12
+     * pass 5 L2, 30 Sep 2026). A tab closed or asleep then is not told and
+     * keeps its sign-in (A12 pass 6 L2).
      * Ended on the server when it can be reached, and taken out of this
      * tab's storage either way. Another account's sign-in is left alone,
      * and a tab holding none sends nothing, so tabs never answer each
