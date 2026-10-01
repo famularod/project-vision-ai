@@ -686,7 +686,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -11668,7 +11668,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
                 restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); });
-                dropDeletedPredecessors([...deletedItemIds]); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026))
+                dropDeletedPredecessors([...deletedItemIds], updated); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026)); a link moves to the task shown that answers to its removed row (A6 pass 14 L1)
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
                   ...relatedScheduleItems.map(item =>
@@ -11930,9 +11930,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setOperationalSyncTombstones(next);
   }
 
-  /** Surviving tasks drop the deleted ones from their dependencies, through the normal task update (audit A5; batch A5 pass 3 F7). */
-  function dropDeletedPredecessors(deletedItemIds: readonly string[]) {
-    dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, deletedItemIds).forEach(change => {
+  /** Surviving tasks drop the deleted ones from their dependencies, through the normal task update (audit A5; batch A5 pass 3 F7); after a schedule's delete (schedulesAfter), a link moves to the task shown that answers to its removed row, dropped only when none does (A6 pass 14 L1). */
+  function dropDeletedPredecessors(deletedItemIds: readonly string[], schedulesAfter?: readonly ReferenceDocument[]) {
+    (schedulesAfter ? scheduleDependenciesAfterScheduleDeleted(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], deletedItemIds, schedulesAfter) : dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, deletedItemIds)).forEach(change => {
       scheduleItemSyncWarningsRef.current.add(change.id); // no alert per successor offline (A5 pass 2)
       updateScheduleItem(change.id, { dependencies: change.dependencies });
     });

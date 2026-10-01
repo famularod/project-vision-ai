@@ -271,6 +271,9 @@ describe('deleting a task', () => {
     // Pin changed deliberately (A10 pass 7 L5, 30 Sep 2026): a task delete also removes the hidden rows the
     // task answers to (itemIds), and drops all of them from the successors' dependencies.
     expect(app).toMatch(/setScheduleItems\(prev => prev\.filter\(scheduleItem => !itemIds\.includes\(scheduleItem\.id\)\)\);\n\s+dropDeletedPredecessors\(itemIds\);/);
-    expect(app).toMatch(/function dropDeletedPredecessors\(deletedItemIds: readonly string\[\]\) \{\n\s+dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, deletedItemIds\)\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
+    // Pin changed deliberately (A6 pass 14 L1, 1 Oct 2026): "Delete PDF + Items" passes the schedules left
+    // (schedulesAfter), and a link to a removed row then moves to the task shown that answers to it; a task's
+    // own delete passes none and drops the links as before.
+    expect(app).toMatch(/function dropDeletedPredecessors\(deletedItemIds: readonly string\[\], schedulesAfter\?: readonly ReferenceDocument\[\]\) \{\n\s+\(schedulesAfter \? scheduleDependenciesAfterScheduleDeleted\([^\n]*\) : dependencyChangesForDeletedTask\(scheduleItemsCurrentRef\.current, deletedItemIds\)\)\.forEach\(change => \{\n\s+scheduleItemSyncWarningsRef\.current\.add\(change\.id\);[^\n]*\n\s+updateScheduleItem\(change\.id, \{ dependencies: change\.dependencies \}\);\n\s+\}\);/);
   });
 });

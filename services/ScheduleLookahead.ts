@@ -1,4 +1,4 @@
-import type { ReferenceDocument, ScheduleItem, ScheduleLookaheadOverlay } from '../types';
+import type { ReferenceDocument, ScheduleDependency, ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
@@ -18,7 +18,7 @@ import {
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
-import { scheduleTaskProjectKey, scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
+import { scheduleTaskLinks, scheduleTaskProjectKey, scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
 
 /**
  * Owner answer Q22 (30 Sep 2026): "a shorter schedule should be made to
@@ -551,6 +551,52 @@ export function scheduleItemsAfterScheduleDeleted({
   scheduleTasksAnsweringToRemovedTasks(shown, removed, kept, schedules, progressOfRemovedRow)
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   return [...changed.values()];
+}
+
+/**
+ * The links "Delete PDF + Items" changes on the tasks it keeps, each task's
+ * new list of predecessors (whole-app audit A6 pass 14 L1, 1 Oct 2026).
+ *
+ * David linked Roofing after Framing while master F was current; master M
+ * moved Framing onto a new row, and Roofing's link still pointed at F's,
+ * now hidden. Deleting F with its items dropped the link and stamped
+ * Roofing, so its predecessor count went from 1 to 0 and the next report
+ * said "Alpha: Roofing was updated." with nothing visible changed. A link to
+ * a removed row now moves to the task shown that answers to that row after
+ * the delete (scheduleTaskLinks, as field updates on the row are linked: M's
+ * Framing, which lists F's row as earlier, or the task the delete wrote the
+ * row's id onto), keeping its type and lag. It is dropped only when no task
+ * shown answers to the row (or two could), and never doubles a link the
+ * task has or points a task at itself.
+ */
+export function scheduleDependenciesAfterScheduleDeleted(
+  /** The saved tasks after the delete, its changes included (scheduleItemsAfterScheduleDeleted). */
+  items: readonly ScheduleItem[],
+  removedIds: readonly string[],
+  /** The schedules saved after the delete. */
+  documents: readonly ReferenceDocument[],
+): Array<{ id: string; dependencies: ScheduleDependency[] }> {
+  const removed = new Set(removedIds.map(id => id.trim()).filter(Boolean));
+  const predecessorOf = (link: ScheduleDependency) =>
+    typeof link?.predecessorItemId === 'string' ? link.predecessorItemId.trim() : '';
+  const linksOf = (item: ScheduleItem) => (Array.isArray(item.dependencies) ? item.dependencies : []);
+  const hit = items.filter(item => !removed.has(item.id.trim()) && linksOf(item).some(link => removed.has(predecessorOf(link))));
+  if (hit.length === 0) return [];
+  const answering = scheduleTaskLinks(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }), items);
+  return hit.map(item => {
+    const own = item.id.trim();
+    const linked = new Set(linksOf(item).map(predecessorOf).filter(id => !removed.has(id)));
+    const dependencies = linksOf(item).flatMap(link => {
+      const id = predecessorOf(link);
+      if (!removed.has(id)) return [link];
+      const now = answering({ scheduleItemId: id })?.item.id;
+      const nowId = now?.trim() ?? '';
+      if (!now || !nowId || removed.has(nowId) || nowId === own || linked.has(nowId)) return [];
+      linked.add(nowId);
+      return [{ ...link, predecessorItemId: now }];
+    });
+    return { id: item.id, dependencies };
+  });
 }
 
 /**

@@ -10,7 +10,7 @@
 import { dependencyChangesForDeletedTask } from '../../services/VitruviusScheduleEngine';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -59,6 +59,9 @@ function harness(items: ScheduleItem[], documents: ReferenceDocument[]) {
     // Owner answer Q22 (landed after this test): a deleted lookahead's master tasks go back to their dates.
     // A10 pass 6 M1: the delete's other saves (lookahead give-backs, removed ids on the moved tasks) come from one service now.
     scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, syncScheduleItemRevision: noop,
+    // Pin changed deliberately (A6 pass 14 L1, 1 Oct 2026): a link to a removed row moves to the task shown that
+    // answers to it, dropped only when none does (none here, so the drops below are unchanged).
+    scheduleDependenciesAfterScheduleDeleted,
     Alert: { alert: (_title: string, _message: string, options: typeof buttons) => { buttons = options; } },
     recordDAVESyncTombstones: async (list: unknown[]) => list,
     advanceScheduleItemSyncGeneration: noop, cancelScheduleItemTextSync: noop, rememberOperationalTombstones: noop,
