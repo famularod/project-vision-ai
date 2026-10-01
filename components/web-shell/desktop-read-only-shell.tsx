@@ -58,7 +58,10 @@ import {
   scheduleDocumentIsScheduleLike,
 } from '../../services/PIEScheduleReconciliation';
 import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
-import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
+import {
+  formatScheduleCalendarDay,
+  scheduleCalendarDay,
+} from '../../services/ScheduleCalendarDay';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -2746,9 +2749,9 @@ function TaskList({
             <View style={styles.taskCompactFacts}>
               <Text style={styles.dataDetail}>{task.percentComplete}% complete</Text>
               <Text style={styles.taskFactDivider}>•</Text>
-              <Text style={styles.dataDetail}>Start {formatDate(task.startDate)}</Text>
+              <Text style={styles.dataDetail}>Start {formatCalendarDate(task.startDate)}</Text>
               <Text style={styles.taskFactDivider}>•</Text>
-              <Text style={styles.dataDetail}>Finish / Due {formatDate(task.finishDate)}</Text>
+              <Text style={styles.dataDetail}>Finish / Due {formatCalendarDate(task.finishDate)}</Text>
               <Text style={styles.taskFactDivider}>•</Text>
               <Text style={styles.dataDetail}>{task.priority} priority</Text>
               {task.owner ? (
@@ -2857,8 +2860,8 @@ function TaskDetailsPanel({
       </View>
 
       <View style={styles.taskDetailsFacts}>
-        <TaskDetailFact label="Start" value={formatDate(task.startDate)} />
-        <TaskDetailFact label="Finish / due" value={formatDate(task.finishDate)} />
+        <TaskDetailFact label="Start" value={formatCalendarDate(task.startDate)} />
+        <TaskDetailFact label="Finish / due" value={formatCalendarDate(task.finishDate)} />
         <TaskDetailFact label="Owner" value={task.owner || 'Unassigned'} />
         <TaskDetailFact label="Contractor" value={task.contractor || 'Not assigned'} />
       </View>
@@ -4466,7 +4469,7 @@ function DocumentManagementWorkspace({
                         <View style={styles.dataGrow}>
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
                           <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
-                          <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatDate(item.finishDate)}</Text>
+                          <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
                           {uploadProjects.length > 1 ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
@@ -6977,10 +6980,20 @@ function formatDesktopDate(date: Date): string {
   });
 }
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return 'No date';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+/**
+ * A task's start, finish / due or other plain-day date as text: the
+ * calendar day it names, read as the date boxes read it, with no time-zone
+ * shift; text that names no day ("TBD", "Week 41") as written. Timestamps
+ * (created, updated, recorded, imported) use formatDateTime.
+ *
+ * Whole-app audit A12 pass 4 residual R1 (30 Sep 2026): this had used the
+ * browser's date parser, so 2026-10-05, the form older web builder saves
+ * wrote, showed as 4 Oct on David's Pacific-time computer (anywhere west of
+ * UTC), and "Week 41" as 1 Jan 2041.
+ */
+function formatCalendarDate(value: string | null | undefined): string {
+  if (!value?.trim()) return 'No date';
+  return formatScheduleCalendarDay(value) ?? value.trim();
 }
 
 /**

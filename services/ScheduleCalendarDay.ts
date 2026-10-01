@@ -33,6 +33,25 @@ export function scheduleCalendarDay(value: unknown): string | null {
 }
 
 /**
+ * A schedule date shown as this computer writes a day (10/5/2026 in the
+ * US), or null when it names no day (scheduleCalendarDay). For plain days
+ * only (start, finish, baseline and due dates), never for timestamps.
+ *
+ * Whole-app audit A12 pass 4 residual R1 (30 Sep 2026): the web's Tasks page
+ * showed these through the browser's date parser, which takes 2026-10-05 as
+ * midnight UTC, so west of UTC (David's Pacific time) it showed 4 Oct, and
+ * reads "Week 41" as 1 Jan 2041. The day is formatted in UTC from its own
+ * year, month and day, so no time zone moves it.
+ */
+export function formatScheduleCalendarDay(value: unknown): string | null {
+  const day = scheduleCalendarDay(value);
+  if (!day) return null;
+  const [year, month, dayOfMonth] = day.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, dayOfMonth))
+    .toLocaleDateString(undefined, { timeZone: 'UTC' });
+}
+
+/**
  * Whole-app audit A12 M2, schedule side (30 Sep 2026): the web schedule
  * builder saves a task's dates as 2026-10-05, files and the phone as
  * 10/05/2026, so a revised upload compared them as text, found every such
