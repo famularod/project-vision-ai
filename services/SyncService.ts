@@ -4757,6 +4757,19 @@ async function uploadExactQueueItem(
   return { landed, error: landed ? null : remaining?.lastError || result.errors[0] || null };
 }
 
+/**
+ * The cloud's row for a task as it is now (whole-app audit A8 pass 12 L2);
+ * null when the cloud has none. sync_conflict_cloud_copy_unreadable when the
+ * cloud cannot be read.
+ */
+async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | null> {
+  const cloud = await listScheduleItems();
+  if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
+    throw new Error('sync_conflict_cloud_copy_unreadable');
+  }
+  return cloud.data.find(item => item.id === itemId) ?? null;
+}
+
 export async function resolveScheduleItemSyncConflict(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
@@ -4785,14 +4798,20 @@ export async function resolveScheduleItemSyncConflict(
   const localItem = localPayload.itemData;
 
   if (resolution === 'keep_cloud') {
-    if (!isRecord(conflict.remotePayload)) {
-      throw new Error('sync_conflict_cloud_copy_missing');
+    // The cloud's row as it is now, read before this phone's waiting work is
+    // withdrawn (whole-app audit A8 pass 12 L2, as for field updates, A4
+    // pass 12 L1 and pass 16 L3). Keep Cloud wrote back the copy saved when
+    // the conflict was found, over an earlier task id a web delete handed the
+    // task since and the progress David entered on the web. A cloud that
+    // cannot be read changes nothing; a task the cloud no longer has is not
+    // written back, and its conflict is closed.
+    const cloudItem = await currentCloudScheduleItem(conflict.localId);
+    if (!cloudItem) {
+      await clearScheduleItemSyncConflicts(conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
     }
-
-    const cloudItem = conflict.remotePayload as ScheduleItem;
-    // Remove both the conflict-era edit and any newer queued local revision.
-    // Waiting for the active uploader before restoring the selected cloud copy
-    // prevents an older in-flight task snapshot from winning afterward.
+    // Remove both the conflict-era edit and any newer queued local revision,
+    // around any upload of this phone's already under way.
     await removeOperationalRecordFromSyncQueue(
       'schedule_item',
       conflict.localId,
@@ -4802,14 +4821,32 @@ export async function resolveScheduleItemSyncConflict(
       'schedule_item',
       conflict.localId,
     );
-    const restore = await upsertScheduleItem(cloudItem);
-    if (!restore.ok || restore.stubbed) {
-      throw new Error(
-        restore.error || restore.message || 'sync_conflict_save_failed',
-      );
+    // Read again now: an edit from another device that landed meanwhile is the
+    // cloud's too. The first read stands in when this one fails.
+    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    if (reread === null) {
+      await clearScheduleItemSyncConflicts(conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
+    }
+    const cloudNow = reread ?? cloudItem;
+    // The cloud already holds its own copy, so nothing is written back, unless
+    // an upload of this phone's, under way when David chose, landed a phone
+    // edit he discarded since the first read (its landing closes the
+    // conflict): the copy read before it goes back.
+    const phoneEditLanded = !(await getSyncConflicts()).some(item =>
+      item.entity === 'schedule_item' && item.localId === conflict.localId);
+    if (phoneEditLanded && JSON.stringify(cloudNow) !== JSON.stringify(cloudItem)) {
+      const restore = await upsertScheduleItem(cloudItem);
+      if (!restore.ok || restore.stubbed) {
+        throw new Error(
+          restore.error || restore.message || 'sync_conflict_save_failed',
+        );
+      }
+      await clearResolvedConflict(conflict.id);
+      return cloudItem;
     }
     await clearResolvedConflict(conflict.id);
-    return cloudItem;
+    return cloudNow;
   }
 
   if (!localItem || typeof localItem.id !== 'string') {

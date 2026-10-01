@@ -1817,6 +1817,148 @@ describe('offline upload deletion barriers', () => {
     });
   });
 
+  // Whole-app audit A8 pass 12 L2 (1 Oct 2026): Keep Cloud on a task wrote
+  // back the cloud's copy saved when the conflict was found. An earlier task
+  // id a web delete handed the task since (row W), and the 50% David entered
+  // on the web, were lost. Keep Cloud now keeps the cloud's row as it is now,
+  // and writes nothing back unless this phone's own upload put a discarded
+  // edit there while the choice ran.
+  describe('Keep Cloud keeps the cloud copy as it is now', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-cloud-current',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'Pour slab',
+      startDate: '2026-10-03',
+      finishDate: '2026-10-07',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'master-n.csv',
+      importBatchId: 'batch-n',
+      revisedFromTaskIds: ['row-a'],
+      createdAt: '2026-09-28T08:00:00.000Z',
+      updatedAt: '2026-09-28T09:00:00.000Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+    /** The cloud's task rows; null: the cloud cannot be read. */
+    let cloudRows: ScheduleItem[] | null = [];
+
+    beforeEach(() => {
+      cloudRows = [];
+      mockListScheduleItems.mockImplementation(() => Promise.resolve(cloudRows
+        ? cloudList(cloudRows)
+        : { ok: false, configured: true, stubbed: false, data: [] }));
+    });
+    afterEach(() => {
+      mockListScheduleItems.mockImplementation(() => Promise.resolve(cloudList([])));
+    });
+
+    async function conflictWithWebDelete() {
+      // The web deleted master M: its row X now answers to this task.
+      cloudRows = [{ ...phoneTask, notes: '', revisedFromTaskIds: ['row-x', 'row-a'], updatedAt: '2026-09-29T12:00:00.000Z' }];
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      expect(conflict).toBeDefined();
+      return conflict;
+    }
+
+    /** Meanwhile another web delete handed the task row W, and David entered 50% on the web. */
+    function cloudCopyNow(conflict: { remotePayload?: unknown }): ScheduleItem {
+      return {
+        ...(conflict.remotePayload as ScheduleItem),
+        revisedFromTaskIds: ['row-w', 'row-x', 'row-a'],
+        percentComplete: 50,
+        status: 'In Progress',
+        updatedAt: '2026-09-30T09:00:00.000Z',
+      };
+    }
+
+    it('keeps the earlier id and the 50% the web wrote since, and writes nothing back', async () => {
+      const conflict = await conflictWithWebDelete();
+      const current = cloudCopyNow(conflict);
+      cloudRows = [current];
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(current);
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    it('changes nothing when the cloud copy cannot be read', async () => {
+      const conflict = await conflictWithWebDelete();
+      await queueScheduleItemRecord(
+        { ...phoneTask, notes: 'A newer phone edit.', updatedAt: '2026-09-30T10:00:00.000Z' },
+        false,
+        ['notes', 'updatedAt'],
+      );
+      const queued = await getOfflineQueue();
+      cloudRows = null;
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'))
+        .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+      await expect(getOfflineQueue()).resolves.toEqual(queued);
+    });
+
+    it('closes the conflict, writing nothing, when the cloud no longer has the task', async () => {
+      const conflict = await conflictWithWebDelete();
+      cloudRows = [];
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'))
+        .rejects.toThrow('sync_conflict_record_deleted');
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+    });
+
+    it('puts the cloud copy back when an upload already under way lands a discarded phone edit during the choice', async () => {
+      const conflict = await conflictWithWebDelete();
+      const current = cloudCopyNow(conflict);
+      cloudRows = [current];
+      // A newer phone edit, which Keep Cloud discards, is on its way up when David chooses.
+      await queueScheduleItemRecord(
+        { ...phoneTask, notes: 'A newer phone edit.', updatedAt: '2026-09-30T10:00:00.000Z' },
+        false,
+        ['notes', 'updatedAt'],
+      );
+      let landEdit: () => void = () => undefined;
+      const landing = new Promise<void>(resolve => { landEdit = resolve; });
+      let editSending: () => void = () => undefined;
+      const sending = new Promise<void>(resolve => { editSending = resolve; });
+      mockUpsertScheduleItem.mockImplementationOnce(async (...args: unknown[]) => {
+        editSending();
+        await landing;
+        cloudRows = [args[0] as ScheduleItem];
+        return { ok: true, configured: true, stubbed: false };
+      });
+      const inFlight = uploadPendingChanges();
+      await sending;
+      // Keep Cloud reads the cloud before the edit lands; it lands, and that
+      // upload finishes, before Keep Cloud goes on.
+      mockListScheduleItems.mockImplementationOnce(async () => {
+        const answer = cloudList([current]);
+        landEdit();
+        await inFlight;
+        return answer;
+      });
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(current);
+      expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2);
+      expect(mockUpsertScheduleItem.mock.calls[0][0]).toMatchObject({ notes: 'A newer phone edit.' });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(current);
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+  });
+
   it('removes newer queued phone edits when the project manager keeps the cloud task copy', async () => {
     const localTask: ScheduleItem = {
       id: 'task-resolve-cloud',
@@ -1864,13 +2006,20 @@ describe('offline upload deletion barriers', () => {
       false,
       ['notes', 'updatedAt'],
     );
+    // Keep Cloud reads the cloud's row now, and again after withdrawing the
+    // phone's edits (A8 pass 12 L2).
+    mockListScheduleItems
+      .mockResolvedValueOnce({ ok: true, configured: true, stubbed: false, data: [cloudTask] })
+      .mockResolvedValueOnce({ ok: true, configured: true, stubbed: false, data: [cloudTask] });
 
     await expect(
       resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'),
     ).resolves.toEqual(cloudTask);
     await expect(getOfflineQueue()).resolves.toEqual([]);
     await expect(getSyncConflicts()).resolves.toEqual([]);
-    expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(cloudTask);
+    // Was: the conflict-time cloud copy written back. The cloud already holds
+    // its own copy, so Keep Cloud writes nothing (A8 pass 12 L2).
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
   });
 
   it('clears a stale task conflict instead of restoring a deleted task', async () => {
