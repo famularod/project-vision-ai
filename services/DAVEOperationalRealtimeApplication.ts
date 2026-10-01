@@ -14,7 +14,7 @@ import {
   scheduleDocumentIsScheduleLike,
 } from './PIEScheduleReconciliation';
 import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision';
-import { hasMatchingQueuedProjectUpdateRevision } from './ProjectUpdateQueueRevision';
+import { hasMatchingQueuedProjectUpdateRevision, withCarriedProjectUpdateEdits } from './ProjectUpdateQueueRevision';
 import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
 import { cloudCopyShownOnDevice, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
@@ -186,7 +186,8 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       const cloudRow = normalized as CloudProjectUpdate<OperationalProjectUpdate>;
       const cloudUpdate = options.normalizeUpdate(cloudRow.updateData);
       const localUpdate = state.updates.find(update => update.id === cloudUpdate.id);
-      if (localUpdate && hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue)) {
+      // An edit a queued patch carries holds the card too (A4 pass 24 L1).
+      if (localUpdate && hasMatchingQueuedProjectUpdateRevision(localUpdate, withCarriedProjectUpdateEdits(pendingQueue))) {
         return true;
       }
       const photos = cloudUpdate.photos.map(cloudPhoto =>
@@ -205,7 +206,7 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
       const freshLocal = fresh.updates.find(update => update.id === cloudUpdate.id);
-      if (freshLocal && hasMatchingQueuedProjectUpdateRevision(freshLocal, latestQueue)) return true;
+      if (freshLocal && hasMatchingQueuedProjectUpdateRevision(freshLocal, withCarriedProjectUpdateEdits(latestQueue))) return true;
       const deviceCopy = withLatestLocalPhotoTransport(
         previewReady,
         localUpdate,

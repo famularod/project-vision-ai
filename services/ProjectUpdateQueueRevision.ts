@@ -71,7 +71,7 @@ export function refreshKeepsLocalProjectUpdate(
   update: ProjectUpdate,
   queue: readonly SyncQueueItem[],
 ): boolean {
-  const withCarried = queue.flatMap(item => [item, ...carriedEdit(item)]);
+  const withCarried = withCarriedProjectUpdateEdits(queue);
   if (hasMatchingQueuedProjectUpdateRevision(update, withCarried)) return true;
   if (update.status !== 'queued' && update.status !== 'failed') return false;
   return withCarried.some(item => {
@@ -80,6 +80,17 @@ export function refreshKeepsLocalProjectUpdate(
     return payload.id === update.id && payload.archiveOnly !== true &&
       !queuedFieldUpdateDocumentPatches(item) && isProjectUpdateRecord(payload.updateData);
   });
+}
+
+/**
+ * The queue with each edit a queued item carries (newerEdit) beside it. The
+ * realtime applier matches against it too (whole-app audit A4 pass 24 L1):
+ * an echo of the iPad's save put its copy on the card as Sent over a held
+ * edit a late analysis's patch carried, the case A4 pass 23 L3 fixed for a
+ * refresh.
+ */
+export function withCarriedProjectUpdateEdits(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
+  return queue.flatMap(item => [item, ...carriedEdit(item)]);
 }
 
 /** The edit a queued item carries (newerEdit), as the queue item it goes back as. */

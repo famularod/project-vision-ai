@@ -121,6 +121,7 @@ import { resolveLegacyOwnedLocalFilePath } from '../../services/OwnedLocalFileRe
 import { mergeLocalUpdateWithCloudCopy } from '../../services/DAVECloudRecovery';
 import { hasMatchingQueuedProjectUpdateRevision, refreshKeepsLocalProjectUpdate } from '../../services/ProjectUpdateQueueRevision';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
+import { photoAnalysisFinishedAfterPatch } from '../../services/FieldUpdatePhotoAnalysisPatch';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from '../../services/ProjectPhotoTransport';
 import { normalizeStartupArray } from '../../services/StartupRecovery';
 import { withStoredPhotoComparisonCap } from '../../services/PhotoAssessment';
@@ -700,12 +701,12 @@ describe('the patch rules', () => {
 });
 
 /** A realtime echo of the cloud row, applied to the phone as the App commits it. */
-async function realtimeEcho(phone: Device, id = 'u1') {
+async function realtimeEcho(phone: Device, id = 'u1', getPendingQueue: typeof getOfflineQueue = getOfflineQueue) {
   const apply = createDAVEOperationalRealtimeApplier({
     isActive: () => true,
     snapshot: () => ({ projects: [], projectRecords: [], archivedProjects: [], deletedProjectNames: [], updates: phone.savedUpdatesRef.current,
       deletedUpdates: [], tombstones: [], areas: [], scheduleItems: [], documents: [] }) as never,
-    getPendingQueue: getOfflineQueue,
+    getPendingQueue,
     normalizeUpdate: A.normalizeStoredUpdateRecord as never, normalizeAreas: () => [], normalizeSchedule: () => [],
     normalizeDocuments: () => [], migrateSchedule: item => item, localPhotoUri: A.resolveProjectPhotoUri,
     mergeProjectNames: (names: string[]) => names, updateHasPendingLocalWork: A.updateNeedsAutomaticSyncRetry as never,
@@ -5236,5 +5237,130 @@ describe('this phone\'s earlier analysis patch is not put back over a newer resu
     expect(firstPhotoAnalysis(phone.saved())).toEqual(r2);
     expect(await getSyncConflicts()).toEqual([]);
     expect(await getOfflineQueue()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 24 L1 (older; the echo case of A4 pass 23 L3):
+ * the conflict is open and a newer edit is held; a late analysis turns its
+ * queue entry into a patch carrying that edit. A realtime echo of the
+ * iPad's row before the patch went up ignored the carried edit and put the
+ * iPad's copy on the card as Sent; after Keep Phone, the cloud and the card
+ * ended on the conflict's copy while "45 yards" sat unsent in the queue.
+ */
+describe('a realtime echo keeps the newer edit a late analysis\'s patch carries (audit A4 pass 24 L1)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('the echo comes before Keep Phone: the card keeps the newer edit, which then reaches the cloud and the card', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    expect((await queuedFor())?.payload).toMatchObject({
+      newerEdit: expect.objectContaining({ payload: expect.objectContaining({ updateData: expect.objectContaining({ notes: NEWER }) }) }),
+    });
+    await realtimeEcho(phone); // the iPad's row, before the patch goes up
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(phone.saved()?.status).not.toBe('sent');
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    await refresh(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('the save and the late result land while the echo loads its previews: the card keeps the newer edit', async () => {
+    const phone = await offlineEditInConflictWithIPad([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    // The card takes the save before its queue write lands, so the echo's
+    // first look at the queue does not match it; the queue write and the
+    // late result land during the echo's awaits.
+    const edited = { ...phone.saved()!, notes: NEWER, status: 'queued' };
+    phone.setSavedUpdates(prev => prev.map(update => update.id === 'u1' ? edited : update));
+    phone.render();
+    let reads = 0;
+    await realtimeEcho(phone, 'u1', async () => {
+      reads += 1;
+      if (reads === 2) {
+        await queueProjectUpdateRecord(edited, false);
+        lateAnalysisFinishes(phone, finishedAnalysis());
+        await phone.settle();
+      }
+      return getOfflineQueue();
+    });
+    expect(reads).toBe(2);
+    expect((await queuedFor())?.payload).toMatchObject({
+      newerEdit: expect.objectContaining({ payload: expect.objectContaining({ updateData: expect.objectContaining({ notes: NEWER }) }) }),
+    });
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(phone.saved()?.status).not.toBe('sent');
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 24 M1 (older, from A4 pass 14 #3; no conflict
+ * needed): a late analysis result went up as a patch; in the same session
+ * David opened Edit, Photos, marked the result Incorrect and saved. The edit
+ * went up with this phone's patch put back on it, and the patch's copy of
+ * the same result, with no mark, replaced the edit's: the cloud and the iPad
+ * never got the mark, and the card lost it at the next refresh. Only a
+ * Confirmed result feeds reports, so a confirmed finding dropped out of them.
+ */
+describe('David\'s review mark on a late result goes up with his edit (audit A4 pass 24 M1)', () => {
+  const marked = (update: Update, review: string) => (update.photos as Array<Record<string, unknown>>).map((photo, index) =>
+    index === 0 ? { ...photo, photoIntelligence: { ...(photo.photoIntelligence as object), userReview: review,
+      userReviewedAt: new Date().toISOString() } } : photo);
+
+  it.each(['incorrect', 'confirmed'])('marked %s: the cloud and the card keep the mark after a refresh', async review => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    await uploadPendingChanges();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { photos: marked(phone.saved()!, review) } as never);
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ ...result, userReview: review });
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ ...result, userReview: review });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('the same time is the same result; with no time on either side, the patch still goes on', () => {
+    const at = '2026-10-01T08:00:00.000Z';
+    const holding = (result: Record<string, unknown>) => ({ photos: [{ id: analyzingPhoto.id, photoIntelligence: result }] });
+    const patch = (result: Record<string, unknown>) => ({ photoId: analyzingPhoto.id, photoIntelligence: result }) as never;
+    expect(photoAnalysisFinishedAfterPatch(holding({ status: 'analysis_complete', updatedAt: at, userReview: 'confirmed' }),
+      patch({ status: 'analysis_complete', updatedAt: at }))).toBe(true);
+    expect(photoAnalysisFinishedAfterPatch(holding({ status: 'analysis_complete' }), patch({ status: 'analysis_complete' }))).toBe(false);
+    expect(photoAnalysisFinishedAfterPatch(holding({ status: 'analysis_complete' }),
+      patch({ status: 'analysis_complete', updatedAt: at }))).toBe(false);
+  });
+
+  it('a later retried result in the edit still wins over the earlier patch, as A4 pass 23 L2 has it', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const first = finishedAnalysis();
+    lateAnalysisFinishes(phone, first);
+    await phone.settle();
+    await uploadPendingChanges();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const later = { ...finishedAnalysis(), currentObservation: 'Rebar mat placed at column C5' };
+    await editAndSave(phone, { photos: (phone.saved()!.photos as Array<Record<string, unknown>>).map((photo, index) =>
+      index === 0 ? { ...photo, photoIntelligence: later } : photo) } as never);
+    await waitingUpdateSync(phone);
+    await uploadPendingChanges();
+    expect(firstPhotoAnalysis(inCloud())).toEqual(later);
   });
 });

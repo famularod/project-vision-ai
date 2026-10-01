@@ -91,7 +91,10 @@ export function withoutPhotoAnalysis(update: unknown): unknown {
 /**
  * Whether the update holds a result for the patch's photo that finished
  * later than the patch's (whole-app audit A4 pass 23 L2): by the results'
- * own times; a photo still analysing has none.
+ * own times; a photo still analysing has none. The same time is the same
+ * result, which the update may hold with David's review mark (Confirmed,
+ * Incorrect, Not useful) set in Edit: the patch's copy has none, and put
+ * back over the edit it wiped the mark (A4 pass 24 M1).
  */
 export function photoAnalysisFinishedAfterPatch(update: object, patch: FieldUpdatePhotoAnalysisPatch): boolean {
   const finishedAt = (analysis: unknown) => {
@@ -100,7 +103,8 @@ export function photoAnalysisFinishedAfterPatch(update: object, patch: FieldUpda
       ? Date.parse(typeof updatedAt === 'string' ? updatedAt : '') || 0 : null;
   };
   const held = finishedAt((update as UpdateWithPhotos).photos?.find(photo => photo?.id === patch.photoId)?.photoIntelligence);
-  return held !== null && held > (finishedAt(patch.photoIntelligence) ?? 0);
+  const patchAt = finishedAt(patch.photoIntelligence) ?? 0;
+  return held !== null && (held > patchAt || (patchAt > 0 && held === patchAt));
 }
 
 /** A later result for the same photo: its own, with what the earlier one cleared. */
