@@ -17,25 +17,51 @@
  * its saved row in the project filter too: the report links to no task, and
  * still to North's own ROOF DRAINS when a North master shows one.
  *
- * The web's Microsoft Project PDF upload and import plan, the phone's delete
- * helper, the shown-schedule pick, the deleted-task split and evidence
- * correlation. Synthetic data.
+ * L2 (older): A5 pass 14 L1's scenario (F, M, delete M while current, approve
+ * N; the report on M's row links to N's Pour slab), then "Delete PDF + Items"
+ * on F, the cleanup the dialog invites. The delete matched F's Pour slab to
+ * N's by name and gave N's row only F's id, never the M row F's row listed, so
+ * the report became "Historical evidence — linked task was deleted." and left
+ * every summary. Now the name match also hands N's row the ids F's row listed,
+ * as the answered path does (A8 pass 11 L1).
+ *
+ * Real CSV normalizer, the web's Microsoft Project PDF upload and import plan,
+ * the phone's merge, activation and delete helpers, the shown-schedule pick,
+ * the deleted-task split, reconciliation and evidence correlation. Synthetic
+ * data.
  */
 import type { DAVESyncTombstone, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 import { partitionProjectUpdatesByDeletedTask } from '../../services/DAVEDeletedTaskEvidence';
 import { buildDAVEEvidenceCorrelations } from '../../services/DAVEEvidenceCorrelation';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
-import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import { buildPIEScheduleReconciliation, scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
-import { scheduleTaskLinks } from '../../services/ScheduleTaskRevisions';
+import { scheduleTaskLinks, scheduleTasksAnsweringToRemovedTasks } from '../../services/ScheduleTaskRevisions';
+import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
 
 type State = { items: ScheduleItem[]; documents: ReferenceDocument[]; tombstones?: DAVESyncTombstone[] };
 const shown = (state: State) => selectAuthoritativeScheduleItems({ scheduleItems: state.items, scheduleDocuments: state.documents }) as ScheduleItem[];
+const named = (items: readonly ScheduleItem[], name: string) => items.find(item => item.taskName === name)!;
 const row = (state: State, id: string) => state.items.find(item => item.id === id);
+
+/** Approving a master merges its rows (paired with the rows shown) and makes it current (App.tsx). */
+function approve(state: State, source: ReferenceDocument, imported: ScheduleItem[]): State {
+  const merged = mergeApprovedScheduleImportItems({
+    existing: state.items, imported, completionMatch: () => null, mergeCompletion: item => item,
+    isCurrent: scheduleItemsVisibleBeforeImport(state.items, [...state.documents, source], source.importBatchId || ''), approvedAt: source.importedAt,
+  });
+  return {
+    items: [...merged.additions, ...merged.next],
+    documents: scheduleDocumentsAfterActivation(source, [...state.documents, source], 'project'),
+    tombstones: state.tombstones,
+  };
+}
 
 /** "Delete PDF + Items" as the phone does it (App.tsx), through the shared delete helper. */
 function deleteWithItems(state: State, document: ReferenceDocument, at: string): State {
@@ -206,5 +232,84 @@ describe('A5 p15 L1: a web-filed North report on a deleted North row never links
     expect(links({ ...webReport, scheduleItemId: 'row-nobody-lists' })).toBeNull();
     // Filed on the phone, its app project names the building.
     expect(links({ ...phoneReport, scheduleItemId: 'row-nobody-lists' })).toEqual({ item: n1Drains, basis: 'stored_task_name' });
+  });
+});
+
+describe('A5 p15 L2: deleting the old master after A5 p14 L1\'s scenario keeps the report current and linked', () => {
+  const schedule = (id: string, importedAt: string): ReferenceDocument => ({
+    id, name: id, originalFileName: `${id}.csv`, uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt,
+    projectId: null, projectName: 'Alpha', projectNames: ['Alpha'], importBatchId: `batch-${id}`,
+  }) as ReferenceDocument;
+  const F = schedule('MASTER F', '2026-08-31T12:00:00.000Z');
+  const M = schedule('MASTER M', '2026-09-26T08:00:00.000Z');
+  const N = schedule('MASTER N', '2026-09-30T14:00:00.000Z');
+  const DELETED_M_AT = '2026-09-30T12:00:00.000Z';
+  const DELETED_F_AT = '2026-10-01T09:00:00.000Z';
+  const NOW = new Date('2026-10-01T15:00:00.000Z');
+  function rows(source: ReferenceDocument, lines: string[]): ScheduleItem[] {
+    return (normalizeScheduleImport({
+      contents: ['Task,Project,Area,Start,Finish', ...lines].join('\n'), sourceName: source.originalFileName, mimeType: 'text/csv',
+      projects: ['Alpha'], now: new Date(source.importedAt),
+    }).items as ScheduleItem[]).map((item, index) => ({
+      ...item, id: `${source.id}-${index + 1}`, importBatchId: source.importBatchId, sourceDocumentId: source.id,
+    }));
+  }
+
+  const FRAMING = 'Framing,Alpha,Lot,10/10/2026,10/20/2026';
+  const onF = approve({ items: [], documents: [] }, F, rows(F, ['Pour slab,Alpha,Lot,10/01/2026,10/05/2026', FRAMING]));
+  const fPour = named(onF.items, 'Pour slab');
+  const onM = approve(onF, M, rows(M, ['Pour slab,Alpha,Lot,10/02/2026,10/06/2026', FRAMING]));
+  const mPour = named(shown(onM), 'Pour slab');
+  const onN = approve(deleteWithItems(onM, M, DELETED_M_AT), N, rows(N, ['Pour slab,Alpha,Lot,10/03/2026,10/07/2026', FRAMING]));
+  const nPour = named(shown(onN), 'Pour slab');
+  // The cleanup the dialog invites: "Delete PDF + Items" on F.
+  const cleaned = deleteWithItems(onN, F, DELETED_F_AT);
+
+  const report: ProjectUpdate = {
+    id: 'u-pour-complete', projectName: 'Alpha', scheduleProjectName: 'Alpha', date: '2026-09-29T16:00:00.000Z', photos: [],
+    recipients: { contactIds: [] }, notes: 'Pour slab is complete.', scheduleItemId: mPour.id, scheduleTaskName: 'Pour slab',
+    selectedAreaName: 'Lot',
+  } as ProjectUpdate;
+
+  it('the scenario: before the cleanup the report links to N\'s Pour slab by name (A5 p14 L1); the cleanup removes F\'s Pour slab', () => {
+    expect(row(onN, fPour.id)!.revisedFromTaskIds).toEqual([mPour.id]);
+    expect(nPour.revisedFromTaskIds).toBeUndefined();
+    expect(scheduleTaskLinks(shown(onN), onN.items)(report)).toEqual({ item: nPour, basis: 'stored_task_name' });
+    expect(cleaned.tombstones!.map(entry => entry.recordId)).toContain(fPour.id);
+    expect(row(cleaned, fPour.id)).toBeUndefined();
+  });
+
+  it('the cleanup hands N\'s Pour slab F\'s row id and the M row F\'s row listed', () => {
+    expect(row(cleaned, nPour.id)!.revisedFromTaskIds).toEqual([fPour.id, mPour.id]);
+  });
+
+  it('the report stays current evidence (it was "Historical evidence — linked task was deleted.") and links to N\'s Pour slab', () => {
+    const split = partitionProjectUpdatesByDeletedTask([report], cleaned.tombstones!, update => update, { scheduleItems: cleaned.items });
+    expect(split.historical).toEqual([]);
+    expect(split.active.map(update => update.id)).toEqual([report.id]);
+    expect(scheduleTaskLinks(shown(cleaned), cleaned.items)(report)).toEqual({ item: row(cleaned, nPour.id), basis: 'earlier_task_id' });
+  });
+
+  it('reconciliation and evidence correlation still count the report for N\'s Pour slab', () => {
+    const split = partitionProjectUpdatesByDeletedTask([report], cleaned.tombstones!, update => update, { scheduleItems: cleaned.items });
+    const reconciliation = buildPIEScheduleReconciliation({
+      scheduleItems: shown(cleaned), knownScheduleItems: cleaned.items, updates: split.active, projectName: 'Alpha', now: NOW,
+    });
+    expect(reconciliation.matches.filter(match => match.updateId === report.id).map(match => match.scheduleItemId)).toEqual([nPour.id]);
+    expect(reconciliation.warnings.filter(warning => warning.scheduleItemId === nPour.id).map(warning => warning.title))
+      .not.toContain('Scheduled work lacks recent field evidence');
+    const correlation = buildDAVEEvidenceCorrelations({
+      scheduleItems: shown(cleaned), knownScheduleItems: cleaned.items, updates: split.active, now: NOW.toISOString(),
+    });
+    expect(correlation.tasks.find(task => task.taskId === nPour.id)!.conclusion).not.toBe('schedule_only');
+  });
+
+  it('the delete helper alone: N\'s row takes F\'s id and the M row F\'s row listed; a task of F\'s own schedule takes nothing', () => {
+    const removed = { ...fPour, revisedFromTaskIds: [mPour.id] } as ScheduleItem;
+    expect(scheduleTasksAnsweringToRemovedTasks([nPour], [removed], [nPour]).map(item => [item.id, item.revisedFromTaskIds]))
+      .toEqual([[nPour.id, [fPour.id, mPour.id]]]);
+    // F's own sibling never takes them (A8 pass 8 L1).
+    const sibling = { ...nPour, id: 'F-sibling', importBatchId: F.importBatchId, sourceDocumentId: F.id } as ScheduleItem;
+    expect(scheduleTasksAnsweringToRemovedTasks([sibling], [removed], [sibling])).toEqual([]);
   });
 });

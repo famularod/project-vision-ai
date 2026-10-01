@@ -444,6 +444,13 @@ function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
  * that answers to one of them (Y lists A). And a removed row a task shown
  * already answers to hands that task its own earlier ids (deleting F gives Y
  * the X that A recorded).
+ *
+ * Whole-app audit A5 pass 15 L2 (1 Oct 2026): F, then M (moving Pour slab),
+ * then Delete PDF + Items on M while current (F's hidden row took M's row
+ * id), then N; a report on M's row linked to N's Pour slab by name. Deleting
+ * F too matched F's Pour slab to N's by name and gave N's row only F's id,
+ * not the M row F's row listed: the report became "Historical evidence —
+ * linked task was deleted." The name match now hands over those ids as well.
  */
 export function scheduleTasksAnsweringToRemovedTasks(
   shown: readonly ScheduleItem[],
@@ -512,7 +519,8 @@ export function scheduleTasksAnsweringToRemovedTasks(
     if (scheduleItemImportBatchIds(matches[0]).length === 0 || leftOutBetween(gone, matches[0])) return;
     const ownRows = new Set((savedNamed.get(nameAndProject(gone)) || []).filter(item => inSchedule(item) && sameRemovedTask(item, gone)));
     if (ownRows.size !== 1) return;
-    add(matches[0], goneId);
+    // With the rows the removed row listed (A5 pass 15 L2), as the answered path above (A8 pass 11 L1).
+    add(matches[0], goneId, ...earlierIds.filter(id => !shownById.has(id)));
   });
   return [...added.entries()].map(([item, ids]) => ({
     ...item,
