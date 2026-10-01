@@ -58,6 +58,7 @@ jest.mock('../../services/SyncService', () => ({
 }));
 
 import { testSupabaseConnection } from '../../services/SupabaseService';
+import { synchronizeLocalData } from '../../services/SyncService';
 import { AdminScreen } from '../../screens/AdminScreen';
 
 function renderAdmin() {
@@ -126,5 +127,58 @@ describe('Review Conflicts shows whenever a conflict is saved on this phone (aud
     });
     expect(await screen.findAllByText('Cloud sync finished, but 1 saved conflict needs review.')).not.toHaveLength(0);
     expect(screen.getByText('Review Conflicts')).toBeTruthy();
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 14 #5 (30 Sep 2026): with a conflict open, Sync
+ * Now's message named only the conflict; another update that failed to
+ * upload was not mentioned. Since A4 pass 13 G2 a conflict stays open
+ * through every Sync Now, so the failures were hidden each time. They now
+ * follow the conflict sentence, as the failure message lists them.
+ */
+describe('Sync Now names other failures after the conflict sentence (audit A4 pass 14 #5)', () => {
+  beforeEach(() => {
+    jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    cleanup();
+    jest.restoreAllMocks();
+  });
+  const details = {
+    cloudProjectsDownloaded: 1, cloudSchedulesDownloaded: 0, cloudUpdatesDownloaded: 1,
+    cloudAreasDownloaded: 0, cloudDocumentsDownloaded: 0,
+  };
+  async function pressSyncNow(errors: string[]) {
+    (synchronizeLocalData as jest.Mock).mockResolvedValueOnce({ errors, uploaded: 0, missingPhotos: [], recovered: {}, details });
+    const screen = renderAdmin();
+    await screen.findByText('1 item pending on this device');
+    await act(async () => {
+      fireEvent.press(screen.getByText('Sync Now'));
+    });
+    return screen;
+  }
+
+  it('one other failure: named under the conflict sentence', async () => {
+    const screen = await pressSyncNow(['Field update for “Beta” could not sync. Permission denied.']);
+    expect(await screen.findAllByText([
+      'Cloud sync finished, but 1 saved conflict needs review.',
+      '1 other item still needs attention:',
+      '• Field update for “Beta” could not sync. Permission denied.',
+    ].join('\n'))).not.toHaveLength(0);
+  });
+
+  it('several: the first three, and how many more', async () => {
+    const screen = await pressSyncNow(['A failed.', 'B failed.', 'C failed.', 'D failed.', 'E failed.']);
+    expect(await screen.findAllByText([
+      'Cloud sync finished, but 1 saved conflict needs review.',
+      '5 other items still need attention:',
+      '• A failed.', '• B failed.', '• C failed.', '• 2 more items',
+    ].join('\n'))).not.toHaveLength(0);
+  });
+
+  it('none: the conflict sentence alone, as before', async () => {
+    const screen = await pressSyncNow([]);
+    expect(await screen.findAllByText('Cloud sync finished, but 1 saved conflict needs review.')).not.toHaveLength(0);
   });
 });

@@ -820,18 +820,33 @@ export function AdminScreen({
         result.errors.length,
         nextStatus.recoveryAvailable ? 1 : 0,
       ) + documentsRemaining);
+      const failedItems = [
+        ...result.errors.slice(0, 3).map(error => `• ${error}`),
+        ...(result.errors.length > 3
+          ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
+          : []),
+      ];
+      // Named after a review sentence too (whole-app audit A4 pass 14 #5): a
+      // conflict stays open through Sync Now (A4 pass 13 G2), and its sentence
+      // alone hid every other item that failed, each time.
+      const otherFailedItems = result.errors.length > 0
+        ? [`${result.errors.length} other ${result.errors.length === 1 ? 'item still needs' : 'items still need'} attention:`, ...failedItems]
+        : [];
       const syncMessage = nextStatus.recoveryAvailable
-        ? `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        ? [
+            `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`,
+            ...otherFailedItems,
+          ].join('\n')
         : nextConflicts.length > 0
-        ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
+        ? [
+            `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`,
+            ...otherFailedItems,
+          ].join('\n')
         : result.errors.length === 0
         ? `Cloud sync completed. Shared record refreshed: ${result.details.cloudProjectsDownloaded} projects, ${result.details.cloudSchedulesDownloaded} tasks, ${result.details.cloudUpdatesDownloaded} field updates, ${result.details.cloudAreasDownloaded} areas, and ${result.details.cloudDocumentsDownloaded} documents.${result.uploaded > 0 ? ` ${result.uploaded} device change${result.uploaded === 1 ? '' : 's'} uploaded.` : ''}`
         : [
             `Cloud sync finished with ${result.errors.length} ${result.errors.length === 1 ? 'item' : 'items'} still needing attention:`,
-            ...result.errors.slice(0, 3).map(error => `• ${error}`),
-            ...(result.errors.length > 3
-              ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
-              : []),
+            ...failedItems,
           ].join('\n');
       const message = [syncMessage, projectDocumentsStillUploadingNotice(documentsRemaining)].filter(Boolean).join('\n');
       setSyncAttemptMessage(message);
