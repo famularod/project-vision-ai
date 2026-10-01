@@ -127,11 +127,13 @@ describe('A10 pass 5 L3: Talk\'s Undo gives back who stated the progress, not ju
     expect(phone.task()).toMatchObject({ percentComplete: 50, progressSource: 'project_manager', progressConfirmedBy: 'David' });
     phone.undo();
     const undone = phone.task();
-    expect(undone).toMatchObject({ percentComplete: 30, status: 'In Progress', progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null });
+    // Pin updated (A10 pass 6 L3): the file's percent comes back marked as a file's over David's is kept
+    // ("Schedule update", confirmed at the Undo), so a device still holding Talk's 50% cannot win it back.
+    expect(undone).toMatchObject({ percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: UNDO_AT });
     expect(undone.progressJudgment ?? null).toBeNull();
     expect(scheduleProgressRecordedByManager(undone)).toBe(false);
     // What the phone saved is what it shows.
-    expect(phone.synced.at(-1)).toMatchObject({ percentComplete: 30, progressSource: null });
+    expect(phone.synced.at(-1)).toMatchObject({ percentComplete: 30, progressConfirmedBy: 'Schedule update' });
     expect(laterMaster(undone, 20)).toMatchObject({ percentComplete: 20 });
   });
 

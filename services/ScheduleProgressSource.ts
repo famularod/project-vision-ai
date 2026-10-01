@@ -62,6 +62,9 @@ export type ScheduleProgressUndoPoint = Readonly<Pick<ScheduleItem,
   | 'progressJudgment'
   | 'completionVerification'
   | 'lookaheadOverlay'
+  | 'importBatchId'
+  | 'sourceDocumentId'
+  | 'importedFrom'
 >>;
 
 /**
@@ -81,6 +84,10 @@ export function scheduleProgressUndoPoint(task: ScheduleItem): ScheduleProgressU
     progressJudgment: task.progressJudgment ?? undefined,
     completionVerification: task.completionVerification ?? null,
     lookaheadOverlay: task.lookaheadOverlay ?? undefined,
+    // Where the task came from: a percent with no source on a file's task is the file's (A10 pass 6 L3).
+    importBatchId: task.importBatchId ?? null,
+    sourceDocumentId: task.sourceDocumentId ?? null,
+    importedFrom: task.importedFrom ?? null,
   };
 }
 
@@ -90,20 +97,32 @@ export function scheduleProgressUndoPoint(task: ScheduleItem): ScheduleProgressU
  * it, the completion record and the lookahead note. A manager-ranked percent
  * is confirmed again at the Undo, so every device takes it back
  * (DAVEScheduleRecovery keeps the newer confirmation), and the manager's own
- * keeps when the manager judged it (progressJudgment, A10 pass 5 L1); a
- * file's keeps its own time. Never marked as the manager's by the Undo.
+ * keeps when the manager judged it (progressJudgment, A10 pass 5 L1). Never
+ * marked as the manager's judgment by the Undo.
+ *
+ * Whole-app audit A10 pass 6 L3 (30 Sep 2026): the file's 30% came back with
+ * no source, and another device still holding Talk's 50%, marked as the
+ * manager's, won over it on Full Sync (DAVEScheduleRecovery ranks a manager's
+ * copy above a file's). A percent that was not the manager's now comes back
+ * the way a file's percent over the manager's is kept (ScheduleImportMerge):
+ * project_manager, confirmed by "Schedule update" at the Undo, so it wins the
+ * same sync while a later file can still lower it and the summaries read it
+ * as the schedule's. A percent on a task entered by hand with nothing saying
+ * who set it counts as the manager's (as the import and the summaries count
+ * it) and comes back as the manager's, confirmed at the Undo.
  */
 export function scheduleProgressRestored(point: ScheduleProgressUndoPoint, at: string): Partial<ScheduleItem> {
-  const managerRanked = point.progressSource === 'project_manager';
-  const judgedAt = managerRanked && point.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER
+  const fromFile = point.progressSource === 'schedule_import' || (point.progressSource !== 'project_manager' &&
+    [point.importBatchId, point.sourceDocumentId, point.importedFrom].some(value => typeof value === 'string' && value.trim()));
+  const judgedAt = point.progressSource === 'project_manager' && point.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER
     ? scheduleProgressJudgedAt(point)
     : null;
   return {
     status: point.status,
     percentComplete: point.percentComplete,
-    progressSource: point.progressSource ?? null,
-    progressConfirmedBy: point.progressConfirmedBy ?? null,
-    progressConfirmedAt: managerRanked ? at : point.progressConfirmedAt ?? null,
+    progressSource: 'project_manager',
+    progressConfirmedBy: fromFile ? SCHEDULE_UPDATE_PROGRESS_CONFIRMER : point.progressConfirmedBy ?? null,
+    progressConfirmedAt: at,
     progressJudgment: judgedAt && judgedAt !== at ? { judgedAt, givenBackAt: at } : undefined,
     completionVerification: point.completionVerification ?? null,
     lookaheadOverlay: point.lookaheadOverlay ?? undefined,
