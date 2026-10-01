@@ -2,6 +2,14 @@
  * Whole-app audit A7 pass 16 (1 Oct 2026): Keep Phone and Keep Cloud on a
  * task's conflict, and the upload of a task edit.
  *
+ * L-1 Keep Cloud undid "phone edits" it found in the cloud's row whenever a
+ *     field of the row equalled one of the phone's waiting edits, even when
+ *     no edit had landed: a progress edit still waiting and the web's 60%
+ *     share status and progressSource, so Keep Cloud wrote 60% back with
+ *     "Not Started". It now undoes only when an edit of the phone's may have
+ *     landed during the choice (its landing closes the conflict), or during
+ *     an earlier Keep Cloud that could not finish (L-2).
+ *
  * L-2 A Keep Cloud that could not finish put the phone's withdrawn edits
  *     back on the queue. Tasks have no automatic-send hold, so the next pass
  *     sent the edit David chose to discard and closed the conflict. They now
@@ -143,6 +151,52 @@ beforeEach(() => {
   mockCloudRows.set('task-other-2', otherTask(2));
 });
 
+
+describe('L-1: Keep Cloud on a task writes nothing when no phone edit landed (audit A7 pass 16)', () => {
+  it('a progress edit still waiting, then the web\'s 60%, with the screen still showing 0%: the 60% stays exactly as it is', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    // On weak signal David sets 30% on the phone during the conflict; it waits.
+    await queueScheduleItemRecord({
+      ...phoneTask,
+      percentComplete: 30,
+      status: 'In Progress',
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-09-30T08:00:00.000Z',
+      progressConfirmedBy: 'David',
+      updatedAt: '2026-09-30T08:00:00.000Z',
+    }, false, ['percentComplete', 'status', 'progressSource', 'progressConfirmedAt', 'progressConfirmedBy', 'updatedAt']);
+    // Then he sets 60% on the web, with his manager rank.
+    const web60: ScheduleItem = {
+      ...shown,
+      percentComplete: 60,
+      status: 'In Progress',
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-09-30T09:00:00.000Z',
+      progressConfirmedBy: 'David',
+      updatedAt: '2026-09-30T09:00:00.000Z',
+    };
+    mockCloudRows.set(phoneTask.id, web60);
+
+    // It wrote 60% back with "Not Started", without progressSource and
+    // progressConfirmedBy, and with the 0% copy's stamp.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toEqual(web60);
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(web60);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('control: an edit that did land during the choice is still undone', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    landsDuringFirstRead(await newerPhoneEditOnItsWayUp());
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toEqual(shown);
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+});
 
 describe('L-2: a Keep Cloud on a task that cannot finish leaves no discarded edit for an automatic pass to send (audit A7 pass 16)', () => {
   it('the second read fails after a landing: the next automatic pass sends nothing, the conflict stays, and Keep Cloud chosen again puts the screen\'s copy back', async () => {

@@ -5019,25 +5019,34 @@ export async function resolveScheduleItemSyncConflict(
     withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
     // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
     const phoneEdits = [...localPayload.withdrawnEdits ?? [], ...waitingEdits, ...withdrawn];
+    // An edit of this phone's can be in the cloud only when one landed during
+    // this choice (a landing closes the conflict) or during an earlier Keep
+    // Cloud that could not finish (its edits wait on the conflict) (A7 pass
+    // 16 L-1). Edits found in the row by value alone were undone when none
+    // had landed: a progress edit still waiting and the web's 60% share
+    // status and progressSource, so the 60% went back as "Not Started".
+    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) ||
+      !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+    // Read again now: an edit from another device that landed meanwhile is
+    // the cloud's too.
+    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    if (reread === null) {
+      await clearScheduleItemSyncConflicts(conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
+    }
+    // None landed: the cloud's row is kept as it is, and nothing is written.
+    // The first read stands in when this one fails.
+    if (!phoneEditMayHaveLanded) {
+      await clearResolvedConflict(conflict.id);
+      return reread ?? cloudItem;
+    }
     try {
-      // Read again now: an edit from another device that landed meanwhile is
-      // the cloud's too.
-      const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
-      if (reread === null) {
-        await clearScheduleItemSyncConflicts(conflict.localId);
-        throw new Error('sync_conflict_record_deleted');
-      }
-      // The first read stands in when this one fails, unless an edit of this
-      // phone's may be in the cloud (whole-app audit A7 pass 15 L-1): one
-      // landed during the choice (its landing closes the conflict), or the
-      // first read holds one. Then nothing is decided, and nothing changes.
-      if (reread === undefined && (
-        !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId) ||
-        taskFieldsHoldingPhoneEdits(cloudItem, shown, phoneEdits).length > 0
-      )) {
+      // One may have landed and the cloud cannot be read again (A7 pass 15
+      // L-1): nothing is decided, and nothing changes.
+      if (reread === undefined) {
         throw new Error('sync_conflict_cloud_copy_unreadable');
       }
-      const cloudNow = reread ?? cloudItem;
+      const cloudNow = reread;
       // The cloud already holds its own copy, so nothing is written back,
       // unless it holds an edit of this phone's that David discarded: an
       // upload under way when he chose landed it, before Keep Cloud read the
@@ -5060,9 +5069,7 @@ export async function resolveScheduleItemSyncConflict(
       await clearResolvedConflict(conflict.id);
       return restored;
     } catch (error) {
-      if (!(error instanceof Error && error.message === 'sync_conflict_record_deleted')) {
-        await putBackTaskConflictAsItWas(conflict, phoneEdits);
-      }
+      await putBackTaskConflictAsItWas(conflict, phoneEdits);
       throw error;
     }
   }
