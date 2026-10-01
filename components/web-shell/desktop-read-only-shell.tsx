@@ -595,6 +595,7 @@ function DesktopPageData({
       <DesktopOverviewPage
         projects={projects}
         tasks={tasks}
+        knownTasks={snapshot.knownScheduleItems}
         updates={updates}
         selectedProject={selectedProject}
       />

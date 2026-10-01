@@ -493,6 +493,7 @@ function buildDAVEWebProjectTruths(
       projectName: project.name,
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
       scheduleItems: scope.scheduleItems,
+      knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
       projectAreas: scope.projectAreas,
       referenceDocuments: scope.referenceDocuments.map(document => ({
         ...document,

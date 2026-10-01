@@ -585,11 +585,14 @@ function compareScheduleDocumentAuthority(left: ReferenceDocument, right: Refere
 
 export function buildPIEScheduleReconciliation({
   scheduleItems = [],
+  knownScheduleItems = [],
   updates = [],
   projectName = null,
   now = new Date(),
 }: {
   scheduleItems?: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates?: ProjectUpdate[];
   projectName?: string | null;
   now?: Date;
@@ -614,7 +617,7 @@ export function buildPIEScheduleReconciliation({
   const matches: PIEScheduleFieldMatch[] = [];
   const warnings: PIEScheduleReconciliationWarning[] = [];
   // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
-  const linkOf = scheduleTaskLinks(scopedScheduleItems);
+  const linkOf = scheduleTaskLinks(scopedScheduleItems, knownScheduleItems);
   const links = new Map(scopedUpdates.map(update => [update, linkOf(update)] as const));
 
   scopedScheduleItems.forEach(item => {

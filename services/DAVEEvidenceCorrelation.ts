@@ -84,16 +84,19 @@ export type DAVEEvidenceCorrelationResult = Readonly<{
 
 export function buildDAVEEvidenceCorrelations({
   scheduleItems,
+  knownScheduleItems = [],
   updates = [],
   now = new Date().toISOString(),
 }: {
   scheduleItems: readonly ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates?: readonly ProjectUpdate[];
   now?: string;
 }): DAVEEvidenceCorrelationResult {
   const generatedAt = validTimestamp(now) ? new Date(now).toISOString() : new Date().toISOString();
   // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
-  const linkOf = scheduleTaskLinks(scheduleItems);
+  const linkOf = scheduleTaskLinks(scheduleItems, knownScheduleItems);
   const links = new Map(updates.map(update => [update, linkOf(update)] as const));
   const tasks = scheduleItems.map(item => correlateTask(
     item,

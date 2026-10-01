@@ -65,7 +65,7 @@ function deletedTaskStillAnswered(
       const shown = schedule.shownScheduleItems
         ? schedule.shownScheduleItems.filter(item => !deletedIds.has(normalized(item.id)))
         : selectAuthoritativeScheduleItems({ scheduleItems: living, scheduleDocuments: [...(schedule.scheduleDocuments || [])] });
-      linkOf = scheduleTaskLinks(shown);
+      linkOf = scheduleTaskLinks(shown, living); // never by a name the update's own schedule shared (A10 pass 6 L2)
     }
     return Boolean(linkOf(reference));
   };

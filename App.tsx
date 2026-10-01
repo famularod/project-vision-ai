@@ -4397,6 +4397,7 @@ function buildOverviewProjectRows(
   projects: string[],
   savedUpdates: ProjectUpdate[],
   scheduleItems: ScheduleItem[],
+  knownScheduleItems: ScheduleItem[] = [], // every saved task, for the name fallback (A10 pass 6 L2)
 ): OverviewProjectRow[] {
   return projects.map(project => {
     const scopeProjects = scheduleProjectScopeNames(
@@ -4424,6 +4425,7 @@ function buildOverviewProjectRows(
     });
     const scheduleReconciliation = buildPIEScheduleReconciliation({
       scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     });
     const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
@@ -13524,6 +13526,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       scheduleItems: (
         reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
       ) as unknown as PIELiveAuthorityInput['scheduleItems'],
+      knownScheduleItems: scheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'], // every saved task, for the name fallback (A10 pass 6 L2)
       currentUpdate: (
         reportEvidenceScope ? reportEvidenceScope.currentUpdate : draft
       ) as unknown as PIELiveAuthorityInput['currentUpdate'],
@@ -13615,7 +13618,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projects={activeProjects}
               archivedProjects={archivedProjects}
               savedUpdates={activeSavedUpdates}
-              scheduleItems={authoritativeScheduleItems}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -13742,7 +13745,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               ]}
               projectAreas={selectedWorkspaceProjectAreas}
               projectDocuments={projectDocuments}
-              scheduleItems={authoritativeScheduleItems}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               contactBook={contactBook}
               coverPhoto={coverPhotoForProject(projectRecords, selectedWorkspaceProject)}
               coverPhotoMode={projectRecords.find(project =>
@@ -13900,7 +13903,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               screenshotImportAvailable={scheduleScreenshotOcrAvailable}
               cloudDownloadPending={scheduleCloudDownloadPending}
-              scheduleItems={authoritativeScheduleItems}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
@@ -14472,7 +14475,7 @@ function HomeScreen({
   projects,
   archivedProjects,
   savedUpdates,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   displayName,
   unfinishedDraft,
   draftSavedAt,
@@ -14494,7 +14497,7 @@ function HomeScreen({
   projects: string[];
   archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   displayName: string;
   unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
@@ -14533,12 +14536,12 @@ function HomeScreen({
   const overviewRows = buildOverviewProjectRows(
     scopedProjects,
     savedUpdates,
-    scheduleItems,
+    scheduleItems, knownScheduleItems,
   );
   const attentionRows = overviewRows.filter(row => row.health !== 'Healthy');
   const topPriority = attentionRows[0] || null;
   const commitmentControl = buildVitruviusCommitmentControl({
-    scheduleItems,
+    scheduleItems, knownScheduleItems,
     updates: savedUpdates,
     projectNames: scopedProjects,
   });
@@ -16913,7 +16916,7 @@ type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
 
 function ProjectTaskControlPanel({
   projectName,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   savedUpdates,
   onUpdate,
   onSave,
@@ -16922,7 +16925,7 @@ function ProjectTaskControlPanel({
   onAddTask,
 }: {
   projectName: string;
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   savedUpdates: ProjectUpdate[];
   onUpdate: (
     itemId: string,
@@ -16959,9 +16962,10 @@ function ProjectTaskControlPanel({
   const reconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
       scheduleItems: operationalScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     }),
-    [operationalScheduleItems, scopedFieldUpdates],
+    [knownScheduleItems, operationalScheduleItems, scopedFieldUpdates],
   );
   const attentionItems = useMemo(
     () => buildPhase2AttentionItems(scopedFieldUpdates, null),
@@ -17167,7 +17171,7 @@ function ProjectWorkspaceScreen({
   usedCaptureMemoryIds,
   projectAreas,
   projectDocuments,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   contactBook,
   coverPhoto,
   coverPhotoMode,
@@ -17210,7 +17214,7 @@ function ProjectWorkspaceScreen({
   usedCaptureMemoryIds: readonly string[];
   projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   contactBook: ContactBook;
   coverPhoto: ProjectCoverPhoto | null;
   coverPhotoMode: 'automatic' | 'manual';
@@ -17473,7 +17477,7 @@ function ProjectWorkspaceScreen({
 
       <ProjectTaskControlPanel
         projectName={projectName}
-        scheduleItems={scheduleItems}
+        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems}
         savedUpdates={savedUpdates}
         onUpdate={onUpdateScheduleItem}
         onSave={onSaveScheduleItem}
@@ -19220,7 +19224,7 @@ function ScheduleScreen({
   contentStyle,
   screenshotImportAvailable,
   cloudDownloadPending = false,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   savedUpdates,
   projectAreas,
   projects,
@@ -19255,7 +19259,7 @@ function ScheduleScreen({
   contentStyle: StyleProp<ViewStyle>;
   screenshotImportAvailable: boolean;
   cloudDownloadPending?: boolean;
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
   projects: string[];
@@ -19337,10 +19341,10 @@ function ScheduleScreen({
 
   const scheduleReconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
-      scheduleItems: workspaceScheduleItems,
+      scheduleItems: workspaceScheduleItems, knownScheduleItems,
       updates: workspaceSavedUpdates,
     }),
-    [workspaceSavedUpdates, workspaceScheduleItems],
+    [knownScheduleItems, workspaceSavedUpdates, workspaceScheduleItems],
   );
   const actionableScheduleWarnings = useMemo(
     () => scheduleReconciliation.warnings.filter(scheduleWarningIsUserActionable),
@@ -19359,11 +19363,12 @@ function ScheduleScreen({
   const actionInbox = useMemo(
     () => buildDAVEActionInbox({
       scheduleItems: workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: workspaceSavedUpdates as unknown as import('./types').ProjectUpdate[],
       reconciliationWarnings: actionableScheduleWarnings,
       dependencyNodes: dependencyNetwork.nodes,
     }),
-    [actionableScheduleWarnings, dependencyNetwork.nodes, workspaceSavedUpdates, workspaceScheduleItems],
+    [actionableScheduleWarnings, dependencyNetwork.nodes, knownScheduleItems, workspaceSavedUpdates, workspaceScheduleItems],
   );
   const attentionScheduleItemIds = useMemo(
     () => new Set(actionInbox.items.flatMap(item => item.scheduleItemId ? [item.scheduleItemId] : [])),

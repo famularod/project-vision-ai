@@ -44,11 +44,14 @@ export type VitruviusCommitmentControl = Readonly<{
 
 export function buildVitruviusCommitmentControl({
   scheduleItems,
+  knownScheduleItems = [],
   updates,
   projectNames,
   now = new Date(),
 }: {
   scheduleItems: readonly ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates: readonly ProjectUpdate[];
   projectNames?: readonly string[];
   now?: Date;
@@ -58,7 +61,7 @@ export function buildVitruviusCommitmentControl({
     projectScope.size === 0 ||
     projectScope.has(normalizedKey(parentProjectName(item))),
   );
-  const updatesByTask = groupUpdatesByTask(updates, scopedItems);
+  const updatesByTask = groupUpdatesByTask(updates, scopedItems, knownScheduleItems);
   const items = scopedItems
     .map(item => commitmentItem(item, updatesByTask.get(normalizedKey(item.id)) || [], now))
     .sort(compareCommitments);
@@ -197,10 +200,10 @@ function proofNeededFor(
   return 'Add a current field photo or note when the condition changes.';
 }
 
-function groupUpdatesByTask(updates: readonly ProjectUpdate[], scheduleItems: readonly ScheduleItem[]) {
+function groupUpdatesByTask(updates: readonly ProjectUpdate[], scheduleItems: readonly ScheduleItem[], known: readonly ScheduleItem[]) {
   const grouped = new Map<string, ProjectUpdate[]>();
   // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
-  const linkOf = scheduleTaskLinks(scheduleItems);
+  const linkOf = scheduleTaskLinks(scheduleItems, known);
   updates.forEach(update => {
     const key = normalizedKey(linkOf(update)?.item.id || update.scheduleItemId);
     if (!key) return;

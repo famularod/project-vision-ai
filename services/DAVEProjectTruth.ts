@@ -196,6 +196,8 @@ export type BuildDAVEProjectTruthInput = {
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectAreas?: ProjectArea[];
   referenceDocuments?: ReferenceDocument[];
   projectDocuments?: DAVEDailyBriefDocument[];
@@ -293,6 +295,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const photoComparisons = buildPhotoComparisons(updates, entityLinks);
   const correlations = buildDAVEEvidenceCorrelations({
     scheduleItems,
+    knownScheduleItems: input.knownScheduleItems,
     updates,
     now: generatedAt,
   });
@@ -356,7 +359,7 @@ function buildEvidenceLedger(
 ): DAVEEvidenceLedgerRecord[] {
   const records: DAVEEvidenceLedgerRecord[] = [];
   // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
-  const linkOf = scheduleTaskLinks(input.scheduleItems);
+  const linkOf = scheduleTaskLinks(input.scheduleItems, input.knownScheduleItems);
   for (const update of input.updates) {
     const areaName = clean(update.selectedAreaName);
     const taskId = linkOf(update)?.item.id || clean(update.scheduleItemId);

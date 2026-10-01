@@ -105,6 +105,8 @@ export type PIELiveAuthorityInput = {
   reportType?: PIEReportType;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: ScheduleItem[];
   currentUpdate?: ProjectUpdate | null;
   projectAreas?: ProjectArea[];
   contacts?: ContactBook;
@@ -610,6 +612,7 @@ export function PIELiveAuthorityProvider({
     projectName: truthInput.projectName,
     updates: truthInput.updates,
     scheduleItems: truthInput.scheduleItems,
+    knownScheduleItems: truthInput.knownScheduleItems,
     projectAreas: truthInput.projectAreas,
     referenceDocuments: truthInput.referenceDocuments,
     projectDocuments: truthInput.projectDocuments,
@@ -620,6 +623,7 @@ export function PIELiveAuthorityProvider({
   }), [
     truthCore,
     truthInput.captureMemories,
+    truthInput.knownScheduleItems,
     truthInput.projectDocuments,
     truthInput.projectAreas,
     truthInput.projectName,

@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
  * Which task a field update's task id answers to now.
@@ -21,6 +22,16 @@ import type { ScheduleItem } from '../types';
  * earlier ids: an update whose task id is no task shown then matches by the
  * task name it stored, within its project and area, only when exactly one
  * task shown has that name; never a guess between two.
+ *
+ * Whole-app audit A10 pass 6 L2 (30 Sep 2026): Lot had two "Pour slab" tasks,
+ * phase 1 finished and phase 2 not started. A new master dropped phase 1 and,
+ * with one row against two saved, paired neither, so a field report on phase 1
+ * fell back by name to phase 2, the one shown: "Possible progress is not
+ * reflected in the schedule … Not Started at 0%". The name was unique among
+ * the tasks shown but not in the update's own schedule. Given every saved task
+ * (hidden ones included), the fallback now looks up the update's old row, and
+ * when the schedule it came from had more than one task of that name in the
+ * update's project and area, the update is matched to none.
  */
 
 /** What a field update says about its task. */
@@ -91,12 +102,34 @@ function sameArea(item: ScheduleItem, reference: ScheduleTaskReference): boolean
   return !area || areas.length === 0 || areas.includes(area);
 }
 
+/** The tasks of the schedule a task came from: its imports', or the tasks entered by hand. */
+function sameSchedule(own: ScheduleItem): (item: ScheduleItem) => boolean {
+  const batches = scheduleItemImportBatchIds(own);
+  if (batches.length > 0) return item => scheduleItemImportBatchIds(item).some(batch => batches.includes(batch));
+  const document = idOf(own.sourceDocumentId);
+  return item => scheduleItemImportBatchIds(item).length === 0 && idOf(item.sourceDocumentId) === document;
+}
+
 /**
  * Resolves field updates against the tasks shown (built once for many
  * updates). An update with no task id resolves to nothing here; each summary
- * keeps its own matching for those.
+ * keeps its own matching for those. With every saved task known, the stored
+ * name is taken only when the update's own schedule had it once (A10 pass 6
+ * L2).
  */
-export function scheduleTaskLinks(items: readonly ScheduleItem[]): (reference: ScheduleTaskReference) => ScheduleTaskLink | null {
+export function scheduleTaskLinks(
+  items: readonly ScheduleItem[],
+  known: readonly ScheduleItem[] = [],
+): (reference: ScheduleTaskReference) => ScheduleTaskLink | null {
+  const knownById = new Map<string, ScheduleItem>();
+  known.forEach(item => { if (idOf(item.id) && !knownById.has(idOf(item.id))) knownById.set(idOf(item.id), item); });
+  const nameSharedInOwnSchedule = (reference: ScheduleTaskReference, taskId: string, name: string): boolean => {
+    const own = knownById.get(taskId);
+    if (!own) return false;
+    const inSchedule = sameSchedule(own);
+    return known.filter(item => inSchedule(item) && nameKey(item.taskName) === name &&
+      sameProject(item, reference) && sameArea(item, reference)).length > 1;
+  };
   const byId = new Map<string, ScheduleItem>();
   const byEarlierId = new Map<string, ScheduleItem[]>();
   const byName = new Map<string, ScheduleItem[]>();
@@ -115,7 +148,7 @@ export function scheduleTaskLinks(items: readonly ScheduleItem[]): (reference: S
     const revised = byEarlierId.get(taskId) || [];
     if (revised.length === 1) return { item: revised[0], basis: 'earlier_task_id' };
     const name = nameKey(reference.scheduleTaskName);
-    const named = name
+    const named = name && !nameSharedInOwnSchedule(reference, taskId, name)
       ? (byName.get(name) || []).filter(item => sameProject(item, reference) && sameArea(item, reference))
       : [];
     return named.length === 1 ? { item: named[0], basis: 'stored_task_name' } : null;
@@ -127,8 +160,9 @@ export function scheduleItemAnsweringToTaskId(
   items: readonly ScheduleItem[],
   taskId: string | null | undefined,
   saved: Omit<ScheduleTaskReference, 'scheduleItemId'> = {},
+  known: readonly ScheduleItem[] = [],
 ): ScheduleItem | null {
-  return scheduleTaskLinks(items)({ ...saved, scheduleItemId: taskId })?.item ?? null;
+  return scheduleTaskLinks(items, known)({ ...saved, scheduleItemId: taskId })?.item ?? null;
 }
 
 function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {

@@ -38,6 +38,12 @@ import { ecosClosedProjectNames } from './ECOSProjectQuestion';
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
   scheduleItems: readonly DAVEWebScheduleItem[];
+  /**
+   * Every saved task, hidden ones included (deleted ones out): the name
+   * fallback for a field update's task checks the update's own schedule
+   * (whole-app audit A10 pass 6 L2).
+   */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
   referenceDocuments: readonly DAVEWebReferenceDocument[];
   /**
@@ -136,6 +142,7 @@ export async function loadDAVEWebReadOnlySnapshot(
     projects: Object.freeze(projects),
     openCloudProjects: Object.freeze(openCloudProjects),
     scheduleItems: Object.freeze(scheduleItems),
+    knownScheduleItems: Object.freeze(reconciledScheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(referenceDocuments),
     closedProjectNames: Object.freeze(closedProjectNames),
