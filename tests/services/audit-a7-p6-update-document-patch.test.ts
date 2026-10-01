@@ -3486,3 +3486,97 @@ describe('a failed Keep Phone leaves neither copy changed (audit A4 pass 16 L1)'
     expect(await getSyncConflicts()).toHaveLength(1);
   });
 });
+
+/** Keep Phone or Keep Cloud in Settings (AdminScreen's own resolveConflict): everything the screen shows afterwards. */
+async function chooseInSettingsSeeing(phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud') {
+  const seen = {
+    alerts: [] as Array<{ title: string; message?: string }>, messages: [] as string[],
+    conflictsShown: [] as unknown[][], reviewClosed: false, applied: [] as Update[],
+  };
+  const { resolveConflict } = evaluate<{ resolveConflict: (conflict: unknown, resolution: string) => Promise<void> }>(
+    transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
+    {
+      setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
+      resolveProjectUpdateSyncConflict, onApplyCloudConflictUpdate: (update: Update) => { seen.applied.push(update); },
+      savedUpdates: phone.savedUpdatesRef.current, projectUpdateCopyIsLastInCloud,
+      getSyncConflicts, getSyncStatus: async () => null, setSyncStatus: () => undefined,
+      setSyncConflicts: (conflicts: unknown[]) => { seen.conflictsShown.push(conflicts); },
+      setSyncAttemptMessage: (message: string | null) => { if (message) seen.messages.push(message); },
+      setConflictReviewVisible: (visible: boolean) => { if (!visible) seen.reviewClosed = true; },
+      Alert: { alert: (title: string, message?: string) => { seen.alerts.push({ title, message }); } },
+    },
+  );
+  await resolveConflict((await getSyncConflicts()).find(item => item.id === conflict.id), resolution);
+  phone.render();
+  return seen;
+}
+
+/**
+ * A4 pass 16 L2 (older): an update in conflict was deleted on the iPad. Keep
+ * Phone always failed ("Conflict not resolved. Neither copy was changed."):
+ * the deletion record superseded its kept copy. Keep Cloud did clear the
+ * conflict, but said "Conflict not resolved" too, and the list was not
+ * refreshed, so the conflict still showed. A deleted update's conflict is now
+ * closed for either choice, nothing is sent, and Settings says so and
+ * refreshes the list.
+ */
+describe('a conflict for an update deleted on the iPad is closed by either choice (audit A4 pass 16 L2)', () => {
+  const DELETED_MESSAGE = 'This update was deleted on another device, so the conflict is closed.';
+  /** The iPad deletes the update: its cloud row is gone, and its deletion record is in the cloud. */
+  function iPadDeletesIt() {
+    mockCloud.delete('u1');
+    (supabaseMock().listDAVESyncTombstones as jest.Mock).mockResolvedValue({
+      ok: true, configured: true, stubbed: false,
+      data: [{ entityType: 'project_update', recordId: 'u1', deletedAt: new Date().toISOString() }],
+    });
+  }
+  afterEach(() => {
+    (supabaseMock().listDAVESyncTombstones as jest.Mock).mockResolvedValue({ ok: true, configured: true, stubbed: false, data: [] });
+  });
+
+  it.each([
+    ['Keep Phone', 'keep_local'],
+    ['Keep Cloud', 'keep_cloud'],
+  ] as const)('%s: the conflict is closed, Settings says why and refreshes the list, and nothing is sent', async (_label, resolution) => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const [conflict] = await getSyncConflicts();
+    iPadDeletesIt();
+    const writes = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    const seen = await chooseInSettingsSeeing(phone, conflict, resolution);
+    expect(seen.alerts).toEqual([]);
+    expect(seen.messages.at(-1)).toBe(DELETED_MESSAGE);
+    expect(seen.conflictsShown.at(-1)).toEqual([]);
+    expect(seen.reviewClosed).toBe(true);
+    expect(seen.applied).toEqual([]);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(writes);
+    expect(mockCloud.has('u1')).toBe(false);
+  });
+
+  it('another conflict still open stays listed, and the message says so', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const [conflict] = await getSyncConflicts();
+    // A second update in conflict.
+    const other = { ...savedUpdate([], 'queued', 'u2'), notes: 'Strip forms (phone)' };
+    putInCloud({ ...other, notes: 'Strip forms' });
+    await queueProjectUpdateRecord(other, false);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    putInCloud({ ...other, notes: 'Strip forms (iPad)' }, new Date().toISOString());
+    await uploadPendingChanges();
+    expect(await getSyncConflicts()).toHaveLength(2);
+    iPadDeletesIt();
+    const seen = await chooseInSettingsSeeing(phone, conflict, 'keep_local');
+    expect(seen.alerts).toEqual([]);
+    expect(seen.messages.at(-1)).toBe(`${DELETED_MESSAGE} 1 conflict remains to review.`);
+    expect(seen.conflictsShown.at(-1)).toEqual([expect.objectContaining({ localId: 'u2' })]);
+    expect(seen.reviewClosed).toBe(false);
+  });
+
+  it('control: an update not deleted is still kept as chosen', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(seen.alerts).toEqual([]);
+    expect(seen.messages.at(-1)).toBe('Cloud conflicts resolved.');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+  });
+});

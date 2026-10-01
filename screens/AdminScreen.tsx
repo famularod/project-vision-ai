@@ -922,6 +922,22 @@ export function AdminScreen({
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
   ) {
+    /** The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it. */
+    const showConflictsAfterChoice = async (closed: string | null) => {
+      const [nextConflicts, nextStatus] = await Promise.all([
+        getSyncConflicts(),
+        getSyncStatus(),
+      ]);
+      setSyncConflicts(nextConflicts);
+      setSyncStatus(nextStatus);
+      const remaining = nextConflicts.length > 0
+        ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
+        : null;
+      setSyncAttemptMessage(closed
+        ? [closed, remaining].filter(Boolean).join(' ')
+        : remaining || 'Cloud conflicts resolved.');
+      if (nextConflicts.length === 0) setConflictReviewVisible(false);
+    };
     setResolvingConflictId(conflict.id);
 
     try {
@@ -951,19 +967,17 @@ export function AdminScreen({
         }
       }
 
-      const [nextConflicts, nextStatus] = await Promise.all([
-        getSyncConflicts(),
-        getSyncStatus(),
-      ]);
-      setSyncConflicts(nextConflicts);
-      setSyncStatus(nextStatus);
-      setSyncAttemptMessage(
-        nextConflicts.length > 0
-          ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
-          : 'Cloud conflicts resolved.',
-      );
-      if (nextConflicts.length === 0) setConflictReviewVisible(false);
-    } catch {
+      await showConflictsAfterChoice(null);
+    } catch (error) {
+      // Deleted on another device (whole-app audit A4 pass 16 L2): its
+      // conflict is closed, whichever copy was chosen, and nothing was sent.
+      // It said "Conflict not resolved", and the list still showed it.
+      if (error instanceof Error && error.message === 'sync_conflict_record_deleted') {
+        await showConflictsAfterChoice(conflict.entity === 'schedule_item'
+          ? 'This task was deleted on another device, so the conflict is closed.'
+          : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
+        return;
+      }
       Alert.alert(
         'Conflict not resolved',
         'Neither copy was changed. Check the cloud connection and try again.',

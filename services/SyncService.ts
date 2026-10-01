@@ -4340,31 +4340,23 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   }
 
   const localPayload = conflict.localPayload as ProjectUpdateRecordPayload<TUpdate>;
+  // As for tasks (whole-app audit A4 pass 5): a deleted update is not written
+  // back, whichever copy David chose. Its conflict is closed and nothing is
+  // sent (sync_conflict_record_deleted, which Settings shows as closed). Keep
+  // Phone failed every time (A4 pass 16 L2): the deletion record superseded
+  // its kept copy, and Settings said neither copy was changed.
+  await closeConflictOfDeletedProjectUpdate(conflict);
 
   if (resolution === 'keep_cloud') {
     const cloudUpdate = conflict.remotePayload;
     if (!isRecord(cloudUpdate)) {
       throw new Error('sync_conflict_cloud_copy_missing');
     }
-    // As for tasks (whole-app audit A4 pass 5): a deleted update is not
-    // written back; otherwise the phone's queued revisions (the conflict-era
-    // edit and any newer one) are withdrawn around any upload in flight, and
-    // the chosen copy goes back through the queue (the one write path, as
-    // Keep Phone does), so neither a later upload nor a retry that already
-    // reached the cloud undoes the choice.
-    const tombstoneSync = await synchronizeDAVESyncTombstones();
-    if (!tombstoneSync.cloudAuthoritative) {
-      throw new Error('sync_conflict_deletion_history_unavailable');
-    }
-    const normalizedUpdateId = conflict.localId.trim().toLowerCase();
-    const updateWasDeleted =
-      (await hasProjectUpdateDeletionIntent(conflict.localId)) ||
-      deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
-        .some(recordId => recordId.trim().toLowerCase() === normalizedUpdateId);
-    if (updateWasDeleted) {
-      await clearConflictsForLocalRecord('project_update', conflict.localId);
-      throw new Error('sync_conflict_record_deleted');
-    }
+    // The phone's queued revisions (the conflict-era edit and any newer one)
+    // are withdrawn around any upload in flight, and the chosen copy goes
+    // back through the queue (the one write path, as Keep Phone does), so
+    // neither a later upload nor a retry that already reached the cloud
+    // undoes the choice.
     const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
     const phoneCopies = [localPayload.updateData, ...(await getOfflineQueue())
       .filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
@@ -4469,6 +4461,28 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
+}
+
+/**
+ * A field update deleted on any device (this phone's deletion journal, or the
+ * cloud's deletion records): its conflict is cleared and
+ * sync_conflict_record_deleted thrown, before either choice writes anything
+ * (whole-app audit A4 pass 16 L2). The cloud's deletion history must be
+ * readable, as for Keep Cloud before.
+ */
+async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Promise<void> {
+  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  if (!tombstoneSync.cloudAuthoritative) {
+    throw new Error('sync_conflict_deletion_history_unavailable');
+  }
+  const normalizedUpdateId = conflict.localId.trim().toLowerCase();
+  const updateWasDeleted =
+    (await hasProjectUpdateDeletionIntent(conflict.localId)) ||
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
+      .some(recordId => recordId.trim().toLowerCase() === normalizedUpdateId);
+  if (!updateWasDeleted) return;
+  await clearConflictsForLocalRecord('project_update', conflict.localId);
+  throw new Error('sync_conflict_record_deleted');
 }
 
 /**
