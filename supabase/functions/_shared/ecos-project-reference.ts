@@ -21,8 +21,9 @@
  * 2375; pass 6 L4), unless it is written as one of five things
  * (EXEMPT_PATTERNS below):
  *   1. a measurement: a unit from MEASUREMENT_WORD_UNITS (or V, m, %, °, a
- *      glued A, a feet or inch mark) right after it: "4000 psi", "2375mm",
- *      "200 bags", "200A";
+ *      glued A, a prime mark) right after it, or a feet-inch pair with both
+ *      marks: "4000 psi", "2375mm", "200 bags", "200A", "12'-6\"" (a lone
+ *      ' or " is not a measurement; audit A9 pass 8);
  *   2. money: "$2,375", "USD 2375", "2375 dollars";
  *   3. part of a full date or a clock time: "10/05/2026", "2026-10-05",
  *      "Oct 5, 2026", "5 Oct 2026", "0730 hrs" (a bare year is not exempt);
@@ -202,13 +203,17 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
   //    spaced " A" is never amps ("What is left at 2375 A?"; audit A9 pass 7
   //    L5; write "200A" or "200 amps"). Then %, ° and the prime marks ′ and
   //    ″ with a word or a hyphen after them ("2375′ run"); a mark that may
-  //    close a quotation ("at 2375′?", "2375′s") is not a measurement. The
-  //    quote marks ' ’ " ” are checked in exemptSpans (FEET_QUOTE_MARK,
-  //    INCH_QUOTE_MARK).
+  //    close a quotation ("at 2375′?", "2375′s") is not a measurement. Then a
+  //    feet-inch pair with both marks, straight, curly or prime: "12'-6\"",
+  //    "12' 6\"", "12'6\"", "12’-6”", "12′-6″". Audit A9 pass 8: no other ' ’
+  //    " or ” after a number is a measurement, so a lone "2375\"" or "2375'"
+  //    names the project (four passes of quotation tracking each left a
+  //    quotation misread; write "2375 in." or "2375 ft").
   new RegExp(`${NUMBER}[ -]?(?:${MEASUREMENT_WORD_UNITS.join('|')})(?![a-z0-9])`, 'gi'),
   new RegExp(String.raw`${NUMBER}(?:A(?!${WING_LETTER_AFTER_A})| ?[Vm])(?=[\s.,;:!?)]|$)`, 'g'),
   new RegExp(String.raw`${NUMBER} ?(?:%|°[FC]?)`, 'gi'),
   new RegExp(String.raw`(?<!['"‘“’”′″])${NUMBER}[′″](?=\s[a-z0-9]|-)`, 'gi'),
+  new RegExp(String.raw`${NUMBER}['’′]\s?-?\s?\d+(?:\.\d+)?["”″]`, 'g'),
   // 2. Money: "$2,375.50", "$ 2375", "USD 2375", "2375 dollars", "2375 USD".
   new RegExp(String.raw`(?:\$|\bUSD)\s?${NUMBER}|${NUMBER}\s?(?:dollars|USD)\b`, 'gi'),
   // 3. Full dates and clock times: "10/05/2026", "10-5-26", "2026-10-05",
@@ -234,73 +239,6 @@ const EXEMPT_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * A number with ' or ’ after it. It is a feet mark only in a feet-inch pair
- * ("2375'-6\"", "2375' 6\"", "2375'6\"") or, with a word or a hyphen next,
- * when no single quotation is open before the number; otherwise it closes
- * the quotation ("The super wrote 'delivered to 2375' this morning"; audit
- * A9 pass 7 L3, mirroring the double quote rule below).
- */
-const FEET_QUOTE_MARK = new RegExp(String.raw`${NUMBER}['’]`, 'g');
-
-function feetQuoteMarkIsMeasurement(before: string, after: string) {
-  if (/^\s?-?\s?\d+(?:\.\d+)?["”″]/.test(after)) return true;
-  if (!/^(?:\s[a-z0-9]|-)/i.test(after)) return false;
-  return !/['"‘“’”′″]$/.test(before) && !singleQuotationOpen(before);
-}
-
-/**
- * Whether a single quotation opened in `text` is still open at its end: ' or
- * ‘ at the start of a word opens one, and ' or ’ at the end of a word closes
- * it. An apostrophe inside a word ("don't", "2375's", "crew’s") does neither.
- */
-function singleQuotationOpen(text: string) {
-  let open = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character !== "'" && character !== '‘' && character !== '’') continue;
-    const afterWord = /[a-z0-9]/i.test(text[index - 1] ?? '');
-    const beforeWord = /[a-z0-9]/i.test(text[index + 1] ?? '');
-    if (afterWord && beforeWord) continue;
-    if (!afterWord && character !== '’') open = true;
-    else if (afterWord && character !== '‘') open = false;
-  }
-  return open;
-}
-
-/**
- * A number with " or ” after it and a word or a hyphen next. It is an inch
- * mark only in a feet-inch pair ("12'-6\"", "12' 6\"") or when no double
- * quotation is open before the number; otherwise it closes the quotation
- * ('The super wrote "delivered to 2375" this morning'; audit A9 pass 6 L2).
- */
-const INCH_QUOTE_MARK = new RegExp(String.raw`${NUMBER}["”](?=\s[a-z0-9]|-)`, 'gi');
-
-function inchQuoteMarkIsMeasurement(before: string) {
-  if (/\d['’′]\s?-?\s?$/.test(before)) return true;
-  return !/['"‘“’”′″]$/.test(before) && !doubleQuotationOpen(before);
-}
-
-/**
- * Whether a double quotation opened in `text` is still open at its end: “
- * opens and ” closes; a straight " closes an open quotation, and opens one
- * only after the start, a space or punctuation (after a letter it is a stray
- * mark). A straight " right after a digit is an inch mark ('the 6" pipe'): it
- * neither opens nor closes, so 'He wrote "the 6" pipe at 2375" today' keeps
- * the quotation open up to 2375 (audit A9 pass 7 L4).
- */
-function doubleQuotationOpen(text: string) {
-  let open = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    const previous = text[index - 1] ?? '';
-    if (character === '“') open = true;
-    else if (character === '”') open = false;
-    else if (character === '"' && !/\d/.test(previous)) open = open ? false : !/[a-z]/i.test(previous);
-  }
-  return open;
-}
-
-/**
  * The [start, end) spans of `text` written as one of the five exemptions.
  * Talk uses them so a project named just a number ("2375") is not matched
  * by name inside "2375 sqft" or "555-2375" (audit A9 pass 6 L6c).
@@ -314,19 +252,6 @@ function exemptSpans(text: string): Array<readonly [number, number]> {
   for (const source of EXEMPT_PATTERNS) {
     const pattern = new RegExp(source.source, source.flags);
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-      spans.push([match.index, match.index + match[0].length]);
-    }
-  }
-  const feetMark = new RegExp(FEET_QUOTE_MARK.source, FEET_QUOTE_MARK.flags);
-  for (let match = feetMark.exec(text); match; match = feetMark.exec(text)) {
-    const end = match.index + match[0].length;
-    if (feetQuoteMarkIsMeasurement(text.slice(0, match.index), text.slice(end))) {
-      spans.push([match.index, end]);
-    }
-  }
-  const inchMark = new RegExp(INCH_QUOTE_MARK.source, INCH_QUOTE_MARK.flags);
-  for (let match = inchMark.exec(text); match; match = inchMark.exec(text)) {
-    if (inchQuoteMarkIsMeasurement(text.slice(0, match.index))) {
       spans.push([match.index, match.index + match[0].length]);
     }
   }

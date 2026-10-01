@@ -505,7 +505,7 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     ['Call the super at 555-2375.', '2375 Compliance Project'],
     ['Which sealant does spec 03 30 00 call for?', '2375 Compliance Project'],
     ['What is on sheet A-201?', '201 Market Street'],
-    ['Is the run 2375\' long?', '2375 Compliance Project'],
+    // "Is the run 2375' long?" was here: since audit A9 pass 8 a lone ' is not a feet mark (refused in the pass 7 L3 vectors).
     ['Was the $2,375 change order approved?', '375 Main Street'],
   ] as const).map(([question, project]) => ({
     name: `allows "${question}" when "${project}" is another project`,
@@ -545,13 +545,14 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
-  // Audit A9 pass 6 L2: " or ” after a number closes an open quotation; it is
-  // an inch mark only with no quotation open, or in a feet-inch pair.
+  // Audit A9 pass 6 L2: " or ” after a number closes an open quotation. Since
+  // audit A9 pass 8 it is an inch mark only in a feet-inch pair.
   ...([
     ['The super wrote "delivered to 2375" this morning, right?', '2375'],
     ['The super wrote “delivered to 2375” this morning, right?', '2375'],
-    ['Is the pipe 2375" long?', null],
-    ['Is the 6" pipe 2375" long?', null],
+    // Pass 8: a lone " is not an inch mark (the quotation tracking was removed), so these two flip to refused.
+    ['Is the pipe 2375" long?', '2375'],
+    ['Is the 6" pipe 2375" long?', '2375'],
     ['He wrote "set the sleeve at 12\'-2375" above grade" today?', null],
   ] as const).map(([question, refused]) => ({
     name: `pass 6 L2: ${question} when 2375 is another project`,
@@ -686,15 +687,15 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refusedClosed: true,
   },
   // Audit A9 pass 7 L3: ' or ’ after a number closes an open single
-  // quotation; it is a feet mark only with no quotation open, or in a
-  // feet-inch pair. An apostrophe inside a word opens nothing.
+  // quotation. Since audit A9 pass 8 it is a feet mark only in a feet-inch pair.
   ...([
     ["The super wrote 'delivered to 2375' this morning, right?", '2375'],
     ['The super wrote ‘delivered to 2375’ this morning, right?', '2375'],
     ["I don't know, he wrote 'send it to 2375' today?", '2375'],
     ["Is the '2375' job done?", '2375'],
-    ["Is the run 2375' long?", null],
-    ["I don't think the run is 2375' long?", null],
+    // Pass 8: a lone ' is not a feet mark (the quotation tracking was removed), so these two flip to refused.
+    ["Is the run 2375' long?", '2375'],
+    ["I don't think the run is 2375' long?", '2375'],
     ["He wrote 'set the sleeve at 2375'-6\" above grade' today?", null],
     ["He wrote 'set the sleeve at 2375'6\" above grade' today?", null],
   ] as const).map(([question, refused]) => ({
@@ -704,13 +705,14 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
-  // Audit A9 pass 7 L4: a straight " right after a digit is an inch mark and
-  // does not close an open double quotation.
+  // Audit A9 pass 7 L4: "the 6" pipe at 2375"" names 2375. Since audit A9
+  // pass 8 no quotation is tracked: a " is an inch mark only in a feet-inch pair.
   ...([
     ['He wrote "the 6" pipe at 2375" this morning?', '2375'],
     ['He wrote “the 6" pipe at 2375” this morning?', '2375'],
     ['Is the "2375" job done?', '2375'],
-    ['Is the 6" pipe 2375" long?', null],
+    // Pass 8: a lone " is not an inch mark (the quotation tracking was removed), so this flips to refused.
+    ['Is the 6" pipe 2375" long?', '2375'],
     ['He wrote "set the 6" sleeve at 12\' 2375" above grade" today?', null],
   ] as const).map(([question, refused]) => ({
     name: `pass 7 L4: ${question} when 2375 is another project`,
@@ -741,6 +743,31 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     projectName: SELECTED,
     question,
     knownProjectNames,
+    refused,
+  })),
+  // Audit A9 pass 8 L1, L3: the quotation tracking is gone. A quote mark after
+  // a number is a measurement only in a feet-inch pair with both marks; word
+  // units ("ft", "in.", "inch", "feet", "LF") still are.
+  ...([
+    ['Did he write "Gate 5" or "go to 2375" today?', '2375'],
+    ['He wrote “the 6” pipe at 2375” this morning', '2375'],
+    ["He wrote 'the 12' beam at 2375' this morning", '2375'],
+    ['He wrote ‘the 12’ beam at 2375’ this morning', '2375'],
+    ['Is the pipe 2375” long?', '2375'],
+    ['Is the run 2375’ long?', '2375'],
+    ["Is the run 2375'-6\" long?", null],
+    ["Is the run 2375' 6\" long?", null],
+    ["Is the run 2375'6\" long?", null],
+    ['Is the run 2375’-6” long?', null],
+    ['Is the run 2375′-6″ long?', null],
+    ['Is the run 2375 ft long?', null],
+    ['Is the pipe 2375 inch?', null],
+    ['Is the run 2375 LF?', null],
+  ] as const).map(([question, refused]) => ({
+    name: `pass 8 L1/L3: ${question} when 2375 is another project`,
+    projectName: SELECTED,
+    question,
+    knownProjectNames: OWNER_PROJECTS,
     refused,
   })),
   // Fail closed: without a usable list, today's stricter check applies exactly.

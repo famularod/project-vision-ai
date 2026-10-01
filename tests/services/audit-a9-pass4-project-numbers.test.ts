@@ -325,7 +325,8 @@ describe('audit A9 pass 5: the five exemptions', () => {
     ['Is the trench 2375 linear feet?', PROJECTS],
     ['Is the beam 2375.5 mm deep?', PROJECTS],
     ['Is the slab 2375 in. thick?', PROJECTS],
-    ['Is the run 2375\' long?', PROJECTS],
+    // "Is the run 2375' long?" was here: since audit A9 pass 8 a lone ' is not a feet mark (refused; see the pass 8 tests).
+    ['Is the run 2375\'-6" long?', PROJECTS],
     ['Is the bearing 2,375 ksf?', [SELECTED, '375 Main Street']],
     // "2375 A or 2375 V" is refused since audit A9 pass 6 L1 (a spaced "A"
     // before a word reads as a wing letter). Since audit A9 pass 7 L5 a
