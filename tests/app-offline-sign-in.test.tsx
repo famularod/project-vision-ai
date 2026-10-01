@@ -1661,9 +1661,14 @@ describe('A1 pass 4 review', () => {
  * another app and failing on his return, ended Sign Out of All Devices with
  * "needs signal" although there was signal: auth-js had used its 30 s of
  * retries by the wall clock while he was away.
+ * L3: Retry on the lockout behind a captive portal stayed on "Opening your
+ * Vitruvius workspace…" until the phone's own request timeout (about a
+ * minute): the startup lookup had no 8-second limit there.
  */
 describe('A1 pass 5 review', () => {
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const EXPIRED = 'No signal, and your sign-in has not refreshed for 7 days. Your work is saved on this phone. Connect to the internet, then tap Retry.';
+  const OPENING = 'Opening your Vitruvius workspace…';
   const LOCKOUT = 'Workspace protection needs attention';
   const REFRESH = 'POST /auth/v1/token?grant_type=refresh_token';
   const HEALTH = 'GET /auth/v1/health';
@@ -1836,6 +1841,61 @@ describe('A1 pass 5 review', () => {
     } finally {
       clock.mockRestore();
       alerts.spy.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L3 Retry on the 7-day lockout behind a captive portal: the lockout again after about 8 seconds, not "Opening" until the phone gives up', async () => {
+    await saveSignIn('owner-a', 7 * 24 + 1);
+    await phoneWorkspaceOf('owner-a');
+    const { screen, rtl } = launch();
+    const clock = jest.spyOn(Date, 'now');
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      // auth-js's minute is over; a captive portal now swallows every request.
+      clock.mockImplementation(() => realNow() + 61_000);
+      network.mode = 'hang';
+      const from = network.calls.length;
+      const startedAt = realNow();
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+      await rtl.waitFor(() => expect(screen.getByText(OPENING)).toBeTruthy(), OPEN);
+      await rtl.waitFor(() => expect(network.calls.slice(from)).toContain(REFRESH), OPEN);
+      // Before: still "Opening your Vitruvius workspace…" after 14 seconds
+      // (on a phone, until its own request timeout, about a minute).
+      await rtl.waitFor(() => expect(screen.getByText(EXPIRED)).toBeTruthy(), { timeout: 14_000 });
+      expect(realNow() - startedAt).toBeLessThan(12_000);
+      expect(screen.queryByText(OPENING)).toBeNull();
+      expect(mockWorkspaceMounts).toEqual([]);
+      // Locked, not signed out (owner answer Q13).
+      expect(mockSecure.has(`${tokenKey()}.meta`)).toBe(true);
+      expect(JSON.parse(mockAsync.get(META) as string).activeOwnerId).toBe('owner-a');
+    } finally {
+      clock.mockRestore();
+      screen.unmount();
+    }
+  });
+
+  test('L3 Retry within the 7 days behind a captive portal opens offline, sign-in pending, after about 8 seconds (owner answer Q13)', async () => {
+    // A lockout within the 7 days: this phone's workspace not yet confirmed
+    // as this account's (no workspace on the phone), then it is.
+    await saveSignIn('owner-a', 14);
+    const { screen, rtl } = launch();
+    const clock = jest.spyOn(Date, 'now');
+    try {
+      await rtl.waitFor(() => expect(screen.getByText(LOCKOUT)).toBeTruthy(), OPEN);
+      await refreshGivenUp(rtl);
+      await phoneWorkspaceOf('owner-a');
+      clock.mockImplementation(() => realNow() + 61_000);
+      network.mode = 'hang';
+      const startedAt = realNow();
+      await rtl.act(async () => { rtl.fireEvent.press(screen.getByText('Retry')); });
+      await rtl.waitFor(() => expect(screen.getByText(OPENING)).toBeTruthy(), OPEN);
+      await rtl.waitFor(() => expect(screen.getByText('WORKSPACE OPEN owner-a')).toBeTruthy(), { timeout: 14_000 });
+      expect(realNow() - startedAt).toBeLessThan(12_000);
+      expect(screen.getByText('Offline, sign-in pending')).toBeTruthy();
+    } finally {
+      clock.mockRestore();
       screen.unmount();
     }
   });

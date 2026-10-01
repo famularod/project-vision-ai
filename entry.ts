@@ -30,6 +30,7 @@ import {
 import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecision';
 import {
   clearLatestTimeSeen,
+  OFFLINE_LOOKUP_TIMEOUT_MS,
   offlineSignInRefusalMessage,
   savedSignInClockSetBack,
   SIGNAL_BACK_FINISHING_SIGN_IN,
@@ -153,12 +154,15 @@ export function NativeRoot() {
     // A1 pass 3 L1: with signal back after an earlier failure, the lookup
     // finishes the sign-in and says so, until a sign-in event decides.
     const lookupStillWanted = () => active && desiredOwnerId === undefined;
+    // A1 pass 5 L3: the lookup's 8-second limit ends with this attempt.
+    let endLookup: () => void = () => undefined;
+    const lookupEnded = new Promise<void>(resolve => { endLookup = resolve; });
     void openSavedWorkspace(sandbox, {
       stillWanted: lookupStillWanted,
       onSignalBack: () => {
         if (lookupStillWanted()) setState({ status: 'loading', message: SIGNAL_BACK_FINISHING_SIGN_IN });
       },
-    }).then(owner => {
+    }, lookupEnded).then(owner => {
       activate(owner.ownerId, owner.signInPending, owner.lastRefreshedAtMs);
     }).catch(error => {
       // A sign-in event that already chose the workspace outranks a failed
@@ -174,6 +178,7 @@ export function NativeRoot() {
 
     return () => {
       active = false;
+      endLookup();
       endGraceWatch();
       unsubscribe();
     };
@@ -256,24 +261,29 @@ export function NativeRoot() {
 async function openSavedWorkspace(
   sandbox: OwnerStorageSandbox,
   lookup: Pick<SavedSignInRefreshOptions, 'onSignalBack' | 'stillWanted'>,
+  lookupEnded: Promise<void>,
 ): Promise<Readonly<{ ownerId: string | null; signInPending: boolean; lastRefreshedAtMs?: number }>> {
   const noAnswerMark = signInRefreshNoAnswerMark();
   const refreshOptions = { ...lookup, noAnswerMark };
-  const result = await getCurrentSessionUser();
+  // A1 pass 5 L3: null when the lookup ran out (a refresh under way that
+  // never answers, behind a captive portal).
+  const result = await sessionUserWithin(OFFLINE_LOOKUP_TIMEOUT_MS, lookupEnded);
   let owner: Readonly<{ ownerId: string | null; signInPending: boolean; lastRefreshedAtMs?: number }>;
-  if (result.ok) {
+  if (result?.ok) {
     owner = { ownerId: result.data?.id || null, signInPending: false };
   } else {
     const offline = await workspaceOwnerAfterFailedLookup(
       () => sandbox.activeOwnerId(),
       undefined,
-      undefined,
+      // The refresh has had its 8 seconds: decided now, as if there were no
+      // signal, unless it has already said more (a 5xx, A1 pass 4 L2).
+      result ? undefined : 0,
       refreshOptions,
     );
     if (!offline || !('ownerId' in offline)) {
       throw new Error(
         (offline && offlineSignInRefusalMessage(offline.refused, offline.seenAtMs)) ||
-        result.message || result.error ||
+        result?.message || result?.error ||
         'Vitruvius could not verify the signed-in account.',
       );
     }
@@ -291,6 +301,34 @@ async function openSavedWorkspace(
   const confirmed = await workspaceOwnerWithClockSetBack(seenAtMs, undefined, refreshOptions);
   if ('ownerId' in confirmed) return confirmed;
   throw new Error(offlineSignInRefusalMessage('clock', confirmed.seenAtMs));
+}
+
+/**
+ * Whole-app audit A1 pass 5 L3: the startup session lookup, or null after
+ * `timeoutMs`. At launch it gives up after 1.5 s while auth-js starts; on
+ * Retry auth-js has started, and a refresh it sends behind a captive portal
+ * kept "Opening your Vitruvius workspace…" until the phone's own request
+ * timeout (about a minute), where launch decided after about 8 seconds.
+ * Once `ended` (the attempt is over), the limit no longer runs.
+ */
+async function sessionUserWithin(
+  timeoutMs: number,
+  ended: Promise<void>,
+): Promise<Awaited<ReturnType<typeof getCurrentSessionUser>> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  void ended.then(() => {
+    if (timer) clearTimeout(timer);
+  });
+  try {
+    return await Promise.race([
+      getCurrentSessionUser(),
+      new Promise<null>(resolve => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const ownerBoundaryStyles = StyleSheet.create({
