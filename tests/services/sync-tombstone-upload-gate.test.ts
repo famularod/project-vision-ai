@@ -162,6 +162,13 @@ jest.mock('../../services/SupabaseService', () => ({
   upsertDAVESyncTombstones: (tombstones: unknown[]) =>
     Promise.resolve({ ok: true, configured: true, stubbed: false, data: tombstones }),
   listScheduleItems: (...args: unknown[]) => mockListScheduleItems(...args),
+  // A conflict choice reads the task's row by its id (whole-app audit A7
+  // pass 15 L-2), here the row the cloud list gives: each read takes the
+  // list's next answer, as the list read it replaced did.
+  getScheduleItem: async (id: string) => {
+    const cloud = await mockListScheduleItems();
+    return cloud.ok ? { ...cloud, data: cloud.data.find(item => item.id === id) ?? null } : cloud;
+  },
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: (...args: unknown[]) =>
     mockListReferenceDocuments(...args),

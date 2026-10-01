@@ -7,6 +7,7 @@ import {
   deleteProjectUpdate,
   deleteProject,
   getProjectUpdateSyncMetadata,
+  getScheduleItem,
   getSupabaseConfigurationStatus,
   listProjectUpdates,
   listProjectAreas,
@@ -4781,14 +4782,16 @@ async function uploadExactQueueItem(
 /**
  * The cloud's row for a task as it is now (whole-app audit A8 pass 12 L2);
  * null when the cloud has none. sync_conflict_cloud_copy_unreadable when the
- * cloud cannot be read.
+ * cloud cannot be read. Read by its id (A7 pass 15 L-2): the full list pages
+ * by offset, newest first, so a row edited while it was read could be missed,
+ * and the conflict was closed as "deleted on another device".
  */
 async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | null> {
-  const cloud = await listScheduleItems();
-  if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
+  const cloud = await getScheduleItem(itemId).catch(() => null);
+  if (!cloud?.ok || cloud.stubbed) {
     throw new Error('sync_conflict_cloud_copy_unreadable');
   }
-  return cloud.data.find(item => item.id === itemId) ?? null;
+  return cloud.data ?? null;
 }
 
 export async function resolveScheduleItemSyncConflict(

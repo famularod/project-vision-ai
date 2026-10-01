@@ -2315,6 +2315,39 @@ export async function listScheduleItems(): Promise<SupabaseServiceResult<Schedul
   });
 }
 
+/**
+ * One task's cloud row, read by its id, as listScheduleItems gives it; null
+ * when the cloud has none (whole-app audit A7 pass 15 L-2). The list pages by
+ * offset, newest first, so a row edited while it is read moves to page 0 and
+ * can be missed: a conflict choice read "not in the list" as deleted.
+ */
+export async function getScheduleItem(
+  id: string,
+): Promise<SupabaseServiceResult<ScheduleItem | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<ScheduleItem | null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(SCHEDULE_ITEMS_TABLE)
+    .select('id, item_data')
+    .eq('owner_id', owner.data)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) return tableAwareErrorResult<ScheduleItem | null>(error.message, status);
+  if (!data) return okResult<ScheduleItem | null>(null, status);
+
+  const row = toRecord(data);
+  const item = toRecord(row.item_data);
+  // A row with no task in it is left out of the list too.
+  if (Object.keys(item).length === 0) return okResult<ScheduleItem | null>(null, status);
+  return okResult(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, status);
+}
+
 export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<ReferenceDocument[]>();
