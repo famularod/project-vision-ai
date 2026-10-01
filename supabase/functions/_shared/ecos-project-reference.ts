@@ -565,7 +565,7 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
   const nameAfter = wordsIn(name.slice(at.index + at[0].length));
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
-  const following = wordsInCommon(nameAfter, afterWords);
+  const following = wordsInCommon(nameAfter, afterWords, true);
   const preceding = wordsInCommon(nameBefore, beforeWords);
   const asWritten = following.count + preceding.count;
   return {
@@ -587,16 +587,29 @@ function wordsIn(text: string): string[] {
  * `count` the ones written as in the name and `abbreviated` the ones that
  * match only through a street abbreviation ("St" for "Street"; pass 14 L4).
  */
-function wordsInCommon(nameWords: readonly string[], words: readonly string[]) {
+function wordsInCommon(nameWords: readonly string[], words: readonly string[], toQuestionEnd = false) {
   let walked = 0;
   let count = 0;
   let abbreviated = 0;
   while (walked < nameWords.length && walked < words.length && sameNameWord(words[walked], nameWords[walked])) {
     if (words[walked].toLowerCase() !== nameWords[walked].toLowerCase()) abbreviated += 1;
-    else if (!isFunctionWord(nameWords[walked], words[walked])) count += 1;
+    else if (!isFunctionWord(nameWords[walked], words[walked]) || isLetterA(nameWords, words, walked, toQuestionEnd)) count += 1;
     walked += 1;
   }
   return { count, abbreviated, walked };
+}
+
+/**
+ * Audit A9 pass 16 L1: a lower-case "a" is the capital A of a name when the
+ * name's next word follows it too, even abbreviated ("2375 a st" continues
+ * "24117 - 2375 A Street"), or when it ends the question (`toQuestionEnd`:
+ * `words` run to the end; "What is left at 450 a"); "Is 450 a priority this
+ * week?" still does not (pass 15 L5), nor does an "a" that starts it ("a
+ * 2375 update" is not "Tower A 2375").
+ */
+function isLetterA(nameWords: readonly string[], words: readonly string[], at: number, toQuestionEnd: boolean) {
+  return nameWords[at] === 'A' && words[at] === 'a' &&
+    ((toQuestionEnd && at === words.length - 1) || sameNameWord(words[at + 1], nameWords[at + 1]));
 }
 
 const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to', 'a', 'an', 'by', 'with', 'from']);
@@ -604,7 +617,8 @@ const FUNCTION_WORDS = new Set(['at', 'on', 'of', 'for', 'in', 'and', 'the', 'to
 /**
  * A function word in a name; a capital A is a letter, as in "2375 A Street"
  * (audit A9 pass 10 L1), when the question writes it as a capital too
- * (audit A9 pass 15 L5: "Is 450 a priority?" does not continue "450 A Street").
+ * (audit A9 pass 15 L5: "Is 450 a priority?" does not continue "450 A Street"),
+ * or as a lower-case "a" in the places isLetterA reads (pass 16 L1).
  */
 function isFunctionWord(nameWord: string, word: string) {
   return !(nameWord === 'A' && word === 'A') && FUNCTION_WORDS.has(nameWord.toLowerCase());

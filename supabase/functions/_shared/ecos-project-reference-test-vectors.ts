@@ -1416,6 +1416,31 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refused ? { refusedSelected: '450' } : {}),
   })),
+  // Audit A9 pass 16 L1: a lower-case "a" continues an "A Street" name when
+  // the name's next word follows it (even abbreviated) or nothing does.
+  ...([
+    ['What is left at 2375 a st?', SELECTED, [SELECTED, '24117 - 2375 A Street'], '2375 (24117 - 2375 A Street)', undefined],
+    ['what is left at 450 a street', SELECTED, [SELECTED, '24117 - 450 A St'], '450 (24117 - 450 A St)', undefined],
+    ['What is left at 450 a St?', '24117 - 450 A Street', [SELECTED, '24117 - 450 A Street', '450 Elm St'], null, undefined],
+    ['What is left at 450 a', '450 Elm St', [SELECTED, '24117 - 450 A Street', '450 Elm St'], '450 (24117 - 450 A Street)', '450'],
+    ['Is 450 a priority this week?', '450 Elm St', [SELECTED, '24117 - 450 A St', '450 Elm St'], null, undefined],
+  ] as const).map(([question, projectName, knownProjectNames, refused, refusedSelected]) => ({
+    name: `pass 16 L1: "${question}" on "${projectName}" with ${knownProjectNames.filter(name => name !== projectName).join(', ')}`,
+    projectName,
+    question,
+    knownProjectNames,
+    refused,
+    ...(refusedSelected ? { refusedSelected } : {}),
+  })),
+  {
+    name: 'pass 16 L1: the note "Crew finished framing at 450 a St today" on 2321 names a closed "24117 - 450 A Street"',
+    projectName: SELECTED,
+    question: 'Crew finished framing at 450 a St today',
+    knownProjectNames: [SELECTED],
+    closedProjectNames: ['24117 - 450 A Street'],
+    refused: '450 (24117 - 450 A Street)',
+    refusedClosed: true,
+  },
   // Fail closed: without a usable list, today's stricter check applies exactly.
   {
     name: 'without a project list, 4000 psi is still refused (unchanged)',
