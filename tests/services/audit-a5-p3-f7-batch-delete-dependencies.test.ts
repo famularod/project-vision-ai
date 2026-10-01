@@ -10,7 +10,7 @@
 import { dependencyChangesForDeletedTask } from '../../services/VitruviusScheduleEngine';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
+import { scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -57,7 +57,8 @@ function harness(items: ScheduleItem[], documents: ReferenceDocument[]) {
     scheduleItemsOfUnbatchedDocument,
     dependencyChangesForDeletedTask,
     // Owner answer Q22 (landed after this test): a deleted lookahead's master tasks go back to their dates.
-    scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote, syncScheduleItemRevision: noop,
+    // A10 pass 6 M1: the delete's other saves (lookahead give-backs, removed ids on the moved tasks) come from one service now.
+    scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, syncScheduleItemRevision: noop,
     Alert: { alert: (_title: string, _message: string, options: typeof buttons) => { buttons = options; } },
     recordDAVESyncTombstones: async (list: unknown[]) => list,
     advanceScheduleItemSyncGeneration: noop, cancelScheduleItemTextSync: noop, rememberOperationalTombstones: noop,

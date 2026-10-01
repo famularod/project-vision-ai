@@ -130,3 +130,42 @@ export function scheduleItemAnsweringToTaskId(
 ): ScheduleItem | null {
   return scheduleTaskLinks(items)({ ...saved, scheduleItemId: taskId })?.item ?? null;
 }
+
+function sameRemovedTask(shown: ScheduleItem, removed: ScheduleItem): boolean {
+  if (!nameKey(removed.taskName) || nameKey(shown.taskName) !== nameKey(removed.taskName)) return false;
+  if (nameKey(shown.scheduleProjectName || shown.projectName) !== nameKey(removed.scheduleProjectName || removed.projectName)) return false;
+  const area = nameKey(shown.locationName);
+  const removedArea = nameKey(removed.locationName);
+  return !area || !removedArea || area === removedArea;
+}
+
+/**
+ * Whole-app audit A10 pass 6 M1 (30 Sep 2026): "Delete PDF + Items" on an old
+ * master removes the old row of every task a new master moved. A row a new
+ * master saved before the earlier ids were kept (79f49d3) does not answer to
+ * the removed id, so its field updates read as evidence of a deleted task.
+ * Before the deletions are recorded, each removed task's id goes onto the one
+ * task shown after the delete with its name, project and area, when the
+ * removed tasks hold no other task by that name there either (never a guess
+ * between two). The tasks to save, with the ids added; none for a removed
+ * task some task shown already answers to.
+ */
+export function scheduleTasksAnsweringToRemovedTasks(
+  shown: readonly ScheduleItem[],
+  removed: readonly ScheduleItem[],
+): ScheduleItem[] {
+  const answered = new Set(shown.flatMap(item => [idOf(item.id), ...scheduleTaskEarlierIds(item)]));
+  const added = new Map<ScheduleItem, string[]>();
+  removed.forEach(gone => {
+    const goneId = idOf(gone.id);
+    if (!goneId || answered.has(goneId)) return;
+    const matches = shown.filter(item => sameRemovedTask(item, gone));
+    if (matches.length !== 1) return;
+    if (removed.filter(other => sameRemovedTask(matches[0], other)).length !== 1) return;
+    added.set(matches[0], [...(added.get(matches[0]) || []), goneId]);
+  });
+  return [...added.entries()].map(([item, ids]) => ({
+    ...item,
+    revisedFromTaskIds: scheduleTaskEarlierIds({ id: item.id, revisedFromTaskIds: [...ids, ...scheduleTaskEarlierIds(item)] }),
+  }));
+}

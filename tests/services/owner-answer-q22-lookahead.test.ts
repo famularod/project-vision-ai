@@ -26,6 +26,7 @@ import {
 import {
   scheduleImportAddsToMaster,
   scheduleItemsAfterLookaheadDeleted,
+  scheduleItemsAfterScheduleDeleted,
   scheduleLookaheadDeleteNote,
   suggestScheduleImportRole,
   withScheduleImportRole,
@@ -567,7 +568,8 @@ describe('App.tsx, compiled: approving a lookahead and deleting it (owner answer
     const { deleteScheduleDocument } = compile<{ deleteScheduleDocument: (id: string) => void }>(['dropDeletedPredecessors', 'deleteScheduleDocument'], {
       referenceDocuments: documents, scheduleItems: items, scheduleItemsCurrentRef, referenceDocumentsCurrentRef: { current: documents },
       scheduleItemsOnlyInImportBatch, scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleDocumentIsScheduleLike,
-      dependencyChangesForDeletedTask, scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote,
+      // A10 pass 6 M1: the delete's other saves (lookahead give-backs, removed ids on the moved tasks) come from one service now.
+      dependencyChangesForDeletedTask, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote,
       syncScheduleItemRevision: (item: ScheduleItem) => { synced.push(item); },
       Alert: { alert: (_title: string, message: string, buttons: typeof alert.buttons) => { alert = { message, buttons }; } },
       recordDAVESyncTombstones: async (list: unknown[]) => list, advanceScheduleItemSyncGeneration: () => 1,

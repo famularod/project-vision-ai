@@ -5,6 +5,7 @@ import {
   scheduleDocumentAddsToMaster,
   scheduleFullCopyLeftUnshown,
   scheduleProjectScopeKey,
+  selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -16,6 +17,7 @@ import {
   scheduleRowStatesPercent,
 } from './ScheduleProgressSource';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
+import { scheduleTasksAnsweringToRemovedTasks } from './ScheduleTaskRevisions';
 
 /**
  * Owner answer Q22 (30 Sep 2026): "a shorter schedule should be made to
@@ -389,6 +391,38 @@ export function scheduleItemsAfterLookaheadDeleted(
   updatedAt = new Date().toISOString(),
 ): ScheduleItem[] {
   return tasksAfterLookaheadDeleted(items, document, updatedAt).map(entry => entry.item);
+}
+
+/**
+ * Every task "Delete PDF + Items" saves besides those it removes: the tasks a
+ * deleted lookahead restated, given back (scheduleItemsAfterLookaheadDeleted),
+ * and the task shown after the delete that each removed task was, answering
+ * to the removed id (whole-app audit A10 pass 6 M1,
+ * scheduleTasksAnsweringToRemovedTasks), so its field updates stay current.
+ */
+export function scheduleItemsAfterScheduleDeleted({
+  items,
+  removed,
+  document,
+  documents,
+  updatedAt = new Date().toISOString(),
+}: Readonly<{
+  /** The saved tasks the delete keeps. */
+  items: readonly ScheduleItem[];
+  /** The tasks it removes. */
+  removed: readonly ScheduleItem[];
+  document: ReferenceDocument;
+  /** The schedules saved after the delete. */
+  documents: readonly ReferenceDocument[];
+  updatedAt?: string;
+}>): ScheduleItem[] {
+  const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt).map(item => [item.id, item]));
+  const shown = selectAuthoritativeScheduleItems({
+    scheduleItems: items.map(item => changed.get(item.id) || item),
+    scheduleDocuments: [...documents],
+  });
+  scheduleTasksAnsweringToRemovedTasks(shown, removed).forEach(item => changed.set(item.id, { ...item, updatedAt }));
+  return [...changed.values()];
 }
 
 /**

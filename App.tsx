@@ -685,7 +685,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleImportAddsToMaster, scheduleItemsAfterLookaheadDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -6520,8 +6520,9 @@ useEffect(() => {
       savedUpdates,
       operationalSyncTombstones,
       update => update,
+      { scheduleItems: scheduleItems as unknown as import('./types').ScheduleItem[], scheduleDocuments: referenceDocuments }, // a task a new master moved still answers to its old id (A10 pass 6 M1)
     ),
-    [operationalSyncTombstones, savedUpdates],
+    [operationalSyncTombstones, savedUpdates, scheduleItems, referenceDocuments],
   );
   const activeSavedUpdates = useMemo(() => savedUpdateTaskEvidence.active.filter(update => !update.isArchived), [savedUpdateTaskEvidence.active]); // an archived update stops counting at once, not when the cloud copy returns (audit round 2 L4)
   const deletedTaskEvidenceIds = useMemo(
@@ -11646,7 +11647,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
-                const restored = new Map(scheduleItemsAfterLookaheadDeleted(scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], document).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22)
+                const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
                 const nextScheduleItems = scheduleItemsCurrentRef.current
                   .filter(item => !deletedItemIds.has(item.id)).map(item => restored.get(item.id) || item);
                 referenceDocumentsCurrentRef.current = updated;

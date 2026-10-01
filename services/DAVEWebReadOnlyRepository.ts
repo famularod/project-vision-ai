@@ -122,6 +122,8 @@ export async function loadDAVEWebReadOnlySnapshot(
     rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
     tombstones,
     update => update.updateData,
+    // A task a new master moved still answers to its old id (A10 pass 6 M1).
+    { scheduleItems: reconciledScheduleItems, shownScheduleItems: scheduleItems },
   ).active;
 
   const openCloudProjects = rawProjects.flatMap(project => (
