@@ -1250,6 +1250,8 @@ function echoWhileStillQueued(phone: Device) {
 async function chooseInSettings(
   phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud',
   onRetryUpdateSync: (...args: unknown[]) => Promise<unknown> = jest.fn(async () => ({})),
+  /** What happens on the phone while the choice talks to the cloud (A4 pass 18 L1). */
+  duringChoice?: () => Promise<void>,
 ) {
   const applyChosen = evaluate<(update: Update) => void>(
     transpile(`module.exports = function (update) ${blockAfter('onApplyCloudConflictUpdate={update => {')}`),
@@ -1263,8 +1265,15 @@ async function chooseInSettings(
     transpile(`${componentFunction('resolveConflict', adminScreen)}\nmodule.exports = { resolveConflict };`),
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
-      resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
-      projectUpdateCopyIsLastInCloud, onRetryUpdateSync,
+      resolveProjectUpdateSyncConflict: duringChoice
+        ? async (...args: Parameters<typeof resolveProjectUpdateSyncConflict>) => {
+          const resolved = await resolveProjectUpdateSyncConflict(...args);
+          await duringChoice();
+          return resolved;
+        }
+        : resolveProjectUpdateSyncConflict,
+      syncConflictChoiceStopReason, onApplyCloudConflictUpdate: applyChosen, savedUpdates: phone.savedUpdatesRef.current,
+      savedUpdatesRef: phone.savedUpdatesRef, projectUpdateCopyIsLastInCloud, onRetryUpdateSync,
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
       Alert: { alert: (title: string) => { alerts.push(title); } },
@@ -1764,6 +1773,7 @@ async function chooseInSettingsExpectingFailure(phone: Device, conflict: { id: s
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
       resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: jest.fn(), savedUpdates: phone.savedUpdatesRef.current,
+      savedUpdatesRef: phone.savedUpdatesRef,
       projectUpdateCopyIsLastInCloud, onRetryUpdateSync: jest.fn(async () => ({})), // Settings' Retry callback (A4 pass 17 L2)
       getSyncConflicts, getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined,
       setSyncAttemptMessage: () => undefined, setConflictReviewVisible: () => undefined,
@@ -3530,7 +3540,7 @@ async function chooseInSettingsSeeing(phone: Device, conflict: { id: string }, r
     {
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
       resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: (update: Update) => { seen.applied.push(update); },
-      savedUpdates: phone.savedUpdatesRef.current, projectUpdateCopyIsLastInCloud,
+      savedUpdates: phone.savedUpdatesRef.current, savedUpdatesRef: phone.savedUpdatesRef, projectUpdateCopyIsLastInCloud,
       onRetryUpdateSync: jest.fn(async () => ({})), // Settings' Retry callback (A4 pass 17 L2)
       getSyncConflicts, getSyncStatus: async () => null, setSyncStatus: () => undefined,
       setSyncConflicts: (conflicts: unknown[]) => { seen.conflictsShown.push(conflicts); },
@@ -4087,5 +4097,56 @@ describe('Keep Phone\'s archive is not undone by the waiting-update sync (audit 
     expect(inCloud().isArchived ?? false).toBe(false);
     expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
     expect(phone.saved()!.isArchived ?? false).toBe(false);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 18 L1 (caused by 6c4f49a): after Keep Phone with a
+ * newer edit, Settings sent the card as it was when David tapped. A photo
+ * analysis that finished while Keep Phone talked to the cloud had reached
+ * the card; the App's Retry wrote the older copy over the card, then over
+ * the waiting edit, then to the cloud, and both devices read "Analyzing".
+ * Settings now sends the card as it is after the choice.
+ */
+describe('after Keep Phone, Settings sends the newer edit as the card is now (audit A4 pass 18 L1)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+
+  it('a photo analysis that finishes while Keep Phone talks to the cloud stays on the card and reaches the cloud', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    // Settings' Retry callback as the App wires it.
+    const wiring = /onRetryUpdateSync=\{(.+)\}\n/.exec(app)![1];
+    const retry = evaluate<(...args: unknown[]) => Promise<unknown>>(
+      transpile(`module.exports = ${wiring};`), { retryQueuedUpdate: appRetryQueuedUpdate(phone) });
+    const calls: Array<Promise<unknown>> = [];
+    const onRetryUpdateSync = jest.fn((...args: unknown[]) => {
+      const call = retry(...args);
+      calls.push(call);
+      return call;
+    });
+    const result = finishedAnalysis();
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync, async () => {
+      lateAnalysisFinishes(phone, result);
+      await phone.settle();
+    });
+    expect(onRetryUpdateSync).toHaveBeenCalledTimes(1);
+    expect(firstPhotoAnalysis(onRetryUpdateSync.mock.calls[0][0] as Update)).toEqual(result);
+    await Promise.all(calls);
+    phone.render();
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
   });
 });

@@ -233,6 +233,10 @@ export function AdminScreen({
   // Read when a sync ends, while the document uploads it started may still run.
   const failedDocumentCountRef = useRef(failedDocumentCount);
   failedDocumentCountRef.current = failedDocumentCount;
+  // Read after a conflict choice's cloud calls (whole-app audit A4 pass 18
+  // L1): a photo analysis can land on the card while Keep Phone runs.
+  const savedUpdatesRef = useRef(savedUpdates);
+  savedUpdatesRef.current = savedUpdates;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [conflictReviewVisible, setConflictReviewVisible] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
@@ -979,8 +983,10 @@ export function AdminScreen({
         // A card reading Sent is not one: a refresh or echo during the
         // conflict showed the iPad's copy there (A4 pass 12 L3).
         // An archive Keep Phone kept is no newer edit (whole-app audit A4
-        // pass 17 L2; the check leaves it aside).
-        const phoneCopy = savedUpdates.find(update => update.id === conflict.localId);
+        // pass 17 L2; the check leaves it aside). The card as it is now, not
+        // as it was when David tapped (A4 pass 18 L1): sent as it was, it
+        // wrote over a photo analysis that landed meanwhile.
+        const phoneCopy = savedUpdatesRef.current.find(update => update.id === conflict.localId);
         const newerPhoneEdit = Boolean(phoneCopy) && (phoneCopy!.status === 'queued' || phoneCopy!.status === 'failed') &&
           !projectUpdateCopyIsLastInCloud(phoneCopy!);
         if (resolution === 'keep_cloud' || !newerPhoneEdit) {
