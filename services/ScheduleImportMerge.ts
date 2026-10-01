@@ -532,8 +532,14 @@ function pairTaskRevisions(
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
-  // The lookaheads, known by the notes of the tasks they restated (A5 pass 18 F3).
-  const lookaheads = new Set(existing.flatMap(item => (item.lookaheadOverlay?.lookaheads || []).map(entry => key(entry.batchId))).filter(Boolean));
+  // The lookaheads, known by the notes of the tasks they restated (A5 pass 18 F3), and by the tasks they added.
+  // Whole-app audit A6 pass 19 M2 (1 Oct 2026): L1 added a third Pour slab and L2 restated it; deleting L1
+  // cleared L1 from every note, so the third pour counted as a master's, the next master's two rows met three
+  // twins, nothing paired, and David's 60% left the view. A task a lookahead added names its lookahead itself.
+  const lookaheads = new Set([
+    ...existing.flatMap(item => (item.lookaheadOverlay?.lookaheads || []).map(entry => key(entry.batchId))),
+    ...existing.filter(item => item.importedAsLookahead === true).map(item => key(item.importBatchId)),
+  ].filter(Boolean));
   const addedByLookahead = (item: ScheduleItem) => {
     const imports = scheduleItemImportBatchIds(item).map(key).filter(Boolean);
     return imports.length > 0 && imports.every(batch => lookaheads.has(batch));
@@ -829,7 +835,8 @@ export function mergeApprovedScheduleImportItems({
     if (overlay) {
       const saved = pairedSaved || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
       if (!saved) {
-        additions.push(importedItem);
+        // Added by the lookahead: it says so itself, after the lookahead's notes are gone (A6 pass 19 M2).
+        additions.push({ ...importedItem, importedAsLookahead: true });
         return;
       }
       claimed.add(saved.id);

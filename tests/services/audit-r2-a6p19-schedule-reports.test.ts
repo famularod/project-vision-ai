@@ -28,6 +28,7 @@ import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, sch
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 type State = { items: ScheduleItem[]; documents: ReferenceDocument[] };
 const EMPTY: State = { items: [], documents: [] };
@@ -172,5 +173,78 @@ describe('M1: deleting a newer lookahead never brings back dates a newer master 
     state = approve(state, L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,'], true);
     state = deleteWithItems(state, L2, '2026-09-19T10:00:00.000Z');
     expect(datesOf(state, 'Framing')).toEqual([['10/18/2026', '10/28/2026']]);
+  });
+});
+
+describe('M2: after the lookahead that added a third twin is deleted (a later lookahead still holds it), the next master pairs the twins', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const L2 = doc('LOOKAHEAD L2', '2026-09-16T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', '2026-09-21T12:00:00.000Z');
+  const FRAMING = 'Framing,Alpha,Lot,10/26/2026,10/30/2026,';
+  const run = (deleteL1: boolean, webEdit = false) => {
+    let state = approve(EMPTY, F, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', FRAMING]);
+    state = record(state, named(state, 'Pour slab')[0].id, 60, '2026-09-08T15:00:00.000Z');
+    // Week 1's rolling lookahead: the second pour, and a third.
+    state = approve(state, L1, ['Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', 'Pour slab,Alpha,Lot,11/02/2026,11/06/2026,'], true);
+    if (webEdit) {
+      // A web edit of the third pour (its owner) keeps what the lookahead noted on it.
+      const third = named(state, 'Pour slab')[2];
+      const edited = buildDAVEWebScheduleItem({
+        draft: {
+          projectId: 'alpha', itemType: 'Task', taskName: third.taskName, projectName: third.projectName, locationName: third.locationName,
+          startDate: third.startDate, finishDate: third.finishDate, milestone: '', owner: 'Concrete crew', contractor: '',
+          percentComplete: third.percentComplete, priority: 'Medium', status: third.status, notes: '', nextAction: '', activityMessage: '',
+        } as any,
+        current: { ...third, cloudUpdatedAt: null } as any, id: third.id, now: '2026-09-10T09:00:00.000Z', actor: 'David',
+      }) as unknown as ScheduleItem;
+      expect(edited.importedAsLookahead).toBe(true);
+      const { cloudUpdatedAt: _drop, ...plain } = edited as any;
+      state = { ...state, items: state.items.map(item => item.id === third.id ? plain as ScheduleItem : item) };
+    }
+    // Week 2's lookahead restates both.
+    state = approve(state, L2, ['Pour slab,Alpha,Lot,10/20/2026,10/24/2026,', 'Pour slab,Alpha,Lot,11/03/2026,11/07/2026,'], true);
+    const r1 = send(null, state, '2026-09-17T15:00:00.000Z');
+    if (deleteL1) state = deleteWithItems(state, L1, '2026-09-19T10:00:00.000Z');
+    // Monday's master slips its two pours two days; the third is not in it yet.
+    state = approve(state, G, ['Pour slab,Alpha,Lot,10/07/2026,10/11/2026,', 'Pour slab,Alpha,Lot,10/22/2026,10/26/2026,', FRAMING]);
+    const r2 = send(r1.sent, state, '2026-09-21T15:00:00.000Z');
+    return { pours: named(state, 'Pour slab').map(item => [item.startDate, item.percentComplete]), r2 };
+  };
+
+  it('control: week 1\'s lookahead kept: three pours, David\'s 60% on the first', () => {
+    const { pours, r2 } = run(false);
+    expect(pours).toEqual([['10/07/2026', 60], ['10/22/2026', 0], ['11/03/2026', 0]]);
+    expect(r2.counts).toBe('0 completed; 0 open');
+  });
+
+  it('week 1\'s lookahead deleted first: still three pours, David\'s 60% on the first, no pour added or removed', () => {
+    const control = run(false);
+    const { pours, r2 } = run(true);
+    expect(pours).toEqual([['10/07/2026', 60], ['10/22/2026', 0], ['11/03/2026', 0]]);
+    expect(r2.counts).toBe('0 completed; 0 open');
+    expect(r2.lines).toEqual(control.r2.lines);
+    expect(r2.lines.some(line => /added to the project plan|removed from the current project plan/.test(line))).toBe(false);
+  });
+
+  it('a web edit of the pour the lookahead added keeps the mark, and the next master still pairs', () => {
+    const { pours } = run(true, true);
+    expect(pours).toEqual([['10/07/2026', 60], ['10/22/2026', 0], ['11/03/2026', 0]]);
+  });
+
+  it('a pour a lookahead added that a master then lists is the master\'s: it no longer counts as the lookahead\'s', () => {
+    let state = approve(EMPTY, F, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,']);
+    state = approve(state, L1, ['Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', 'Pour slab,Alpha,Lot,11/02/2026,11/06/2026,'], true);
+    expect(state.items.filter(item => item.importedAsLookahead).map(item => item.id)).toEqual(['LOOKAHEAD L1-2']);
+    // G lists all three, unchanged: the third is re-homed into G, a master's twin from now on.
+    state = approve(state, G, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', 'Pour slab,Alpha,Lot,11/02/2026,11/06/2026,']);
+    expect(named(state, 'Pour slab').map(item => item.id)).toEqual(['MASTER F-1', 'MASTER F-2', 'LOOKAHEAD L1-2']);
+    expect(state.items.find(item => item.id === 'LOOKAHEAD L1-2')!.alsoImportedInBatchIds).toEqual(['batch-MASTER G']);
+    // Deleting L1 keeps it (G holds it), and the next master's three rows pair with all three: David's 30% stays.
+    state = record(state, 'LOOKAHEAD L1-2', 30, '2026-09-22T09:00:00.000Z');
+    state = deleteWithItems(state, L1, '2026-09-22T10:00:00.000Z');
+    const H = doc('MASTER H', '2026-09-28T12:00:00.000Z');
+    state = approve(state, H, ['Pour slab,Alpha,Lot,10/06/2026,10/10/2026,', 'Pour slab,Alpha,Lot,10/20/2026,10/24/2026,', 'Pour slab,Alpha,Lot,11/03/2026,11/07/2026,']);
+    expect(named(state, 'Pour slab').map(item => [item.startDate, item.percentComplete])).toEqual([['10/06/2026', 0], ['10/20/2026', 0], ['11/03/2026', 30]]);
   });
 });

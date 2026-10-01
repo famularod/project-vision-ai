@@ -856,6 +856,15 @@ export type ScheduleItem = {
    */
   alsoImportedSourceRow?: { importBatchId: string; sourceRowNumber: number } | null;
   /**
+   * A task a lookahead added (no master had it): its own import
+   * (importBatchId) is a lookahead's (whole-app audit A6 pass 19 M2, 1 Oct
+   * 2026). The merge knew lookaheads only by the notes of the tasks they
+   * restated, which deleting the lookahead clears, so a later lookahead still
+   * holding the task left it counted as a master's. Kept in the task's JSON
+   * record. Missing on every other task, and on one added before.
+   */
+  importedAsLookahead?: boolean | null;
+  /**
    * The lookaheads that restated this task in place (owner answer Q22), and
    * what it said before the first of them, so deleting a lookahead gives the
    * task back its master schedule dates.

@@ -332,6 +332,8 @@ export function buildDAVEWebScheduleItem({
     ...(current?.alsoImportedInBatchIds?.length ? { alsoImportedInBatchIds: current.alsoImportedInBatchIds } : {}),
     // The row its latest import gives it, for twins' file order (A5 pass 19 L4).
     ...(current?.alsoImportedSourceRow ? { alsoImportedSourceRow: current.alsoImportedSourceRow } : {}),
+    // A task a lookahead added says so (A6 pass 19 M2).
+    ...(current?.importedAsLookahead === true ? { importedAsLookahead: true } : {}),
     // What the task said before a lookahead restated it (owner answer Q22).
     ...(current?.lookaheadOverlay ? { lookaheadOverlay: current.lookaheadOverlay } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
