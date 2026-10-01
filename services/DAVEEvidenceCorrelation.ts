@@ -10,7 +10,7 @@ import {
   classifyDAVEImplementation,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
-import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressIsComplete, scheduleProgressRecordedByManager } from './ScheduleProgressInvariant';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
@@ -111,7 +111,8 @@ function correlateTask(
 ): DAVETaskEvidenceCorrelation {
   const evidence: DAVETaskEvidenceClaim[] = [scheduleClaim(item)];
   const verification = item.completionVerification;
-  const pmScheduleJudgment = item.progressSource === 'project_manager';
+  // Not a percent a schedule file set on a task the manager tracked (A10 pass 3 M1).
+  const pmScheduleJudgment = scheduleProgressRecordedByManager(item);
 
   for (const source of verification?.evidence ?? []) {
     const isPMEvidence = source.kind === 'pm_confirmation' || source.kind === 'pm_note';
@@ -298,7 +299,8 @@ function correlateTask(
 }
 
 function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
-  const pmJudgment = item.progressSource === 'project_manager';
+  // A percent a schedule file set reads as the schedule's (A10 pass 3 M1).
+  const pmJudgment = scheduleProgressRecordedByManager(item);
   return {
     id: `correlation:schedule:${item.id}`,
     kind: pmJudgment ? 'pm_confirmation' : 'schedule',

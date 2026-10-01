@@ -14,7 +14,11 @@ import {
   parseDAVEAssertions,
   type DAVEAssertionParseResult,
 } from './DAVEAssertionParser';
-import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  scheduleProgressIsComplete,
+  scheduleProgressRecordedByManager,
+  scheduleProgressSetByScheduleFile,
+} from './ScheduleProgressInvariant';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -79,10 +83,24 @@ export type PIEScheduleReconciliationResult = {
 };
 
 export function scheduleHasAuthoritativeProgressJudgment(item: ScheduleItem) {
-  if (item.progressSource === 'project_manager') return true;
+  if (scheduleProgressRecordedByManager(item)) return true;
+  // A percent an approved schedule file set is the scheduler's, and the task
+  // says so; it is not the manager's judgment (A10 pass 3 M1).
+  if (scheduleProgressSetByScheduleFile(item)) return false;
 
   // Older records did not preserve progress provenance. A saved in-progress
   // percentage is still an explicit professional judgment, not a DAVE guess.
+  return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
+}
+
+/**
+ * Which saved copy of a task shows keeps the rank sync gives it
+ * (DAVEScheduleRecovery): a task the manager tracked stays ranked after an
+ * approved file raises it. Only the summaries read the file's percent as the
+ * schedule's (scheduleHasAuthoritativeProgressJudgment).
+ */
+function scheduleProgressHoldsManagerRank(item: ScheduleItem) {
+  if (item.progressSource === 'project_manager') return true;
   return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
 }
 
@@ -94,14 +112,16 @@ export function scheduleCompletionOverridesFieldMatch(
 
   const verification = item.completionVerification;
   const pmVerified = verification?.status === 'pm_verified';
-  const pmRecorded = item.progressSource === 'project_manager';
-  const scheduleImported = item.progressSource === 'schedule_import';
+  const pmRecorded = scheduleProgressRecordedByManager(item);
+  // A file's completion, from the import or from an approved update (A10 pass 3 M1).
+  const fileSet = scheduleProgressSetByScheduleFile(item);
+  const scheduleImported = item.progressSource === 'schedule_import' || fileSet;
   if (!pmVerified && !pmRecorded && !scheduleImported) return false;
 
   const completionAt = timestamp(
     pmVerified
       ? verification?.verifiedAt || verification?.reportedAt || null
-      : pmRecorded
+      : pmRecorded || fileSet
         ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
         : item.importedAt || item.createdAt || null,
   );
@@ -118,7 +138,7 @@ export function scheduleProgressOverridesFieldMatch(
   item: ScheduleItem,
   match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
 ) {
-  if (item.progressSource !== 'project_manager') return false;
+  if (!scheduleProgressRecordedByManager(item)) return false;
   const progressAt = timestamp(
     item.progressConfirmedAt || item.importedAt || item.createdAt || null,
   );
@@ -208,7 +228,7 @@ export function selectAuthoritativeScheduleItems({
     scheduleItems
       .filter(item => (
         itemHasOrphanedProvenance(item) &&
-        scheduleHasAuthoritativeProgressJudgment(item)
+        scheduleProgressHoldsManagerRank(item)
       ))
       .map(scheduleOccurrenceKey),
   );
@@ -229,7 +249,7 @@ export function selectAuthoritativeScheduleItems({
     if (
       itemHasOrphanedProvenance(item) &&
       activeOccurrenceKeys.has(occurrenceKey)
-    ) return scheduleHasAuthoritativeProgressJudgment(item);
+    ) return scheduleProgressHoldsManagerRank(item);
 
     const containing = containingDocuments(item);
     if (containing.length > 0) return containedByCurrentSchedule(item, containing);

@@ -1,4 +1,4 @@
-import type { ScheduleStatus } from '../types';
+import type { ScheduleItem, ScheduleStatus } from '../types';
 import {
   classifyDAVECompletion,
   parseDAVEAssertions,
@@ -150,4 +150,39 @@ export function scheduleProgressIsComplete(
   value: Pick<CanonicalScheduleProgress, 'status' | 'percentComplete'>,
 ) {
   return value.status === 'Complete' && value.percentComplete === 100;
+}
+
+/**
+ * Who confirmed progress an approved schedule file set over the manager's.
+ * The same value as ScheduleImportMerge.SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+ * which writes it (A5 pass 4 #1); a test pins the two together. Kept here so
+ * the summaries can read it without importing the merge (which imports
+ * PIEScheduleReconciliation).
+ */
+export const SCHEDULE_FILE_PROGRESS_CONFIRMER = 'Schedule update';
+
+/**
+ * Progress an approved schedule file set on a task the manager had tracked
+ * (whole-app audit A10 pass 3 M1, 30 Sep 2026). The task stays marked as the
+ * manager's only so that sync keeps the newer value on every device
+ * (DAVEScheduleRecovery); the percent is the scheduler's.
+ */
+export function scheduleProgressSetByScheduleFile(
+  item: Pick<ScheduleItem, 'progressSource' | 'progressConfirmedBy'>,
+): boolean {
+  return item.progressSource === 'project_manager' &&
+    item.progressConfirmedBy === SCHEDULE_FILE_PROGRESS_CONFIRMER;
+}
+
+/**
+ * Progress the project manager set or confirmed by hand: the one test every
+ * summary uses before calling a task's progress the manager's judgment (PIE
+ * reconciliation and evidence fusion, DAVE evidence correlation, Project
+ * Truth, reasoning and the action inbox). Progress a schedule file set reads
+ * as the schedule's.
+ */
+export function scheduleProgressRecordedByManager(
+  item: Pick<ScheduleItem, 'progressSource' | 'progressConfirmedBy'>,
+): boolean {
+  return item.progressSource === 'project_manager' && !scheduleProgressSetByScheduleFile(item);
 }
