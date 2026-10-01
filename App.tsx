@@ -181,7 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
-import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview } from './components/field-update-document-change-notice';
+import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -7982,7 +7982,7 @@ useEffect(() => {
   async function syncFieldUpdateWithMissingPhotoRepair(
     update: ProjectUpdate,
     onRepair?: (repairedUpdate: ProjectUpdate) => void,
-    sync: { automatic?: boolean } = {}, // the waiting-update sync's: an update in conflict is left for review (A4 pass 13 M1)
+    sync: FieldUpdateSyncChoice = {}, // an update in conflict is left for review unless David chose to send it over (A4 pass 15 H1)
   ) {
     const firstAttempt = await runFieldUpdateCloudSync(update, sync);
     if (firstAttempt.missingPhotos.length === 0) {
@@ -8001,8 +8001,8 @@ useEffect(() => {
     return { ...repairedAttempt, update: repairedUpdate };
   }
 
-  // Settings' Retry Sync is `automatic`: an update in conflict is left for review (A7 pass 12 M-1).
-  async function retryQueuedUpdate(update: ProjectUpdate, sync: { automatic?: boolean } = {}) {
+  // Only a Retry David confirmed over a conflict sends it (A7 pass 12 M-1, A4 pass 15 H1).
+  async function retryQueuedUpdate(update: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
     const now = new Date().toISOString();
     const retryUpdate: ProjectUpdate = {
       ...update,
@@ -18677,7 +18677,7 @@ function SavedUpdatesScreen({
   onDelete: (updateId: string) => void;
   onArchive: (updateId: string) => void;
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
-  onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onRetryQueuedUpdate: (update: ProjectUpdate, choice?: FieldUpdateSyncChoice) => void;
   onBack: () => void;
   initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
   initialWithinDays?: number | null;
@@ -18755,11 +18755,11 @@ function SavedUpdatesScreen({
         ? 'No drafts.'
         : 'No update history yet.';
 
-  function retryUpdate(update: ProjectUpdate) {
+  function retryUpdate(update: ProjectUpdate, choice?: FieldUpdateSyncChoice) {
     const lifecycle = lifecycleStatusForUpdate(update);
 
     if (lifecycle === 'queued' || lifecycle === 'failed') {
-      onRetryQueuedUpdate(update);
+      onRetryQueuedUpdate(update, choice);
       return;
     }
 
@@ -18800,7 +18800,7 @@ function SavedUpdatesScreen({
           lifecycle={lifecycleStatusForUpdate(update)}
           pieStatus={updatePIEAnalysisStatus(update)}
           onOpen={onSelect}
-          onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
+          onRetry={updateCanInlineRetry(update) ? choice => retryUpdate(update, choice) : undefined}
           onDelete={() => onDelete(update.id)}
           onArchive={() => onArchive(update.id)}
           selected={selected}
@@ -19056,7 +19056,7 @@ function UpdateHistoryCard({
   lifecycle: FieldUpdateStatus;
   pieStatus: string | null;
   onOpen: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
   onDelete: () => void;
   onArchive: () => void;
   selected?: boolean;

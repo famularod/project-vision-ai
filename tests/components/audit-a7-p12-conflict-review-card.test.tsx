@@ -198,6 +198,23 @@ describe('the card of an update left for conflict review says so (audit A7 pass 
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 
+  it('only the confirmed Send asks the sync to send over the conflict; a Retry with no conflict asks nothing of it (A4 pass 15 H1)', async () => {
+    await phoneEditThenIPadEdit();
+    await uploadPendingChanges();
+    const onRetry = renderCard();
+    await screen.findByText(REVIEW);
+    fireEvent.press(screen.getByText('Retry'));
+    const buttons = (Alert.alert as jest.Mock).mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+    buttons.find(button => button.text === 'Send')!.onPress!();
+    expect(onRetry).toHaveBeenCalledWith({ overConflict: true });
+
+    const [conflict] = await getSyncConflicts();
+    await act(async () => { await clearResolvedConflict(conflict.id); });
+    await waitFor(() => expect(screen.queryByText(REVIEW)).toBeNull());
+    fireEvent.press(screen.getByText('Retry'));
+    expect(onRetry).toHaveBeenLastCalledWith(); // not the press event either
+  });
+
   it('a card with no conflict reads as before', async () => {
     renderCard();
     await act(async () => { await new Promise(resolve => setImmediate(resolve)); });

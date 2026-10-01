@@ -259,15 +259,17 @@ assert(
 );
 
 const savedUpdatesScreen = sliceBetween(app, 'function SavedUpdatesScreen', 'function UpdateFilterSheet');
+// Pins changed in A4 pass 15 H1: the Retry carries David's choice to send over
+// a conflict (`choice`), which only the card's confirmed "Send" makes.
 assert(
-  savedUpdatesScreen.includes('function retryUpdate(update: ProjectUpdate)') &&
+  savedUpdatesScreen.includes('function retryUpdate(update: ProjectUpdate, choice?: FieldUpdateSyncChoice)') &&
     savedUpdatesScreen.includes('if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto)') &&
     savedUpdatesScreen.includes('updateCanInlineRetry(update)'),
   'Analysis unavailable Needs Attention retry must rerun photo analysis for the source update/photo.',
 );
 assert(
   savedUpdatesScreen.includes("lifecycle === 'queued' || lifecycle === 'failed'") &&
-    savedUpdatesScreen.includes('onRetryQueuedUpdate(update)'),
+    savedUpdatesScreen.includes('onRetryQueuedUpdate(update, choice)'),
   'Queued or failed send Needs Attention retry must route to the source queued update.',
 );
 assert(
@@ -277,7 +279,7 @@ assert(
 
 const updateHistoryCard = sliceBetween(app, 'function UpdateHistoryCard', 'function UpdateOverflowMenu');
 assert(
-  updateHistoryCard.includes('onRetry?: () => void') &&
+  updateHistoryCard.includes('onRetry?: FieldUpdateRetry') &&
     // Pin changed in A7 pass 12 M-1: the same Retry, which asks first only when
     // the update waits for conflict review.
     updateHistoryCard.includes('onPress={retryOverConflictConfirmed(conflictReview, onRetry)}') &&

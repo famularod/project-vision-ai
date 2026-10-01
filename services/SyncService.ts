@@ -164,6 +164,27 @@ export type SyncConflict<TPayload = unknown> = {
   remotePayload?: unknown;
 };
 
+/**
+ * The conflict saved on this phone for a field update, while one is open
+ * (whole-app audit A4 pass 15 H1, L1). The one test for both: while it is
+ * open, the update's card reads "Needs Review", and nothing automatic sends
+ * the update.
+ */
+export function openFieldUpdateConflict(conflicts: readonly SyncConflict[], updateId: string): SyncConflict | null {
+  return conflicts.find(conflict => conflict.entity === 'project_update' && conflict.localId === updateId) ?? null;
+}
+
+/**
+ * How a field update's sync was asked for (whole-app audit A4 pass 15 H1).
+ * While a conflict is open for the update, nothing automatic sends it: only a
+ * choice David made for it does. `overConflict`: a Retry he confirmed ("This
+ * update was also changed on another device. Send your version over it?");
+ * Keep Phone and Keep Cloud mark their own copy. `automatic` changes nothing
+ * now; the callers that pass it are automatic, as is every call without
+ * `overConflict`.
+ */
+export type FieldUpdateSyncChoice = Readonly<{ automatic?: boolean; overConflict?: boolean }>;
+
 export type SyncStatus = {
   configured: boolean;
   queuedChanges: number;
@@ -616,6 +637,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    * it lands (whole-app audit A7 pass 11 L-2; see newerEditQueuedAfter).
    */
   newerEdit?: SyncQueueItem;
+  /**
+   * A copy David chose to send over this open conflict (its id): Keep Phone's,
+   * Keep Cloud's, or a Retry he confirmed (whole-app audit A4 pass 15 H1).
+   * Any other whole copy of an update in conflict waits for his choice.
+   */
+  overConflict?: string;
 };
 
 type ProjectUpdateDeletePayload = {
@@ -2605,14 +2632,17 @@ function projectUpdateQueueItemId(updateId: string) {
  *   this copy goes up whole: an edit whose queue write was lost after the
  *   document change was never sent.
  * - a whole copy keeps the time David saved it (A4 pass 13 M1; see
- *   queuedEditSavedAt), unless it is sent over a conflict (a Retry).
+ *   queuedEditSavedAt), unless David chose to send it over a conflict (a
+ *   Retry he confirmed): `overConflict`, that conflict's id, which the copy
+ *   carries so the upload pass sends it (A4 pass 15 H1). Such a copy goes up
+ *   whole, a waiting patch with it: "Send your version over it".
  * The item left in the queue; null when nothing was written.
  */
 async function writeStagedProjectUpdateRecord(
   update: ProjectUpdate,
   pendingPhotoAssetIds: readonly string[],
-  { lastVersionInCloud = false, replacing, overConflict = false }: {
-    lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null; overConflict?: boolean;
+  { lastVersionInCloud = false, replacing, overConflict }: {
+    lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null; overConflict?: string;
   },
 ): Promise<SyncQueueItem | null> {
   if (await hasProjectUpdateDeletionIntent(update.id)) return null;
@@ -2626,16 +2656,18 @@ async function writeStagedProjectUpdateRecord(
     if (existing?.operation === 'delete') return unchanged;
     if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
     if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(update)) return unchanged;
-    const patch = Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(update.status) ||
+    const patch = !overConflict && Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(update.status) ||
       fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], update));
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
           id, entity: 'project_update', operation: 'update', createdAt: now, retryCount: 0, lastError: null,
-          changedAt: (!overConflict && existing && queuedEditSavedAt(existing, update)) || now,
+          // The second write of a send over a conflict keeps the first's time.
+          changedAt: ((!overConflict || replacing) && existing && queuedEditSavedAt(existing, update)) || now,
           payload: {
             id: update.id, projectId: update.projectId, projectName: update.projectName,
             selectedAreaName: update.selectedAreaName, updateData: update, pendingPhotoAssetIds: pending,
+            ...(overConflict ? { overConflict } : {}),
           },
           ...(ownerId ? { ownerId } : {}),
         };
@@ -2719,10 +2751,19 @@ async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueIt
   await mutateOfflineQueue(queue => {
     const kept = queued ? queue.filter(item => !(item.id === queued.id && sameStagedProjectUpdateRecord(item, queued))) : queue;
     const queuedIds = new Set(kept.map(item => item.id));
-    // The later withdrawal of an id holds the newer work.
-    const back = [...new Map(withdrawn.map(item => [item.id, item])).values()].filter(item => !queuedIds.has(item.id));
+    // The later withdrawal of an id holds the newer work. None of it goes
+    // over the conflict now without a new choice (A4 pass 15 H1).
+    const back = [...new Map(withdrawn.map(item => [item.id, withoutChoiceOverConflict(item)])).values()]
+      .filter(item => !queuedIds.has(item.id));
     return { nextQueue: [...kept, ...back], result: undefined, persist: kept.length !== queue.length || back.length > 0 };
   });
+}
+
+function withoutChoiceOverConflict(item: SyncQueueItem): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload> | undefined;
+  if (item.entity !== 'project_update' || !payload?.overConflict) return item;
+  const { overConflict: _chosen, ...rest } = payload;
+  return { ...item, payload: rest };
 }
 
 export type ProjectUpdateTombstoneReplay = {
@@ -2811,29 +2852,28 @@ export async function replayProjectUpdateTombstonesInQueue(
 
 export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
-  { automatic = false }: { automatic?: boolean } = {},
+  { overConflict = false }: FieldUpdateSyncChoice = {},
 ): Promise<StagedProjectUpdateSync> {
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
   const owner = currentCloudOwner();
   // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
-  // see writeStagedProjectUpdateRecord. An update in conflict keeps its own
-  // copy for review, and is sent whole when retried. The waiting-update sync,
-  // Sync Now and Retry Sync (`automatic`: not a choice made for this update)
-  // leave it for Keep Phone, Keep Cloud or Retry (A4 pass 13 M1, G2, A7 pass
-  // 12 M-1): they sent it whole, over the iPad's newer edit, and the conflict
-  // was gone, a silent Keep Phone.
-  const conflict = (await getSyncConflicts()).find(item =>
-    item.entity === 'project_update' && item.localId === update.id);
+  // see writeStagedProjectUpdateRecord. While a conflict is open for the
+  // update, nothing automatic sends it, whichever copy this is (A4 pass 15
+  // H1): the waiting-update sync, Sync Now, Retry Sync and a Save's own sync
+  // write nothing, and the card reads "Needs Review". Since 139b0bb any copy
+  // that was not exactly the conflict's own (a document's details edited, an
+  // older copy put back, the iPad's copy a refresh showed) went up whole,
+  // stamped now, over the iPad's edit, and the conflict was gone with
+  // David's offline edit in it. Keep Phone sends a newer edit saved since
+  // (A7 pass 11 L-2), its photos checked here once the conflict is settled.
+  // Only a Retry David confirmed sends this copy over the conflict.
+  const conflict = openFieldUpdateConflict(await getSyncConflicts(), update.id);
   const conflicted = Boolean(conflict);
-  // Only the conflict's own copy (A7 pass 12 L-1). A newer edit saved since,
-  // waiting on its photos, was held too, and only staging checks them: it
-  // never went up. It is staged as any edit is, with the time it was saved,
-  // and the upload's conflict check still keeps a later iPad edit.
-  const conflictsOwnCopy = Boolean(conflict) && await isConflictsOwnProjectUpdateCopy(conflict!, update);
-  const heldForConflictReview = conflictsOwnCopy && automatic;
+  const heldForConflictReview = conflicted && !overConflict;
+  const sentOverConflict = conflict && overConflict ? conflict.id : undefined;
   const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(
     cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id),
-    { lastVersionInCloud: !conflicted, overConflict: conflictsOwnCopy });
+    { lastVersionInCloud: !conflicted, overConflict: sentOverConflict });
   const nothingToSend = heldForConflictReview ||
     (!staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate));
   const photoAttempt = await uploadUpdatePhotosForSync(
@@ -2850,7 +2890,7 @@ export async function stageProjectUpdateForSync(
     };
   // Not into the next account's storage (whole-app audit A1 H2/M3).
   if (cloudOwnerUnchanged(owner) && staged) {
-    await writeStagedProjectUpdateRecord(recordToPersist, photoAttempt.failedPhotoIds, { replacing: staged });
+    await writeStagedProjectUpdateRecord(recordToPersist, photoAttempt.failedPhotoIds, { replacing: staged, overConflict: sentOverConflict });
   }
 
   return {
@@ -2882,15 +2922,15 @@ export async function stageProjectUpdateForSync(
 
 export async function runFieldUpdateCloudSync(
   update: ProjectUpdate,
-  { automatic = false }: { automatic?: boolean } = {},
+  choice: FieldUpdateSyncChoice = {},
 ): Promise<{
   syncResult: SyncUploadResult;
   workAttempt: FieldUpdateSyncWorkAttempt;
   missingPhotos: MissingSyncPhoto[];
-  /** The waiting-update sync left it alone, in conflict (A4 pass 13 M1): its card stays as it is. */
+  /** Left alone, in conflict (A4 pass 13 M1, A4 pass 15 H1): its card stays as it is. */
   heldForConflictReview?: boolean;
 }> {
-  const staged = await stageProjectUpdateForSync(update, { automatic });
+  const staged = await stageProjectUpdateForSync(update, choice);
   const workAttempt = staged.workAttempt;
   if (staged.heldForConflictReview) {
     return {
@@ -3038,10 +3078,16 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const orderedQueue = pendingUploadOrder(
     queue.filter(item => !heldForAnotherOwner(item.ownerId, owner)),
   );
+  // Nothing automatic sends an update in conflict (whole-app audit A4 pass
+  // 15 H1): a whole copy of it waits, as it is, for Keep Phone, Keep Cloud or
+  // a Retry David confirms, which mark their copy. This pass is the automatic
+  // retry, the refresh and realtime triggers, and every sync's upload.
+  const conflictsAtStart = await getSyncConflicts();
+  const heldForReview = orderedQueue.filter(item => fieldUpdateCopyHeldForReview(item, conflictsAtStart));
   const {
     taskPriorityBatch,
     uploadBatch,
-  } = planPendingUploadBatch(orderedQueue);
+  } = planPendingUploadBatch(orderedQueue.filter(item => !heldForReview.includes(item)));
 
   if (!configuration.configured) {
     return {
@@ -3060,6 +3106,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const errors: string[] = [];
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   const uploadContext: QueueUploadContext = { settledQueueItemIds: resolvedIds };
+  // Still queued, with no error: no retry is owed until David chooses.
+  heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
   let uploaded = 0;
   let heldErrorCount = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
@@ -3313,6 +3361,21 @@ function newerEditQueuedAfter(landed: SyncQueueItem): SyncQueueItem[] {
   if (!newer || !isRecord(newer)) return [];
   const now = new Date().toISOString();
   return [{ ...newer, createdAt: now, changedAt: now }];
+}
+
+/**
+ * A whole copy of a field update while a conflict is open for it, queued by
+ * anything but a choice David made over that conflict (whole-app audit A4
+ * pass 15 H1): held for review, as it is. A document change or a late
+ * analysis result (a patch on the cloud's copy, which settles no conflict),
+ * an archive and a delete still go.
+ */
+function fieldUpdateCopyHeldForReview(item: SyncQueueItem, conflicts: readonly SyncConflict[]): boolean {
+  if (item.entity !== 'project_update' || item.operation === 'delete') return false;
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (!payload.id || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return false;
+  const conflict = openFieldUpdateConflict(conflicts, payload.id);
+  return Boolean(conflict) && payload.overConflict !== conflict!.id;
 }
 
 function accountChangedDuringUpload(
@@ -4310,6 +4373,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           updateData: chosenCloudUpdate,
           // The cloud copy's photos are already in cloud storage.
           pendingPhotoAssetIds: [],
+          overConflict: conflict.id, // David's choice (A4 pass 15 H1)
         },
         changedAt: new Date().toISOString(),
         autoUpload: false,
@@ -4349,7 +4413,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, localUpdateData)) ?? null;
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
-      payload: { ...conflictPayload, updateData: localUpdateData, ...(newer ? { newerEdit: newer } : {}) },
+      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
       createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
     };
     const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
@@ -4363,20 +4427,6 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
-}
-
-/**
- * Whether this copy of an update in conflict is the conflict's own copy, as
- * Keep Phone sends it (isNewerQueuedPhoneEdit): the copy recorded with the
- * conflict with the document changes made since, a Retry's stamps aside, and
- * a late photo analysis result aside too, which is not an edit (A4 pass 13
- * G1). Anything else is an edit saved since (A7 pass 12 L-1).
- */
-async function isConflictsOwnProjectUpdateCopy(conflict: SyncConflict, update: ProjectUpdate): Promise<boolean> {
-  const conflictCopy = (await withDocumentChangesSinceConflict(conflict.localId))(
-    (conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData);
-  return sameProjectUpdateContent(withoutPhotoAnalysis(conflictCopy), withoutPhotoAnalysis(update) as ProjectUpdate,
-    { retryStampsAside: true });
 }
 
 /** A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4). */
@@ -5438,7 +5488,10 @@ async function projectUpdateAlreadyHasCloudReceipt(
     return false;
   }
 
-  await clearConflictsForLocalRecord('project_update', payload.id);
+  // A patch already in the cloud's copy settles no conflict (A4 pass 9 L1):
+  // its copy may be the iPad's a refresh showed, while David's offline edit
+  // waits in the conflict (whole-app audit A4 pass 15 H1).
+  if (!queuedFieldUpdateDocumentPatches(item)) await clearConflictsForLocalRecord('project_update', payload.id);
   recordProjectUpdateUpload(payload.id);
   return true;
 }

@@ -2109,14 +2109,31 @@ describe('project and field-update queue rules from the audit', () => {
     await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 
-  it('an upload of the phone’s copy after a conflict settles that conflict', async () => {
+  // Pin changed in A4 pass 15 H1: nothing automatic sends an update in
+  // conflict. A copy David chose to send over the conflict (a Retry he
+  // confirmed; Keep Phone) carries that conflict's id and settles it; any
+  // other copy waits in the queue, untouched, with no retry owed.
+  it('an upload of the phone’s copy David chose to send over a conflict settles that conflict', async () => {
     storeConflict('u-retried');
-    await enqueuePendingChange(updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z'));
+    const chosen = updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z');
+    await enqueuePendingChange({ ...chosen, payload: { ...chosen.payload, overConflict: 'project_update_conflict-u-retried' } });
     await expect(uploadPendingChanges()).resolves.toMatchObject({
       itemOutcomes: { 'project-update-u-retried': 'uploaded' },
     });
     expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
     await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('any other copy of an update in conflict waits for review: not sent, still queued, the conflict open (A4 pass 15 H1)', async () => {
+    storeConflict('u-retried');
+    await enqueuePendingChange(updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z'));
+    const before = await getOfflineQueue();
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      itemOutcomes: { 'project-update-u-retried': 'blocked' }, errors: [],
+    });
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual(before);
+    await expect(getSyncConflicts()).resolves.toHaveLength(1);
   });
 });
 

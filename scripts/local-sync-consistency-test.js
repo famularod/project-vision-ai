@@ -125,7 +125,9 @@ includes(app, "Sync failed · Update save issue", 'database failures must use up
 includes(app, "Sync failed · App data issue", 'malformed payload failures must use app data copy');
 includes(app, "Sync failed · Retry", 'online sync failure must show retryable copy');
 includes(app, "Queued — will sync when you're back online", 'offline queued copy must be specific');
-includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}', 'queued/failed cards must expose retry');
+// Pin changed in A4 pass 15 H1: the card's Retry passes on David's choice to
+// send over a conflict, which only its confirmed "Send" makes.
+includes(app, 'onRetry={updateCanInlineRetry(update) ? choice => retryUpdate(update, choice) : undefined}', 'queued/failed cards must expose retry');
 includes(app, 'startAutomaticSyncBackgroundTask(', 'sync worker must run through the guarded background path');
 includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync work must be keyed and bounded');
 includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
@@ -255,7 +257,9 @@ assert(
     sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync('),
   'shared sync must persist update metadata before potentially slow photo work',
 );
-includes(sync, '{ replacing: staged }', 'the staging pass\'s second write must replace only its own queue record');
+// Pin changed in A4 pass 15 H1: the second write also carries a send David
+// chose over a conflict.
+includes(sync, '{ replacing: staged, overConflict: sentOverConflict }', 'the staging pass\'s second write must replace only its own queue record');
 includes(sync, 'let aggregateResult = await uploadPendingChanges()', 'shared sync must attempt database insert/update work');
 includes(sync, 'requestPendingChangesUpload(', 'durable queue uploads must use the guarded background entry point');
 assert(!sync.includes('void uploadPendingChanges();'), 'queue upload must not create a floating rejecting promise');

@@ -13,6 +13,7 @@ import {
   subscribeToFieldUpdateConflicts,
   subscribeToQueuedDocumentChanges,
 } from '../services/FieldUpdateDocumentChangeNotice';
+import type { FieldUpdateSyncChoice } from '../services/SyncService';
 import { colors } from './app-shell-theme';
 
 export { FIELD_UPDATE_CONFLICT_REVIEW_LABEL } from '../services/FieldUpdateDocumentChangeNotice';
@@ -26,12 +27,26 @@ export function useFieldUpdateConflictReview(updateId: string, lifecycle: string
   return (lifecycle === 'queued' || lifecycle === 'failed') && fieldUpdateHasOpenConflict(conflicts, updateId);
 }
 
-/** The card's Retry: an explicit send, which asks first when the update needs review (A7 pass 12 M-1). */
-export function retryOverConflictConfirmed(conflictReview: boolean, onRetry?: () => void): (() => void) | undefined {
-  if (!conflictReview || !onRetry) return onRetry;
+export type { FieldUpdateSyncChoice } from '../services/SyncService';
+
+/** A field update's Retry; `choice` says when David chose to send it over a conflict. */
+export type FieldUpdateRetry = (choice?: FieldUpdateSyncChoice) => void;
+
+/** What a Retry David confirmed over a conflict asks of the sync (whole-app audit A4 pass 15 H1). */
+export const RETRY_OVER_CONFLICT: FieldUpdateSyncChoice = Object.freeze({ overConflict: true });
+
+/**
+ * The card's Retry: an explicit send, which asks first when the update needs
+ * review (A7 pass 12 M-1). Only "Send" sends it over the conflict (A4 pass 15
+ * H1): any other Retry of an update in conflict is left for review, as every
+ * automatic sync leaves it.
+ */
+export function retryOverConflictConfirmed(conflictReview: boolean, onRetry?: FieldUpdateRetry): (() => void) | undefined {
+  if (!onRetry) return undefined;
+  if (!conflictReview) return () => onRetry();
   return () => Alert.alert(FIELD_UPDATE_RETRY_OVER_CONFLICT_TITLE, FIELD_UPDATE_RETRY_OVER_CONFLICT_MESSAGE, [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Send', onPress: onRetry },
+    { text: 'Send', onPress: () => onRetry(RETRY_OVER_CONFLICT) },
   ]);
 }
 
