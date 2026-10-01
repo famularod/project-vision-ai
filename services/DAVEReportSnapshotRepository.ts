@@ -26,12 +26,21 @@ const STORAGE_PREFIX = '@vitruvius/report-snapshots/v1';
  * It now lives in the Keychain, readable while the device is unlocked and
  * never carried to another device (WHEN_UNLOCKED_THIS_DEVICE_ONLY): it
  * survives a reinstall and stays behind in a backup. The app-storage key
- * below is the pass 9 copy, moved to the Keychain once, and where there is
- * no Keychain (the web) the id is kept there as before. A device restored
- * from a backup taken before the move still shares the id it carried.
+ * below is where pass 9 kept it, replaced in the Keychain once (pass 11 L4,
+ * below), and where there is no Keychain (the web) the id is kept there as
+ * before.
+ *
+ * Whole-app audit A6 pass 11 L4 (30 Sep 2026): the move copied the
+ * app-storage id, so a device restored from a backup taken before the move
+ * wrote the other device's id into its Keychain for good, and each device's
+ * sends counted as the other's own. The move now makes a fresh id; the
+ * app-storage one is deleted and kept, in the Keychain on this device only,
+ * as this install's former id, under which its own sends are still known by
+ * its saved copy of them (`reportSnapshotSentHere`).
  */
 const SENDER_ID_KEY = '@vitruvius/report-sender-id/v1';
 const KEYCHAIN_SENDER_ID_KEY = 'vitruvius.report-sender-id.v1';
+const KEYCHAIN_FORMER_SENDER_ID_KEY = 'vitruvius.report-sender-id.app-storage.v1';
 const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
@@ -46,15 +55,22 @@ export type SenderIdKeychain = Readonly<{
   available: () => Promise<boolean>;
   read: () => Promise<string | null>;
   write: (id: string) => Promise<void>;
+  /** The app-storage id this install had before the move, kept here by the move (A6 pass 11 L4). */
+  readFormer?: () => Promise<string | null>;
+  writeFormer?: (id: string) => Promise<void>;
 }>;
+
+const readSecureId = async (key: string) => {
+  const id = await SecureStore.getItemAsync(key, KEYCHAIN_OPTIONS);
+  return typeof id === 'string' && id ? id : null;
+};
 
 const deviceKeychain: SenderIdKeychain = {
   available: () => SecureStore.isAvailableAsync(),
-  read: async () => {
-    const id = await SecureStore.getItemAsync(KEYCHAIN_SENDER_ID_KEY, KEYCHAIN_OPTIONS);
-    return typeof id === 'string' && id ? id : null;
-  },
+  read: () => readSecureId(KEYCHAIN_SENDER_ID_KEY),
   write: id => SecureStore.setItemAsync(KEYCHAIN_SENDER_ID_KEY, id, KEYCHAIN_OPTIONS),
+  readFormer: () => readSecureId(KEYCHAIN_FORMER_SENDER_ID_KEY),
+  writeFormer: id => SecureStore.setItemAsync(KEYCHAIN_FORMER_SENDER_ID_KEY, id, KEYCHAIN_OPTIONS),
 };
 
 /**
@@ -206,9 +222,12 @@ export async function reportSenderId(
     if (await keychain.available().catch(() => false)) {
       const kept = await readKeychainSenderId(keychain);
       if (kept) return kept;
-      // The id pass 9 kept in app storage moves here once, then leaves app storage.
+      // A fresh id, never the one pass 9 kept in app storage (a device restored
+      // from a backup carries the other device's there): that one is kept here
+      // as this install's former id, then leaves app storage (A6 pass 11 L4).
       const earlier = await storage.getItem(SENDER_ID_KEY);
-      const id = earlier || randomSenderId();
+      const id = randomSenderId();
+      if (earlier) await keychain.writeFormer?.(earlier).catch(() => undefined);
       await keychain.write(id);
       if (await readKeychainSenderId(keychain) === id) {
         if (earlier) await storage.removeItem?.(SENDER_ID_KEY);
@@ -226,13 +245,21 @@ export async function reportSenderId(
   return senderIdCreation;
 }
 
-/** This install's sender id if it has one, without making one: the Keychain's, else the one in app storage. */
+/**
+ * This install's sender id if it has one, without making one: the
+ * Keychain's; where there is no Keychain (the web), the one in app storage.
+ * Where there is a Keychain, an id still in app storage is the former one
+ * (A6 pass 11 L4: it may be the other device's, restored from its backup).
+ */
 async function savedReportSenderId(storage: SnapshotStorage, keychain: SenderIdKeychain): Promise<string | null> {
-  if (await keychain.available().catch(() => false)) {
-    const kept = await readKeychainSenderId(keychain);
-    if (kept) return kept;
-  }
+  if (await keychain.available().catch(() => false)) return readKeychainSenderId(keychain);
   return storage.getItem(SENDER_ID_KEY);
+}
+
+/** The id pass 9 kept in app storage, if this install had one: there until the move, then in the Keychain (A6 pass 11 L4). */
+async function formerReportSenderId(storage: SnapshotStorage, keychain: SenderIdKeychain): Promise<string | null> {
+  if (!await keychain.available().catch(() => false)) return null;
+  return (await keychain.readFormer?.().catch(() => null)) || storage.getItem(SENDER_ID_KEY);
 }
 
 /**
@@ -243,7 +270,9 @@ async function savedReportSenderId(storage: SnapshotStorage, keychain: SenderIdK
  * that sent a report saves it marked sent). An approval not yet sent, or a
  * report saved before sends were recorded, is not a send. Whatever the send,
  * this install's id is read, so it is kept for the app session (A6 pass 11
- * L3): opening Reports reads it before any send.
+ * L3): opening Reports reads it before any send. A send under this install's
+ * former id (the app-storage one, pass 11 L4) is known by the saved copy
+ * too: a device restored from a backup may have carried that id as well.
  */
 export async function reportSnapshotSentHere(
   snapshot: DAVEReportSnapshot | null | undefined,
@@ -252,7 +281,8 @@ export async function reportSnapshotSentHere(
 ): Promise<boolean> {
   if (!snapshot || typeof snapshot.deliveredAt !== 'string') return false;
   const here = await savedReportSenderId(storage, keychain).catch(() => null);
-  if (snapshot.sentBy) return snapshot.sentBy === here;
+  if (snapshot.sentBy && snapshot.sentBy === here) return true;
+  if (snapshot.sentBy && snapshot.sentBy !== await formerReportSenderId(storage, keychain).catch(() => null)) return false;
   if (!snapshot.reportFormat) return false;
   const own = await loadLocalDAVEReportSnapshot(snapshot.scopeKey, snapshot.reportFormat, storage);
   return own?.deliveredAt === snapshot.deliveredAt && own.sourceFingerprint === snapshot.sourceFingerprint;

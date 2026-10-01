@@ -1,4 +1,4 @@
-// Whole-app audit A6 pass 11 L3 (30 Sep 2026), on pass 10 L3 (this
+// Whole-app audit A6 pass 11 L3, L4 (30 Sep 2026), on pass 10 L3 (this
 // install's report sender id lives in the Keychain, this device only) and
 // pass 10 M1 (a device waits until it has downloaded the tasks since the
 // other device's send).
@@ -11,6 +11,12 @@
 //     used at send; and a send with no id that this device does not know as
 //     its own (its own are known by their send time) is the other install's:
 //     a send from an older build waits for a download, which ends by itself.
+// L4. A device restored from a backup taken before the Keychain move carried
+//     the other device's id in app storage, and the move wrote that one id
+//     into both Keychains for good: each device's sends counted as the
+//     other's own. The move now makes a fresh id and deletes the app-storage
+//     one; this device's sends under the old id are still known as its own
+//     by its saved copy of them.
 
 const mockDevices = new Map<string, Map<string, string>>();
 const mockKeychains = new Map<string, Map<string, string>>();
@@ -322,5 +328,87 @@ describe('L3: the sender id read this app session is used while the Keychain can
     forgetReportSenderIdSession();
     await expect(reportSenderId()).rejects.toThrow();
     expect(mockDevices.get('phone')?.get(APP_STORAGE_SENDER_ID_KEY)).toBeUndefined();
+  });
+});
+
+/** Before this build: the pass 9 id in app storage, nothing in the Keychain, and the last send made under that id. */
+function asBeforeTheKeychainMove(device: string, oldId: string) {
+  const storage = mockDevices.get(device) as Map<string, string>;
+  const sent = { ...(local(device) as DAVEReportSnapshot), sentBy: oldId };
+  storage.set(KEY, JSON.stringify(sent));
+  storage.set(APP_STORAGE_SENDER_ID_KEY, oldId);
+  mockKeychains.get(device)?.clear();
+  const row = cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string | null };
+  if (row.deliveredAt === sent.deliveredAt) mockCloud.set('tower|project_manager', { ...row, snapshot: sent });
+  return sent;
+}
+const OLD_ID = 'pass9-app-storage-id-0123456789';
+const FORMER_KEYCHAIN_KEY = 'vitruvius.report-sender-id.app-storage.v1';
+
+describe('L4: the move to the Keychain makes a fresh id, so a device restored from an earlier backup has its own', () => {
+  it('the move: a fresh id in the Keychain, the app-storage one deleted and kept in the Keychain as this device\'s former id', async () => {
+    mockDevices.set('phone', new Map([[APP_STORAGE_SENDER_ID_KEY, OLD_ID]]));
+    const id = await reportSenderId();
+    expect(id).not.toBe(OLD_ID);
+    expect(keychainId('phone')).toBe(id);
+    expect(mockDevices.get('phone')?.has(APP_STORAGE_SENDER_ID_KEY)).toBe(false);
+    expect(mockKeychains.get('phone')?.get(FORMER_KEYCHAIN_KEY)).toBe(OLD_ID);
+    expect(await reportSenderId()).toBe(id);
+  });
+
+  it('this device\'s send under the old id is still its own, before and after the move', async () => {
+    await sends('phone', tower(0));
+    const own = asBeforeTheKeychainMove('phone', OLD_ID);
+
+    // This build, before the move: Frame walls completed since, no download since that send.
+    open('phone', tower(1));
+    await approvable();
+    expect(screen.queryByText(/hasn't received|^Your other device/)).toBeNull();
+    expect(await period()).toContain('Frame walls was completed.');
+    views.splice(0).forEach(view => view.unmount());
+
+    // The move (the next send), then the same report: still its own.
+    await reportSenderId();
+    expect(keychainId('phone')).not.toBe(OLD_ID);
+    open('phone', tower(0));
+    await approvable();
+    expect(screen.queryByText(/^Your other device/)).toBeNull();
+    expect(own.sentBy).toBe(OLD_ID);
+  });
+
+  it('an iPad restored from the phone\'s backup taken before the move: each device\'s sends are the other\'s there', async () => {
+    // The phone, on the pass 9 build, sent the morning report under its app-storage id.
+    await sends('phone', tower(0));
+    asBeforeTheKeychainMove('phone', OLD_ID);
+    // Its backup, app storage only, restored onto the iPad; both then update to this build.
+    mockDevices.set('ipad', new Map(mockDevices.get('phone')));
+
+    // The iPad completes Frame walls and sends: under an id of its own.
+    const midday = await sends('ipad', tower(1));
+    expect(midday.sentBy).toBe(keychainId('ipad'));
+    expect(midday.sentBy).not.toBe(OLD_ID);
+    expect(mockDevices.get('ipad')?.has(APP_STORAGE_SENDER_ID_KEY)).toBe(false);
+
+    // The phone, before its sync, waits for the iPad's changes: nothing reopened.
+    const phone = open('phone', tower(0));
+    await loaded();
+    expect(screen.getByText(deviceBehind(midday))).toBeTruthy();
+    expect(await period()).not.toMatch(/reopened/);
+
+    // Synced, the phone completes Pour slab and sends: under another id of its own.
+    phone.rerender(reportsScreen(tower(2)));
+    await downloadsTasks('phone');
+    await approveAndSend();
+    const afternoon = local('phone') as DAVEReportSnapshot;
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(afternoon.deliveredAt), SLOW);
+    expect(afternoon.sentBy).toBe(keychainId('phone'));
+    expect([OLD_ID, midday.sentBy]).not.toContain(afternoon.sentBy);
+    phone.unmount();
+
+    // So the iPad, synced, is told the phone already sent it.
+    await downloadsTasks('ipad');
+    open('ipad', tower(2));
+    await approvable();
+    expect(screen.getByText(alreadySent(afternoon))).toBeTruthy();
   });
 });

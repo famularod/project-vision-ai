@@ -103,15 +103,27 @@ describe('L3: the report sender id is kept in the Keychain, on this device only'
     expect(ipadId).not.toBe(phoneId);
   });
 
-  it('the id pass 9 kept in app storage moves to the Keychain once, and its sends stay this device\'s own', async () => {
-    const storage = appStorage([[LEGACY_KEY, 'legacy-install-id-0123456789']]);
-    expect(await reportSnapshotSentHere(sentBy('legacy-install-id-0123456789'), storage)).toBe(true);
-    expect(await reportSenderId(storage)).toBe('legacy-install-id-0123456789');
-    expect(mockKeychain.get(KEYCHAIN_KEY)).toBe('legacy-install-id-0123456789');
+  // Pin changed in A6 pass 11 L4: the pass 9 id no longer moves to the
+  // Keychain (a device restored from a backup taken before the move carried
+  // the other device's id there, and both Keychains got it for good). A fresh
+  // id is made; the pass 9 one leaves app storage and is kept in the Keychain
+  // as this install's former id, whose sends stay this device's own where it
+  // has its saved copy of them.
+  it('the id pass 9 kept in app storage is replaced by a fresh one once, and its sends stay this device\'s own by their saved copy', async () => {
+    const send = sentBy('legacy-install-id-0123456789');
+    const savedCopy: [string, string] = ['@vitruvius/report-snapshots/v1:tower:project_manager', JSON.stringify(send)];
+    const storage = appStorage([[LEGACY_KEY, 'legacy-install-id-0123456789'], savedCopy]);
+    expect(await reportSnapshotSentHere(send, storage)).toBe(true);
+    const id = await reportSenderId(storage);
+    expect(id).not.toBe('legacy-install-id-0123456789');
+    expect(mockKeychain.get(KEYCHAIN_KEY)).toBe(id);
     expect(storage.values.has(LEGACY_KEY)).toBe(false);
+    expect(await reportSnapshotSentHere(send, storage)).toBe(true);
+    // Without its saved copy of that send (another device that had the same id), it is not.
+    expect(await reportSnapshotSentHere(send, appStorage([[LEGACY_KEY, 'legacy-install-id-0123456789']]))).toBe(false);
     // A backup taken after the move carries nothing: a restored device makes its own.
     mockKeychain.clear();
-    expect(await reportSenderId(appStorage(storage.values))).not.toBe('legacy-install-id-0123456789');
+    expect(await reportSenderId(appStorage(storage.values))).not.toBe(id);
   });
 
   it('two sends at once make one id', async () => {
