@@ -536,18 +536,7 @@ function pairTaskRevisions(
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
-  // The lookaheads, known by the notes of the tasks they restated (A5 pass 18 F3), and by the tasks they added.
-  // Whole-app audit A6 pass 19 M2 (1 Oct 2026): L1 added a third Pour slab and L2 restated it; deleting L1
-  // cleared L1 from every note, so the third pour counted as a master's, the next master's two rows met three
-  // twins, nothing paired, and David's 60% left the view. A task a lookahead added names its lookahead itself.
-  const lookaheads = new Set([
-    ...existing.flatMap(item => (item.lookaheadOverlay?.lookaheads || []).map(entry => key(entry.batchId))),
-    ...existing.filter(item => item.importedAsLookahead === true).map(item => key(item.importBatchId)),
-  ].filter(Boolean));
-  const addedByLookahead = (item: ScheduleItem) => {
-    const imports = scheduleItemImportBatchIds(item).map(key).filter(Boolean);
-    return imports.length > 0 && imports.every(batch => lookaheads.has(batch));
-  };
+  const addedByLookahead = statedOnlyByLookaheads(existing);
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   candidates
     .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
@@ -555,6 +544,29 @@ function pairTaskRevisions(
     .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved, { lookahead, inFile, addedByLookahead })
       .forEach((item, row) => pairs.set(row, item)));
   return pairs;
+}
+
+/**
+ * Whether a saved task was stated only by lookaheads: every import it belongs
+ * to is a lookahead (a task a lookahead added that no master has listed).
+ * The lookaheads are known by the notes of the tasks they restated (A5 pass
+ * 18 F3), and by the tasks they added.
+ *
+ * Whole-app audit A6 pass 19 M2 (1 Oct 2026): L1 added a third Pour slab and
+ * L2 restated it; deleting L1 cleared L1 from every note, so the third pour
+ * counted as a master's, the next master's two rows met three twins, nothing
+ * paired, and David's 60% left the view. A task a lookahead added names its
+ * lookahead itself (importedAsLookahead).
+ */
+function statedOnlyByLookaheads(existing: readonly ScheduleItem[]): (item: ScheduleItem) => boolean {
+  const lookaheads = new Set([
+    ...existing.flatMap(item => (item.lookaheadOverlay?.lookaheads || []).map(entry => key(entry.batchId))),
+    ...existing.filter(item => item.importedAsLookahead === true).map(item => key(item.importBatchId)),
+  ].filter(Boolean));
+  return item => {
+    const imports = scheduleItemImportBatchIds(item).map(key).filter(Boolean);
+    return imports.length > 0 && imports.every(batch => lookaheads.has(batch));
+  };
 }
 
 /**
@@ -821,6 +833,7 @@ export function mergeApprovedScheduleImportItems({
   const fileProgressIds: string[] = [];
   const overlaidIds: string[] = [];
   const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay);
+  const lookaheadsOnly = statedOnlyByLookaheads(existing);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
 
@@ -865,8 +878,13 @@ export function mergeApprovedScheduleImportItems({
     }
     // A note takes the progress the manager holds now before the file applies (A5 pass 7 M1).
     const paired = pairedSaved && scheduleNoteTakesManagersProgress(pairedSaved);
-    // A new master repeating what it said before a lookahead restated the task (Q22).
-    const repeated = paired ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem) : { dates: false, percent: false };
+    // A new master repeating what it said before a lookahead restated the task (Q22). Whole-app audit A6 pass 19
+    // M1 (sweep): lookahead L3 added Cleanup on 12/21 and L5 moved it to 12/22; master M6 then listed it on 12/21,
+    // read as a repeat, and kept L5's older dates. A task only lookaheads stated has no master's word to repeat:
+    // the master's row is the newer file, as for any task it moves.
+    const repeated = paired && !lookaheadsOnly(paired)
+      ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem)
+      : { dates: false, percent: false };
     // A task entered by hand, on new dates: restated in place on the master's dates (A5 pass 17 M1).
     const movedByHand = Boolean(paired) && !ownedByImport(paired!) && !unchangedTask(paired!, importedItem) && !repeated.dates;
     const found = paired

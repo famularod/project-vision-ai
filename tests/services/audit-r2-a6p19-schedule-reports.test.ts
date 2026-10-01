@@ -178,6 +178,40 @@ describe('M1: deleting a newer lookahead never brings back dates a newer master 
   });
 });
 
+describe('M1 (sweep): a master listing a task only lookaheads stated gives it the master\'s dates', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L3 = doc('LOOKAHEAD L3', '2026-09-16T12:00:00.000Z', 'lookahead');
+  const L5 = doc('LOOKAHEAD L5', '2026-09-23T12:00:00.000Z', 'lookahead');
+  const M6 = doc('MASTER M6', '2026-09-28T12:00:00.000Z');
+  const FRAMING = 'Framing,Alpha,Lot,11/19/2026,11/29/2026,';
+  const run = (cleanupInM6: string) => {
+    let state = approve(EMPTY, F, [FRAMING]);
+    state = approve(state, L3, ['Cleanup,Alpha,Lot,12/21/2026,12/22/2026,'], true); // L3 adds Cleanup
+    state = approve(state, L5, ['Cleanup,Alpha,Lot,12/22/2026,12/23/2026,'], true); // L5 moves it a day
+    const r1 = send(null, state, '2026-09-24T15:00:00.000Z');
+    state = approve(state, M6, [FRAMING, cleanupInM6]); // the master lists Cleanup for the first time
+    return { r1, state, r2: send(r1.sent, state, '2026-10-01T15:00:00.000Z') };
+  };
+
+  it('on L3\'s dates: Cleanup shows once, on the master\'s 12/21-12/22, and the report says so', () => {
+    const { state, r2 } = run('Cleanup,Alpha,Lot,12/21/2026,12/22/2026,');
+    expect(datesOf(state, 'Cleanup')).toEqual([['12/21/2026', '12/22/2026']]);
+    expect(r2.lines).toEqual(['Alpha: Cleanup finish changed from 12/23/2026 to 12/22/2026.']);
+  });
+
+  it('control: on other dates, the same', () => {
+    const { state } = run('Cleanup,Alpha,Lot,12/28/2026,12/29/2026,');
+    expect(datesOf(state, 'Cleanup')).toEqual([['12/28/2026', '12/29/2026']]);
+  });
+
+  it('a task a master stated still keeps a later lookahead\'s dates when the next master repeats it', () => {
+    let state = approve(EMPTY, F, [FRAMING, 'Cleanup,Alpha,Lot,12/21/2026,12/22/2026,']);
+    state = approve(state, L5, ['Cleanup,Alpha,Lot,12/22/2026,12/23/2026,'], true);
+    state = approve(state, M6, [FRAMING, 'Cleanup,Alpha,Lot,12/21/2026,12/22/2026,']);
+    expect(datesOf(state, 'Cleanup')).toEqual([['12/22/2026', '12/23/2026']]);
+  });
+});
+
 describe('M2: after the lookahead that added a third twin is deleted (a later lookahead still holds it), the next master pairs the twins', () => {
   const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
   const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
