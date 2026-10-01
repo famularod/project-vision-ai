@@ -892,7 +892,9 @@ function buildRecentChanges({
   // is not the one the earlier report saved says it, whatever its time (a
   // note made offline on the iPad before the phone's send, received after);
   // one whose activity the earlier report saved does not say it again. Only
-  // against a report saved before these keys does the activity's time decide.
+  // against a report saved before these keys does the activity's time decide,
+  // and (A6 pass 15 L1) for a task paired with a different row of the earlier
+  // report across a master change: the comparison lists neither.
   const newActivityTaskIds = new Set(reportingPeriod.newActivityTaskIds ?? []);
   const sameActivityTaskIds = new Set(reportingPeriod.sameActivityTaskIds ?? []);
   const taskChanges: DAVEReportRecentChange[] = [];

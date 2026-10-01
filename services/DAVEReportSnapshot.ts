@@ -384,17 +384,18 @@ export type DAVEReportPeriodComparison = Readonly<{
    */
   unchangedTaskIds?: readonly string[];
   /**
-   * Every task (by its id now) paired with a task of the earlier report
-   * whose saved latest activity is not its own: the report says that
-   * activity even when its time is before the earlier report (A6 pass 14 L2:
-   * a note made offline on the other device before the send). Not listed
-   * against a task saved with no activity key.
+   * Every task (by its id now) whose own row in the earlier report saved a
+   * latest activity that is not its own: the report says that activity even
+   * when its time is before the earlier report (A6 pass 14 L2: a note made
+   * offline on the other device before the send). Not listed against a task
+   * saved with no activity key, nor against a different row the task is
+   * paired with across a master change (A6 pass 15 L1: those go by time).
    */
   newActivityTaskIds?: readonly string[];
   /**
-   * Every task paired with a task of the earlier report whose saved latest
-   * activity is its own: that activity was there for the earlier report, so
-   * it is not said again, whatever its time (A6 pass 14 L2).
+   * Every task whose own row in the earlier report saved its latest
+   * activity: that activity was there for the earlier report, so it is not
+   * said again, whatever its time (A6 pass 14 L2).
    */
   sameActivityTaskIds?: readonly string[];
   /**
@@ -517,7 +518,12 @@ export function compareDAVEReportSnapshots({
       continue;
     }
     if (sameContent(prior, task)) unchangedTaskIds.add(task.taskId);
-    if (typeof prior.activityKey === 'string') {
+    // Whole-app audit A6 pass 15 L1 (1 Oct 2026): the keys only for the same
+    // row. Going back to master F paired F's row with M's row through M's
+    // earlier ids; M's row had no note, so F's old note read as new. A row
+    // paired across a master change keeps the time rule (a hidden row cannot
+    // be given a note).
+    if (prior.taskId === task.taskId && typeof prior.activityKey === 'string') {
       (prior.activityKey === task.activityKey ? sameActivityTaskIds : newActivityTaskIds).add(task.taskId);
     }
     changes.push(...changesBetween(prior, task));
