@@ -173,10 +173,15 @@ describe('M1: "And N more changes." counts only the changes not shown', () => {
   });
 
   it('a task changed during the period with nothing the report compares still says it was updated', () => {
-    const notesOnly = v1.map(item => item.taskName === 'Set trim'
-      ? { ...item, notes: 'Trim delivered.', updatedAt: '2026-09-28T09:00:00.000Z' } as ScheduleItem
+    // Pin moved deliberately by A6 pass 13 M1 (1 Oct 2026): this used a
+    // notes-only change. "Was updated." now needs a change to what the task
+    // says in Project Truth (its content key), so an ids-only write by
+    // "Delete PDF + Items" stops reading as one; the task's notes are not in
+    // Project Truth or the report. Its next step is, and is not compared.
+    const nextStepOnly = v1.map(item => item.taskName === 'Set trim'
+      ? { ...item, nextAction: 'Confirm trim delivery.', updatedAt: '2026-09-28T09:00:00.000Z' } as ScheduleItem
       : item);
-    for (const lines of sinceLines(notesOnly, lastWeek)) {
+    for (const lines of sinceLines(nextStepOnly, lastWeek)) {
       expect(lines.slice(1)).toEqual(['• Tower: Set trim was updated.']);
     }
   });

@@ -36,6 +36,14 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   earlierTaskIds?: readonly string[];
   /**
+   * What the task says, as one key (`reportTaskContentKey`): every field
+   * David can see or edit on it, never its ids or times. Whole-app audit A6
+   * pass 13 M1 (1 Oct 2026): a task whose key is the one the earlier report
+   * saved gets no "was updated." line. Absent on snapshots saved before then
+   * (those count as before), and ignored by builds before then.
+   */
+  contentKey?: string;
+  /**
    * When this task last changed on the device that saved the snapshot, saved
    * by A6 pass 9 M2 only (30 Sep 2026). No longer saved or read: a row's
    * update time also moves for a note or an owner change, so it could not
@@ -360,6 +368,14 @@ export type DAVEReportPeriodComparison = Readonly<{
    */
   changedTaskIds?: readonly string[];
   /**
+   * Every task (by its id now) paired with a task of the earlier report (by
+   * id, by its earlier ids, or as a revision) whose content key is its own:
+   * nothing David can see on it changed, so the report adds no "was
+   * updated." line for it (A6 pass 13 M1). Not listed against a task saved
+   * with no content key.
+   */
+  unchangedTaskIds?: readonly string[];
+  /**
    * Not counted: the report this one counts from was sent by the other
    * device after this device last downloaded the tasks, so any difference
    * could be the other device's change read backwards (A6 pass 10 M1, M2).
@@ -397,6 +413,7 @@ export function buildDAVEReportSnapshot({
     urgency: task.urgency,
     approvalStatus: clean(task.approvalStatus) || null,
     estimatedScheduleImpactDays: finiteNumber(task.estimatedScheduleImpactDays),
+    contentKey: reportTaskContentKey(truth.projectName, task),
   }))).sort((left, right) =>
     normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
     normalized(left.taskName).localeCompare(normalized(right.taskName)) ||
@@ -460,6 +477,7 @@ export function compareDAVEReportSnapshots({
   );
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
+  const unchangedTaskIds = new Set<string>();
 
   // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
   // whose copy in the earlier report was the newer row. A note or owner
@@ -473,6 +491,7 @@ export function compareDAVEReportSnapshots({
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
       continue;
     }
+    if (sameContent(prior, task)) unchangedTaskIds.add(task.taskId);
     changes.push(...changesBetween(prior, task));
   }
 
@@ -493,6 +512,7 @@ export function compareDAVEReportSnapshots({
     changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
     changeCount: distinctChanges.length,
     changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
+    unchangedTaskIds: Object.freeze([...unchangedTaskIds]),
   });
 }
 
@@ -510,6 +530,7 @@ export function reportPeriodWaitingForOtherDevice(period: DAVEReportPeriodCompar
     changes: Object.freeze([]),
     changeCount: 0,
     changedTaskIds: Object.freeze([]),
+    unchangedTaskIds: Object.freeze([]),
     waitingForOtherDevice: true,
   });
 }
@@ -591,6 +612,60 @@ function earlierIdsOf(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTask
 function withEarlierIds(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTaskIds'>) {
   const earlierTaskIds = earlierIdsOf(task);
   return earlierTaskIds.length > 0 ? { earlierTaskIds: Object.freeze(earlierTaskIds) } : {};
+}
+
+/** Which fields a content key covers; a key made from another list never equals this one's. */
+const TASK_CONTENT_KEY_VERSION = 'task-content/1';
+
+/**
+ * What a task says, as one key (whole-app audit A6 pass 13 M1, 1 Oct 2026).
+ * "Delete PDF + Items" writes the removed rows' ids onto the tasks shown that
+ * answer to them and stamps their update time, so every device takes the ids
+ * (that stamp stays: rows sync by it). The report said "<task> was updated."
+ * for any task stamped since the last report with no compared change, so an
+ * ids-only write read as one line per moved task to the client.
+ *
+ * The key covers what David can see or edit on the task: its project, name,
+ * type, area, owner, assignee, contractor, trade and next step; status,
+ * percent, duration, start, finish and baseline dates, milestone and how many
+ * predecessors it has; approval, workflow stage, response date and
+ * reference; checklist counts; schedule impact days, confidence and impact
+ * notes. The task's own notes are not in Project Truth, so not here: a
+ * notes-only change no longer reads "was updated." It leaves out ids (its own, its earlier ids and its predecessors' ids,
+ * which change when masters move rows), times (updated, updated by, latest
+ * activity, which has its own line), and what is worked out from today or
+ * from evidence (urgency, completion state, verification, related evidence,
+ * contradictions). Dates are compared as calendar days.
+ */
+function reportTaskContentKey(projectName: string, task: DAVEProjectTruth['schedule'][number]): string {
+  const text = (value: unknown) => clean(value) || null;
+  const day = (value: unknown) => parsePlainDate(value) || text(value);
+  const predecessors = Array.isArray(task.predecessorTaskIds) ? task.predecessorTaskIds.length : 0;
+  return `${TASK_CONTENT_KEY_VERSION}:${contentHash(JSON.stringify([
+    text(projectName), text(task.taskName), text(task.itemType), text(task.areaName),
+    text(task.owner), text(task.assignee), text(task.contractor), text(task.trade), text(task.nextAction),
+    text(task.status), finiteNumber(task.percentComplete), finiteNumber(task.durationWeight),
+    day(task.startDate), day(task.finishDate), day(task.baselineStartDate), day(task.baselineFinishDate),
+    Boolean(task.isMilestone), predecessors,
+    text(task.approvalStatus), text(task.workflowStage), day(task.responseDueDate), text(task.referenceNumber),
+    finiteNumber(task.checklistTotal), finiteNumber(task.checklistComplete),
+    finiteNumber(task.estimatedScheduleImpactDays), text(task.impactConfidence), text(task.impactNotes),
+  ]))}`;
+}
+
+/** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */
+function sameContent(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): boolean {
+  return typeof prior.contentKey === 'string' && prior.contentKey === task.contentKey;
+}
+
+/** FNV-1a, as the report's fingerprint hashes (DAVEReportIntelligence). */
+function contentHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 type TaskIdLinks = Readonly<{

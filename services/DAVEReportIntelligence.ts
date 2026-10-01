@@ -848,6 +848,12 @@ function buildRecentChanges({
   const comparedTaskIds = new Set(
     reportingPeriod.changedTaskIds ?? reportingPeriod.changes.map(change => change.taskId),
   );
+  // Whole-app audit A6 pass 13 M1 (1 Oct 2026): nor a task that says what
+  // it said in the earlier report. "Delete PDF + Items" stamps the tasks it
+  // writes removed ids onto (rows sync by that time), and each one read
+  // "Pour slab was updated." with nothing changed. A report saved before the
+  // content keys lists none here, and counts as before.
+  const unchangedTaskIds = new Set(reportingPeriod.unchangedTaskIds ?? []);
   const taskChanges: DAVEReportRecentChange[] = [];
   for (const truth of truths) {
     for (const task of truth.schedule) {
@@ -867,7 +873,7 @@ function buildRecentChanges({
           summary: `${truth.projectName}: ${task.taskName} — ${toPMReportLanguage(activity) || activity}`,
           source: 'task_activity',
         }));
-      } else if (occurredAt && !comparedTaskIds.has(task.taskId)) {
+      } else if (occurredAt && !comparedTaskIds.has(task.taskId) && !unchangedTaskIds.has(task.taskId)) {
         taskChanges.push(Object.freeze({
           id: `report-change:${task.taskId}:revision`,
           projectName: truth.projectName,
