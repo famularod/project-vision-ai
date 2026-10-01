@@ -141,6 +141,22 @@ export function DAVEVoiceCaptureSheet({
     heldTranscriptRef.current = null;
   }, [visible, projectId]);
 
+  // The project changed while "Preparing…" (a walk's project record changed
+  // underneath): that upload's words are dropped above, and the sheet stayed
+  // on "Preparing…" with only Discard as a way out (whole-app audit A11 pass 5
+  // L2). It stops waiting and keeps the recording ready to try again.
+  const shownProjectIdRef = useRef(projectId);
+  useEffect(() => {
+    if (shownProjectIdRef.current === projectId) return;
+    shownProjectIdRef.current = projectId;
+    if (!visible || preparingOperationRef.current === null) return;
+    preparingOperationRef.current = null;
+    setIsTranscribing(false);
+    setNotice(`The project changed while this recording was being prepared. It is kept here. Tap ${continueLabel} to try again.`);
+    // Only a project change while the sheet is open does this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
   useEffect(() => {
     if (!visible) {
       autoStartHandledRef.current = false;
@@ -148,6 +164,7 @@ export function DAVEVoiceCaptureSheet({
     }
     setError(null);
     setNotice(null);
+    preparingOperationRef.current = null;
     setIsTranscribing(false);
     setTaskPickerOpen(false);
     setTaskSearch('');
@@ -340,12 +357,15 @@ export function DAVEVoiceCaptureSheet({
   }
 
   // "Keep Recording for Later": stop waiting, keep the audio, back to "Recording ready".
+  // An upload already dropped (a project change) holds no words, but still
+  // ends the wait: it used to do nothing (whole-app audit A11 pass 5 L2).
   function stopWaitingKeepRecording() {
     const operation = preparingOperationRef.current;
-    if (operation === null || operation !== transcriptionOperationRef.current) return;
-    stoppedWaitingRef.current = { operation, recording: recordingGenerationRef.current };
+    if (operation !== null && operation === transcriptionOperationRef.current) {
+      stoppedWaitingRef.current = { operation, recording: recordingGenerationRef.current };
+      transcriptionOperationRef.current += 1;
+    }
     preparingOperationRef.current = null;
-    transcriptionOperationRef.current += 1;
     setIsTranscribing(false);
     setNotice(`Stopped waiting. The recording is kept here. Tap ${continueLabel} to try again.`);
   }

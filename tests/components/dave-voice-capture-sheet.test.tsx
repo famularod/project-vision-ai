@@ -573,3 +573,86 @@ describe('DAVEVoiceCaptureSheet A11 pass 4 L1: no signal while the sign-in waits
     expect(signInPending()).toBe(true);
   });
 });
+
+// Whole-app audit A11 pass 5 L2 (30 Sep 2026): the project changed while a
+// recording was "Preparing…" (on a walk, the project record changed
+// underneath). The upload for the old project was dropped, but the sheet
+// stayed on "Preparing…": its words never landed, "Keep Recording for Later"
+// did nothing, "Keep Waiting" never ended, and only Discard (which deletes
+// the recording) got out.
+describe('DAVEVoiceCaptureSheet A11 pass 5 L2: the project changes while a recording is being prepared', () => {
+  const OTHER_PROJECT_ID = '99999999-2222-4333-8444-555555555555';
+  const PROJECT_CHANGED =
+    'The project changed while this recording was being prepared. It is kept here. Tap Continue to try again.';
+  let alert: jest.SpyInstance;
+  beforeEach(() => { alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined); });
+  afterEach(() => { alert.mockRestore(); });
+
+  function sheet(projectId: string, onMemoryReady: jest.Mock, onCancel: jest.Mock) {
+    return (
+      <DAVEVoiceCaptureSheet
+        visible projectId={projectId} projectName="Canopy Project" candidateLocations={[]}
+        title="Talk" continueLabel="Continue" autoSubmitOnStop
+        onMemoryReady={onMemoryReady} onTypeInstead={jest.fn()} onCancel={onCancel}
+      />
+    );
+  }
+
+  async function prepareThenChangeProject(beforeChange?: () => void) {
+    const upload = deferred<{ transcript: string }>();
+    transcription.transcribeDAVECaptureMemoryAudio.mockImplementationOnce(() => upload.promise);
+    const onMemoryReady = jest.fn();
+    const onCancel = jest.fn();
+    const view = render(sheet(PROJECT_ID, onMemoryReady, onCancel));
+    await startListening(8_000);
+    fireEvent.press(screen.getByText('Stop & Continue'));
+    await screen.findByText('Preparing…');
+    beforeChange?.();
+    await act(async () => { view.rerender(sheet(OTHER_PROJECT_ID, onMemoryReady, onCancel)); });
+    return { upload, onMemoryReady, onCancel };
+  }
+
+  it('stops waiting and keeps the recording ready; Continue tries again for the new project', async () => {
+    const { upload, onMemoryReady, onCancel } = await prepareThenChangeProject();
+
+    expect(screen.queryByText('Preparing…')).toBeNull();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    expect(screen.getByText(PROJECT_CHANGED)).toBeTruthy();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+
+    // The old project's words are not used.
+    await act(async () => { upload.resolve({ transcript: 'Old project words.' }); });
+    expect(onMemoryReady).not.toHaveBeenCalled();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'New project words.' });
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'New project words.' }));
+    expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenLastCalledWith(
+      expect.objectContaining({ uri: RECORDING_URI, projectId: OTHER_PROJECT_ID }),
+    );
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('Keep Recording for Later, tapped on the question asked before the change, ends the wait and keeps the audio', async () => {
+    const { upload, onMemoryReady, onCancel } = await prepareThenChangeProject(() => {
+      fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+      expect(alert.mock.calls[0][0]).toBe('Stop preparing this recording?');
+    });
+    const keepForLater = lastAlertButtons(alert).find(button => button.text === 'Keep Recording for Later');
+    await act(async () => { keepForLater?.onPress?.(); });
+
+    expect(screen.queryByText('Preparing…')).toBeNull();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    expect(screen.getByText('Stopped waiting. The recording is kept here. Tap Continue to try again.')).toBeTruthy();
+    expect(fileSystem.deleteAsync).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // The dropped upload's words are not held for the next Continue.
+    await act(async () => { upload.resolve({ transcript: 'Old project words.' }); });
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'New project words.' });
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'New project words.' }));
+    expect(onMemoryReady).toHaveBeenCalledTimes(1);
+  });
+});
