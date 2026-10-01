@@ -724,4 +724,70 @@ describe('ScheduleTaskEditorModal', () => {
       expect(fields(screen)).toEqual(['Seal roof', 'Main St', 'Main St Yard']);
     });
   });
+
+  // Whole-app audit A3 pass 9 L4 (30 Sep 2026): only a successful save
+  // cleared the form. After X, the next Add Task refilled project, location
+  // and owner but kept the cancelled task's name, notes, dates and type, and
+  // guided questions pre-filled the cancelled task name. Closing the form
+  // without saving (X or Back; it never asked before discarding) now discards
+  // the attempt, so the form opens fresh.
+  describe('opens fresh after it was closed without saving', () => {
+    const area = (name: string, projectName: string) => ({
+      id: `area-${name}`, name, projectName, latitude: 34, longitude: -118, radiusFeet: 250,
+    });
+    const freshProps = {
+      projects: ['Lot 9', 'Main St'],
+      projectAreas: [area('Lot 9 Yard', 'Lot 9'), area('Main St Yard', 'Main St')],
+      scheduleItems: [],
+      initialProjectName: 'Lot 9',
+      defaultOwner: 'David',
+    };
+
+    it('X discards the cancelled task, and the next one saves with none of it', async () => {
+      const onClose = jest.fn();
+      const onSubmit = jest.fn();
+      const props = { ...freshProps, onClose, onSubmit };
+      const screen = await render(<ScheduleTaskEditorModal {...props} visible />);
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Seal roof');
+      fireEvent.press(screen.getByRole('radio', { name: 'Issue' }));
+      fireEvent.press(screen.getByRole('button', { name: '+7 Days' }));
+      fireEvent.changeText(screen.getByLabelText('Contractor'), 'ABC Roofing');
+      fireEvent.press(screen.getByRole('radio', { name: '50%' }));
+      fireEvent.press(screen.getByRole('radio', { name: 'High' }));
+      fireEvent.changeText(screen.getByLabelText('Milestone'), 'Dry-in');
+      fireEvent.changeText(screen.getByLabelText('Next action'), 'Order membrane');
+      fireEvent.changeText(screen.getByLabelText('Notes'), 'Wait for dry weather');
+      fireEvent.changeText(screen.getByLabelText('Location'), 'North gate');
+      fireEvent.press(screen.getByLabelText('Close Add Task'));
+      expect(onClose).toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      screen.rerender(<ScheduleTaskEditorModal {...props} visible={false} />);
+      screen.rerender(<ScheduleTaskEditorModal {...props} visible />);
+      expect(['Task or milestone', 'Project', 'Location', 'Owner', 'Contractor', 'Percent Complete', 'Milestone', 'Next action', 'Notes']
+        .map(label => screen.getByLabelText(label).props.value))
+        .toEqual(['', 'Lot 9', 'Lot 9 Yard', 'David', '', '0', '', '', '']);
+      expect(screen.getByRole('radio', { name: 'Task' }).props.accessibilityState).toEqual({ selected: true });
+
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Sweep the lot');
+      fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        taskName: 'Sweep the lot', itemType: 'Task', projectName: 'Lot 9', locationName: 'Lot 9 Yard',
+        startDate: '', finishDate: '', milestone: '', owner: 'David', contractor: '',
+        percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', nextAction: '',
+      }));
+    });
+
+    it('guided questions after X do not pre-fill the cancelled task name', async () => {
+      const props = { ...freshProps, onClose: jest.fn(), onSubmit: jest.fn() };
+      const screen = await render(<ScheduleTaskEditorModal {...props} visible />);
+      fireEvent.changeText(screen.getByLabelText('Task or milestone'), 'Seal roof');
+      fireEvent.press(screen.getByLabelText('Close Add Task'));
+      screen.rerender(<ScheduleTaskEditorModal {...props} visible={false} />);
+      screen.rerender(<ScheduleTaskEditorModal {...props} visible initiallyGuided />);
+      expect(screen.getByText('Question 1 of 14')).toBeTruthy();
+      expect(screen.getByLabelText('Answer Task').props.value).toBe('');
+      expect(screen.getByLabelText('Task or milestone').props.value).toBe('');
+    });
+  });
 });

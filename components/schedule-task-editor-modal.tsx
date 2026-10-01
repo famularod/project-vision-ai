@@ -106,8 +106,11 @@ export function ScheduleTaskEditorModal({
   // Nor does the project in view: the form covers the screen, so it only
   // changes when the iPad rotates or resizes across the wide layout, which
   // switched the project and kept the old project's location (A3 pass 8 L1).
+  // Closing without saving (X, Back) discards the attempt as a save does, so
+  // the next Add Task opens fresh (A3 pass 9 L4).
   useEffect(() => {
     if (!visible) {
+      if (filledRef.current) reset();
       filledRef.current = false;
       return;
     }
