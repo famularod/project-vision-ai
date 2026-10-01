@@ -35,7 +35,7 @@ import {
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
-  uploadPendingChanges,
+  uploadPendingChanges, withPhoneAnalysisResults,
   type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -8007,10 +8007,12 @@ useEffect(() => {
   // a screen read earlier: that wrote over a photo analysis landed since. Only
   // the archive Settings puts on after Keep Phone kept one comes from `given`.
   // Over a conflict, a card that no longer owes its own sync is the cloud's
-  // copy a refresh or echo put there, not David's version (A4 pass 20 M1).
+  // copy a refresh or echo put there, not David's version (A4 pass 20 M1),
+  // which keeps only the card's finished photo analyses (A4 pass 21 F2).
   async function retryQueuedUpdate(given: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
     const current = savedUpdatesRef.current.find(item => item.id === given.id);
-    const base = !current || (sync.overConflict && current.status !== 'queued' && current.status !== 'failed') ? given : current;
+    const base = !current ? given : sync.overConflict && current.status !== 'queued' && current.status !== 'failed'
+      ? withPhoneAnalysisResults(given, [current]) as ProjectUpdate : current;
     const archived = [given, current].find(copy => copy?.isArchived); // nothing un-archives an update
     const update: ProjectUpdate = archived && !base.isArchived
       ? { ...base, isArchived: true, archivedAt: archived.archivedAt ?? null } : base;

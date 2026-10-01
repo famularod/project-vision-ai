@@ -4621,8 +4621,10 @@ function withArchiveKept(copy: unknown, queued: readonly SyncQueueItem[], cloudC
  * have put them there: a finished result newer than the copy's (or the copy
  * still analysing), with the analysis summary of the phone copy it came
  * from. Keep Cloud lost a result taken into one of the phone's copies.
+ * "Send your version?" keeps the card's this way when it sends the copy
+ * David chose (A4 pass 21 F2): the card read "Analyzing" again.
  */
-function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly unknown[]): unknown {
+export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly unknown[]): unknown {
   if (!isRecord(copy) || !Array.isArray(copy.photos)) return copy;
   const finishedAt = (analysis: unknown) => isRecord(analysis) && typeof analysis.status === 'string' && analysis.status !== 'analyzing'
     ? Date.parse(typeof analysis.updatedAt === 'string' ? analysis.updatedAt : '') || 0 : null;

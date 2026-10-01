@@ -111,6 +111,7 @@ import {
   runFieldUpdateCloudSync,
   synchronizeLocalData,
   uploadPendingChanges,
+  withPhoneAnalysisResults,
 } from '../../services/SyncService';
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
 import { reconcileFieldUpdateSyncResult } from '../../services/FieldUpdateSyncGeneration';
@@ -2556,6 +2557,7 @@ function appRetryQueuedUpdate(phone: Device) {
       fieldUpdateSyncCategoryWithoutSession: async () => 'offline', signInPendingRef: { current: false },
       runFieldUpdateCloudSync, markMissingPhotosUnavailable: (update: Update) => update,
       removeMissingPhotosFromSyncQueue: async () => undefined, persistSavedUpdateImmediately: async () => true,
+      withPhoneAnalysisResults, // Send keeps the card's finished results (A4 pass 21 F2)
     },
   ).retryQueuedUpdate;
 }
@@ -4749,5 +4751,63 @@ describe('a Keep Cloud that cannot finish leaves the phone\'s work as it was, wi
     expect(phone.saved()).toMatchObject({ notes: IPAD_SECOND_NOTE, status: 'sent' });
     expect(await getSyncConflicts()).toEqual([]);
     expect(await getOfflineQueue()).toEqual([]);
+  });
+});
+
+/**
+ * Whole-app audit A4 pass 21 F2 (caused by 19bc2da, A4 pass 20 M1): "Send
+ * your version?" over a conflict starts from the copy the question opened on
+ * once a refresh or the iPad's echo has put the iPad's copy on the card. A
+ * photo analysis that finished while the question was up, its patch already
+ * on the cloud's copy, was not in that copy: the card read "Analyzing" until
+ * the next refresh, and when the iPad had saved again meanwhile the result
+ * was gone from the cloud too. Send now keeps the card's finished results for
+ * the photos both copies share, by Keep Cloud's rule (withPhoneAnalysisResults).
+ */
+describe('"Send your version?" keeps a photo analysis that finished while the question was up (audit A4 pass 21 F2)', () => {
+  it.each(['a refresh', 'the iPad saving again, then a refresh'])('its patch went up, then %s put the iPad\'s copy on the card', async what => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(await getSyncConflicts()).toHaveLength(1);
+    const cardWhenAsked = phone.saved()!; // the render the question opened on
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    await uploadPendingChanges(); // its patch goes onto the cloud's copy
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    if (what !== 'a refresh') {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await iPadEditsNow(IPAD_SECOND_NOTE);
+    }
+    await refresh(phone);
+    expect(phone.saved()?.notes).not.toBe(RETRY_SYNC_OFFLINE_EDIT); // the cloud's copy is on the card, with the result
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true }); // Send
+    phone.render();
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await uploadPendingChanges();
+    await waitingUpdateSync(phone);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent', pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('control: a photo the card no longer lists is not added back, and an older result does not replace the copy\'s newer one', async () => {
+    const older = { ...finishedAnalysis(), updatedAt: '2026-09-28T09:30:00.000Z', currentObservation: 'older' };
+    const newer = { ...finishedAnalysis(), currentObservation: 'newer' };
+    const other = { id: 'photo-only-on-card', uri: 'file:///phone/Documents/project-photos/other.jpg', caption: '', createdAt: SENT_AT,
+      photoIntelligence: newer };
+    const given = { ...savedUpdate([], 'queued'), photos: [{ ...analyzingPhoto, photoIntelligence: newer }] };
+    const current = { ...savedUpdate([], 'sent'), notes: IPAD_NOTE, photos: [{ ...analyzingPhoto, photoIntelligence: older }, other] };
+    expect(withPhoneAnalysisResults(given, [current])).toEqual(given);
   });
 });
