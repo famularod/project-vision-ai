@@ -1,7 +1,7 @@
 /**
- * Audit round 2, A7 pass 26 and A6 pass 23 (1 Oct 2026), with A5 pass 23 L2:
- * the progress Full Sync carries from a task's old row to the newest row
- * that answers to it (3035b7a, A6 pass 22 M1).
+ * Audit round 2, A7 pass 26, A6 pass 23 and A5 pass 23 (1 Oct 2026): the
+ * progress Full Sync carries from a task's old row to the newest row that
+ * answers to it (3035b7a, A6 pass 22 M1).
  *
  * A7 p26 M-1 (Medium, caused by 3035b7a): the carried percent stayed on the
  *   device (Full Sync carries after it uploads; a refresh uploads nothing),
@@ -16,6 +16,10 @@
  *   two devices' copies differed only in that stamp.
  * A6 p23 M1 (Medium, older): the offline percent entered before G was lost
  *   when Framing had an earlier lookahead both devices saw.
+ * A5 p23 L1 (Low, caused by 3035b7a): a refresh or Full Sync carried
+ *   David's percent past a master that had replaced it with a file's, below
+ *   a newer master's percent (owner answer Q32, option b: the newest master
+ *   wins).
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -822,6 +826,100 @@ describe('A6 p23 M1: the offline percent entered before G, when Framing had an e
     // Not carried as David's own: the lookahead's percent stands (or, under Q32, is floored at his, still the file's).
     const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [restated], allowCloudOnly: true }).find(item => item.id === restated.id)!;
     expect([merged.progressSource ?? null, merged.progressConfirmedBy ?? null]).toEqual([null, null]);
+  });
+});
+
+describe('A5 p23 L1 and owner answer Q32 (option b): a newer master that replaced David\'s percent with a file\'s stands after the sync too', () => {
+  it('one device: F, David\'s 50%, G moves Framing at 100%, H moves it at 10%: 10% after approval, a refresh, a restart and Full Sync', async () => {
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T10:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 50 });
+    at(G.importedAt!);
+    await approve(phone, G, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,100', SURVEY]);
+    shareDocuments(phone);
+    at(H.importedAt!);
+    await approve(phone, H, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,10', SURVEY]);
+    shareDocuments(phone);
+    expect(onDevice(phone)[0][2]).toBe(10);
+    await refresh(phone);
+    expect(onDevice(phone)[0][2]).toBe(10);
+    await startup(phone);
+    expect(onDevice(phone)[0][2]).toBe(10);
+    const writes = cloudWrites();
+    await fullSync(phone);
+    expect([onDevice(phone)[0][2], onWeb()[0][2], cloudWrites()]).toEqual([10, 10, writes]);
+  });
+
+  it.each([
+    ['G and H move Framing', 'Framing,Alpha,Lot,10/18/2026,10/28/2026,60', 'Framing,Alpha,Lot,10/20/2026,10/30/2026,30'],
+  ] as const)('two devices (Q32 case 1): David\'s 40%% on the offline iPad before G; G at 60%% and H at 30%% on the phone; %s: H\'s 30%% everywhere', async (_label, gRow, hRow) => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(ipad, false);
+    at(BEFORE_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 40 });
+    at(G.importedAt!);
+    await approve(phone, G, [gRow, SURVEY]);
+    shareDocuments(phone);
+    at(H.importedAt!);
+    await approve(phone, H, [hRow, SURVEY]);
+    shareDocuments(phone);
+    at('2026-09-22T08:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
+  });
+
+  // Q32 case 1 with Framing on its dates, left open: G and H restate F's row in place, and the row keeps only H's 30%, not
+  // that G's 60% had replaced David's 40% first. Merging the iPad's copy (his 40%) with the cloud's (30%) cannot tell this
+  // from H stating 30% straight over his 40%, which one device ignores. Telling them apart needs the row to keep each file's
+  // stated percent, which the import does not record.
+  it.skip('two devices (Q32 case 1), Framing on its dates: H\'s 30% everywhere (open: the row does not keep G\'s 60%)', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(ipad, false);
+    at(BEFORE_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 40 });
+    at(G.importedAt!);
+    await approve(phone, G, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,60', SURVEY]);
+    shareDocuments(phone);
+    at(H.importedAt!);
+    await approve(phone, H, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,30', SURVEY]);
+    shareDocuments(phone);
+    at('2026-09-22T08:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
+  });
+
+  it('a row between whose master stated more than David\'s, then a lookahead lowered it, still took his percent over', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 60, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-10T16:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-10T16:00:00.000Z' } as ScheduleItem;
+    // G (11 Sep) moved Framing at 70%, above his 60%; a lookahead then lowered G's row to 10%; H (13 Sep) moved it at 30%.
+    const between = {
+      ...rowsOf(G, [G_ROW('70')])[0], importedAt: '2026-09-11T12:00:00.000Z', percentComplete: 10, status: 'In Progress', revisedFromTaskIds: [davids.id],
+      lookaheadOverlay: {
+        masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 70, masterFilePercentComplete: 70, masterProgressSource: null,
+        lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/24/2026', finishDate: '11/03/2026', percentComplete: 10 }],
+      },
+    } as ScheduleItem;
+    const newest = { ...rowsOf(H, ['Framing,Alpha,Lot,10/27/2026,11/06/2026,30'])[0], importedAt: '2026-09-13T23:00:00.000Z', revisedFromTaskIds: [davids.id, between.id] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [davids, between, newest], allowCloudOnly: true });
+    expect(merged.find(item => item.id === newest.id)!.percentComplete).toBe(30);
+  });
+
+  it('a percent the row between took from a lookahead note its import brought along does not stop the carry; one G stated itself does (A6 p23 M1)', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-12T10:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-12T10:00:00.000Z' } as ScheduleItem;
+    const note = {
+      masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 0, masterFilePercentComplete: 0,
+      lookaheads: [{ batchId: 'batch-LOOKAHEAD L1', startDate: '10/18/2026', finishDate: '10/28/2026', percentComplete: 40, datesReplacedByMaster: 'batch-MASTER G' }],
+    };
+    const between = { ...rowsOf(G, [G_ROW()])[0], percentComplete: 40, status: 'In Progress', revisedFromTaskIds: [davids.id], lookaheadOverlay: note } as ScheduleItem;
+    const newest = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,10'])[0], revisedFromTaskIds: [davids.id, between.id] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [between, newest], allowCloudOnly: true });
+    expect(merged.find(item => item.id === newest.id)!.percentComplete).toBe(30);
+    // The same row between, its 40% stated by G itself: G took David's 30% over, and H's newer 10% stands (Q32, option b).
+    const stated = { ...between, lookaheadOverlay: { ...note, masterPercentComplete: 40, masterFilePercentComplete: 40 } } as ScheduleItem;
+    expect(recoverDAVEScheduleRecords({ local: [davids], cloud: [stated, newest], allowCloudOnly: true }).find(item => item.id === newest.id)!.percentComplete).toBe(10);
   });
 });
 
