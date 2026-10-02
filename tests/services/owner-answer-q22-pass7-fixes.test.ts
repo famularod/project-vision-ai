@@ -320,6 +320,12 @@ describe('A5 p7 L1: a percent column is read as fractions or as percents as a wh
     expect(percents(['0.4', '1', '40%'])).toEqual([40, 100, 40]);
   });
 
+  it('a fraction rounds as the percent it says (2 Oct 2026): 0.575 is 58%, not 57%', () => {
+    // 0.575 × 100 is 57.49999999999999 in floating point, which rounded down; 57.5% written as a percent rounds up.
+    expect(percents(['0.575', '0.145', '0.125', '0.995', '1'])).toEqual([58, 15, 13, 100, 100]);
+    expect(percents(['57.5', '75'])).toEqual([58, 75]);
+  });
+
   it('0–1 decimals mixed with numbers above 1: percents, and 0.5 is not read as 50%', () => {
     // Pin updated (A5 pass 8 L4): half a percent rounds as the progress rule rounds it, to 1% (it was cut to 0%).
     expect(percents(['0.5', '75'])).toEqual([1, 75]);

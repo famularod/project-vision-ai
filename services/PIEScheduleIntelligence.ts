@@ -733,7 +733,9 @@ const UNIQUE_ID_NAMES = ['unique id', 'uid', 'task uid', 'unique task id'];
 
 function normalizePercent(value: string, status: ScheduleStatus, fractions = false): number | null {
   const fraction = fractionValue(value);
-  if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
+  // 0.575 × 100 is 57.49999999999999 in floating point, which rounded to 57%; the percent the cell says (57.5)
+  // rounds to 58%, as a written 57.5% does (2 Oct 2026, with owner answers Q25-Q30).
+  if (fraction !== null && fractions) return clamp(Math.round(Number((fraction * 100).toPrecision(12))), 0, 100);
   const match = value.match(/(\d*\.\d+|\d+)/);
 
   if (match) return clamp(Math.round(Number(match[1])), 0, 100);
