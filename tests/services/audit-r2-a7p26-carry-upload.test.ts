@@ -47,6 +47,10 @@
  *   the row between at or below his percent.
  * A7 p28 L (Low, caused by b3d1970): a carry from a row deleted over
  *   realtime, refused later, let Sync Now send the iPad's old copy whole.
+ * A7 p29 L1 (Low, caused by f81ccc1; with F's row kept, from 30170fc): a
+ *   percent a lookahead delete gave back while its upload waited was weighed
+ *   as a carry by the refresh and the startup load, which showed the deleted
+ *   lookahead's percent; a note or Sync Now in that window kept it.
  * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
  *   recorded Low (Set Active to an older master); see each test.
  *
@@ -2082,5 +2086,117 @@ describe('A7 p28 L: a carry from a row deleted over realtime, refused later, lea
     const newer = { ...older, percentComplete: 45, progressConfirmedAt: '2026-09-16T09:30:00.000Z' } as ScheduleItem;
     const [merged] = recoverDAVEScheduleRecords({ local: [carried], cloud: [newer], allowCloudOnly: true });
     expect([merged.percentComplete, merged.progressCarriedFrom ?? null]).toEqual([45, null]);
+  });
+});
+
+describe('A7 p29 L1: a percent given back while its upload waits is David\'s word, not a carry, in the refresh and the startup load', () => {
+  const L = scheduleDoc('LOOKAHEAD L', '2026-09-16T09:00:00.000Z', 'lookahead');
+  const GIVEN = [['10/22/2026', '11/01/2026', 30, '', '']];
+  const NOTED = [['10/22/2026', '11/01/2026', 30, 'Phone note', '']];
+
+  /** A7 p28's flow with the carry landing: G's row holds David's 30% carried from F's row (marked); F deleted on both devices. */
+  async function carriedAndLanded() {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!); await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z'); await deleteWithItems(phone, F);
+    at(AFTER_G); await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    await backgroundUpload(phone); await echoes(ipad); await fullSync(phone);
+    await tombstoneEchoes(ipad); await backgroundUpload(ipad); await echoes(phone);
+    expect([cloudRow('MASTER G-1')!.progressCarriedFrom, theRow(phone).progressCarriedFrom]).toEqual([
+      { taskId: 'MASTER F-1', judgedAt: AFTER_G }, { taskId: 'MASTER F-1', judgedAt: AFTER_G },
+    ]);
+    return { phone, ipad };
+  }
+
+  /**
+   * Lookahead L states 60% on Framing (above his 30%); the phone, offline, deletes L with its items, which gives back his
+   * 30% (queued whole); back online, the routine refresh or the startup cloud load runs before that upload.
+   */
+  async function giveBackThenLoad(phone: Device, ipad: Device, mode: 'refresh' | 'startup') {
+    at(L.importedAt!); await approve(phone, L, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,60'], true);
+    shareDocuments(phone); await echoes(ipad);
+    setOnline(phone, false);
+    at('2026-09-16T10:00:00.000Z'); await deleteWithItems(phone, L);
+    const given = onDevice(phone);
+    expect((await queueOf(phone)).map(item => (item.payload as { changedFields?: unknown }).changedFields ?? 'whole')).toEqual(['whole']);
+    at('2026-09-16T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    if (mode === 'refresh') await refresh(phone, false); else await startup(phone, false);
+    return { given, during: onDevice(phone) };
+  }
+  /** Then the background upload and a sync round on both devices. */
+  async function settle(phone: Device, ipad: Device) {
+    await backgroundUpload(phone);
+    await echoes(phone); await echoes(ipad); await refresh(phone); await refresh(ipad); await fullSync(phone); await fullSync(ipad);
+    return [onWeb(), onDevice(ipad), onDevice(phone)];
+  }
+
+  it.each(['refresh', 'startup'] as const)('(the finding) F deleted, %s first: the phone shows 30%%, not the deleted lookahead\'s 60%%', async (mode) => {
+    const { phone, ipad } = await carriedAndLanded();
+    const { given, during } = await giveBackThenLoad(phone, ipad, mode);
+    expect([given, during]).toEqual([GIVEN, GIVEN]);
+    expect(await settle(phone, ipad)).toEqual([GIVEN, GIVEN, GIVEN]);
+  });
+
+  it.each(['refresh', 'startup'] as const)('(the finding) F deleted, %s first, then a note on Framing before the upload: 30%% and the note everywhere', async (mode) => {
+    const { phone, ipad } = await carriedAndLanded();
+    await giveBackThenLoad(phone, ipad, mode);
+    at('2026-09-16T12:05:00.000Z'); await edit(phone, 'MASTER G-1', { notes: 'Phone note' });
+    expect(await settle(phone, ipad)).toEqual([NOTED, NOTED, NOTED]);
+  });
+
+  it.each(['refresh', 'startup'] as const)('(the finding) F deleted, %s first, then Sync Now before the upload: 30%% everywhere', async (mode) => {
+    const { phone, ipad } = await carriedAndLanded();
+    await giveBackThenLoad(phone, ipad, mode);
+    await fullSync(phone, false); // Sync Now, its upload pass not yet requested again
+    expect(await settle(phone, ipad)).toEqual([GIVEN, GIVEN, GIVEN]);
+  });
+
+  it.each(['refresh', 'startup'] as const)('(older, 30170fc) F\'s row kept, %s first, then a note: 30%% and the note everywhere', async (mode) => {
+    const { phone, ipad } = await offlineThirty();
+    await fullSync(ipad);
+    await echoes(phone); await refresh(phone);
+    const { during } = await giveBackThenLoad(phone, ipad, mode);
+    at('2026-09-16T12:05:00.000Z'); await edit(phone, 'MASTER G-1', { notes: 'Phone note' });
+    expect([during, await settle(phone, ipad)]).toEqual([GIVEN, [NOTED, NOTED, NOTED]]);
+    // Another round writes nothing.
+    const writes = framingWritesOf(phone, ipad);
+    at('2026-09-17T08:00:00.000Z');
+    await fullSync(ipad); await fullSync(phone); await refresh(ipad); await refresh(phone);
+    expect(framingWritesOf(phone, ipad)).toBe(writes);
+  });
+
+  it('pure: a copy changed here after the cloud\'s is weighed alone; the same copy no newer than the cloud\'s is still weighed as carried', () => {
+    const MARK = { taskId: 'MASTER F-1', judgedAt: AFTER_G };
+    const imported = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: ['MASTER F-1'] } as ScheduleItem;
+    const earlier = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', updatedAt: AFTER_G } as ScheduleItem;
+    // The cloud's copy: L restated G's row at 60% on new dates, his 30% noted under it.
+    const restated = {
+      ...imported, startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60, status: 'In Progress',
+      progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: '2026-09-16T09:00:00.000Z',
+      managersPercentUnderFile: 30, managersPercentUnderFileJudgedAt: AFTER_G, progressCarriedFrom: MARK,
+      alsoImportedInBatchIds: ['batch-LOOKAHEAD L'], updatedAt: '2026-09-16T09:00:00.000Z',
+      lookaheadOverlay: { masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 30, masterStatus: 'In Progress', masterProgressSource: 'project_manager', masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: AFTER_G, masterFilePercentComplete: null, lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60 }] },
+    } as ScheduleItem;
+    // The phone's copy after deleting L: his 30% given back with when he judged it, the mark still on the row.
+    const givenBack = {
+      ...imported, percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David',
+      progressConfirmedAt: '2026-09-16T09:00:00.001Z', progressJudgment: { judgedAt: AFTER_G, givenBackAt: '2026-09-16T09:00:00.001Z' },
+      managersPercentUnderFile: 30, managersPercentUnderFileJudgedAt: AFTER_G, progressCarriedFrom: MARK,
+      alsoImportedInBatchIds: ['batch-LOOKAHEAD L'], updatedAt: '2026-09-16T10:00:00.000Z',
+    } as ScheduleItem;
+    const merged = (local: ScheduleItem[], deletedIds: string[]) => recoverDAVEScheduleRecords({ local, cloud: [restated], deletedIds, allowCloudOnly: true })
+      .filter(row => row.id === 'MASTER G-1').map(row => [row.percentComplete, row.startDate]);
+    // F's row deleted (the mark), and F's row kept: 30% on G's dates, as one device shows after deleting L.
+    expect(merged([givenBack], ['MASTER F-1'])).toEqual([[30, '10/22/2026']]);
+    expect(merged([earlier, givenBack], [])).toEqual([[30, '10/22/2026']]);
+    // Sync Now's upload check sends it, as before.
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [givenBack], cloud: [restated], deletedIds: ['MASTER F-1'] }).map(row => row.percentComplete)).toEqual([30]);
+    // The same copy stamped no later than the cloud's (a carried copy keeps the row's own stamp): weighed as carried, as
+    // before, so the cloud's newer lookahead stands (A7 pass 28 L, A7 pass 26 M-1).
+    const notNewer = { ...givenBack, updatedAt: restated.updatedAt } as ScheduleItem;
+    expect(merged([notNewer], ['MASTER F-1'])).toEqual([[60, '10/25/2026']]);
+    expect(merged([earlier, notNewer], [])).toEqual([[60, '10/25/2026']]);
   });
 });

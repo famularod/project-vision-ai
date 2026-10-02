@@ -170,7 +170,8 @@ function mergedWithCarriedProgressWeighedAgain(
   copies: ReadonlyMap<string, readonly ScheduleItem[]>,
   deleted: ReadonlySet<string> = new Set(),
 ): ScheduleItem {
-  const carried = carriedProgressHeld(record, copies, deleted);
+  // A copy changed here since the cloud's (a percent given back, an edit) is his word, weighed alone (A7 pass 29 L1).
+  const carried = !changedHereSince(record, cloudRecord) && carriedProgressHeld(record, copies, deleted);
   if (!carried) return mergeScheduleRevisions(record, cloudRecord);
   const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, cloudRecord[field]]));
   const own = { ...record, ...progress } as ScheduleItem;
@@ -184,6 +185,27 @@ function mergedWithCarriedProgressWeighedAgain(
   const weighed = !keepsHisPercentUnderFile(merged, record) &&
     scheduleProgressCarriedFrom(record, merged, merged.updatedAt ?? '', { fileProgressDated: restatedSinceImport(merged) });
   return weighed ? { ...weighed, progressCarriedFrom: record.progressCarriedFrom } : lookaheadFlooredAtManagersPercentOf(record, merged) ?? merged;
+}
+
+/**
+ * Whole-app audit A7 pass 29 L1 (Low, caused by f81ccc1; with F's row kept,
+ * from 30170fc): a carry put David's 30% on G's row and landed, and F was
+ * deleted. Lookahead L stated 60% there. The phone, offline, deleted L, which
+ * gave back his 30% with when he judged it, so the copy read as the carried
+ * one again (the carry's mark, or F's row still holding the 30%). Back
+ * online, the refresh or the startup cloud load ran before the upload,
+ * weighed the copy as a carry and showed the cloud's 60%; a note or Sync Now
+ * in that window put the 60% on every device. A copy changed on the device
+ * after the cloud's copy last changed (a percent given back, an edit) is
+ * David's word, waiting to go up: it is weighed alone, as Sync Now's upload
+ * check weighs it (A7 pass 27 L2) and as its queued upload sends it. A
+ * carried copy keeps the row's own stamp (withOwnStamp), so it reads newer
+ * than the cloud's copy only when that copy has no stamp: no one has edited
+ * the row, and his percent outranks the import's either way. Any other
+ * carried copy is weighed as before.
+ */
+function changedHereSince(record: ScheduleItem, cloudRecord: ScheduleItem): boolean {
+  return timestamp(record.updatedAt) > timestamp(cloudRecord.updatedAt);
 }
 
 /** Whether a copy's progress is David's from an earlier row it answers to (A7 pass 26 M-1). */
