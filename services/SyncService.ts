@@ -5795,6 +5795,12 @@ function scheduleItemCarriedOntoCloudCopy(
   return { ...next, updatedAt: edited.length > 0 || !later ? new Date().toISOString() : later };
 }
 
+/** A queued carry with nothing of David's queued with it: only the carried progress and its stamp (A7 pass 27 L1). */
+function scheduleItemCarryOnly(changedFields: readonly (keyof ScheduleItem)[]): boolean {
+  const progressFields = new Set<keyof ScheduleItem>(SCHEDULE_CARRIED_PROGRESS_FIELDS);
+  return changedFields.every(field => field === 'updatedAt' || progressFields.has(field));
+}
+
 function timestampOf(value: string | null | undefined): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
@@ -5879,8 +5885,12 @@ async function uploadQueueItem(
     const carriedOnto = remote && changedFields && payload.carriedProgress === true
       ? scheduleItemCarriedOntoCloudCopy(payload, changedFields, remote)
       : null;
+    // Whole-app audit A7 pass 27 L1 (Low, caused by 30170fc): a carried percent sent on its own is the sync's, not an
+    // edit of David's, so it never settles a conflict on the task waiting for Review Conflicts (Keep Phone then said the
+    // conflict had closed by itself). Queued with an edit of his, the edit settles it, as any edit does.
+    const carryOnly = carriedOnto !== null && scheduleItemCarryOnly(changedFields || []);
     if (carriedOnto === 'unchanged') {
-      await clearConflictsForLocalRecord('schedule_item', payload.id);
+      if (!carryOnly) await clearConflictsForLocalRecord('schedule_item', payload.id);
       return 'uploaded';
     }
     const authoritative = carriedOnto
@@ -5941,7 +5951,7 @@ async function uploadQueueItem(
     const result = await upsertScheduleItem(authoritative);
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, authoritative);
-      await clearConflictsForLocalRecord('schedule_item', payload.id);
+      if (!carryOnly) await clearConflictsForLocalRecord('schedule_item', payload.id);
       return 'uploaded';
     }
     return result.error || result.message || 'Task sync is waiting for Supabase.';

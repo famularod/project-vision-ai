@@ -31,6 +31,8 @@
  *   master stating 70%. One device shows 70%.
  * A7 p27 M (Medium, older): an old master deleted on the phone and heard
  *   over realtime on the iPad took David's percent on its row with it.
+ * A7 p27 L1 (Low, caused by 30170fc): the carry's own upload closed a task
+ *   conflict waiting for Review Conflicts.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -156,7 +158,7 @@ import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookah
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import {
-  getOfflineQueue, getSyncConflicts, queueScheduleItemRecord, runScheduleImportCloudSync, runScheduleItemCloudSync,
+  getOfflineQueue, getSyncConflicts, queueScheduleItemProgressCarried, queueScheduleItemRecord, runScheduleImportCloudSync, runScheduleItemCloudSync,
   synchronizeLocalData, uploadPendingChanges,
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
@@ -1370,6 +1372,65 @@ describe('A7 p27 M: an old master deleted on the phone, heard over realtime, kee
     await refresh(ipad);
     await refresh(phone);
     expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
+  });
+});
+
+describe('A7 p27 L1: a carried percent sent on its own leaves a task conflict waiting for Review Conflicts', () => {
+  const gOf = (device: Device) => device.state.find(item => item.id === 'MASTER G-1')!;
+  const conflictNotes = async (device: Device) => (await conflictsOf(device))
+    .map(conflict => [conflict.localId, (conflict.localPayload as { itemData?: ScheduleItem }).itemData?.notes]);
+  /** The iPad holds a conflict on G's row (its copy's note against the web's); the phone's 30% on F's row is in the cloud. */
+  async function conflictOnG() {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!);
+    await approve(ipad, G, [G_ROW(), SURVEY]);
+    shareDocuments(ipad);
+    await backgroundUpload(ipad);
+    at('2026-09-14T13:00:00.000Z');
+    await edit(ipad, 'MASTER G-1', { notes: 'iPad note' });
+    at('2026-09-14T13:30:00.000Z');
+    mockCloud.rows.set('MASTER G-1', { ...cloudRow('MASTER G-1')!, notes: 'Web note', updatedAt: new Date().toISOString() });
+    at('2026-09-14T13:40:00.000Z');
+    on(ipad);
+    await runScheduleItemCloudSync(gOf(ipad)); // Save sends the iPad's whole copy: the web changed it first
+    expect(await conflictNotes(ipad)).toEqual([['MASTER G-1', 'iPad note']]);
+    at(AFTER_G);
+    await edit(phone, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    return { phone, ipad };
+  }
+
+  it('the iPad\'s refresh carries the 30% to G\'s row and sends it: the cloud has 30% and the web\'s note; the conflict still waits', async () => {
+    const { ipad } = await conflictOnG();
+    await refresh(ipad);
+    expect([cloudRow('MASTER G-1')?.percentComplete, cloudRow('MASTER G-1')?.notes]).toEqual([30, 'Web note']);
+    expect(await queueOf(ipad)).toEqual([]);
+    expect(await conflictNotes(ipad)).toEqual([['MASTER G-1', 'iPad note']]);
+  });
+
+  it('the same carry reaching a cloud copy that already holds it leaves the conflict too', async () => {
+    const { ipad } = await conflictOnG();
+    await refresh(ipad);
+    const carried = gOf(ipad);
+    on(ipad);
+    await queueScheduleItemProgressCarried(carried, { ...carried, percentComplete: 0, status: 'Not Started', progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null } as ScheduleItem);
+    const writes = cloudWrites();
+    await backgroundUpload(ipad);
+    expect([await queueOf(ipad), cloudWrites() - writes]).toEqual([[], 0]);
+    expect(await conflictNotes(ipad)).toEqual([['MASTER G-1', 'iPad note']]);
+  });
+
+  it('a note David types while the carry waits goes up with it and settles the conflict, as any edit of his does', async () => {
+    const { ipad } = await conflictOnG();
+    await refresh(ipad, false);
+    expect((await queueOf(ipad)).map(item => (item.payload as { carriedProgress?: boolean }).carriedProgress)).toEqual([true]);
+    at('2026-09-15T09:00:00.000Z');
+    await edit(ipad, 'MASTER G-1', { notes: 'Inspection Friday' });
+    expect([cloudRow('MASTER G-1')?.percentComplete, cloudRow('MASTER G-1')?.notes]).toEqual([30, 'Inspection Friday']);
+    expect(await conflictNotes(ipad)).toEqual([]);
   });
 });
 
