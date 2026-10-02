@@ -20,6 +20,8 @@
  *   David's percent past a master that had replaced it with a file's, below
  *   a newer master's percent (owner answer Q32, option b: the newest master
  *   wins).
+ * A5 p23 M (Medium, older): a deleted old master took David's offline
+ *   percent with it.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -921,6 +923,73 @@ describe('A5 p23 L1 and owner answer Q32 (option b): a newer master that replace
     const stated = { ...between, lookaheadOverlay: { ...note, masterPercentComplete: 40, masterFilePercentComplete: 40 } } as ScheduleItem;
     expect(recoverDAVEScheduleRecords({ local: [davids], cloud: [stated, newest], allowCloudOnly: true }).find(item => item.id === newest.id)!.percentComplete).toBe(10);
   });
+});
+
+describe('A5 p23 M: a deleted old master no longer takes David\'s offline percent with it', () => {
+  it('Delete PDF + Items of F on the phone after G: Full Sync keeps the 30% on G\'s row everywhere', async () => {
+    const { phone, ipad } = await offlineThirty(BEFORE_G);
+    setOnline(ipad, false);
+    at('2026-09-15T09:00:00.000Z');
+    await deleteWithItems(phone, F);
+    shareDocuments(phone);
+    expect(cloudItems().map(item => item.id)).not.toContain('MASTER F-1');
+    at('2026-09-15T10:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 30, '', '']]));
+    expect(ipad.state.map(item => item.id)).not.toContain('MASTER F-1');
+  });
+
+  it('the mirror: G deleted while the iPad recorded on G\'s row, and H answers to G\'s row', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW(), SURVEY]);
+    shareDocuments(phone);
+    await fullSync(ipad);
+    setOnline(ipad, false);
+    at('2026-09-15T09:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { percentComplete: 40 });
+    at(H.importedAt!);
+    await approve(phone, H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,', SURVEY]);
+    shareDocuments(phone);
+    at('2026-09-21T13:00:00.000Z');
+    await deleteWithItems(phone, G);
+    shareDocuments(phone);
+    at('2026-09-21T14:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/25/2026', '11/04/2026', 40, '', '']]));
+  });
+
+  it('pure merge: the deleted row lends its percent and never comes back; a deleted row nothing answers to lends nothing', () => {
+    const old = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', updatedAt: BEFORE_G } as ScheduleItem;
+    const moved = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: [old.id] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [old], cloud: [moved], deletedIds: [old.id], allowCloudOnly: true });
+    expect(merged.map(item => [item.id, item.percentComplete])).toEqual([[moved.id, 30]]);
+    const alone = { ...moved, revisedFromTaskIds: [] } as ScheduleItem;
+    expect(recoverDAVEScheduleRecords({ local: [old], cloud: [alone], deletedIds: [old.id], allowCloudOnly: true }).map(item => [item.id, item.percentComplete]))
+      .toEqual([[moved.id, 0]]);
+  });
+
+  it('a row between that this device no longer has (deleted with its schedule here) keeps an older percent of David\'s from coming back', () => {
+    const older = { ...rowsOf(F, [F_ROW])[0], percentComplete: 70, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-08T02:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-08T02:00:00.000Z' } as ScheduleItem;
+    // G's row held David's later 50%; H moved Framing at 60% (above his 50%); then G was deleted with its items.
+    const newest = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,60'])[0], revisedFromTaskIds: [older.id, 'MASTER G-1'] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [older, newest], cloud: [older, newest], deletedIds: ['MASTER G-1'], allowCloudOnly: true });
+    expect(merged.find(item => item.id === newest.id)!.percentComplete).toBe(60);
+  });
+
+  it('a percent of David\'s judged after the newest row\'s import passes a row between that this device never had', () => {
+    // G was approved and deleted on the phone while the iPad was offline; H answers to G's row. David's 100% on the iPad
+    // came after H's import, so it is newer than anything said on G's row.
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 100, status: 'Complete', progressSource: 'project_manager', progressConfirmedAt: '2026-09-22T10:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-22T10:00:00.000Z' } as ScheduleItem;
+    const newest = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,60'])[0], revisedFromTaskIds: [davids.id, 'MASTER G-1'] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [davids, newest], deletedIds: ['MASTER G-1'], allowCloudOnly: true });
+    expect(merged.find(item => item.id === newest.id)!.percentComplete).toBe(100);
+  });
+
 });
 
 describe('convergence', () => {

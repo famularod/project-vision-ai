@@ -136,7 +136,7 @@ export function recoverDAVEScheduleRecords({
     }
     combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies));
   });
-  return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]));
+  return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), deletedRowsHeld(local, cloud, deleted));
 }
 
 function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
@@ -183,6 +183,23 @@ function progressTakenFrom(row: ScheduleItem, earlier: ScheduleItem): boolean {
 }
 
 /**
+ * The deleted rows this device still holds and this sync drops (A5 pass 23
+ * M), each with the cloud's copy merged in when it has one: they lend
+ * David's percent to the newest row kept that answers to them, and are never
+ * returned. Once dropped, a row lends nothing more.
+ */
+function deletedRowsHeld(local: readonly ScheduleItem[], cloud: readonly ScheduleItem[], deleted: ReadonlySet<string>): ScheduleItem[] {
+  if (deleted.size === 0) return [];
+  const cloudById = new Map(cloud.map(record => [normalized(record.id), record] as const));
+  return local.flatMap(record => {
+    const id = normalized(record.id);
+    if (!deleted.has(id)) return [];
+    const cloudRecord = cloudById.get(id);
+    return [cloudRecord ? mergeScheduleRevisions(record, cloudRecord) : record];
+  });
+}
+
+/**
  * Whole-app audit A6 pass 22 M1 (1 Oct 2026, older): master F was current on
  * both devices; the phone approved master G, which moved Framing to new
  * dates, so Framing got a new row answering to the old one
@@ -223,8 +240,24 @@ function progressTakenFrom(row: ScheduleItem, earlier: ScheduleItem): boolean {
  * his percent from passing it: that file took his percent over there, as
  * approval does. A file percent below his there still lets it pass (A6 pass
  * 22 M1).
+ *
+ * Whole-app audit A5 pass 23 M (1 Oct 2026, older): the same 30% on the
+ * offline iPad, and after approving G David deleted F with its items on the
+ * phone or the web, as the delete question invites. F's row was dropped as
+ * deleted before the carry ran, so both devices showed G's row at 0% and the
+ * 30% was gone, with no notice. A deleted row this sync drops now lends
+ * David's percent, by the same rule, to the newest row kept that answers to
+ * it (G's row; or H's, when G was the one deleted); the deleted row itself
+ * never comes back, and a row nothing answers to lends nothing. A percent
+ * of his judged before the newest row's import does not pass a row between
+ * that this device no longer has: what David or a file said there is gone,
+ * and deleting a hidden master's rows must not bring back an older percent
+ * of his that a later one, on a deleted row, had replaced (found by the A7
+ * pass 26 comparisons). A percent he judged after that import is newer than
+ * anything said there, and passes.
  */
-function progressCarriedToRevisedTasks(records: ScheduleItem[]): ScheduleItem[] {
+function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
+  // Only rows kept answer; a deleted row only lends its percent (A5 pass 23 M).
   const answering = new Map<string, ScheduleItem[]>();
   records.forEach(record => scheduleTaskEarlierIds(record).forEach(id => {
     const key = normalized(id);
@@ -232,14 +265,17 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[]): ScheduleItem[] 
   }));
   if (answering.size === 0) return records;
   // Each row's latest David percent from the rows it answers to (it alone, as the newest row of the task).
-  const known = new Map(records.map(record => [normalized(record.id), record] as const));
+  const known = new Map([...records, ...deleted].map(record => [normalized(record.id), record] as const));
   const from = new Map<ScheduleItem, ScheduleItem>();
-  records.forEach(earlier => {
+  [...records, ...deleted].forEach(earlier => {
     const moved = scheduleProgressIsManagers(earlier) ? answering.get(normalized(earlier.id)) : undefined;
     if (!moved) return;
     const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
     const newest = moved.filter(record => !superseded.has(normalized(record.id)));
     if (newest.length !== 1) return;
+    // A percent judged before the newest row's import passes only rows between that this device still knows (A5 pass 23 M).
+    if (timestamp(scheduleProgressJudgedAt(earlier)) <= timestamp(newest[0].importedAt || newest[0].createdAt) &&
+      rowsBetween(earlier, newest[0], known).some(row => !row)) return;
     const taken = from.get(newest[0]);
     if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(newest[0], earlier);
   });
@@ -329,7 +365,7 @@ export function scheduleProgressCarriedOntoCloudCopy(
   return scheduleProgressCarriedFrom(carried, cloudCopy, at, { fileProgressDated: restatedSinceImport(cloudCopy) });
 }
 
-/** The rows between a row and the newest that answers to it: undefined where this device does not have one. */
+/** The rows between a row and the newest that answers to it: undefined where this device no longer has one. */
 function rowsBetween(earlier: ScheduleItem, newest: ScheduleItem, known: ReadonlyMap<string, ScheduleItem>): Array<ScheduleItem | undefined> {
   const before = new Set([normalized(earlier.id), ...scheduleTaskEarlierIds(earlier).map(normalized)]);
   return scheduleTaskEarlierIds(newest).map(normalized).filter(id => !before.has(id)).map(id => known.get(id));
