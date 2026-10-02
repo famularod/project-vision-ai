@@ -260,6 +260,13 @@ function deletedRowsHeld(local: readonly ScheduleItem[], cloud: readonly Schedul
  * Owner answer Q22 and the A5 recorded Low R-c (cab99c0) on Full Sync: a
  * lookahead never takes a task below the percent David entered himself
  * (lookaheadFlooredAtManagersPercentOf).
+ *
+ * Whole-app audit A7 pass 26 follow-up (Low, caused by dbf7192; owner answer
+ * Q32, option b): a percent David entered on an old row that the other
+ * device's newer row already held, as a file's, when he entered it changed
+ * nothing on one device, so it does not carry; a newer master's percent
+ * stands, below his too (enteredAsFileShowedIt). A lookahead is still
+ * floored at it (owner answer Q22).
  */
 function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
   // Only rows kept answer; a deleted row only lends its percent (A5 pass 23 M).
@@ -288,10 +295,12 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
   return records.map(record => {
     const earlier = from.get(record);
     if (!earlier) return record;
+    // His percent there was the one a file had already given the task: no word of his to carry (A7 pass 26 follow-up, Q32 b).
+    const noWordOfHis = enteredAsFileShowedIt(earlier, record, known);
     // A file that stated his percent or more after he judged it took the task over, row by row (A5 pass 23 L1).
     const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAtLeast(row, earlier));
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
-    const carried = (!takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
+    const carried = (!noWordOfHis && !takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
       fileProgressDated: restatedSinceImport(record),
     })) || lookaheadFlooredAtManagersPercentOf(earlier, record);
     if (!carried) return record;
@@ -397,6 +406,44 @@ function lookaheadFlooredAtManagersPercentOf(earlier: ScheduleItem, record: Sche
   if (!givenByLookahead) return null;
   const floored = scheduleProgressFlooredAtManagers(record, boundedPercent(Number(earlier.percentComplete)));
   return floored ? { ...record, ...floored } : null;
+}
+
+/**
+ * Whole-app audit A7 pass 26 follow-up (Low, caused by dbf7192; owner answer
+ * Q32, option b): David's 70% on Framing; the iPad approved master G, which
+ * moved Framing at 80% (a file's percent above his, so the task took it).
+ * Before the phone heard of G, David entered 80% on the phone's old row, and
+ * then the iPad approved master H, which moved Framing at 70%. One device
+ * doing the same in time order already shows G's 80% when he enters 80%, so
+ * his entry changes nothing: the percent is still G's, and the newer master
+ * H replaces it with 70% (Q32, option b: the newest master wins). Full Sync
+ * carried the phone's 80% to H's row as a percent of David's that H's import
+ * never saw (A6 pass 22 M1), so both devices kept 80%. A percent of his that
+ * the row the other device showed when he judged it (the newest row then
+ * imported, its file's word not restated since) already held as a file's,
+ * with the same status, now carries nothing: what the masters approved
+ * since state stands, below his percent too. A lookahead approved since is
+ * still floored at it, as at 1d4b016 (owner answer Q22): blocking the floor
+ * too took a task below his percent where one device showed a newer master
+ * in between and his entry was a real change (found by the A5 pass 23
+ * generator, its seed 856). A percent
+ * that differs from it is his own new word and carries as before, a newer
+ * master's lower percent never replacing it, as on one device (A6 pass 22
+ * M1); so does one a master stating no percent passed on (A6 pass 23 M1).
+ * A row this device no longer has there leaves it as before.
+ */
+function enteredAsFileShowedIt(earlier: ScheduleItem, newest: ScheduleItem, known: ReadonlyMap<string, ScheduleItem>): boolean {
+  const judgedAt = timestamp(scheduleProgressJudgedAt(earlier));
+  const rows = [...rowsBetween(earlier, newest, known), newest];
+  if (!judgedAt || rows.some(row => row === undefined)) return false;
+  const importedAt = (row: ScheduleItem) => timestamp(row.importedAt || row.createdAt);
+  // The row one device showed when he judged his percent: the newest imported by then.
+  const shown = (rows as ScheduleItem[]).filter(row => importedAt(row) <= judgedAt)
+    .reduce<ScheduleItem | null>((latest, row) => (!latest || importedAt(row) >= importedAt(latest) ? row : latest), null);
+  return Boolean(shown) && !scheduleProgressIsManagers(shown!) && !restatedSinceImport(shown!) &&
+    timestamp(shown!.progressConfirmedAt) <= judgedAt &&
+    boundedPercent(Number(shown!.percentComplete)) === boundedPercent(Number(earlier.percentComplete)) &&
+    shown!.status === earlier.status;
 }
 
 /** The rows between a row and the newest that answers to it: undefined where this device no longer has one. */

@@ -25,6 +25,10 @@
  * A5 recorded Low R-c on Full Sync (cab99c0, owner answer Q22): a
  *   lookahead the phone approved below David's percent entered on the
  *   offline iPad was not floored at it.
+ * A7 p26 follow-up (Low, caused by dbf7192; owner answer Q32, option b):
+ *   David's 80% on the phone's old row, the very percent the iPad's newer
+ *   master had already given the task, was carried past the iPad's later
+ *   master stating 70%. One device shows 70%.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -878,7 +882,9 @@ describe('A5 p23 L1 and owner answer Q32 (option b): a newer master that replace
   // Q32 case 1 with Framing on its dates, left open: G and H restate F's row in place, and the row keeps only H's 30%, not
   // that G's 60% had replaced David's 40% first. Merging the iPad's copy (his 40%) with the cloud's (30%) cannot tell this
   // from H stating 30% straight over his 40%, which one device ignores. Telling them apart needs the row to keep each file's
-  // stated percent, which the import does not record.
+  // stated percent, which the import does not record. The A7 p26 follow-up's rule (below) does not fit: there is no row
+  // between, and his 40% was his own word on the row (it differed from what the row showed), so H's 30% stated after it
+  // is the "straight over his 40%" case as far as the merge can see. Left as it was (the follow-up re-checked it).
   it.skip('two devices (Q32 case 1), Framing on its dates: H\'s 30% everywhere (open: the row does not keep G\'s 60%)', async () => {
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
     setOnline(ipad, false);
@@ -1114,6 +1120,138 @@ describe('A5 recorded Low R-c on Full Sync (cab99c0, Q22): a lookahead never lea
     expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
   });
 
+});
+
+describe('A7 p26 follow-up (Q32, option b): a master that stated a percent after David\'s entry stands on Full Sync too', () => {
+  const H_ROW = (pct: string) => `Framing,Alpha,Lot,10/25/2026,11/04/2026,${pct}`;
+  const percents = (...devices: Device[]) => [onWeb(), ...devices.map(onDevice)].map(place => place.map(row => row[2]));
+
+  /**
+   * Seed 4854's shape: David's 70% on both devices; the iPad, offline, approves master G moving Framing at 80% (above his
+   * 70%, so the task takes G's 80%); the phone, which has not heard of G, gets David's 80% on its old row; then the iPad,
+   * which has not heard of the 80%, approves master H moving Framing at 70%.
+   */
+  async function seed4854() {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T10:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 70 });
+    await fullSync(ipad);
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(ipad, G, [G_ROW('80'), SURVEY]);
+    at(AFTER_G);
+    await edit(phone, theRow(phone).id, { percentComplete: 80 });
+    at(H.importedAt!);
+    await approve(ipad, H, [H_ROW('70'), SURVEY]);
+    at('2026-09-22T08:00:00.000Z');
+    setOnline(ipad, true);
+    return { phone, ipad };
+  }
+
+  it('one device, the same in time order: David\'s 80% changes nothing (G shows 80%), and H\'s 70% stands', async () => {
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T10:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 70 });
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW('80'), SURVEY]);
+    at(AFTER_G);
+    await edit(phone, theRow(phone).id, { percentComplete: 80 });
+    expect(theRow(phone).progressSource ?? null).not.toBe('project_manager');
+    at(H.importedAt!);
+    await approve(phone, H, [H_ROW('70'), SURVEY]);
+    expect(onDevice(phone)).toEqual([['10/25/2026', '11/04/2026', 70, '', '']]);
+  });
+
+  it.each([['the iPad syncs first', 'ipad'], ['the phone syncs first', 'phone']] as const)('two devices (seed 4854), %s: H\'s 70%% on both devices, the cloud and the web; another round writes nothing', async (_label, first) => {
+    const { phone, ipad } = await seed4854();
+    for (const device of first === 'ipad' ? [ipad, phone, ipad] : [phone, ipad, phone]) await fullSync(device);
+    await refresh(phone);
+    await refresh(ipad);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/25/2026', '11/04/2026', 70, '', '']]));
+    expect(cloudRow('MASTER H-1')).toEqual(ipad.state.find(item => item.id === 'MASTER H-1'));
+    const writes = framingWritesOf(phone, ipad);
+    at('2026-09-23T08:00:00.000Z');
+    await fullSync(ipad);
+    await fullSync(phone);
+    expect(framingWritesOf(phone, ipad)).toBe(writes);
+  });
+
+  it('a master that stated a percent after David\'s entry: G at 30% on the phone, his 30% on the offline iPad\'s old row after G (as G showed), H at 10%: 10%, as on one device', async () => {
+    const { phone: alone } = await startBoth(F, [F_ROW, SURVEY]);
+    at(G.importedAt!);
+    await approve(alone, G, [G_ROW('30'), SURVEY]);
+    at(AFTER_G);
+    await edit(alone, theRow(alone).id, { percentComplete: 30 });
+    at(H.importedAt!);
+    await approve(alone, H, [H_ROW('10'), SURVEY]);
+    expect(onDevice(alone)[0][2]).toBe(10);
+
+    const { phone, ipad } = await offlineThirty(AFTER_G, '30');
+    at(H.importedAt!);
+    await approve(phone, H, [H_ROW('10'), SURVEY]);
+    shareDocuments(phone);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect(percents(ipad, phone)).toEqual([[10], [10], [10]]);
+  });
+
+  it('his percent differs from what G showed (G at 20%, his 30% after it): his own word, which H\'s lower 10% never replaces, as on one device', async () => {
+    const { phone: alone } = await startBoth(F, [F_ROW, SURVEY]);
+    at(G.importedAt!);
+    await approve(alone, G, [G_ROW('20'), SURVEY]);
+    at(AFTER_G);
+    await edit(alone, theRow(alone).id, { percentComplete: 30 });
+    at(H.importedAt!);
+    await approve(alone, H, [H_ROW('10'), SURVEY]);
+    expect(onDevice(alone)[0][2]).toBe(30);
+
+    const { phone, ipad } = await offlineThirty(AFTER_G, '20');
+    at(H.importedAt!);
+    await approve(phone, H, [H_ROW('10'), SURVEY]);
+    shareDocuments(phone);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect(percents(ipad, phone)).toEqual([[30], [30], [30]]);
+  });
+
+  it.each([
+    ['G states no percent, his 30% before G (A6 p22 M1)', BEFORE_G, ''],
+    ['G states no percent, his 30% after G (A6 p22 M1)', AFTER_G, ''],
+    ['G states 20%, approved before his 30% (the iPad\'s entry is later)', AFTER_G, '20'],
+  ] as const)('David\'s percent still carries: %s', async (_label, when, gPercent) => {
+    const { phone, ipad } = await offlineThirty(when, gPercent);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect(percents(ipad, phone)).toEqual([[30], [30], [30]]);
+  });
+
+  it('pure merge: the row G\'s import gave held his 80% as a file\'s when he entered it; not when it held 75%, another status, or his own 80%', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 80, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', updatedAt: AFTER_G } as ScheduleItem;
+    const between = { ...rowsOf(G, [G_ROW('80')])[0], revisedFromTaskIds: [davids.id] } as ScheduleItem;
+    const newest = { ...rowsOf(H, [H_ROW('70')])[0], revisedFromTaskIds: [davids.id, between.id] } as ScheduleItem;
+    const merged = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: [davids], cloud: rows, allowCloudOnly: true })
+      .find(item => item.id === newest.id)!.percentComplete;
+    expect([between.percentComplete, between.status, between.importedAt! < AFTER_G]).toEqual([80, 'In Progress', true]);
+    expect(merged([between, newest])).toBe(70);
+    expect(merged([{ ...between, percentComplete: 75 } as ScheduleItem, newest])).toBe(80);
+    expect(merged([{ ...between, status: 'Not Started' } as ScheduleItem, newest])).toBe(80);
+    // His own 80% there (entered on G's row on the other device): his word, which H's lower 70% never replaces on one device.
+    const his = { ...between, progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: G.importedAt } as ScheduleItem;
+    expect(merged([his, newest])).toBe(80);
+  });
+
+  it('pure merge: a lookahead approved since is still floored at that percent of his (owner answer Q22; A5 p23 generator seed 856)', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 60, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', updatedAt: AFTER_G } as ScheduleItem;
+    const between = { ...rowsOf(G, [G_ROW('60')])[0], revisedFromTaskIds: [davids.id] } as ScheduleItem;
+    // H moved Framing stating no percent (G's 60% copied), then lookahead L stated 30% on H's row.
+    const newest = {
+      ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,'])[0], percentComplete: 30, status: 'In Progress', revisedFromTaskIds: [davids.id, between.id],
+      alsoImportedInBatchIds: ['batch-LOOKAHEAD L'],
+      lookaheadOverlay: { masterStartDate: '10/25/2026', masterFinishDate: '11/04/2026', masterPercentComplete: 60, lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/27/2026', finishDate: '11/06/2026', percentComplete: 30 }] },
+    } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [between, newest], allowCloudOnly: true }).find(item => item.id === newest.id)!;
+    expect([merged.percentComplete, merged.managersPercentUnderFile]).toEqual([60, 60]);
+  });
 });
 
 describe('convergence', () => {
