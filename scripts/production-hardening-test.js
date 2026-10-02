@@ -231,7 +231,9 @@ for (const marker of [
   );
 }
 for (const marker of [
-  'npm audit --audit-level=high', // owner answer Q4 (30 Sep 2026)
+  // Owner answer Q4 (30 Sep 2026); since Q33 (1 Oct 2026) CI runs the shared audit gate,
+  // which fails on any high or critical advisory the owner has not accepted.
+  'node scripts/dependency-audit-gate.js --require-registry',
   'npx expo prebuild --platform all --no-install --clean',
   'npm run check:release-metadata',
 ]) {
