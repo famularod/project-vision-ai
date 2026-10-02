@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 
 /**
@@ -224,11 +225,30 @@ export function scheduleProgressCarriedFrom(
 }
 
 /**
+ * Owner answer Q22 and the A5 recorded Low R-c (cab99c0): a lookahead never
+ * takes a task below the percent David entered himself, whether his percent
+ * is shown or kept under a file's higher one (managersPercentUnderFile); a
+ * newer master's percent stands (owner answer Q32, option b). A task whose
+ * percent is a file's, below his: floored at his percent (its status
+ * reconciled), still the file's, with his percent kept under it. Null when
+ * the percent is his own, or at or above his.
+ */
+export function scheduleProgressFlooredAtManagers(task: ScheduleItem, managersPercent: number): Partial<ScheduleItem> | null {
+  const floor = percentOf({ percentComplete: managersPercent });
+  if (scheduleProgressIsManagers(task) || percentOf(task) >= floor) return null;
+  const floored = reconcileScheduleProgress(task.status, floor);
+  return { percentComplete: floored.percentComplete, status: floored.status, managersPercentUnderFile: floor };
+}
+
+/**
  * The fields a carry gives the row it carries to (scheduleProgressCarriedFrom),
- * besides its stamp: what the sync sends of a carried percent (A7 pass 26 M-1).
+ * besides its stamp, with David's own percent a file's replaced
+ * (managersPercentUnderFile), which goes with the file's percent: what the
+ * sync sends of a carried percent (A7 pass 26 M-1).
  */
 export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
   'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
+  'managersPercentUnderFile',
 ] as const satisfies ReadonlyArray<keyof ScheduleItem>;
 
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;

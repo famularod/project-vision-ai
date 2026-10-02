@@ -22,6 +22,9 @@
  *   wins).
  * A5 p23 M (Medium, older): a deleted old master took David's offline
  *   percent with it.
+ * A5 recorded Low R-c on Full Sync (cab99c0, owner answer Q22): a
+ *   lookahead the phone approved below David's percent entered on the
+ *   offline iPad was not floored at it.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -988,6 +991,127 @@ describe('A5 p23 M: a deleted old master no longer takes David\'s offline percen
     const newest = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,60'])[0], revisedFromTaskIds: [davids.id, 'MASTER G-1'] } as ScheduleItem;
     const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [davids, newest], deletedIds: ['MASTER G-1'], allowCloudOnly: true });
     expect(merged.find(item => item.id === newest.id)!.percentComplete).toBe(100);
+  });
+
+});
+
+describe('A5 recorded Low R-c on Full Sync (cab99c0, Q22): a lookahead never leaves a synced task below David\'s own percent', () => {
+  const L = scheduleDoc('LOOKAHEAD L', '2026-09-14T18:00:00.000Z', 'lookahead');
+  /** David's 70% on the offline iPad before G; on the phone G states `gPercent`, then lookahead L states `lPercent`. */
+  async function underG(gPercent: string, lPercent: string) {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(ipad, false);
+    at(BEFORE_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 70 });
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW(gPercent), SURVEY]);
+    shareDocuments(phone);
+    at(L.importedAt!);
+    await approve(phone, L, [`Framing,Alpha,Lot,10/24/2026,11/03/2026,${lPercent}`], true);
+    shareDocuments(phone);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(ipad, true);
+    return { phone, ipad };
+  }
+
+  it.each([['the iPad syncs first', 'ipad'], ['the phone syncs first', 'phone']] as const)('%s: G 80%%, L 40%%: 70%% on both devices, the cloud and the web, his 70%% kept under the file\'s', async (_label, first) => {
+    const { phone, ipad } = await underG('80', '40');
+    for (const device of first === 'ipad' ? [ipad, phone, ipad] : [phone, ipad, phone]) await fullSync(device);
+    await refresh(phone);
+    await refresh(ipad);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/24/2026', '11/03/2026', 70, '', '']]));
+    expect([cloudRow('MASTER G-1'), theRow(ipad), theRow(phone)].map(row => row!.managersPercentUnderFile)).toEqual([70, 70, 70]);
+    const writes = framingWritesOf(phone, ipad);
+    await fullSync(ipad);
+    await fullSync(phone);
+    expect(framingWritesOf(phone, ipad)).toBe(writes);
+  });
+
+  it('unchanged: a lookahead at or above David\'s percent stands', async () => {
+    const { phone, ipad } = await underG('80', '75');
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([75, 75, 75]);
+  });
+
+  it('a lookahead approved on G\'s row after David\'s earlier 30% (entered before G) states 20%: 30% after Full Sync (Q22)', async () => {
+    const { phone, ipad } = await offlineThirty(BEFORE_G);
+    at('2026-09-16T09:00:00.000Z');
+    const L2 = scheduleDoc('LOOKAHEAD L2', '2026-09-16T09:00:00.000Z', 'lookahead');
+    await approve(phone, L2, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,20'], true);
+    shareDocuments(phone);
+    at('2026-09-16T10:00:00.000Z');
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0].slice(0, 3))).toEqual(Array(3).fill(['10/25/2026', '11/04/2026', 30]));
+  });
+
+  it('a percent carried onto a row keeps the row\'s floor with it, the same on the device and in the cloud', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-12T10:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 20 });
+    await fullSync(ipad);
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW('50'), SURVEY]); // G's 50% replaces David's 20%, kept under it
+    shareDocuments(phone);
+    expect(theRow(phone).managersPercentUnderFile).toBe(20);
+    at(AFTER_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 60 });
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([60, 60, 60]);
+    expect([cloudRow('MASTER G-1'), theRow(ipad), theRow(phone)].map(row => row!.managersPercentUnderFile)).toEqual([20, 20, 20]);
+  });
+  it('a merge takes the floor from the copy whose progress wins, also when the other copy leads the task', () => {
+    const row = rowsOf(G, [G_ROW()])[0];
+    // The cloud's copy: a later file's 60% over David's 40%, his kept under it. This device's: an older 40%, a note typed since.
+    const cloudCopy = { ...row, percentComplete: 60, status: 'In Progress', progressSource: 'schedule_import', progressConfirmedBy: 'Schedule update', progressConfirmedAt: '2026-09-15T10:00:00.000Z', managersPercentUnderFile: 40, updatedAt: '2026-09-15T10:00:00.000Z' } as ScheduleItem;
+    const deviceCopy = { ...row, percentComplete: 40, status: 'In Progress', progressSource: 'schedule_import', progressConfirmedBy: 'Schedule update', progressConfirmedAt: '2026-09-14T10:00:00.000Z', notes: 'Crane Friday', updatedAt: '2026-09-16T10:00:00.000Z' } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [deviceCopy], cloud: [cloudCopy], allowCloudOnly: true });
+    expect([merged.notes, merged.percentComplete, merged.managersPercentUnderFile]).toEqual(['Crane Friday', 60, 40]);
+  });
+
+  it('a row where a file replaced a percent David entered on that row itself keeps that one as its floor', () => {
+    // David's 40% on F's row (10 Sep); on G's row he later entered 20%, and a lookahead's 30% replaced it (kept under it).
+    const older = { ...rowsOf(F, [F_ROW])[0], percentComplete: 40, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-10T10:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-10T10:00:00.000Z' } as ScheduleItem;
+    const newest = {
+      ...rowsOf(G, [G_ROW()])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'Schedule update',
+      progressConfirmedAt: '2026-09-16T09:00:00.000Z', managersPercentUnderFile: 20, revisedFromTaskIds: [older.id],
+      lookaheadOverlay: {
+        masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 20, masterProgressSource: 'project_manager',
+        masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: '2026-09-15T20:00:00.000Z',
+        lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/24/2026', finishDate: '11/03/2026', percentComplete: 30 }],
+      },
+    } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [older], cloud: [newest], allowCloudOnly: true }).find(item => item.id === newest.id)!;
+    expect([merged.percentComplete, merged.managersPercentUnderFile]).toEqual([30, 20]);
+  });
+
+  // Owner answer Q32 (option b) case 2, left open: David's 40% on both devices; the iPad offline since before G; the phone
+  // approves G on Framing's dates at 60% (above his, kept under it) and the iPad approves H on the same dates at 30% (below
+  // his, so the iPad keeps his 40%). One device, G then H, ends at H's 30%; after Full Sync the task shows G's 60%. H's
+  // statement left no trace on the iPad's copy, and the two copies meet in the whole-row merge (the recorded A7 pass 25 L-2
+  // class of two devices approving different imports offline), not in the carry this file covers.
+  it.skip('case 2: G at 60% on the phone, H at 30% on the offline iPad, both on Framing\'s dates: H\'s 30% after Full Sync (open)', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T10:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 40 });
+    await fullSync(ipad);
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,60', SURVEY]);
+    shareDocuments(phone);
+    at(H.importedAt!);
+    await approve(ipad, H, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,30', SURVEY]);
+    at('2026-09-22T08:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    shareDocuments(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
   });
 
 });

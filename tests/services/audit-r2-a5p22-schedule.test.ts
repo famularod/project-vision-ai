@@ -440,16 +440,19 @@ describe('A6 p22 M1: Full Sync carries David\'s percent from the row a new maste
     SYNCS.forEach(([, sync]) => expect(shownOf(sync(phone60.items, record(start, oldId, 30, ENTRIES[0][1]).items))).toEqual([['10/22/2026', '11/01/2026', 60]]));
   });
 
-  it('as on one device: a percent G stated above David\'s, then lowered by a lookahead on the phone, stays the lookahead\'s', () => {
+  it('as on one device: a percent G stated above David\'s, then lowered by a lookahead on the phone, is floored at David\'s', () => {
     // David's 70% on the iPad before G; G states 80% (above it), then lookahead L lowers G's row to 40%.
+    // Changed deliberately (A5 recorded Low R-c, cab99c0, 1 Oct 2026): one device now keeps David's 70% under G's
+    // 80% (managersPercentUnderFile) and floors L's 40% at it (owner answer Q22), so it shows 70%, and Full Sync
+    // either way now agrees (DAVEScheduleRecovery, withManagersPercentUnderFile). It was 40% everywhere before.
     const L = doc('LOOKAHEAD L', '2026-09-14T18:00:00.000Z', 'lookahead');
     const phoneL = approve(phoneWith(['Framing,Alpha,Lot,10/22/2026,11/01/2026,80', SURVEY]), L, ['Framing,Alpha,Lot,10/24/2026,11/03/2026,40'], true);
     const iPad70 = record(start, oldId, 70, ENTRIES[1][1]);
     let oneDevice = record(start, oldId, 70, ENTRIES[1][1]);
     oneDevice = approve(approve(oneDevice, G, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,80', SURVEY]), L, ['Framing,Alpha,Lot,10/24/2026,11/03/2026,40'], true);
-    expect(copies(oneDevice, 'Framing')).toEqual([['10/24/2026', '11/03/2026', 40]]);
+    expect(copies(oneDevice, 'Framing')).toEqual([['10/24/2026', '11/03/2026', 70]]);
     SYNCS.forEach(([, sync]) => expect(copies({ items: sync(phoneL.items, iPad70.items), documents: phoneL.documents }, 'Framing'))
-      .toEqual([['10/24/2026', '11/03/2026', 40]]));
+      .toEqual([['10/24/2026', '11/03/2026', 70]]));
   });
 
   it('unchanged: a newer lookahead\'s percent on G\'s row still restates it', () => {

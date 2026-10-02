@@ -6,6 +6,7 @@ import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
+  scheduleProgressFlooredAtManagers,
   scheduleProgressIsManagers,
   scheduleProgressJudgedAt,
 } from './ScheduleProgressSource';
@@ -255,6 +256,10 @@ function deletedRowsHeld(local: readonly ScheduleItem[], cloud: readonly Schedul
  * of his that a later one, on a deleted row, had replaced (found by the A7
  * pass 26 comparisons). A percent he judged after that import is newer than
  * anything said there, and passes.
+ *
+ * Owner answer Q22 and the A5 recorded Low R-c (cab99c0) on Full Sync: a
+ * lookahead never takes a task below the percent David entered himself
+ * (lookaheadFlooredAtManagersPercentOf).
  */
 function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
   // Only rows kept answer; a deleted row only lends its percent (A5 pass 23 M).
@@ -286,9 +291,9 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     // A file that stated his percent or more after he judged it took the task over, row by row (A5 pass 23 L1).
     const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAtLeast(row, earlier));
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
-    const carried = !takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
+    const carried = (!takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
       fileProgressDated: restatedSinceImport(record),
-    });
+    })) || lookaheadFlooredAtManagersPercentOf(earlier, record);
     if (!carried) return record;
     const stamped = withOwnStamp(carried, record);
     rowsTakingCarriedProgress.set(stamped, record);
@@ -363,6 +368,35 @@ export function scheduleProgressCarriedOntoCloudCopy(
     return { ...cloudCopy, ...progress, updatedAt: at };
   }
   return scheduleProgressCarriedFrom(carried, cloudCopy, at, { fileProgressDated: restatedSinceImport(cloudCopy) });
+}
+
+/**
+ * Owner answer Q22 and the A5 recorded Low R-c (cab99c0) on Full Sync: a
+ * lookahead never takes a task below the percent David entered himself,
+ * also when a master's higher percent replaced his. On one device, David's
+ * 70%, master G stating 80% (above it, so the task took 80% and kept his 70%
+ * under it), then lookahead L stating 40% gives 70%. With his 70% entered on
+ * the offline iPad before G, and G and L approved on the phone, Full Sync
+ * showed L's 40%: the phone's row never had his percent under G's, and the
+ * carry does not pass a file statement newer than his percent. When the
+ * carry stops there, a newest row whose percent a lookahead approved since
+ * its import gave, below his, is now floored at his percent, as on one
+ * device (scheduleProgressFlooredAtManagers): the lookahead's percent still,
+ * his kept under it. A master's percent below his stands (owner answer Q32,
+ * option b: the newest master wins), as does a lookahead's at or above his,
+ * and his own on the row. A row where a file replaced a percent he entered
+ * on that row itself ("Schedule update") keeps that percent as its floor, his
+ * later word there: the import applies it.
+ */
+function lookaheadFlooredAtManagersPercentOf(earlier: ScheduleItem, record: ScheduleItem): ScheduleItem | null {
+  if (!scheduleProgressIsManagers(earlier) || record.progressConfirmedBy === SCHEDULE_UPDATE_PROGRESS_CONFIRMER) return null;
+  const percent = boundedPercent(Number(record.percentComplete));
+  const lookaheads = record.lookaheadOverlay?.lookaheads;
+  const givenByLookahead = Array.isArray(lookaheads) && lookaheads.some(entry =>
+    !entry?.datesReplacedByMaster && typeof entry?.percentComplete === 'number' && boundedPercent(entry.percentComplete) === percent);
+  if (!givenByLookahead) return null;
+  const floored = scheduleProgressFlooredAtManagers(record, boundedPercent(Number(earlier.percentComplete)));
+  return floored ? { ...record, ...floored } : null;
 }
 
 /** The rows between a row and the newest that answers to it: undefined where this device no longer has one. */
@@ -484,6 +518,10 @@ function mergeScheduleRevisions(
     progressConfirmedBy: progressSource.progressConfirmedBy,
     ...(progressSource.progressJudgment ? { progressJudgment: progressSource.progressJudgment } : {}),
     completionVerification: progressSource.completionVerification,
+    // David's own percent a file's replaced goes with that file's percent (A5 recorded Low R-c, cab99c0).
+    ...(local.managersPercentUnderFile !== undefined || cloud.managersPercentUnderFile !== undefined
+      ? { managersPercentUnderFile: progressSource.managersPercentUnderFile }
+      : {}),
     projectControls: mergeScheduleProjectControls(local, cloud, base),
     // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).
     ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),
