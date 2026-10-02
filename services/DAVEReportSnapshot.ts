@@ -615,7 +615,7 @@ export function compareDAVEReportSnapshots({
   const distinctChanges = dedupeChanges(changes);
   return Object.freeze({
     basis: 'previous_approved_report',
-    label: `Since the report approved ${formatPeriodDate(previous.capturedAt)}`,
+    label: reportPeriodLabel(previous),
     startedAt: previous.capturedAt,
     endedAt: current.capturedAt,
     completeDelta: completeCount(current.tasks) - completeCount(previous.tasks),
@@ -628,6 +628,20 @@ export function compareDAVEReportSnapshots({
     newActivityTaskIds: Object.freeze([...newActivityTaskIds]),
     sameActivityTaskIds: Object.freeze([...sameActivityTaskIds]),
   });
+}
+
+/**
+ * The period's label on the Reports screen. Everyday item 2 (2 Oct 2026): it
+ * said "Since the report approved <date>" with the date its facts were
+ * captured, where the period runs from when that report was sent. It names
+ * the send now ("Since the report sent Oct 1, 2026"); a report saved before
+ * sends were recorded counts as sent when captured, as everywhere else. An
+ * approval never sent is not a period's start, but would be named as what
+ * it is.
+ */
+function reportPeriodLabel(previous: DAVEReportSnapshot): string {
+  if (previous.deliveredAt === null) return `Since the report approved ${formatPeriodDate(previous.capturedAt)}`;
+  return `Since the report sent ${formatPeriodDate(previous.deliveredAt ?? previous.capturedAt)}`;
 }
 
 /**
