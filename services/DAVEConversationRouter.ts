@@ -22,7 +22,13 @@ import {
   ecosProjectNumberMentionsAt,
   ecosProjectsAroundNumber,
 } from '../supabase/functions/_shared/ecos-project-reference';
-import { ecosProjectReferenceMismatchMessage, projectReferenceMismatchText, projectsNamedTogetherText } from './ECOSProjectRefusal';
+import {
+  ecosDigitsOnlyQuestion,
+  ecosProjectNumbersAreDigitsOnly,
+  ecosProjectReferenceMismatchMessage,
+  projectReferenceMismatchText,
+  projectsNamedTogetherText,
+} from './ECOSProjectRefusal';
 
 export type DAVEConversationIntent =
   | 'ask'
@@ -148,11 +154,16 @@ export function mentionedDAVEProject(
   const note = intent !== 'ask' && intent !== 'task_update';
   const namedHere = new Set(note ? named.flatMap(project => project.names).filter(name => name !== target).map(normalize) : []);
   const notAlongside = (name: string) => !alongside.has(talkProjectKey(name)) && !namedHere.has(normalize(name));
+  // Owner answer Q27: numbers are read as digits only by what the whole list
+  // says, not the shorter one checked here.
   const askWouldRefuse = ecosProjectReferenceMismatchMessage(
     target,
     transcript.replace(/\s+/g, ' ').trim(),
     projectNames.filter(notAlongside),
-    { closedProjectNames: closed.filter(notAlongside) },
+    {
+      closedProjectNames: closed.filter(notAlongside),
+      digitsOnlyProjectNumbers: ecosProjectNumbersAreDigitsOnly([...projectNames, ...closed]),
+    },
   ) !== null;
   return askWouldRefuse ? null : target;
 }
@@ -230,23 +241,28 @@ function talkNamedProjects(
   const openKeys = new Set(open.map(normalize));
   const closed = uniqueNames(closedNames).filter(name => !openKeys.has(normalize(name)));
   const all = [...open, ...closed];
-  const exempt = ecosProjectNumberExemptSpans(transcript);
+  // Owner answer Q27: with no lettered project number, read as Ask ECOS does
+  // ("2375A" is 2375 and then the word A).
+  const text = ecosProjectNumbersAreDigitsOnly([...all, selectedName])
+    ? ecosDigitsOnlyQuestion(transcript, all, selectedName)
+    : transcript;
+  const exempt = ecosProjectNumberExemptSpans(text);
   const closedSet = new Set(closed);
   // Audit A9 pass 9 L3: a task update counts a closed name anywhere.
   const taskUpdate = classifyDAVEConversation(transcript).intent === 'task_update';
-  const occurrences = all.flatMap(name => nameOccurrences(transcript, name)
+  const occurrences = all.flatMap(name => nameOccurrences(text, name)
     .filter(([start, end]) => !exempt.some(([from, to]) => from <= start && end <= to))
-    .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, transcript, start, end))
-    .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(transcript, start, end) })));
+    .filter(([start, end]) => !closedSet.has(name) || taskUpdate || closedNameNamesProject(name, text, start, end))
+    .map(([start, end]) => ({ name, start, end, inCommaGroup: inCommaGroup(text, start, end) })));
   // Audit A9 pass 16 L2: with the selected project, so a spaced capital it is
   // numbered with ("400 N" on "400N Tower") still reads as another job's
   // address ("24117 - 400 N Main St"), as in Ask ECOS.
-  const numbers = ecosProjectNumberMentionsAt(transcript, all, selectedName);
+  const numbers = ecosProjectNumberMentionsAt(text, all, selectedName);
   // The projects whose name continues furthest around each plain number (see
   // the loop below); a name said in full decides only against `selectedName`
   // (audit A9 pass 15 L1).
   const aroundNumbers = numbers.map(mention =>
-    mention.letter || mention.spacedLetter ? [] : ecosProjectsAroundNumber(transcript, mention, all, selectedName));
+    mention.letter || mention.spacedLetter ? [] : ecosProjectsAroundNumber(text, mention, all, selectedName));
   // "Oak Street" names one project even when another is called "Oak". Audit
   // A9 pass 14 L5: so does a name that continues further around a number in
   // the one said in full ("What is left at 450 Elm St?" is "24117-450 Elm
