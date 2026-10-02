@@ -37,6 +37,9 @@
  *   Now sent the iPad's old copy whole over a newer lookahead.
  * A5 p24 L1 (Low, caused by dc3f469): a master stating exactly David's
  *   percent was read as having taken it over.
+ * A5 p24 L3 (Low, caused by ef943e5): deleted rows passing David's percent:
+ *   (a) an unknown row between stopped a newer one, (b) an older one passed
+ *   a row between holding a newer one.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -1632,6 +1635,46 @@ describe('A5 p24 L1: a master stating exactly David\'s percent has not taken it 
     at('2026-09-16T08:00:00.000Z');
     await fullSync(phone); await fullSync(ipad); await fullSync(phone); await refresh(ipad);
     expect(percentsOf(ipad, phone)).toEqual([[70], [70], [70]]);
+  });
+});
+
+describe('A5 p24 L3: deleted rows lend David\'s percent by its time', () => {
+  const davids = (row: ScheduleItem, percent: number, when: string) => ({ ...row, percentComplete: percent, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: when, updatedAt: when }) as ScheduleItem;
+  const P1 = scheduleDoc('MASTER P1', '2026-09-09T12:00:00.000Z');
+  const P2 = scheduleDoc('MASTER P2', '2026-09-10T19:00:00.000Z');
+  const P5 = scheduleDoc('MASTER P5', '2026-09-15T22:00:00.000Z');
+  const old = davids(rowsOf(F, [F_ROW])[0], 10, '2026-09-12T10:00:00.000Z');
+  const p2 = { ...davids(rowsOf(P2, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'])[0], 30, '2026-09-10T03:00:00.000Z'), revisedFromTaskIds: [old.id, 'MASTER P1-1'] } as ScheduleItem;
+  const p5 = { ...p2, id: 'MASTER P5-1', importBatchId: P5.importBatchId, sourceDocumentId: P5.id, importedAt: P5.importedAt, startDate: '10/21/2026', finishDate: '10/31/2026', revisedFromTaskIds: [old.id, 'MASTER P1-1', p2.id] } as ScheduleItem;
+  const newest = (rows: ScheduleItem[]) => rows.find(row => row.id === p5.id)!.percentComplete;
+
+  it('(a) seed 8211: the iPad\'s newer 10% on F\'s row (deleted on the phone) passes P1\'s row, which it never had, as P2\'s row shows his older 30% from there', () => {
+    expect(P1.importedAt! < p2.progressConfirmedAt!).toBe(true);
+    expect(newest(recoverDAVEScheduleRecords({ local: [old], cloud: [p2, p5], deletedIds: [old.id, 'MASTER P1-1'], allowCloudOnly: true }))).toBe(10);
+  });
+
+  it('(a) unchanged: with no row it knows after the unknown one, an older percent of his does not pass it (A5 p23 M)', () => {
+    const p5Alone = { ...p5, revisedFromTaskIds: [old.id, 'MASTER P1-1'] } as ScheduleItem;
+    const fileRow = { ...p5Alone, percentComplete: 5, status: 'In Progress', progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null } as ScheduleItem;
+    expect(recoverDAVEScheduleRecords({ local: [old], cloud: [fileRow], deletedIds: [old.id, 'MASTER P1-1'], allowCloudOnly: true })
+      .find(row => row.id === p5.id)!.percentComplete).toBe(5);
+    // A row it knows after the unknown one that holds a file's percent says nothing of his there either.
+    const p2File = { ...p2, percentComplete: 5, progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null } as ScheduleItem;
+    expect(recoverDAVEScheduleRecords({ local: [old], cloud: [p2File, { ...fileRow, revisedFromTaskIds: [old.id, 'MASTER P1-1', p2.id] } as ScheduleItem], deletedIds: [old.id, 'MASTER P1-1'], allowCloudOnly: true })
+      .find(row => row.id === p5.id)!.percentComplete).toBe(5);
+  });
+
+  it('(b) seed 20876: a deleted row\'s older 90% does not pass a row between holding his newer 50% (answered by sibling rows, it carries nothing itself)', () => {
+    const deletedOld = davids(rowsOf(F, [F_ROW])[0], 90, '2026-09-10T10:00:00.000Z');
+    const between = { ...davids(rowsOf(P2, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'])[0], 50, '2026-09-12T10:00:00.000Z'), revisedFromTaskIds: [deletedOld.id] } as ScheduleItem;
+    const sibling = { ...rowsOf(P1, ['Framing,Alpha,Lot,10/19/2026,10/29/2026,20'])[0], revisedFromTaskIds: [between.id] } as ScheduleItem;
+    const last = { ...rowsOf(P5, ['Framing,Alpha,Lot,10/21/2026,10/31/2026,80'])[0], revisedFromTaskIds: [deletedOld.id, between.id] } as ScheduleItem;
+    const merged = recoverDAVEScheduleRecords({ local: [deletedOld, between, sibling, last], cloud: [between, sibling, last], deletedIds: [deletedOld.id], allowCloudOnly: true });
+    expect(merged.find(row => row.id === last.id)!.percentComplete).toBe(80);
+    // Without the row between's newer word, the deleted row's 90% passes (A5 p23 M).
+    const filed = { ...between, percentComplete: 0, status: 'Not Started', progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null } as ScheduleItem;
+    expect(recoverDAVEScheduleRecords({ local: [deletedOld, filed, sibling, last], cloud: [filed, sibling, last], deletedIds: [deletedOld.id], allowCloudOnly: true })
+      .find(row => row.id === last.id)!.percentComplete).toBe(90);
   });
 });
 

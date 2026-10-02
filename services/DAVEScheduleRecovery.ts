@@ -290,9 +290,10 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
     const newest = moved.filter(record => !superseded.has(normalized(record.id)));
     if (newest.length !== 1) return;
-    // A percent judged before the newest row's import passes only rows between that this device still knows (A5 pass 23 M).
+    // A percent judged before the newest row's import passes only rows between that this device still knows (A5 pass 23 M),
+    // or whose word a later row between it knows holds as his own (A5 pass 24 L3).
     if (timestamp(scheduleProgressJudgedAt(earlier)) <= timestamp(newest[0].importedAt || newest[0].createdAt) &&
-      rowsBetween(earlier, newest[0], known).some(row => !row)) return;
+      rowsBetweenUnheard(rowsBetween(earlier, newest[0], known))) return;
     const taken = from.get(newest[0]);
     if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(newest[0], earlier);
   });
@@ -302,6 +303,9 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     if (!earlier) return record;
     // His percent there was the one a file had already given the task: no word of his to carry (A7 pass 26 follow-up, Q32 b).
     const noWordOfHis = enteredAsFileShowedIt(earlier, record, known);
+    // A newer percent of his on a row between stands over this one there (A5 pass 24 L3).
+    if (rowsBetween(earlier, record, known).some(row => row !== undefined && scheduleProgressIsManagers(row) &&
+      timestamp(scheduleProgressJudgedAt(row)) > timestamp(scheduleProgressJudgedAt(earlier)))) return record;
     // A file that stated more than his percent after he judged it took the task over, row by row (A5 pass 23 L1, A5 pass 24 L1).
     const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAbove(row, earlier));
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
@@ -472,6 +476,27 @@ function enteredAsFileShowedIt(earlier: ScheduleItem, newest: ScheduleItem, know
     timestamp(shown!.progressConfirmedAt) <= judgedAt &&
     boundedPercent(Number(shown!.percentComplete)) === boundedPercent(Number(earlier.percentComplete)) &&
     shown!.status === earlier.status;
+}
+
+/**
+ * Whole-app audit A5 pass 24 L3 (Low, caused by ef943e5): (a) David's 30% on
+ * the phone's master row P1 (moved from F's), then P2 moved Framing on with
+ * it; the phone deleted F and P1 with their items; the offline iPad, which
+ * never had P1, had his newer 10% on F's row; then the phone's P5 moved
+ * Framing again. One device shows 10%, but Full Sync kept 30%: P1, a row
+ * between that the iPad does not know, stopped the 10% (A5 pass 23 M), though
+ * P2, which the iPad knows, holds what P1 passed on, his older 30%. A row
+ * between this device does not know stops a percent judged before the newest
+ * row's import only while no row it knows after it holds a percent of his
+ * own: such a row shows what was said there. (b) A deleted row passed his
+ * older 90% to the newest row past a row between holding his newer 50%
+ * (which, answered by sibling rows, carries nothing itself); one device shows
+ * the newer word. A newer percent of his on a row between now stops the
+ * older one (progressCarriedToRevisedTasks).
+ */
+function rowsBetweenUnheard(between: ReadonlyArray<ScheduleItem | undefined>): boolean {
+  const lastUnknown = between.reduce<number>((last, row, index) => (row === undefined ? index : last), -1);
+  return lastUnknown >= 0 && !between.slice(lastUnknown + 1).some(row => row !== undefined && scheduleProgressIsManagers(row));
 }
 
 /** The rows between a row and the newest that answers to it: undefined where this device no longer has one. */
