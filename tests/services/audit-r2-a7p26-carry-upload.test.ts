@@ -40,6 +40,8 @@
  * A5 p24 L3 (Low, caused by ef943e5): deleted rows passing David's percent:
  *   (a) an unknown row between stopped a newer one, (b) an older one passed
  *   a row between holding a newer one.
+ * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
+ *   recorded Low (Set Active to an older master); see each test.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -1622,7 +1624,8 @@ describe('A5 p24 L1: a master stating exactly David\'s percent has not taken it 
   // approves H at 30% on G's row. One device pairs H with F's row and keeps 70%. The sync merge sees G's 80% stated after
   // his 70% on a row between and reads it as a take-over: the rows do not record that Make Current set G aside. Recording
   // it would mean re-confirming his 70% at the activation, which would outrank a newer percent he entered offline on that
-  // row before it (the A5 pass 12 L class); the activation's mark for a file's percent (L2) does not apply here.
+  // row before it (the A5 pass 12 L class). A mark at the activation for a file's percent (L2, also left open, below)
+  // would not apply here either: here the activation lets his own percent stand.
   it.skip('L1 (b), open: Make Current F after G\'s take-over, then H at 30% on the phone: 70% everywhere', async () => {
     const G2 = scheduleDoc('MASTER G', '2026-09-13T00:00:00.000Z');
     const H2 = scheduleDoc('MASTER H', '2026-09-15T00:00:00.000Z');
@@ -1675,6 +1678,51 @@ describe('A5 p24 L3: deleted rows lend David\'s percent by its time', () => {
     const filed = { ...between, percentComplete: 0, status: 'Not Started', progressSource: null, progressConfirmedBy: null, progressConfirmedAt: null } as ScheduleItem;
     expect(recoverDAVEScheduleRecords({ local: [deletedOld, filed, sibling, last], cloud: [filed, sibling, last], deletedIds: [deletedOld.id], allowCloudOnly: true })
       .find(row => row.id === last.id)!.percentComplete).toBe(90);
+  });
+});
+
+describe('Left open: Set Active and Make Current (A5 p24 L2, A5 recorded Low)', () => {
+  // A5 p24 L2 (Low, older), left open: Set Active G lets G's 70% stand over David's 60% entered under F, but the sync
+  // merge dates G's 70% by G's import, so after H's 40% the next refresh carries his 60% past G's row. Marking G's row at
+  // the activation as approval marks a file's percent over his ("Schedule update", project_manager rank, his percent kept
+  // under it) fixes this case, but the A5 p24 generator found the mark's manager rank making the marked copy outrank the
+  // other device's later lookahead on that row in the sync merge, losing the lookahead's dates (its seeds 2203 and 3097).
+  // A mark that only the carry reads needs a new task field. Built and measured, then left out (1 Oct).
+  it.skip('L2, open: phone G 70% (moved), Set Active F, David 60%, Set Active G (70%), H (moved) 40%: 40% after a refresh, on the iPad and the web', async () => {
+    const G1 = scheduleDoc('MASTER G', '2026-09-08T09:00:00.000Z');
+    const H1 = scheduleDoc('MASTER H', '2026-09-12T09:00:00.000Z');
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at(G1.importedAt!); await approve(phone, G1, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,70', SURVEY]); shareDocuments(phone);
+    await setActive(phone, F, '2026-09-08T12:00:00.000Z');
+    at('2026-09-09T09:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 60 });
+    await setActive(phone, G1, '2026-09-10T09:00:00.000Z');
+    at(H1.importedAt!); await approve(phone, H1, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,40', SURVEY]); shareDocuments(phone);
+    at('2026-09-13T09:00:00.000Z');
+    await refresh(phone);
+    await fullSync(ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[40], [40], [40]]);
+  });
+
+  // A5 recorded Low (older), left open: G uploaded on the web at 40%, David's 60% after it, H approved at 70%, then G
+  // made current shows G's 40%: the activation weighs only the row it hides (H's), never F's row with his 60%. Weighing
+  // the rows the task now shown answers to (with every task known passed by Set Active and by the web's Make Current)
+  // fixes this case, but follows the two-device chain of earlier ids, which can differ from one device's: a master
+  // approved on a device with a stale view answers to a row one device would not link, so the activation gave David's
+  // percent where one device keeps the file's (the A5 p24 generator's seed 20077, and 1224 and 2070). Built and
+  // measured, then left out (1 Oct).
+  it.skip('A5 recorded Low, open: phone Set Active back to G after H: his later 60% everywhere, as without H', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    const G1 = webUpload('WEB G', '2026-09-08T09:00:00.000Z', ['Framing,Alpha,Lot,10/22/2026,11/01/2026,40', SURVEY]);
+    await refresh(phone);
+    at('2026-09-09T09:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 60 });
+    const H1 = scheduleDoc('MASTER H', '2026-09-10T09:00:00.000Z');
+    at(H1.importedAt!); await approve(phone, H1, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,70', SURVEY]); shareDocuments(phone);
+    await refresh(phone);
+    await setActive(phone, G1, '2026-09-11T09:00:00.000Z');
+    await refresh(phone); await fullSync(ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[60], [60], [60]]);
   });
 });
 
