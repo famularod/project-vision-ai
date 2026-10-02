@@ -29,6 +29,8 @@
  *   David's 80% on the phone's old row, the very percent the iPad's newer
  *   master had already given the task, was carried past the iPad's later
  *   master stating 70%. One device shows 70%.
+ * A7 p27 M (Medium, older): an old master deleted on the phone and heard
+ *   over realtime on the iPad took David's percent on its row with it.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -141,7 +143,7 @@ jest.mock('../../services/SupabaseService', () => {
 // The app's background upload is run by the rig, right after each action that requests it.
 jest.mock('../../services/BackgroundTaskGuard', () => ({ startGuardedBackgroundTask: () => undefined }));
 
-import { daveScheduleItemsNeedingCloudUpload, isDAVESafeCloudScheduleRecord, reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { daveScheduleItemsNeedingCloudUpload, isDAVESafeCloudScheduleRecord, reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords, scheduleItemsAfterCloudDeletion } from '../../services/DAVEScheduleRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from '../../services/DAVECloudRecovery';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { deletedDAVERecordIds, loadDAVEOperationalTombstones, recordDAVESyncTombstones, synchronizeDAVESyncTombstones } from '../../services/DAVESyncTombstones';
@@ -401,6 +403,41 @@ async function echoes(device: Device) {
   return events.length;
 }
 
+/** Realtime: each deletion-history row since the device last heard, as the app applies it (A7 pass 27). */
+const heardTombstones = new Map<DeviceName, number>();
+async function tombstoneEchoes(device: Device) {
+  on(device);
+  if (!mockOnline()) return 0;
+  const from = heardTombstones.get(device.name) ?? 0;
+  const events = mockCloud.tombstones.slice(from);
+  heardTombstones.set(device.name, mockCloud.tombstones.length);
+  let tombstones = mockCloud.tombstones.slice(0, from) as DAVESyncTombstone[];
+  const apply = createDAVEOperationalRealtimeApplier({
+    isActive: () => true,
+    snapshot: () => ({
+      projects: ['Alpha'], projectRecords: [], archivedProjects: [], deletedProjectNames: [], updates: [], deletedUpdates: [],
+      tombstones, areas: [], scheduleItems: device.ref.current, documents: device.documents,
+    }),
+    getPendingQueue: getOfflineQueue,
+    normalizeUpdate: identity as never, normalizeAreas: identity as never,
+    normalizeSchedule: (value: unknown) => listCopy(value as ScheduleItem[]),
+    normalizeDocuments: identity as never, migrateSchedule: identity,
+    localPhotoUri: () => '', mergeProjectNames: (base: string[]) => base, updateHasPendingLocalWork: () => false,
+    mergeUpdates: ({ localUpdates }: { localUpdates: unknown[] }) => localUpdates, buildUpdateTombstone: identity as never,
+    buildCloudDeletionBarrier: identity as never, upsertDeletedUpdate: identity as never,
+    commitProjects: () => undefined, commitDeletedProjects: () => undefined, commitUpdates: () => undefined,
+    commitDeletedUpdates: () => undefined, commitTombstones: (next: DAVESyncTombstone[]) => { tombstones = next; }, commitAreas: () => undefined,
+    commitSchedule: (items: ScheduleItem[]) => { setter(device)(items); device.ref.current = items; },
+    commitDocuments: () => undefined,
+  } as never);
+  for (const tombstone of events) {
+    const row = { entity_type: tombstone.entityType, record_id: tombstone.recordId, deleted_at: tombstone.deletedAt };
+    await apply('sync_tombstone' as never, { eventType: 'INSERT', newRow: row } as never);
+  }
+  await render(device);
+  return events.length;
+}
+
 /** Delete PDF + Items of a schedule on this device (App.tsx: the deletion history first, then the tasks it gives back, sent). */
 async function deleteWithItems(device: Device, target: ReferenceDocument) {
   on(device);
@@ -463,6 +500,7 @@ function resetRig() {
   mockCloud.events.length = 0;
   mockCloud.offline.clear();
   heard.clear();
+  heardTombstones.clear();
   cloudDocuments = [];
   deletedDocuments.clear();
   mockDevice = 'phone';
@@ -1251,6 +1289,87 @@ describe('A7 p26 follow-up (Q32, option b): a master that stated a percent after
     } as ScheduleItem;
     const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [between, newest], allowCloudOnly: true }).find(item => item.id === newest.id)!;
     expect([merged.percentComplete, merged.managersPercentUnderFile]).toEqual([60, 60]);
+  });
+});
+
+describe('A7 p27 M: an old master deleted on the phone, heard over realtime, keeps David\'s percent', () => {
+  /** The phone, offline, approves G and deletes F with its items; the online iPad's 30% on F's row reaches the cloud. */
+  async function deletedOffline() {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z');
+    await deleteWithItems(phone, F);
+    at(AFTER_G);
+    await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    expect(cloudRow('MASTER F-1')?.percentComplete).toBe(30);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone); // the reconnect upload sends G's rows
+    shareDocuments(phone);
+    await fullSync(phone); // the deletion goes up; the cloud drops F's row
+    expect(cloudRow('MASTER F-1')).toBeUndefined();
+    return { phone, ipad };
+  }
+
+  it('the iPad hears of G\'s row, then of F\'s deletion: 30% on G\'s row on the iPad, sent at once; the cloud, the web and the phone show 30%', async () => {
+    const { phone, ipad } = await deletedOffline();
+    await echoes(ipad);
+    expect(await tombstoneEchoes(ipad)).toBe(1);
+    expect(ipad.state.map(item => item.id)).not.toContain('MASTER F-1');
+    expect(onDevice(ipad)).toEqual([['10/22/2026', '11/01/2026', 30, '', '']]);
+    await backgroundUpload(ipad);
+    expect(await queueOf(ipad)).toEqual([]);
+    await refresh(phone);
+    expect([onWeb(), onDevice(phone)]).toEqual(Array(2).fill([['10/22/2026', '11/01/2026', 30, '', '']]));
+    const writes = framingWritesOf(phone, ipad);
+    at('2026-09-16T08:00:00.000Z');
+    await fullSync(ipad); await fullSync(phone); await refresh(ipad);
+    expect([framingWritesOf(phone, ipad), onDevice(ipad)[0][2], onDevice(phone)[0][2]]).toEqual([writes, 30, 30]);
+  });
+
+  it('unchanged: heard by a refresh instead, the same 30% (A5 p23 M)', async () => {
+    const { phone, ipad } = await deletedOffline();
+    await refresh(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 30, '', '']]));
+  });
+
+  it('pure: a deleted row nothing answers to lends nothing; rows that do not answer to it stay as they were', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', updatedAt: AFTER_G } as ScheduleItem;
+    const moved = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: [davids.id] } as ScheduleItem;
+    // Another task whose own old row holds a percent of David's a refresh would carry: realtime leaves it to the refresh.
+    const otherOld = { ...rowsOf(F, ['Roofing,Alpha,Lot,10/15/2026,10/25/2026,'])[0], id: 'MASTER F-9', percentComplete: 50, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David' } as ScheduleItem;
+    const otherNew = { ...rowsOf(G, ['Roofing,Alpha,Lot,10/22/2026,11/01/2026,'])[0], id: 'MASTER G-9', revisedFromTaskIds: [otherOld.id] } as ScheduleItem;
+    const after = scheduleItemsAfterCloudDeletion([davids, moved, otherOld, otherNew], davids.id);
+    expect(after.map(item => [item.id, item.percentComplete])).toEqual([[moved.id, 30], [otherOld.id, 50], [otherNew.id, 0]]);
+    expect(scheduleItemsAfterCloudDeletion([davids, otherOld], davids.id).map(item => [item.id, item.percentComplete])).toEqual([[otherOld.id, 50]]);
+  });
+
+  // Left open: when the deletion reaches the iPad before G's row does (the phone's Full Sync sends the deletion history
+  // before the tasks waiting on its queue), no row on the iPad answers to F's yet, so F's row goes with nothing to lend to,
+  // and G's row then arrives at 0%. Holding the deleted row until a row that answers to it arrives needs state the
+  // realtime applier does not keep.
+  it.skip('the deletion heard before G\'s row (open): 30% everywhere', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z');
+    await deleteWithItems(phone, F);
+    at(AFTER_G);
+    await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await fullSync(phone);
+    await tombstoneEchoes(ipad);
+    await echoes(ipad);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
   });
 });
 

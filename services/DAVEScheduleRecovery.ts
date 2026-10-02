@@ -339,6 +339,29 @@ function laterStamp(...values: Array<string | null | undefined>): string {
 }
 
 /**
+ * Whole-app audit A7 pass 27 M (Medium, older; the realtime gap the A5 pass
+ * 23 M fix left): the phone, offline, approved master G and deleted F with
+ * its items, while David's 30% on F's row went up from the online iPad. When
+ * the phone synced, the cloud dropped F's row with its deletion, and the
+ * iPad's realtime applier, hearing of the deletion, removed F's row as it
+ * stood: nothing carried the 30% to G's row, so the web, the iPad and the
+ * phone showed 0% for good (a refresh instead of realtime gave 30%). The
+ * tasks after a deletion heard over realtime: the deleted row is gone, and
+ * lends David's percent to the newest row kept that answers to it by the
+ * rule the sync merge uses (A5 pass 23 M), so the app sends it up as a
+ * carried percent (ScheduleProgressCarryUpload). Only rows that answer to
+ * the deleted row change here; a refresh or Full Sync weighs the rest.
+ */
+export function scheduleItemsAfterCloudDeletion(items: readonly ScheduleItem[], deletedId: string): ScheduleItem[] {
+  const id = normalized(deletedId);
+  const removed = items.filter(item => normalized(item.id) === id);
+  const kept = items.filter(item => normalized(item.id) !== id);
+  if (removed.length === 0 || !id) return kept;
+  const lent = progressCarriedToRevisedTasks(kept, removed);
+  return lent.map((row, index) => scheduleTaskEarlierIds(kept[index]).some(earlier => normalized(earlier) === id) ? row : kept[index]);
+}
+
+/**
  * The rows a recovery merge gave a carried percent (A7 pass 26 M-1), each
  * with the row as it was before: the app sends each to the cloud as a change
  * of its progress alone (ScheduleProgressCarryUpload).

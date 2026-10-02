@@ -6,6 +6,7 @@ import type {
 } from './DAVEOperationalRefresh';
 import { projectRecordFromCloud, type ProjectRecord } from './ProjectCoverPhotoService';
 import { deletedDAVERecordIds, mergeDAVESyncTombstones } from './DAVESyncTombstones';
+import { scheduleItemsAfterCloudDeletion } from './DAVEScheduleRecovery';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
 import { carryECOSHostedIndexStatus } from './ECOSHostedIndexer';
@@ -138,7 +139,8 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       } else if (tombstone.entityType === 'project_area') {
         options.commitAreas(state.areas.filter(area => area.id !== tombstone.recordId));
       } else if (tombstone.entityType === 'schedule_item') {
-        options.commitSchedule(state.scheduleItems.filter(item => item.id !== tombstone.recordId));
+        // David's percent on the deleted row goes to the newest row kept that answers to it (A7 pass 27 M).
+        options.commitSchedule(scheduleItemsAfterCloudDeletion(state.scheduleItems, tombstone.recordId));
       } else if (tombstone.entityType === 'reference_document') {
         options.commitDocuments(state.documents.filter(document => document.id !== tombstone.recordId));
         // Deleting the current revision can make another one current in the
