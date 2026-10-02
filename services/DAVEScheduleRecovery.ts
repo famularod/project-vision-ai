@@ -200,6 +200,16 @@ function progressTakenFrom(row: ScheduleItem, earlier: ScheduleItem): boolean {
  * restated since its own import (the 30% entered before G, not yet synced)
  * is weighed as that import weighs a percent of David's: its file's percent
  * stands only above his, whenever he entered it.
+ *
+ * Whole-app audit A6 pass 23 M1 (1 Oct 2026, older; the part of A6 pass 22
+ * M1 left): the same 30%, entered on the offline iPad before G, was still
+ * lost when Framing had an earlier lookahead both devices saw. G's new row
+ * takes the task's lookahead note at its own import (A5 pass 8 L3), and any
+ * note counted as a restatement since the import, so G's import time
+ * outranked the 30%. Restated since its import now means what happened
+ * after it (restatedSinceImport): a later file it also belongs to, or a
+ * lookahead no master has replaced since; a note the import brought along
+ * is not a statement.
  */
 function progressCarriedToRevisedTasks(records: ScheduleItem[]): ScheduleItem[] {
   const answering = new Map<string, ScheduleItem[]>();
@@ -304,11 +314,17 @@ export function scheduleProgressCarriedOntoCloudCopy(
 }
 
 /**
- * Whether a file restated the row since its own import (A6 pass 22 M1): a
- * later file it also belongs to, or a lookahead note.
+ * Whether a file restated the row after its own import (A6 pass 23 M1): a
+ * later file it also belongs to, or a lookahead whose dates no master has
+ * replaced. The lookaheads a new master's row takes over at its import are
+ * marked replaced by a master (scheduleTaskMasterRestated), so the note it
+ * brought along does not count; a note the app cannot read counts, as before.
  */
 function restatedSinceImport(record: ScheduleItem): boolean {
-  return scheduleItemImportBatchIds(record).length > 1 || Boolean(record.lookaheadOverlay);
+  if (scheduleItemImportBatchIds(record).length > 1) return true;
+  const note = record.lookaheadOverlay;
+  if (!note) return false;
+  return Array.isArray(note.lookaheads) ? note.lookaheads.some(entry => !entry?.datesReplacedByMaster) : true;
 }
 
 /**

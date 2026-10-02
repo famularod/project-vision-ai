@@ -1,6 +1,6 @@
 /**
- * Audit round 2, A7 pass 26 (1 Oct 2026), with A5 pass 23 L2 and A6 pass 23
- * L1: the progress Full Sync carries from a task's old row to the newest row
+ * Audit round 2, A7 pass 26 and A6 pass 23 (1 Oct 2026), with A5 pass 23 L2:
+ * the progress Full Sync carries from a task's old row to the newest row
  * that answers to it (3035b7a, A6 pass 22 M1).
  *
  * A7 p26 M-1 (Medium, caused by 3035b7a): the carried percent stayed on the
@@ -14,6 +14,8 @@
  *   realtime echo put 0% back until the next refresh; each refresh carried
  *   again with a new stamp and re-saved the task list; after a sync round the
  *   two devices' copies differed only in that stamp.
+ * A6 p23 M1 (Medium, older): the offline percent entered before G was lost
+ *   when Framing had an earlier lookahead both devices saw.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -780,6 +782,46 @@ describe('A7 p26: the rules the carry keeps', () => {
       items, documentsBefore: documents, documentsAfter: after, now: '2026-09-20T09:00:00.000Z',
     }) as ScheduleItem[];
     expect(carried.map(item => [item.id, item.percentComplete, item.updatedAt])).toEqual([['MASTER G-1', 30, '2026-09-20T09:00:00.000Z']]);
+  });
+});
+
+describe('A6 p23 M1: the offline percent entered before G, when Framing had an earlier lookahead', () => {
+  it.each([['L1 states no percent', '', 0], ['L1 states 20%', '20', 20]] as const)('%s: 30%% after Full Sync on both devices, the cloud and the web', async (_label, l1, l1Pct) => {
+    const L1 = scheduleDoc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at(L1.importedAt!);
+    await approve(phone, L1, [`Framing,Alpha,Lot,10/18/2026,10/28/2026,${l1}`], true);
+    shareDocuments(phone);
+    await fullSync(ipad);
+    expect(onDevice(ipad)[0][2]).toBe(l1Pct);
+    setOnline(ipad, false);
+    at(BEFORE_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 30 });
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW(), SURVEY]);
+    shareDocuments(phone);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(ipad, true);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 30, '', '']]));
+    // David's own 30%, carried as his: not a file's percent floored at it.
+    expect([cloudRow('MASTER G-1'), theRow(ipad), theRow(phone)].map(row => [row!.progressSource, row!.progressConfirmedBy]))
+      .toEqual(Array(3).fill(['project_manager', 'David']));
+  });
+
+  it('a lookahead approved on G\'s row after its import still counts as a restatement', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', updatedAt: BEFORE_G } as ScheduleItem;
+    const restated = {
+      ...rowsOf(G, [G_ROW()])[0], percentComplete: 20, status: 'In Progress', revisedFromTaskIds: [davids.id],
+      lookaheadOverlay: {
+        masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 0,
+        lookaheads: [{ batchId: 'batch-LOOKAHEAD L2', startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 20 }],
+      },
+    } as ScheduleItem;
+    // Not carried as David's own: the lookahead's percent stands (or, under Q32, is floored at his, still the file's).
+    const merged = recoverDAVEScheduleRecords({ local: [davids], cloud: [restated], allowCloudOnly: true }).find(item => item.id === restated.id)!;
+    expect([merged.progressSource ?? null, merged.progressConfirmedBy ?? null]).toEqual([null, null]);
   });
 });
 
