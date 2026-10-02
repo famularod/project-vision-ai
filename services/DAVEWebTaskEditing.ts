@@ -357,12 +357,14 @@ export function buildDAVEWebScheduleItem({
       ...(current.managersPercentUnderFileJudgedAt !== undefined ? { managersPercentUnderFileJudgedAt: current.managersPercentUnderFileJudgedAt } : {}),
     } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
+    ...(current?.notRevisionOfTaskIds?.length ? { notRevisionOfTaskIds: current.notRevisionOfTaskIds } : {}), // tasks David said it is not (owner answer Q30)
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,
     sourceRowNumber: current?.sourceRowNumber ?? null,
+    ...(current?.sourceUniqueId ? { sourceUniqueId: current.sourceUniqueId } : {}), // its own identity (owner answer Q30)
     completionVerification: progressEditedHere ? null : current?.completionVerification ?? null,
     createdAt: current?.createdAt || now,
     updatedAt: now,

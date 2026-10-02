@@ -18,7 +18,9 @@ import {
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
 import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
+import { scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from '../services/ScheduleImportMerge';
 import {
+  scheduleImportAddsToMaster,
   scheduleImportAsksRole,
   scheduleImportRoleRefusal,
   suggestScheduleImportRole,
@@ -34,6 +36,13 @@ import {
 } from '../services/DAVECompletionVerification';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { PrimaryButton, SecondaryButton } from './ProjectDetailsCard';
+import {
+  ScheduleImportPairingCheck,
+  scheduleImportPairingGuess,
+  scheduleImportPairingRefusal,
+  withScheduleImportPairingChoices,
+  type ScheduleImportPairingAnswer,
+} from './schedule-import-pairing-check';
 
 export function ScheduleImportFlow({
   screenshotImportAvailable,
@@ -75,6 +84,19 @@ export function ScheduleImportFlow({
     () => scheduleImportWarnings(pendingBatch),
     [pendingBatch],
   );
+  // Same-named tasks whose pairing the dates cannot settle: David confirms which is which (owner answer Q30).
+  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id
+    ? roleReview.chosen || roleReview.role
+    : null;
+  const pairingQuestions = useMemo(() => pendingBatch ? scheduleImportPairingQuestions({
+    existing: roleContext?.items || [],
+    imported: pendingBatch.items,
+    overlay: reviewedRole ? reviewedRole === 'lookahead' : scheduleImportAddsToMaster(pendingBatch, roleContext?.documents || []),
+  }) : [], [pendingBatch, reviewedRole, roleContext?.documents, roleContext?.items]);
+  const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${pendingBatch?.id}|${reviewedRole}|${question.key}`;
+  const pairingAnswerOf = (question: ScheduleImportPairingQuestion) =>
+    pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
 
   function openReview(batch: PIEScheduleImportBatch) {
     setExpandedItemIds([]);
@@ -179,13 +201,13 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
-    const refusal = reviewedRoleRefusal(batchToReview);
+    const refusal = reviewedRoleRefusal(batchToReview) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withReviewedRole({ ...batchToReview, items: readyItems }));
+      await onApprove(withScheduleImportPairingChoices(withReviewedRole({ ...batchToReview, items: readyItems }), pairingQuestions, pairingAnswerOf));
 
       if (remainingItems.length) {
         setPendingBatch(current => current?.id === batchToReview.id ? {
@@ -213,12 +235,12 @@ export function ScheduleImportFlow({
     ) return;
 
     const batchToSave = pendingBatch;
-    const refusal = reviewedRoleRefusal(batchToSave);
+    const refusal = reviewedRoleRefusal(batchToSave) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withReviewedRole(batchToSave));
+      await onApprove(withScheduleImportPairingChoices(withReviewedRole(batchToSave), pairingQuestions, pairingAnswerOf));
       setPendingBatch(current => current?.id === batchToSave.id ? null : current);
       setExpandedItemIds([]);
     } catch (error) {
@@ -366,6 +388,18 @@ export function ScheduleImportFlow({
                 onChoose={chosen => setRoleReview(current => current ? { ...current, chosen } : current)}
               />
             ) : null}
+            {pairingQuestions.map(question => (
+              <ScheduleImportPairingCheck
+                key={pairingKey(question)}
+                question={question}
+                answer={pairingAnswerOf(question)}
+                disabled={saveBusy}
+                onChange={answer => {
+                  setSaveError(null);
+                  setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }));
+                }}
+              />
+            ))}
             {pendingBatch ? (
               <Text style={styles.bulkSaveText}>
                 Review Project, Area, Task, Dates, Status, and Owner. Accept only the activities you want ECOS to use.

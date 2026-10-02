@@ -12524,6 +12524,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         completionMatch: findExactScheduleTaskForCompletionClaim,
         isCurrent: scheduleItemsVisibleBeforeImport(scheduleItemsCurrentRef.current, referenceDocumentsCurrentRef.current, approvedBatch.id),
         overlay: scheduleImportAddsToMaster(approvedBatch, referenceDocumentsCurrentRef.current), // a lookahead restates the master's tasks in place (owner answer Q22)
+        pairingChoices: approvedBatch.pairingChoices, // which saved task each same-named row is, as David confirmed it (owner answer Q30)
         mergeCompletion: (item, importedItem) => normalizeScheduleItem(
           mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
         ) as unknown as import('./types').ScheduleItem,

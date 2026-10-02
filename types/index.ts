@@ -938,6 +938,13 @@ export type ScheduleItem = {
    */
   revisedFromTaskIds?: string[] | null;
   /**
+   * The saved tasks David said at import review this row is not (owner
+   * answer Q30, 2 Oct 2026): a same-named row he called a new task. Set
+   * Active and Make Current never pair it with them, so his answer holds when
+   * he switches masters. Kept in the task's JSON record; missing otherwise.
+   */
+  notRevisionOfTaskIds?: string[] | null;
+  /**
    * A task entered by hand: the rows of schedules uploaded on the web, not
    * current yet, that restate it (whole-app audit A5 pass 18 L3, 1 Oct
    * 2026). Each restates the task when its schedule is made current for the
@@ -954,6 +961,13 @@ export type ScheduleItem = {
   sourceWbsCode?: string | null;
   /** Immutable one-based source row used when activity/WBS values are not unique. */
   sourceRowNumber?: number | null;
+  /**
+   * Microsoft Project's Unique ID for the row, when the file has the column
+   * (owner answer Q30, 2 Oct 2026): unlike the ID, row and WBS it survives a
+   * revision, so same-named tasks pair by it without asking. Missing when the
+   * file has none.
+   */
+  sourceUniqueId?: string | null;
   completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
   /** Last user-authored task change. Imported legacy rows may omit it. */

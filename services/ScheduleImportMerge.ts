@@ -573,7 +573,27 @@ function pairTaskRevisions(
   isCurrent: (item: ScheduleItem) => boolean,
   lookahead = false,
   inFile = true,
+  /** David's answers at import review: an imported row's id to the saved task's, or null for none (owner answer Q30). */
+  choices?: ReadonlyMap<string, string | null>,
 ): Map<ScheduleItem, ScheduleItem> {
+  const addedByLookahead = statedOnlyByLookaheads(existing);
+  const pairs = new Map<ScheduleItem, ScheduleItem>();
+  revisionGroups(existing, imported, isCurrent, lookahead, inFile)
+    .forEach(group => pairGroup(group, { lookahead, inFile, addedByLookahead }, choices).forEach((item, row) => pairs.set(row, item)));
+  return pairs;
+}
+
+type RevisionGroup = Readonly<{ rows: readonly ScheduleItem[]; saved: readonly ScheduleItem[] }>;
+type TwinRule = Parameters<typeof pairSameNamedTasks>[2];
+
+/** The rows of one task name, project and area, with the saved tasks they may revise (pairTaskRevisions). */
+function revisionGroups(
+  existing: readonly ScheduleItem[],
+  imported: readonly ScheduleItem[],
+  isCurrent: (item: ScheduleItem) => boolean,
+  lookahead: boolean,
+  inFile: boolean,
+): RevisionGroup[] {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
     // Whole-app audit A6 pass 19 L1 (1 Oct 2026): Set Active back to G showed one Pour slab from F's import
@@ -592,14 +612,202 @@ function pairTaskRevisions(
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
-  const addedByLookahead = statedOnlyByLookaheads(existing);
-  const pairs = new Map<ScheduleItem, ScheduleItem>();
-  candidates
+  return candidates
     .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
       saved.every(item => groupCount.get(item.id) === 1))
-    .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved, { lookahead, inFile, addedByLookahead })
-      .forEach((item, row) => pairs.set(row, item)));
-  return pairs;
+    .map(({ rows, saved }) => ({ rows, saved }));
+}
+
+/**
+ * One group's pairs (owner answer Q30, 2 Oct 2026). David's answers at the
+ * import review decide for the rows he answered (scheduleImportPairingQuestions).
+ * Otherwise a row's own identity first: Microsoft Project's Unique ID, for
+ * same-named rows when the file and the saved twins carry it (rows that all
+ * carry it pair only by it), and, for the saved tasks Set Active and Make
+ * Current show again (inFile false), the ids rows answer to
+ * (revisedFromTaskIds): the pairing an approval made, David's choice
+ * included, holds when he switches back and forth. The rest by the rule for
+ * twins (pairSameNamedTasks).
+ */
+function pairGroup(
+  { rows, saved }: RevisionGroup,
+  rule: TwinRule,
+  choices?: ReadonlyMap<string, string | null>,
+): Map<ScheduleItem, ScheduleItem> {
+  const known = new Map<ScheduleItem, ScheduleItem>();
+  const taken = new Set<ScheduleItem>();
+  const take = (row: ScheduleItem, item: ScheduleItem) => { known.set(row, item); taken.add(item); };
+  const answered = new Set<ScheduleItem>();
+  if (choices) {
+    rows.forEach(row => {
+      if (!choices.has(row.id)) return;
+      answered.add(row);
+      const chosen = choices.get(row.id);
+      const item = chosen ? saved.find(candidate => candidate.id === chosen && !taken.has(candidate)) : undefined;
+      if (item) take(row, item);
+    });
+  }
+  const twins = rows.length > 1 || saved.length > 1;
+  const uniqueId = (item: ScheduleItem) => key(item.sourceUniqueId);
+  if (twins) {
+    rows.filter(row => !answered.has(row) && uniqueId(row)).forEach(row => {
+      const same = saved.filter(item => !taken.has(item) && uniqueId(item) === uniqueId(row));
+      if (same.length === 1) take(row, same[0]);
+    });
+  }
+  if (!rule.inFile) {
+    rows.filter(row => !answered.has(row) && !known.has(row)).forEach(row => {
+      const own = new Set([row.id, ...scheduleTaskEarlierIds(row)]);
+      const chained = saved.filter(item => !taken.has(item) && (own.has(item.id) || scheduleTaskEarlierIds(item).includes(row.id)));
+      if (chained.length === 1) take(row, chained[0]);
+    });
+  }
+  const identified = twins && [...rows, ...saved].every(item => uniqueId(item));
+  const restRows = rows.filter(row => !answered.has(row) && !known.has(row));
+  const restSaved = saved.filter(item => !taken.has(item));
+  if (identified || restRows.length === 0 || restSaved.length === 0) return known;
+  // David's answers and the rows' identity leave the rest as before: the rule for twins, never pairing a row with
+  // a task he said at review it is not (notRevisionOfTaskIds).
+  const ruled = restRows.length === rows.length && restSaved.length === saved.length
+    ? pairSameNamedTasks(rows, saved, rule)
+    : pairSameNamedTasks(restRows, restSaved, rule);
+  ruled.forEach((item, row) => { if (!saidNotRevision(row, item)) known.set(row, item); });
+  return known;
+}
+
+/** Whether David said at review one of these is not the other (owner answer Q30). */
+function saidNotRevision(left: ScheduleItem, right: ScheduleItem): boolean {
+  return (left.notRevisionOfTaskIds || []).includes(right.id) || (right.notRevisionOfTaskIds || []).includes(left.id);
+}
+
+/**
+ * The same-days reading with the rows left over paired with the saved tasks
+ * left over (owner answer Q30): the unchanged twins stay, the rest moved. In
+ * start order when as many of each are left, and each with its uniquely
+ * nearest one (pairByNearestDays).
+ */
+function withRestPaired(
+  pairs: ReadonlyMap<ScheduleItem, ScheduleItem>,
+  rows: readonly ScheduleItem[],
+  saved: readonly ScheduleItem[],
+): Map<ScheduleItem, ScheduleItem>[] {
+  const taken = new Set(pairs.values());
+  const restRows = inStableOrder(rows.filter(row => !pairs.has(row)), true);
+  const restSaved = inStableOrder(saved.filter(item => !taken.has(item)), false);
+  if (restRows.length === 0 || restSaved.length === 0) return [];
+  const inOrder = restRows.length === restSaved.length
+    ? [new Map([...pairs, ...restRows.map((row, index) => [row, restSaved[index]] as const)])]
+    : [];
+  return [...inOrder, new Map([...pairs, ...pairByNearestDays(restRows, restSaved)])];
+}
+
+/**
+ * The "every date slipped" readings of same-named rows (owner answer Q30):
+ * the rows and the saved tasks each in start order, one side's run lined up
+ * with the other's at each offset, where every row (two or more) starts the
+ * same number of days after its saved task.
+ */
+function uniformSlipReadings(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem>[] {
+  const rowOrder = inStableOrder(rows, true);
+  const savedOrder = inStableOrder(saved, false);
+  const shorter = Math.min(rowOrder.length, savedOrder.length);
+  const readings: Map<ScheduleItem, ScheduleItem>[] = [];
+  // One pair is no pattern: a single row is any saved task "slipped" (the same days and nearest readings cover it).
+  if (shorter < 2) return readings;
+  for (let offset = 0; offset <= Math.abs(rowOrder.length - savedOrder.length); offset += 1) {
+    const pairs = Array.from({ length: shorter }, (_, index) => rowOrder.length <= savedOrder.length
+      ? [rowOrder[index], savedOrder[index + offset]] as const
+      : [rowOrder[index + offset], savedOrder[index]] as const);
+    const shifts = pairs.map(([row, item]) => {
+      const rowStart = dayNumber(row.startDate);
+      const savedStart = dayNumber(item.startDate);
+      return rowStart === null || savedStart === null ? null : rowStart - savedStart;
+    });
+    if (shifts.every(shift => shift !== null && shift === shifts[0])) readings.push(new Map(pairs));
+  }
+  return readings;
+}
+
+/**
+ * A question the import review asks David (owner answer Q30, 2 Oct 2026):
+ * "YES, repeated task names within an area. The import review asks him to
+ * confirm instead of guessing."
+ */
+export type ScheduleImportPairingQuestion = Readonly<{
+  /** The task name, project and area. */
+  key: string;
+  taskName: string;
+  projectName: string;
+  areaName: string;
+  /** "2 tasks named Pour slab in Lot A — confirm which is which". */
+  title: string;
+  /** The saved tasks of that name there, as David sees them, by start day. */
+  saved: readonly ScheduleItem[];
+  /** The file's rows of that name there, by start day. */
+  rows: readonly ScheduleItem[];
+  /** The app's best guess: each row's saved task, or null for a new task. */
+  guess: Readonly<Record<string, string | null>>;
+}>;
+
+/**
+ * Same-named tasks in one area whose pairing the file's dates cannot settle
+ * (owner answer Q30). Whole-app audit A5 passes 17-18 paired them by one rule
+ * per schedule role: a master keeps their order (the slip reading), a
+ * lookahead takes the nearest days (the rolling-window reading). Some
+ * changes look identical by dates alone: "every date slipped one week" and
+ * "the first was dropped and a new one added". The review now asks when the
+ * readings disagree: the app's rule (its guess, pre-selected), the
+ * same-days reading (a row on exactly a saved task's days is that task; the
+ * rest moved: in order, or each to its nearest, withRestPaired) and the
+ * slip readings (every row the same number of days after its saved task, in
+ * order); a group is asked about when any of the others pairs a row
+ * differently from the guess. Never when the rows sit on exactly the saved
+ * tasks' days, when a slip reads the same every way, for one row and one
+ * task, or when the file and the saved tasks carry Microsoft Project's
+ * Unique ID. Given the tasks shown and the rows to approve, as the merge
+ * pairs them (a lookahead when overlay).
+ */
+export function scheduleImportPairingQuestions({
+  existing,
+  imported,
+  isCurrent = () => true,
+  overlay = false,
+}: {
+  existing: readonly ScheduleItem[];
+  imported: readonly ScheduleItem[];
+  isCurrent?: (item: ScheduleItem) => boolean;
+  overlay?: boolean;
+}): ScheduleImportPairingQuestion[] {
+  const rule: TwinRule = { lookahead: overlay, inFile: true, addedByLookahead: statedOnlyByLookaheads(existing) };
+  return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap(group => {
+    const { rows, saved } = group;
+    if (rows.length === 0 || saved.length === 0 || (rows.length < 2 && saved.length < 2)) return [];
+    if ([...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
+    // Two rows of one task (one answers to the other) shown at once are not twins: nothing to ask about them.
+    const savedIds = new Set(saved.map(item => item.id));
+    if (saved.some(item => scheduleTaskEarlierIds(item).some(id => savedIds.has(id)))) return [];
+    const guess = pairGroup(group, rule);
+    const sameDays = pairOnSameDays(rows, saved, true);
+    const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
+    // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
+    const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
+    if (!disagrees) return [];
+    const first = rows[0];
+    const areaName = (saved.find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
+    const projectName = (first.projectName || first.scheduleProjectName || '').trim();
+    const count = Math.max(saved.length, rows.length);
+    const byStart = (items: readonly ScheduleItem[], inFile: boolean) => inStableOrder(items, inFile);
+    return [{
+      key: [first.taskName, projectKey(first), first.locationName].map(key).join('|'),
+      taskName: first.taskName.trim(),
+      projectName,
+      areaName,
+      title: `${count} tasks named ${first.taskName.trim()} in ${areaName || projectName} — confirm which is which`,
+      saved: byStart(saved, false),
+      rows: byStart(rows, true),
+      guess: Object.fromEntries(rows.map(row => [row.id, guess.get(row)?.id ?? null])),
+    }];
+  });
 }
 
 /**
@@ -861,6 +1069,7 @@ export function mergeApprovedScheduleImportItems({
   approvedAt = new Date().toISOString(),
   overlay = false,
   current = true,
+  pairingChoices,
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
@@ -879,6 +1088,12 @@ export function mergeApprovedScheduleImportItems({
    * made current (scheduleRowsAwaitingCurrent, A5 pass 18 L3).
    */
   current?: boolean;
+  /**
+   * David's answers to the review's question about same-named tasks (owner
+   * answer Q30): an imported row's id to the saved task it revises, or null
+   * for a new task. They decide the pairing of those rows.
+   */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }): ScheduleImportMergeResult {
   let next = [...existing];
   const additions: ScheduleItem[] = [];
@@ -886,7 +1101,15 @@ export function mergeApprovedScheduleImportItems({
   const carriedProgressIds: string[] = [];
   const fileProgressIds: string[] = [];
   const overlaidIds: string[] = [];
-  const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay);
+  const choices = pairingChoices ? new Map(Object.entries(pairingChoices)) : undefined;
+  const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay, true, choices);
+  // A row David answered is a new task never pairs by the import identity either (owner answer Q30), and is never
+  // paired with those saved tasks later (notRevisionOfTaskIds, Set Active and Make Current).
+  const answeredNew = (row: ScheduleItem) => Boolean(choices?.has(row.id) && !choices.get(row.id));
+  const twinsSaidNotOf = (row: ScheduleItem): Partial<ScheduleItem> => {
+    const ids = answeredNew(row) ? existing.filter(item => isCurrent(item) && sameTask(item, row, overlay)).map(item => item.id) : [];
+    return ids.length > 0 ? { notRevisionOfTaskIds: ids } : {};
+  };
   const lookaheadsOnly = statedOnlyByLookaheads(existing);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
@@ -904,10 +1127,11 @@ export function mergeApprovedScheduleImportItems({
     const pairedId = pairs.get(importedItem)?.id;
     const pairedSaved = pairedId ? next.find(item => item.id === pairedId) : undefined;
     if (overlay) {
-      const saved = pairedSaved || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      const saved = pairedSaved || (answeredNew(importedItem) ? undefined
+        : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem)));
       if (!saved) {
         // Added by the lookahead: it says so itself, after the lookahead's notes are gone (A6 pass 19 M2).
-        additions.push({ ...importedItem, importedAsLookahead: true });
+        additions.push({ ...importedItem, importedAsLookahead: true, ...twinsSaidNotOf(importedItem) });
         return;
       }
       claimed.add(saved.id);
@@ -945,7 +1169,7 @@ export function mergeApprovedScheduleImportItems({
     const movedByHand = Boolean(paired) && !ownedByImport(paired!) && !unchangedTask(paired!, importedItem) && !repeated.dates;
     const found = paired
       ? (unchangedTask(paired, importedItem) || repeated.dates || movedByHand ? paired : undefined)
-      : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      : answeredNew(importedItem) ? undefined : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
     // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
@@ -1068,7 +1292,7 @@ export function mergeApprovedScheduleImportItems({
       carriedProgressIds.push(importedItem.id);
       return;
     }
-    additions.push(revision(importedItem));
+    additions.push({ ...revision(importedItem), ...twinsSaidNotOf(importedItem) });
   });
 
   if (current && [...next, ...additions].some(item => scheduleTaskLinksOf(item).length > 0)) {
