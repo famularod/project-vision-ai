@@ -410,7 +410,8 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
-import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, projectDocumentWaitsForSignIn, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
+import { useAfterSignInPendingEnds } from './hooks/use-after-sign-in-pending-ends';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -3149,7 +3150,8 @@ async function deleteOwnedProjectDocument(document: ProjectDocument) {
   });
 }
 
-function projectDocumentStatusDetail(document: ProjectDocument) {
+function projectDocumentStatusDetail(document: ProjectDocument, signInPending = false) {
+  if (signInPending && projectDocumentWaitsForSignIn(document, true)) return PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN; // everyday item 5
   if (document.status === 'failed') {
     return 'Document upload failed · Retry';
   }
@@ -5000,6 +5002,7 @@ function AppShell() {
   archivedProjectsCurrentRef.current = archivedProjects;
   operationalSyncTombstonesRef.current = operationalSyncTombstones;
   const [projectDocumentUploadRetry] = useState(() => createProjectDocumentUploadRetryRunner(() => projectDocumentsCurrentRef.current)); // documents added without signal upload by themselves (whole-app audit A8 pass 1 F5, 30 Sep 2026)
+  useAfterSignInPendingEnds(() => void projectDocumentUploadRetry.run(retryProjectDocumentUpload, { ignoreBackoff: true })); // and once "offline, sign-in pending" ends (everyday item 5)
   // A card's typed text is queued once typing pauses (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
   const projectDocumentSharedRecordSync = useProjectDocumentSharedRecordSync(documentId => {
     const latest = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
@@ -7012,6 +7015,7 @@ useEffect(() => {
       ) ||
       draft.documents?.find(document => document.id === documentId);
 
+    if (target && projectDocumentWaitsForSignIn(target, signInPendingRef.current)) return false; // waits for the sign-in, then uploads (everyday item 5)
     if (!target?.localUri) {
       updateDocumentEverywhere(documentId, document => ({
         ...document,
@@ -15205,9 +15209,10 @@ function ProjectDocumentInlineRow({
   document: ProjectDocument;
   onRetry?: () => void;
 }) {
+  const signInPending = useNativeWorkspaceSignInPending();
   const canRetry =
     Boolean(onRetry) &&
-    (document.status === 'failed' || document.status === 'local');
+    (document.status === 'failed' || document.status === 'local') && !projectDocumentWaitsForSignIn(document, signInPending);
 
   return (
     <View style={styles.compactLocationRow}>
@@ -15215,7 +15220,7 @@ function ProjectDocumentInlineRow({
       <View style={styles.rowMain}>
         <Text style={styles.projectName}>{document.name}</Text>
         <Text style={styles.rowSub}>
-          {document.category} · {projectDocumentStatusDetail(document)}
+          {document.category} · {projectDocumentStatusDetail(document, signInPending)}
         </Text>
       </View>
       {canRetry ? (

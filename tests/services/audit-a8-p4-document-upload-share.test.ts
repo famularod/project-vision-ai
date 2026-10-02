@@ -54,6 +54,7 @@ import {
   bindProjectDocumentUploadToAccount,
   projectDocumentUploadAttemptsAfterFailure,
   uploadedProjectDocumentToShare,
+  projectDocumentWaitsForSignIn,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createOwnedLocalFileManifest,
@@ -207,6 +208,9 @@ function phone(options: Readonly<{
       alerts.push({ title, buttons });
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount, uploadedProjectDocumentToShare,
+    // Everyday item 5 (landed after this test): a document waits, untried, while the workspace is open
+    // "offline, sign-in pending"; not pending here. Deps added deliberately.
+    signInPendingRef: { current: false }, projectDocumentWaitsForSignIn,
     resendUpdatesListingDocument: jest.fn(), withoutFieldUpdateDocument, withDeviceDocumentUploadState,
     // publishUploadedProjectDocument
     parseOwnedLocalFileManifest, projectsCurrentRef: { current: [PROJECT] }, authorityProjectId: legacyProjectNameKey,

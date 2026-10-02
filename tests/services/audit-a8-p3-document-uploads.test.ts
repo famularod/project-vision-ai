@@ -30,6 +30,7 @@ import {
   createProjectDocumentUploadRetryRunner,
   projectDocumentUploadAttemptsAfterFailure,
   uploadedProjectDocumentToShare,
+  projectDocumentWaitsForSignIn,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createOwnedLocalFileManifest,
@@ -120,6 +121,9 @@ function phone(documents: PhoneDocument[], upload: (onProgress: (progress: numbe
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount,
     uploadedProjectDocumentToShare, // audit A8 pass 4 L4: read again from the list before it is shared
+    // Everyday item 5 (landed after this test): a document waits, untried, while the workspace is open
+    // "offline, sign-in pending"; not pending here. Deps added deliberately.
+    signInPendingRef: { current: false }, projectDocumentWaitsForSignIn,
     // deleteProjectDocument
     isComplianceSensitiveProjectDocument: () => false, findSharedReferenceDocumentForProjectDocument: () => null,
     referenceDocumentsCurrentRef: { current: [] }, projectDocumentSharedRecordSync: { cancel: jest.fn() },

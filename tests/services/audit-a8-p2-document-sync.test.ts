@@ -31,6 +31,7 @@ import {
   projectDocumentsDueForUploadRetry,
   projectDocumentUploadAttemptsAfterFailure,
   uploadedProjectDocumentToShare,
+  projectDocumentWaitsForSignIn,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createProjectDocumentSharedRecordSyncLifecycle,
@@ -126,6 +127,9 @@ function uploader(documents: PhoneDocument[], upload: (document: PhoneDocument) 
     bindProjectDocumentUploadToAccount,
     // Audit A8 pass 4 L4 (landed after this test): the document is read again from the list before it is shared.
     uploadedProjectDocumentToShare,
+    // Everyday item 5 (landed after this test): a document waits, untried, while the workspace is open
+    // "offline, sign-in pending"; not pending here. Deps added deliberately.
+    signInPendingRef: { current: false }, projectDocumentWaitsForSignIn,
     // Audit A7 pass 5 M1 (landed after this test): a finished upload sends each sent update listing it again.
     resendUpdatesListingDocument: jest.fn(), withDeviceDocumentUploadState: (update: unknown) => update,
   };
