@@ -52,7 +52,10 @@ import {
 import {
   daveScheduleItemsNeedingCloudUpload,
   recoverDAVEScheduleRecords,
+  scheduleProgressCarriedOntoCloudCopy,
 } from './DAVEScheduleRecovery';
+import { SCHEDULE_CARRIED_PROGRESS_FIELDS } from './ScheduleProgressSource';
+import { scheduleItemCarriedProgressWaiting } from './ScheduleItemQueueRevision';
 import {
   daveReferenceDocumentsNeedingCloudUpload,
   mergeDAVEReferenceDocumentRecoveryRecords,
@@ -704,6 +707,14 @@ type ScheduleItemRecordPayload = {
   changedFields?: Array<keyof ScheduleItem>;
   /** Explicit conflict resolution may intentionally replace the cloud copy. */
   forceLocal?: boolean;
+  /**
+   * Its progress fields are a percent the sync merge carried to the task
+   * (whole-app audit A7 pass 26 M-1): they land only while the merge's rule
+   * still holds against the cloud's copy (scheduleProgressCarriedOntoCloudCopy).
+   */
+  carriedProgress?: boolean;
+  /** The task's progress fields as they were when the merge carried the percent (A7 pass 26 M-1). */
+  carriedOver?: Partial<ScheduleItem>;
   /**
    * On a task's conflict only (whole-app audit A7 pass 16 L-2): this phone's
    * edits of the task that a Keep Cloud which could not finish took off the
@@ -1588,6 +1599,8 @@ function mergeScheduleItemQueueChangeScope(
   ) {
     const fullRecordPayload = { ...incomingPayload };
     delete fullRecordPayload.changedFields;
+    delete fullRecordPayload.carriedProgress; // a whole copy is weighed whole (A7 pass 26 M-1)
+    delete fullRecordPayload.carriedOver;
     return {
       ...incoming,
       payload: fullRecordPayload,
@@ -1623,10 +1636,18 @@ function mergeScheduleItemQueueChangeScope(
     incomingPayload.itemData,
   );
 
+  // The progress stays a carried percent while the edits since leave it as the carry gave it (A7 pass 26 M-1).
+  const carriedProgress = incomingPayload.carriedProgress === true || (existingPayload.carriedProgress === true &&
+    SCHEDULE_CARRIED_PROGRESS_FIELDS.every(field =>
+      JSON.stringify(itemData[field] ?? null) === JSON.stringify(existingPayload.itemData[field] ?? null)));
+  const { carriedProgress: _carried, carriedOver: _over, ...mergedPayload } = incomingPayload;
+  // What the progress was before the carry: the first carry's, while this entry still holds a carry.
+  const carriedOver = !carriedProgress ? undefined
+    : existingPayload.carriedProgress === true ? existingPayload.carriedOver : incomingPayload.carriedOver;
   return {
     ...incoming,
     payload: {
-      ...incomingPayload,
+      ...mergedPayload,
       itemData,
       changedFields: [
         ...new Set([
@@ -1634,6 +1655,8 @@ function mergeScheduleItemQueueChangeScope(
           ...incomingPayload.changedFields,
         ]),
       ],
+      ...(carriedProgress ? { carriedProgress: true } : {}),
+      ...(carriedOver ? { carriedOver } : {}),
     },
   };
 }
@@ -1757,6 +1780,31 @@ export async function queueScheduleItemRecord(
     },
     changedAt,
     autoUpload,
+  });
+}
+
+/**
+ * Whole-app audit A7 pass 26 M-1 (1 Oct 2026, caused by 3035b7a): the
+ * percent the sync merge carried to a task's newest row stayed on the device
+ * (Full Sync carries after it uploads; a refresh uploads nothing), and as
+ * David's it outranked the cloud's copy whole, so that device's next Full
+ * Sync wrote its old notes, owner, dates and lookahead over the other
+ * device's newer ones. The carried percent now goes up at once, as a change
+ * of the task's progress alone, as Set Active sends its carried rows.
+ */
+export async function queueScheduleItemProgressCarried(item: ScheduleItem, before: ScheduleItem): Promise<void> {
+  await enqueuePendingChange<ScheduleItemRecordPayload>({
+    id: scheduleItemQueueItemId(item.id),
+    entity: 'schedule_item',
+    operation: 'update',
+    payload: {
+      id: item.id,
+      itemData: item,
+      changedFields: [...SCHEDULE_CARRIED_PROGRESS_FIELDS, 'updatedAt'],
+      carriedProgress: true,
+      carriedOver: Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, before[field] ?? null])),
+    },
+    changedAt: item.updatedAt || item.progressConfirmedAt || new Date().toISOString(),
   });
 }
 
@@ -3996,6 +4044,10 @@ export async function synchronizeLocalData(
     tombstoneSync.tombstones,
     'schedule_item',
   );
+  // A carried percent waiting on the queue goes up as itself, not as the whole task (A7 pass 26 M-1).
+  const queueBeforeUpload = await getOfflineQueue();
+  syncableScheduleItems = syncableScheduleItems.filter(item =>
+    !scheduleItemCarriedProgressWaiting(item, queueBeforeUpload));
   syncableReferenceDocuments = removeDAVETombstonedRecords(
     payload.referenceDocuments,
     tombstoneSync.tombstones,
@@ -5713,6 +5765,41 @@ async function loadOperationalProjectIdentityAuthority(
   return context.projectIdentityAuthority;
 }
 
+/**
+ * The cloud's copy with a queued carried percent and any edits queued with it
+ * (A7 pass 26 M-1), or 'unchanged' when nothing would change. The percent's
+ * fields come from the carry weighed against this copy, and only while it
+ * still stands (a percent David entered since, a file's higher percent or a
+ * newer lookahead's stated percent stays); the copy's notes, owner, dates and
+ * lookahead note stay unless an edit queued with it changed them. Stamped the
+ * later of the two copies' times when only the percent changes, so the
+ * device's copy and the cloud's then match.
+ */
+function scheduleItemCarriedOntoCloudCopy(
+  payload: ScheduleItemRecordPayload,
+  changedFields: readonly (keyof ScheduleItem)[],
+  remote: ScheduleItem,
+): ScheduleItem | 'unchanged' {
+  const carried = scheduleProgressCarriedOntoCloudCopy(payload.itemData, remote, payload.carriedOver);
+  const progressFields = new Set<keyof ScheduleItem>(SCHEDULE_CARRIED_PROGRESS_FIELDS);
+  const edited = changedFields.filter(field => field !== 'updatedAt' && !progressFields.has(field));
+  const next = edited.reduce<ScheduleItem>((merged, field) => field === 'projectControls' &&
+    payload.itemData.projectControls && remote.projectControls
+    ? { ...merged, projectControls: mergeProjectControlsRevisions(payload.itemData.projectControls, remote.projectControls) }
+    : { ...merged, [field]: payload.itemData[field] },
+  carried
+    ? SCHEDULE_CARRIED_PROGRESS_FIELDS.reduce<ScheduleItem>((merged, field) => ({ ...merged, [field]: carried[field] }), remote)
+    : remote);
+  if (JSON.stringify(next) === JSON.stringify(remote)) return 'unchanged';
+  const later = timestampOf(payload.itemData.updatedAt) > timestampOf(remote.updatedAt) ? payload.itemData.updatedAt : remote.updatedAt;
+  return { ...next, updatedAt: edited.length > 0 || !later ? new Date().toISOString() : later };
+}
+
+function timestampOf(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
@@ -5788,7 +5875,17 @@ async function uploadQueueItem(
         context.scheduleItemsById.set(payload.id, row.data);
       }
     }
-    const authoritative = remote && changedFields
+    // A carried percent lands only while the merge's rule holds against this copy (A7 pass 26 M-1).
+    const carriedOnto = remote && changedFields && payload.carriedProgress === true
+      ? scheduleItemCarriedOntoCloudCopy(payload, changedFields, remote)
+      : null;
+    if (carriedOnto === 'unchanged') {
+      await clearConflictsForLocalRecord('schedule_item', payload.id);
+      return 'uploaded';
+    }
+    const authoritative = carriedOnto
+      ? carriedOnto
+      : remote && changedFields
       ? {
           ...changedFields.reduce<ScheduleItem>(
             (merged, field) => field === 'projectControls' &&

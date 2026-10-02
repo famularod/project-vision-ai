@@ -3,6 +3,7 @@ import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
+  SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
   scheduleProgressIsManagers,
@@ -125,6 +126,7 @@ export function recoverDAVEScheduleRecords({
     const id = normalized(record.id);
     if (id && !deleted.has(id)) combined.set(id, record);
   });
+  const copies = rowCopiesById([...local, ...cloud]);
   localRecords.forEach(record => {
     const id = normalized(record.id);
     const cloudRecord = combined.get(id);
@@ -132,9 +134,52 @@ export function recoverDAVEScheduleRecords({
       combined.set(id, record);
       return;
     }
-    combined.set(id, mergeScheduleRevisions(record, cloudRecord));
+    combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies));
   });
   return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]));
+}
+
+function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
+  const copies = new Map<string, ScheduleItem[]>();
+  records.forEach(record => {
+    const id = normalized(record.id);
+    if (id) copies.set(id, [...(copies.get(id) || []), record]);
+  });
+  return copies;
+}
+
+/**
+ * Whole-app audit A7 pass 26 M-1 (1 Oct 2026): a percent carried from an
+ * earlier row is that row's, not a statement of this row's own. As David's,
+ * the carried copy outranked the cloud's whole, so its old notes, owner,
+ * dates and lookahead note beat the other device's newer ones. A local copy
+ * whose progress is the one an earlier row it answers to holds (its percent,
+ * status, who stated it and when it was judged) is now merged with the
+ * cloud's copy's progress instead, the copy edited later leading (the
+ * cloud's when neither was); the carry then weighs that earlier row again
+ * against the merged row (progressCarriedToRevisedTasks), so the percent
+ * stays wherever its rule still holds and the cloud's newer edits stay with
+ * it.
+ */
+function mergedWithCarriedProgressWeighedAgain(record: ScheduleItem, cloudRecord: ScheduleItem, copies: ReadonlyMap<string, readonly ScheduleItem[]>): ScheduleItem {
+  const carried = scheduleProgressIsManagers(record) &&
+    scheduleTaskEarlierIds(record).some(id => (copies.get(normalized(id)) || []).some(earlier => progressTakenFrom(record, earlier)));
+  if (!carried) return mergeScheduleRevisions(record, cloudRecord);
+  const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, cloudRecord[field]]));
+  const own = { ...record, ...progress } as ScheduleItem;
+  // With the same progress, the copy edited later leads; the cloud's when neither was.
+  return recordRevisionTimestamp(own) > recordRevisionTimestamp(cloudRecord)
+    ? mergeScheduleRevisions(own, cloudRecord)
+    : mergeScheduleRevisions(cloudRecord, own);
+}
+
+/** Whether a row holds the progress David stated on an earlier row (the carry's, or an import's that kept it). */
+function progressTakenFrom(row: ScheduleItem, earlier: ScheduleItem): boolean {
+  return scheduleProgressIsManagers(earlier) &&
+    boundedPercent(Number(row.percentComplete)) === boundedPercent(Number(earlier.percentComplete)) &&
+    row.status === earlier.status &&
+    (row.progressConfirmedBy ?? null) === (earlier.progressConfirmedBy ?? null) &&
+    timestamp(scheduleProgressJudgedAt(row)) === timestamp(scheduleProgressJudgedAt(earlier));
 }
 
 /**
@@ -175,13 +220,95 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[]): ScheduleItem[] 
     if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(newest[0], earlier);
   });
   if (from.size === 0) return records;
-  const now = new Date().toISOString();
   return records.map(record => {
     const earlier = from.get(record);
+    if (!earlier) return record;
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
-    const untouched = scheduleItemImportBatchIds(record).length <= 1 && !record.lookaheadOverlay;
-    return (earlier && scheduleProgressCarriedFrom(earlier, record, now, { fileProgressDated: !untouched })) || record;
+    const carried = scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
+      fileProgressDated: restatedSinceImport(record),
+    });
+    if (!carried) return record;
+    const stamped = withOwnStamp(carried, record);
+    rowsTakingCarriedProgress.set(stamped, record);
+    return stamped;
   });
+}
+
+/**
+ * Whole-app audit A7 pass 26 L-2 (1 Oct 2026, caused by 3035b7a; A5 pass 23
+ * L2 and A6 pass 23 L1 the same): the carried row was stamped with each
+ * device's clock at each merge, so every refresh re-saved the task list, and
+ * after a sync round the two devices' copies differed only in that stamp, so
+ * the next sync moved the report's fingerprint once. The carried row keeps
+ * the row's own stamp, the same on every device and at every merge: the
+ * carry changes only its progress, which carries its own time (when David
+ * judged it), so a copy carried later never reads as a newer edit of the
+ * task's notes, owner, dates or lookahead note. A row no one edited since its
+ * import has no stamp (approval and the web's upload add rows unstamped): it
+ * is stamped one millisecond after its import and the carried percent, the
+ * same everywhere. Stamped at its import, it tied with a copy of the same row
+ * that a merge left unstamped, each device kept its own copy, and every Full
+ * Sync wrote the row again (found by the A5 pass 23 reviewer's generator).
+ */
+function withOwnStamp(carried: ScheduleItem, record: ScheduleItem): ScheduleItem {
+  if (typeof record.updatedAt === 'string' && record.updatedAt.trim()) return { ...carried, updatedAt: record.updatedAt };
+  // Newer than an unstamped copy of the same row, which would otherwise tie with it.
+  const latest = Math.max(timestamp(record.importedAt), timestamp(record.createdAt), timestamp(carried.progressConfirmedAt));
+  return latest > 0 ? { ...carried, updatedAt: new Date(latest + 1).toISOString() } : carried;
+}
+
+function laterStamp(...values: Array<string | null | undefined>): string {
+  return values.reduce<string>((later, value) =>
+    typeof value === 'string' && timestamp(value) > timestamp(later) ? value : later, values.find(value => typeof value === 'string') ?? '');
+}
+
+/**
+ * The rows a recovery merge gave a carried percent (A7 pass 26 M-1), each
+ * with the row as it was before: the app sends each to the cloud as a change
+ * of its progress alone (ScheduleProgressCarryUpload).
+ */
+const rowsTakingCarriedProgress = new WeakMap<ScheduleItem, ScheduleItem>();
+
+export function scheduleItemsTakingCarriedProgress(
+  items: readonly ScheduleItem[],
+): Array<Readonly<{ item: ScheduleItem; before: ScheduleItem }>> {
+  return items.flatMap(item => {
+    const before = rowsTakingCarriedProgress.get(item);
+    return before ? [{ item, before }] : [];
+  });
+}
+
+/**
+ * The cloud's copy of a row with the percent this device carried to it, or
+ * null when the cloud's own progress stands (A7 pass 26 M-1). While the
+ * cloud's copy still holds the progress the merge carried over (carriedOver),
+ * the carry stands as the merge decided it: a lookahead approved since that
+ * left the progress alone changes nothing. Otherwise the merge's rule is
+ * weighed against the cloud's copy as it is now, so a percent David entered
+ * since, a file's higher percent or a newer lookahead's stated percent is
+ * never overwritten.
+ */
+export function scheduleProgressCarriedOntoCloudCopy(
+  carried: ScheduleItem,
+  cloudCopy: ScheduleItem,
+  carriedOver?: Partial<ScheduleItem>,
+): ScheduleItem | null {
+  const at = laterStamp(carried.updatedAt, cloudCopy.updatedAt);
+  const unchanged = carriedOver && SCHEDULE_CARRIED_PROGRESS_FIELDS.every(field =>
+    JSON.stringify(cloudCopy[field] ?? null) === JSON.stringify(carriedOver[field] ?? null));
+  if (unchanged) {
+    const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, carried[field]]));
+    return { ...cloudCopy, ...progress, updatedAt: at };
+  }
+  return scheduleProgressCarriedFrom(carried, cloudCopy, at, { fileProgressDated: restatedSinceImport(cloudCopy) });
+}
+
+/**
+ * Whether a file restated the row since its own import (A6 pass 22 M1): a
+ * later file it also belongs to, or a lookahead note.
+ */
+function restatedSinceImport(record: ScheduleItem): boolean {
+  return scheduleItemImportBatchIds(record).length > 1 || Boolean(record.lookaheadOverlay);
 }
 
 /**

@@ -356,6 +356,7 @@ import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutatio
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { refreshKeepsLocalProjectUpdate } from './services/ProjectUpdateQueueRevision';
 import { scheduleItemRevisionForCloudRefresh } from './services/ScheduleItemQueueRevision';
+import { queueScheduleProgressCarriedToCloud } from './services/ScheduleProgressCarryUpload';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
 import {
   runAutomaticSyncQueue,
@@ -5996,6 +5997,7 @@ useEffect(() => {
     if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
+  useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) void queueScheduleProgressCarriedToCloud(scheduleItems); }, [scheduleItems, scheduleItemsLoaded, startupHydrationReady]); // a percent the sync merge carried goes up as itself (A7 pass 26 M-1)
   useEffect(() => {
     // A schedule labelled with projects none of its rows belong to (every
     // project the import could use, before 30 Sep) is narrowed to its rows'

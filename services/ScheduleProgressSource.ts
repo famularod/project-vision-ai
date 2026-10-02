@@ -223,6 +223,14 @@ export function scheduleProgressCarriedFrom(
   };
 }
 
+/**
+ * The fields a carry gives the row it carries to (scheduleProgressCarriedFrom),
+ * besides its stamp: what the sync sends of a carried percent (A7 pass 26 M-1).
+ */
+export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
+  'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
+] as const satisfies ReadonlyArray<keyof ScheduleItem>;
+
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
 
 /**
