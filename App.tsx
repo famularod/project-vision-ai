@@ -10217,7 +10217,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // (audit A6 pass 3: a dismissed sheet started the next reporting period).
     const sent = await askToContinue(
       'Was the report sent?',
-      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded and you can send it later.',
+      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded: once you send it, use Mark as Sent in Reports.',
       'Yes, it was sent',
       'Not yet',
     );

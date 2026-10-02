@@ -313,6 +313,23 @@ export async function reportSnapshotSentHere(
   return own?.deliveredAt === snapshot.deliveredAt && own.sourceFingerprint === snapshot.sourceFingerprint;
 }
 
+/**
+ * Whether `approval`, not yet sent, is the approval this device saved for its
+ * period (everyday item 1, 2 Oct 2026): only the device that approved a
+ * report offers to record it as sent another way. An approval read from the
+ * other device's shared copy may hold changes this device has not received.
+ */
+export async function reportApprovalSavedHere(
+  approval: DAVEReportSnapshot | null | undefined,
+  storage: SnapshotStorage = AsyncStorage,
+): Promise<boolean> {
+  if (!approval || approval.deliveredAt !== null || !approval.reportFormat) return false;
+  const own = await loadLocalDAVEReportSnapshot(approval.scopeKey, approval.reportFormat, storage);
+  return own?.deliveredAt === null &&
+    own.sourceFingerprint === approval.sourceFingerprint &&
+    own.capturedAt === approval.capturedAt;
+}
+
 /** This device sent a report at `sentAt` (A6 pass 12 L2): kept on this account's list of its own sends. */
 export function rememberReportSentHere(sentAt: string, storage: SnapshotStorage = AsyncStorage): Promise<void> {
   const write = ownSendWrites.then(async () => {

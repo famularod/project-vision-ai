@@ -18,6 +18,7 @@ import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { ReportsWideWorkspace } from '../components/reports-workspace-layout';
+import { ReportMarkSentPanel } from '../components/report-mark-sent';
 import { useAppShellLayout } from '../components/app-shell-layout';
 import {
   colors,
@@ -70,6 +71,7 @@ import {
   loadDAVEReportPeriod,
   loadDAVEReportSnapshot,
   rememberReportSentHere,
+  reportApprovalSavedHere,
   reportSenderId,
   reportSnapshotSentHere,
   saveDAVEReportSnapshot,
@@ -110,6 +112,12 @@ import {
   buildVitruviusCommitmentControl,
   type VitruviusCommitmentControl,
 } from '../services/VitruviusCommitmentControl';
+import {
+  describeSendWindowTime,
+  manualReportMarkTime,
+  manualReportSendTime,
+  reportApprovalAwaitingSend,
+} from '../services/ReportManualSend';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 type ReportFormat = 'project_manager' | 'executive';
@@ -287,6 +295,10 @@ export function ReportsScreen({
   const [approvalChecking, setApprovalChecking] = useState(false);
   // When this device last downloaded every task (whole-app audit A6 pass 10 M1, M2).
   const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
+  // Everyday item 1 (2 Oct 2026): the approval this device saved, to record as sent another way.
+  const [approvalSavedHereKey, setApprovalSavedHereKey] = useState<string | null>(null);
+  const [markSentRecording, setMarkSentRecording] = useState(false);
+  const [markSentMessage, setMarkSentMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -755,6 +767,7 @@ export function ReportsScreen({
     setCommunicationError('');
     setSnapshotSaveError('');
     setPeriodNotice('');
+    setMarkSentMessage('');
     setApprovalChecking(false);
     approvalCheckRef.current = null;
     pendingCommunicationTokenRef.current = null;
@@ -973,7 +986,7 @@ export function ReportsScreen({
     }
     const shown = previousReportSnapshotRef.current;
     if (shown && reportPeriodKey(shown) === sentPeriodKey) {
-      markSavedReportDelivered(shown, sentFingerprint, sentStateKey);
+      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey);
       return;
     }
     // The screen moved to the other format (or other projects) while the send
@@ -982,9 +995,19 @@ export function ReportsScreen({
     void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
       .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey), () => undefined);
   };
-  const markSavedReportDelivered = (saved: DAVEReportSnapshot | null, sentFingerprint: string, sentStateKey: string) => {
-    if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;
-    const deliveredAt = new Date().toISOString();
+  /**
+   * Records `saved` as sent: at `deliveredAt` (now for a send from the app),
+   * with `markedSentAt` when the owner recorded it afterwards (everyday item
+   * 1). Resolves true once this device's copy is saved.
+   */
+  const markSavedReportDelivered = (
+    saved: DAVEReportSnapshot | null,
+    sentFingerprint: string,
+    sentStateKey: string,
+    deliveredAt: string = new Date().toISOString(),
+    markedSentAt: string | null = null,
+  ): Promise<boolean> => {
+    if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
     // a tab switch is never taken for the other device's; the approval it
     // sent now stands on the period that send starts (A6 pass 8 M1).
@@ -994,18 +1017,92 @@ export function ReportsScreen({
     rememberApprovedReportSent(sentStateKey, reportPeriodSentAt(saved), deliveredAt);
     // Marked with this install's sender id, so it stays known as this
     // device's after a relaunch (A6 pass 9 L2).
-    void reportSenderId()
+    return reportSenderId()
       .catch(() => null)
       .then(sentBy => {
-        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy);
+        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt);
         return saveDAVEReportSnapshot(delivered).then(() => {
           if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
             previousReportSnapshotRef.current = delivered;
             setPreviousReportSnapshot(delivered);
           }
+          return true;
         });
       })
-      .catch(() => undefined);
+      .catch(() => false);
+  };
+
+  // Everyday item 1 (2 Oct 2026): the approval this period waits to have
+  // sent, when this device saved it, can be recorded as sent another way.
+  const approvalAwaitingSend = snapshotScopeLoaded && !snapshotLoadFailed
+    ? reportApprovalAwaitingSend(previousReportSnapshot)
+    : null;
+  const approvalAwaitingSendKey = approvalAwaitingSend
+    ? `${reportPeriodKey(approvalAwaitingSend)}|${approvalAwaitingSend.sourceFingerprint}|${approvalAwaitingSend.capturedAt}`
+    : null;
+  useEffect(() => {
+    let cancelled = false;
+    if (!approvalAwaitingSendKey) return undefined;
+    void reportApprovalSavedHere(previousReportSnapshotRef.current)
+      .catch(() => false)
+      .then(here => {
+        if (!cancelled && here) setApprovalSavedHereKey(approvalAwaitingSendKey);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [approvalAwaitingSendKey]);
+  const approvalToMarkSent = approvalAwaitingSend && approvalSavedHereKey === approvalAwaitingSendKey
+    ? approvalAwaitingSend
+    : null;
+
+  /**
+   * The owner sent the approved report another way and says when (everyday
+   * item 1). As before a send (A6 pass 7), the other device's last report is
+   * read again: when it sent one after this approval's period began, the
+   * period counts from it and this approval is not recorded. Offline, it is
+   * recorded on this device and shared on the next open.
+   */
+  const markReportSentManually = (choice: 'now' | Date) => {
+    const approval = approvalToMarkSent;
+    if (!approval || markSentRecording || pendingCommunicationTokenRef.current) return;
+    const checked = manualReportSendTime(choice, approval);
+    if (!checked.ok) {
+      setMarkSentMessage(checked.message);
+      return;
+    }
+    const period = { scopeKey: approval.scopeKey, reportFormat };
+    const stateKey = reportStateIdentityKey;
+    // The screen's approval moves to the new period only when it is this report's (A6 pass 8 M1).
+    const approvalStateKey = recallReportSessionState(stateKey)?.approvedFingerprint === approval.sourceFingerprint ? stateKey : '';
+    setMarkSentRecording(true);
+    setMarkSentMessage('');
+    void (async () => {
+      try {
+        const loaded = await loadDAVEReportPeriod(period.scopeKey, period.reportFormat).catch(() => null);
+        if (loaded && showLaterSharedPeriod(period, loaded, reportPeriodSentAt(approval), 'mark')) return;
+        const recorded = manualReportSendTime(choice, approval);
+        if (!recorded.ok) {
+          if (mountedRef.current) setMarkSentMessage(recorded.message);
+          return;
+        }
+        const saved = await markSavedReportDelivered(
+          approval,
+          approval.sourceFingerprint,
+          approvalStateKey,
+          recorded.sentAt,
+          manualReportMarkTime(recorded.sentAt),
+        );
+        if (!mountedRef.current) return;
+        if (saved) {
+          setPeriodNotice(`Recorded as sent ${describeSendWindowTime(recorded.sentAt)}. The next report runs from this one.`);
+        } else {
+          setMarkSentMessage("The report couldn't be recorded as sent on this device. Try again.");
+        }
+      } finally {
+        if (mountedRef.current) setMarkSentRecording(false);
+      }
+    })();
   };
   const reportHeader = (
     <ScreenHeader
@@ -1128,6 +1225,12 @@ export function ReportsScreen({
               completeCommunication(report =>
                 onOutlookReport(report, drawingReferences));
             }}
+            markSent={approvalToMarkSent ? {
+              approval: approvalToMarkSent,
+              recording: markSentRecording,
+              message: markSentMessage,
+              onRecord: markReportSentManually,
+            } : null}
           />
     </ScreenCard>
   );
@@ -1304,8 +1407,11 @@ export function BeforeYouSharePanel({
   );
 }
 
-/** When the other device's last report was read again (whole-app audit A6 pass 7). */
-type SharedPeriodMoment = 'refresh' | 'approve' | 'send';
+/**
+ * When the other device's last report was read again (whole-app audit A6
+ * pass 7); 'mark': before recording a report sent another way (everyday item 1).
+ */
+type SharedPeriodMoment = 'refresh' | 'approve' | 'send' | 'mark';
 
 const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
 
@@ -1340,6 +1446,11 @@ function laterSharedReportNotice(
   edited: boolean,
 ): string {
   const when = describeReportSendTime(reportPeriodSentAt(later) ?? '');
+  // The owner's own send is not undone; it is not where the next report counts from (everyday item 1).
+  if (moment === 'mark') {
+    return `Your other device sent a report ${when}, after this one was approved, so this one was not recorded as sent. ` +
+      'The next report counts from your other device\'s report.';
+  }
   if (later.deliveredAt !== null && later.sourceFingerprint === currentFingerprint) {
     return moment === 'send'
       ? `${ALREADY_SENT_NOTICE_START} ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
@@ -1413,6 +1524,7 @@ function PIEReporterPreview({
   onTextReport,
   onDownloadWordReport,
   onOutlookReport,
+  markSent,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -1453,6 +1565,13 @@ function PIEReporterPreview({
   onTextReport: () => void;
   onDownloadWordReport: () => void;
   onOutlookReport: () => void;
+  /** The approval this device saved and has not recorded as sent (everyday item 1), or null. */
+  markSent?: Readonly<{
+    approval: DAVEReportSnapshot;
+    recording: boolean;
+    message: string;
+    onRecord: (choice: 'now' | Date) => void;
+  }> | null;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1707,6 +1826,16 @@ function PIEReporterPreview({
           <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
           <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
         </View>
+      ) : null}
+
+      {markSent ? (
+        <ReportMarkSentPanel
+          approval={markSent.approval}
+          disabled={communicationPending}
+          recording={markSent.recording}
+          message={markSent.message}
+          onRecord={markSent.onRecord}
+        />
       ) : null}
 
       {periodNotice ? (

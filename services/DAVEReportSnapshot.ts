@@ -117,6 +117,15 @@ export type DAVEReportSnapshot = Readonly<{
    * Absent on reports sent before then, and on approvals not yet sent.
    */
   sentBy?: string;
+  /**
+   * When the owner recorded, in Reports, a report he sent another way: a
+   * Mail draft he sent later, Outlook after "Not yet", or the Word file from
+   * a laptop (everyday item 1, 2 Oct 2026). `deliveredAt` is when he says it
+   * went out; this is when he said so. Absent on a send from the app, which
+   * is recorded as it completes. Another device's download counts as having
+   * this report's changes only once it started after both (`reportSendCountsFrom`).
+   */
+  markedSentAt?: string;
 }>;
 
 /**
@@ -200,14 +209,35 @@ function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
   return Object.freeze({ ...report, supersedes: Object.freeze(before) });
 }
 
-/** The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2). */
+/**
+ * The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2).
+ * `markedSentAt`: the owner recorded the send afterwards, at that time (everyday item 1).
+ */
 export function markReportSnapshotDelivered(
   snapshot: DAVEReportSnapshot,
   deliveredAt: string,
   sentBy?: string | null,
+  markedSentAt?: string | null,
 ): DAVEReportSnapshot {
-  const { sentBy: _earlierSender, ...approved } = snapshot;
-  return Object.freeze({ ...approved, deliveredAt, ...(sentBy ? { sentBy } : {}) });
+  const { sentBy: _earlierSender, markedSentAt: _earlierMark, ...approved } = snapshot;
+  return Object.freeze({
+    ...approved,
+    deliveredAt,
+    ...(sentBy ? { sentBy } : {}),
+    ...(markedSentAt ? { markedSentAt } : {}),
+  });
+}
+
+/**
+ * The time another device's download must start after to have the changes
+ * behind `send`: its send time, or, for a send the owner recorded afterwards
+ * (everyday item 1), the later of that and when he recorded it. Until then
+ * the sending device may not have uploaded them.
+ */
+export function reportSendCountsFrom(send: Pick<DAVEReportSnapshot, 'deliveredAt' | 'markedSentAt'>): number {
+  const sent = Date.parse(send.deliveredAt ?? '');
+  const marked = Date.parse(send.markedSentAt ?? '');
+  return Number.isNaN(marked) ? sent : Math.max(sent, marked);
 }
 
 /**
@@ -325,6 +355,10 @@ export function reportPeriodSend(snapshot: DAVEReportSnapshot | null | undefined
  * Keychain could not be read, or by a build before A6 pass 9) that is not one
  * of `ownSends` (this device knows its own by their send time) is now taken
  * for the other install's: at worst this device waits for a download.
+ *
+ * Everyday item 1 (2 Oct 2026): a send the owner recorded afterwards counts
+ * from when he recorded it too (`reportSendCountsFrom`), so a download made
+ * between the send he names and his record is not taken as having it.
  */
 export function otherDeviceSendNotReceived({
   period,
@@ -346,7 +380,7 @@ export function otherDeviceSendNotReceived({
   if (send.sourceFingerprint === currentFingerprint) return null;
   const pulled = Date.parse(pulledAt ?? '');
   if (Number.isNaN(pulled)) return send;
-  if (pulled > Date.parse(send.deliveredAt)) return null;
+  if (pulled > reportSendCountsFrom(send)) return null;
   const seen = Date.parse(seenAt ?? '');
   return !Number.isNaN(seen) && pulled >= seen ? null : send;
 }
