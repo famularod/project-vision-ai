@@ -853,6 +853,15 @@ export type ScheduleItem = {
    * on a floor saved before, which counts as older than any dated entry.
    */
   managersPercentUnderFileJudgedAt?: string | null;
+  /**
+   * The earlier row a sync carry took this task's percent from, and when
+   * David judged that percent (whole-app audit A7 pass 28 L, 2 Oct 2026): a
+   * copy still holding it is weighed as a carried percent, not as David's
+   * word on this row, also after that row is deleted. It goes with the
+   * percent, and stops counting once the percent changes. Kept in the task's
+   * JSON record.
+   */
+  progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;

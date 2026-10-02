@@ -45,6 +45,8 @@
  * A5 p25 L1 (Low, partly caused by d3db006): a refresh carried David's old
  *   percent past masters that had replaced it, once a later master restated
  *   the row between at or below his percent.
+ * A7 p28 L (Low, caused by b3d1970): a carry from a row deleted over
+ *   realtime, refused later, let Sync Now send the iPad's old copy whole.
  * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
  *   recorded Low (Set Active to an older master); see each test.
  *
@@ -1947,5 +1949,138 @@ describe('A5 p25 L1: a master that replaced David\'s percent keeps it from passi
     // An older entry of his under the file's (judged before this one), or a floor saved without its time: carried, as before.
     expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, { percent: 30, judgedAt: '2026-09-09T09:00:00.000Z' })])).toBe(30);
     expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, { percent: 30 })])).toBe(30);
+  });
+});
+
+describe('A7 p28 L: a carry from a row deleted over realtime, refused later, leaves no old copy for Sync Now to send', () => {
+  const L = scheduleDoc('LOOKAHEAD L', '2026-09-16T09:00:00.000Z', 'lookahead');
+  const MARK = { taskId: 'MASTER F-1', judgedAt: AFTER_G };
+  /**
+   * The phone, offline, approves G and deletes F with its items; the online iPad's 30% on F's row goes up. The phone
+   * syncs; the iPad hears G's row, then F's deletion over realtime, and carries the 30% to G's row (queued). Then the
+   * iPad loses signal; the phone approves lookahead L stating `lPercent` on new dates and types a note; the iPad is back.
+   */
+  async function heardThenLookahead(lPercent: string) {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!); await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z'); await deleteWithItems(phone, F);
+    at(AFTER_G); await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    await backgroundUpload(phone);
+    await echoes(ipad);
+    await fullSync(phone);
+    expect(await tombstoneEchoes(ipad)).toBe(1);
+    expect([theRow(ipad).percentComplete, theRow(ipad).progressCarriedFrom]).toEqual([30, MARK]);
+    expect((await queueOf(ipad)).map(item => (item.payload as { carriedProgress?: boolean }).carriedProgress)).toEqual([true]);
+    setOnline(ipad, false);
+    at(L.importedAt!); await approve(phone, L, [`Framing,Alpha,Lot,10/25/2026,11/04/2026,${lPercent}`], true); shareDocuments(phone);
+    at('2026-09-16T09:30:00.000Z'); await edit(phone, 'MASTER G-1', { notes: 'Phone note' });
+    at('2026-09-16T10:00:00.000Z'); setOnline(ipad, true);
+    return { phone, ipad };
+  }
+
+  it.each([
+    ['reconnect upload, then Sync Now (the finding)', 'reconnect', '60', 60],
+    ['Sync Now twice (the finding)', 'twice', '60', 60],
+    ['reconnect upload, then Sync Now: L states 10%, never below David\'s 30%', 'reconnect', '10', 30],
+    ['Sync Now twice: L states 10%', 'twice', '10', 30],
+    ['reconnect upload, then Sync Now: L states no percent, and the carry lands', 'reconnect', '', 30],
+  ] as const)('%s: L\'s dates, the percent and the phone\'s note stay everywhere', async (_label, mode, lPercent, percent) => {
+    const { phone, ipad } = await heardThenLookahead(lPercent);
+    if (mode === 'reconnect') {
+      await backgroundUpload(ipad); // the reconnect upload, or Retry Sync
+      expect(await queueOf(ipad)).toEqual([]);
+      // A carry that still stands lands with its mark; a refused one leaves the cloud's copy unmarked.
+      expect(cloudRow('MASTER G-1')!.progressCarriedFrom ?? null).toEqual(percent === 30 ? MARK : null);
+    } else {
+      await fullSync(ipad, false); // Sync Now, its upload pass not yet requested again
+    }
+    await fullSync(ipad); // Sync Now
+    await refresh(phone); await refresh(ipad);
+    const expected = [['10/25/2026', '11/04/2026', percent, 'Phone note', '']];
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual([expected, expected, expected]);
+    // Another round writes nothing.
+    const writes = framingWritesOf(phone, ipad);
+    at('2026-09-17T08:00:00.000Z');
+    await fullSync(ipad); await fullSync(phone); await refresh(ipad); await refresh(phone);
+    expect(framingWritesOf(phone, ipad)).toBe(writes);
+  });
+
+  it('unchanged: online, the carry goes up at once with its mark, and every place shows 30%', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!); await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z'); await deleteWithItems(phone, F);
+    at(AFTER_G); await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    await backgroundUpload(phone); await echoes(ipad); await fullSync(phone);
+    await tombstoneEchoes(ipad);
+    // While the carry waits on the queue, a refresh keeps 30% (no flicker to the cloud's 0%).
+    await refresh(ipad, false);
+    expect(onDevice(ipad)[0][2]).toBe(30);
+    await backgroundUpload(ipad);
+    await refresh(phone);
+    expect([cloudRow('MASTER G-1')!.progressCarriedFrom, theRow(phone).progressCarriedFrom]).toEqual([MARK, MARK]);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([30, 30, 30]);
+    // David's own 45% on G's row is his word there: the mark no longer counts.
+    at('2026-09-16T08:00:00.000Z');
+    await edit(phone, 'MASTER G-1', { percentComplete: 45 });
+    await fullSync(ipad); await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => place[0][2])).toEqual([45, 45, 45]);
+  });
+
+  it('pure: a copy holding the percent its mark names, from a row the sync knows as deleted, is weighed as carried; otherwise as before', () => {
+    const imported = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: ['MASTER F-1'] } as ScheduleItem;
+    const carried = { ...imported, percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', progressCarriedFrom: MARK, updatedAt: '2026-09-14T14:00:00.001Z' } as ScheduleItem;
+    // The cloud's copy: lookahead L restated G's row at 60% on new dates, and the phone typed a note.
+    const restated = {
+      ...imported, startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60, status: 'In Progress', notes: 'Phone note',
+      alsoImportedInBatchIds: ['batch-LOOKAHEAD L'], updatedAt: '2026-09-16T09:30:00.000Z',
+      lookaheadOverlay: { masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 0, lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60 }] },
+    } as ScheduleItem;
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [carried], cloud: [restated], deletedIds: ['MASTER F-1'] })).toEqual([]);
+    expect(recoverDAVEScheduleRecords({ local: [carried], cloud: [restated], deletedIds: ['MASTER F-1'], allowCloudOnly: true })[0]).toEqual(restated);
+    // Not known as deleted (a single row weighed alone), a percent of his entered on G's row since, or a mark naming another
+    // row: his percent outranks the cloud's copy whole, as before.
+    const asBefore = (local: ScheduleItem, deletedIds: string[]) => daveScheduleItemsNeedingCloudUpload({ local: [local], cloud: [restated], deletedIds }).map(row => [row.percentComplete, row.startDate]);
+    expect(asBefore(carried, [])).toEqual([[30, '10/22/2026']]);
+    const ownSince = { ...carried, progressConfirmedAt: '2026-09-16T11:00:00.000Z', updatedAt: '2026-09-16T11:00:00.000Z' } as ScheduleItem;
+    expect(asBefore(ownSince, ['MASTER F-1'])).toEqual([[30, '10/22/2026']]);
+    expect(recoverDAVEScheduleRecords({ local: [ownSince], cloud: [restated], deletedIds: ['MASTER F-1'], allowCloudOnly: true }).map(row => [row.percentComplete, row.startDate])).toEqual([[30, '10/22/2026']]);
+    expect(asBefore({ ...carried, progressCarriedFrom: { taskId: 'MASTER E-1', judgedAt: AFTER_G } } as ScheduleItem, ['MASTER F-1', 'MASTER E-1'])).toEqual([[30, '10/22/2026']]);
+    // The cloud's copy unchanged but for the note: the carried 30% still stands, with the cloud's note and the mark.
+    const noted = { ...imported, notes: 'Phone note', updatedAt: '2026-09-16T09:30:00.000Z' } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [carried], cloud: [noted], deletedIds: ['MASTER F-1'], allowCloudOnly: true });
+    expect([merged.percentComplete, merged.notes, merged.progressCarriedFrom]).toEqual([30, 'Phone note', MARK]);
+    // His 30% judged before G's import (entered offline under F): a lookahead stating 10% on G's row stops the carry (G's
+    // file spoke after it), and its percent is floored at his 30% (owner answer Q22), as the carry from his row floors it.
+    const before = { ...carried, progressConfirmedAt: BEFORE_G, progressCarriedFrom: { taskId: 'MASTER F-1', judgedAt: BEFORE_G } } as ScheduleItem;
+    const lowered = { ...restated, percentComplete: 10, lookaheadOverlay: { ...restated.lookaheadOverlay!, lookaheads: [{ ...restated.lookaheadOverlay!.lookaheads[0], percentComplete: 10 }] } } as ScheduleItem;
+    const [floored] = recoverDAVEScheduleRecords({ local: [before], cloud: [lowered], deletedIds: ['MASTER F-1'], allowCloudOnly: true });
+    expect([floored.percentComplete, floored.startDate, floored.notes, floored.managersPercentUnderFile]).toEqual([30, '10/25/2026', 'Phone note', 30]);
+  });
+
+  it('pure: a cloud copy that kept the carried percent under a file\'s since (a newer master replaced it there) keeps the file\'s', () => {
+    const imported = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: ['MASTER F-1'] } as ScheduleItem;
+    const carried = { ...imported, percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', progressCarriedFrom: MARK, updatedAt: '2026-09-14T14:00:00.001Z' } as ScheduleItem;
+    const replaced = { ...imported, percentComplete: 10, status: 'In Progress', managersPercentUnderFile: 30, managersPercentUnderFileJudgedAt: AFTER_G, notes: 'Phone note', updatedAt: '2026-09-16T09:30:00.000Z' } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [carried], cloud: [replaced], deletedIds: ['MASTER F-1'], allowCloudOnly: true });
+    expect(merged).toEqual(replaced);
+  });
+
+  it('pure: the mark goes with the percent in a merge, not with the copy that leads the task', () => {
+    const imported = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: ['MASTER F-1'] } as ScheduleItem;
+    const carried = { ...imported, percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', progressCarriedFrom: MARK, updatedAt: '2026-09-14T14:00:00.001Z' } as ScheduleItem;
+    // The other copy: an older percent of his (13 Sep) and a newer note, so it leads the task while the carried 30% is newer.
+    const older = { ...imported, percentComplete: 20, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-13T09:00:00.000Z', progressConfirmedBy: 'David', notes: 'Phone note', updatedAt: '2026-09-16T09:30:00.000Z' } as ScheduleItem;
+    for (const [local, cloud] of [[carried, older], [older, carried]]) {
+      const [merged] = recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true });
+      expect([merged.percentComplete, merged.notes, merged.progressCarriedFrom]).toEqual([30, 'Phone note', MARK]);
+    }
+    // The other way round: the older copy's progress wins (a newer percent of his there), and no mark comes with it.
+    const newer = { ...older, percentComplete: 45, progressConfirmedAt: '2026-09-16T09:30:00.000Z' } as ScheduleItem;
+    const [merged] = recoverDAVEScheduleRecords({ local: [carried], cloud: [newer], allowCloudOnly: true });
+    expect([merged.percentComplete, merged.progressCarriedFrom ?? null]).toEqual([45, null]);
   });
 });

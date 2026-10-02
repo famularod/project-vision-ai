@@ -293,12 +293,12 @@ export function scheduleManagersPercentUnderFileOfBoth(
  * The fields a carry gives the row it carries to (scheduleProgressCarriedFrom),
  * besides its stamp, with David's own percent a file's replaced
  * (managersPercentUnderFile) and when he judged it (A6 pass 24 L1), which go
- * with the file's percent: what the sync sends of a carried percent (A7 pass
- * 26 M-1).
+ * with the file's percent, and the row the percent was carried from (A7 pass
+ * 28 L): what the sync sends of a carried percent (A7 pass 26 M-1).
  */
 export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
   'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
-  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt',
+  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt', 'progressCarriedFrom',
 ] as const satisfies ReadonlyArray<keyof ScheduleItem>;
 
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
