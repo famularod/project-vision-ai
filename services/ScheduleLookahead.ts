@@ -25,6 +25,7 @@ import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import {
   scheduleTaskEarlierIds,
   scheduleTaskLinks,
+  scheduleTaskLinksFollowingShownTasks,
   scheduleTaskProjectKey,
   scheduleTasksAnsweringToRemovedTasks,
 } from './ScheduleTaskRevisions';
@@ -813,6 +814,17 @@ export function scheduleItemsAfterScheduleDeleted({
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   progressOfRowsNowHidden(items, removed, document, documents, kept, shown.map(item => changed.get(item.id) || item))
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // a row the delete hides gives David's newer progress (A6 pass 19 L2)
+  // Owner answer Q29 (2 Oct 2026): David's hand links follow each task to the row shown for it after the delete
+  // (the row that answers to a removed one included), on the phone and the web alike. A link to a removed row
+  // nothing shown answers to is left to scheduleDependenciesAfterScheduleDeleted (the row that answers to it,
+  // shown or not; dropped only when none does).
+  const keptNow = items.map(item => changed.get(item.id) || item);
+  scheduleTaskLinksFollowingShownTasks({
+    before: selectAuthoritativeScheduleItems({ scheduleItems: [...items, ...removed], scheduleDocuments: [document, ...documents] }),
+    after: selectAuthoritativeScheduleItems({ scheduleItems: keptNow, scheduleDocuments: [...documents] }),
+    known: keptNow,
+    now: updatedAt,
+  }).forEach(item => changed.set(item.id, item));
   // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
   return [...changed.values()].map(scheduleItemAsSaved);
 }
@@ -892,13 +904,22 @@ export function scheduleDependenciesAfterScheduleDeleted(
   const hit = items.filter(item => !removed.has(item.id.trim()) && linksOf(item).some(link => removed.has(predecessorOf(link))));
   if (hit.length === 0) return [];
   const answering = scheduleTaskLinks(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }), items);
+  // Owner answer Q29 (2 Oct 2026): with no task shown answering to it (a newer master not current at the delete),
+  // the saved row that does, so the link follows the task when that row is shown again.
+  const answeringSaved = scheduleTaskLinks(items, items);
+  const answeringRow = (id: string) => {
+    const shown = answering({ scheduleItemId: id });
+    if (shown) return shown.item.id;
+    const saved = answeringSaved({ scheduleItemId: id });
+    return saved && saved.basis !== 'stored_task_name' ? saved.item.id : undefined;
+  };
   return hit.map(item => {
     const own = item.id.trim();
     const linked = new Set(linksOf(item).map(predecessorOf).filter(id => !removed.has(id)));
     const dependencies = linksOf(item).flatMap(link => {
       const id = predecessorOf(link);
       if (!removed.has(id)) return [link];
-      const now = answering({ scheduleItemId: id })?.item.id;
+      const now = answeringRow(id);
       const nowId = now?.trim() ?? '';
       if (!now || !nowId || removed.has(nowId) || nowId === own || linked.has(nowId)) return [];
       linked.add(nowId);

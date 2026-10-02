@@ -809,6 +809,14 @@ export type ScheduleItem = {
   parentItemId?: string | null;
   sortOrder?: number | null;
   dependencies?: ScheduleDependency[];
+  /**
+   * When David last changed this task's links by hand (owner answer Q29, 2
+   * Oct 2026): the links follow the task from row to row as masters move it
+   * and as Set Active / Make Current switch rows, and of two rows of one task
+   * the one changed later holds them. Kept in the task's JSON record; missing
+   * on a task whose links were never changed since.
+   */
+  dependenciesUpdatedAt?: string | null;
   isSummary?: boolean;
   isMilestone?: boolean;
   baselineStartDate?: string | null;

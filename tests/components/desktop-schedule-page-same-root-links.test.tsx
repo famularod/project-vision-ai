@@ -26,8 +26,9 @@ import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
 const mockUpdateTask = jest.fn();
+let mockSnapshot: unknown = null;
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({
-  useDesktopAuth: () => ({ userEmail: 'pm@example.com', createTask: jest.fn(), updateTask: mockUpdateTask }),
+  useDesktopAuth: () => ({ userEmail: 'pm@example.com', createTask: jest.fn(), updateTask: mockUpdateTask, snapshot: mockSnapshot }),
 }));
 
 const ROOT = '2400 Compliance Project';
@@ -151,5 +152,47 @@ describe('A5 p13 L1: North\'s Punch list follows South\'s Install HVAC', () => {
     const screen = render(<DesktopSchedulePage tasks={withCrossLink} projects={[ROOT]} selectedProject={ROOT} />);
     fireEvent.press(screen.getAllByLabelText('Edit PUNCH LIST')[1]);
     expect(predecessorChoices(screen).map(choice => choice.label)).toEqual(['S.1 · POUR SLAB', 'S.2 · INSTALL HVAC']);
+  });
+});
+
+/**
+ * Owner answer Q29 (2 Oct 2026): a hand link follows its task to the row a new
+ * master saved for it. A link saved before then can still point at the old
+ * row the master hid: the page reads it as the task's row shown, never
+ * "Missing", and opening the task in the editor checks that row, so a save
+ * stores the link on it.
+ */
+describe('owner answer Q29: a link to a row a newer master hid', () => {
+  beforeEach(() => mockUpdateTask.mockReset());
+  const excavate = task('g-excavate', 'Alpha', 'Alpha', 'Excavate', '10/05/2026', { wbsCode: '1.1' });
+  const fFraming = task('f-framing', 'Alpha', 'Alpha', 'Framing', '10/16/2026', { wbsCode: '1.2' });
+  const gFraming = task('g-framing', 'Alpha', 'Alpha', 'Framing', '10/18/2026', { wbsCode: '1.2', revisedFromTaskIds: ['f-framing'] });
+  const roofing = task('g-roofing', 'Alpha', 'Alpha', 'Roofing', '10/30/2026', {
+    wbsCode: '1.3', dependencies: [{ predecessorItemId: 'f-framing', type: 'FS' }],
+  });
+  const shownTasks = [excavate, gFraming, roofing];
+
+  it('reads the row shown for the task, not "Missing"; with no saved rows known, "Missing" as before', () => {
+    mockSnapshot = { knownScheduleItems: [...shownTasks, fFraming] };
+    const screen = render(<DesktopSchedulePage tasks={shownTasks} projects={['Alpha']} selectedProject="Alpha" />);
+    expect(screen.queryByText('Missing')).toBeNull();
+    mockSnapshot = null;
+    const before = render(<DesktopSchedulePage tasks={[excavate, roofing]} projects={['Alpha']} selectedProject="Alpha" />);
+    expect(before.getByText('Missing')).toBeTruthy();
+  });
+
+  it('the editor checks the row shown, and saving stores the link on it', async () => {
+    mockSnapshot = { knownScheduleItems: [...shownTasks, fFraming] };
+    const screen = render(<DesktopSchedulePage tasks={shownTasks} projects={['Alpha']} selectedProject="Alpha" />);
+    fireEvent.press(screen.getByLabelText('Edit Roofing'));
+    expect(predecessorChoices(screen)).toEqual([
+      { label: '1.1 · Excavate', checked: false },
+      { label: '1.2 · Framing', checked: true },
+    ]);
+    fireEvent.press(screen.getByText('Save Changes'));
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'g-roofing', dependencies: [{ predecessorItemId: 'g-framing', type: 'FS', lagDays: 0 }],
+    })));
+    mockSnapshot = null;
   });
 });

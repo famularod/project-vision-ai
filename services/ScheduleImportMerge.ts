@@ -9,7 +9,15 @@ import {
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
-import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
+import {
+  scheduleTaskEarlierIds,
+  scheduleTaskLinksFollowingShownTasks,
+  scheduleTaskLinkTargets,
+  scheduleTaskLinksOf,
+  scheduleTaskLinksPointedAt,
+  scheduleTaskRevisedFrom,
+  scheduleTaskWithLinksOf,
+} from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
@@ -662,6 +670,7 @@ export function scheduleProgressCarriedToShownTasks({
   documentsBefore,
   documentsAfter,
   now = new Date().toISOString(),
+  known,
 }: {
   /** The tasks shown before the schedule was made current. */
   before: readonly ScheduleItem[];
@@ -671,16 +680,25 @@ export function scheduleProgressCarriedToShownTasks({
   documentsBefore?: readonly ReferenceDocument[];
   documentsAfter?: readonly ReferenceDocument[];
   now?: string;
+  /** Every saved task, hidden ones included, when known: the rows of each task, for its links (owner answer Q29). */
+  known?: readonly ScheduleItem[];
 }): ScheduleItem[] {
-  const carried = progressCarried(before, after, now);
+  const { carried, pairs } = progressCarried(before, after, now);
   const restated = documentsBefore && documentsAfter ? handTasksRestatedWhenCurrent(after, documentsBefore, documentsAfter, now) : [];
   const carriedIds = new Set(carried.map(item => item.id));
   const saved = [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
-  if (!documentsBefore || !documentsAfter) return saved;
-  // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
   const changed = new Map(saved.map(item => [item.id, item]));
-  scheduleTasksOnNotedDatesWhenCurrent({
-    after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
+  // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
+  if (documentsBefore && documentsAfter) {
+    scheduleTasksOnNotedDatesWhenCurrent({
+      after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
+    }).forEach(item => changed.set(item.id, item));
+  }
+  // Owner answer Q29 (2 Oct 2026): David's hand links follow each task to the row shown for it now.
+  const pairedById = new Map([...pairs].map(([shown, hidden]) => [shown.id, hidden]));
+  scheduleTaskLinksFollowingShownTasks({
+    before, after: after.map(item => changed.get(item.id) || item), known: known ?? [...before, ...after],
+    paired: shown => pairedById.get(shown.id), now,
   }).forEach(item => changed.set(item.id, item));
   // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
   return [...changed.values()].map(scheduleItemAsSaved);
@@ -777,18 +795,25 @@ function handTasksRestatedWhenCurrent(
   });
 }
 
-function progressCarried(before: readonly ScheduleItem[], after: readonly ScheduleItem[], now: string): ScheduleItem[] {
+function progressCarried(
+  before: readonly ScheduleItem[],
+  after: readonly ScheduleItem[],
+  now: string,
+): { carried: ScheduleItem[]; pairs: Map<ScheduleItem, ScheduleItem> } {
   const beforeIds = new Set(before.map(item => item.id));
   const afterIds = new Set(after.map(item => item.id));
   const nowShown = after.filter(item => !beforeIds.has(item.id));
   const nowHidden = before.filter(item => !afterIds.has(item.id));
-  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  if (nowShown.length === 0 || nowHidden.length === 0) return { carried: [], pairs: new Map() };
   const pairs = pairTaskRevisions(nowHidden, nowShown, () => true, false, false);
-  return nowShown.flatMap(shown => {
-    const hidden = pairs.get(shown);
-    const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
-    return carried ? [carried] : [];
-  });
+  return {
+    pairs,
+    carried: nowShown.flatMap(shown => {
+      const hidden = pairs.get(shown);
+      const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
+      return carried ? [carried] : [];
+    }),
+  };
 }
 
 /** The phone's form: every saved task, and the schedules before and after Set Active. */
@@ -806,8 +831,18 @@ export function scheduleProgressCarriedOnActivation({
   const shownWith = (documents: readonly ReferenceDocument[]) =>
     selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] });
   return scheduleProgressCarriedToShownTasks({
-    before: shownWith(documentsBefore), after: shownWith(documentsAfter), documentsBefore, documentsAfter, now,
+    before: shownWith(documentsBefore), after: shownWith(documentsAfter), documentsBefore, documentsAfter, now, known: items,
   });
+}
+
+/**
+ * A task's new row with the links of the row it replaces, when the new row has none of its own (owner answer Q29),
+ * and when David changed them: links he removed stay removed on the task's older rows' return.
+ */
+function withLinksOf(row: ScheduleItem, paired: ScheduleItem): ScheduleItem {
+  if (scheduleTaskLinksOf(row).length > 0) return row;
+  if (scheduleTaskLinksOf(paired).length === 0 && !paired.dependenciesUpdatedAt) return row;
+  return scheduleTaskWithLinksOf(row, paired) ?? row;
 }
 
 /** The import identity, with an empty saved area matching the imported one. */
@@ -915,8 +950,9 @@ export function mergeApprovedScheduleImportItems({
     // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
     const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
+    // David's hand links go with the task to its new row (owner answer Q29).
     const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
-      ? scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired)
+      ? withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired)
       : row;
     if (duplicate) {
       claimed.add(duplicate.id);
@@ -1034,6 +1070,25 @@ export function mergeApprovedScheduleImportItems({
     }
     additions.push(revision(importedItem));
   });
+
+  if (current && [...next, ...additions].some(item => scheduleTaskLinksOf(item).length > 0)) {
+    // Owner answer Q29 (2 Oct 2026): a link to a task this master moved points at its new row, and one to a row
+    // an earlier master hid at the row shown for its task. On the tasks shown before and the rows added; a
+    // schedule not current yet (a web upload) re-points at Make Current.
+    const newRowOf = new Map<string, string | null>();
+    additions.forEach(item => scheduleTaskEarlierIds(item).forEach(id => newRowOf.set(id, newRowOf.has(id) ? null : item.id)));
+    const replaced = new Set([...newRowOf.keys()]);
+    const shownAfter = [...next.filter(item => isCurrent(item) && !replaced.has(item.id)), ...additions];
+    const shownIds = new Set(shownAfter.map(item => item.id));
+    const answering = scheduleTaskLinkTargets(shownAfter, [...existing, ...additions]);
+    const pointTo = (id: string) => newRowOf.get(id) || (shownIds.has(id) ? undefined : answering(id)?.id);
+    const pointed = (item: ScheduleItem) => {
+      const moved = scheduleTaskLinksPointedAt(item, pointTo);
+      return moved === item ? item : { ...moved, updatedAt: approvedAt };
+    };
+    next = next.map(item => isCurrent(item) && !replaced.has(item.id) ? pointed(item) : item);
+    additions.splice(0, additions.length, ...additions.map(pointed));
+  }
 
   // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
   const unchanged = new Set(existing);

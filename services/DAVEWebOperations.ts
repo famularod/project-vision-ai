@@ -32,7 +32,7 @@ import {
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
 import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
-import { scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
@@ -433,13 +433,23 @@ export function planDAVEWebScheduleDocumentDelete({
   const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
   const kept = saved.filter(item => !removedIds.has(item.id));
   const keptById = new Map(kept.map(item => [item.id, item]));
-  const changed = scheduleItemsAfterScheduleDeleted({
+  const documents = snapshot.referenceDocuments.filter(other => other.id !== document.id);
+  const restored = scheduleItemsAfterScheduleDeleted({
     items: kept,
     removed: saved.filter(item => removedIds.has(item.id)),
     document,
-    documents: snapshot.referenceDocuments.filter(other => other.id !== document.id),
+    documents,
     updatedAt,
   });
+  // Owner answer Q29 (2 Oct 2026): David's hand links to a removed row move to the row that answers to it, as the
+  // phone's Delete PDF + Items moves them (dropped only when none does); the web left them pointing at nothing.
+  const byId = new Map<string, ScheduleItem>(restored.map(item => [item.id, item]));
+  scheduleDependenciesAfterScheduleDeleted(kept.map(item => byId.get(item.id) || item), [...removedIds], documents)
+    .forEach(change => {
+      const item = byId.get(change.id) || keptById.get(change.id);
+      if (item) byId.set(change.id, { ...item, dependencies: change.dependencies, updatedAt });
+    });
+  const changed = [...byId.values()];
   return Object.freeze(changed.flatMap(item => {
     const before = keptById.get(item.id);
     return before

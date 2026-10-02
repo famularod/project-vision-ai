@@ -278,6 +278,12 @@ export function buildDAVEWebScheduleItem({
     );
   }
 
+  const dependencies = normalizeScheduleDependencies(
+    draft.dependencies === undefined ? current?.dependencies : draft.dependencies,
+  );
+  const linkKeys = (links: readonly { predecessorItemId: string; lagDays?: number | null }[]) =>
+    links.map(link => `${link.predecessorItemId}+${link.lagDays ?? 0}`).sort().join('\n');
+  const linksChanged = linkKeys(dependencies) !== linkKeys(normalizeScheduleDependencies(current?.dependencies));
   const shownDates = current?.savedLookaheadDates;
   const keepsSavedDates = Boolean(shownDates) &&
     sameScheduleCalendarDay(draft.startDate.trim(), shownDates!.shownStartDate) &&
@@ -303,9 +309,10 @@ export function buildDAVEWebScheduleItem({
     wbsCode: optionalPlanningText(draft.wbsCode, current?.wbsCode),
     parentItemId: optionalPlanningText(draft.parentItemId, current?.parentItemId),
     sortOrder: optionalPlanningNumber(draft.sortOrder, current?.sortOrder),
-    dependencies: normalizeScheduleDependencies(
-      draft.dependencies === undefined ? current?.dependencies : draft.dependencies,
-    ),
+    dependencies,
+    // When David changed the links by hand: of two rows of one task, the one changed later holds them as the
+    // task moves between rows (owner answer Q29).
+    ...(linksChanged ? { dependenciesUpdatedAt: now } : current?.dependenciesUpdatedAt ? { dependenciesUpdatedAt: current.dependenciesUpdatedAt } : {}),
     isSummary: draft.isSummary === undefined
       ? current?.isSummary === true
       : draft.isSummary === true,

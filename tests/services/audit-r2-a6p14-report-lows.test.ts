@@ -332,14 +332,26 @@ describe('A6 p14 L1: after "Delete PDF + Items", a hand link to a removed row mo
     const roofing = named(shown(withF), 'Roofing')[0];
     const predecessors = links.map(name => named(shown(withF), name)[0].id);
     const linked = edited(withF, roofing.id, { dependencies: predecessors.map(predecessorItemId => ({ predecessorItemId, type: 'FS' as const })) }, LINKED_AT);
-    const withM = approve(linked, M, rows(M, [
+    const approved = approve(linked, M, rows(M, [
       'Framing,Alpha,Lot,10/02/2026,10/11/2026,0%',
       'Roofing,Alpha,Lot,12/01/2026,12/15/2026,0%',
     ]));
+    // Owner answer Q29 (2 Oct 2026): the approval itself now points Roofing's link at M's Framing. The links below
+    // are the ones a build before it left on F's rows, which a delete still has to move.
+    const withM = { ...approved, items: approved.items.map(item => item.id === roofing.id
+      ? { ...item, dependencies: predecessors.map(predecessorItemId => ({ predecessorItemId, type: 'FS' as const })) }
+      : item) };
     const fFraming = named(withF.items, 'Framing')[0];
     const mFraming = named(shown(withM), 'Framing')[0];
-    return { withM, roofing, fFraming, mFraming, sent: snapshotOf(withM, REPORT_SENT) };
+    return { approved, withM, roofing, fFraming, mFraming, sent: snapshotOf(withM, REPORT_SENT) };
   }
+
+  it('owner answer Q29: the approval points the link at M\'s Framing (the task\'s row shown), stamped at the approval', () => {
+    const { approved, roofing } = linkedCase();
+    const mFraming = named(shown(approved), 'Framing')[0];
+    expect(byId(approved, roofing.id).dependencies).toEqual([{ predecessorItemId: mFraming.id, type: 'FS' }]);
+    expect(byId(approved, roofing.id).updatedAt).toBe(M.importedAt);
+  });
 
   it('the reviewer\'s case: the link moves to M\'s Framing, and the next report says nothing changed', () => {
     const { withM, roofing, fFraming, mFraming, sent } = linkedCase();
@@ -351,7 +363,9 @@ describe('A6 p14 L1: after "Delete PDF + Items", a hand link to a removed row mo
     const deleted = phoneDelete(withM, F);
     expect(deleted.removed.map(item => item.id)).toContain(fFraming.id);
     expect(byId(deleted, roofing.id).dependencies).toEqual([{ predecessorItemId: mFraming.id, type: 'FS' }]);
-    expect(deleted.linkChanged).toEqual([roofing.id]);
+    // Owner answer Q29 (2 Oct 2026): the delete's own saves (scheduleItemsAfterScheduleDeleted) move it now, before
+    // dropDeletedPredecessors, which has nothing left to do; stamped at the delete as before.
+    expect(deleted.linkChanged).toEqual([]);
     expect(byId(deleted, roofing.id).updatedAt).toBe(DELETED_AT);
     expect(sinceLines(deleted, sent)).toEqual(NOTHING_CHANGED);
   });
@@ -408,11 +422,11 @@ describe('A6 p14 L1: after "Delete PDF + Items", a hand link to a removed row mo
     expect(changes).toEqual([{ id: roofing.id, dependencies: [] }]);
   });
 
-  it('the web delete leaves its links alone (reported, not changed): the shared helper writes no dependencies', () => {
-    const { withM, roofing, fFraming } = linkedCase();
+  it('owner answer Q29: the shared helper the web delete runs moves the link too (it was left alone before)', () => {
+    const { withM, roofing, mFraming } = linkedCase();
     const deleted = deleteWithItems(withM, F);
-    expect(byId(deleted, roofing.id)).toBe(byId(withM, roofing.id));
-    expect(byId(deleted, roofing.id).dependencies).toEqual([{ predecessorItemId: fFraming.id, type: 'FS' }]);
+    expect(byId(deleted, roofing.id).dependencies).toEqual([{ predecessorItemId: mFraming.id, type: 'FS' }]);
+    expect(byId(deleted, roofing.id).updatedAt).toBe(DELETED_AT);
   });
 
   it('a task deleted on its own still drops the links to it (unchanged)', () => {
