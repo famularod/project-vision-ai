@@ -129,6 +129,8 @@ type DesktopAuthContextValue = Readonly<{
     report: DAVEWebReportRecord;
     expectedCloudUpdatedAt?: string | null;
   }) => Promise<string>;
+  /** The phone and iPad's shared "since the last report" period, read only (everyday item 3). */
+  loadReportPeriod: (scopeKey: string, format: string) => Promise<Readonly<{ snapshot: unknown }> | 'unavailable'>;
   restoreMissingTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
   askProjectQuestion: (input: {
     projectId: string;
@@ -396,8 +398,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const nextSnapshot = await loadDAVEWebReadOnlySnapshot(options.collections);
+      // Everyday item 3 (2 Oct 2026): when this tab's last download of every
+      // task started, for Reports' "behind" check; only a full load reads them all.
+      const startedAt = new Date().toISOString();
+      const loaded = await loadDAVEWebReadOnlySnapshot(options.collections);
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
+      const tasksPulledAt = options.collections ? snapshotRef.current?.tasksPulledAt ?? null : startedAt;
+      const nextSnapshot = Object.freeze({ ...loaded, tasksPulledAt });
       snapshotRef.current = nextSnapshot;
       lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
       setSnapshot(nextSnapshot);
@@ -1169,6 +1176,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return revision;
   }, [announceMutation, refreshSnapshotInBackground]);
 
+  const loadReportPeriod = useCallback(
+    (scopeKey: string, format: string) => daveWebSupabaseGateway.loadAuthorizedReportPeriod(scopeKey, format),
+    [],
+  );
+
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
     const candidates = items.filter(item => !currentIds.has(item.id));
@@ -1270,6 +1282,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     updateDocument,
     enqueueDocumentPreparation,
     saveReport,
+    loadReportPeriod,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,
@@ -1300,6 +1313,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     updateDocument,
     enqueueDocumentPreparation,
     saveReport,
+    loadReportPeriod,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,

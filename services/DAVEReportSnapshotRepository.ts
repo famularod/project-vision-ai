@@ -1,10 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import {
-  DAVE_REPORT_SNAPSHOT_VERSION,
   laterReportPeriod,
   reportPeriodIsLater,
   reportPeriodSentAt,
+  validReportPeriodSnapshot,
   type DAVEReportFormat,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -415,20 +415,7 @@ function parseSnapshot(
   }
 }
 
-function validSnapshot(
-  value: unknown,
-  scopeKey: string,
-  reportFormat: DAVEReportFormat | undefined,
-): DAVEReportSnapshot | null {
-  const parsed = value as DAVEReportSnapshot | null;
-  if (
-    parsed?.version !== DAVE_REPORT_SNAPSHOT_VERSION ||
-    parsed.scopeKey !== scopeKey ||
-    parsed.reportFormat !== reportFormat ||
-    !Array.isArray(parsed.tasks)
-  ) return null;
-  return parsed;
-}
+const validSnapshot = validReportPeriodSnapshot;
 
 /**
  * The shared pre-Q17 key is the prefix and the encoded projects; a format's

@@ -16,6 +16,7 @@ import {
   buildDAVEReportSourceFingerprint,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
+import type { DAVEReportSnapshot } from './DAVEReportSnapshot';
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
@@ -96,6 +97,12 @@ export type DAVEWebReportRecord = Readonly<{
   sourceTaskIds: readonly string[];
   sourceUpdateIds: readonly string[];
   sourceDocumentIds?: readonly string[];
+  /**
+   * The "since the last report" period the report was prepared on
+   * (everyday item 3): 'sent:<time>' when it counted from a sent report.
+   * Absent on reports saved before then.
+   */
+  sourcePeriodKey?: string | null;
   audit: readonly DAVEWebReportAuditEvent[];
 }>;
 
@@ -107,6 +114,8 @@ export type DAVEWebReportSource = Readonly<{
   taskIds: readonly string[];
   updateIds: readonly string[];
   documentIds: readonly string[];
+  /** The period it was prepared on (everyday item 3); absent on reports saved before then. */
+  periodKey?: string;
 }>;
 
 export type DAVEWebDocumentExtension = Readonly<{
@@ -447,14 +456,26 @@ function canonicalSha256(value: string): string | null {
 export function buildDAVEWebReportDraft(
   snapshot: DAVEWebReadOnlySnapshot,
   selectedProject: string | null,
+  /** The phone's shared period, as the web counts it (everyday item 3); none: no "since" period. */
+  period?: Readonly<{ previousSnapshot: DAVEReportSnapshot | null; waitingForOtherDevice: boolean }>,
 ): DAVEReportBriefing {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   return buildDAVEReportBriefing({
     truths,
     selectedProjectNames: truths.map(truth => truth.projectName),
+    previousSnapshot: period?.previousSnapshot ?? null,
+    waitingForOtherDevice: period?.waitingForOtherDevice ?? false,
     // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
+}
+
+/** The project facts a web report is made from, for its period's scope and fingerprint (everyday item 3). */
+export function buildDAVEWebReportTruths(
+  snapshot: DAVEWebReadOnlySnapshot,
+  selectedProject: string | null,
+): DAVEProjectTruth[] {
+  return buildDAVEWebProjectTruths(snapshot, selectedProject);
 }
 
 /**
@@ -465,6 +486,11 @@ export function buildDAVEWebReportDraft(
 export function buildDAVEWebReportSource(
   snapshot: DAVEWebReadOnlySnapshot,
   selectedProject: string | null,
+  /**
+   * The period the report counts "since the last report" from (everyday item
+   * 3): a report counted from a sent report is current only on that period.
+   */
+  periodKey?: string,
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
@@ -500,7 +526,7 @@ export function buildDAVEWebReportSource(
     version: 'dave-web-report-source/1.0',
     scopeKey,
     refreshedAt: snapshot.refreshedAt,
-    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}`,
+    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}${periodKey?.startsWith('sent:') ? `:period-${periodKey}` : ''}`,
     taskIds: Object.freeze(uniqueSorted(truths.flatMap(truth =>
       truth.schedule.map(task => task.taskId),
     ))),
@@ -510,6 +536,7 @@ export function buildDAVEWebReportSource(
     documentIds: Object.freeze(uniqueSorted(evidenceRecords
       .filter(record => record.kind === 'document')
       .map(record => record.sourceRecordId))),
+    ...(periodKey ? { periodKey } : {}),
   });
 }
 
@@ -605,7 +632,15 @@ export function prepareDAVEWebReportEmailBody(
 export function formatDAVEWebReport(
   briefing: DAVEReportBriefing,
   audience: DAVEWebReportAudience = 'project_manager',
+  /**
+   * "Since the last report", counted as on the phone (everyday item 3): the
+   * period's label and the phone's lines. Absent: no such section.
+   */
+  since?: Readonly<{ label: string; lines: readonly string[] }> | null,
 ): string {
+  const sinceSection = since && since.lines.length > 0
+    ? ['## Since the Last Report', since.label, ...since.lines.map(line => `- ${line}`), '']
+    : [];
   if (audience === 'executive') {
     const executiveLines = [
       `# ${buildDAVEWebReportTitle(briefing, audience)}`,
@@ -616,6 +651,7 @@ export function formatDAVEWebReport(
       '## Executive Snapshot',
       briefing.executiveSnapshot,
       '',
+      ...sinceSection,
       '## Project Status',
       ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
       '',
@@ -671,6 +707,7 @@ export function formatDAVEWebReport(
     '## Executive Summary',
     briefing.executiveSnapshot,
     '',
+    ...sinceSection,
     '## Project Status',
     ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
     '',

@@ -129,6 +129,27 @@ export type DAVEReportSnapshot = Readonly<{
 }>;
 
 /**
+ * A saved or shared snapshot of this period, or null: the right version,
+ * projects, format and a task list. Shared by the phone's repository and the
+ * web Reports page (everyday item 3, 2 Oct 2026), which read the same
+ * report_snapshots row.
+ */
+export function validReportPeriodSnapshot(
+  value: unknown,
+  scopeKey: string,
+  reportFormat: DAVEReportFormat | undefined,
+): DAVEReportSnapshot | null {
+  const parsed = value as DAVEReportSnapshot | null;
+  if (
+    parsed?.version !== DAVE_REPORT_SNAPSHOT_VERSION ||
+    parsed.scopeKey !== scopeKey ||
+    parsed.reportFormat !== reportFormat ||
+    !Array.isArray(parsed.tasks)
+  ) return null;
+  return parsed;
+}
+
+/**
  * Which reporting period a snapshot is: its projects and, since owner answer
  * Q17, its report format. A Project Manager report and an Executive Summary
  * of the same projects share their facts and fingerprint, so the fingerprint

@@ -59,6 +59,13 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
    */
   openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
   refreshedAt: string;
+  /**
+   * When this tab's last download of every task started (a full load; a
+   * refresh of some collections keeps the earlier time). Reports uses it as
+   * the phone uses its last download: the other device's send counts only
+   * once a download started after it (everyday item 3, 2 Oct 2026).
+   */
+  tasksPulledAt?: string | null;
 }>;
 
 export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtension & Readonly<{
@@ -452,6 +459,8 @@ export function normalizeWebReport(value: unknown): DAVEWebReportRecord | null {
     sourceDocumentIds: Array.isArray(report.sourceDocumentIds)
       ? report.sourceDocumentIds.filter((item): item is string => typeof item === 'string')
       : [],
+    // The period it was prepared on (everyday item 3); absent on reports saved before then.
+    ...(readString(report.sourcePeriodKey) ? { sourcePeriodKey: readString(report.sourcePeriodKey) } : {}),
     audit,
   };
 }

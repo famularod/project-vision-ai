@@ -83,6 +83,7 @@ import {
   buildDAVEWebReportDraft,
   buildDAVEWebReportSource,
   buildDAVEWebReportTitle,
+  buildDAVEWebReportTruths,
   buildDAVEWebTruthDiagnostics,
   createDAVEWebBackup,
   createDAVEWebId,
@@ -129,6 +130,17 @@ import {
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
+import { buildDAVEReportSourceFingerprint, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
+import { daveReportSnapshotScopeKey } from '../../services/DAVEReportSnapshot';
+import {
+  daveWebReportBehindMessage,
+  daveWebReportPeriodMoved,
+  daveWebReportPeriodMovedMessage,
+  daveWebReportPeriodNote,
+  daveWebReportPeriodState,
+  readDAVEWebReportPeriod,
+  type DAVEWebReportPeriodRead,
+} from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
   ECOSDocumentExtractionCancelledError,
@@ -5460,22 +5472,73 @@ function ReportWorkspace({
   documents: readonly DAVEWebReferenceDocument[];
 }) {
   const auth = useDesktopAuth();
-  const briefing = useMemo(
-    () => buildDAVEWebReportDraft(snapshot, selectedProject),
+  const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
+  // Everyday item 3 (2 Oct 2026): "since the last report", counted as the
+  // phone counts it, from the period the phone and the iPad share (read only).
+  const reportTruths = useMemo(
+    () => buildDAVEWebReportTruths(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
-  const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
+  const reportFingerprint = useMemo(() => buildDAVEReportSourceFingerprint(reportTruths), [reportTruths]);
+  const periodScopeKey = daveReportSnapshotScopeKey(reportTruths.map(truth => truth.projectName));
+  const periodReadKey = `${periodScopeKey}|${reportAudience}`;
+  const [periodRead, setPeriodRead] = useState<{ key: string; read: DAVEWebReportPeriodRead }>({
+    key: '',
+    read: { status: 'loading' },
+  });
+  const loadReportPeriod = auth.loadReportPeriod;
+  useEffect(() => {
+    let cancelled = false;
+    void readDAVEWebReportPeriod(loadReportPeriod, periodScopeKey, reportAudience).then(read => {
+      if (!cancelled) setPeriodRead({ key: periodReadKey, read });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Read again on each refresh of the project record: a report sent from the phone then shows up.
+  }, [loadReportPeriod, periodReadKey, periodScopeKey, reportAudience, snapshot.refreshedAt]);
+  const currentPeriodRead: DAVEWebReportPeriodRead = periodRead.key === periodReadKey
+    ? periodRead.read
+    : { status: 'loading' };
+  const period = daveWebReportPeriodState({
+    read: currentPeriodRead,
+    fingerprint: reportFingerprint,
+    pulledAt: snapshot.tasksPulledAt ?? null,
+  });
+  // Behind the other device's send: nothing is counted, and every task is downloaded again, once per send.
+  const behindKey = period.behindSend ? `${period.behindSend.sentBy ?? ''}|${period.behindSend.deliveredAt}` : null;
+  const requestedDownloadRef = useRef<string | null>(null);
+  const refreshSnapshot = auth.refreshSnapshot;
+  useEffect(() => {
+    if (!behindKey || requestedDownloadRef.current === behindKey) return;
+    requestedDownloadRef.current = behindKey;
+    void refreshSnapshot().catch(() => false);
+  }, [behindKey, refreshSnapshot]);
+  const periodBaseline = period.previousSnapshot;
+  const periodWaiting = Boolean(period.behindSend);
+  const briefing = useMemo(
+    () => buildDAVEWebReportDraft(snapshot, selectedProject, {
+      previousSnapshot: periodBaseline,
+      waitingForOtherDevice: periodWaiting,
+    }),
+    [periodBaseline, periodWaiting, selectedProject, snapshot],
+  );
+  const periodChecked = currentPeriodRead.status === 'checked';
+  const sinceSection = useMemo(() => {
+    const lines = periodChecked ? reportPeriodMovementLines(briefing) : null;
+    return lines ? { label: briefing.reportingPeriod.label, lines } : null;
+  }, [briefing, periodChecked]);
   const generatedTitle = useMemo(
     () => buildDAVEWebReportTitle(briefing, reportAudience),
     [briefing, reportAudience],
   );
   const generatedBody = useMemo(
-    () => formatDAVEWebReport(briefing, reportAudience),
-    [briefing, reportAudience],
+    () => formatDAVEWebReport(briefing, reportAudience, sinceSection),
+    [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject),
-    [selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey),
+    [period.periodKey, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
@@ -5490,6 +5553,27 @@ function ReportWorkspace({
   const [editingReportBody, setEditingReportBody] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  // What the generator last put in the draft: a draft still reading so, never
+  // saved, follows the period when it loads or moves (everyday item 3).
+  const generatedDraftRef = useRef({ title: generatedTitle, body: generatedBody });
+  const shownPeriodKeyRef = useRef(period.periodKey);
+  useEffect(() => {
+    if (shownPeriodKeyRef.current === period.periodKey) return;
+    shownPeriodKeyRef.current = period.periodKey;
+    const untouched = expectedRevision === null &&
+      reportStatus === 'draft' &&
+      reportTitle === generatedDraftRef.current.title &&
+      reportBody === generatedDraftRef.current.body;
+    if (!untouched) return;
+    generatedDraftRef.current = { title: generatedTitle, body: generatedBody };
+    setReportTitle(generatedTitle);
+    setReportBody(generatedBody);
+    setReportGeneratedAt(briefing.generatedAt);
+    setReportSource(currentReportSource);
+    // Only a change of period regenerates the draft; facts changing alone still ask for a refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period.periodKey]);
+  const approvedPeriodMoved = reportStatus === 'approved' && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey);
   const selectedProjectNames = useMemo(
     () => selectedProject
       ? scheduleProjectScopeNames(selectedProject, [...snapshot.scheduleItems])
@@ -5570,6 +5654,7 @@ function ReportWorkspace({
   };
 
   const resetFromCurrentTruth = () => {
+    generatedDraftRef.current = { title: generatedTitle, body: generatedBody };
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(generatedTitle);
     setReportBody(generatedBody);
@@ -5584,7 +5669,9 @@ function ReportWorkspace({
   const applyReportAudience = (audience: DAVEWebReportAudience) => {
     if (audience === reportAudience) return;
     const nextTitle = buildDAVEWebReportTitle(briefing, audience);
+    // The other format's period is read next; its "since" section follows (everyday item 3).
     const nextBody = formatDAVEWebReport(briefing, audience);
+    generatedDraftRef.current = { title: nextTitle, body: nextBody };
     setReportAudience(audience);
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(nextTitle);
@@ -5605,6 +5692,15 @@ function ReportWorkspace({
 
   const save = async (status: 'draft' | 'approved') => {
     if (pending || !reportTitle.trim() || !reportBody.trim()) return;
+    // Approval waits for the period, and for this tab to have the other device's changes (everyday item 3).
+    if (status === 'approved' && currentPeriodRead.status === 'loading') {
+      setNotice({ tone: 'danger', text: 'The reporting period is still loading.' });
+      return;
+    }
+    if (status === 'approved' && period.behindSend) {
+      setNotice({ tone: 'danger', text: daveWebReportBehindMessage(period.behindSend) });
+      return;
+    }
     if (status === 'approved' && !daveWebReportSourceIsCurrent(reportSource.fingerprint, currentReportSource)) {
       setNotice({
         tone: 'danger',
@@ -5636,6 +5732,7 @@ function ReportWorkspace({
       sourceTaskIds: reportSource.taskIds,
       sourceUpdateIds: reportSource.updateIds,
       sourceDocumentIds: reportSource.documentIds,
+      sourcePeriodKey: reportSource.periodKey ?? null,
       audit: nextAudit,
     };
     try {
@@ -5678,6 +5775,7 @@ function ReportWorkspace({
       taskIds: Object.freeze([...report.sourceTaskIds]),
       updateIds: Object.freeze([...report.sourceUpdateIds]),
       documentIds: Object.freeze([...(report.sourceDocumentIds || [])]),
+      ...(report.sourcePeriodKey ? { periodKey: report.sourcePeriodKey } : {}),
     });
     setNotice(null);
     setComposerOpen(true);
@@ -5685,6 +5783,11 @@ function ReportWorkspace({
 
   const shareApprovedReport = async () => {
     if (reportStatus !== 'approved') return;
+    // An approval stands only on the period it was given on (A6 pass 8 M1, on the web since everyday item 3).
+    if (approvedPeriodMoved) {
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
+      return;
+    }
     setNotice(null);
     try {
       const shareData = {
@@ -5715,6 +5818,10 @@ function ReportWorkspace({
 
   const prepareApprovedReportEmail = () => {
     if (reportStatus !== 'approved' || typeof window === 'undefined') return;
+    if (approvedPeriodMoved) {
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
+      return;
+    }
     const subject = encodeURIComponent(reportTitle.trim());
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
@@ -5776,6 +5883,32 @@ function ReportWorkspace({
             ))}
           </View>
         ) : null}
+      </View>
+
+      <View style={styles.reportNextActionsCard} accessibilityLabel="Since the last report">
+        <View style={styles.reportFactHeading}>
+          <View style={[styles.reportFactIcon, styles.reportFactIcon_neutral]}>
+            <Ionicons name="time-outline" size={21} color={desktopSurfaces.accent} />
+          </View>
+          <View style={styles.dataGrow}>
+            <Text style={styles.reportFactTitle}>Since the last report</Text>
+            <Text style={styles.dataMeta}>
+              {sinceSection ? sinceSection.label : 'Counted from the last report sent from your phone or iPad.'}
+            </Text>
+          </View>
+        </View>
+        {sinceSection ? (
+          <View style={styles.reportFactList}>
+            {sinceSection.lines.map((line, index) => (
+              <View key={`since:${index}:${line}`} style={styles.reportFactRow}>
+                <View style={styles.reportFactBullet} />
+                <Text style={styles.reportFactText}>{line}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
+        )}
       </View>
 
       <View style={styles.reportPMGrid}>
@@ -5957,9 +6090,13 @@ function ReportWorkspace({
                   </View>
                 </View>
                 <Text style={styles.reportReviewText}>
-                  {reportFactsAreCurrent
-                    ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
-                    : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
+                  {period.behindSend
+                    ? daveWebReportBehindMessage(period.behindSend)
+                    : approvedPeriodMoved
+                      ? daveWebReportPeriodMovedMessage(period.periodKey)
+                      : reportFactsAreCurrent
+                        ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
+                        : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
                 </Text>
                 <View style={styles.reportActionStack}>
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={resetFromCurrentTruth} disabled={pending}>

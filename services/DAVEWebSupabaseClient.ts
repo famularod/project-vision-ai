@@ -1402,6 +1402,38 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
     },
 
+    /**
+     * The owner's shared "since the last report" period for these projects
+     * and format, as the phone and the iPad keep it (owner answer Q16): the
+     * stored snapshot, null when there is none yet. Everyday item 3 (2 Oct
+     * 2026): the web Reports page reads it and never writes it. 'unavailable'
+     * before the report_snapshots table exists; throws when it could not be
+     * read.
+     */
+    async loadAuthorizedReportPeriod(
+      scopeKey: string,
+      format: string,
+    ): Promise<Readonly<{ snapshot: unknown }> | 'unavailable'> {
+      if (!client) return 'unavailable';
+      const ownerId = await requireAuthorizedOwnerCached();
+      const { data, error } = await client
+        .from('report_snapshots')
+        .select('snapshot')
+        .eq('owner_id', ownerId)
+        .eq('scope_key', scopeKey)
+        .eq('format', format)
+        .maybeSingle();
+      if (error) {
+        const message = (error.message || '').toLowerCase();
+        // Only a missing table is quiet, as on the phone (SupabaseService.isMissingTableError).
+        if (message.includes('could not find the table') || (message.includes('relation') && message.includes('does not exist'))) {
+          return 'unavailable';
+        }
+        throw new Error('The shared report period could not be read.');
+      }
+      return Object.freeze({ snapshot: isRecord(data) ? data.snapshot ?? null : null });
+    },
+
     async saveAuthorizedReportArtifact({
       id,
       projectName,

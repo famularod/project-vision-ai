@@ -674,18 +674,8 @@ function formatReportBody(
     return `${condition.projectName}: ${condition.percentComplete}% complete; ${condition.schedule}` +
       `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
   });
-  const period = briefing.reportingPeriod;
-  const reportingMovement = period.waitingForOtherDevice
-    ? [REPORT_PERIOD_WAITING_LINE]
-    : period.basis === 'previous_approved_report'
-    ? [
-        `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
-          `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
-          `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
-        ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
-        ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
-      ]
-    : ['This approval establishes the baseline for the next reporting period.'];
+  const reportingMovement = reportPeriodMovementLines(briefing) ??
+    ['This approval establishes the baseline for the next reporting period.'];
   const actions = (format === 'executive'
     ? briefing.nextActions.slice(0, 4)
     : briefing.nextActions)
@@ -731,6 +721,26 @@ function formatReportBody(
 
 /** The changes the written report names; the rest are counted (A6 pass 8 L1). */
 const SINCE_LINES = 6;
+
+/**
+ * The written report's "since the last report" lines: the counts and the
+ * changes it names, or the line saying they are not counted yet while this
+ * device waits for the other device's changes (A6 pass 10 M1, M2). Null with
+ * no earlier report to count from. Everyday item 3 (2 Oct 2026): the web
+ * Reports page writes the same lines as the phone.
+ */
+export function reportPeriodMovementLines(briefing: DAVEReportBriefing): string[] | null {
+  const period = briefing.reportingPeriod;
+  if (period.waitingForOtherDevice) return [REPORT_PERIOD_WAITING_LINE];
+  if (period.basis !== 'previous_approved_report') return null;
+  return [
+    `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
+      `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
+      `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
+    ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
+    ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
+  ];
+}
 
 /** "Since the last report" while this device waits for the other device's changes (A6 pass 10 M1, M2). */
 export const REPORT_PERIOD_WAITING_LINE =

@@ -505,7 +505,9 @@ describe('A6 p14 L4: Completed Work\'s "Last updated" date does not move on the 
     const reports = fs.readFileSync(path.resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
     expect(reports).toMatch(/buildDAVEReportBriefing\(\{\n\s+truths: reportTruths,[\s\S]{0,600}?\n\s+scheduleItems,\n\s+\}\), \[/);
     const web = fs.readFileSync(path.resolve(__dirname, '../../services/DAVEWebOperations.ts'), 'utf8');
-    expect(web).toMatch(/return buildDAVEReportBriefing\(\{\n\s+truths,\n\s+selectedProjectNames: [^\n]+\n[^\n]*\n\s+scheduleItems: snapshot\.knownScheduleItems \?\? snapshot\.scheduleItems,/);
+    // Everyday item 3 (2 Oct 2026): the web report also passes the phone's shared period (previousSnapshot and
+    // waitingForOtherDevice) before the comment line; pin widened deliberately to allow those two lines.
+    expect(web).toMatch(/return buildDAVEReportBriefing\(\{\n\s+truths,\n\s+selectedProjectNames: [^\n]+\n(?:[^\n]*\n){1,3}\s+scheduleItems: snapshot\.knownScheduleItems \?\? snapshot\.scheduleItems,/);
     const { done } = completedCase();
     const truth = truthOf(done, NOW);
     expect(Object.keys(truth.schedule[0]).filter(key => /confirm/i.test(key))).toEqual([]);
