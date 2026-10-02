@@ -35,6 +35,8 @@
  *   conflict waiting for Review Conflicts.
  * A7 p27 L2 (Low, older): after the queue-only upload refused a carry, Sync
  *   Now sent the iPad's old copy whole over a newer lookahead.
+ * A5 p24 L1 (Low, caused by dc3f469): a master stating exactly David's
+ *   percent was read as having taken it over.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -153,7 +155,8 @@ import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperati
 import { deletedDAVERecordIds, loadDAVEOperationalTombstones, recordDAVESyncTombstones, synchronizeDAVESyncTombstones } from '../../services/DAVESyncTombstones';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { reconcileCurrentScheduleDocuments, scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemRevisionForCloudRefresh } from '../../services/ScheduleItemQueueRevision';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
@@ -1516,6 +1519,119 @@ describe('A7 p27 L2: a carry the queue-only upload refuses leaves no old copy fo
     const givenBack = { ...cloudG, percentComplete: 70, progressConfirmedBy: 'David', progressConfirmedAt: '2026-09-16T09:00:00.001Z', progressJudgment: { judgedAt: BEFORE_G, givenBackAt: '2026-09-16T09:00:00.001Z' }, managersPercentUnderFile: undefined, updatedAt: '2026-09-18T10:00:00.000Z' } as ScheduleItem;
     expect(daveScheduleItemsNeedingCloudUpload({ local: [davids, givenBack], cloud: [davids, cloudG] }).map(row => [row.id, row.percentComplete]))
       .toEqual([[givenBack.id, 70]]);
+  });
+});
+
+/* Set Active, Make Current and the web's upload, as the app and the web run them (A5 pass 24). */
+/** Phone Set Active (App.tsx activateReferenceDocument): the cloud's schedules, then the carried tasks saved and sent. */
+async function setActive(device: Device, target: ReferenceDocument, when: string) {
+  at(when);
+  on(device);
+  const before = device.documents;
+  cloudDocuments = scheduleDocumentsAfterActivation(cloudDocuments.find(document => document.id === target.id)!, cloudDocuments, 'project', when);
+  device.documents = reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ local: before, cloud: cloudDocuments, deletedIds: [] }));
+  const carried = scheduleProgressCarriedOnActivation({ items: device.ref.current, documentsBefore: before, documentsAfter: device.documents });
+  if (carried.length > 0) {
+    const byId = new Map(carried.map(item => [item.id, item]));
+    setter(device)(device.ref.current.map(item => byId.get(item.id) || item));
+    await Promise.all(carried.map(item => runScheduleItemCloudSync(item)));
+  }
+  await render(device);
+}
+/** A write the web makes straight to the cloud. */
+function webWrite(item: ScheduleItem) {
+  mockCloud.rows.set(item.id, mockCopy(item));
+  mockCloud.writes.push(`web:${item.id}`);
+  mockCloud.events.push({ id: item.id, row: mockCopy(item) });
+}
+/** The web's Make Current (desktop-auth-provider setCurrentSchedule): the carried tasks written. */
+function webMakeCurrent(target: ReferenceDocument, when: string) {
+  at(when);
+  const shownBefore = webShown();
+  const documentsBefore = cloudDocuments;
+  cloudDocuments = scheduleDocumentsAfterActivation(cloudDocuments.find(document => document.id === target.id)!, cloudDocuments, 'project', when);
+  scheduleProgressCarriedToShownTasks({ before: shownBefore, after: webShown(), documentsBefore, documentsAfter: cloudDocuments, now: when })
+    .forEach(webWrite);
+}
+/** A schedule uploaded on the web (not current until made current). */
+function webUpload(id: string, when: string, lines: string[]): ReferenceDocument {
+  at(when);
+  const prepared = prepareDAVEWebDocumentUpload({
+    fileName: `${id}.csv`, mimeType: 'text/csv', sizeBytes: 300, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+    contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), fingerprint: 'd'.repeat(64), now: when,
+  } as never);
+  const document = { ...(prepared.document as ReferenceDocument), id, importBatchId: `batch-${id}` } as ReferenceDocument;
+  const rows = (prepared.scheduleItems as ScheduleItem[]).map((row, index) => ({ ...row, id: `${id}-${index + 1}`, importBatchId: document.importBatchId, sourceDocumentId: id }));
+  const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown().map(item => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null })) } as never, importedScheduleItems: rows });
+  const plain = (item: ScheduleItem) => { const { cloudUpdatedAt: _cloud, ...rest } = item as ScheduleItem & { cloudUpdatedAt?: unknown }; return rest as ScheduleItem; };
+  plan.additions.forEach(item => webWrite(plain(item as ScheduleItem)));
+  plan.revisions.forEach(revision => webWrite(plain(revision.item as ScheduleItem)));
+  cloudDocuments = [...cloudDocuments, document];
+  return document;
+}
+const percentsOf = (...devices: Device[]) => [webShown(), ...devices.map(deviceShown)].map(items => framingOf(items).map(item => item.percentComplete));
+
+describe('A5 p24 L1: a master stating exactly David\'s percent has not taken it over', () => {
+  const G1 = scheduleDoc('MASTER G', '2026-09-13T00:00:00.000Z');
+  const H1 = scheduleDoc('MASTER H', '2026-09-14T00:00:00.000Z');
+  const gRow = 'Framing,Alpha,Lot,10/20/2026,10/30/2026,30';
+  const hRow = 'Framing,Alpha,Lot,10/22/2026,11/01/2026,20';
+
+  it('one device: David\'s 30%, G moving Framing at 30%, H at 20%: his 30% stays (a file stating his percent changes nothing)', async () => {
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-12T17:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 30 });
+    at(G1.importedAt!); await approve(phone, G1, [gRow, SURVEY]);
+    at(H1.importedAt!); await approve(phone, H1, [hRow, SURVEY]);
+    expect(onDevice(phone)[0][2]).toBe(30);
+  });
+
+  it('two devices (seed 478): David\'s 30% on the iPad; the offline phone approves G at 30%, then H at 20%: 30% everywhere', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at('2026-09-12T17:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { percentComplete: 30 });
+    at(G1.importedAt!); await approve(phone, G1, [gRow, SURVEY]);
+    at(H1.importedAt!); await approve(phone, H1, [hRow, SURVEY]);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await fullSync(phone); await fullSync(ipad); await fullSync(phone); await refresh(ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[30], [30], [30]]);
+  });
+
+  it('unchanged: G stating more than his percent took it over, and H\'s lower percent stands (A5 p23 L1, Q32 b)', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at('2026-09-12T17:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { percentComplete: 30 });
+    at(G1.importedAt!); await approve(phone, G1, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,31', SURVEY]);
+    at(H1.importedAt!); await approve(phone, H1, [hRow, SURVEY]);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await fullSync(phone); await fullSync(ipad); await fullSync(phone); await refresh(ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[20], [20], [20]]);
+  });
+
+  // Left open (L1 b, seed 1658): David's 70% on F's row on the web; the phone, not refreshed, approves G moving Framing at
+  // 80% (above his: G took it over); the web makes F current again, which shows his 70%; the phone, still not refreshed,
+  // approves H at 30% on G's row. One device pairs H with F's row and keeps 70%. The sync merge sees G's 80% stated after
+  // his 70% on a row between and reads it as a take-over: the rows do not record that Make Current set G aside. Recording
+  // it would mean re-confirming his 70% at the activation, which would outrank a newer percent he entered offline on that
+  // row before it (the A5 pass 12 L class); the activation's mark for a file's percent (L2) does not apply here.
+  it.skip('L1 (b), open: Make Current F after G\'s take-over, then H at 30% on the phone: 70% everywhere', async () => {
+    const G2 = scheduleDoc('MASTER G', '2026-09-13T00:00:00.000Z');
+    const H2 = scheduleDoc('MASTER H', '2026-09-15T00:00:00.000Z');
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T21:00:00.000Z');
+    webWrite({ ...cloudRow('MASTER F-1')!, percentComplete: 70, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: '2026-09-10T21:00:00.000Z', updatedAt: '2026-09-10T21:00:00.000Z' });
+    at(G2.importedAt!); await approve(phone, G2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,80', SURVEY]); shareDocuments(phone);
+    webMakeCurrent(F, '2026-09-14T09:00:00.000Z');
+    at(H2.importedAt!); await approve(phone, H2, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,30', SURVEY]); shareDocuments(phone);
+    at('2026-09-16T08:00:00.000Z');
+    await fullSync(phone); await fullSync(ipad); await fullSync(phone); await refresh(ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[70], [70], [70]]);
   });
 });
 

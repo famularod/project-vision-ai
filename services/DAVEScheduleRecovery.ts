@@ -240,8 +240,9 @@ function deletedRowsHeld(local: readonly ScheduleItem[], cloud: readonly Schedul
  * answer Q32), but the next refresh or restart carried the 50% from F's row
  * past G's to H's, and the next Sync Now uploaded it. The same on two
  * devices, with the 50% on the iPad and G and H approved on the phone. A row
- * between the old row and the newest that holds a file's percent at or
- * above David's, stated after he judged his (fileStatedAtLeast), now keeps
+ * between the old row and the newest that holds a file's percent above
+ * David's, stated after he judged his (fileStatedAbove; at first "at or
+ * above", A5 pass 24 L1), now keeps
  * his percent from passing it: that file took his percent over there, as
  * approval does. A file percent below his there still lets it pass (A6 pass
  * 22 M1).
@@ -301,8 +302,8 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     if (!earlier) return record;
     // His percent there was the one a file had already given the task: no word of his to carry (A7 pass 26 follow-up, Q32 b).
     const noWordOfHis = enteredAsFileShowedIt(earlier, record, known);
-    // A file that stated his percent or more after he judged it took the task over, row by row (A5 pass 23 L1).
-    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAtLeast(row, earlier));
+    // A file that stated more than his percent after he judged it took the task over, row by row (A5 pass 23 L1, A5 pass 24 L1).
+    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAbove(row, earlier));
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
     const carried = (!noWordOfHis && !takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
       fileProgressDated: restatedSinceImport(record),
@@ -480,15 +481,23 @@ function rowsBetween(earlier: ScheduleItem, newest: ScheduleItem, known: Readonl
 }
 
 /**
- * A row holding a percent its own file stated, at or above David's on the
- * earlier row, after he judged it (A5 pass 23 L1). The file stated it when
+ * A row holding a percent its own file stated, above David's on the earlier
+ * row, after he judged it (A5 pass 23 L1). The file stated it when
  * the row was imported, or when an approval confirmed it ("Schedule update").
  * Once a lookahead restated the row since, the master's percent its note
  * keeps is what the file stated. A percent the row took from a lookahead note
  * its import brought along (the note's master percent is not the row's) is
  * not its file's statement (A6 pass 23 M1).
+ *
+ * Whole-app audit A5 pass 24 L1 (Low, caused by dc3f469): David's 30% on the
+ * iPad; the phone, not having heard it, approved G moving Framing at 30%,
+ * then H moving it at 20%. One device keeps his 30%: a file stating his own
+ * percent changes nothing at approval, so it stays his, and a newer master's
+ * lower percent never replaces his own. Full Sync read G's 30% as having
+ * taken his percent over, and showed H's 20% everywhere. A file percent equal
+ * to his is no take-over; only one above his is.
  */
-function fileStatedAtLeast(row: ScheduleItem, earlier: ScheduleItem): boolean {
+function fileStatedAbove(row: ScheduleItem, earlier: ScheduleItem): boolean {
   if (scheduleProgressIsManagers(row)) return false;
   const note = row.lookaheadOverlay;
   const restated = restatedSinceImport(row);
@@ -496,7 +505,7 @@ function fileStatedAtLeast(row: ScheduleItem, earlier: ScheduleItem): boolean {
   if (note && !restated && notedPercent !== boundedPercent(Number(row.percentComplete))) return false;
   const notedIsDavids = note?.masterProgressSource === 'project_manager' && note.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
   const stated = note && restated && !notedIsDavids ? notedPercent : boundedPercent(Number(row.percentComplete));
-  if (stated < boundedPercent(Number(earlier.percentComplete))) return false;
+  if (stated <= boundedPercent(Number(earlier.percentComplete))) return false;
   const statedAt = Math.max(timestamp(row.progressConfirmedAt), timestamp(row.importedAt || row.createdAt));
   return statedAt > timestamp(scheduleProgressJudgedAt(earlier));
 }
