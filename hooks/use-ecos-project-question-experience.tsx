@@ -170,6 +170,7 @@ export function useECOSProjectQuestionExperience({
       guidance="Ask one project question. ECOS will review current tasks, field updates, and indexed documents, then show the exact proof it used."
       continueLabel="Ask ECOS"
       transcriptionPurpose="question"
+      keepSlot="ask"
       showWalkContext={false}
       onMemoryReady={answer => { void ask(answer.transcript); }}
       onProjectChange={name => { dismissResult(); setProjectName(name); }}

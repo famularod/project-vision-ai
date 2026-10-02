@@ -20,6 +20,7 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
+import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
@@ -1192,19 +1193,22 @@ export function AdminScreen({
     // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5),
     // and field notes waiting to sync, and an unsaved field note, which a
     // sign-out discards (whole-app audit A11 pass 4 L5); and an unsaved
-    // Project Walk memory, which it discards too (A11 pass 5 L3).
-    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview] = fieldNoteOwnerKey
+    // Project Walk memory, which it discards too (A11 pass 5 L3); and a
+    // recording kept on this device waiting for signal (everyday item 4).
+    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview, keptRecording] = fieldNoteOwnerKey
       ? await Promise.all([
           fieldNotesWaitingToSync(fieldNoteOwnerKey),
           unsavedFieldNoteExists(fieldNoteOwnerKey),
           unsavedWalkMemoryExists(fieldNoteOwnerKey),
           fieldNotesNeedingReview(fieldNoteOwnerKey),
+          keptVoiceRecordingExists(fieldNoteOwnerKey).catch(() => false),
         ])
-      : [0, false, false, 0];
+      : [0, false, false, 0, false];
     const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
     const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
-      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
+      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '') +
+      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.

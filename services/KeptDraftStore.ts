@@ -13,7 +13,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  */
 export const KEPT_DRAFT_KEY_PREFIX = '@vitruvius/kept-drafts/v1/';
 
-export type KeptDraftKind = 'field-note' | 'walk-memory';
+/** 'voice-recording': a recording waiting for signal, kept per sheet (everyday item 4, KeptVoiceRecording). */
+export type KeptDraftKind = 'field-note' | 'walk-memory' | 'voice-recording';
 export type KeptDraft = Readonly<{ value: unknown; keptAt: string }>;
 
 const generations = new Map<KeptDraftKind, number>();

@@ -9,7 +9,7 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -21,7 +21,17 @@ import {
   View,
 } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
-import { daveVoiceFailureMessage } from '../services/DAVEVoiceSignalWait';
+import { daveVoiceFailureIsWaitingForSignal, daveVoiceFailureMessage } from '../services/DAVEVoiceSignalWait';
+import type * as KeptVoiceRecordingModule from '../services/KeptVoiceRecording';
+
+/**
+ * Loaded by a sheet that keeps recordings on the device (everyday item 4)
+ * only when it needs to: a sheet without a keep slot needs no phone storage.
+ */
+function keptVoiceRecordings(): typeof KeptVoiceRecordingModule {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('../services/KeptVoiceRecording') as typeof KeptVoiceRecordingModule;
+}
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import {
@@ -39,7 +49,7 @@ import {
   type DAVEVoiceTaskOption,
 } from './dave-voice-task-options';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
-import { useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
+import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
 
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
@@ -73,6 +83,7 @@ export function DAVEVoiceCaptureSheet({
   autoStartRecording = false,
   autoSubmitOnStop = false,
   showWalkContext = true,
+  keepSlot,
   onMemoryReady,
   onProjectChange,
   onTaskChange,
@@ -100,6 +111,14 @@ export function DAVEVoiceCaptureSheet({
   autoStartRecording?: boolean;
   autoSubmitOnStop?: boolean;
   showWalkContext?: boolean;
+  /**
+   * Everyday item 4 (2 Oct 2026): this sheet's name for a recording kept on
+   * the device. With one, a recording waiting for signal (or one he chose to
+   * keep for later) survives iOS closing the app, for this account: the sheet
+   * offers it, and tries it again, the next time it opens for that project.
+   * Without one it is kept in the sheet only, while Vitruvius stays open.
+   */
+  keepSlot?: string;
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
   onProjectChange?: (projectName: string) => void;
   onTaskChange?: (taskId: string | null) => void;
@@ -132,6 +151,14 @@ export function DAVEVoiceCaptureSheet({
   const preparingOperationRef = useRef<number | null>(null);
   const stoppedWaitingRef = useRef<{ operation: number; recording: number } | null>(null);
   const heldTranscriptRef = useRef<{ recording: number; result: DAVEVoiceUnderstandingResponse } | null>(null);
+  // Everyday item 4: the account and sheet a recording is kept on this device for, and its kept copy.
+  const ownerBoundary = useContext(NativeWorkspaceOwnerContext);
+  const keptOwner = keepSlot && ownerBoundary !== undefined ? ownerBoundary ?? 'local-device' : null;
+  const keepsOnDevice = Boolean(keptOwner && keepSlot);
+  const keptCopyRef = useRef<string | null>(null);
+  const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
+  const recordingUriRef = useRef<string | null>(null);
+  recordingUriRef.current = recordingUri;
 
   useEffect(() => () => {
     // A closed/unmounted sheet or different project must not start an upload retry,
@@ -152,8 +179,12 @@ export function DAVEVoiceCaptureSheet({
     if (!visible || preparingOperationRef.current === null) return;
     preparingOperationRef.current = null;
     setIsTranscribing(false);
-    // A11 pass 7 L2: like "Stopped waiting", say it is kept only while Vitruvius stays open.
-    setNotice(`The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
+    // A11 pass 7 L2: like "Stopped waiting", say it is kept only while Vitruvius stays open
+    // (on this device past a closed app when this sheet keeps it, everyday item 4).
+    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration);
+    setNotice(keepsOnDevice
+      ? `The project changed while this recording was being prepared. It is kept on this device. Tap ${continueLabel} to try again.`
+      : `The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
     // Only a project change while the sheet is open does this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
@@ -247,6 +278,7 @@ export function DAVEVoiceCaptureSheet({
     setError(null);
     setNotice(null);
     await removeRecording(recordingUri);
+    forgetRecordingKeptOnDevice();
     setRecordingUri(null);
     setRecordingDuration(0);
     recordingDurationRef.current = 0;
@@ -268,15 +300,73 @@ export function DAVEVoiceCaptureSheet({
   }
 
   useEffect(() => {
-    if (!visible || !projectName || !autoStartRecording || autoStartHandledRef.current) return;
+    if (!visible || !projectName || !autoStartRecording || autoStartHandledRef.current || !keptChecked) return;
     const timeout = setTimeout(() => {
       autoStartHandledRef.current = true;
+      // A recording kept from before the app closed is offered instead (everyday item 4).
+      if (recordingUriRef.current) return;
       void startRecording();
     }, 250);
     return () => clearTimeout(timeout);
     // Guided capture intentionally starts once when a new field sheet opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStartRecording, projectName, visible]);
+  }, [autoStartRecording, projectName, visible, keptChecked]);
+
+  // Everyday item 4: a recording kept on this device for this account and
+  // sheet comes back when the sheet opens for its project, and is tried again.
+  useEffect(() => {
+    if (!visible || !keptOwner || !keepSlot) {
+      setKeptChecked(!visible || !keepsOnDevice);
+      return undefined;
+    }
+    let current = true;
+    setKeptChecked(false);
+    void keptVoiceRecordings().readKeptVoiceRecording(keptOwner, keepSlot).catch(() => null).then(kept => {
+      if (!current) return;
+      setKeptChecked(true);
+      if (!kept || recordingUriRef.current || recordingActiveRef.current || recordingFinishingRef.current) return;
+      if (kept.projectName.trim().toLowerCase() !== projectName.trim().toLowerCase()) return;
+      keptCopyRef.current = kept.uri;
+      recordingGenerationRef.current += 1;
+      recordingDurationRef.current = kept.durationMs;
+      setRecordingUri(kept.uri);
+      setRecordingDuration(kept.durationMs);
+      void transcribeRecording(kept.uri, kept.durationMs);
+      setNotice(`Kept from ${keptTimeLabel(kept.keptAt)}, when there was no signal. Trying it again now.`);
+    });
+    return () => {
+      current = false;
+    };
+    // Read once each time the sheet opens, for its account, sheet and project.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, keptOwner, keepSlot, projectName]);
+
+  /** Keeps this recording on the device past a closed app (everyday item 4); the sheet keeps using its own copy. */
+  async function keepRecordingOnDevice(uri: string, duration: number) {
+    if (!keptOwner || !keepSlot) return;
+    if (keptCopyRef.current) return;
+    const recording = recordingGenerationRef.current;
+    try {
+      const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
+      const kept = await keepVoiceRecording(keptOwner, keepSlot, { uri, durationMs: duration, projectId, projectName });
+      // Discarded, used or recorded again meanwhile: nothing stays kept.
+      if (recording !== recordingGenerationRef.current || !recordingUriRef.current) {
+        await forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
+        return;
+      }
+      keptCopyRef.current = kept;
+    } catch {
+      // Kept in this sheet only, as before.
+    }
+  }
+
+  /** The recording was used, discarded or recorded again: its copy on the device and its entry go. */
+  function forgetRecordingKeptOnDevice() {
+    if (!keptOwner || !keepSlot) return;
+    const kept = keptCopyRef.current;
+    keptCopyRef.current = null;
+    void keptVoiceRecordings().forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
+  }
 
   async function stopRecording() {
     // A lock or call may already have claimed and be finishing this recording.
@@ -317,6 +407,7 @@ export function DAVEVoiceCaptureSheet({
       setError(null);
       setNotice(null);
       await removeRecording(uri);
+      forgetRecordingKeptOnDevice();
       setRecordingUri(null);
       onMemoryReady(held.result);
       return;
@@ -344,11 +435,15 @@ export function DAVEVoiceCaptureSheet({
         return;
       }
       await removeRecording(uri);
+      forgetRecordingKeptOnDevice();
       setRecordingUri(null);
       onMemoryReady(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
-      setError(daveVoiceFailureMessage(reason, continueLabel));
+      // Waiting for signal: kept on this device past a closed app when this sheet keeps it (everyday item 4).
+      const waiting = keepsOnDevice && daveVoiceFailureIsWaitingForSignal(reason);
+      if (waiting) void keepRecordingOnDevice(uri, duration);
+      setError(daveVoiceFailureMessage(reason, continueLabel, waiting));
     } finally {
       if (operation === transcriptionOperationRef.current) {
         preparingOperationRef.current = null;
@@ -368,8 +463,11 @@ export function DAVEVoiceCaptureSheet({
     }
     preparingOperationRef.current = null;
     setIsTranscribing(false);
-    // Kept in this sheet only, while the app stays open (A11 pass 6 L2).
-    setNotice(`Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
+    // Kept in this sheet only, while the app stays open (A11 pass 6 L2); on this device when this sheet keeps it (everyday item 4).
+    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration);
+    setNotice(keepsOnDevice
+      ? `Stopped waiting. The recording is kept on this device. Tap ${continueLabel} to try again.`
+      : `Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
   }
 
   async function transcribe() {
@@ -385,7 +483,9 @@ export function DAVEVoiceCaptureSheet({
     if (isTranscribing) {
       Alert.alert(
         'Stop preparing this recording?',
-        `It is still being turned into text. You can keep waiting, keep the recording here while Vitruvius stays open and try ${continueLabel} again later, or discard it.`,
+        keepsOnDevice
+          ? `It is still being turned into text. You can keep waiting, keep the recording on this device and try ${continueLabel} again later, or discard it.`
+          : `It is still being turned into text. You can keep waiting, keep the recording here while Vitruvius stays open and try ${continueLabel} again later, or discard it.`,
         [
           { text: 'Keep Waiting', style: 'cancel' },
           { text: 'Keep Recording for Later', onPress: stopWaitingKeepRecording },
@@ -420,6 +520,7 @@ export function DAVEVoiceCaptureSheet({
     if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
+    forgetRecordingKeptOnDevice();
     setRecordingUri(null);
     setNotice(null);
     recordingDurationRef.current = 0;
@@ -743,6 +844,15 @@ function DAVERecordingPlayback({ uri }: { uri: string }) {
       <Text style={styles.secondaryText}>{status.playing ? 'Pause Replay' : 'Replay Recording'}</Text>
     </TouchableOpacity>
   );
+}
+
+/** "2:14 PM" today; "Oct 1 at 2:14 PM" another day. */
+function keptTimeLabel(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'earlier';
+  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${time}`;
 }
 
 async function removeRecording(uri: string | null) {

@@ -94,6 +94,7 @@ export function NativeFieldNotesExperience({
         guidance="State the observation or reminder clearly. You will review it before saving."
         continueLabel="Use Note"
         captureLabel="Field note"
+        keepSlot="field-note"
         autoStartRecording
         autoSubmitOnStop
         showWalkContext={false}

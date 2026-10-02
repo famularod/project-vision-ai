@@ -223,6 +223,8 @@ describe('Project Walk memory kept until Save (A11 pass 4 L3)', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     expect(app).toMatch(/const \[captureDraft, setCaptureDraft\] = useKeptWalkMemoryDraft\(projectName\);/);
     expect(app).not.toContain('const [captureDraft, setCaptureDraft] = useState');
-    expect(app).toMatch(/if \(accountChanged\) \{ forgetFieldNoteDraft\(\); forgetKeptWalkMemoryDrafts\(\); \}/);
+    // Everyday item 4 (2 Oct 2026): a recording kept on the device for signal is forgotten with them;
+    // pin updated deliberately (behaviour in everyday-4-voice-kept-recording).
+    expect(app).toMatch(/if \(accountChanged\) \{ forgetFieldNoteDraft\(\); forgetKeptWalkMemoryDrafts\(\); forgetKeptVoiceRecordings\(\); \}/);
   });
 });

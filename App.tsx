@@ -221,6 +221,7 @@ import {
 import { useAccountDisplayName } from './hooks/use-account-display-name';
 import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
 import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { forgetKeptVoiceRecordings } from './services/KeptVoiceRecording';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -13058,7 +13059,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Another account must not inherit this one's report narrative or
       // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
       if (accountChanged) forgetAllReportSessionState();
-      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); } // nobody's unsaved note or walk memory carries over (A2 M3, A11 pass 4 L3)
+      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); forgetKeptVoiceRecordings(); } // nobody's unsaved note, walk memory or kept recording carries over (A2 M3, A11 pass 4 L3, everyday item 4)
     });
 
     return () => {
@@ -14352,6 +14353,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               title="Talk"
               prompt="What do you need?"
               guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
+              keepSlot="talk" // a recording waiting for signal survives iOS closing the app (everyday item 4)
               continueLabel="Continue"
               operationLabel="Create a task"
               operationGuidance="Answer guided questions so every task field is reviewed before saving."
@@ -17589,6 +17591,7 @@ function ProjectWorkspaceScreen({
         projectName={projectName}
         walkContext={projectWalkContext}
         candidateLocations={projectAreas.map(area => area.name)}
+        keepSlot={`walk:${projectName}`}
         onMemoryReady={result => {
           projectWalkLocationRequest.current += 1;
           const createdAt = new Date().toISOString();
