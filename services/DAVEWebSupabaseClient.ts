@@ -22,6 +22,7 @@ import {
   type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
 import {
+  accessTokenIsForBrowserTabSignIn,
   browserTabSignInUserId,
   browserTabStoredSignIn,
   forgetBrowserTabSignIn,
@@ -212,7 +213,40 @@ const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
     })
   : null;
 
+/** Live-update connections already kept on their tab's own sign-in. */
+const realtimeKeptOnThisTabsSignIn = new WeakSet<object>();
+
+/**
+ * This tab's live updates keep this tab's own sign-in too (owner answer
+ * Q26, 2 Oct 2026; whole-app audit A12 pass 6). supabase-js gives the
+ * live-update connection the access token of every refresh and sign-in its
+ * auth client hears, and auth-js passes this tab every other tab's of this
+ * browser, with that tab's tokens. Another account's tab refreshing had
+ * made this tab's live updates sign in as that account until that tab
+ * signed out or David clicked back into this one: the cloud's owner check
+ * kept every row from it, so he missed live updates meanwhile.
+ *
+ * Now a token is taken only when it is for the account this tab's own
+ * stored sign-in is: his own refreshes and sign-ins (auth-js stores them
+ * before it tells of them) and another tab of his account, as before.
+ * Another account's, or any while this tab holds no sign-in, is left out
+ * and the connection keeps what it had. A sign-out still sets it back to
+ * this tab's own sign-in (none once signed out), as before.
+ */
+function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
+  const realtime = (client as Partial<Pick<SupabaseClient, 'realtime'>>).realtime;
+  if (!realtime || typeof realtime.setAuth !== 'function') return;
+  if (realtimeKeptOnThisTabsSignIn.has(realtime)) return;
+  realtimeKeptOnThisTabsSignIn.add(realtime);
+  const setAuth = realtime.setAuth.bind(realtime);
+  realtime.setAuth = async (token?: string | null) => {
+    if (token && !accessTokenIsForBrowserTabSignIn(token)) return;
+    await setAuth(token);
+  };
+}
+
 export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
+  if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
   let authorizedPhotoPaths = new Set<string>();
   let authorizedDocumentPaths = new Set<string>();

@@ -76,26 +76,33 @@ function storedAuthKeys(storage: Storage): string[] {
 export type BrowserTabStoredSignIn = Readonly<{ userId: string; sessionId: string | null }>;
 
 /**
- * The `session_id` claim of a Supabase access token: which sign-in it
- * belongs to. Every sign-in starts a new session, and its refreshes keep it
- * while its tokens change. Read from the token's payload only (base64url
- * JSON): the signature is not checked, as this only tells apart sign-ins
- * this tab already holds, and the server still checks every request. Null
- * when the token is not a JWT or has no such claim. The token is never
- * logged.
+ * A text claim of a Supabase access token, read from its payload only
+ * (base64url JSON): the signature is not checked, as this only tells apart
+ * sign-ins this tab already holds, and the server still checks every
+ * request. Null when the token is not a JWT or has no such claim. The token
+ * is never logged.
  */
-function accessTokenSessionId(accessToken: string): string | null {
+function accessTokenClaim(accessToken: string, claim: 'session_id' | 'sub'): string | null {
   const parts = accessToken.split('.');
   if (parts.length !== 3 || typeof atob !== 'function') return null;
   try {
     const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))) as unknown;
     if (!claims || typeof claims !== 'object') return null;
-    const sessionId = (claims as { session_id?: unknown }).session_id;
-    return typeof sessionId === 'string' && sessionId.trim() ? sessionId : null;
+    const value = (claims as Record<string, unknown>)[claim];
+    return typeof value === 'string' && value.trim() ? value : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The `session_id` claim of a Supabase access token: which sign-in it
+ * belongs to. Every sign-in starts a new session, and its refreshes keep it
+ * while its tokens change. Null when the token does not say.
+ */
+function accessTokenSessionId(accessToken: string): string | null {
+  return accessTokenClaim(accessToken, 'session_id');
 }
 
 /** The account a stored Supabase session belongs to, and its session. */
@@ -141,6 +148,19 @@ export function browserTabStoredSignIn(): BrowserTabStoredSignIn | null {
  */
 export function browserTabSignInUserId(): string | null {
   return browserTabStoredSignIn()?.userId ?? null;
+}
+
+/**
+ * Whether an access token is for the account this tab's own stored sign-in
+ * belongs to (owner answer Q26, 2 Oct 2026): its `sub` claim, read as the
+ * session is above. False when this tab holds no sign-in, or the token does
+ * not say whose it is. auth-js passes this tab every other tab's refresh and
+ * sign-in, with that tab's tokens; this tells his own from another
+ * account's.
+ */
+export function accessTokenIsForBrowserTabSignIn(accessToken: string): boolean {
+  const ownUserId = browserTabSignInUserId();
+  return ownUserId !== null && accessTokenClaim(accessToken, 'sub') === ownUserId;
 }
 
 /**
