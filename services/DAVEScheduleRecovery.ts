@@ -5,6 +5,7 @@ import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './Sche
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleManagersOwnPercent,
   scheduleManagersPercentUnderFileOfBoth,
   scheduleProgressCarriedFrom,
   scheduleProgressFlooredAtManagers,
@@ -307,8 +308,10 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     // A newer percent of his on a row between stands over this one there (A5 pass 24 L3).
     if (rowsBetween(earlier, record, known).some(row => row !== undefined && scheduleProgressIsManagers(row) &&
       timestamp(scheduleProgressJudgedAt(row)) > timestamp(scheduleProgressJudgedAt(earlier)))) return record;
-    // A file that stated more than his percent after he judged it took the task over, row by row (A5 pass 23 L1, A5 pass 24 L1).
-    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && fileStatedAbove(row, earlier));
+    // A file that stated more than his percent after he judged it took the task over, row by row (A5 pass 23 L1, A5 pass 24 L1),
+    // as did one whose percent replaced it, or a later one of his, there or on this row (A5 pass 25 L1).
+    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined &&
+      (fileStatedAbove(row, earlier) || keepsHisPercentUnderFile(row, earlier))) || keepsHisPercentUnderFile(record, earlier);
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
     const carried = (!noWordOfHis && !takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
       fileProgressDated: restatedSinceImport(record),
@@ -534,6 +537,30 @@ function fileStatedAbove(row: ScheduleItem, earlier: ScheduleItem): boolean {
   if (stated <= boundedPercent(Number(earlier.percentComplete))) return false;
   const statedAt = Math.max(timestamp(row.progressConfirmedAt), timestamp(row.importedAt || row.createdAt));
   return statedAt > timestamp(scheduleProgressJudgedAt(earlier));
+}
+
+/**
+ * Whole-app audit A5 pass 25 L1 (Low, partly caused by d3db006): on one
+ * device, David's 30% on Framing; master G moved it at 40%, a file's percent
+ * above his, so the task took 40% and kept his 30% under it; master H listed
+ * Framing on G's dates at 30%, restating G's row in place; master I moved it
+ * at 10%. Approval showed 10% (owner answer Q32, option b: a newer master
+ * replaces a file's percent), but the next refresh, restart or Full Sync
+ * carried his old 30% past G's row to I's and sent it up, so the web and the
+ * iPad showed 30% too: the take-over check (fileStatedAbove) reads only what
+ * a row between holds now, H's 30%, which is no longer above his (A5 pass 24
+ * L1), and H at 25% was missed the same way. G's row and I's row both keep
+ * his 30% under the file's percent (managersPercentUnderFile), with when he
+ * judged it: a file's percent replaced that entry of his there. A row between
+ * or the newest row that shows a file's percent and keeps, under it, his
+ * percent from the earlier row or a later one of his (judged at or after it)
+ * has now taken it over, as approval did. A floor saved before its time was
+ * kept (A6 pass 24 L1) changes nothing here.
+ */
+function keepsHisPercentUnderFile(row: ScheduleItem, earlier: ScheduleItem): boolean {
+  if (scheduleProgressIsManagers(row) || row.managersPercentUnderFileJudgedAt === undefined) return false;
+  const under = scheduleManagersOwnPercent(row);
+  return Boolean(under) && timestamp(under!.judgedAt) >= timestamp(scheduleProgressJudgedAt(earlier));
 }
 
 /**

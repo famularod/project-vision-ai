@@ -42,6 +42,9 @@
  *   a row between holding a newer one.
  * A6 p24 L1 (Low, caused by cab99c0): a lookahead floor older than the
  *   percent David entered since came back from the other device's copy.
+ * A5 p25 L1 (Low, partly caused by d3db006): a refresh carried David's old
+ *   percent past masters that had replaced it, once a later master restated
+ *   the row between at or below his percent.
  * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
  *   recorded Low (Set Active to an older master); see each test.
  *
@@ -1896,5 +1899,53 @@ describe('A6 p24 L1: the lookahead floor is David\'s latest own entry', () => {
     expect([ownWins.percentComplete, ...floorOf(ownWins)]).toEqual([10, 20, '2026-09-10T09:00:00.000Z']);
     expect(scheduleManagersOwnPercent(ownWins)).toEqual({ percent: 10, judgedAt: '2026-09-12T09:00:00.000Z' });
     expect(scheduleManagersOwnPercent(file)).toEqual({ percent: 20, judgedAt: '2026-09-10T09:00:00.000Z' });
+  });
+});
+
+describe('A5 p25 L1: a master that replaced David\'s percent keeps it from passing, after a later master restates that row', () => {
+  const I = scheduleDoc('MASTER I', '2026-09-28T12:00:00.000Z');
+  const G_ROW_AT = (pct: string) => `Framing,Alpha,Lot,10/22/2026,11/01/2026,${pct}`;
+  /** One device: David's 30% under F; G moves Framing at 40%; H lists it on G's dates at `hPercent`; I moves it at 10%. */
+  async function restated(hPercent: string) {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: 30 });
+    const his = [30, '2026-09-10T09:00:00.000Z'];
+    at(G.importedAt!); await approve(phone, G, [G_ROW_AT('40'), SURVEY]); shareDocuments(phone);
+    expect([theRow(phone).id, theRow(phone).percentComplete, theRow(phone).managersPercentUnderFile, theRow(phone).managersPercentUnderFileJudgedAt]).toEqual(['MASTER G-1', 40, ...his]);
+    at(H.importedAt!); await approve(phone, H, [G_ROW_AT(hPercent), SURVEY]); shareDocuments(phone);
+    at(I.importedAt!); await approve(phone, I, ['Framing,Alpha,Lot,10/29/2026,11/08/2026,10', SURVEY]); shareDocuments(phone);
+    // I's new row keeps his 30% under its 10%, with when he judged it.
+    expect([theRow(phone).id, theRow(phone).percentComplete, theRow(phone).managersPercentUnderFile, theRow(phone).managersPercentUnderFileJudgedAt]).toEqual(['MASTER I-1', 10, ...his]);
+    return { phone, ipad };
+  }
+
+  it.each([['his percent exactly (the finding)', '30'], ['below his percent', '25'], ['control: above his percent', '35']] as const)('H %s: 10%% after approval, a refresh, a restart and Full Sync, on the phone, the web and the iPad', async (_label, hPercent) => {
+    const { phone, ipad } = await restated(hPercent);
+    const seen = [theRow(phone).percentComplete];
+    at('2026-09-28T13:00:00.000Z');
+    await refresh(phone); seen.push(theRow(phone).percentComplete);
+    await startup(phone); seen.push(theRow(phone).percentComplete);
+    await fullSync(phone); await fullSync(ipad); await refresh(ipad);
+    expect([seen, percentsOf(ipad, phone)]).toEqual([[10, 10, 10], [[10], [10], [10]]]);
+  });
+
+  it('pure merge: his percent kept under a file\'s on a row between or the newest stops it from passing; an older floor, or one saved without its time, does not', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-10T09:00:00.000Z', progressConfirmedBy: 'David', updatedAt: '2026-09-10T09:00:00.000Z' } as ScheduleItem;
+    const fileRow = (id: string, from: ScheduleItem, pct: number, floor?: { percent: number; judgedAt?: string }) => ({
+      ...rowsOf(G, [G_ROW()])[0], id, percentComplete: pct, status: 'In Progress', revisedFromTaskIds: [...(from.revisedFromTaskIds || []), from.id],
+      ...(floor ? { managersPercentUnderFile: floor.percent, ...(floor.judgedAt ? { managersPercentUnderFileJudgedAt: floor.judgedAt } : {}) } : {}),
+    }) as ScheduleItem;
+    const carriedTo = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: rows, cloud: [], allowCloudOnly: true }).find(item => item.id === rows[rows.length - 1].id)!.percentComplete;
+    const his = { percent: 30, judgedAt: davids.progressConfirmedAt! };
+    const between = fileRow('MASTER G-1', davids, 30, his);
+    // Between, or on the newest row alone: his 30% was replaced by a file's there.
+    expect(carriedTo([davids, between, fileRow('MASTER I-1', between, 10, his)])).toBe(10);
+    expect(carriedTo([davids, between, fileRow('MASTER I-1', between, 10)])).toBe(10);
+    expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, his)])).toBe(10);
+    // A later entry of his kept under a file's stops an older one too.
+    expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, { percent: 20, judgedAt: '2026-09-11T09:00:00.000Z' })])).toBe(10);
+    // An older entry of his under the file's (judged before this one), or a floor saved without its time: carried, as before.
+    expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, { percent: 30, judgedAt: '2026-09-09T09:00:00.000Z' })])).toBe(30);
+    expect(carriedTo([davids, fileRow('MASTER G-1', davids, 10, { percent: 30 })])).toBe(30);
   });
 });
