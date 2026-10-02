@@ -13,8 +13,8 @@ export function groupDAVEWebDocuments(
   const ordered = [...documents].sort(compareDocumentRecency);
   const scheduleDocuments = ordered.filter(scheduleDocumentIsScheduleLike);
 
-  // A lookahead is in effect by its role, whatever its flag (owner answer Q22).
-  const inEffect = (document: DAVEWebReferenceDocument) => document.isCurrent || scheduleDocumentAddsToMaster(document);
+  // A lookahead is in effect by its role, whatever its flag (owner answer Q22), until newer ones replace it (Q25).
+  const inEffect = daveWebDocumentInEffect;
   return Object.freeze({
     currentSchedule: Object.freeze(scheduleDocuments.filter(inEffect)),
     priorScheduleVersions: Object.freeze(scheduleDocuments.filter(document => !inEffect(document))),
@@ -22,10 +22,20 @@ export function groupDAVEWebDocuments(
   });
 }
 
+/**
+ * A schedule in effect: current, or a lookahead, which is in effect by its
+ * role whatever its flag (owner answer Q22) until newer lookaheads replace
+ * it for every project it covers (owner answer Q25, 2 Oct 2026: then it is a
+ * prior version, "Replaced by the lookahead of <date>").
+ */
+export function daveWebDocumentInEffect(document: DAVEWebReferenceDocument): boolean {
+  return scheduleDocumentAddsToMaster(document) ? !document.lookaheadReplaced : document.isCurrent;
+}
+
 export function daveWebDocumentDeletionIsProtected(
   document: DAVEWebReferenceDocument,
 ): boolean {
-  return Boolean((document.isCurrent || scheduleDocumentAddsToMaster(document)) && scheduleDocumentIsScheduleLike(document));
+  return Boolean(daveWebDocumentInEffect(document) && scheduleDocumentIsScheduleLike(document));
 }
 
 function compareDocumentRecency(

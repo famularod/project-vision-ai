@@ -374,11 +374,13 @@ function projectConditionFromTruth(
     dueSoon > 0 ? `${dueSoon} due within 7 days` : '',
     accounting.waiting > 0 ? `${accounting.waiting} waiting` : '',
   ].filter(Boolean);
-  const totalWeight = truth.schedule.reduce(
+  // The master sets the scope: a lookahead's detail tasks leave % Complete alone (owner answer Q25).
+  const scope = tasksSettingScope(truth.schedule);
+  const totalWeight = scope.reduce(
     (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
     0,
   );
-  const weightedProgress = truth.schedule.reduce(
+  const weightedProgress = scope.reduce(
     (total, task) =>
       total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
     0,
@@ -500,6 +502,12 @@ function taskWord(count: number) {
   return count === 1 ? 'task' : 'tasks';
 }
 
+/** The tasks that set a % Complete: all but a lookahead's detail, unless that is every task (owner answer Q25). */
+function tasksSettingScope<T extends { lookaheadDetail?: true }>(tasks: readonly T[]): readonly T[] {
+  const scope = tasks.filter(task => task.lookaheadDetail !== true);
+  return scope.length > 0 ? scope : tasks;
+}
+
 function buildDashboardMetrics({
   truths,
   risks,
@@ -532,11 +540,12 @@ function buildDashboardMetrics({
     areaMap.set(key, [...(areaMap.get(key) || []), { ...task, areaName }]);
   }
   const workAreas = Array.from(areaMap.entries()).map(([key, areaTasks]) => {
-    const totalWeight = areaTasks.reduce(
+    const scope = tasksSettingScope(areaTasks); // owner answer Q25
+    const totalWeight = scope.reduce(
       (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
       0,
     );
-    const weightedProgress = areaTasks.reduce(
+    const weightedProgress = scope.reduce(
       (total, task) => total +
         scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
       0,

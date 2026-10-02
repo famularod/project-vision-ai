@@ -616,7 +616,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
-  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
+  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -19790,8 +19790,8 @@ function ScheduleScreen({
                 <View style={styles.rowMain}>
                   <Text style={styles.panelTitle}>Schedule Sources</Text>
                   <Text style={styles.rowSub}>
-                    {scheduleDocuments.filter(document => document.category === 'Schedules' && document.isCurrent).length} current ·{' '}
-                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !document.isCurrent).length} prior
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && (scheduleDocumentAddsToMaster(document) ? scheduleLookaheadInEffect(document, scheduleDocuments) : document.isCurrent)).length} current ·{' '}
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !(scheduleDocumentAddsToMaster(document) ? scheduleLookaheadInEffect(document, scheduleDocuments) : document.isCurrent)).length} prior{/* a lookahead counts while it is the newest for a project (owner answer Q25) */}
                     {scheduleDocuments.some(document => document.notes.includes('[Schedule communication screenshot]'))
                       ? ` · ${scheduleDocuments.filter(document => document.notes.includes('[Schedule communication screenshot]')).length} supporting`
                       : ''}

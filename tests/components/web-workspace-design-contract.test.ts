@@ -222,7 +222,8 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain("auth.getArtifactUrl('project-documents'");
     expect(shell).toContain('accessibilityLabel={`${label}, custom value`}');
     expect(shell).toContain("'aria-label': label");
-    expect(shell).toContain("if (kind === 'prior') return 'Prior version'");
+    // A lookahead newer ones replaced reads "Replaced by the lookahead of <date>" (owner answer Q25, 2 Oct 2026).
+    expect(shell).toContain("if (kind === 'prior') return document.lookaheadReplaced || 'Prior version'");
     expect(shell).toContain('return buildECOSDocumentReadiness(document).label');
   });
 

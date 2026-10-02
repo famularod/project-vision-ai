@@ -18,7 +18,7 @@ import {
   validateProjectItemWorkflowEdit,
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
-import { scheduleCalendarDay } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -278,6 +278,11 @@ export function buildDAVEWebScheduleItem({
     );
   }
 
+  const shownDates = current?.savedLookaheadDates;
+  const keepsSavedDates = Boolean(shownDates) &&
+    sameScheduleCalendarDay(draft.startDate.trim(), shownDates!.shownStartDate) &&
+    sameScheduleCalendarDay(draft.finishDate.trim(), shownDates!.shownFinishDate);
+
   const item: DAVEWebScheduleItem = {
     id: requiredText(id, 'Task identity'),
     projectId,
@@ -287,8 +292,10 @@ export function buildDAVEWebScheduleItem({
     projectName: projectNameForRecord,
     locationName: draft.locationName.trim(),
     taskName,
-    startDate: draft.startDate.trim(),
-    finishDate: draft.finishDate.trim(),
+    // Dates left as shown on a task shown on the master's dates keep the dates saved (owner answer Q25).
+    ...(keepsSavedDates && current?.savedLookaheadDates
+      ? { startDate: current.savedLookaheadDates.startDate, finishDate: current.savedLookaheadDates.finishDate }
+      : { startDate: draft.startDate.trim(), finishDate: draft.finishDate.trim() }),
     milestone: draft.milestone.trim(),
     owner: draft.owner.trim(),
     contractor: draft.contractor.trim(),

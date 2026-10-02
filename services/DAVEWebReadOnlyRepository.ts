@@ -20,6 +20,8 @@ import {
   reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
   scheduleDocumentIsScheduleLike,
+  scheduleLookaheadReplacedFor,
+  scheduleLookaheadReplacedLabel,
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
@@ -79,6 +81,13 @@ export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtens
    * with an earlier revision included; Make Current needs at least one.
    */
   importedScheduleItemCount: number;
+  /**
+   * A lookahead newer ones replaced for every project it covers (owner answer
+   * Q25, 2 Oct 2026): "Replaced by the lookahead of <date>". It is no longer
+   * in effect, so it is listed with the prior versions and is not protected
+   * from deletion. Null otherwise; missing on a record built before.
+   */
+  lookaheadReplaced?: string | null;
 }>;
 
 export async function loadDAVEWebReadOnlySnapshot(
@@ -121,6 +130,10 @@ export async function loadDAVEWebReadOnlySnapshot(
     // Make Current counts the tasks the import contains: a revision whose
     // every task is unchanged has no task of its own (audit A5 pass 3 F5).
     importedScheduleItemCount: scheduleItemsForExactImportBatch(reconciledScheduleItems, document).length,
+    // A lookahead newer ones replaced everywhere it applied (owner answer Q25).
+    lookaheadReplaced: scheduleLookaheadReplacedFor(reconciledDocuments)(document, null)
+      ? scheduleLookaheadReplacedLabel(document, reconciledDocuments)
+      : null,
   }));
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,

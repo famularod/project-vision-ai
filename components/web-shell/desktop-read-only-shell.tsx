@@ -33,6 +33,7 @@ import {
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
+  daveWebDocumentInEffect,
   groupDAVEWebDocuments,
 } from '../../services/DAVEWebDocumentManagement';
 import {
@@ -7061,16 +7062,18 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
 
 /**
  * Current, or a lookahead, which is in effect by its role whatever its flag:
- * the cloud's activation of a master clears that flag (owner answer Q22).
+ * the cloud's activation of a master clears that flag (owner answer Q22),
+ * until newer lookaheads replace it (owner answer Q25).
  */
 function documentInEffect(document: DAVEWebReferenceDocument): boolean {
-  return document.isCurrent || scheduleDocumentAddsToMaster(document);
+  return daveWebDocumentInEffect(document);
 }
 
 /**
- * Where a lookahead is deleted, until the owner decides whether a newer one
- * replaces an older (Q25): the web keeps it, and the phone's or iPad's
- * Delete PDF + Items also puts back the master's dates (A12 pass 3 A8-L2).
+ * Where a lookahead in effect is deleted: the web keeps it, and the phone's
+ * or iPad's Delete PDF + Items also puts back the master's dates (A12 pass 3
+ * A8-L2). One newer lookaheads replaced (owner answer Q25, 2 Oct 2026) has
+ * no dates left to put back: it is a prior version the web may delete.
  */
 const LOOKAHEAD_DELETION_NOTICE =
   "Lookahead · adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back.";
@@ -7087,7 +7090,7 @@ function documentStatusLabel(document: DAVEWebReferenceDocument, allDocuments?: 
   }
   const kind = documentStatusKind(document);
   if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current', allDocuments);
-  if (kind === 'prior') return 'Prior version';
+  if (kind === 'prior') return document.lookaheadReplaced || 'Prior version'; // "Replaced by the lookahead of …" (owner answer Q25)
   return buildECOSDocumentReadiness(document).label;
 }
 

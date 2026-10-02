@@ -2,6 +2,7 @@ import type { ReferenceDocument, ScheduleItem, ScheduleRowAwaitingCurrent } from
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import {
   currentScheduleDocumentsByProject,
+  scheduleItemAsSaved,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
@@ -681,7 +682,8 @@ export function scheduleProgressCarriedToShownTasks({
   scheduleTasksOnNotedDatesWhenCurrent({
     after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
   }).forEach(item => changed.set(item.id, item));
-  return [...changed.values()];
+  // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
+  return [...changed.values()].map(scheduleItemAsSaved);
 }
 
 /**
@@ -1033,5 +1035,10 @@ export function mergeApprovedScheduleImportItems({
     additions.push(revision(importedItem));
   });
 
-  return { next, additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };
+  // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
+  const unchanged = new Set(existing);
+  return {
+    next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
+    additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+  };
 }

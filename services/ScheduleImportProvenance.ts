@@ -173,3 +173,37 @@ function provenanceBatchId(value: ScheduleItem | ReferenceDocument): string | nu
     .importBatchId;
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
+
+/**
+ * Owner answer Q25 (2 Oct 2026), with the reviewers' A10 pass 3 L1: a
+ * lookahead's detail tasks (those it added, which no master lists) are
+ * listed, but the master sets the project's scope, so they do not change its
+ * % Complete: adding detail never makes the project look less done.
+ *
+ * A task is such detail when a lookahead added it (importedAsLookahead) and
+ * every import it belongs to is a lookahead: known by the notes of the tasks
+ * lookaheads restated and by the tasks they added (as the merge knows them,
+ * A6 pass 19 M2). A master that lists it later makes it the master's. Given
+ * the tasks of the projects measured; returns those that set the scope, or
+ * every task when none does (a project with lookaheads only).
+ */
+export function scheduleTasksSettingProjectScope<T extends ScheduleItem>(items: readonly T[]): T[] {
+  const detail = scheduleTaskAddedByLookaheadsOnly(items);
+  const scope = items.filter(item => !detail(item));
+  return scope.length > 0 ? scope : [...items];
+}
+
+/** Whether a task is a lookahead's detail (scheduleTasksSettingProjectScope), given the tasks it is measured with. */
+export function scheduleTaskAddedByLookaheadsOnly(items: readonly ScheduleItem[]): (item: ScheduleItem) => boolean {
+  const batchKey = (value: unknown) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+  const lookaheads = new Set([
+    ...items.flatMap(item => (Array.isArray(item.lookaheadOverlay?.lookaheads) ? item.lookaheadOverlay!.lookaheads : [])
+      .map(entry => batchKey(entry?.batchId))),
+    ...items.filter(item => item.importedAsLookahead === true).map(item => batchKey(item.importBatchId)),
+  ].filter(Boolean));
+  return item => {
+    if (item.importedAsLookahead !== true) return false;
+    const imports = scheduleItemImportBatchIds(item).map(batchKey).filter(Boolean);
+    return imports.length > 0 && imports.every(batch => lookaheads.has(batch));
+  };
+}

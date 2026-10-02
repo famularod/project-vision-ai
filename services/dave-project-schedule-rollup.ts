@@ -4,6 +4,7 @@ import {
   normalizeScheduleStatus,
   scheduleProgressIsComplete,
 } from './ScheduleProgressInvariant';
+import { scheduleTasksSettingProjectScope } from './ScheduleImportProvenance';
 
 export type DAVEProjectScheduleHealth = 'On Track' | 'At Risk' | 'Blocked';
 
@@ -129,8 +130,10 @@ export function buildDAVEProjectScheduleRollup({
     daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined) === null,
   ).length;
   const waitingCount = accounting.waiting;
-  const totalWeight = tasks.reduce((total, item) => total + scheduleTaskDurationWeight(item), 0);
-  const weightedProgress = tasks.reduce(
+  // The master sets the scope: a lookahead's detail tasks are listed but leave % Complete alone (owner answer Q25).
+  const scope = scheduleTasksSettingProjectScope(tasks);
+  const totalWeight = scope.reduce((total, item) => total + scheduleTaskDurationWeight(item), 0);
+  const weightedProgress = scope.reduce(
     (total, item) => total + scheduleTaskDurationWeight(item) * item.percentComplete,
     0,
   );

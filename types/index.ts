@@ -913,6 +913,15 @@ export type ScheduleItem = {
    */
   lookaheadOverlay?: ScheduleLookaheadOverlay | null;
   /**
+   * Only on a copy of the task as shown, never saved (owner answer Q25, 2 Oct
+   * 2026): the task is shown on the master's dates because the lookahead
+   * that moved it was replaced; these are the dates saved on the task and
+   * those shown. A change written from the shown copy that leaves the dates
+   * as shown keeps the saved ones (scheduleItemAsSaved), so the newest
+   * lookahead's deletion can show the one before it again.
+   */
+  savedLookaheadDates?: Readonly<{ startDate: string; finishDate: string; shownStartDate: string; shownFinishDate: string }> | null;
+  /**
    * The ids this task had before new masters moved its dates, oldest first
    * (whole-app audit A10 pass 5 M1, 30 Sep 2026): a new master saves a moved
    * task as a new row with a new id, and a field update linked to an earlier

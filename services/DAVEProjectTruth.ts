@@ -6,7 +6,12 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import { scheduleDocumentAddsToMaster, scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import {
+  scheduleDocumentAddsToMaster,
+  scheduleDocumentRetiredForProject,
+  scheduleHasAuthoritativeProgressJudgment,
+  scheduleLookaheadReplacedFor,
+} from './PIEScheduleReconciliation';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
@@ -31,6 +36,7 @@ import {
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { scheduleTaskEarlierIds, scheduleTaskLinks } from './ScheduleTaskRevisions';
+import { scheduleTaskAddedByLookaheadsOnly } from './ScheduleImportProvenance';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -148,6 +154,12 @@ export type DAVEScheduleTruth = {
   latestActivityAt: string | null;
   latestActivitySummary: string | null;
   urgency: 'overdue' | 'due_soon' | 'upcoming' | 'not_urgent';
+  /**
+   * A lookahead's detail task (one it added that no master lists): listed,
+   * but not part of the project's % Complete, which the master's scope sets
+   * (owner answer Q25, 2 Oct 2026). Absent otherwise.
+   */
+  lookaheadDetail?: true;
   completionState:
     | 'scheduled'
     | 'reported_complete'
@@ -244,11 +256,16 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const scheduleSources = new Set(
     scheduleItems.map(item => normalizedKey(item.importedFrom || '')).filter(Boolean),
   );
+  // A lookahead is in effect by its role (Q22) while it is the newest for the project (owner answer Q25).
+  const lookaheadReplaced = scheduleLookaheadReplacedFor(input.referenceDocuments ?? []);
+  const inEffect = (document: ReferenceDocument) => scheduleDocumentAddsToMaster(document)
+    ? !lookaheadReplaced(document, input.projectName)
+    : document.isCurrent;
   const referenceDocuments = (input.referenceDocuments ?? []).filter(document => {
     // Report artifacts are derived outputs. They must not participate in the
     // current-truth fingerprint that governs their own freshness.
     if (normalizedKey(document.category) === 'report') return false;
-    if (!document.isCurrent && !scheduleDocumentAddsToMaster(document)) return false; // a lookahead is in effect by its role (Q22)
+    if (!inEffect(document)) return false;
     // A combined schedule retired for this project is current only for its others (owner answer Q15).
     if (scheduleDocumentRetiredForProject(document, input.projectName)) return false;
     const explicitProjectId = clean(document.projectId);
@@ -278,7 +295,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
         status: 'reference',
         createdAt: document.importedAt,
         importedAt: document.importedAt,
-        isArchived: !document.isCurrent && !scheduleDocumentAddsToMaster(document),
+        isArchived: !inEffect(document),
       })),
     ],
     scheduleItems,
@@ -693,6 +710,8 @@ function buildScheduleTruth(
   projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
 ): DAVEScheduleTruth[] {
   const today = new Date(now);
+  // A lookahead's detail task is listed but leaves % Complete to the master's scope (owner answer Q25).
+  const lookaheadDetail = scheduleTaskAddedByLookaheadsOnly(scheduleItems);
   return scheduleItems.map(item => {
     const relatedEvidenceIds = links
       .filter(link => link.targetType === 'schedule-task' && link.targetId === item.id)
@@ -749,6 +768,7 @@ function buildScheduleTruth(
       latestActivityAt: clean(latestActivity?.createdAt),
       latestActivitySummary: clean(latestActivity?.message),
       urgency: taskUrgency(item, today, projectTimeZone),
+      ...(lookaheadDetail(item) ? { lookaheadDetail: true as const } : {}),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
       relatedEvidenceIds: uniqueText([...relatedEvidenceIds, ...correlationEvidenceIds]),
       needsVerification:

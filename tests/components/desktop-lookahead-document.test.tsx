@@ -15,10 +15,12 @@ import type {
 // changed (ending its role and making it deletable without putting the
 // master's dates back), its badge turned grey, and the save notice said
 // "before making it current".
-// A8-L2: a lookahead cannot be deleted on the web (until the owner decides
-// Q25); its notice said it was protected as the current schedule. It now
-// says it is deleted on the iPhone or iPad, where Delete PDF + Items puts the
-// master's dates back. Synthetic data; same shell harness as
+// A8-L2: a lookahead cannot be deleted on the web; its notice said it was
+// protected as the current schedule. It now says it is deleted on the iPhone
+// or iPad, where Delete PDF + Items puts the master's dates back.
+// Owner answer Q25 (2 Oct 2026): a lookahead newer ones replaced is no longer
+// in effect: a prior version, "Replaced by the lookahead of <date>", which
+// the web may delete. Synthetic data; same shell harness as
 // owner-answer-q15-web-make-current.test.tsx.
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
@@ -226,5 +228,32 @@ describe('the web says where a lookahead is deleted (A12 pass 3 A8-L2)', () => {
     expect(screen.getByText('Keep Lookahead')).toBeTruthy();
     expect(screen.queryByText(/current project schedule and is protected/)).toBeNull();
     expect(screen.queryByText('Delete Document')).toBeNull();
+  });
+});
+
+describe('owner answer Q25: a lookahead a newer one replaced is a prior version on the web', () => {
+  // As the snapshot reads it (loadDAVEWebReadOnlySnapshot): replaced by the week 41 lookahead.
+  const replaced = scheduleDocument('Alpha lookahead wk 39', {
+    scheduleRole: 'lookahead',
+    isCurrent: true,
+    importedAt: '2026-09-18T12:00:00.000Z',
+    lookaheadReplaced: 'Replaced by the lookahead of Sep 25, 2026',
+  });
+
+  it('reads "Replaced by the lookahead of <date>", in the prior group, and can be deleted', async () => {
+    withDocuments([master, lookahead, replaced]);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    const priorBadge = screen.getAllByText('Replaced by the lookahead of Sep 25, 2026')[0];
+    expect(textColor(priorBadge)).not.toEqual(textColor(screen.getAllByText('Current')[0]));
+
+    fireEvent.press(screen.getByLabelText('View Alpha lookahead wk 39'));
+    expect(await screen.findAllByText('Replaced by the lookahead of Sep 25, 2026')).toHaveLength(2);
+    expect(screen.queryByText(LOOKAHEAD_NOTICE)).toBeNull();
+
+    // Its row's Delete (the only one offered) asks as for any prior version.
+    fireEvent.press(screen.getAllByText('Delete')[0]);
+    expect(screen.getByText('Delete “Alpha lookahead wk 39”?')).toBeTruthy();
+    expect(screen.getByText('Delete Document')).toBeTruthy();
+    expect(screen.queryByText('Keep Lookahead')).toBeNull();
   });
 });

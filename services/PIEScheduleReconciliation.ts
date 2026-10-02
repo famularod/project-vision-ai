@@ -23,6 +23,7 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleTaskEarlierIds, scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
@@ -192,8 +193,14 @@ export function selectAuthoritativeScheduleItems({
 }) {
   const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
   const currentByProject = currentScheduleDocumentsByProject(scheduleSources);
-  // Owner answer Q22 (30 Sep 2026): each lookahead adds to its projects' master.
-  const lookaheads = scheduleSources.filter(scheduleDocumentAddsToMaster);
+  // Owner answer Q22 (30 Sep 2026): each lookahead adds to its projects' master. Owner answer Q25 (2 Oct 2026):
+  // only the newest for each project; an older one stops applying there (scheduleLookaheadReplacedFor): the
+  // tasks it added (importedAsLookahead) leave the list. A master's task it restated stays, as before, on the
+  // master's dates (withReplacedLookaheadDates).
+  const replacedFor = scheduleLookaheadReplacedFor(scheduleSources);
+  const lookaheads = scheduleSources.filter(document => scheduleDocumentAddsToMaster(document) && !replacedFor(document, null));
+  const inEffectFor = (document: ReferenceDocument, item: ScheduleItem) =>
+    !scheduleDocumentAddsToMaster(document) || item.importedAsLookahead !== true || !replacedFor(document, scheduleTaskAppProject(item));
   const activeSchedules = [...currentScheduleDocumentWinners(scheduleSources), ...lookaheads];
   const activeScheduleSources = new Set(
     activeSchedules
@@ -224,10 +231,10 @@ export function selectAuthoritativeScheduleItems({
   // lookahead's tasks always show: it adds to the master (Q22). The task's
   // app project, not its Gantt root (A5 pass 12 M).
   const containedByCurrentSchedule = (item: ScheduleItem, containing: readonly ReferenceDocument[]) => {
-    if (containing.some(scheduleDocumentAddsToMaster)) return true;
+    if (containing.some(document => scheduleDocumentAddsToMaster(document) && inEffectFor(document, item))) return true;
     const current = currentByProject.get(scheduleTaskAppProject(item));
     if (current) return containing.includes(current);
-    return containing.some(document => activeDocumentIds.has(normalize(document.id)));
+    return containing.some(document => activeDocumentIds.has(normalize(document.id)) && inEffectFor(document, item));
   };
   const itemHasActiveProvenance = (item: ScheduleItem) => {
     const containing = containingDocuments(item);
@@ -271,6 +278,10 @@ export function selectAuthoritativeScheduleItems({
 
     const containing = containingDocuments(item);
     if (containing.length > 0) return containedByCurrentSchedule(item, containing);
+    // A task a lookahead added whose file was deleted alone ("Delete PDF Only") is that lookahead's still: a newer
+    // lookahead for its project replaces it (owner answer Q25).
+    if (item.importedAsLookahead === true && lookaheads.some(document =>
+      scheduleLookaheadCoversTask(document, item) && timestamp(document.importedAt) > timestamp(item.importedAt || item.createdAt))) return false;
     const importedFrom = normalize(item.importedFrom || '');
     return !importedFrom ||
       !knownScheduleSources.has(importedFrom) ||
@@ -287,9 +298,104 @@ export function selectAuthoritativeScheduleItems({
     normalize(item.importedFrom || '') && !normalize(item.sourceDocumentId || '') &&
     scheduleItemImportBatchIds(item).length === 0 && answeredTo.has(item.id.trim())));
 
-  return dedupeScheduleItems(lookaheads.length > 0
-    ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments)
+  const shown = dedupeScheduleItems(lookaheads.length > 0
+    ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments, inEffectFor)
     : shownItems);
+  let rowsByEarlierId: Map<string, ScheduleItem[]> | null = null;
+  return withReplacedLookaheadDates(shown, scheduleSources, replacedFor, (item: ScheduleItem) => {
+    // A newer master that moved the task to its own row, current for the task's project, has the master's dates now.
+    const current = currentByProject.get(scheduleTaskAppProject(item));
+    if (!current) return null;
+    if (!rowsByEarlierId) {
+      const index = new Map<string, ScheduleItem[]>();
+      scheduleItems.forEach(row => scheduleTaskEarlierIds(row).forEach(id => index.set(id, [...(index.get(id) || []), row])));
+      rowsByEarlierId = index;
+    }
+    const ofCurrent = (row: ScheduleItem) => row.id !== item.id && containingDocuments(row).includes(current);
+    const rows = (rowsByEarlierId.get(item.id.trim()) || []).filter(ofCurrent);
+    if (rows.length > 0) return rows.length === 1 ? rows[0] : null;
+    // A device that had not heard of that master moved the task's older row: the master's row of the same task (a
+    // revision of the same earlier row) is the master's word, unless a later master restated the note's dates.
+    const restatedLater = (item.lookaheadOverlay?.lookaheads || []).some(entry => {
+      const by = entry.datesReplacedByMaster;
+      if (!by) return false;
+      const restating = typeof by === 'string' && scheduleSources.find(document => normalize(document.importBatchId || '') === normalize(by));
+      return !restating || timestamp(restating.importedAt) >= timestamp(current.importedAt);
+    });
+    if (restatedLater) return null;
+    const index = rowsByEarlierId;
+    const siblings = [...new Set(scheduleTaskEarlierIds(item).flatMap(id => index.get(id) || []))].filter(ofCurrent);
+    return siblings.length === 1 ? siblings[0] : null;
+  });
+}
+
+/**
+ * Owner answer Q25 (2 Oct 2026): a master task an older lookahead moved,
+ * that the newest lookahead for its project does not list, is shown on the
+ * master's dates (those its note keeps from before the lookaheads, or the
+ * row of the master current for its project that moved it since), while it
+ * is on the dates that older lookahead gave it: dates David moved by hand,
+ * or a newer master's, stay. Worked out from the saved tasks and schedules
+ * when they are shown, with nothing written, so the phone, the iPad and the
+ * web show the same once they hold the same records, whichever device
+ * approved which lookahead and in what order; deleting the newest lookahead
+ * shows the one before it again. A change David saves on the task (on the
+ * web, from the dates shown) keeps the dates shown. Percents are untouched.
+ */
+function withReplacedLookaheadDates(
+  items: readonly ScheduleItem[],
+  scheduleSources: readonly ReferenceDocument[],
+  replacedFor: (document: ReferenceDocument, projectKey: string | null) => boolean,
+  /** The current master's own row of the task, when a newer master moved it (that row is the master's word). */
+  masterRowOf: (item: ScheduleItem) => ScheduleItem | null,
+): ScheduleItem[] {
+  if (!items.some(item => item.lookaheadOverlay?.lookaheads?.length)) return items as ScheduleItem[];
+  const lookaheadByBatch = new Map(scheduleSources.filter(scheduleDocumentAddsToMaster)
+    .map(document => [normalize(document.importBatchId || ''), document] as const)
+    .filter(([batch]) => Boolean(batch)));
+  return items.map(item => {
+    const overlay = item.lookaheadOverlay;
+    const entries = Array.isArray(overlay?.lookaheads) ? overlay!.lookaheads : [];
+    const latest = entries[entries.length - 1];
+    if (!overlay || !latest) return item;
+    const project = scheduleTaskAppProject(item);
+    const holding = scheduleItemImportBatchIds(item)
+      .map(batch => lookaheadByBatch.get(normalize(batch)))
+      .filter((document): document is ReferenceDocument => Boolean(document));
+    // A lookahead in effect for the project that the task belongs to restated it (its note may not say so yet, from a
+    // copy merged before that restatement arrived): its dates stand.
+    if (holding.some(document => !replacedFor(document, project))) return item;
+    const onDays = (days: Pick<ScheduleItem, 'startDate' | 'finishDate'>) =>
+      sameScheduleCalendarDay(item.startDate, days.startDate) && sameScheduleCalendarDay(item.finishDate, days.finishDate);
+    // On the dates the latest lookahead in its note gave it, that lookahead replaced.
+    const lookahead = lookaheadByBatch.get(normalize(latest.batchId || ''));
+    if (!lookahead || !replacedFor(lookahead, project) || !onDays(latest)) return item;
+    const masterRow = masterRowOf(item);
+    const master = masterRow
+      ? { startDate: masterRow.startDate, finishDate: masterRow.finishDate }
+      : { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+    if (onDays(master) || !master.startDate?.trim() || !master.finishDate?.trim()) return item;
+    return {
+      ...item,
+      startDate: master.startDate,
+      finishDate: master.finishDate,
+      savedLookaheadDates: { startDate: item.startDate, finishDate: item.finishDate, shownStartDate: master.startDate, shownFinishDate: master.finishDate },
+    };
+  });
+}
+
+/**
+ * The task to save from a copy as shown (owner answer Q25): without the shown
+ * copy's note, and on its saved dates while it is still on the dates shown
+ * (the master's, for a replaced lookahead); dates changed since are kept. The
+ * same task when it is not such a copy.
+ */
+export function scheduleItemAsSaved<T extends ScheduleItem>(item: T): T {
+  const shown = item.savedLookaheadDates;
+  if (!shown) return item;
+  const { savedLookaheadDates: _shown, ...rest } = item;
+  const unchanged = sameScheduleCalendarDay(item.startDate, shown.shownStartDate) && sameScheduleCalendarDay(item.finishDate, shown.shownFinishDate);
+  return (unchanged ? { ...rest, startDate: shown.startDate, finishDate: shown.finishDate } : rest) as T;
 }
 
 /**
@@ -305,6 +411,8 @@ function withoutLookaheadDuplicates(
   items: readonly ScheduleItem[],
   currentByProject: ReadonlyMap<string, ReferenceDocument>,
   containingDocuments: (item: ScheduleItem) => ReferenceDocument[],
+  /** A lookahead in effect for the task's project: the newest there (owner answer Q25). */
+  inEffectFor: (document: ReferenceDocument, item: ScheduleItem) => boolean,
 ): ScheduleItem[] {
   const groups = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
@@ -316,7 +424,7 @@ function withoutLookaheadDuplicates(
     if (group.length < 2) return;
     const master = currentByProject.get(scheduleTaskAppProject(group[0]));
     const sources = new Map(group.map(item => [item, containingDocuments(item)
-      .filter(document => document === master || scheduleDocumentAddsToMaster(document))] as const));
+      .filter(document => document === master || (scheduleDocumentAddsToMaster(document) && inEffectFor(document, item)))] as const));
     if ([...sources.values()].some(documents => documents.length === 0)) return;
     const perFile = new Map<string, number>();
     sources.forEach(documents => documents.forEach(document => perFile.set(document.id, (perFile.get(document.id) || 0) + 1)));
@@ -520,8 +628,14 @@ export function scheduleDocumentCurrentLabel(
   documents?: readonly ReferenceDocument[],
 ): string {
   if (scheduleDocumentAddsToMaster(document)) {
-    const projects = scheduleDocumentScopeNames(document);
-    return `Lookahead: adds to the master schedule${projects.length > 0 ? ` for ${projects.join(', ')}` : ''}`;
+    // Given the schedules: an older lookahead a newer one replaced, for some or all of its projects (owner answer Q25).
+    const replacement = documents ? scheduleLookaheadReplacement(document, documents) : null;
+    const replaced = replacement && documents ? scheduleLookaheadReplacedLabel(document, documents) : null;
+    if (replacement?.whole && replaced) return replaced;
+    const kept = new Set((replacement?.projectNames || []).map(normalize));
+    const projects = scheduleDocumentScopeNames(document).filter(name => !kept.has(normalize(name)));
+    const adds = `Lookahead: adds to the master schedule${projects.length > 0 ? ` for ${projects.join(', ')}` : ''}`;
+    return replaced ? `${adds} · ${replaced}` : adds;
   }
   const retired = new Set([
     ...scheduleDocumentRetiredProjectNames(document),
@@ -614,6 +728,145 @@ export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
  */
 export function scheduleDocumentAddsToMaster(document: ReferenceDocument): boolean {
   return document.scheduleRole === 'lookahead' && scheduleDocumentIsScheduleLike(document);
+}
+
+type LookaheadReplacementEntry = Readonly<{
+  scope: readonly string[];
+  /** The newer lookaheads, newest first, and the projects each covers (none: every project). */
+  newer: readonly ReferenceDocument[];
+  newerScopes: readonly ReadonlySet<string>[];
+}>;
+
+/**
+ * Owner answer Q25 (2 Oct 2026): "YES, the newest lookahead for a project
+ * replaces older ones". Every lookahead stayed in effect until David deleted
+ * it (owner answer Q22), so with a weekly three-week lookahead the detail
+ * tasks that finished and dropped off the next one piled up as overdue on
+ * Home and in his reports, old dates stayed on master tasks, and the web
+ * listed every old lookahead as protected.
+ *
+ * Now, for each project, only the newest saved lookahead (by when it was
+ * imported, the order schedules are ranked in) is in effect; an older one is
+ * replaced there. Worked out from the saved schedules alone, so the phone,
+ * the iPad and the web reach the same answer once they have the same
+ * schedules (a refresh or Full Sync). Deleting the newest puts the one before
+ * it back in effect: it is then the newest. A task is in a lookahead's
+ * project when its app project is one the lookahead covers (a lookahead
+ * covering no project covers every project); for a task outside a
+ * lookahead's projects, the lookahead counts only while it is in effect for
+ * one of them.
+ *
+ * Returns whether a lookahead is replaced for a task's project key
+ * (scheduleProjectScopeKey of its app project), or, given null, replaced for
+ * every project it covers. A schedule that is not a lookahead is never
+ * replaced here.
+ */
+export function scheduleLookaheadReplacedFor(
+  documents: readonly ReferenceDocument[],
+): (document: ReferenceDocument, projectKey: string | null) => boolean {
+  const index = lookaheadReplacementIndex(documents);
+  // Asked once per task shown: answers kept per lookahead and project.
+  const answers = new Map<string, boolean>();
+  return (document, projectKey) => {
+    const entry = index.get(document.id);
+    if (!entry || entry.newer.length === 0) return false;
+    const project = projectKey === null ? null : lookaheadScopeKey(projectKey);
+    const asked = `${document.id}\n${project ?? ''}\n${project === null ? 'all' : 'one'}`;
+    const known = answers.get(asked);
+    if (known !== undefined) return known;
+    const covered = (key: string) => entry.newerScopes.some(scope => scope.size === 0 || scope.has(key));
+    const answer = project !== null && (entry.scope.length === 0 || entry.scope.includes(project))
+      ? covered(project)
+      : entry.scope.length === 0 ? entry.newerScopes.some(scope => scope.size === 0) : entry.scope.every(covered);
+    answers.set(asked, answer);
+    return answer;
+  };
+}
+
+/**
+ * The newest lookahead that replaced this one, and the projects it is
+ * replaced for (owner answer Q25), or null while it is in effect for all of
+ * them. `whole` when it is in effect for none.
+ */
+export function scheduleLookaheadReplacement(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): Readonly<{ by: ReferenceDocument; projectNames: readonly string[]; whole: boolean }> | null {
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  const entry = lookaheadReplacementIndex(listed).get(document.id);
+  if (!entry || entry.newer.length === 0) return null;
+  const replacedFor = scheduleLookaheadReplacedFor(listed);
+  const names = scheduleDocumentScopeNames(document);
+  const projectNames = names.filter(name => replacedFor(document, name));
+  const whole = replacedFor(document, null);
+  if (!whole && projectNames.length === 0) return null;
+  const by = entry.newer.find(newer => whole
+    ? (names.length === 0 || names.some(name => lookaheadCovers(newer, lookaheadScopeKey(name))))
+    : projectNames.some(name => lookaheadCovers(newer, lookaheadScopeKey(name)))) || entry.newer[0];
+  return { by, projectNames, whole };
+}
+
+/** A lookahead in effect for at least one of its projects: not replaced by newer ones for all of them (owner answer Q25). */
+export function scheduleLookaheadInEffect(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): boolean {
+  if (!scheduleDocumentAddsToMaster(document)) return false;
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  return !scheduleLookaheadReplacedFor(listed)(document, null);
+}
+
+/** "Replaced by the lookahead of Oct 9, 2026", or null while the lookahead is in effect for all its projects (Q25). */
+export function scheduleLookaheadReplacedLabel(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): string | null {
+  if (!scheduleDocumentAddsToMaster(document)) return null;
+  const replacement = scheduleLookaheadReplacement(document, documents);
+  if (!replacement) return null;
+  const of = `the lookahead of ${scheduleDocumentDayLabel(replacement.by)}`;
+  return replacement.whole || replacement.projectNames.length === 0
+    ? `Replaced by ${of}`
+    : `Replaced for ${replacement.projectNames.join(', ')} by ${of}`;
+}
+
+/** The day a schedule was imported, "Oct 9, 2026" (its name when the time is unreadable). */
+export function scheduleDocumentDayLabel(document: ReferenceDocument): string {
+  const time = timestamp(document.importedAt);
+  return time > 0
+    ? new Date(time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : document.name;
+}
+
+function lookaheadScopeKey(value: string): string {
+  return normalize(value).trim();
+}
+
+function lookaheadScope(document: ReferenceDocument): string[] {
+  return [...new Set(scheduleDocumentScope(document).map(lookaheadScopeKey).filter(Boolean))];
+}
+
+function scheduleLookaheadCoversTask(lookahead: ReferenceDocument, item: ScheduleItem): boolean {
+  return lookaheadCovers(lookahead, lookaheadScopeKey(item.projectName || item.scheduleProjectName || ''));
+}
+
+function lookaheadCovers(lookahead: ReferenceDocument, projectKey: string): boolean {
+  const scope = lookaheadScope(lookahead);
+  return scope.length === 0 || scope.includes(projectKey);
+}
+
+function lookaheadReplacementIndex(documents: readonly ReferenceDocument[]): Map<string, LookaheadReplacementEntry> {
+  const lookaheads = documents
+    .filter(scheduleDocumentAddsToMaster)
+    .filter((document, position, all) => all.findIndex(other => other.id === document.id) === position)
+    .sort(compareScheduleDocumentAuthority);
+  const scopes = lookaheads.map(lookaheadScope);
+  const scopeSets = scopes.map(scope => new Set(scope));
+  return new Map(lookaheads.map((document, position) => [document.id, {
+    scope: scopes[position],
+    newer: lookaheads.slice(0, position),
+    newerScopes: scopeSets.slice(0, position),
+  }]));
 }
 
 export function scheduleDocumentIsScheduleLike(document: ReferenceDocument): boolean {

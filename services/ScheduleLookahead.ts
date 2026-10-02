@@ -3,8 +3,12 @@ import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
   scheduleDocumentAddsToMaster,
+  scheduleDocumentDayLabel,
   scheduleFullCopyLeftUnshown,
   scheduleDocumentIsScheduleLike,
+  scheduleItemAsSaved,
+  scheduleLookaheadReplacedFor,
+  scheduleLookaheadReplacement,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
@@ -305,6 +309,24 @@ export function scheduleTaskRestatedByLookahead(
 }
 
 /**
+ * Whether a lookahead entry of a task's note is one a newer lookahead
+ * replaced for the task's project, given the schedules saved (owner answer
+ * Q25): its dates are never given back. An entry whose lookahead is not
+ * saved, or the schedules not given, counts as not replaced, as before.
+ */
+function lookaheadEntryReplacedByLookahead(
+  documents?: readonly ReferenceDocument[],
+): (entry: LookaheadEntry, task: ScheduleItem) => boolean {
+  if (!documents) return () => false;
+  const replacedFor = scheduleLookaheadReplacedFor(documents);
+  const byBatch = new Map(documents.filter(scheduleDocumentAddsToMaster).map(document => [key(document.importBatchId), document] as const));
+  return (entry, task) => {
+    const lookahead = byBatch.get(key(entry.batchId));
+    return Boolean(lookahead) && replacedFor(lookahead!, task.projectName || task.scheduleProjectName || '');
+  };
+}
+
+/**
  * A full schedule's row that says what the master said before a lookahead
  * restated the task: the new master did not change the task, so the
  * lookahead's dates stay. With the row's percent the same too, the master's
@@ -445,6 +467,8 @@ function tasksAfterLookaheadDeleted(
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
   const replaced = datesReplacedAtDelete(items, documents);
+  // An older lookahead a newer saved one replaces gives no dates back either (owner answer Q25).
+  const replacedByLookahead = lookaheadEntryReplacedByLookahead(documents);
   return items.flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
@@ -454,7 +478,7 @@ function tasksAfterLookaheadDeleted(
     const top = index === entries.length - 1 && sameDates(item, entries[index]);
     // An earlier lookahead's dates only when no newer master replaced them (A6 pass 19 M1); else the master's.
     // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
-    const back = [...remaining].reverse().find(entry => !replaced(entry, item)) ||
+    const back = [...remaining].reverse().find(entry => !replaced(entry, item) && !replacedByLookahead(entry, item)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
@@ -789,7 +813,8 @@ export function scheduleItemsAfterScheduleDeleted({
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   progressOfRowsNowHidden(items, removed, document, documents, kept, shown.map(item => changed.get(item.id) || item))
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // a row the delete hides gives David's newer progress (A6 pass 19 L2)
-  return [...changed.values()];
+  // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
+  return [...changed.values()].map(scheduleItemAsSaved);
 }
 
 /**
@@ -915,13 +940,50 @@ export function scheduleLookaheadDeleteNote(
   // Which master is current after the delete, as the delete reads it (A5 pass 20 P1).
   const back = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after)
     .filter(entry => entry.datesBack || entry.percentBack);
-  if (back.length === 0) return '';
+  const again = after && documents && shown ? lookaheadInEffectAgainNote(document, documents, after, kept, shown) : '';
+  if (back.length === 0) return again;
   const dates = back.filter(entry => entry.datesBack).length;
   const percents = back.filter(entry => entry.percentBack).length;
   const what = percents === 0 ? 'dates'
     : dates === 0 ? 'progress'
       : dates === back.length && percents === back.length ? 'dates and progress' : 'dates or progress';
-  return ` Delete PDF + Items also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.`;
+  return ` Delete PDF + Items also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.${again}`;
+}
+
+/**
+ * " The lookahead of Oct 2, 2026 applies again.": deleting the newest
+ * lookahead puts the one before it back in effect (owner answer Q25).
+ */
+function lookaheadInEffectAgainNote(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+  after: readonly ReferenceDocument[],
+  /** The tasks the delete keeps, and those shown after it. */
+  kept: readonly ScheduleItem[],
+  shown: ReadonlySet<string>,
+): string {
+  const replacedCount = (lookahead: ReferenceDocument, saved: readonly ReferenceDocument[]) => {
+    const replacement = scheduleLookaheadReplacement(lookahead, saved);
+    return !replacement ? 0 : replacement.whole ? Number.MAX_SAFE_INTEGER : replacement.projectNames.length;
+  };
+  const again = after
+    .filter(saved => saved.id !== document.id && scheduleDocumentAddsToMaster(saved))
+    .filter(saved => replacedCount(saved, after) < replacedCount(saved, documents))
+    .sort((left, right) => timeOf(right.importedAt) - timeOf(left.importedAt))[0];
+  if (!again) return '';
+  // Only when it changes something shown: tasks it lists show again, or take its dates again (not those the deleted
+  // lookahead restated: the question counts them above).
+  const before = new Map(selectAuthoritativeScheduleItems({ scheduleItems: [...kept], scheduleDocuments: [...documents] }).map(item => [item.id, item]));
+  const batch = key(again.importBatchId);
+  const deleted = key(document.importBatchId);
+  const changes = selectAuthoritativeScheduleItems({ scheduleItems: [...kept], scheduleDocuments: [...after] }).some(item => {
+    if (!shown.has(item.id)) return false;
+    const was = before.get(item.id);
+    if (!was) return scheduleItemImportBatchIds(item).map(key).includes(batch);
+    const restatedByDeleted = (item.lookaheadOverlay?.lookaheads || []).some(entry => key(entry.batchId) === deleted);
+    return !restatedByDeleted && !sameDates(was, item);
+  });
+  return changes ? ` The lookahead of ${scheduleDocumentDayLabel(again)} applies again.` : '';
 }
 
 /** Whether approving this import adds to the master: its document, or the one an earlier Accept Selected saved. */
