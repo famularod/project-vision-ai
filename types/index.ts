@@ -862,6 +862,14 @@ export type ScheduleItem = {
    * JSON record.
    */
   progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
+  /**
+   * The percent Talk wrote on this task that its Undo took back, and when
+   * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
+   * device may still hold that entry, or a floor made from it, and neither
+   * counts as David's word. Kept in the task's JSON record; the latest Undo's
+   * stays.
+   */
+  progressUndone?: { percentComplete: number; confirmedAt: string | null } | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;

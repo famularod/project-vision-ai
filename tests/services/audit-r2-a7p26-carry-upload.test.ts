@@ -51,6 +51,10 @@
  *   percent a lookahead delete gave back while its upload waited was weighed
  *   as a carry by the refresh and the startup load, which showed the deleted
  *   lookahead's percent; a note or Sync Now in that window kept it.
+ * A5 p26 L1 (Low, caused by aa3e0be and 82b9842): after a Talk Undo, the
+ *   undone percent another device still held was taken as David's latest
+ *   entry: kept as the floor under a file's percent, or as having taken his
+ *   percent over on a new master's row.
  * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
  *   recorded Low (Set Active to an older master); see each test.
  *
@@ -184,7 +188,7 @@ import {
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
-import { scheduleManagersOwnPercent } from '../../services/ScheduleProgressSource';
+import { scheduleManagersOwnPercent, scheduleManagersPercentUnderFileOfBoth, scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
@@ -305,8 +309,8 @@ async function approve(device: Device, source: ReferenceDocument, lines: string[
   await render(device);
 }
 
-/** A task edit (App.tsx's updateScheduleItem, then its sync). */
-async function edit(device: Device, itemId: string, change: Partial<ScheduleItem>) {
+/** A task edit (App.tsx's updateScheduleItem, then its sync); `restoresProgress` as Talk's Undo applies its edit. */
+async function edit(device: Device, itemId: string, change: Partial<ScheduleItem>, restoresProgress = false) {
   on(device);
   const deps: Record<string, unknown> = {
     scheduleItemsCurrentRef: device.ref,
@@ -326,8 +330,8 @@ async function edit(device: Device, itemId: string, change: Partial<ScheduleItem
     queueScheduleItemRecord,
     Alert: { alert: () => undefined },
   };
-  const update = compiled<(id: string, change: Partial<ScheduleItem>) => void>(`module.exports = (() => { ${UPDATE_SOURCE}\n return updateScheduleItem; })();`, deps);
-  update(itemId, change);
+  const update = compiled<(id: string, change: Partial<ScheduleItem>, workflow?: unknown, restores?: boolean) => void>(`module.exports = (() => { ${UPDATE_SOURCE}\n return updateScheduleItem; })();`, deps);
+  update(itemId, change, undefined, restoresProgress);
   await Promise.all(device.pendingEffects.splice(0));
   await render(device);
 }
@@ -2198,5 +2202,152 @@ describe('A7 p29 L1: a percent given back while its upload waits is David\'s wor
     const notNewer = { ...givenBack, updatedAt: restated.updatedAt } as ScheduleItem;
     expect(merged([notNewer], ['MASTER F-1'])).toEqual([[60, '10/25/2026']]);
     expect(merged([earlier, notNewer], [])).toEqual([[60, '10/25/2026']]);
+  });
+});
+
+describe('A5 p26 L1: after a Talk Undo, the percent it undid is not David\'s latest entry', () => {
+  const FRAMING = (pct: number | '' = '') => `Framing,Alpha,Lot,10/15/2026,10/25/2026,${pct}`;
+  const G_AT = scheduleDoc('MASTER G', '2026-09-14T12:00:00.000Z');
+  const L = scheduleDoc('LOOKAHEAD L', '2026-09-21T12:00:00.000Z', 'lookahead');
+  const percentEverywhere = (phone: Device, ipad: Device) => [theRow(phone)?.percentComplete, theRow(ipad)?.percentComplete, framingOf(webShown())[0]?.percentComplete];
+
+  /**
+   * On the phone Talk sets `percent` on Framing; the iPad hears it (`hears`: realtime, or its Sync Now), then sleeps or
+   * loses signal, and David taps Undo a few minutes later (as the app applies it, giving back who stated the progress).
+   */
+  async function talkThenUndo(phone: Device, ipad: Device, percent: number, hears: 'realtime' | 'Sync Now') {
+    at('2026-09-16T10:00:00.000Z');
+    const target = theRow(phone);
+    const previous = scheduleProgressUndoPoint(target);
+    await edit(phone, target.id, { percentComplete: percent });
+    const written = scheduleProgressUndoPoint(phone.ref.current.find(item => item.id === target.id)!);
+    await backgroundUpload(phone);
+    if (hears === 'realtime') await echoes(ipad); else await fullSync(ipad);
+    expect(theRow(ipad).percentComplete).toBe(percent);
+    setOnline(ipad, false);
+    at('2026-09-16T10:04:00.000Z');
+    const undo = scheduleTalkUndo(phone.ref.current, { id: target.id, taskName: 'Framing' }, previous, written, new Date().toISOString(), deviceShown(phone));
+    if (!undo.ok) throw new Error(undo.message);
+    await edit(phone, undo.taskId, undo.edit, true);
+    await backgroundUpload(phone);
+  }
+  /** The iPad wakes and its app starts again: the saved list read back, then the startup cloud load. */
+  async function coldLaunch(ipad: Device) {
+    at('2026-09-19T08:00:00.000Z');
+    setOnline(ipad, true);
+    heard.set('ipad', mockCloud.events.length); // realtime missed the Undo
+    ipad.state = JSON.parse(JSON.stringify(ipad.state)); ipad.ref.current = ipad.state; ipad.effectsSeen = null;
+    await startup(ipad);
+  }
+  /** David's percent, then master G stating `gPercent` above it on Framing's dates (his percent kept under G's). */
+  async function underG(own: number, gPercent: number) {
+    const { phone, ipad } = await startBoth(F, [FRAMING(), SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: own });
+    await backgroundUpload(phone); await echoes(ipad);
+    at(G_AT.importedAt!); await approve(phone, G_AT, [FRAMING(gPercent), SURVEY]); shareDocuments(phone);
+    await backgroundUpload(phone); await echoes(ipad); await fullSync(ipad);
+    expect([theRow(ipad).percentComplete, theRow(ipad).managersPercentUnderFile]).toEqual([gPercent, own]);
+    return { phone, ipad };
+  }
+  async function lookaheadThenRound(phone: Device, ipad: Device, by: Device, percent: number) {
+    at(L.importedAt!); await approve(by, L, [`Framing,Alpha,Lot,10/16/2026,10/26/2026,${percent}`], true); shareDocuments(by);
+    await backgroundUpload(by);
+    await fullSync(ipad); await fullSync(phone); await refresh(ipad); await refresh(phone);
+    return percentEverywhere(phone, ipad);
+  }
+
+  it.each([
+    ['the iPad', 'realtime', 'ipad'],
+    ['the phone, after the iPad\'s Sync Now', 'realtime', 'phone'],
+    ['the iPad, which heard Talk on its Sync Now', 'Sync Now', 'ipad'],
+  ] as const)('(the finding) his 40%% under G\'s 60%%, Talk 50%%, Undo: after the iPad\'s cold launch a lookahead at 45%% on %s shows 45%% everywhere', async (_label, hears, where) => {
+    const { phone, ipad } = await underG(40, 60);
+    await talkThenUndo(phone, ipad, 50, hears);
+    expect([theRow(phone).percentComplete, theRow(phone).managersPercentUnderFile]).toEqual([60, 40]);
+    await coldLaunch(ipad);
+    // The iPad keeps his 40% under G's 60%, not Talk's undone 50%, and sends nothing over it.
+    expect([theRow(ipad).percentComplete, theRow(ipad).managersPercentUnderFile]).toEqual([60, 40]);
+    if (where === 'phone') { await fullSync(ipad); await fullSync(phone); }
+    expect(await lookaheadThenRound(phone, ipad, where === 'ipad' ? ipad : phone, 45)).toEqual([45, 45, 45]);
+  });
+
+  it('(lowering) his 10% under G\'s 60%, Talk 0%, Undo: a lookahead at 5% shows his 10% (owner answer Q22), not 5%', async () => {
+    const { phone, ipad } = await underG(10, 60);
+    await talkThenUndo(phone, ipad, 0, 'realtime');
+    await coldLaunch(ipad);
+    expect(await lookaheadThenRound(phone, ipad, ipad, 5)).toEqual([10, 10, 10]);
+  });
+
+  it('(Undo back to his own percent, then a master raises it) his 40%, Talk 50%, Undo, master H at 60%: a lookahead at 45% shows 45%', async () => {
+    const { phone, ipad } = await startBoth(F, [FRAMING(), SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: 40 });
+    await backgroundUpload(phone); await echoes(ipad);
+    await talkThenUndo(phone, ipad, 50, 'realtime');
+    expect(theRow(phone).percentComplete).toBe(40);
+    const H18 = scheduleDoc('MASTER H', '2026-09-18T12:00:00.000Z');
+    at(H18.importedAt!); await approve(phone, H18, [FRAMING(60), SURVEY]); shareDocuments(phone); await backgroundUpload(phone);
+    // His 40% is kept under H's 60%, and the task still notes Talk's 50% as taken back.
+    expect([theRow(phone).managersPercentUnderFile, theRow(phone).progressUndone]).toEqual([40, { percentComplete: 50, confirmedAt: '2026-09-16T10:00:00.000Z' }]);
+    await coldLaunch(ipad); await fullSync(ipad);
+    expect(await lookaheadThenRound(phone, ipad, ipad, 45)).toEqual([45, 45, 45]);
+  });
+
+  it('(the mirror) the iPad, still holding Talk\'s 50%, approves master H raising Framing to 60%: a lookahead at 45% shows 45%', async () => {
+    const { phone, ipad } = await startBoth(F, [FRAMING(), SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: 40 });
+    await backgroundUpload(phone); await echoes(ipad);
+    await talkThenUndo(phone, ipad, 50, 'realtime');
+    // The iPad, which never heard the Undo, approves H over its 50%, kept under H's 60% from Talk's time.
+    const H18 = scheduleDoc('MASTER H', '2026-09-18T12:00:00.000Z');
+    at(H18.importedAt!); await approve(ipad, H18, [FRAMING(60), SURVEY]);
+    expect([theRow(ipad).percentComplete, theRow(ipad).managersPercentUnderFile]).toEqual([60, 50]);
+    at('2026-09-19T08:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    await backgroundUpload(ipad); await fullSync(ipad); await fullSync(phone); await refresh(ipad);
+    // The phone's 40%, given back by the Undo after Talk's 50%, is his latest entry: kept under H's 60%.
+    expect([theRow(phone).managersPercentUnderFile, theRow(ipad).managersPercentUnderFile, cloudRow(theRow(phone).id)!.managersPercentUnderFile]).toEqual([40, 40, 40]);
+    expect(await lookaheadThenRound(phone, ipad, phone, 45)).toEqual([45, 45, 45]);
+  });
+
+  it('(take-over, 82b9842) the iPad, still holding Talk\'s 20%, approves a master moving Framing at 30%: his 40% everywhere', async () => {
+    const { phone, ipad } = await startBoth(F, [FRAMING(), SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: 40 });
+    await backgroundUpload(phone); await echoes(ipad);
+    await talkThenUndo(phone, ipad, 20, 'Sync Now');
+    expect(theRow(phone).percentComplete).toBe(40);
+    // The iPad, which never heard the Undo, approves master M moving Framing at 30% over its 20%.
+    const M = scheduleDoc('MASTER M', '2026-09-18T00:00:00.000Z');
+    at(M.importedAt!); await approve(ipad, M, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,30', SURVEY]);
+    expect([theRow(ipad).percentComplete, theRow(ipad).managersPercentUnderFile]).toEqual([30, 20]);
+    at('2026-09-18T04:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    await backgroundUpload(ipad); await fullSync(ipad); await fullSync(phone); await fullSync(ipad); await refresh(phone); await refresh(ipad);
+    // One device: his 40% (given back by the Undo, after Talk's 20%) is not lowered by M's 30%.
+    expect(percentEverywhere(phone, ipad)).toEqual([40, 40, 40]);
+  });
+
+  it('pure: the Undo notes the entry it took back; that entry, or a floor made from it, is not his word; every other entry is weighed as before', () => {
+    const base = { ...rowsOf(G_AT, [FRAMING(60)])[0], status: 'In Progress' } as ScheduleItem;
+    const TALK = '2026-09-16T10:00:00.000Z';
+    const UNDONE = { percentComplete: 50, confirmedAt: TALK };
+    // G's 60% over his 40% (judged 10 Sep); Talk wrote 50% at 10:00; Undo at 10:04.
+    const restated = { ...base, percentComplete: 60, progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: G_AT.importedAt, managersPercentUnderFile: 40, managersPercentUnderFileJudgedAt: '2026-09-10T09:00:00.000Z' } as ScheduleItem;
+    const talk = { ...restated, percentComplete: 50, progressConfirmedBy: 'David', progressConfirmedAt: TALK } as ScheduleItem;
+    const undo = scheduleTalkUndo([talk], { id: talk.id, taskName: 'Framing' }, scheduleProgressUndoPoint(restated), scheduleProgressUndoPoint(talk), '2026-09-16T10:04:00.000Z');
+    if (!undo.ok) throw new Error(undo.message);
+    const undone = { ...talk, ...undo.edit } as ScheduleItem;
+    expect([undone.percentComplete, undone.managersPercentUnderFile, undone.managersPercentUnderFileJudgedAt, undone.progressUndone]).toEqual([60, 40, '2026-09-10T09:00:00.000Z', UNDONE]);
+    // Merged with a copy still holding Talk's 50%: his 40% stays under G's 60%, and the note stays.
+    expect(scheduleManagersPercentUnderFileOfBoth(undone, talk)).toEqual({ managersPercentUnderFile: 40, managersPercentUnderFileJudgedAt: '2026-09-10T09:00:00.000Z' });
+    const [merged] = recoverDAVEScheduleRecords({ local: [talk], cloud: [undone], allowCloudOnly: true });
+    expect([merged.percentComplete, merged.managersPercentUnderFile, merged.progressUndone]).toEqual([60, 40, UNDONE]);
+    // An entry of his after the Undo, or one at Talk's time with another percent, is still his latest.
+    const later = { ...talk, percentComplete: 55, progressConfirmedAt: '2026-09-16T11:00:00.000Z' } as ScheduleItem;
+    expect(scheduleManagersPercentUnderFileOfBoth(undone, later).managersPercentUnderFile).toBe(55);
+    expect(scheduleManagersPercentUnderFileOfBoth(undone, { ...talk, percentComplete: 45 } as ScheduleItem).managersPercentUnderFile).toBe(45);
+    // A floor made from Talk's 50% (a master approved over it) gives way to the restored copy's entry of his.
+    const hFloor = { ...restated, managersPercentUnderFile: 50, managersPercentUnderFileJudgedAt: TALK, progressConfirmedAt: '2026-09-18T12:00:00.000Z' } as ScheduleItem;
+    const ownBack = { ...base, percentComplete: 40, progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: '2026-09-16T10:04:00.000Z', progressJudgment: { judgedAt: '2026-09-10T09:00:00.000Z', givenBackAt: '2026-09-16T10:04:00.000Z' }, progressUndone: UNDONE } as ScheduleItem;
+    expect(scheduleManagersPercentUnderFileOfBoth(hFloor, ownBack)).toEqual({ managersPercentUnderFile: 40, managersPercentUnderFileJudgedAt: '2026-09-10T09:00:00.000Z' });
+    // Without the note (another task, or one no Undo touched), a later floor stands over an older entry, as before.
+    expect(scheduleManagersPercentUnderFileOfBoth(hFloor, { ...ownBack, progressUndone: undefined } as ScheduleItem).managersPercentUnderFile).toBe(50);
   });
 });

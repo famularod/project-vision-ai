@@ -285,8 +285,41 @@ export function scheduleManagersPercentUnderFileOfBoth(
   const kept = { managersPercentUnderFile: progress.managersPercentUnderFile, managersPercentUnderFileJudgedAt: progress.managersPercentUnderFileJudgedAt };
   const floor = scheduleProgressIsManagers(progress) ? null : scheduleManagersOwnPercent(progress);
   const later = scheduleManagersOwnPercent(other);
-  if (!floor || !later || timeOf(later.judgedAt) <= timeOf(floor.judgedAt)) return kept;
+  if (!floor || !later) return kept;
+  // An entry Talk's Undo took back is not his: the other copy's never replaces the floor, and a floor made from it gives
+  // way to the other copy's entry (A5 pass 26 L1).
+  if (scheduleEntryUndone(progress, later)) return kept;
+  if (timeOf(later.judgedAt) <= timeOf(floor.judgedAt) && !scheduleEntryUndone(other, floor)) return kept;
   return { managersPercentUnderFile: later.percent, managersPercentUnderFileJudgedAt: later.judgedAt };
+}
+
+/**
+ * Whole-app audit A5 pass 26 L1 (Low, caused by aa3e0be and 82b9842): David
+ * entered 40% on Framing; master G stated 60%, so the task took 60% and kept
+ * his 40% under it. On the phone Talk set 50%; the open iPad heard it, then
+ * slept, and David tapped Undo, which put back G's 60% with his 40% under it.
+ * The iPad's next cold launch or Sync Now took Talk's undone 50% (entered
+ * after his 40%) as his latest entry, kept it under G's 60% and sent it up: a
+ * lookahead at 45% then showed 50% on every device, where one device shows
+ * 45%. The same with Talk lowering (a lookahead below his entry showed),
+ * with Undo putting back his own percent before a master raised it, with the
+ * iPad approving a master over Talk's percent (kept under it, from Talk's
+ * time), and when that master moved the task: its row read as having taken
+ * his percent over (82b9842). Undo now notes on the task the entry it took
+ * back (progressUndone: Talk's percent and when Talk confirmed it), and the
+ * note goes with the task. A copy's entry, or a floor, that is that entry is
+ * no word of David's: a merge never keeps it as his latest entry, and a
+ * master's row keeping it under its percent has not taken his percent over.
+ * Every other entry is weighed by when he judged it, as before.
+ */
+export function scheduleEntryUndone(
+  row: Pick<ScheduleItem, 'progressUndone'>,
+  entry: Readonly<{ percent: number; judgedAt: string | null }>,
+): boolean {
+  const undone = row.progressUndone;
+  return Boolean(undone && undone.confirmedAt && entry.judgedAt) &&
+    timeOf(undone!.confirmedAt) === timeOf(entry.judgedAt) &&
+    percentOf({ percentComplete: undone!.percentComplete }) === entry.percent;
 }
 
 /**
@@ -344,6 +377,8 @@ export function scheduleTalkUndo(
   const now = scheduleTaskNow(items, task.id, shown);
   const holds = now && WRITTEN_FIELDS.every(field => (now[field] ?? null) === (written[field] ?? null));
   if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
-  const { lookaheadOverlay, ...edit } = scheduleProgressRestored(before, at);
+  const { lookaheadOverlay, ...restored } = scheduleProgressRestored(before, at);
+  // The entry the Undo takes back, so a copy or a floor still holding it is not his word (A5 pass 26 L1).
+  const edit = { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } };
   return { ok: true, taskId: now.id, edit: now.id === task.id ? { ...edit, lookaheadOverlay } : edit };
 }

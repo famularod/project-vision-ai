@@ -5,6 +5,7 @@ import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './Sche
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleEntryUndone,
   scheduleManagersOwnPercent,
   scheduleManagersPercentUnderFileOfBoth,
   scheduleProgressCarriedFrom,
@@ -638,7 +639,8 @@ function fileStatedAbove(row: ScheduleItem, earlier: ScheduleItem): boolean {
 function keepsHisPercentUnderFile(row: ScheduleItem, earlier: ScheduleItem): boolean {
   if (scheduleProgressIsManagers(row) || row.managersPercentUnderFileJudgedAt === undefined) return false;
   const under = scheduleManagersOwnPercent(row);
-  return Boolean(under) && timestamp(under!.judgedAt) >= timestamp(scheduleProgressJudgedAt(earlier));
+  // A floor made from the entry Talk's Undo took back on the earlier row took nothing over (A5 pass 26 L1).
+  return Boolean(under) && timestamp(under!.judgedAt) >= timestamp(scheduleProgressJudgedAt(earlier)) && !scheduleEntryUndone(earlier, under!);
 }
 
 /**
