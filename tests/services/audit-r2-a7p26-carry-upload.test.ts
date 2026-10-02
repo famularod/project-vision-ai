@@ -33,6 +33,8 @@
  *   over realtime on the iPad took David's percent on its row with it.
  * A7 p27 L1 (Low, caused by 30170fc): the carry's own upload closed a task
  *   conflict waiting for Review Conflicts.
+ * A7 p27 L2 (Low, older): after the queue-only upload refused a carry, Sync
+ *   Now sent the iPad's old copy whole over a newer lookahead.
  *
  * The two-device tests run in the app's real order, with each device's own
  * storage and one cloud: SyncService's Full Sync (upload, then download), its
@@ -1431,6 +1433,89 @@ describe('A7 p27 L1: a carried percent sent on its own leaves a task conflict wa
     await edit(ipad, 'MASTER G-1', { notes: 'Inspection Friday' });
     expect([cloudRow('MASTER G-1')?.percentComplete, cloudRow('MASTER G-1')?.notes]).toEqual([30, 'Inspection Friday']);
     expect(await conflictNotes(ipad)).toEqual([]);
+  });
+});
+
+describe('A7 p27 L2: a carry the queue-only upload refuses leaves no old copy for Sync Now to send', () => {
+  const L = scheduleDoc('LOOKAHEAD L', '2026-09-16T09:00:00.000Z', 'lookahead');
+  const lookaheadNote = (row: ScheduleItem | undefined) => (row?.lookaheadOverlay?.lookaheads || []).map(entry => entry.batchId);
+  /** The iPad's carry waits on its queue, offline; the phone approves L stating `lPercent` on new dates and types a note. */
+  async function carryThenLookahead(lPercent: string) {
+    const { phone, ipad } = await offlineThirty();
+    await fullSync(ipad, false);
+    setOnline(ipad, false);
+    expect((await queueOf(ipad)).map(item => (item.payload as { carriedProgress?: boolean }).carriedProgress)).toEqual([true]);
+    at(L.importedAt!);
+    await approve(phone, L, [`Framing,Alpha,Lot,10/25/2026,11/04/2026,${lPercent}`], true);
+    shareDocuments(phone);
+    at('2026-09-16T09:30:00.000Z');
+    await edit(phone, theRow(phone).id, { notes: 'Crew short Tuesday' });
+    at('2026-09-16T10:00:00.000Z');
+    setOnline(ipad, true);
+    return { phone, ipad };
+  }
+
+  it.each([
+    ['L states 60%: the carry is refused, and L\'s 60% stands', '60', 60],
+    ['L states 10%: the carry lands (never below David\'s 30%)', '10', 30],
+    ['L states no percent: the carry lands', '', 30],
+  ] as const)('%s; L\'s dates, its note and the phone\'s note stay everywhere, as with Sync Now alone', async (_label, lPercent, percent) => {
+    const { phone, ipad } = await carryThenLookahead(lPercent);
+    await backgroundUpload(ipad); // the reconnect upload, or Retry Sync
+    expect(await queueOf(ipad)).toEqual([]);
+    await fullSync(ipad); // Sync Now
+    await refresh(phone);
+    await refresh(ipad);
+    const expected = [['10/25/2026', '11/04/2026', percent, 'Crew short Tuesday', '']];
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual([expected, expected, expected]);
+    expect(lookaheadNote(cloudRow('MASTER G-1'))).toEqual(['batch-LOOKAHEAD L']);
+  });
+
+  it('control: Sync Now with no queue-only upload first gives the same', async () => {
+    const { phone, ipad } = await carryThenLookahead('60');
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/25/2026', '11/04/2026', 60, 'Crew short Tuesday', '']]));
+  });
+
+  it('pure: a copy holding a percent carried from its old row is weighed with that row; David\'s own percent on the row is weighed alone, as before', () => {
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', updatedAt: AFTER_G } as ScheduleItem;
+    const imported = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: [davids.id] } as ScheduleItem;
+    const carried = { ...imported, percentComplete: 30, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David' } as ScheduleItem;
+    // The cloud's copy: lookahead L restated G's row at 60% on new dates, and the phone typed a note.
+    const restated = {
+      ...imported, startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60, status: 'In Progress', notes: 'Crew short Tuesday',
+      alsoImportedInBatchIds: ['batch-LOOKAHEAD L'], updatedAt: '2026-09-16T09:30:00.000Z',
+      lookaheadOverlay: { masterStartDate: '10/22/2026', masterFinishDate: '11/01/2026', masterPercentComplete: 0, lookaheads: [{ batchId: 'batch-LOOKAHEAD L', startDate: '10/25/2026', finishDate: '11/04/2026', percentComplete: 60 }] },
+    } as ScheduleItem;
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [davids, carried], cloud: [davids, restated] })).toEqual([]);
+    // His own 30% typed on G's row itself (judged later than any percent on F's row) still outranks a file's percent.
+    const own = { ...carried, progressConfirmedAt: '2026-09-16T11:00:00.000Z', updatedAt: '2026-09-16T11:00:00.000Z' } as ScheduleItem;
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [davids, own], cloud: [davids, restated] }).map(row => [row.id, row.percentComplete]))
+      .toEqual([[own.id, 30]]);
+  });
+
+  it('pure: weighed with every task, as the download weighs it: a newer percent on the old row does not go to a row with a sibling (seed 4235 of the A7 p27 comparisons)', () => {
+    // The iPad's 100% on F's row went to G's row with G's import; the phone's newer 80% on F's row; the phone's P row also answers to F's.
+    const ipadOld = { ...rowsOf(F, [F_ROW])[0], percentComplete: 100, status: 'Complete', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', updatedAt: BEFORE_G } as ScheduleItem;
+    const phoneOld = { ...ipadOld, percentComplete: 80, status: 'In Progress', progressConfirmedAt: AFTER_G, updatedAt: AFTER_G } as ScheduleItem;
+    const gRowCopy = { ...rowsOf(G, [G_ROW()])[0], percentComplete: 100, status: 'Complete', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', revisedFromTaskIds: [ipadOld.id] } as ScheduleItem;
+    const sibling = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,'])[0], percentComplete: 80, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', revisedFromTaskIds: [ipadOld.id, 'MASTER P-1'] } as ScheduleItem;
+    // The cloud's copy of G's row changed since (a note typed on the phone).
+    const gCloud = { ...gRowCopy, notes: 'Crew short Tuesday', updatedAt: '2026-09-16T00:00:00.000Z' } as ScheduleItem;
+    // The download leaves G's row at 100% (two rows answer to F's: no carry); so the upload sends nothing.
+    expect(recoverDAVEScheduleRecords({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling], allowCloudOnly: true }).find(row => row.id === gRowCopy.id)!.percentComplete).toBe(100);
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling] })).toEqual([]);
+  });
+
+  it('pure: a percent of his given back on the device after the cloud\'s copy last changed is weighed alone, as before (sweep seeds 9093, 9036)', () => {
+    // His 70% on F's row; lookahead L stated 80% on G's row (his 70% under it); a note on the phone; then deleting L on
+    // this device gave his 70% back, stamped 1 ms after L's percent (his own time kept), after the cloud's copy last changed.
+    const davids = { ...rowsOf(F, [F_ROW])[0], percentComplete: 70, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', updatedAt: BEFORE_G } as ScheduleItem;
+    const cloudG = { ...rowsOf(G, [G_ROW()])[0], percentComplete: 80, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: '2026-09-16T09:00:00.000Z', managersPercentUnderFile: 70, revisedFromTaskIds: [davids.id], notes: 'Crew short Tuesday', updatedAt: '2026-09-17T09:00:00.000Z' } as ScheduleItem;
+    const givenBack = { ...cloudG, percentComplete: 70, progressConfirmedBy: 'David', progressConfirmedAt: '2026-09-16T09:00:00.001Z', progressJudgment: { judgedAt: BEFORE_G, givenBackAt: '2026-09-16T09:00:00.001Z' }, managersPercentUnderFile: undefined, updatedAt: '2026-09-18T10:00:00.000Z' } as ScheduleItem;
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [davids, givenBack], cloud: [davids, cloudG] }).map(row => [row.id, row.percentComplete]))
+      .toEqual([[givenBack.id, 70]]);
   });
 });
 

@@ -163,15 +163,19 @@ function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleIt
  * it.
  */
 function mergedWithCarriedProgressWeighedAgain(record: ScheduleItem, cloudRecord: ScheduleItem, copies: ReadonlyMap<string, readonly ScheduleItem[]>): ScheduleItem {
-  const carried = scheduleProgressIsManagers(record) &&
-    scheduleTaskEarlierIds(record).some(id => (copies.get(normalized(id)) || []).some(earlier => progressTakenFrom(record, earlier)));
-  if (!carried) return mergeScheduleRevisions(record, cloudRecord);
+  if (!holdsCarriedProgress(record, copies)) return mergeScheduleRevisions(record, cloudRecord);
   const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, cloudRecord[field]]));
   const own = { ...record, ...progress } as ScheduleItem;
   // With the same progress, the copy edited later leads; the cloud's when neither was.
   return recordRevisionTimestamp(own) > recordRevisionTimestamp(cloudRecord)
     ? mergeScheduleRevisions(own, cloudRecord)
     : mergeScheduleRevisions(cloudRecord, own);
+}
+
+/** Whether a copy's progress is David's from an earlier row it answers to (A7 pass 26 M-1). */
+function holdsCarriedProgress(record: ScheduleItem, copies: ReadonlyMap<string, readonly ScheduleItem[]>): boolean {
+  return scheduleProgressIsManagers(record) &&
+    scheduleTaskEarlierIds(record).some(id => (copies.get(normalized(id)) || []).some(earlier => progressTakenFrom(record, earlier)));
 }
 
 /** Whether a row holds the progress David stated on an earlier row (the carry's, or an import's that kept it). */
@@ -515,6 +519,28 @@ function restatedSinceImport(record: ScheduleItem): boolean {
  * Select only local task revisions that would actually change cloud truth.
  * Recovery may return cloud-only rows so another device can hydrate them; it
  * must never cause those same rows to be written back during Full Sync.
+ *
+ * Whole-app audit A7 pass 27 L2 (Low, older; what A7 pass 26 M-1 left): the
+ * iPad's carried 30% on G's row waited on its queue when it went offline;
+ * the phone then approved lookahead L stating 60% on new dates and typed a
+ * note. Back online, the iPad's queue-only upload (the reconnect upload, or
+ * Retry Sync) rightly refused the carry, but the iPad kept its copy, and
+ * Sync Now weighed that copy against the cloud's alone: as David's percent
+ * it outranked the cloud's whole, so L's dates, its 60% and both notes were
+ * written over everywhere (Sync Now with no queue-only upload first kept
+ * them). A copy whose percent is carried from an earlier row it answers to,
+ * older than the cloud's copy (a carried row keeps the row's own stamp), is
+ * now weighed with every task, as the download weighs it
+ * (mergedWithCarriedProgressWeighedAgain, then the carry): what the carry
+ * still gives goes up with the cloud's newer edits, and a refused one leaves
+ * the cloud's copy as it is. Weighed with only the rows it answers to, a
+ * percent carried to a row with sibling rows (which the download does not
+ * carry) went up; and a percent of his given back on the device after the
+ * cloud's copy last changed (deleting a lookahead gives back his percent
+ * before it, stamped 1 ms after the lookahead's, and it also reads as taken
+ * from his earlier row) lost to the cloud's (both found by the A7 pass 27
+ * comparisons). Any other copy, and a copy changed on the device after the
+ * cloud's, is weighed alone, as before.
  */
 export function daveScheduleItemsNeedingCloudUpload({
   local,
@@ -532,16 +558,24 @@ export function daveScheduleItemsNeedingCloudUpload({
       .filter(([id]) => Boolean(id) && !deleted.has(id)),
   );
 
+  const copies = rowCopiesById([...local, ...cloud]);
+  // What the download makes of every task, worked out once, when a copy holds a carried percent (A7 pass 27 L2).
+  let downloaded: Map<string, ScheduleItem> | null = null;
+  const asDownloaded = () => downloaded ??= new Map(recoverDAVEScheduleRecords({ local, cloud, deletedIds, allowCloudOnly: true })
+    .map(row => [normalized(row.id), row] as const));
   return local.flatMap(record => {
     const id = normalized(record.id);
     if (!id || deleted.has(id)) return [];
     const remote = cloudById.get(id);
     if (!remote) return [record];
-    const authoritative = recoverDAVEScheduleRecords({
-      local: [record],
-      cloud: [remote],
-      allowCloudOnly: true,
-    }).find(candidate => normalized(candidate.id) === id);
+    // A carried percent on a copy older than the cloud's is weighed with every task, as the download weighs it (A7 pass 27 L2).
+    const authoritative = holdsCarriedProgress(record, copies) && timestamp(remote.updatedAt) > timestamp(record.updatedAt)
+      ? asDownloaded().get(id)
+      : recoverDAVEScheduleRecords({
+        local: [record],
+        cloud: [remote],
+        allowCloudOnly: true,
+      }).find(candidate => normalized(candidate.id) === id);
     if (!authoritative) return [];
     return stableMeaning(authoritative) === stableMeaning(remote)
       ? []
