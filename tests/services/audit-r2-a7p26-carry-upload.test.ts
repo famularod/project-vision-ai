@@ -40,6 +40,8 @@
  * A5 p24 L3 (Low, caused by ef943e5): deleted rows passing David's percent:
  *   (a) an unknown row between stopped a newer one, (b) an older one passed
  *   a row between holding a newer one.
+ * A6 p24 L1 (Low, caused by cab99c0): a lookahead floor older than the
+ *   percent David entered since came back from the other device's copy.
  * Left open, with their tests skipped: A5 p24 L1 (b), A5 p24 L2 and the A5
  *   recorded Low (Set Active to an older master); see each test.
  *
@@ -172,6 +174,11 @@ import {
   synchronizeLocalData, uploadPendingChanges,
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
+import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
+import { scheduleManagersOwnPercent } from '../../services/ScheduleProgressSource';
+import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
+import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 
 /* App.tsx's own code, compiled -------------------------------------------- */
 const APP = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
@@ -1077,6 +1084,8 @@ describe('A5 recorded Low R-c on Full Sync (cab99c0, Q22): a lookahead never lea
     await refresh(ipad);
     expect([onWeb(), onDevice(ipad), onDevice(phone)]).toEqual(Array(3).fill([['10/24/2026', '11/03/2026', 70, '', '']]));
     expect([cloudRow('MASTER G-1'), theRow(ipad), theRow(phone)].map(row => row!.managersPercentUnderFile)).toEqual([70, 70, 70]);
+    // With when he judged it, everywhere (A6 p24 L1: the floor is his latest entry, so a merge weighs it by its time).
+    expect([cloudRow('MASTER G-1'), theRow(ipad), theRow(phone)].map(row => row!.managersPercentUnderFileJudgedAt)).toEqual(Array(3).fill(BEFORE_G));
     const writes = framingWritesOf(phone, ipad);
     await fullSync(ipad);
     await fullSync(phone);
@@ -1740,5 +1749,152 @@ describe('convergence', () => {
     const fullSyncSaves = phone.saves + ipad.saves - saves; // Full Sync's download apply saves the list each time, as before
     await refresh(phone); await refresh(ipad); await echoes(phone); await echoes(ipad);
     expect([cloudWrites() - writes, phone.saves + ipad.saves - saves - fullSyncSaves]).toEqual([0, 0]);
+  });
+});
+
+describe('A6 p24 L1: the lookahead floor is David\'s latest own entry', () => {
+  const L1 = scheduleDoc('LOOKAHEAD L1', '2026-09-10T10:00:00.000Z', 'lookahead');
+  const L2 = scheduleDoc('LOOKAHEAD L2', '2026-09-11T10:00:00.000Z', 'lookahead');
+  const L3 = scheduleDoc('LOOKAHEAD L3', '2026-09-12T10:00:00.000Z', 'lookahead');
+  const lookaheadRow = (start: string, finish: string, pct: string) => `Framing,Alpha,Lot,${start},${finish},${pct}`;
+  const syncRound = async (phone: Device, ipad: Device) => {
+    await backgroundUpload(phone); await backgroundUpload(ipad);
+    await fullSync(ipad); await fullSync(phone); await fullSync(ipad);
+    await refresh(phone); await refresh(ipad); await echoes(phone); await echoes(ipad);
+  };
+  const floorOf = (row: ScheduleItem | undefined) => [row?.managersPercentUnderFile ?? null, row?.managersPercentUnderFileJudgedAt ?? null];
+  /** What Reports says moved on Framing's percent, from the report before. */
+  function framingReport(device: Device, previous: DAVEReportSnapshot | null) {
+    const now = new Date().toISOString();
+    const view = deviceShown(device);
+    const truth = buildDAVEProjectTruth({ projectId: 'report:alpha', projectName: 'Alpha', updates: [], scheduleItems: view, projectAreas: [], referenceDocuments: [], now });
+    const fingerprint = buildDAVEReportSourceFingerprint([truth]);
+    const briefing = buildDAVEReportBriefing({ truths: [truth], selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(previous, fingerprint), scheduleItems: view });
+    const approved = reportSnapshotToSave(buildDAVEReportSnapshot({ truths: [truth], scopeKey: daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: now, reportFormat: 'project_manager' }), previous);
+    return { lines: briefing.recentChanges.map(change => change.summary).filter(line => /Framing moved/.test(line)), sent: approved ? markReportSnapshotDelivered(approved, now, device.name) : previous };
+  }
+
+  /**
+   * David's 20%, then L1 at 70% (his 20% kept under it) on both devices. David then lowers Framing to 10% (`how`: on the
+   * phone, or on the web); before the iPad hears of it, `approver` approves L2 at 40%. After a sync round, the phone
+   * approves L3 stating `l3`.
+   */
+  async function lowered({ how = 'phone', approver = 'ipad', l3 }: { how?: 'phone' | 'web'; approver?: DeviceName; l3: string }) {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T09:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 20 });
+    at(L1.importedAt!); await approve(phone, L1, [lookaheadRow('10/16/2026', '10/26/2026', '70')], true); shareDocuments(phone);
+    at('2026-09-10T12:00:00.000Z'); await syncRound(phone, ipad);
+    expect([theRow(phone), theRow(ipad)].map(row => [row.percentComplete, ...floorOf(row)])).toEqual(Array(2).fill([70, 20, '2026-09-10T09:00:00.000Z']));
+    const reportBefore = framingReport(phone, null).sent;
+    at('2026-09-11T09:00:00.000Z');
+    if (how === 'phone') await edit(phone, theRow(phone).id, { percentComplete: 10 });
+    else webWrite(webEdited(cloudRow(theRow(phone).id)!, { percentComplete: '10' }));
+    at(L2.importedAt!);
+    const device = approver === 'ipad' ? ipad : phone;
+    if (approver === 'phone') await refresh(phone);
+    await approve(device, L2, [lookaheadRow('10/17/2026', '10/27/2026', '40')], true); shareDocuments(device);
+    at('2026-09-11T12:00:00.000Z'); await syncRound(phone, ipad);
+    const reportL2 = framingReport(phone, reportBefore);
+    at(L3.importedAt!); await approve(phone, L3, [lookaheadRow('10/18/2026', '10/28/2026', l3)], true); shareDocuments(phone);
+    at('2026-09-12T12:00:00.000Z'); await syncRound(phone, ipad);
+    return { phone, ipad, report: framingReport(phone, reportL2.sent).lines };
+  }
+  /** A web edit of Framing (the desktop's task editor), from the cloud's copy. */
+  function webEdited(current: ScheduleItem, patch: Record<string, unknown>): ScheduleItem {
+    const built = buildDAVEWebScheduleItem({
+      id: current.id, now: new Date().toISOString(), actor: 'David', current: { ...current, cloudUpdatedAt: current.updatedAt ?? null } as never,
+      draft: {
+        projectId: MOCK_PROJECT_ID, itemType: 'Task', taskName: current.taskName, projectName: current.projectName, locationName: current.locationName || '',
+        startDate: current.startDate, finishDate: current.finishDate, milestone: '', owner: current.owner || '', contractor: '', percentComplete: String(current.percentComplete),
+        priority: 'Medium', status: current.status, notes: current.notes || '', nextAction: '', activityMessage: '', ...patch,
+      } as never,
+    }) as ScheduleItem & { cloudUpdatedAt?: unknown };
+    const { cloudUpdatedAt: _cloud, ...plain } = built;
+    return plain as ScheduleItem;
+  }
+
+  it('the finding: his 10% on the phone, L2 at 40% on the iPad before it heard of it, then L3 at 10%: 10% everywhere, and Reports says 40% to 10%', async () => {
+    const { phone, ipad, report } = await lowered({ l3: '10' });
+    expect(percentsOf(ipad, phone)).toEqual([[10], [10], [10]]);
+    expect(report).toEqual(['Alpha: Framing moved from 40% to 10% complete.']);
+  });
+
+  it('after L2 every copy keeps his 10% under L2\'s 40%, as one device does, not the 20% he entered before it', async () => {
+    const twoDevices = await lowered({ l3: '' });
+    const oneDevice = await lowered({ approver: 'phone', l3: '' });
+    for (const { phone, ipad } of [twoDevices, oneDevice]) {
+      expect([cloudRow(theRow(phone).id), theRow(ipad), theRow(phone)].map(row => [row!.percentComplete, ...floorOf(row)]))
+        .toEqual(Array(3).fill([40, 10, '2026-09-11T09:00:00.000Z']));
+    }
+  });
+
+  it.each([['at', '10', 10], ['below', '5', 10], ['above', '25', 25]] as const)('L3 %s his new 10%% (%s%%): %s%% everywhere, on two devices as on one', async (_label, l3, expected) => {
+    for (const approver of ['ipad', 'phone'] as const) {
+      const { phone, ipad } = await lowered({ approver, l3 });
+      expect(percentsOf(ipad, phone)).toEqual([[expected], [expected], [expected]]);
+    }
+  });
+
+  it('unchanged: a web edit to 10% drops the floor from the cloud\'s copy, and the same sequence gives 10%', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T09:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 20 });
+    at(L1.importedAt!); await approve(phone, L1, [lookaheadRow('10/16/2026', '10/26/2026', '70')], true); shareDocuments(phone);
+    at('2026-09-10T12:00:00.000Z'); await syncRound(phone, ipad);
+    at('2026-09-11T09:00:00.000Z');
+    const edited = webEdited(cloudRow(theRow(phone).id)!, { percentComplete: '10' });
+    expect([edited.percentComplete, 'managersPercentUnderFile' in edited, 'managersPercentUnderFileJudgedAt' in edited]).toEqual([10, false, false]);
+    const noted = webEdited(cloudRow(theRow(phone).id)!, { notes: 'Crane Friday' });
+    expect([noted.percentComplete, ...floorOf(noted)]).toEqual([70, 20, '2026-09-10T09:00:00.000Z']);
+    const { phone: phone2, ipad: ipad2 } = await lowered({ how: 'web', l3: '5' });
+    expect(percentsOf(ipad2, phone2)).toEqual([[10], [10], [10]]);
+  });
+
+  it('the floor stays while a file\'s percent is shown: L2 at 40% with no entry of his since, then L3 at 10%: his 20%', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T09:00:00.000Z');
+    await edit(phone, theRow(phone).id, { percentComplete: 20 });
+    at(L1.importedAt!); await approve(phone, L1, [lookaheadRow('10/16/2026', '10/26/2026', '70')], true); shareDocuments(phone);
+    at('2026-09-10T12:00:00.000Z'); await syncRound(phone, ipad);
+    at(L2.importedAt!); await approve(ipad, L2, [lookaheadRow('10/17/2026', '10/27/2026', '40')], true); shareDocuments(ipad);
+    at('2026-09-11T12:00:00.000Z'); await syncRound(phone, ipad);
+    expect([cloudRow(theRow(phone).id), theRow(ipad), theRow(phone)].map(row => [row!.percentComplete, ...floorOf(row)]))
+      .toEqual(Array(3).fill([40, 20, '2026-09-10T09:00:00.000Z']));
+    at(L3.importedAt!); await approve(phone, L3, [lookaheadRow('10/18/2026', '10/28/2026', '10')], true); shareDocuments(phone);
+    at('2026-09-12T12:00:00.000Z'); await syncRound(phone, ipad);
+    expect(percentsOf(ipad, phone)).toEqual([[20], [20], [20]]);
+  });
+
+  it('a master moving the task keeps his percent under its file\'s with when he judged it, row to row', async () => {
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    at('2026-09-10T09:00:00.000Z'); await edit(phone, theRow(phone).id, { percentComplete: 20 });
+    at(G.importedAt!); await approve(phone, G, [G_ROW('40'), SURVEY]); shareDocuments(phone);
+    const his = [20, '2026-09-10T09:00:00.000Z'];
+    expect([theRow(phone).id, theRow(phone).percentComplete, ...floorOf(theRow(phone))]).toEqual(['MASTER G-1', 40, ...his]);
+    at(H.importedAt!); await approve(phone, H, ['Framing,Alpha,Lot,10/29/2026,11/08/2026,50', SURVEY]); shareDocuments(phone);
+    expect([theRow(phone).id, theRow(phone).percentComplete, ...floorOf(theRow(phone))]).toEqual(['MASTER H-1', 50, ...his]);
+  });
+
+  it('pure merge: the floor is the later entry of his either copy knows; his own percent shown is its own floor', () => {
+    const row = rowsOf(F, [F_ROW])[0];
+    const file = { ...row, percentComplete: 40, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', progressConfirmedAt: '2026-09-11T10:00:00.000Z', managersPercentUnderFile: 20, managersPercentUnderFileJudgedAt: '2026-09-10T09:00:00.000Z', updatedAt: '2026-09-11T10:00:00.000Z' } as ScheduleItem;
+    const own = (pct: number, when: string) => ({ ...row, percentComplete: pct, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: when, managersPercentUnderFile: 20, managersPercentUnderFileJudgedAt: '2026-09-10T09:00:00.000Z', updatedAt: when }) as ScheduleItem;
+    const merged = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0];
+    // His 10% entered after the 20% under the file's 40%: the floor, whichever copy is the device's.
+    for (const [local, cloud] of [[file, own(10, '2026-09-11T09:00:00.000Z')], [own(10, '2026-09-11T09:00:00.000Z'), file]]) {
+      expect([merged(local, cloud).percentComplete, ...floorOf(merged(local, cloud))]).toEqual([40, 10, '2026-09-11T09:00:00.000Z']);
+    }
+    // His 10% entered before the 20%: the 20% stays the floor.
+    expect(floorOf(merged(file, own(10, '2026-09-09T09:00:00.000Z')))).toEqual([20, '2026-09-10T09:00:00.000Z']);
+    // A later floor on the other copy's file percent wins too; an older one does not.
+    const laterFloor = { ...file, percentComplete: 50, progressConfirmedAt: '2026-09-11T08:00:00.000Z', managersPercentUnderFile: 15, managersPercentUnderFileJudgedAt: '2026-09-10T20:00:00.000Z' } as ScheduleItem;
+    expect(floorOf(merged(file, laterFloor))).toEqual([15, '2026-09-10T20:00:00.000Z']);
+    expect(floorOf(merged({ ...file, managersPercentUnderFileJudgedAt: '2026-09-10T21:00:00.000Z' }, laterFloor))).toEqual([20, '2026-09-10T21:00:00.000Z']);
+    // His own 10% shown wins the progress: the field is left as it was, and his 10% is the floor (it is never read under his own).
+    const ownWins = merged(own(10, '2026-09-12T09:00:00.000Z'), file);
+    expect([ownWins.percentComplete, ...floorOf(ownWins)]).toEqual([10, 20, '2026-09-10T09:00:00.000Z']);
+    expect(scheduleManagersOwnPercent(ownWins)).toEqual({ percent: 10, judgedAt: '2026-09-12T09:00:00.000Z' });
+    expect(scheduleManagersOwnPercent(file)).toEqual({ percent: 20, judgedAt: '2026-09-10T09:00:00.000Z' });
   });
 });

@@ -845,6 +845,14 @@ export type ScheduleItem = {
    * before.
    */
   managersPercentUnderFile?: number | null;
+  /**
+   * When David judged the percent kept in managersPercentUnderFile (whole-app
+   * audit A6 pass 24 L1, 2 Oct 2026): the floor is his latest own entry, so
+   * a merge keeps the later of the two copies' entries, never an older floor
+   * over a percent he entered since. Kept in the task's JSON record; missing
+   * on a floor saved before, which counts as older than any dated entry.
+   */
+  managersPercentUnderFileJudgedAt?: string | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;

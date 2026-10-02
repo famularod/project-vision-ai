@@ -5,6 +5,7 @@ import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './Sche
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
+  scheduleManagersPercentUnderFileOfBoth,
   scheduleProgressCarriedFrom,
   scheduleProgressFlooredAtManagers,
   scheduleProgressIsManagers,
@@ -436,7 +437,7 @@ function lookaheadFlooredAtManagersPercentOf(earlier: ScheduleItem, record: Sche
   const givenByLookahead = Array.isArray(lookaheads) && lookaheads.some(entry =>
     !entry?.datesReplacedByMaster && typeof entry?.percentComplete === 'number' && boundedPercent(entry.percentComplete) === percent);
   if (!givenByLookahead) return null;
-  const floored = scheduleProgressFlooredAtManagers(record, boundedPercent(Number(earlier.percentComplete)));
+  const floored = scheduleProgressFlooredAtManagers(record, boundedPercent(Number(earlier.percentComplete)), scheduleProgressJudgedAt(earlier));
   return floored ? { ...record, ...floored } : null;
 }
 
@@ -656,10 +657,9 @@ function mergeScheduleRevisions(
     progressConfirmedBy: progressSource.progressConfirmedBy,
     ...(progressSource.progressJudgment ? { progressJudgment: progressSource.progressJudgment } : {}),
     completionVerification: progressSource.completionVerification,
-    // David's own percent a file's replaced goes with that file's percent (A5 recorded Low R-c, cab99c0).
-    ...(local.managersPercentUnderFile !== undefined || cloud.managersPercentUnderFile !== undefined
-      ? { managersPercentUnderFile: progressSource.managersPercentUnderFile }
-      : {}),
+    // David's own percent a file's replaced goes with that file's percent (A5 recorded Low R-c, cab99c0), unless the
+    // other copy knows a later entry of his (A6 pass 24 L1).
+    ...scheduleManagersPercentUnderFileOfBoth(progressSource, progressSource === local ? cloud : local),
     projectControls: mergeScheduleProjectControls(local, cloud, base),
     // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).
     ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),

@@ -233,22 +233,72 @@ export function scheduleProgressCarriedFrom(
  * reconciled), still the file's, with his percent kept under it. Null when
  * the percent is his own, or at or above his.
  */
-export function scheduleProgressFlooredAtManagers(task: ScheduleItem, managersPercent: number): Partial<ScheduleItem> | null {
+export function scheduleProgressFlooredAtManagers(
+  task: ScheduleItem,
+  managersPercent: number,
+  /** When David judged that percent (A6 pass 24 L1). */
+  judgedAt: string | null = null,
+): Partial<ScheduleItem> | null {
   const floor = percentOf({ percentComplete: managersPercent });
   if (scheduleProgressIsManagers(task) || percentOf(task) >= floor) return null;
   const floored = reconcileScheduleProgress(task.status, floor);
-  return { percentComplete: floored.percentComplete, status: floored.status, managersPercentUnderFile: floor };
+  return { percentComplete: floored.percentComplete, status: floored.status, managersPercentUnderFile: floor, managersPercentUnderFileJudgedAt: judgedAt };
+}
+
+/**
+ * David's latest own percent a task holds, and when he judged it: the
+ * lookahead floor (owner answer Q22). His own percent while it is shown;
+ * the one a file's replaced (managersPercentUnderFile) only while a file's
+ * percent is shown; else none.
+ *
+ * Whole-app audit A6 pass 24 L1 (Low, caused by cab99c0): David's 20%, then
+ * lookahead L1 at 70% kept his 20% as the floor. He lowered the task to 10%
+ * on the phone, which left the 20% in the task's record; before the iPad
+ * heard of it, it approved lookahead L2 at 40%, and Full Sync took the floor
+ * from the iPad's copy, whose 40% won. Lookahead L3 at 10% then gave 20% on
+ * every device ("Framing moved from 40% to 20% complete"); one device gives
+ * 10%. A floor left in the record under his own percent no longer counts,
+ * and a merge keeps his latest entry either copy knows
+ * (scheduleManagersPercentUnderFileOfBoth).
+ */
+export function scheduleManagersOwnPercent(item: ScheduleItem): Readonly<{ percent: number; judgedAt: string | null }> | null {
+  if (scheduleProgressIsManagers(item)) return { percent: percentOf(item), judgedAt: scheduleProgressJudgedAt(item) };
+  const floor = item.managersPercentUnderFile;
+  return typeof floor === 'number' && Number.isFinite(floor)
+    ? { percent: percentOf({ percentComplete: floor }), judgedAt: item.managersPercentUnderFileJudgedAt ?? null }
+    : null;
+}
+
+/**
+ * The floor of two copies of a task merged, where `progress` is the copy
+ * whose progress the merge keeps (A6 pass 24 L1): the floor goes with the
+ * file's percent (A5 recorded Low R-c, cab99c0), but when the other copy
+ * knows a later entry of David's (his own percent shown there, judged after
+ * this floor, or a later floor), that entry is the floor. Unchanged
+ * otherwise, and when the kept copy shows his own percent.
+ */
+export function scheduleManagersPercentUnderFileOfBoth(
+  progress: ScheduleItem,
+  other: ScheduleItem,
+): Partial<Pick<ScheduleItem, 'managersPercentUnderFile' | 'managersPercentUnderFileJudgedAt'>> {
+  if (progress.managersPercentUnderFile === undefined && other.managersPercentUnderFile === undefined) return {};
+  const kept = { managersPercentUnderFile: progress.managersPercentUnderFile, managersPercentUnderFileJudgedAt: progress.managersPercentUnderFileJudgedAt };
+  const floor = scheduleProgressIsManagers(progress) ? null : scheduleManagersOwnPercent(progress);
+  const later = scheduleManagersOwnPercent(other);
+  if (!floor || !later || timeOf(later.judgedAt) <= timeOf(floor.judgedAt)) return kept;
+  return { managersPercentUnderFile: later.percent, managersPercentUnderFileJudgedAt: later.judgedAt };
 }
 
 /**
  * The fields a carry gives the row it carries to (scheduleProgressCarriedFrom),
  * besides its stamp, with David's own percent a file's replaced
- * (managersPercentUnderFile), which goes with the file's percent: what the
- * sync sends of a carried percent (A7 pass 26 M-1).
+ * (managersPercentUnderFile) and when he judged it (A6 pass 24 L1), which go
+ * with the file's percent: what the sync sends of a carried percent (A7 pass
+ * 26 M-1).
  */
 export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
   'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
-  'managersPercentUnderFile',
+  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt',
 ] as const satisfies ReadonlyArray<keyof ScheduleItem>;
 
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;

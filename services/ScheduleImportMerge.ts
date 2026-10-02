@@ -184,8 +184,12 @@ function fileProgressFor(
   const change = percentOf(file) - percentOf(saved);
   if (managers ? change <= 0 : change === 0) return null;
   const confirmed = { progressConfirmedAt: approvedAt, progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER };
-  // David's own percent the file's higher one replaces, kept as a lookahead's floor (A5 recorded Low, Q22).
-  const under = managers ? { managersPercentUnderFile: percentOf(saved) } : {};
+  // David's own percent the file's higher one replaces, kept as a lookahead's floor (A5 recorded Low, Q22), with when
+  // he judged it (A6 pass 24 L1): one entered by hand with no source, when it was imported or created.
+  const under = managers ? {
+    managersPercentUnderFile: percentOf(saved),
+    managersPercentUnderFileJudgedAt: scheduleProgressJudgedAt(saved) || saved.importedAt || saved.createdAt || null,
+  } : {};
   // Taken at approval: a manager-ranked task stays manager-ranked, confirmed
   // by the approval, so every device's merge keeps the file's value.
   if (saved.progressSource === 'project_manager') {
@@ -205,7 +209,9 @@ function fileProgressFor(
 function withManagersPercentUnderFile(row: ScheduleItem, paired: ScheduleItem): ScheduleItem {
   const under = paired.managersPercentUnderFile;
   if (typeof under !== 'number' || typeof row.managersPercentUnderFile === 'number' || scheduleProgressIsManagers(paired)) return row;
-  return { ...row, managersPercentUnderFile: under };
+  // With when David judged it (A6 pass 24 L1).
+  const judgedAt = paired.managersPercentUnderFileJudgedAt;
+  return { ...row, managersPercentUnderFile: under, ...(judgedAt !== undefined ? { managersPercentUnderFileJudgedAt: judgedAt } : {}) };
 }
 
 /**
@@ -978,7 +984,9 @@ export function mergeApprovedScheduleImportItems({
       if (fileProgress && floored === fileProgress) {
         // David's own percent the file's replaces stays with the task on its new row (A5 recorded Low, Q22 floor gap).
         const under = fileProgress.managersPercentUnderFile;
-        additions.push(revision(typeof under === 'number' ? { ...filled, managersPercentUnderFile: under } : filled));
+        additions.push(revision(typeof under === 'number'
+          ? { ...filled, managersPercentUnderFile: under, managersPercentUnderFileJudgedAt: fileProgress.managersPercentUnderFileJudgedAt ?? null }
+          : filled));
         fileProgressIds.push(importedItem.id);
         return;
       }
