@@ -512,3 +512,48 @@ describe('review N1 L2: a report approved in another browser (or before site dat
     expect([...profile.keys()].some(key => key.includes('report-snapshots/v1:tower'))).toBe(false);
   });
 });
+
+describe('review N1 (Low): the page\'s fixed lines are true with and without the shared report record', () => {
+  /** Every line on the page that names whose reports count or where a send reaches. */
+  const said = () => screen.UNSAFE_root
+    .findAll(node => typeof node.props?.children === 'string' && /every device|phone or iPad|this computer|any of your devices/i.test(node.props.children))
+    .map(node => node.props.children as string);
+
+  it('before the shared record exists: nothing says "every device" or "phone or iPad"; each line says this computer', async () => {
+    table = 'missing';
+    const share = jest.fn(async () => undefined);
+    setNavigator({ share });
+    render(<DesktopReadOnlyShell page="reports" />);
+    await screen.findByText(/^Reports aren't shared between your devices yet, and none was sent from this computer/);
+    expect(screen.getByText('Counted from the last report sent from this computer.')).toBeTruthy();
+    fireEvent.press(screen.getByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    expect(screen.getByText(/^This approved report \(project facts as of .*\) isn't recorded as sent\. If you sent it from an email draft, the share menu or as the Word file, mark it sent so the next report on this computer runs from it\.$/)).toBeTruthy();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(QUESTION);
+    expect(screen.getByText('If you sent it, the next report on this computer runs from this one. If not, nothing is recorded: once you send it, use Mark as Sent.')).toBeTruthy();
+    expect(said().filter(line => /every device|phone or iPad|any of your devices/i.test(line))).toEqual([]);
+    fireEvent.press(screen.getByText('Yes, it was sent'));
+    expect(await screen.findByText(/^Recorded as sent .*\. Reports aren't shared between your devices yet, so the next report counts from it on this computer only\.$/)).toBeTruthy();
+    expect(said().filter(line => /every device|phone or iPad|any of your devices/i.test(line))).toEqual([]);
+  });
+
+  it('with the shared record: any of his devices, and every device', async () => {
+    table = new Map();
+    const share = jest.fn(async () => undefined);
+    setNavigator({ share });
+    render(<DesktopReadOnlyShell page="reports" />);
+    expect(await screen.findByText('Counted from the last report sent from any of your devices.')).toBeTruthy();
+    expect(screen.queryByText(/phone or iPad/)).toBeNull();
+    fireEvent.press(screen.getByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    expect(screen.getByText(/mark it sent so the next report on every device runs from it\.$/)).toBeTruthy();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(QUESTION);
+    expect(screen.getByText('If you sent it, the next report on every device runs from this one. If not, nothing is recorded: once you send it, use Mark as Sent.')).toBeTruthy();
+  });
+});

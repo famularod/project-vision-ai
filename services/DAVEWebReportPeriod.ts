@@ -123,6 +123,20 @@ export function daveWebReportPeriodMoved(preparedKey: string | null | undefined,
 }
 
 /**
+ * Under "Since the last report", when there is no period to name: whose last
+ * report it counts from. Review N1 (3 Oct 2026): it said "from your phone or
+ * iPad" always. Since the web's own sends count (owner answer 2 Oct) that is
+ * any of his devices when reports are shared between them, and this computer
+ * alone before the shared record exists.
+ */
+export function daveWebReportCountedFromLine(read: DAVEWebReportPeriodRead): string {
+  if (read.status === 'loading') return 'Counted from the last report sent.';
+  return read.shared === 'unavailable'
+    ? 'Counted from the last report sent from this computer.'
+    : 'Counted from the last report sent from any of your devices.';
+}
+
+/**
  * What the page says about the period: why it has no "since" lines, or where
  * they count from when the shared copy was not read.
  */

@@ -163,6 +163,7 @@ import {
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
   daveWebReportCheckedPressAgain,
+  daveWebReportCountedFromLine,
   daveWebReportKeptInTabOnlyNote,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
@@ -5647,6 +5648,8 @@ function ReportWorkspace({
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
   const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
+  // Before the shared record exists a send from here is this computer's own period: the lines say so (review N1).
+  const reportsSharedBetweenDevices = currentPeriodRead.status !== 'loaded' || currentPeriodRead.shared !== 'unavailable';
   // Review N1 M2 (2 Oct 2026): an approved report this computer had sent,
   // reopened from Report history, could not be shared again. The saved report
   // keeps the period it was prepared on; its own send had moved the period,
@@ -6202,7 +6205,7 @@ function ReportWorkspace({
           <View style={styles.dataGrow}>
             <Text style={styles.reportFactTitle}>Since the last report</Text>
             <Text style={styles.dataMeta}>
-              {sinceSection ? sinceSection.label : 'Counted from the last report sent from your phone or iPad.'}
+              {sinceSection ? sinceSection.label : daveWebReportCountedFromLine(currentPeriodRead)}
             </Text>
           </View>
         </View>
@@ -6227,6 +6230,7 @@ function ReportWorkspace({
         {approvalToMarkSent ? (
           <DesktopReportMarkSent
             approval={approvalToMarkSent}
+            sharedBetweenDevices={reportsSharedBetweenDevices}
             recording={markSentRecording}
             message={markSentMessage}
             onRecord={markReportSentManually}
@@ -6477,7 +6481,7 @@ function ReportWorkspace({
               </View>
             </View>
             {sharedReportOnScreen ? (
-              <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} />
+              <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} sharedBetweenDevices={reportsSharedBetweenDevices} />
             ) : null}
             {!reportFactsAreCurrent ? (
               <View style={styles.errorBanner} accessibilityRole="alert">

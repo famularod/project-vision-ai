@@ -36,19 +36,31 @@ export function sameSharedReport(shared: DesktopSharedReport, onScreen: DesktopS
     shared.reportFormat === onScreen.reportFormat;
 }
 
+/**
+ * Where the next report runs from once a send is recorded (review N1, 3 Oct
+ * 2026): every device when reports are shared between them (owner answer
+ * Q16); before that, this computer only. The panels said "every device"
+ * either way.
+ */
+function nextReportRunsOn(sharedBetweenDevices: boolean): string {
+  return sharedBetweenDevices ? 'on every device' : 'on this computer';
+}
+
 export function DesktopReportSentQuestion({
   pending,
   onAnswer,
+  sharedBetweenDevices = true,
 }: {
   pending: boolean;
   onAnswer: (sent: boolean) => void;
+  /** False before the shared record exists: a send from here is this computer's own period. */
+  sharedBetweenDevices?: boolean;
 }) {
   return (
     <View style={styles.panel} accessibilityLabel="Was the report sent?">
       <Text style={styles.title}>Was the report sent?</Text>
       <Text style={styles.detail}>
-        If you sent it, the next report on every device runs from this one. If not, nothing is recorded: once you
-        send it, use Mark as Sent.
+        {`If you sent it, the next report ${nextReportRunsOn(sharedBetweenDevices)} runs from this one. If not, nothing is recorded: once you send it, use Mark as Sent.`}
       </Text>
       <View style={styles.actions}>
         <Pressable
@@ -84,11 +96,14 @@ export function DesktopReportMarkSent({
   recording,
   message,
   onRecord,
+  sharedBetweenDevices = true,
 }: {
   approval: DAVEReportSnapshot;
   recording: boolean;
   message: string;
   onRecord: (choice: 'now' | Date) => void;
+  /** False before the shared record exists: a send from here is this computer's own period. */
+  sharedBetweenDevices?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [when, setWhen] = useState<'now' | 'earlier'>('now');
@@ -102,7 +117,7 @@ export function DesktopReportMarkSent({
         <Text style={styles.title}>Sent it another way?</Text>
         <Text style={styles.detail}>
           {`This approved report (project facts as of ${factsAsOf}) isn't recorded as sent. If you sent it from an email draft, ` +
-            'the share menu or as the Word file, mark it sent so the next report on every device runs from it.'}
+            `the share menu or as the Word file, mark it sent so the next report ${nextReportRunsOn(sharedBetweenDevices)} runs from it.`}
         </Text>
         {message ? <Text style={styles.message}>{message}</Text> : null}
         <Pressable
