@@ -6,6 +6,7 @@ import { REPORT_PERIOD_WAITING_LINE } from '../../services/DAVEReportIntelligenc
 import { buildDAVEWebReportSource, buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
+import { forgetDAVEWebOwnReportSends } from '../../services/DAVEWebReportSend';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 // Everyday item 3 (2 Oct 2026): the web Reports page had no "since the last
@@ -98,8 +99,12 @@ const mockAuth = {
   loadReportPeriod: jest.fn(async (_scopeKey: string, _format: string) => {
     if (shared === 'throws') throw new Error('offline');
     if (shared === 'unavailable') return 'unavailable' as const;
-    return { snapshot: shared };
+    return { ownerId: 'owner-1', snapshot: shared };
   }),
+  // Owner answer 2 Oct (web sends count): the web now writes the period too, keeps its own copy per
+  // account and has its own sender id; mocks added deliberately (behaviour in owner-2oct-web-report-sends).
+  saveReportPeriod: jest.fn(async () => 'saved' as const),
+  reportOwnerId: jest.fn(async () => 'owner-1'),
   saveReport: jest.fn(async () => '2026-10-01T12:30:00.000Z'),
   getArtifactUrl: jest.fn(),
   loadDocumentCoverageSummary: jest.fn(),
@@ -117,7 +122,16 @@ beforeAll(() => {
   browserWindow.addEventListener = jest.fn();
   browserWindow.removeEventListener = jest.fn();
 });
+/** This browser profile's storage, empty for each test. */
+let mockProfile = new Map<string, string>();
 beforeEach(() => {
+  mockProfile = new Map();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (key: string) => mockProfile.get(key) ?? null,
+    setItem: (key: string, value: string) => { mockProfile.set(key, value); },
+    removeItem: (key: string) => { mockProfile.delete(key); },
+  };
+  forgetDAVEWebOwnReportSends();
   forgetDAVEWebReportPeriodSession();
   mockAuth.refreshSnapshot.mockClear();
   mockAuth.loadReportPeriod.mockClear();
@@ -192,12 +206,13 @@ describe('the web Reports page counts "since the last report" as the phone does 
   it('no report sent yet, no shared table, or not readable: said plainly, and the formal report has no such section', async () => {
     shared = null;
     const view = render(<DesktopReadOnlyShell page="reports" />);
-    expect(await screen.findByText('No report for these projects has been recorded as sent from your phone or iPad yet.')).toBeTruthy();
+    // Owner answer 2 Oct (web sends count): a send from this computer counts too, so the notes no longer name only the phone and iPad; pins updated deliberately.
+    expect(await screen.findByText('No report for these projects has been recorded as sent yet.')).toBeTruthy();
     view.unmount();
 
     shared = 'unavailable';
     const second = render(<DesktopReadOnlyShell page="reports" />);
-    expect(await screen.findByText(/isn't shared with this computer yet/)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, and none was sent from this computer/)).toBeTruthy();
     openComposer();
     expect(reportBody()).not.toContain('Since the Last Report');
     second.unmount();
@@ -215,7 +230,8 @@ describe('the web Reports page counts "since the last report" as the phone does 
     shared = null;
     fireEvent.press(screen.getByLabelText('Executive Summary report'));
     await waitFor(() => expect(mockAuth.loadReportPeriod).toHaveBeenCalledWith('tower', 'executive'));
-    expect(await screen.findByText('No report for these projects has been recorded as sent from your phone or iPad yet.')).toBeTruthy();
+    // Owner answer 2 Oct (web sends count): a send from this computer counts too, so the notes no longer name only the phone and iPad; pins updated deliberately.
+    expect(await screen.findByText('No report for these projects has been recorded as sent yet.')).toBeTruthy();
   });
 
   it('an approval stands only on its period: after the phone sends a later report, it is not shared', async () => {
@@ -230,7 +246,8 @@ describe('the web Reports page counts "since the last report" as the phone does 
     shared = phoneSent(100, '2026-10-01T12:00:00.000Z');
     mockAuth.snapshot = { ...webSnapshot(100, '2026-10-01T12:05:00.000Z') };
     view.rerender(<DesktopReadOnlyShell page="reports" />);
-    expect(await screen.findAllByText(/^Your phone or iPad sent a report .*, after this one was approved/)).not.toHaveLength(0);
+    // Owner answer 2 Oct (web sends count): a send from this computer counts too, so the later send is \"your other device\"; pins updated deliberately.
+    expect(await screen.findAllByText(/^Your other device sent a report .*, after this one was approved/)).not.toHaveLength(0);
     const share = jest.fn();
     (globalThis as { navigator?: unknown }).navigator = { share };
     await act(async () => {

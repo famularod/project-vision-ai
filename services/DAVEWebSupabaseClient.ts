@@ -1405,15 +1405,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     /**
      * The owner's shared "since the last report" period for these projects
      * and format, as the phone and the iPad keep it (owner answer Q16): the
-     * stored snapshot, null when there is none yet. Everyday item 3 (2 Oct
-     * 2026): the web Reports page reads it and never writes it. 'unavailable'
-     * before the report_snapshots table exists; throws when it could not be
-     * read.
+     * stored snapshot, null when there is none yet, with the account it was
+     * read for. 'unavailable' before the report_snapshots table exists;
+     * throws when it could not be read. Everyday item 3 read it; since owner
+     * answer 2 Oct (web sends count) the web writes it too
+     * (saveAuthorizedReportPeriod).
      */
     async loadAuthorizedReportPeriod(
       scopeKey: string,
       format: string,
-    ): Promise<Readonly<{ snapshot: unknown }> | 'unavailable'> {
+    ): Promise<Readonly<{ ownerId: string; snapshot: unknown }> | 'unavailable'> {
       if (!client) return 'unavailable';
       const ownerId = await requireAuthorizedOwnerCached();
       const { data, error } = await client
@@ -1431,7 +1432,57 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         }
         throw new Error('The shared report period could not be read.');
       }
-      return Object.freeze({ snapshot: isRecord(data) ? data.snapshot ?? null : null });
+      return Object.freeze({ ownerId, snapshot: isRecord(data) ? data.snapshot ?? null : null });
+    },
+
+    /**
+     * Owner answer 2 Oct (web sends count): a report approved or sent from
+     * this computer goes into the owner's shared period, exactly as the
+     * phone's does (SupabaseService.saveReportSnapshotCloud): one row per
+     * owner, projects and format, the later send kept by the table's own
+     * rule. With `expectedOwnerId`, nothing is written once another account
+     * is signed in. 'unavailable' before the report_snapshots table exists
+     * (this computer then keeps its own period only).
+     */
+    async saveAuthorizedReportPeriod(row: Readonly<{
+      scopeKey: string;
+      format: string;
+      snapshot: unknown;
+      approvedAt: string;
+      deliveredAt: string | null;
+      expectedOwnerId?: string;
+    }>): Promise<'saved' | 'unavailable'> {
+      if (!client) return 'unavailable';
+      const ownerId = await requireAuthorizedOwnerCached();
+      if (row.expectedOwnerId && row.expectedOwnerId !== ownerId) {
+        throw new Error('The signed-in account changed before the report period was shared.');
+      }
+      const { error } = await client
+        .from('report_snapshots')
+        .upsert(
+          {
+            owner_id: ownerId,
+            scope_key: row.scopeKey,
+            format: row.format,
+            snapshot: row.snapshot,
+            approved_at: row.approvedAt,
+            delivered_at: row.deliveredAt,
+          },
+          { onConflict: 'owner_id,scope_key,format' },
+        );
+      if (error) {
+        const message = (error.message || '').toLowerCase();
+        if (message.includes('could not find the table') || (message.includes('relation') && message.includes('does not exist'))) {
+          return 'unavailable';
+        }
+        throw new Error('The shared report period could not be saved.');
+      }
+      return 'saved';
+    },
+
+    /** The signed-in owner's id, for this computer's own copy of the report periods (owner answer 2 Oct). */
+    async authorizedOwnerId(): Promise<string> {
+      return requireAuthorizedOwnerCached();
     },
 
     async saveAuthorizedReportArtifact({

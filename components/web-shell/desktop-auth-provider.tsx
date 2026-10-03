@@ -129,8 +129,12 @@ type DesktopAuthContextValue = Readonly<{
     report: DAVEWebReportRecord;
     expectedCloudUpdatedAt?: string | null;
   }) => Promise<string>;
-  /** The phone and iPad's shared "since the last report" period, read only (everyday item 3). */
-  loadReportPeriod: (scopeKey: string, format: string) => Promise<Readonly<{ snapshot: unknown }> | 'unavailable'>;
+  /** The phone and iPad's shared "since the last report" period (everyday item 3). */
+  loadReportPeriod: (scopeKey: string, format: string) => Promise<Readonly<{ ownerId: string; snapshot: unknown }> | 'unavailable'>;
+  /** A report approved or sent here goes into that shared period (owner answer 2 Oct, web sends count). */
+  saveReportPeriod: (row: Parameters<typeof daveWebSupabaseGateway.saveAuthorizedReportPeriod>[0]) => Promise<'saved' | 'unavailable'>;
+  /** The signed-in owner, for this computer's own copy of the report periods. */
+  reportOwnerId: () => Promise<string>;
   restoreMissingTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
   askProjectQuestion: (input: {
     projectId: string;
@@ -1180,6 +1184,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     (scopeKey: string, format: string) => daveWebSupabaseGateway.loadAuthorizedReportPeriod(scopeKey, format),
     [],
   );
+  const saveReportPeriod = useCallback(
+    (row: Parameters<typeof daveWebSupabaseGateway.saveAuthorizedReportPeriod>[0]) =>
+      daveWebSupabaseGateway.saveAuthorizedReportPeriod(row),
+    [],
+  );
+  const reportOwnerId = useCallback(() => daveWebSupabaseGateway.authorizedOwnerId(), []);
 
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
@@ -1283,6 +1293,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     enqueueDocumentPreparation,
     saveReport,
     loadReportPeriod,
+    saveReportPeriod,
+    reportOwnerId,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,
@@ -1314,6 +1326,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     enqueueDocumentPreparation,
     saveReport,
     loadReportPeriod,
+    saveReportPeriod,
+    reportOwnerId,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,

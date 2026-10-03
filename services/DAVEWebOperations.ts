@@ -540,6 +540,20 @@ export function buildDAVEWebReportSource(
   });
 }
 
+/**
+ * The prepared report's source on another period (owner answer 2 Oct, web
+ * sends count): this computer's own send of an approved report starts the
+ * next period, and the approval stands on it, as on the phone (A6 pass 8 M1).
+ */
+export function daveWebReportSourceOnPeriod(source: DAVEWebReportSource, periodKey: string): DAVEWebReportSource {
+  const base = source.fingerprint.replace(/:period-sent:.*$/, '');
+  return Object.freeze({
+    ...source,
+    periodKey,
+    fingerprint: periodKey.startsWith('sent:') ? `${base}:period-${periodKey}` : base,
+  });
+}
+
 export function daveWebReportSourceIsCurrent(
   sourceFingerprint: string | null | undefined,
   currentSource: DAVEWebReportSource,

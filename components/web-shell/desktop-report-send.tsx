@@ -1,0 +1,205 @@
+import { createElement, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+import type { DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
+import { describeSendWindowTime, manualReportSendWindow } from '../../services/ReportManualSend';
+import { colors, spacing } from '../../theme';
+import { desktopSurfaces } from './desktop-surface-palette';
+
+/**
+ * Owner answer 2 Oct (web sends count): the web Reports page's own send
+ * questions. A share sheet or an email draft cannot say whether the report
+ * went out, so David is asked (as the phone asks after Outlook), and a report
+ * sent another way is recorded with Mark as Sent (as on the phone). Nothing
+ * is recorded until he says so.
+ */
+export function DesktopReportSentQuestion({
+  pending,
+  onAnswer,
+}: {
+  pending: boolean;
+  onAnswer: (sent: boolean) => void;
+}) {
+  return (
+    <View style={styles.panel} accessibilityLabel="Was the report sent?">
+      <Text style={styles.title}>Was the report sent?</Text>
+      <Text style={styles.detail}>
+        If you sent it, the next report on every device runs from this one. If not, nothing is recorded: once you
+        send it, use Mark as Sent.
+      </Text>
+      <View style={styles.actions}>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, pending && styles.disabled, pressed && styles.pressed]}
+          onPress={() => onAnswer(true)}
+          disabled={pending}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryText}>Yes, it was sent</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+          onPress={() => onAnswer(false)}
+          accessibilityRole="button"
+        >
+          <Text style={styles.secondaryText}>Not yet</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/** "2026-10-01T16:30" in this computer's time zone, for a datetime-local field. */
+function localDateTimeValue(iso: string): string {
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Mark as Sent for the approval this computer saved and has not recorded as sent (the phone's rules). */
+export function DesktopReportMarkSent({
+  approval,
+  recording,
+  message,
+  onRecord,
+}: {
+  approval: DAVEReportSnapshot;
+  recording: boolean;
+  message: string;
+  onRecord: (choice: 'now' | Date) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [when, setWhen] = useState<'now' | 'earlier'>('now');
+  const [picked, setPicked] = useState('');
+  const sendWindow = manualReportSendWindow(approval);
+  const factsAsOf = describeSendWindowTime(approval.capturedAt);
+
+  if (!open) {
+    return (
+      <View style={styles.panel} accessibilityLabel="Sent it another way?">
+        <Text style={styles.title}>Sent it another way?</Text>
+        <Text style={styles.detail}>
+          {`This approved report (project facts as of ${factsAsOf}) isn't recorded as sent. If you sent it from an email draft, ` +
+            'the share menu or as the Word file, mark it sent so the next report on every device runs from it.'}
+        </Text>
+        {message ? <Text style={styles.message}>{message}</Text> : null}
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+          onPress={() => {
+            setWhen('now');
+            setPicked(localDateTimeValue(new Date().toISOString()));
+            setOpen(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Mark as Sent"
+        >
+          <Text style={styles.secondaryText}>Mark as Sent</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.title}>When was it sent?</Text>
+      <View style={styles.actions} accessibilityRole="radiogroup">
+        {(['now', 'earlier'] as const).map(choice => (
+          <Pressable
+            key={choice}
+            style={({ pressed }) => [styles.choice, when === choice && styles.choiceActive, pressed && styles.pressed]}
+            onPress={() => setWhen(choice)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: when === choice }}
+            accessibilityLabel={choice === 'now' ? 'Sent just now' : 'Sent earlier'}
+          >
+            <Text style={styles.choiceText}>{choice === 'now' ? 'Just now' : 'Earlier'}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {when === 'earlier' ? (
+        <>
+          {createElement('input', {
+            type: 'datetime-local',
+            value: picked,
+            min: sendWindow ? localDateTimeValue(sendWindow.earliest) : undefined,
+            max: localDateTimeValue(new Date().toISOString()),
+            onChange: (event: { target: { value: string } }) => setPicked(event.target.value),
+            'aria-label': 'When the report was sent',
+            'data-testid': 'report-mark-sent-time',
+            style: { fontSize: 15, padding: 8, borderRadius: 8, border: `1px solid ${desktopSurfaces.border}` },
+          })}
+          <Text style={styles.detail}>{`Any time from ${factsAsOf}, when this report's project facts were current.`}</Text>
+        </>
+      ) : null}
+      {message ? <Text style={styles.message}>{message}</Text> : null}
+      <View style={styles.actions}>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+          onPress={() => setOpen(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel marking as sent"
+        >
+          <Text style={styles.secondaryText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, recording && styles.disabled, pressed && styles.pressed]}
+          onPress={() => onRecord(when === 'now' ? 'now' : new Date(picked))}
+          disabled={recording}
+          accessibilityRole="button"
+          accessibilityLabel="Record as Sent"
+        >
+          <Text style={styles.primaryText}>Record as Sent</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.detail}>Nothing is sent from here: this only records that the approved report went out.</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  panel: {
+    gap: spacing.xs,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.sm,
+  },
+  title: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  detail: { color: colors.mutedText, fontSize: 13, lineHeight: 18 },
+  message: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  actions: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
+  choice: {
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  choiceActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  choiceText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  primaryButton: {
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+  },
+  primaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  secondaryButton: {
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  secondaryText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  disabled: { opacity: 0.5 },
+  pressed: { opacity: 0.7 },
+});

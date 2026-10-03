@@ -84,6 +84,7 @@ import {
   buildDAVEWebReportSource,
   buildDAVEWebReportTitle,
   buildDAVEWebReportTruths,
+  daveWebReportSourceOnPeriod,
   buildDAVEWebTruthDiagnostics,
   createDAVEWebBackup,
   createDAVEWebId,
@@ -131,9 +132,21 @@ import {
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import { buildDAVEReportSourceFingerprint, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
-import { daveReportSnapshotScopeKey } from '../../services/DAVEReportSnapshot';
+import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAt } from '../../services/DAVEReportSnapshot';
+import {
+  approveDAVEWebReportPeriod,
+  daveWebOwnReportSends,
+  daveWebReportSnapshotCloud,
+  daveWebReportStorage,
+  recordDAVEWebReportSend,
+  type DAVEWebPeriodOutcome,
+} from '../../services/DAVEWebReportSend';
+import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
+import { DesktopReportMarkSent, DesktopReportSentQuestion } from './desktop-report-send';
 import {
   daveWebReportBehindMessage,
+  daveWebReportLaterSendMessage,
+  daveWebReportRecordedMessage,
   daveWebReportPeriodMoved,
   daveWebReportPeriodMovedMessage,
   daveWebReportPeriodNote,
@@ -5474,7 +5487,8 @@ function ReportWorkspace({
   const auth = useDesktopAuth();
   const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
   // Everyday item 3 (2 Oct 2026): "since the last report", counted as the
-  // phone counts it, from the period the phone and the iPad share (read only).
+  // phone counts it. Owner answer 2 Oct (web sends count): this computer
+  // approves and sends into that period like the phone (DAVEWebReportSend).
   const reportTruths = useMemo(
     () => buildDAVEWebReportTruths(snapshot, selectedProject),
     [selectedProject, snapshot],
@@ -5486,17 +5500,22 @@ function ReportWorkspace({
     key: '',
     read: { status: 'loading' },
   });
-  const loadReportPeriod = auth.loadReportPeriod;
+  const { loadReportPeriod, saveReportPeriod, reportOwnerId } = auth;
+  const periodStore = useMemo(() => ({
+    storage: daveWebReportStorage(reportOwnerId),
+    cloud: daveWebReportSnapshotCloud(loadReportPeriod, saveReportPeriod),
+  }), [loadReportPeriod, reportOwnerId, saveReportPeriod]);
+  const [periodReload, setPeriodReload] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    void readDAVEWebReportPeriod(loadReportPeriod, periodScopeKey, reportAudience).then(read => {
+    void readDAVEWebReportPeriod(periodStore, periodScopeKey, reportAudience).then(read => {
       if (!cancelled) setPeriodRead({ key: periodReadKey, read });
     });
     return () => {
       cancelled = true;
     };
     // Read again on each refresh of the project record: a report sent from the phone then shows up.
-  }, [loadReportPeriod, periodReadKey, periodScopeKey, reportAudience, snapshot.refreshedAt]);
+  }, [periodStore, periodReadKey, periodScopeKey, periodReload, reportAudience, snapshot.refreshedAt]);
   const currentPeriodRead: DAVEWebReportPeriodRead = periodRead.key === periodReadKey
     ? periodRead.read
     : { status: 'loading' };
@@ -5504,6 +5523,7 @@ function ReportWorkspace({
     read: currentPeriodRead,
     fingerprint: reportFingerprint,
     pulledAt: snapshot.tasksPulledAt ?? null,
+    ownSends: daveWebOwnReportSends(),
   });
   // Behind the other device's send: nothing is counted, and every task is downloaded again, once per send.
   const behindKey = period.behindSend ? `${period.behindSend.sentBy ?? ''}|${period.behindSend.deliveredAt}` : null;
@@ -5523,7 +5543,7 @@ function ReportWorkspace({
     }),
     [periodBaseline, periodWaiting, selectedProject, snapshot],
   );
-  const periodChecked = currentPeriodRead.status === 'checked';
+  const periodChecked = currentPeriodRead.status === 'loaded';
   const sinceSection = useMemo(() => {
     const lines = periodChecked ? reportPeriodMovementLines(briefing) : null;
     return lines ? { label: briefing.reportingPeriod.label, lines } : null;
@@ -5574,6 +5594,71 @@ function ReportWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period.periodKey]);
   const approvedPeriodMoved = reportStatus === 'approved' && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey);
+  // Owner answer 2 Oct (web sends count): a share or email draft asks whether it went out; Mark as Sent records one sent another way.
+  const [sendQuestion, setSendQuestion] = useState(false);
+  const [markSentRecording, setMarkSentRecording] = useState(false);
+  const [markSentMessage, setMarkSentMessage] = useState('');
+  const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
+  const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
+    periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
+  /** The report on screen as the period records it: its facts, these projects, this format. */
+  const periodSnapshotOfReport = () => buildDAVEReportSnapshot({
+    truths: reportTruths,
+    scopeKey: periodScopeKey,
+    sourceFingerprint: reportFingerprint,
+    capturedAt: reportTruths.map(truth => truth.generatedAt).sort().at(-1),
+    reportFormat: reportAudience,
+  });
+  /**
+   * Records the approved report as sent from here, or as sent another way at
+   * `sentAt` (Mark as Sent), exactly as the phone records a send; says what
+   * happened. Not recorded over a later send from another device.
+   */
+  const recordSend = async (sentAt: string, markedSentAt: string | null, approvedFingerprint: string | null) => {
+    let outcome: DAVEWebPeriodOutcome | null = null;
+    try {
+      outcome = await recordDAVEWebReportSend(periodStore, { scopeKey: periodScopeKey, reportFormat: reportAudience }, approvedFingerprint, sentAt, markedSentAt);
+    } catch {
+      setNotice({ tone: 'danger', text: "The report couldn't be recorded as sent on this computer. Try again." });
+      return false;
+    }
+    setPeriodReload(count => count + 1);
+    if (!outcome) {
+      setNotice({ tone: 'danger', text: 'There is no approval of this report waiting to be recorded as sent on this computer.' });
+      return false;
+    }
+    if (outcome.status === 'later_send') {
+      setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'record') });
+      return false;
+    }
+    // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
+    const recordedFingerprint = outcome.snapshot?.sourceFingerprint;
+    setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
+      ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
+      : source);
+    setNotice({ tone: 'good', text: daveWebReportRecordedMessage(sentAt, currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'unchecked') });
+    return true;
+  };
+  const answerSendQuestion = (sent: boolean) => {
+    setSendQuestion(false);
+    if (!sent) {
+      setNotice({ tone: 'good', text: 'Nothing was recorded. Once you send it, use Mark as Sent.' });
+      return;
+    }
+    void recordSend(new Date().toISOString(), null, reportSource.fingerprint.split(':media-')[0] || null);
+  };
+  const markReportSentManually = (choice: 'now' | Date) => {
+    if (!approvalToMarkSent || markSentRecording) return;
+    const checked = manualReportSendTime(choice, approvalToMarkSent);
+    if (!checked.ok) {
+      setMarkSentMessage(checked.message);
+      return;
+    }
+    setMarkSentRecording(true);
+    setMarkSentMessage('');
+    void recordSend(checked.sentAt, manualReportMarkTime(checked.sentAt), approvalToMarkSent.sourceFingerprint)
+      .finally(() => setMarkSentRecording(false));
+  };
   const selectedProjectNames = useMemo(
     () => selectedProject
       ? scheduleProjectScopeNames(selectedProject, [...snapshot.scheduleItems])
@@ -5710,6 +5795,23 @@ function ReportWorkspace({
     }
     setPending(true);
     setNotice(null);
+    if (status === 'approved') {
+      // As on the phone (A6 pass 7): the period is read again; a later send from another device stops the approval.
+      let outcome: DAVEWebPeriodOutcome;
+      try {
+        outcome = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
+      } catch {
+        outcome = { status: 'saved', snapshot: null };
+        setNotice({ tone: 'danger', text: "The report's reporting period could not be saved on this computer, so a send from here will not be recorded. Try Approve again." });
+      }
+      if (outcome.status === 'later_send') {
+        setPeriodReload(count => count + 1);
+        setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'approve') });
+        setPending(false);
+        return;
+      }
+      setPeriodReload(count => count + 1);
+    }
     const now = new Date().toISOString();
     const nextAudit = [
       ...audit,
@@ -5745,7 +5847,7 @@ function ReportWorkspace({
       setAudit(nextAudit);
       setExpectedRevision(savedRevision);
       setReportStatus(status);
-      setNotice({ tone: 'good', text: status === 'approved' ? 'Report approved and saved with its source snapshot and audit history.' : 'Report draft saved to the shared project record.' });
+      setNotice(current => current?.tone === 'danger' ? current : { tone: 'good', text: status === 'approved' ? 'Report approved and saved with its source snapshot and audit history.' : 'Report draft saved to the shared project record.' });
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
       await auth.refreshSnapshot();
@@ -5797,11 +5899,15 @@ function ReportWorkspace({
       if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
         await navigator.share(shareData);
         setNotice({ tone: 'good', text: 'The approved report was handed to the system share menu.' });
+        // The share menu cannot say whether it went out (owner answer 2 Oct, web sends count).
+        setSendQuestion(true);
         return;
       }
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(`${shareData.title}\n\n${shareData.text}`);
         setNotice({ tone: 'good', text: 'The approved report was copied for project communication.' });
+        // Copied to be pasted and sent, a send as the phone's Copy Report is (owner answer 2 Oct).
+        void recordSend(new Date().toISOString(), null, reportSource.fingerprint.split(':media-')[0] || null);
         return;
       }
       throw new Error('Sharing is unavailable in this browser.');
@@ -5835,6 +5941,8 @@ function ReportWorkspace({
         tone: 'good',
         text: 'An email draft was opened. Review the recipients and content before sending.',
       });
+    // An email draft cannot say whether it was sent (owner answer 2 Oct, web sends count).
+    setSendQuestion(true);
   };
 
   const reportFactsAreCurrent = daveWebReportSourceIsCurrent(
@@ -5906,9 +6014,18 @@ function ReportWorkspace({
               </View>
             ))}
           </View>
-        ) : (
+        ) : null}
+        {daveWebReportPeriodNote(currentPeriodRead) ? (
           <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
-        )}
+        ) : null}
+        {approvalToMarkSent ? (
+          <DesktopReportMarkSent
+            approval={approvalToMarkSent}
+            recording={markSentRecording}
+            message={markSentMessage}
+            onRecord={markReportSentManually}
+          />
+        ) : null}
       </View>
 
       <View style={styles.reportPMGrid}>
@@ -6145,6 +6262,9 @@ function ReportWorkspace({
                 </View>
               </View>
             </View>
+            {sendQuestion && reportStatus === 'approved' ? (
+              <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} />
+            ) : null}
             {!reportFactsAreCurrent ? (
               <View style={styles.errorBanner} accessibilityRole="alert">
                 <Text style={styles.errorText}>Project facts changed after this draft was prepared. Regenerate from current facts before approval.</Text>

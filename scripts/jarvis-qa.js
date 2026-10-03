@@ -99,7 +99,9 @@ const buildUpdate = liveAppSlice('function BuildUpdateScreen', 'function ReadOnl
 const reportsScreen = readFile('screens/ReportsScreen.tsx');
 const daveReportIntelligence = readFile('services/DAVEReportIntelligence.ts');
 const daveReportSnapshot = readFile('services/DAVEReportSnapshot.ts');
-const daveReportSnapshotRepository = readFile('services/DAVEReportSnapshotRepository.ts');
+// Owner answer 2 Oct (web sends count): the phone's repository gives its device to the shared store, where the
+// rules now live (the web desktop uses the same ones); both are read, pin updated deliberately.
+const daveReportSnapshotRepository = readFile('services/DAVEReportSnapshotRepository.ts') + readFile('services/DAVEReportSnapshotStore.ts');
 const projectOverviewScreen = liveAppSlice('function ProjectWorkspaceScreen', 'function ProjectDocumentsScreen');
 const liveAuthorityProvider = readFile('providers/PIELiveAuthorityProvider.tsx');
 const daveProjectTruth = readFile('services/DAVEProjectTruth.ts');
