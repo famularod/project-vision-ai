@@ -297,6 +297,7 @@ import {
   markPhotoUnavailableInBackup,
 } from './services/BackupArchivePhotos';
 import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
+import { isOpenDraftRow, updatesWithOpenDraft } from './services/FieldUpdateOpenDraftRow';
 import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
@@ -14172,12 +14173,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'SavedUpdates' && (
             <SavedUpdatesScreen
               contentStyle={contentStyle}
-              updates={savedUpdates}
+              updates={updatesWithOpenDraft(savedUpdates, draft, hasMeaningfulDraft(draft))}
               deletedTaskEvidenceIds={deletedTaskEvidenceIds}
               projectAreas={projectAreas}
               contactBook={contactBook}
               onOpen={openSavedUpdate}
-              onDelete={deleteSavedUpdate}
+              onDelete={updateId => (isOpenDraftRow(savedUpdates, draft, updateId) ? discardDraft() : deleteSavedUpdate(updateId))}
               onArchive={archiveSavedUpdate}
               onRetryPhotoAnalysis={(update, photo) => {
                 void retryPhotoAnalysis(update, photo);
