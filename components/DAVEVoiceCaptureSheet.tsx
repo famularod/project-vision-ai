@@ -156,6 +156,10 @@ export function DAVEVoiceCaptureSheet({
   const keptOwner = keepSlot && ownerBoundary !== undefined ? ownerBoundary ?? 'local-device' : null;
   const keepsOnDevice = Boolean(keptOwner && keepSlot);
   const keptCopyRef = useRef<string | null>(null);
+  // Review N1 M1: which recording a keep under way is for. Use, Discard and
+  // Record Again move it on, so that keep is undone when it lands.
+  const keepEpochRef = useRef(0);
+  const keepUnderWayRef = useRef<Promise<void> | null>(null);
   const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
   const recordingUriRef = useRef<string | null>(null);
   recordingUriRef.current = recordingUri;
@@ -314,6 +318,9 @@ export function DAVEVoiceCaptureSheet({
 
   // Everyday item 4: a recording kept on this device for this account and
   // sheet comes back when the sheet opens for its project, and is tried again.
+  // One kept for another project stays kept, for when the sheet opens for
+  // that project; a sheet already holding a recording leaves it kept too
+  // (review N1 M1).
   useEffect(() => {
     if (!visible || !keptOwner || !keepSlot) {
       setKeptChecked(!visible || !keepsOnDevice);
@@ -321,7 +328,7 @@ export function DAVEVoiceCaptureSheet({
     }
     let current = true;
     setKeptChecked(false);
-    void keptVoiceRecordings().readKeptVoiceRecording(keptOwner, keepSlot).catch(() => null).then(kept => {
+    void keptVoiceRecordings().readKeptVoiceRecording(keptOwner, keepSlot, projectName).catch(() => null).then(kept => {
       if (!current) return;
       setKeptChecked(true);
       if (!kept || recordingUriRef.current || recordingActiveRef.current || recordingFinishingRef.current) return;
@@ -342,29 +349,44 @@ export function DAVEVoiceCaptureSheet({
   }, [visible, keptOwner, keepSlot, projectName]);
 
   /** Keeps this recording on the device past a closed app (everyday item 4); the sheet keeps using its own copy. */
-  async function keepRecordingOnDevice(uri: string, duration: number) {
-    if (!keptOwner || !keepSlot) return;
-    if (keptCopyRef.current) return;
-    const recording = recordingGenerationRef.current;
-    try {
-      const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
-      const kept = await keepVoiceRecording(keptOwner, keepSlot, { uri, durationMs: duration, projectId, projectName });
-      // Discarded, used or recorded again meanwhile: nothing stays kept.
-      if (recording !== recordingGenerationRef.current || !recordingUriRef.current) {
-        await forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
-        return;
+  function keepRecordingOnDevice(uri: string, duration: number): Promise<void> {
+    if (!keptOwner || !keepSlot) return Promise.resolve();
+    if (keptCopyRef.current) return Promise.resolve();
+    // One keep for one recording: a second copy would stay kept after the first was used.
+    if (keepUnderWayRef.current) return keepUnderWayRef.current;
+    const owner = keptOwner;
+    const slot = keepSlot;
+    const epoch = keepEpochRef.current;
+    const keep: Promise<void> = (async () => {
+      try {
+        const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
+        const kept = await keepVoiceRecording(owner, slot, { uri, durationMs: duration, projectId, projectName });
+        // Discarded, used or recorded again meanwhile: this copy does not stay kept.
+        if (epoch !== keepEpochRef.current) await forgetKeptVoiceRecording(owner, slot, kept);
+        else keptCopyRef.current = kept;
+      } catch {
+        // Kept in this sheet only, as before.
       }
-      keptCopyRef.current = kept;
-    } catch {
-      // Kept in this sheet only, as before.
-    }
+    })().finally(() => {
+      if (keepUnderWayRef.current === keep) keepUnderWayRef.current = null;
+    });
+    keepUnderWayRef.current = keep;
+    return keep;
   }
 
-  /** The recording was used, discarded or recorded again: its copy on the device and its entry go. */
+  /**
+   * THIS recording was used, discarded or recorded again: its copy on the
+   * device and its entry go. Only the recording this sheet holds: with none
+   * (the sheet opened for another project, or Start Recording before the
+   * kept check answered) it removed the sheet's kept recording unseen, its
+   * audio left behind and never offered again (review N1 M1).
+   */
   function forgetRecordingKeptOnDevice() {
-    if (!keptOwner || !keepSlot) return;
+    keepEpochRef.current += 1;
+    keepUnderWayRef.current = null;
     const kept = keptCopyRef.current;
     keptCopyRef.current = null;
+    if (!kept || !keptOwner || !keepSlot) return;
     void keptVoiceRecordings().forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
   }
 

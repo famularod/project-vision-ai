@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  */
 export const KEPT_DRAFT_KEY_PREFIX = '@vitruvius/kept-drafts/v1/';
 
-/** 'voice-recording': a recording waiting for signal, kept per sheet (everyday item 4, KeptVoiceRecording). */
+/** 'voice-recording': a recording waiting for signal, one entry per recording (everyday item 4, review N1 M1; KeptVoiceRecording). */
 export type KeptDraftKind = 'field-note' | 'walk-memory' | 'voice-recording';
 export type KeptDraft = Readonly<{ value: unknown; keptAt: string }>;
 
@@ -87,6 +87,28 @@ export async function keptDraftScopes(kind: KeptDraftKind, ownerKey: string): Pr
   return (keys ?? [])
     .filter(key => key.startsWith(prefix))
     .map(key => decodeURIComponent(key.slice(prefix.length)));
+}
+
+/**
+ * Every draft of this kind kept on this phone, for every account, or null
+ * when the phone's storage could not be listed (review N1 M1: the sweep of
+ * kept recordings nothing points at must not read "could not list" as
+ * "nothing is kept").
+ */
+export async function keptDraftsOnDevice(
+  kind: KeptDraftKind,
+): Promise<ReadonlyArray<Readonly<{ ownerKey: string; scope: string }>> | null> {
+  const prefix = `${KEPT_DRAFT_KEY_PREFIX}${kind}/`;
+  const keys = await enqueue(() => AsyncStorage.getAllKeys());
+  if (!Array.isArray(keys)) return null;
+  try {
+    return keys.filter(key => key.startsWith(prefix)).map(key => {
+      const [ownerKey, scope = ''] = key.slice(prefix.length).split('/');
+      return { ownerKey: decodeURIComponent(ownerKey), scope: decodeURIComponent(scope) };
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Account change or sign-out: every account's kept drafts of this kind go. */
