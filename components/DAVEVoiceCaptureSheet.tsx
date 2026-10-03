@@ -21,7 +21,11 @@ import {
   View,
 } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
-import { daveVoiceFailureIsWaitingForSignal, daveVoiceFailureMessage } from '../services/DAVEVoiceSignalWait';
+import {
+  daveVoiceFailureIsTheUpload,
+  daveVoiceFailureIsWaitingForSignal,
+  daveVoiceFailureMessage,
+} from '../services/DAVEVoiceSignalWait';
 import type * as KeptVoiceRecordingModule from '../services/KeptVoiceRecording';
 
 /**
@@ -124,9 +128,10 @@ export function DAVEVoiceCaptureSheet({
   showWalkContext?: boolean;
   /**
    * Everyday item 4 (2 Oct 2026): this sheet's name for a recording kept on
-   * the device. With one, a recording waiting for signal (or one he chose to
-   * keep for later) survives iOS closing the app, for this account: the sheet
-   * offers it, and tries it again, the next time it opens for that project.
+   * the device. With one, a finished recording (review N1 L2: from "Recording
+   * ready" on, not only one waiting for signal) survives iOS closing the app,
+   * for this account: the sheet offers it, and tries it again when he had
+   * sent it, the next time it opens for that project.
    * Without one it is kept in the sheet only, while Vitruvius stays open.
    */
   keepSlot?: string;
@@ -271,7 +276,7 @@ export function DAVEVoiceCaptureSheet({
     const abandoned = generation !== transcriptionOperationRef.current;
     if (uri && !abandoned) {
       recordingDurationRef.current = duration;
-      noteRecordingCaptured();
+      noteRecordingCaptured(uri, duration);
       setRecordingUri(uri);
       setRecordingDuration(duration);
     }
@@ -379,9 +384,17 @@ export function DAVEVoiceCaptureSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, keptOwner, keepSlot, projectName]);
 
-  /** A recording just finished: when, and the walk's matched area then (review N1 L3). */
-  function noteRecordingCaptured() {
+  /**
+   * A recording just finished: when, and the walk's matched area then (review
+   * N1 L3). A sheet that keeps recordings keeps it on the device from here on
+   * (review N1 L2): it was kept only once an upload had failed for want of
+   * signal, so the app closed at "Recording ready" (or after a lock or call
+   * stopped it), during the first "Preparing…", or after "The voice upload
+   * was interrupted" lost the dictation.
+   */
+  function noteRecordingCaptured(uri: string, duration: number) {
     captureRef.current = { recordedAt: new Date().toISOString(), walkArea: walkContext?.recommendedArea ?? null, restored: false };
+    if (keepsOnDevice && daveRecordingIsLongEnough(duration)) void keepRecordingOnDevice(uri, duration, 'ready');
   }
 
   /**
@@ -416,7 +429,10 @@ export function DAVEVoiceCaptureSheet({
     // how far the recording has got since (review N1 L1).
     const keep = keepQueueRef.current.then(async () => {
       if (epoch !== keepEpochRef.current) return false;
-      if (keptCopyRef.current && keptStateRef.current === state) return true;
+      // Kept, and at least as far on as this says: one waiting for signal that is sent again
+      // is still that, and one that was sent is never put back to "ready".
+      const held = keptStateRef.current;
+      if (keptCopyRef.current && (held === state || state === 'ready' || (state === 'sent' && held === 'no-signal'))) return true;
       try {
         const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
         // Where the walk had him when he finished speaking; when that was not known yet, where it has him now.
@@ -479,7 +495,7 @@ export function DAVEVoiceCaptureSheet({
       const uri = recorder.uri || status.url;
       if (!uri) throw new Error('Recording file missing.');
       recordingDurationRef.current = stoppedDuration;
-      noteRecordingCaptured();
+      noteRecordingCaptured(uri, stoppedDuration);
       setRecordingUri(uri);
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
@@ -512,6 +528,8 @@ export function DAVEVoiceCaptureSheet({
     const operation = ++transcriptionOperationRef.current;
     preparingOperationRef.current = operation;
     sentForWordsRef.current = true;
+    // Sent for its words: brought back after a closed app, it is tried again by itself (review N1 L2).
+    if (keepsOnDevice) void keepRecordingOnDevice(uri, duration, 'sent');
     setError(null);
     setNotice(null);
     setIsTranscribing(true);
@@ -538,13 +556,13 @@ export function DAVEVoiceCaptureSheet({
       handOverWords(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
-      // Waiting for signal: kept on this device past a closed app when this sheet keeps it (everyday item 4).
-      // The message says so once it is, for the upload's own offline, connection and time-out
-      // failures too (review N1 L4); a recording that could not be kept is not called kept.
-      const waiting = keepsOnDevice && daveVoiceFailureIsWaitingForSignal(reason);
-      const kept = waiting && await keepRecordingOnDevice(uri, duration, 'no-signal');
+      // Kept on this device past a closed app when this sheet keeps it (everyday item 4), whatever
+      // the failure (review N1 L2). The message says so once it is, for the upload's own failures
+      // (review N1 L4); a recording that could not be kept is not called kept.
+      const kept = keepsOnDevice &&
+        await keepRecordingOnDevice(uri, duration, daveVoiceFailureIsWaitingForSignal(reason) ? 'no-signal' : 'sent');
       if (operation !== transcriptionOperationRef.current) return;
-      setError(daveVoiceFailureMessage(reason, continueLabel, kept));
+      setError(daveVoiceFailureMessage(reason, continueLabel, kept && daveVoiceFailureIsTheUpload(reason)));
     } finally {
       if (operation === transcriptionOperationRef.current) {
         preparingOperationRef.current = null;
@@ -630,11 +648,7 @@ export function DAVEVoiceCaptureSheet({
   async function closeKeepingRecording(exit: () => void) {
     const uri = recordingUri;
     if (!uri) return;
-    const kept = await keepRecordingOnDevice(
-      uri,
-      recordingDuration,
-      keptStateRef.current ?? (sentForWordsRef.current ? 'sent' : 'ready'),
-    );
+    const kept = await keepRecordingOnDevice(uri, recordingDuration, sentForWordsRef.current ? 'sent' : 'ready');
     if (!kept) {
       // Still here, so nothing is lost: he can use it, try again, or discard it.
       setError('The recording could not be kept on this device, so this stays open. Use it now, or discard it.');

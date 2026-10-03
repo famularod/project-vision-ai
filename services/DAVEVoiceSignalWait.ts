@@ -55,3 +55,15 @@ export function daveVoiceFailureIsWaitingForSignal(reason: unknown): boolean {
   return /\((?:VOICE-OFFLINE|VOICE-CONNECTION|VOICE-TIMEOUT)\)$/.test(reason.message) ||
     reason.message === 'Could not reach voice transcription. Check the connection and try again.';
 }
+
+/**
+ * Whether a failure is the upload's own (review N1 L2): waiting for signal,
+ * or any failure the upload names with its code, such as "The voice upload
+ * was interrupted. … (VOICE-CANCELLED)". A sheet that has the recording kept
+ * on the device says so for these; the voice service's own answers ("could
+ * not understand this recording") read as they did.
+ */
+export function daveVoiceFailureIsTheUpload(reason: unknown): boolean {
+  return daveVoiceFailureIsWaitingForSignal(reason) ||
+    (reason instanceof Error && /\(VOICE-[A-Z]+\)$/.test(reason.message));
+}
