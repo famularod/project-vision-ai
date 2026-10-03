@@ -10,7 +10,7 @@
 
 import { cloudOwnerUnchanged, currentCloudOwner } from './CloudOwnerBinding';
 import { requireOwnedProjectDocumentAccess } from './ProjectDocumentLifecycle';
-import { classifySyncFailureText } from './SyncFailureCategory';
+import { syncFailureCategoryOfError } from './SyncFailureCategory';
 
 type UploadRetryDocument = Readonly<{
   id: string;
@@ -74,8 +74,9 @@ export function projectDocumentUploadAttemptsAfterFailure(
   failure: unknown,
 ): number {
   const recorded = Math.max(0, Math.floor(Number(recordedAttempts) || 0));
-  const message = failure instanceof Error ? failure.message : typeof failure === 'string' ? failure : '';
-  return classifySyncFailureText([message]) === 'offline' ? Math.max(0, recorded - 1) : recorded;
+  // By the failure's type and code, never a document name in its message (everyday item 6).
+  if (failure === null || failure === undefined || failure === '') return recorded;
+  return syncFailureCategoryOfError(failure) === 'offline' ? Math.max(0, recorded - 1) : recorded;
 }
 
 /**

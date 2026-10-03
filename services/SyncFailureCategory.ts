@@ -1,3 +1,5 @@
+import { syncErrorIsTransportFailure, syncMessageIsTransportFailure, syncMessageWithoutNames } from './SyncOfflineClassifier';
+
 /**
  * Why a field update's cloud sync failed, as a category the app acts on:
  * 'offline', 'signed_out' and 'auth' are retried automatically; the rest
@@ -55,12 +57,16 @@ const SANITIZED_SENTENCES: ReadonlyArray<readonly [RegExp, SyncFailureCategory]>
   [/cloud sync needs service attention/, 'database_insert_failed'],
 ];
 
-/** Unambiguous transport failures, wherever they appear in a message. */
-const TRANSPORT_FAILURE =
-  /network request failed|failed to fetch|fetch failed|load failed|econn|enotfound|internet connection|appears to be offline|\boffline\b|unreachable/;
-
+/**
+ * Everyday item 6 (2 Oct 2026): offline is the platform's own transport
+ * failure (SyncOfflineClassifier), never a word that can be part of a
+ * project, task or document name. The names a message quotes are taken out
+ * before any of these checks: "Field update for “Fiber Network” could not
+ * sync." read as offline, and "Policy" or "Authority" in a name read as a
+ * permission or sign-in failure.
+ */
 export function classifySyncFailureText(errors: readonly string[]): SyncFailureCategory {
-  const message = errors.join(' ').toLowerCase();
+  const message = syncMessageWithoutNames(errors.join(' ')).toLowerCase();
 
   if (!message.trim()) return 'unknown';
   if (CURRENT_DRAWING_PROTECTED.test(message)) return 'current_drawing_protected';
@@ -74,12 +80,19 @@ export function classifySyncFailureText(errors: readonly string[]): SyncFailureC
   if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
   if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
   if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
-  if (TRANSPORT_FAILURE.test(message)) return 'offline';
+  if (syncMessageIsTransportFailure(message)) return 'offline';
   if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
   if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
   if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
-  if (/network|connection|fetch|internet/.test(message)) return 'offline';
+  // Generic "network" or "connection" wording no longer reads as offline (everyday item 6).
   return 'unknown';
+}
+
+/** A thrown sync error's category: offline by its type and code first, then as its message reads. */
+export function syncFailureCategoryOfError(error: unknown): SyncFailureCategory {
+  if (syncErrorIsTransportFailure(error)) return 'offline';
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return classifySyncFailureText([message || 'unknown sync error']);
 }
 
 export function isSyncFailureCategory(value: unknown): value is SyncFailureCategory {

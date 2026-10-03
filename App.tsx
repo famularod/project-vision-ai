@@ -289,7 +289,7 @@ import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixT
 import { optionalString, uid } from './services/RecordValues';
 import { normalizeFieldUpdateSyncDiagnostics, type FieldUpdateSyncDiagnostics, type FieldUpdateSyncFailureCategory, type FieldUpdateSyncStepResult } from './services/FieldUpdateSyncDiagnosticsRecord';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
-import { classifySyncFailureText } from './services/SyncFailureCategory';
+import { classifySyncFailureText, syncFailureCategoryOfError } from './services/SyncFailureCategory';
 import { forgetAllReportSessionState } from './services/ReportSessionState';
 import {
   archiveDraftEnvelopeForValidation,
@@ -7936,9 +7936,7 @@ useEffect(() => {
       }
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        classifySyncFailureCategory([
-          error instanceof Error ? error.message : 'unknown sync error',
-        ]),
+        syncFailureCategoryOfError(error), // offline by the error's type and code (everyday item 6)
         attemptedAt,
         1,
         null,
@@ -8105,9 +8103,7 @@ useEffect(() => {
       return reconciliation.current || finalUpdate;
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        classifySyncFailureCategory([
-          error instanceof Error ? error.message : 'unknown sync error',
-        ]),
+        syncFailureCategoryOfError(error), // offline by the error's type and code (everyday item 6)
         now,
         1,
         null,

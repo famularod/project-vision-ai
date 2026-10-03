@@ -1,4 +1,5 @@
 import { classifySyncFailureText, CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE, currentDrawingProjectsKeptMessage, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
+import { syncMessageReadsAsConnectionFailure } from './SyncOfflineClassifier';
 import {
   archiveProjectUpdate,
   countCloudProjects,
@@ -529,7 +530,7 @@ export function sanitizeUserFacingSyncMessage(message: string): string {
     return 'Cloud sync needs you to sign in again. Your changes remain saved on this phone.';
   }
 
-  if (/network|fetch|offline|timeout|timed out|connection|dns/i.test(message)) {
+  if (syncMessageReadsAsConnectionFailure(message)) { // by the platform's wording, without names (everyday item 6)
     return 'Cloud sync could not connect. Your changes remain saved and will be retried.';
   }
 
