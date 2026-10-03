@@ -189,6 +189,18 @@ export function daveWebReportSentFromHereNote(sentAt: string): string {
   return `This report was sent from this computer ${describeReportSendTime(sentAt)}. Sharing it again is not counted as another send.`;
 }
 
+/** How long a period check made ahead of a share stands (review N1): the click that follows goes straight through. */
+export const DESKTOP_REPORT_SEND_CHECK_STANDS_MS = 60_000;
+
+/**
+ * The check before a share passed, but the browser no longer takes the press
+ * as a click (the check used it up): nothing went out, and the next press
+ * goes straight through (review N1, the later-send check comes first).
+ */
+export function daveWebReportCheckedPressAgain(button: string): string {
+  return `Checked: no other device has sent a report since this one was approved. Press ${button} again.`;
+}
+
 /** Why an approved report is no longer shared: a later report was sent after it was approved. */
 export function daveWebReportPeriodMovedMessage(currentKey: string): string {
   const sentAt = currentKey.startsWith('sent:') ? currentKey.slice('sent:'.length) : '';

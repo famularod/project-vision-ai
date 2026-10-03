@@ -142,7 +142,7 @@ import {
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import { buildDAVEReportSourceFingerprint, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
-import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAt } from '../../services/DAVEReportSnapshot';
+import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAfter, reportPeriodSentAt } from '../../services/DAVEReportSnapshot';
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
@@ -156,8 +156,10 @@ import {
 import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
 import { DesktopReportMarkSent, DesktopReportSentQuestion, sameSharedReport, type DesktopSharedReport } from './desktop-report-send';
 import {
+  DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
+  daveWebReportCheckedPressAgain,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportRecordedMessage,
@@ -5978,12 +5980,67 @@ function ReportWorkspace({
     setComposerOpen(true);
   };
 
+  // Review N1 (3 Oct 2026, by reading): the later-send check comes BEFORE the report leaves the page. Copy and the
+  // share menu ran first and the period was read again only to record the send, so when another device had sent
+  // a report since this page last read the period (it reads on a refresh), the text copied still counted from
+  // the older one, and he was told only that it "was not recorded". The period is now read again first, and a
+  // report another device has overtaken is not copied, shared or put in an email draft.
+  //
+  // A browser lets a page copy, share or open a window only within a click, and waiting for the read can use
+  // the click up. So the read is made as the pointer reaches the buttons, and a check that passed stands for a
+  // minute: the click then goes straight through. When the click itself had to wait and the browser refuses, he
+  // is told the check passed and to press again.
+  const sendCheckRef = useRef<{ key: string; at: number } | null>(null);
+  const sendCheckUnderWayRef = useRef<{ key: string; check: Promise<string | null> } | null>(null);
+  const sendCheckKey = [reportId, expectedRevision ?? '', reportSource.fingerprint, periodReadKey].join('|');
+  const sendCheckStands = () => Boolean(sentFromHereAt) ||
+    (sendCheckRef.current?.key === sendCheckKey && Date.now() - sendCheckRef.current.at < DESKTOP_REPORT_SEND_CHECK_STANDS_MS);
+  /** Reads the period again. The period another device's later send started, or null when this report still stands. */
+  const checkPeriodBeforeSend = (): Promise<string | null> => {
+    const underWay = sendCheckUnderWayRef.current;
+    if (underWay?.key === sendCheckKey) return underWay.check;
+    const key = sendCheckKey;
+    const readKey = periodReadKey;
+    const preparedKey = reportSource.periodKey;
+    const reportFacts = reportSource.fingerprint.split(':media-')[0];
+    const check = readDAVEWebReportPeriod(periodStore, periodScopeKey, reportAudience).then(read => {
+      setPeriodRead({ key: readKey, read });
+      const periodNow = read.status === 'loaded' ? read.snapshot : null;
+      // The rule the record applies afterwards (recordDAVEWebReportSend), applied first: another device sent a
+      // report after the one this report counts from ('none': it counted from no report). This computer's own
+      // sends, and a report it already sent, are never stopped (review N1 M2); nor is a report saved before
+      // reports kept their period, or one whose period could not be read at all.
+      const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+      const later = countedFrom === undefined ? null : reportPeriodSentAfter(periodNow, countedFrom, daveWebOwnReportSends());
+      if (later && !daveWebReportSentHereAt(periodNow, reportFacts)) return `sent:${reportPeriodSentAt(later)}`;
+      sendCheckRef.current = { key, at: Date.now() };
+      return null;
+    }).finally(() => {
+      if (sendCheckUnderWayRef.current?.check === check) sendCheckUnderWayRef.current = null;
+    });
+    sendCheckUnderWayRef.current = { key, check };
+    return check;
+  };
+  /** As the pointer or the keyboard reaches Share or Prepare Email: the check is made ahead of the click. */
+  const checkAheadOfSend = () => {
+    if (reportStatus !== 'approved' || approvedPeriodMoved || sendCheckStands()) return;
+    void checkPeriodBeforeSend().catch(() => null);
+  };
+
   const shareApprovedReport = async () => {
     if (reportStatus !== 'approved') return;
     // An approval stands only on the period it was given on (A6 pass 8 M1, on the web since everyday item 3).
     if (approvedPeriodMoved) {
       setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
       return;
+    }
+    const checkedAhead = sendCheckStands();
+    if (!checkedAhead) {
+      const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
+      if (overtakenBy) {
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy) });
+        return;
+      }
     }
     setNotice(null);
     // The report as it is shared now: what "Was the report sent?" and the record are about (review N1 M1).
@@ -6015,6 +6072,11 @@ function ReportWorkspace({
       throw new Error('Sharing is unavailable in this browser.');
     } catch (error) {
       const cancelled = error instanceof Error && error.name === 'AbortError';
+      // The click waited for the check and the browser no longer takes it as a click: the check stands, so the next press shares at once.
+      if (!cancelled && !checkedAhead && error instanceof Error && error.name === 'NotAllowedError') {
+        setNotice({ tone: 'good', text: daveWebReportCheckedPressAgain('Share Approved Report') });
+        return;
+      }
       if (!cancelled) {
         setNotice({
           tone: 'danger',
@@ -6024,11 +6086,24 @@ function ReportWorkspace({
     }
   };
 
-  const prepareApprovedReportEmail = () => {
+  const prepareApprovedReportEmail = async () => {
     if (reportStatus !== 'approved' || typeof window === 'undefined') return;
     if (approvedPeriodMoved) {
       setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
       return;
+    }
+    if (!sendCheckStands()) {
+      const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
+      if (overtakenBy) {
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy) });
+        return;
+      }
+      // A browser opens a window only within a click; where it says this one was used up by the wait, the next press opens the draft.
+      const activation = typeof navigator !== 'undefined' ? (navigator as { userActivation?: { isActive?: boolean } }).userActivation : undefined;
+      if (activation && activation.isActive === false) {
+        setNotice({ tone: 'good', text: daveWebReportCheckedPressAgain('Prepare Email') });
+        return;
+      }
     }
     const shared = reportAsShared();
     const subject = encodeURIComponent(reportTitle.trim());
@@ -6355,6 +6430,9 @@ function ReportWorkspace({
                       <Pressable
                         style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]}
                         onPress={() => { void shareApprovedReport(); }}
+                        onHoverIn={checkAheadOfSend}
+                        onFocus={checkAheadOfSend}
+                        onPressIn={checkAheadOfSend}
                         disabled={pending}
                         accessibilityRole="button"
                       >
@@ -6362,7 +6440,10 @@ function ReportWorkspace({
                       </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]}
-                        onPress={prepareApprovedReportEmail}
+                        onPress={() => { void prepareApprovedReportEmail(); }}
+                        onHoverIn={checkAheadOfSend}
+                        onFocus={checkAheadOfSend}
+                        onPressIn={checkAheadOfSend}
                         disabled={pending}
                         accessibilityRole="button"
                       >

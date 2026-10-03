@@ -253,3 +253,131 @@ describe('review N1 M1: "Was the report sent?" is about the report that was shar
     expect(sharedSnapshot()?.deliveredAt).toBeNull();
   });
 });
+
+describe('review N1 (by reading): the later-send check comes before the report leaves the page', () => {
+  const OVERTAKEN = /^Your other device sent a report .*, after this one was approved, so its "since the last report" section is out of date\. Regenerate it from current facts, then approve\.$/;
+  /** While the web shows its approved report, the phone sends a later one; this page has not read the period since. */
+  function phoneSendsLater() {
+    const later = phoneSent(100, '2026-10-01T13:00:00.000Z');
+    rows().set('tower|project_manager', { snapshot: later, deliveredAt: later.deliveredAt as string });
+  }
+  const mailto = () => (globalThis as unknown as { window: { open: jest.Mock } }).window.open;
+  const readPeriod = mockAuth.loadReportPeriod.getMockImplementation();
+  afterEach(() => {
+    mockAuth.loadReportPeriod.mockReset();
+    mockAuth.loadReportPeriod.mockImplementation(readPeriod as never);
+  });
+
+  it('Share: a report the phone has overtaken is not copied; he is told why, and nothing is recorded', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    phoneSendsLater();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect((await screen.findAllByText(OVERTAKEN)).length).toBeGreaterThan(0);
+    expect(copied()).not.toHaveBeenCalled();
+    expect(sharedRow()?.deliveredAt).toBe('2026-10-01T13:00:00.000Z');
+    expect(screen.queryByText(/was not recorded as sent/)).toBeNull();
+  });
+
+  it('the share menu and Prepare Email: not opened, and no "Was the report sent?"', async () => {
+    const share = jest.fn(async () => undefined);
+    setNavigator({ share });
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    phoneSendsLater();
+    mailto().mockClear();
+    fireEvent.press(screen.getByText('Prepare Email'));
+    expect((await screen.findAllByText(OVERTAKEN)).length).toBeGreaterThan(0);
+    expect(mailto()).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await settle();
+    expect(share).not.toHaveBeenCalled();
+    expect(screen.queryByText(QUESTION)).toBeNull();
+  });
+
+  it('a first report (it counted from no report) the phone has since sent ahead of: not copied either', async () => {
+    table = new Map();
+    render(<DesktopReadOnlyShell page="reports" />);
+    fireEvent.press(await screen.findByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    const first = phoneSent(40, '2026-10-01T13:00:00.000Z');
+    rows().set('tower|project_manager', { snapshot: first, deliveredAt: first.deliveredAt as string });
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect((await screen.findAllByText(OVERTAKEN)).length).toBeGreaterThan(0);
+    expect(copied()).not.toHaveBeenCalled();
+  });
+
+  it('the check is made as the pointer reaches the button, and then stands: the click copies at once, with no second read', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    const reads = mockAuth.loadReportPeriod.mock.calls.length;
+    fireEvent(screen.getByText('Share Approved Report'), 'hoverIn');
+    await settle();
+    expect(mockAuth.loadReportPeriod.mock.calls.length).toBe(reads + 1);
+    // From here the cloud is slow to answer: a click that had to read the period again would not have copied yet.
+    let answer: () => void = () => undefined;
+    const slow = new Promise<void>(resolve => { answer = resolve; });
+    mockAuth.loadReportPeriod.mockImplementationOnce(async (scopeKey: string, format: string) => {
+      await slow;
+      return { ownerId: 'owner-1', snapshot: rows().get(rowKey(scopeKey, format))?.snapshot ?? null };
+    });
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await waitFor(() => expect(copied()).toHaveBeenCalledTimes(1));
+    answer();
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+  });
+
+  it('when the browser no longer takes the press as a click after the check: nothing is lost, and the next press shares', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    const refused = Object.assign(new Error('Write permission denied.'), { name: 'NotAllowedError' });
+    copied().mockRejectedValueOnce(refused);
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText('Checked: no other device has sent a report since this one was approved. Press Share Approved Report again.')).toBeTruthy();
+    expect(sharedSnapshot()?.deliveredAt).toBeNull();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(2);
+  });
+
+  it('Prepare Email where the browser says the click was used up by the wait: the draft opens on the next press', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    setNavigator({ clipboard: { writeText: jest.fn(async () => undefined) }, userActivation: { isActive: false } } as never);
+    mailto().mockClear();
+    fireEvent.press(screen.getByText('Prepare Email'));
+    expect(await screen.findByText('Checked: no other device has sent a report since this one was approved. Press Prepare Email again.')).toBeTruthy();
+    expect(mailto()).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Prepare Email'));
+    await screen.findByText(QUESTION);
+    expect(mailto()).toHaveBeenCalledTimes(1);
+  });
+
+  it('offline (the shared period cannot be read): the report is still shared, and recorded on this computer', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    mockAuth.loadReportPeriod.mockRejectedValue(new Error('offline'));
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await waitFor(() => expect(copied()).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+  });
+
+  it('Mark as Sent still refuses a report the phone has overtaken, when it records', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    phoneSendsLater();
+    fireEvent.press(await screen.findByLabelText('Mark as Sent'));
+    fireEvent.press(screen.getByLabelText('Record as Sent'));
+    expect(await screen.findByText(/^Your other device sent a report .*, after this one was approved, so this one was not recorded as sent\./)).toBeTruthy();
+    expect(sharedRow()?.deliveredAt).toBe('2026-10-01T13:00:00.000Z');
+  });
+});

@@ -238,7 +238,10 @@ describe('a report sent from the web counts on the iPhone and the iPad (owner an
     const later = phoneSent(100, '2026-10-01T13:00:00.000Z');
     (table as Map<string, { snapshot: unknown; deliveredAt: string | null }>).set('tower|project_manager', { snapshot: later, deliveredAt: later.deliveredAt as string });
     fireEvent.press(screen.getByText('Share Approved Report'));
-    expect(await screen.findByText(/^Your other device sent a report .*, after this one was approved, so this one was not recorded as sent\./)).toBeTruthy();
+    // Review N1 (3 Oct 2026, the later-send check comes first): the report is no longer copied and then "not recorded
+    // as sent"; the period is read again before the copy, and a report the phone has overtaken is not copied at all.
+    expect(await screen.findByText(/^Your other device sent a report .*, after this one was approved, so its "since the last report" section is out of date\. Regenerate it from current facts, then approve\.$/)).toBeTruthy();
+    expect((globalThis as unknown as { navigator: { clipboard: { writeText: jest.Mock } } }).navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(sharedRow()?.deliveredAt).toBe('2026-10-01T13:00:00.000Z');
     expect(JSON.parse(profile.get('@vitruvius/web/owner-1/@vitruvius/report-snapshots/own-sends/v1') ?? '[]')).toEqual([]);
   });
