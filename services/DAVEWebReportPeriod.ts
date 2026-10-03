@@ -191,6 +191,16 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
   return `Recorded as sent ${when}. The next report on every device runs from this one.`;
 }
 
+/**
+ * A report that went out from this browser with no approval of it waiting
+ * here or in the shared period, and facts that have changed since it was
+ * prepared (review N1 L2, 3 Oct 2026): a later report was approved since, or
+ * it was approved in another browser, or this browser's site data was
+ * cleared. Said plainly: what was not recorded, and what follows.
+ */
+export const DAVE_WEB_REPORT_SEND_NOT_RECORDED =
+  'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
+
 /** Shared again after this computer had recorded it as sent (review N1): said plainly, never as an error. */
 export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
   return `Shared again. This report was already recorded as sent ${describeReportSendTime(sentAt)}, so this is not counted as another send.`;

@@ -154,7 +154,9 @@ const sharedSnapshot = () => sharedRow()?.snapshot as DAVEReportSnapshot | undef
 
 const copied = () => (globalThis as unknown as { navigator: { clipboard: { writeText: jest.Mock } } }).navigator.clipboard.writeText;
 const ownSendTimes = () => JSON.parse(profile.get('@vitruvius/web/owner-1/@vitruvius/report-snapshots/own-sends/v1') ?? '[]') as string[];
-const NO_APPROVAL = 'There is no approval of this report waiting to be recorded as sent on this computer.';
+// Review N1 L2 (3 Oct 2026): what the page says when a send cannot be recorded (was "There is no approval of this
+// report waiting to be recorded as sent on this computer."); pin updated deliberately.
+const NO_APPROVAL = 'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 const ALREADY_RECORDED = /^Shared again\. This report was already recorded as sent .*, so this is not counted as another send\.$/;
 const PHONE_AT_10 = () => new Map([['tower|project_manager', { snapshot: phoneSent(40, '2026-10-01T10:00:00.000Z'), deliveredAt: '2026-10-01T10:00:00.000Z' as string | null }]]);
 
@@ -205,14 +207,19 @@ describe('review N1 (Low): a second Share of a report this computer already sent
     await expect(recordDAVEWebReportSend(store, period, 'other-facts', '2026-10-01T12:47:00.000Z')).resolves.toBeNull();
   });
 
-  it('a report with no approval on this computer, and never sent from it, still says nothing was recorded', async () => {
+  it('a report with no approval on this computer whose facts have changed since, never sent from it, still says nothing was recorded', async () => {
     table = PHONE_AT_10();
-    render(<DesktopReadOnlyShell page="reports" />);
+    const view = render(<DesktopReadOnlyShell page="reports" />);
     await approveOnWeb();
     // This browser's site data is cleared, and the shared copy holds only the phone's send: no approval is left here.
     profile.clear();
     forgetDAVEWebOwnReportSends();
     table = PHONE_AT_10();
+    // Review N1 L2 (3 Oct 2026): with the facts unchanged this computer now takes the approval as its own and records
+    // the send (review-n1b-web-reports). The facts have moved on here, so it cannot, and says so.
+    mockAuth.snapshot = { ...webSnapshot(100, '2026-10-01T12:20:00.000Z'), scheduleItems: [task('frame', 'Frame walls', 100), task('pour', 'Pour slab', 75)] };
+    view.rerender(<DesktopReadOnlyShell page="reports" />);
+    await settle();
     fireEvent.press(screen.getByText('Share Approved Report'));
     expect(await screen.findByText(NO_APPROVAL)).toBeTruthy();
     expect(sharedRow()?.deliveredAt).toBe('2026-10-01T10:00:00.000Z');

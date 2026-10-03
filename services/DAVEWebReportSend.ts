@@ -232,6 +232,11 @@ export function daveWebReportPeriodKeptInTabOnly(): boolean {
   return false;
 }
 
+/** Test seam: a new tab holds nothing in its own memory (neither a period nor the sender id a full profile refused). */
+export function forgetDAVEWebReportTabMemory(): void {
+  tabOnly.clear();
+}
+
 /**
  * This browser profile's storage for report periods: each account's own
  * copy under its owner id; the sender id once for the profile, whoever signs
@@ -450,13 +455,21 @@ export async function recordDAVEWebReportSend(
   markedSentAt: string | null = null,
 ): Promise<DAVEWebSendOutcome | null> {
   // This computer's own copy holds its approval; the shared copy may already hold a later send.
-  const approval = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, LOCAL_ONLY)).snapshot;
-  if (!approval || approval.deliveredAt !== null || (approvedFingerprint !== null && approval.sourceFingerprint !== approvedFingerprint)) {
-    // No approval of these facts is waiting. Already sent from here? Its own copy, then the shared period, says.
+  const own = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, LOCAL_ONLY)).snapshot;
+  let approval = own;
+  if (!own || own.deliveredAt !== null || (approvedFingerprint !== null && own.sourceFingerprint !== approvedFingerprint)) {
+    // No approval of these facts is waiting here. Already sent from here? Its own copy, then the shared period, says.
     const merged = await loadDAVEWebReportPeriod(store, period.scopeKey, period.reportFormat).catch(() => null);
-    const sentAt = daveWebReportSentHereAt(approval, approvedFingerprint) ?? daveWebReportSentHereAt(merged?.snapshot, approvedFingerprint);
-    return sentAt ? { status: 'already_sent', sentAt } : null;
+    const sentAt = daveWebReportSentHereAt(own, approvedFingerprint) ?? daveWebReportSentHereAt(merged?.snapshot, approvedFingerprint);
+    if (sentAt) return { status: 'already_sent', sentAt };
+    // Review N1 L2 (3 Oct 2026): approved in another browser, or here before this browser's site data was cleared.
+    // The approval waiting in the shared period is of exactly these facts: the report going out now is that
+    // approved report, and its send is recorded, where it was dropped with "no approval… on this computer".
+    const waiting = merged?.snapshot;
+    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || waiting.sourceFingerprint !== approvedFingerprint) return null;
+    approval = waiting;
   }
+  if (!approval) return null;
   const loaded = await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, store.cloud);
   const later = reportPeriodSentAfter(loaded.snapshot, reportPeriodSentAt(approval), ownSends);
   if (later) return { status: 'later_send', later };

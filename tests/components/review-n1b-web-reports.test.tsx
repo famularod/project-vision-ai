@@ -10,7 +10,7 @@ import {
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
-import { forgetDAVEWebOwnReportSends, forgetDAVEWebReportPeriods } from '../../services/DAVEWebReportSend';
+import { forgetDAVEWebOwnReportSends, forgetDAVEWebReportPeriods, forgetDAVEWebReportTabMemory } from '../../services/DAVEWebReportSend';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 // Review N1 of reports and sending (3 Oct 2026), the web Reports page
@@ -113,6 +113,7 @@ beforeEach(() => {
   profileFull = false;
   forgetDAVEWebReportPeriods('owner-1');
   forgetDAVEWebReportPeriods('owner-2');
+  forgetDAVEWebReportTabMemory();
   (globalThis as { localStorage?: unknown }).localStorage = {
     getItem: (key: string) => profile.get(key) ?? null,
     setItem: (key: string, value: string) => {
@@ -420,5 +421,94 @@ describe('review N1 L1: when this browser cannot keep the period, the page says 
     fireEvent.press(screen.getByText('Approve Report'));
     expect(await screen.findByText('The report is approved, but this browser could not save its reporting period, so this computer cannot record that it was sent: the next report would count from the report before this one. Approving again will not change that. Sign out of this computer and in again, or use another browser, before you send it.')).toBeTruthy();
     expect(screen.queryByText(/Try Approve again/)).toBeNull();
+  });
+});
+
+describe('review N1 L2: a report approved in another browser (or before site data was cleared) and shared from this one is recorded', () => {
+  /** The approved report as the page saved it, in Report history on a later visit. */
+  function inReportHistory(snapshotOf: DAVEWebReadOnlySnapshot) {
+    const calls = (mockAuth.saveReport as jest.Mock).mock.calls as unknown as Array<[{ id: string; projectName: string | null; report: Record<string, unknown> }]>;
+    const saved = calls[calls.length - 1][0];
+    expect(saved.report.status).toBe('approved');
+    mockAuth.snapshot = {
+      ...snapshotOf,
+      referenceDocuments: [{
+        id: saved.id, name: String(saved.report.title), originalFileName: 'report.md', uri: '', mimeType: 'text/markdown',
+        category: 'Report', notes: 'Approved project report', isCurrent: true, importedAt: String(saved.report.generatedAt),
+        projectId: null, projectName: saved.projectName, importBatchId: null, webVersionGroupId: 'report:portfolio',
+        webReport: saved.report, cloudUpdatedAt: '2026-10-01T12:30:00.000Z', linkedScheduleItems: [], importedScheduleItemCount: 0,
+      }] as unknown as DAVEWebReadOnlySnapshot['referenceDocuments'],
+    };
+  }
+  /** Browser 1 approves (not sent) and is closed; browser 2 is another profile, or this one after "clear site data". */
+  async function approvedInAnotherBrowser(later: DAVEWebReadOnlySnapshot = webSnapshot(100, '2026-10-01T12:00:00.000Z')) {
+    const first = render(<DesktopReadOnlyShell page="reports" />);
+    if (table === 'missing') {
+      fireEvent.press(await screen.findByText('Review & Prepare Report'));
+      fireEvent.press(screen.getByText('Approve Report'));
+      await screen.findByText('Share Approved Report');
+      await settle();
+    } else {
+      await approveOnWeb();
+    }
+    inReportHistory(later);
+    first.unmount();
+    const firstBrowser = profile.get('@vitruvius/report-sender-id/v1');
+    profile.clear();
+    forgetDAVEWebReportPeriods('owner-1');
+    forgetDAVEWebReportTabMemory();
+    forgetDAVEWebOwnReportSends();
+    forgetDAVEWebReportPeriodSession();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await settle();
+    fireEvent.press(screen.getByText('Open'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    return firstBrowser;
+  }
+  const NOT_RECORDED = 'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
+
+  it('with the shared record: its approval is known there, and the copy from this browser is recorded for every device', async () => {
+    table = PHONE_AT_10();
+    await approvedInAnotherBrowser();
+    expect(sharedSnapshot()?.deliveredAt).toBeNull();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent .*\. The next report on every device runs from this one\.$/)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    const sent = sharedSnapshot() as DAVEReportSnapshot;
+    expect(typeof sent.deliveredAt).toBe('string');
+    // Sent by this browser, and kept here now.
+    expect(sent.sentBy).toBe(profile.get('@vitruvius/report-sender-id/v1'));
+    expect([...profile.keys()].some(key => key.includes('report-snapshots/v1:tower'))).toBe(true);
+    expect(screen.queryByText(/No approval of this report/)).toBeNull();
+  });
+
+  it('with the shared record, when the facts have changed since: still that approved report, and still recorded', async () => {
+    table = PHONE_AT_10();
+    await approvedInAnotherBrowser({ ...webSnapshot(100, '2026-10-01T12:20:00.000Z', 75) });
+    const approved = sharedSnapshot() as DAVEReportSnapshot;
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+    const sent = sharedSnapshot() as DAVEReportSnapshot;
+    expect(sent.sourceFingerprint).toBe(approved.sourceFingerprint);
+    expect(sent.tasks.find(task => task.taskName === 'Pour slab')?.percentComplete).toBe(40);
+  });
+
+  it('without the shared record: the report is the approved one on screen and its facts are current, so this computer records it', async () => {
+    table = 'missing';
+    await approvedInAnotherBrowser();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent .*\. Reports aren't shared between your devices yet, so the next report counts from it on this computer only\.$/)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    expect([...profile.keys()].some(key => key.includes('report-snapshots/v1:tower'))).toBe(true);
+  });
+
+  it('without the shared record, when the facts have changed since: it cannot be recorded, and the page says so plainly', async () => {
+    table = 'missing';
+    await approvedInAnotherBrowser({ ...webSnapshot(100, '2026-10-01T12:20:00.000Z', 75) });
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(NOT_RECORDED)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    expect([...profile.keys()].some(key => key.includes('report-snapshots/v1:tower'))).toBe(false);
   });
 });

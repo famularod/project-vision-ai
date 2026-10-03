@@ -158,6 +158,7 @@ import { manualReportMarkTime, manualReportSendTime } from '../../services/Repor
 import { DesktopReportMarkSent, DesktopReportSentQuestion, sameSharedReport, type DesktopSharedReport } from './desktop-report-send';
 import {
   DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
+  DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
@@ -5686,6 +5687,17 @@ function ReportWorkspace({
     let outcome: DAVEWebSendOutcome | null = null;
     try {
       outcome = await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
+      // Review N1 L2 (3 Oct 2026): no approval of this report here or in the shared period (approved in another
+      // browser before reports were shared, or this browser's site data was cleared). It is the approved report
+      // on screen and its facts are the current ones, so this computer takes the approval as its own, as Approve
+      // here would, and records the send; the later-send check applies as for any approval.
+      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && approvedFingerprint === reportFingerprint &&
+        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience) {
+        const approved = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
+        outcome = approved.status === 'later_send'
+          ? approved
+          : await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
+      }
     } catch {
       setNotice({ tone: 'danger', text: "The report couldn't be recorded as sent on this computer. Try again." });
       return false;
@@ -5697,7 +5709,8 @@ function ReportWorkspace({
       return true;
     }
     if (!outcome) {
-      setNotice({ tone: 'danger', text: 'There is no approval of this report waiting to be recorded as sent on this computer.' });
+      // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
+      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SEND_NOT_RECORDED });
       return false;
     }
     if (outcome.status === 'later_send') {
