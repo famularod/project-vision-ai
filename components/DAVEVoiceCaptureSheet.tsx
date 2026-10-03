@@ -71,6 +71,7 @@ const INTERRUPTED_RECORDING_NOTICE =
 const RECORDING_LIMIT_NOTICE = 'Stopped at the 3-minute limit. Anything after 3:00 was not recorded.';
 const RECORDING_LIMIT_WARNING = 'Less than 15 seconds left. Recording stops at 3:00.';
 const RECORDING_LIMIT_WARNING_MS = (MAX_RECORDING_SECONDS - 15) * 1_000;
+const CLOSE_AND_KEEP = 'Close and Keep on This Device';
 
 export function DAVEVoiceCaptureSheet({
   visible,
@@ -170,7 +171,11 @@ export function DAVEVoiceCaptureSheet({
   // Review N1 M1: which recording a keep under way is for. Use, Discard and
   // Record Again move it on, so that keep is undone when it lands.
   const keepEpochRef = useRef(0);
-  const keepUnderWayRef = useRef<Promise<boolean> | null>(null);
+  const keepQueueRef = useRef<Promise<boolean>>(Promise.resolve(false));
+  // Review N1 L1: how far the kept recording had got ('ready', 'sent', 'no-signal'),
+  // and whether this recording has been sent for its words at all.
+  const keptStateRef = useRef<KeptVoiceRecordingModule.KeptVoiceRecordingState | null>(null);
+  const sentForWordsRef = useRef(false);
   const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
   // Review N1 L3: when this recording was dictated and the walk's area then;
   // `restored` when it was brought back from the device.
@@ -199,7 +204,7 @@ export function DAVEVoiceCaptureSheet({
     setIsTranscribing(false);
     // A11 pass 7 L2: like "Stopped waiting", say it is kept only while Vitruvius stays open
     // (on this device past a closed app when this sheet keeps it, everyday item 4).
-    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration);
+    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration, 'sent');
     setNotice(keepsOnDevice
       ? `The project changed while this recording was being prepared. It is kept on this device. Tap ${continueLabel} to try again.`
       : `The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
@@ -350,13 +355,22 @@ export function DAVEVoiceCaptureSheet({
       if (!kept || recordingUriRef.current || recordingActiveRef.current || recordingFinishingRef.current) return;
       if (kept.projectName.trim().toLowerCase() !== projectName.trim().toLowerCase()) return;
       keptCopyRef.current = kept.uri;
+      keptStateRef.current = kept.state;
+      sentForWordsRef.current = kept.state !== 'ready';
       captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true };
       recordingGenerationRef.current += 1;
       recordingDurationRef.current = kept.durationMs;
       setRecordingUri(kept.uri);
       setRecordingDuration(kept.durationMs);
+      if (kept.state === 'ready') {
+        // Closed and kept before he had sent it for its words: offered, and left for him to use (review N1 L1).
+        setNotice(`Kept from ${keptTimeLabel(kept.recordedAt)}. Replay it, then tap ${continueLabel} to use it, or record again.`);
+        return;
+      }
       void transcribeRecording(kept.uri, kept.durationMs);
-      setNotice(`Kept from ${keptTimeLabel(kept.recordedAt)}, when there was no signal. Trying it again now.`);
+      setNotice(kept.state === 'no-signal'
+        ? `Kept from ${keptTimeLabel(kept.recordedAt)}, when there was no signal. Trying it again now.`
+        : `Kept from ${keptTimeLabel(kept.recordedAt)}. Trying it again now.`);
     });
     return () => {
       current = false;
@@ -388,26 +402,33 @@ export function DAVEVoiceCaptureSheet({
    * the sheet keeps using its own copy. Answers whether it is kept: what the
    * sheet then says is only what happened (review N1 L4).
    */
-  function keepRecordingOnDevice(uri: string, duration: number): Promise<boolean> {
+  function keepRecordingOnDevice(
+    uri: string,
+    duration: number,
+    state: KeptVoiceRecordingModule.KeptVoiceRecordingState,
+  ): Promise<boolean> {
     if (!keptOwner || !keepSlot) return Promise.resolve(false);
-    if (keptCopyRef.current) return Promise.resolve(true);
-    // One keep for one recording: a second copy would stay kept after the first was used.
-    if (keepUnderWayRef.current) return keepUnderWayRef.current;
     const owner = keptOwner;
     const slot = keepSlot;
     const epoch = keepEpochRef.current;
-    const keep: Promise<boolean> = (async () => {
+    // One keep at a time for one recording: a second copy would stay kept
+    // after the first was used. A later keep finds the copy and only says
+    // how far the recording has got since (review N1 L1).
+    const keep = keepQueueRef.current.then(async () => {
+      if (epoch !== keepEpochRef.current) return false;
+      if (keptCopyRef.current && keptStateRef.current === state) return true;
       try {
         const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
         // Where the walk had him when he finished speaking; when that was not known yet, where it has him now.
         const capture = captureRef.current;
         const kept = await keepVoiceRecording(owner, slot, {
-          uri,
+          uri: keptCopyRef.current ?? uri,
           durationMs: duration,
           projectId,
           projectName,
           recordedAt: capture?.recordedAt,
           walkArea: capture?.restored ? capture.walkArea : capture?.walkArea ?? walkContext?.recommendedArea ?? null,
+          state,
         });
         // Discarded, used or recorded again meanwhile: this copy does not stay kept.
         if (epoch !== keepEpochRef.current) {
@@ -415,15 +436,14 @@ export function DAVEVoiceCaptureSheet({
           return false;
         }
         keptCopyRef.current = kept;
+        keptStateRef.current = state;
         return true;
       } catch {
-        // Kept in this sheet only, as before.
-        return false;
+        // Not kept: in this sheet only, as before. One already kept stays kept as it was.
+        return epoch === keepEpochRef.current && keptCopyRef.current !== null;
       }
-    })().finally(() => {
-      if (keepUnderWayRef.current === keep) keepUnderWayRef.current = null;
     });
-    keepUnderWayRef.current = keep;
+    keepQueueRef.current = keep;
     return keep;
   }
 
@@ -436,9 +456,10 @@ export function DAVEVoiceCaptureSheet({
    */
   function forgetRecordingKeptOnDevice() {
     keepEpochRef.current += 1;
-    keepUnderWayRef.current = null;
     const kept = keptCopyRef.current;
     keptCopyRef.current = null;
+    keptStateRef.current = null;
+    sentForWordsRef.current = false;
     if (!kept || !keptOwner || !keepSlot) return;
     void keptVoiceRecordings().forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
   }
@@ -490,6 +511,7 @@ export function DAVEVoiceCaptureSheet({
     }
     const operation = ++transcriptionOperationRef.current;
     preparingOperationRef.current = operation;
+    sentForWordsRef.current = true;
     setError(null);
     setNotice(null);
     setIsTranscribing(true);
@@ -520,7 +542,7 @@ export function DAVEVoiceCaptureSheet({
       // The message says so once it is, for the upload's own offline, connection and time-out
       // failures too (review N1 L4); a recording that could not be kept is not called kept.
       const waiting = keepsOnDevice && daveVoiceFailureIsWaitingForSignal(reason);
-      const kept = waiting && await keepRecordingOnDevice(uri, duration);
+      const kept = waiting && await keepRecordingOnDevice(uri, duration, 'no-signal');
       if (operation !== transcriptionOperationRef.current) return;
       setError(daveVoiceFailureMessage(reason, continueLabel, kept));
     } finally {
@@ -543,7 +565,7 @@ export function DAVEVoiceCaptureSheet({
     preparingOperationRef.current = null;
     setIsTranscribing(false);
     // Kept in this sheet only, while the app stays open (A11 pass 6 L2); on this device when this sheet keeps it (everyday item 4).
-    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration);
+    if (keepsOnDevice && recordingUri) void keepRecordingOnDevice(recordingUri, recordingDuration, 'sent');
     setNotice(keepsOnDevice
       ? `Stopped waiting. The recording is kept on this device. Tap ${continueLabel} to try again.`
       : `Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
@@ -558,7 +580,11 @@ export function DAVEVoiceCaptureSheet({
   // transcription failure) is only deleted once the owner confirms, and so is one
   // still being prepared (A11 pass 4 M1). While listening, or with nothing
   // recorded, leaving discards at once as before.
-  function confirmDiscardThen(leave: () => Promise<void>) {
+  // On a sheet that keeps recordings on the device there was still no way to
+  // close it and keep one: the question offered Keep (stay) or Discard only.
+  // "Close and Keep on This Device" closes it and leaves the recording kept,
+  // offered the next time the sheet opens for this project (review N1 L1).
+  function confirmDiscardThen(leave: () => Promise<void>, exit: () => void) {
     if (isTranscribing) {
       Alert.alert(
         'Stop preparing this recording?',
@@ -577,6 +603,19 @@ export function DAVEVoiceCaptureSheet({
       void leave();
       return;
     }
+    if (keepsOnDevice) {
+      Alert.alert(
+        'Discard this recording?',
+        'It has not been used yet. Discarding deletes it from this device. ' +
+          `Close and Keep on This Device closes this and keeps it for the next time you open this${projectName ? ` for ${projectName}` : ''}.`,
+        [
+          { text: 'Keep', style: 'cancel' },
+          { text: CLOSE_AND_KEEP, onPress: () => { void closeKeepingRecording(exit); } },
+          { text: 'Discard', style: 'destructive', onPress: () => { void leave(); } },
+        ],
+      );
+      return;
+    }
     Alert.alert(
       'Discard this recording?',
       'It has not been used yet. Discarding deletes it from this device.',
@@ -585,6 +624,42 @@ export function DAVEVoiceCaptureSheet({
         { text: 'Discard', style: 'destructive', onPress: () => { void leave(); } },
       ],
     );
+  }
+
+  /** "Close and Keep on This Device": the sheet closes and lets go of the recording; its kept copy and entry stay. */
+  async function closeKeepingRecording(exit: () => void) {
+    const uri = recordingUri;
+    if (!uri) return;
+    const kept = await keepRecordingOnDevice(
+      uri,
+      recordingDuration,
+      keptStateRef.current ?? (sentForWordsRef.current ? 'sent' : 'ready'),
+    );
+    if (!kept) {
+      // Still here, so nothing is lost: he can use it, try again, or discard it.
+      setError('The recording could not be kept on this device, so this stays open. Use it now, or discard it.');
+      return;
+    }
+    transcriptionOperationRef.current += 1;
+    recordingGenerationRef.current += 1;
+    preparingOperationRef.current = null;
+    stoppedWaitingRef.current = null;
+    heldTranscriptRef.current = null;
+    setIsTranscribing(false);
+    // Let go of, not forgotten: no keep still to come for it, and its kept copy stays.
+    keepEpochRef.current += 1;
+    const copy = keptCopyRef.current;
+    keptCopyRef.current = null;
+    keptStateRef.current = null;
+    sentForWordsRef.current = false;
+    captureRef.current = null;
+    // The recorder's own file in the cache goes; the kept copy is the one that stays.
+    if (uri !== copy) await removeRecording(uri);
+    setRecordingUri(null);
+    setNotice(null);
+    setError(null);
+    recordingDurationRef.current = 0;
+    exit();
   }
 
   async function discardRecording() {
@@ -641,7 +716,7 @@ export function DAVEVoiceCaptureSheet({
     : null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={() => confirmDiscardThen(cancel)}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={() => confirmDiscardThen(cancel, onCancel)}>
       <View style={[styles.backdrop, usesTabletSheet && styles.backdropTablet]}>
         <KeyboardAvoidingModalCard
           containerStyle={[
@@ -660,7 +735,7 @@ export function DAVEVoiceCaptureSheet({
               <Text style={styles.title}>{title}</Text>
               <Text style={styles.subtitle}>{contextLabel || projectName || 'Choose a project'}</Text>
             </View>
-            <TouchableOpacity style={styles.closeButton} onPress={() => confirmDiscardThen(cancel)} accessibilityLabel="Cancel memory capture">
+            <TouchableOpacity style={styles.closeButton} onPress={() => confirmDiscardThen(cancel, onCancel)} accessibilityLabel="Cancel memory capture">
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -688,7 +763,7 @@ export function DAVEVoiceCaptureSheet({
           {onOperation && operationLabel ? (
             <TouchableOpacity
               style={[styles.operationCard, !projectName && styles.buttonDisabled]}
-              onPress={() => confirmDiscardThen(openOperation)}
+              onPress={() => confirmDiscardThen(openOperation, () => { onOperation?.(); })}
               accessibilityRole="button"
               accessibilityLabel={operationLabel}
               disabled={!projectName}
@@ -895,7 +970,7 @@ export function DAVEVoiceCaptureSheet({
           )}
 
           {!recorderState.isRecording ? (
-            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => confirmDiscardThen(typeInstead)} accessibilityRole="button">
+            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => confirmDiscardThen(typeInstead, onTypeInstead)} accessibilityRole="button">
               <Text style={styles.typeText}>Type Instead</Text>
             </TouchableOpacity>
           ) : null}

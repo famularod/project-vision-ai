@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, type AlertButton } from 'react-native';
 
 import fs from 'fs';
 import path from 'path';
@@ -157,6 +157,7 @@ type SheetOptions = {
   walkContext?: DAVEProjectWalkContext;
   onMemoryReady?: jest.Mock;
   onCancel?: jest.Mock;
+  onTypeInstead?: jest.Mock;
 };
 
 /** Opens a voice sheet for `owner` (a fresh app session when the last one was closed). */
@@ -168,6 +169,7 @@ function openSheet({
   walkContext,
   onMemoryReady = jest.fn(),
   onCancel = jest.fn(),
+  onTypeInstead = jest.fn(),
 }: SheetOptions = {}) {
   closeApp();
   view = render(
@@ -184,12 +186,12 @@ function openSheet({
         autoStartRecording={autoStartRecording}
         walkContext={walkContext}
         onMemoryReady={onMemoryReady}
-        onTypeInstead={jest.fn()}
+        onTypeInstead={onTypeInstead}
         onCancel={onCancel}
       />
     </NativeWorkspaceOwnerContext.Provider>,
   );
-  return { onMemoryReady, onCancel };
+  return { onMemoryReady, onCancel, onTypeInstead };
 }
 
 async function record(durationMillis = 9_000) {
@@ -644,5 +646,169 @@ describe('review N1 L4: an upload that fails for want of signal says the recordi
     expect(daveVoiceFailureMessage(new Error('Something else.'), 'Use Note', true)).toBe('Something else. Your recording is kept on this device.');
     expect(daveVoiceFailureMessage(daveVoiceWaitingForSignalError(), 'Use Note', true))
       .toBe('No signal. Your recording is kept on this device — tap Use Note when you have signal. If Vitruvius closes, it is tried again the next time you open this.');
+  });
+});
+
+describe('review N1 L1: the sheet can be closed and the recording kept on this device', () => {
+  const CLOSE_AND_KEEP = 'Close and Keep on This Device';
+  let alert: jest.SpyInstance;
+  beforeEach(() => { alert = jest.spyOn(Alert, 'alert'); });
+  afterEach(() => { alert.mockRestore(); });
+  /** The last question asked: its title, message and buttons. */
+  const question = () => alert.mock.calls[alert.mock.calls.length - 1] as [string, string, AlertButton[]];
+  const answer = async (text: string) => {
+    const button = question()[2].find(candidate => candidate.text === text);
+    expect(button).toBeTruthy();
+    await act(async () => { button?.onPress?.(); await new Promise(resolve => setTimeout(resolve, 30)); });
+  };
+
+  it('X at "Recording ready" offers it; the sheet closes, the recording stays, and it is offered (not sent by itself) the next time', async () => {
+    const { onCancel } = openSheet();
+    await record();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    const [title, message, buttons] = question();
+    expect(title).toBe('Discard this recording?');
+    expect(message).toBe('It has not been used yet. Discarding deletes it from this device. Close and Keep on This Device closes this and keeps it for the next time you open this for Canopy Project.');
+    expect(buttons.map(button => button.text)).toEqual(['Keep', CLOSE_AND_KEEP, 'Discard']);
+    expect(onCancel).not.toHaveBeenCalled();
+
+    await answer(CLOSE_AND_KEEP);
+    await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+    expect(keptFiles()).toHaveLength(1);
+    expect(mockFiles.has(CACHE_URI)).toBe(false); // the recorder's own file went; the kept copy stays
+    await expect(readKeptVoiceRecording('owner-a', 'talk', 'Canopy Project')).resolves.toMatchObject({ state: 'ready', durationMs: 9_000 });
+    expect(screen.queryByText('Recording ready')).toBeNull();
+    expect(transcription.transcribeDAVECaptureMemoryAudio).not.toHaveBeenCalled();
+
+    // iOS closes the app. The next time Talk opens for this project it is there, waiting for him.
+    const onMemoryReady = jest.fn();
+    openSheet({ onMemoryReady });
+    expect(await screen.findByText('Recording ready')).toBeTruthy();
+    expect(screen.getByText(/^Kept from .*\. Replay it, then tap Continue to use it, or record again\.$/)).toBeTruthy();
+    expect(screen.getByText('0:09')).toBeTruthy();
+    await settle(300);
+    expect(transcription.transcribeDAVECaptureMemoryAudio).not.toHaveBeenCalled();
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Pour moved to Friday.' });
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(keptFiles()).toHaveLength(0));
+    expect(entryKeys()).toHaveLength(0);
+  });
+
+  it('closed and kept after no signal: tried again by itself the next time, as a recording waiting for signal is', async () => {
+    const { onCancel } = openSheet();
+    await recordAndWaitForSignal();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await answer(CLOSE_AND_KEEP);
+    await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+    expect(keptFiles()).toHaveLength(1);
+    expect(entryKeys()).toHaveLength(1);
+
+    const onMemoryReady = jest.fn();
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Pour moved to Friday.' });
+    openSheet({ onMemoryReady });
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledTimes(1));
+  });
+
+  it('closed and kept after an upload he had sent failed for another reason: tried again by itself the next time', async () => {
+    openSheet();
+    await record();
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(new Error('The recording could not be uploaded. Retry this recording or type instead. (VOICE-UPLOAD)'));
+    fireEvent.press(screen.getByText('Continue'));
+    await screen.findByText(/\(VOICE-UPLOAD\)$/);
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await answer(CLOSE_AND_KEEP);
+    await expect(readKeptVoiceRecording('owner-a', 'talk')).resolves.toMatchObject({ state: 'sent' });
+
+    transcription.transcribeDAVECaptureMemoryAudio.mockImplementationOnce(() => new Promise(() => undefined));
+    openSheet();
+    expect(await screen.findByText('Preparing…')).toBeTruthy();
+    expect(screen.getByText(/^Kept from .*\. Trying it again now\.$/)).toBeTruthy();
+    expect(screen.queryByText(/when there was no signal/)).toBeNull();
+  });
+
+  it('in the same app session the sheet opened again offers it', async () => {
+    const sheet = (visible: boolean, onCancel: jest.Mock) => (
+      <NativeWorkspaceOwnerContext.Provider value="owner-a">
+        <DAVEVoiceCaptureSheet
+          visible={visible}
+          projectId={PROJECT_ID}
+          projectName="Canopy Project"
+          candidateLocations={[]}
+          continueLabel="Continue"
+          keepSlot="talk"
+          onMemoryReady={jest.fn()}
+          onTypeInstead={jest.fn()}
+          onCancel={onCancel}
+        />
+      </NativeWorkspaceOwnerContext.Provider>
+    );
+    closeApp();
+    const onCancel = jest.fn();
+    view = render(sheet(true, onCancel));
+    await record();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await answer(CLOSE_AND_KEEP);
+    await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+    view.rerender(sheet(false, onCancel));
+    view.rerender(sheet(true, onCancel));
+    expect(await screen.findByText('Replay Recording')).toBeTruthy();
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    expect(keptFiles()).toHaveLength(1);
+  });
+
+  it('Type Instead can keep it too; Keep still only stays, and Discard still deletes', async () => {
+    const { onTypeInstead, onCancel } = openSheet();
+    await record();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    expect(question()[2][0]).toEqual({ text: 'Keep', style: 'cancel' }); // dismisses the question; the sheet stays open
+    expect(screen.getByText('Recording ready')).toBeTruthy();
+    fireEvent.press(screen.getByText('Type Instead'));
+    await answer(CLOSE_AND_KEEP);
+    await waitFor(() => expect(onTypeInstead).toHaveBeenCalledTimes(1));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(keptFiles()).toHaveLength(1);
+
+    const reopened = openSheet();
+    expect(await screen.findByText('Recording ready')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await answer('Discard');
+    await waitFor(() => expect(reopened.onCancel).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(keptFiles()).toHaveLength(0));
+    expect(entryKeys()).toHaveLength(0);
+  });
+
+  it('a recording that could not be kept stays in the open sheet, and says so', async () => {
+    const { onCancel } = openSheet();
+    await record();
+    fileSystem.copyAsync.mockRejectedValueOnce(new Error('No space left on device.'));
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    await answer(CLOSE_AND_KEEP);
+    expect(await screen.findByText('The recording could not be kept on this device, so this stays open. Use it now, or discard it.')).toBeTruthy();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByText('Replay Recording')).toBeTruthy();
+    expect(mockFiles.has(CACHE_URI)).toBe(true);
+  });
+
+  it('a sheet that keeps nothing on the device still offers Keep or Discard only', async () => {
+    closeApp();
+    view = render(
+      <DAVEVoiceCaptureSheet
+        visible
+        projectId={PROJECT_ID}
+        projectName="Canopy Project"
+        candidateLocations={[]}
+        continueLabel="Continue"
+        onMemoryReady={jest.fn()}
+        onTypeInstead={jest.fn()}
+        onCancel={jest.fn()}
+      />,
+    );
+    await record();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    const [title, message, buttons] = question();
+    expect(title).toBe('Discard this recording?');
+    expect(message).toBe('It has not been used yet. Discarding deletes it from this device.');
+    expect(buttons.map(button => button.text)).toEqual(['Keep', 'Discard']);
   });
 });
