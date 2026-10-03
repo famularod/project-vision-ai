@@ -245,8 +245,10 @@ describe('a recording waiting for signal survives iOS closing the app (everyday 
     transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
     openSheet({ keepSlot: 'field-note', autoStartRecording: true });
     expect(await screen.findByText(KEPT_NO_SIGNAL)).toBeTruthy();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
-    expect(recorder.record).not.toHaveBeenCalled();
+    // Review N1's harness note: the sheet's own start only fires while waitFor is polling, never under
+    // act(setTimeout), so "not called after 400 ms" proved nothing. The wait is now a waitFor that must run out
+    // (review-n1-voice-kept-recordings has the control: with nothing kept, the same sheet does start).
+    await expect(waitFor(() => expect(recorder.record).toHaveBeenCalled(), { timeout: 1500 })).rejects.toThrow();
     expect(keptFiles()).toHaveLength(1);
   });
 

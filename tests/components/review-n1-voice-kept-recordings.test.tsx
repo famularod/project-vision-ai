@@ -110,6 +110,13 @@ const entryKeys = () => [...mockStorage.keys()].filter(key => key.includes('/voi
 /** A recording brought back from the device also says when and where it was dictated (review N1 L3). */
 const WHEN_AND_WHERE = { recordedAt: expect.any(String), walkArea: null };
 const settle = (ms = 50) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+/**
+ * A sheet that records by itself has had its chance to, and did not. In this
+ * harness its start only fires while waitFor is polling, never under
+ * act(setTimeout) (review N1's harness note), so the wait is a waitFor that
+ * must run out.
+ */
+const neverRecordsByItself = () => expect(waitFor(() => expect(recorder.record).toHaveBeenCalled(), { timeout: 1500 })).rejects.toThrow();
 
 function resetRecorder() {
   store.status = { canRecord: false, isRecording: false, durationMillis: 0, mediaServicesDidReset: false, url: null };
@@ -256,6 +263,21 @@ describe('review N1 M1: a kept recording is only removed by Use, Discard or Reco
     await waitFor(() => expect(keptFiles()).toHaveLength(0));
     expect(entryKeys()).toHaveLength(0);
     expect(recorder.record).not.toHaveBeenCalled();
+  });
+
+  it('a sheet that records by itself, with a kept recording for its project: it offers that one and never records over it', async () => {
+    openSheet({ keepSlot: 'field-note' });
+    await recordAndWaitForSignal();
+    closeApp();
+    // Control: with nothing kept for the project, this sheet does start recording by itself.
+    openSheet({ keepSlot: 'field-note', projectName: 'Harbor North', autoStartRecording: true });
+    await waitFor(() => expect(recorder.record).toHaveBeenCalled(), { timeout: 3000 });
+    closeApp();
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
+    openSheet({ keepSlot: 'field-note', autoStartRecording: true });
+    expect(await screen.findByText(KEPT_NO_SIGNAL)).toBeTruthy();
+    await neverRecordsByItself();
+    expect(keptFiles()).toHaveLength(1);
   });
 
   it('Ask ECOS opened for another project, or with no project chosen, and closed with X leaves it kept', async () => {
@@ -900,8 +922,7 @@ describe('review N1 L2: a finished recording is kept on the device in every stat
     openSheet({ keepSlot: 'field-note', autoSubmitOnStop: true, autoStartRecording: true });
     expect(await screen.findByText(/^Kept from .*\. Trying it again now\.$/)).toBeTruthy();
     expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenCalledTimes(2);
-    await settle(400);
-    expect(recorder.record).not.toHaveBeenCalled();
+    await neverRecordsByItself();
   });
 
   it('after "The voice upload was interrupted": kept, the message says so, and it is tried again after a closed app', async () => {
