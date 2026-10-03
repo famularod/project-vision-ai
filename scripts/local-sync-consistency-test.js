@@ -133,9 +133,11 @@ includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync wo
 includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
 assert(!app.includes('void hydrateQueuedUpdates();'), 'automatic sync must not create a floating rejecting promise');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
+// Pin changed for owner answer Q28 (2 Oct 2026): the edit is queued with the
+// task it started from (`current`), the copy the upload weighs it against.
 includes(
   app,
-  'queueScheduleItemRecord(updated, true, changedFields)',
+  'queueScheduleItemRecord(updated, true, changedFields, current)',
   'task note edits must request upload as soon as their durable queue row is saved',
 );
 includes(

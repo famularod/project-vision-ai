@@ -25,6 +25,8 @@ import { clearSignOutAskedHere, noteSignOutAskedHere } from '../services/SignOut
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
+import { scheduleItemConflictCopyOfFields, scheduleItemConflictFieldLabel, scheduleItemConflictFields } from '../services/ScheduleItemEditBase';
+import { fieldUpdateConflictChanges } from '../services/FieldUpdateEditBase';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -1560,6 +1562,10 @@ function SyncConflictReviewList({
         const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
         const phoneTask = conflictScheduleItem(conflict, 'keep_local');
         const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
+        // A task's fields changed on both devices (owner answer Q28): those fields, as each copy has them.
+        const askedFields = scheduleItemConflictFields(conflict.localPayload);
+        // A field update's parts changed on each side since the phone's edit began (owner answer Q28).
+        const updateChanges = conflict.entity === 'project_update' ? fieldUpdateConflictChanges(conflict.localPayload, conflict.remotePayload) : null;
         const resolving = resolvingConflictId === conflict.id;
 
         return (
@@ -1571,9 +1577,17 @@ function SyncConflictReviewList({
                 cloudUpdate?.projectName ||
                 'Project record'}
             </Text>
+            {updateChanges ? (
+              <Text style={styles.settingsRowDetail}>{updateChanges}</Text>
+            ) : null}
+            {askedFields.length > 0 ? (
+              <Text style={styles.settingsRowDetail}>
+                Changed on this phone and on another device: {askedFields.map(scheduleItemConflictFieldLabel).join(', ')}.
+              </Text>
+            ) : null}
             <Text style={styles.settingsRowDetail}>
               Phone: {phoneTask
-                ? formatTaskConflictCopy(phoneTask)
+                ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(phoneTask, askedFields) : formatTaskConflictCopy(phoneTask)
                 : formatConflictCopy(phoneUpdate)}
             </Text>
             {newerPhoneUpdate ? (
@@ -1581,7 +1595,7 @@ function SyncConflictReviewList({
             ) : null}
             <Text style={styles.settingsRowDetail}>
               Cloud: {cloudTask
-                ? formatTaskConflictCopy(cloudTask)
+                ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(cloudTask, askedFields) : formatTaskConflictCopy(cloudTask)
                 : formatConflictCopy(cloudUpdate)}
             </Text>
             <View style={styles.conflictActions}>

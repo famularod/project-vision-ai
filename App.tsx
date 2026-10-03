@@ -32,7 +32,7 @@ import {
   queueProjectAreaRecord,
   queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
   queueProjectUpdateRecord, queueProjectUpdateDocumentChange, queueProjectUpdatePhotoAnalysis, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
-  queueScheduleItemRecord,
+  queueScheduleItemRecord, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad, noteFieldUpdateEditOpened, // each edit's base (owner answer Q28)
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
   uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
@@ -356,7 +356,7 @@ import { normalizeProjectControls, withProjectControlsEditMerged } from './servi
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { refreshKeepsLocalProjectUpdate } from './services/ProjectUpdateQueueRevision';
-import { scheduleItemRevisionForCloudRefresh } from './services/ScheduleItemQueueRevision';
+import { scheduleItemRevisionForCloudRefresh, scheduleItemsWithPendingEditsOverCloud } from './services/ScheduleItemQueueRevision';
 import { queueScheduleProgressCarriedToCloud } from './services/ScheduleProgressCarryUpload';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
 import {
@@ -5789,12 +5789,12 @@ useEffect(() => {
     ),
     applyLocal: (items, found) => { setScheduleItems(items); setScheduleItemsLocalLoaded(true); markScheduleItemsAuthorityReady(found); },
     onLocalError: error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error),
-    loadCloud: listScheduleItems, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    loadCloud: listScheduleItemsWithEditsWaiting, synchronizeTombstones: synchronizeDAVESyncTombstones,
     normalizeCloud: items => normalizeScheduleItems(
       items.filter(isDAVESafeCloudScheduleRecord),
     ).map(migrateLegacyScheduleItem),
     applyCloud: (items, tombstones) => setScheduleItems(current => recoverDAVEScheduleRecords({
-      local: current, cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
+      local: scheduleItemsWithPendingEditsOverCloud(current, items, scheduleItemEditsWaitingAtLastLoad()), cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
       allowCloudOnly: true,
     })),
     onCloudApplied: () => markScheduleItemsAuthorityReady(true),
@@ -11072,7 +11072,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = mergedDocuments;
       setReferenceDocuments(mergedDocuments);
-      if (carried.size > 0) { markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); }); }
+      if (carried.size > 0) { const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); } // with the copy each started from (owner answer Q28)
       return true;
     } catch {
       Alert.alert(
@@ -11681,14 +11681,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
-                const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
+                const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
                 const nextScheduleItems = scheduleItemsCurrentRef.current
                   .filter(item => !deletedItemIds.has(item.id)).map(item => restored.get(item.id) || item);
                 referenceDocumentsCurrentRef.current = updated;
                 scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
-                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); });
+                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); // with the copy it started from (owner answer Q28)
                 dropDeletedPredecessors([...deletedItemIds], updated); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026)); a link moves to the task shown that answers to its removed row (A6 pass 14 L1)
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
@@ -11739,9 +11739,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     item: ScheduleItem,
     generation?: number,
     changedFields?: readonly (keyof ScheduleItem)[],
+    before?: ScheduleItem, // the task the edit started from (owner answer Q28)
   ): Promise<boolean> {
     try {
-      const result = await runScheduleItemCloudSync(item, changedFields);
+      const result = await runScheduleItemCloudSync(item, changedFields, before);
       const itemStillExists = scheduleItemsCurrentRef.current.some(
         candidate => candidate.id === item.id,
       );
@@ -11907,7 +11908,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         scheduleItemTextSyncLifecycleRef.current,
         itemId,
       );
-      void queueScheduleItemRecord(updated, true, changedFields)
+      void queueScheduleItemRecord(updated, true, changedFields, current)
         .then(() => queueDebouncedScheduleItemTextSync(itemId, syncGeneration))
         .catch(() => {
           if (
@@ -11924,7 +11925,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     cancelScheduleItemTextSync(itemId);
-    void syncScheduleItemRevision(updated, syncGeneration, changedFields);
+    void syncScheduleItemRevision(updated, syncGeneration, changedFields, current);
   }
 
   async function saveScheduleItemChanges(itemId: string): Promise<boolean> {
@@ -12562,7 +12563,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const syncResult = await runScheduleImportCloudSync({
       scheduleItems: scheduleSyncItems,
-      referenceDocuments: referenceDocumentSyncRecords,
+      referenceDocuments: referenceDocumentSyncRecords, scheduleItemsBefore: scheduleItemsCurrentRef.current, // each row's copy before (owner answer Q28)
     });
     if (!syncResult.durablyQueued) {
       throw new Error(
@@ -12718,6 +12719,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setScreen(screenForUpdateResume(draftRef.current));
       return;
     }
+    void noteFieldUpdateEditOpened(update); // the copy David's edit starts from (owner answer Q28)
 
     if (hasDraftContent(draft)) {
       const photoCount = draft.photos.length;
@@ -14106,7 +14108,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     recovered.scheduleItems.filter(isDAVESafeCloudScheduleRecord),
                   ).map(migrateLegacyScheduleItem);
                   setScheduleItems(previous => recoverDAVEScheduleRecords({
-                    local: previous,
+                    local: scheduleItemsWithPendingEditsOverCloud(previous, safeCloudItems, recovered.scheduleItemEditsWaiting), // a task edit waiting with its base, over the cloud's row (owner answer Q28)
                     cloud: safeCloudItems,
                     deletedIds: deletedDAVERecordIds(
                       recovered.tombstones,

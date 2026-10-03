@@ -179,7 +179,9 @@ describe('Set Active carries progress recorded since the import to the task now 
     const frame = shown({ items: scheduleItemsCurrentRef.current, documents: reactivated }, 'Frame walls');
     expect(frame).toMatchObject({ id: shown(v2State, 'Frame walls').id, percentComplete: 80, finishDate: '09/01/2026' });
     expect(syncScheduleItemRevision).toHaveBeenCalledTimes(2);
-    expect(syncScheduleItemRevision).toHaveBeenCalledWith(expect.objectContaining({ id: frame.id, percentComplete: 80 }), 1);
+    // Pin changed for owner answer Q28 (2 Oct 2026): each carried task goes with the copy it started from (40%).
+    expect(syncScheduleItemRevision).toHaveBeenCalledWith(expect.objectContaining({ id: frame.id, percentComplete: 80 }), 1, undefined,
+      expect.objectContaining({ id: frame.id, percentComplete: 40 }));
   });
 });
 
