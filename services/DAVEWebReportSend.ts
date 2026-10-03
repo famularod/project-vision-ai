@@ -58,8 +58,12 @@ function browserLocalStorage(): BrowserStorage | null {
 }
 
 const WEB_PREFIX = '@vitruvius/web';
-/** When this tab cannot keep site data, its periods last as long as the tab. */
-const tabOnly = new Map<string, string>();
+/**
+ * When this tab cannot keep site data, or the profile's storage is full, its
+ * periods last as long as the tab: what the profile could not take is kept
+ * here (null: a removal it could not make), and read back from here.
+ */
+const tabOnly = new Map<string, string | null>();
 /** The profile storages this tab keeps periods in, and the keys it wrote to each (for one that cannot list its keys). */
 const profileStorages = new Map<BrowserStorage, Set<string>>();
 
@@ -130,11 +134,17 @@ export function daveWebReportStorage(
 ): SnapshotStorage {
   const keyFor = async (key: string) => (key === REPORT_SENDER_ID_KEY ? key : `${accountPrefix(await ownerId())}${key}`);
   if (local && !profileStorages.has(local)) profileStorages.set(local, new Set());
+  // Review N1 (2 Oct 2026): with the profile's storage full, a write went to
+  // this tab's own copy but every read still asked the profile, which had the
+  // older value or none: Approve said the period could not be saved here, and
+  // a send from here was not recorded. This tab's own copy is the later write,
+  // so it is read first; it goes once the profile takes a write for that key.
   const read = (key: string) => {
+    if (tabOnly.has(key)) return tabOnly.get(key) ?? null;
     try {
-      return local ? local.getItem(key) : tabOnly.get(key) ?? null;
+      return local ? local.getItem(key) : null;
     } catch {
-      return tabOnly.get(key) ?? null;
+      return null;
     }
   };
   const write = (key: string, value: string | null) => {
@@ -144,8 +154,9 @@ export function daveWebReportStorage(
       else local.setItem(key, value);
       if (value === null) profileStorages.get(local)?.delete(key);
       else profileStorages.get(local)?.add(key);
+      tabOnly.delete(key);
     } catch {
-      if (value === null) tabOnly.delete(key);
+      if (value === null && !local) tabOnly.delete(key);
       else tabOnly.set(key, value);
     }
   };

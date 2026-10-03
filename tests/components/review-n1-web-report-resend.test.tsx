@@ -100,8 +100,9 @@ const mockAuth = {
 };
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({ useDesktopAuth: () => mockAuth }));
 
-/** This browser profile's storage. */
+/** This browser profile's storage; when full, every write is refused. */
 let profile = new Map<string, string>();
+let profileFull = false;
 type ShareNavigator = { share?: jest.Mock; clipboard?: { writeText: jest.Mock } };
 const setNavigator = (value: ShareNavigator) => { (globalThis as { navigator?: unknown }).navigator = value; };
 beforeAll(() => {
@@ -116,9 +117,15 @@ beforeAll(() => {
 beforeEach(() => {
   table = new Map();
   profile = new Map();
+  profileFull = false;
+  forgetDAVEWebReportPeriods('owner-1');
+  forgetDAVEWebReportPeriods('owner-2');
   (globalThis as { localStorage?: unknown }).localStorage = {
     getItem: (key: string) => profile.get(key) ?? null,
-    setItem: (key: string, value: string) => { profile.set(key, value); },
+    setItem: (key: string, value: string) => {
+      if (profileFull) throw new Error('QuotaExceededError');
+      profile.set(key, value);
+    },
     removeItem: (key: string) => { profile.delete(key); },
     // A browser's storage lists its keys.
     key: (index: number) => [...profile.keys()][index] ?? null,
@@ -467,5 +474,44 @@ describe('review N1 (Low): after Sign Out of This Computer removed the account\'
 
     render(<DesktopReadOnlyShell page="reports" />);
     expect(await screen.findByText(NONE_SENT_HERE)).toBeTruthy();
+  });
+});
+
+describe('review N1 (Low): with the profile\'s storage full, the period this tab kept instead is read back', () => {
+  const NOT_SAVED = "The report's reporting period could not be saved on this computer, so a send from here will not be recorded. Try Approve again.";
+
+  it('Approve saves the period for this tab, and Share records the send, here and in the shared period', async () => {
+    table = PHONE_AT_10();
+    profileFull = true;
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    expect(screen.queryByText(NOT_SAVED)).toBeNull();
+    expect(profile.size).toBe(0);
+    expect(await screen.findByLabelText('Mark as Sent')).toBeTruthy();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent .*\. The next report on every device runs from this one\.$/)).toBeTruthy();
+    await settle();
+    expect(typeof sharedSnapshot()?.deliveredAt).toBe('string');
+    expect(sharedSnapshot()?.sentBy).toEqual(expect.any(String));
+    // Still this computer's own send: no wait for a download, and a second Share is not a second send.
+    expect(screen.queryByText(/^Not counted yet/)).toBeNull();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
+  });
+
+  it('without the shared table too: the send is this tab\'s own period for as long as the tab lasts', async () => {
+    table = 'missing';
+    profileFull = true;
+    render(<DesktopReadOnlyShell page="reports" />);
+    fireEvent.press(await screen.findByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    expect(screen.queryByText(NOT_SAVED)).toBeNull();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent .*\. Reports aren't shared between your devices yet, so the next report counts from it on this computer only\.$/)).toBeTruthy();
+    await settle();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, /)).toBeTruthy();
+    expect(profile.size).toBe(0);
   });
 });
