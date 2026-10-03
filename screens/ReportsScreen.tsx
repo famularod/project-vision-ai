@@ -2196,8 +2196,9 @@ function ReportPeriodSummary({
           ))}
         </View>
       ) : (
+        // It is the send, not the approval, that starts the next period (review N1, 3 Oct 2026).
         <Text style={styles.reportChartEmpty}>
-          This approval establishes the baseline for the next reporting period.
+          Sending this report establishes the baseline for the next reporting period.
         </Text>
       )}
       {/* Changes are listed only against a previous approved report, as the sent body does (audit A6). */}

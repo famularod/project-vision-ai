@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 /**
  * Audit round 2, A6 pass 13 M1 (1 Oct 2026): after "Delete PDF + Items",
  * the next report told the client tasks "were updated" when nothing changed.
@@ -320,7 +321,7 @@ describe('what still prints', () => {
 
   it('the first report (no earlier one) is unchanged', () => {
     const { deleted } = oldMasterCase();
-    expect(sinceLines(deleted, null)).toEqual(['• This approval establishes the baseline for the next reporting period.']);
+    expect(sinceLines(deleted, null)).toEqual(['• Sending this report establishes the baseline for the next reporting period.']);
   });
 });
 

@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 // Owner answer Q16 (30 Sep 2026): the owner sends reports from both the phone
 // and the iPad, and "since the last report" was kept on each device only, so
 // a report from the phone counted from the phone's own last send even after
@@ -415,7 +416,7 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
 
     // Owner answer Q17 still holds: the Executive Summary has no report yet on either device.
     visit('phone', tower(2), 'executive');
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
     expect(onCopyReport).toHaveBeenCalledTimes(2);
     // Each device's own copy stays under the prefix the per-account storage list covers.
     // Whole-app audit A6 pass 9 L2 (30 Sep 2026): beside it, each device that sent keeps its install's random
@@ -461,7 +462,7 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
     visit('phone', tower(1));
     expect(await period()).toContain('+1 completed; ');
     visit('ipad', tower(1));
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
 
     // Back online: the phone's next open carries its send up, and the iPad counts from it.
     mockCloudState = 'ok';
@@ -484,7 +485,7 @@ describe('the phone and the iPad share "since the last report" on the Reports sc
       expect(local('phone', keyFor('project_manager'))?.deliveredAt).not.toBeNull();
       expect(screen.queryByText(/could not be (saved|read)/)).toBeNull();
       visit('ipad', tower(1));
-      expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+      expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
       expect(mockCloud.size).toBe(0);
       // Tried on approval and on send, and quietly skipped; the open never uploads without the table.
       expect(jest.mocked(saveReportSnapshotCloud)).toHaveBeenCalledTimes(2);

@@ -7607,7 +7607,8 @@ if (
     'Project Status Details',
     'Current Task Position',
     'Source-backed task and schedule facts',
-    'This approval establishes the baseline for the next reporting period.',
+    // Review N1 (3 Oct 2026): was 'This approval establishes...'; the send establishes it, so the line says so.
+    'Sending this report establishes the baseline for the next reporting period.',
   ]) &&
   hasAll(daveReportIntelligence, [
     'DAVE_REPORT_INTELLIGENCE_VERSION',

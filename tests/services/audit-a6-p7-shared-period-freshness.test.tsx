@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 // Whole-app audit A6 pass 7 (30 Sep 2026), on owner answer Q16 (the phone and
 // the iPad share "since the last report" through report_snapshots).
 //
@@ -494,7 +495,7 @@ describe('the owner is told when the other device\'s last report could not be ch
 
     // A device with no report of its own.
     const ipad = open('ipad', tower(1));
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
     expect(screen.getByText(uncheckedWithout)).toBeTruthy();
 
     // Back online: the next return to the app checks, and the line goes.

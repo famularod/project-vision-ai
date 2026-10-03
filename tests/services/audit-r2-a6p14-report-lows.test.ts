@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 /**
  * Audit round 2, A6 pass 14 (1 Oct 2026): three Low findings in the client
  * report's "since the last report" section and in "Delete PDF + Items".
@@ -292,7 +293,7 @@ describe('A6 p14 L2: a note made on the other device before the report, received
 
   it('the first report (no earlier one) is unchanged', () => {
     const { received } = lateNoteCase();
-    expect(sinceLines(received, null)).toEqual(['• This approval establishes the baseline for the next reporting period.']);
+    expect(sinceLines(received, null)).toEqual(['• Sending this report establishes the baseline for the next reporting period.']);
   });
 
   it('the comparison names the tasks with a new latest activity; none against an older report, none while waiting', () => {

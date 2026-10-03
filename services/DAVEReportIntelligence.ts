@@ -686,8 +686,7 @@ function formatReportBody(
     return `${condition.projectName}: ${condition.percentComplete}% complete; ${condition.schedule}` +
       `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
   });
-  const reportingMovement = reportPeriodMovementLines(briefing) ??
-    ['This approval establishes the baseline for the next reporting period.'];
+  const reportingMovement = reportPeriodMovementLines(briefing) ?? [REPORT_FIRST_PERIOD_LINE];
   const actions = (format === 'executive'
     ? briefing.nextActions.slice(0, 4)
     : briefing.nextActions)
@@ -738,6 +737,15 @@ function formatReportBody(
  * APPROVED REPORT", where the period runs from the last report sent.
  */
 export const REPORT_PERIOD_HEADING = 'SINCE THE LAST REPORT';
+
+/**
+ * What a first report says under that heading, on the screen and in the
+ * written report. Review N1 (3 Oct 2026): it read "This approval establishes
+ * the baseline for the next reporting period.", and an approval does not: the
+ * period runs from the last report SENT, and an approval never sent starts
+ * none (whole-app audit A6 pass 2). It is the send that establishes it.
+ */
+export const REPORT_FIRST_PERIOD_LINE = 'Sending this report establishes the baseline for the next reporting period.';
 
 /** The changes the written report names; the rest are counted (A6 pass 8 L1). */
 const SINCE_LINES = 6;
