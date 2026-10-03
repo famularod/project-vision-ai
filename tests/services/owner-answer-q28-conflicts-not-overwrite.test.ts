@@ -2046,3 +2046,40 @@ describe('Schedule review N1 L3: Talk\'s Undo does not put an older percent over
     expect([onDevice(phone), onDevice(ipad), onWeb()].map(rows => rows.map(view => view[2]))).toEqual([[50], [50], [50]]);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule review pass 1, L2 (Low, caused by 79a5ae1; seed 1132828). Both devices approve different lookaheads
+ * offline and one also types a note the other device changed: every device showed the OLDER lookahead's dates. The
+ * stamp of a merged whole copy (review finding 3, 7c3d4cb) already put this right at 8ad6771: the newest lookahead
+ * stands (owner answer Q25), and the note is asked about. Kept here as its own check.
+ */
+describe('Schedule review N1 L2: of two lookaheads approved offline, the newest one\'s dates are shown, with the note asked about', () => {
+  it('the phone approves wk-a offline and types a note; the iPad then approves the newer wk-b offline', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T12:00:00.000Z');
+    await edit(ipad, id, { notes: 'iPad note 1' });
+    at('2026-09-09T12:00:00.000Z');
+    await fullSync(phone);
+    setOnline(phone, false);
+    at('2026-09-10T12:00:00.000Z');
+    await approve(phone, scheduleDoc('LOOKAHEAD wk-a', new Date().toISOString(), 'lookahead'), ['Framing,Alpha,Lot,10/17/2026,10/27/2026,80'], true);
+    at('2026-09-11T12:00:00.000Z');
+    await edit(ipad, id, { notes: 'iPad note 2' });
+    at('2026-09-12T12:00:00.000Z');
+    await edit(phone, id, { notes: PHONE_NOTE });
+    at('2026-09-13T12:00:00.000Z');
+    setOnline(ipad, false);
+    await approve(ipad, scheduleDoc('LOOKAHEAD wk-b', new Date().toISOString(), 'lookahead'), ['Framing,Alpha,Lot,10/19/2026,10/29/2026,'], true);
+    at('2026-09-15T12:00:00.000Z');
+    setOnline(ipad, true); setOnline(phone, true);
+    shareDocuments(phone); shareDocuments(ipad);
+    await backgroundUpload(phone); await backgroundUpload(ipad);
+    await fullSync(ipad); await fullSync(phone); await fullSync(ipad);
+    await refresh(phone); await refresh(ipad);
+    const dates = (rows: ReturnType<typeof onWeb>) => rows.map(view => [view[0], view[1]]);
+    expect([dates(onDevice(phone)), dates(onDevice(ipad)), dates(onWeb())]).toEqual(Array(3).fill([['10/19/2026', '10/29/2026']])); // wk-b lists Framing on 10/19
+    expect((await conflictsOf(phone)).map(conflict => scheduleItemConflictFields(conflict.localPayload))).toEqual([['notes']]);
+  });
+});
