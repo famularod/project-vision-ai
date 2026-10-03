@@ -181,7 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
-import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
+import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, useFieldUpdateDocumentChangeWaiting, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -19101,6 +19101,7 @@ function UpdateHistoryCard({
   const documents = update.documents || [];
   const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
   const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
+  const documentChangeWaiting = useFieldUpdateDocumentChangeWaiting(update.id); // VoiceOver reads the card's label, so it says the line too (everyday item 9)
   const statusLine = conflictReview ? null :
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
@@ -19128,7 +19129,7 @@ function UpdateHistoryCard({
       onPress={onOpen}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
+      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${documentChangeWaiting ? `${FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT}. ` : ''}${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
         {thumbnail.uri ? (

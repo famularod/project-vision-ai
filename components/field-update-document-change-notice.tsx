@@ -16,7 +16,7 @@ import {
 import type { FieldUpdateSyncChoice } from '../services/SyncService';
 import { colors } from './app-shell-theme';
 
-export { FIELD_UPDATE_CONFLICT_REVIEW_LABEL } from '../services/FieldUpdateDocumentChangeNotice';
+export { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT } from '../services/FieldUpdateDocumentChangeNotice';
 
 /**
  * Whether a field update reads "Needs Review": a conflict for it is saved on
@@ -52,12 +52,12 @@ export function retryOverConflictConfirmed(conflictReview: boolean, onRetry?: Fi
 }
 
 /**
- * The line on a field update's card while a document change on it waits to
- * sync: its upload failed, or it has waited a while (whole-app audit A7 pass
- * 8 L2). Gone once it uploads. And, first, where to settle a conflict the
- * update waits in (`conflictReview`, A7 pass 12 M-1).
+ * Whether the card's "Document change waiting to sync" line shows: its
+ * upload failed, or it has waited a while (whole-app audit A7 pass 8 L2).
+ * Everyday item 9 (2 Oct 2026): the card's own VoiceOver label says it too,
+ * since a card read as one button reads its label, not the lines inside it.
  */
-export function FieldUpdateDocumentChangeNotice({ updateId, conflictReview = false }: { updateId: string; conflictReview?: boolean }) {
+export function useFieldUpdateDocumentChangeWaiting(updateId: string): boolean {
   const queue = useSyncExternalStore(subscribeToQueuedDocumentChanges, queuedDocumentChangesSnapshot);
   const [, setClock] = useState(0);
   const { shown, shownAt } = fieldUpdateDocumentChangeWaiting(queue, updateId);
@@ -66,6 +66,17 @@ export function FieldUpdateDocumentChangeNotice({ updateId, conflictReview = fal
     const timer = setTimeout(() => setClock(tick => tick + 1), Math.max(0, shownAt - Date.now()));
     return () => clearTimeout(timer);
   }, [shown, shownAt]);
+  return shown;
+}
+
+/**
+ * The line on a field update's card while a document change on it waits to
+ * sync: its upload failed, or it has waited a while (whole-app audit A7 pass
+ * 8 L2). Gone once it uploads. And, first, where to settle a conflict the
+ * update waits in (`conflictReview`, A7 pass 12 M-1).
+ */
+export function FieldUpdateDocumentChangeNotice({ updateId, conflictReview = false }: { updateId: string; conflictReview?: boolean }) {
+  const shown = useFieldUpdateDocumentChangeWaiting(updateId);
   return (
     <>
       {conflictReview ? (
