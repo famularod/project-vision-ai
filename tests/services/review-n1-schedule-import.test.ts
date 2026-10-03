@@ -8,10 +8,18 @@ import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { rejectScheduleItemCompletion, verifyScheduleItemCompletion } from '../../services/DAVECompletionVerification';
 import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { planDAVEWebScheduleDocumentDelete, planDAVEWebScheduleImport } from '../../services/DAVEWebOperations';
+import { buildDAVEWebScheduleItem, scheduleItemForCloud, type DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
+import {
+  mergeApprovedScheduleImportItems,
+  scheduleItemsVisibleBeforeImport,
+  scheduleProgressCarriedOnActivation,
+  scheduleProgressCarriedToShownTasks,
+} from '../../services/ScheduleImportMerge';
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
@@ -230,5 +238,83 @@ describe('Review N1 M1 (caused by ada8ef6, Q25): a date David changes on the pho
     // The same day set while the lookahead was in effect changed nothing: the master's dates once it is replaced.
     const before = patch(onWk1, framingId, { finishDate: '10/30/2026' }, '2026-09-15T12:00:00.000Z');
     expect(dates(one(approve(before, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,']), 'Framing'))).toBe('10/15/2026-10/25/2026');
+  });
+});
+
+describe('Review N1 L1 (caused by ada8ef6, Q25): the shown copy\'s marker is never saved, by any writer', () => {
+  const shownFraming = () => one(onWk2, 'Framing');
+  const noMarker = (items: readonly unknown[]) => items.filter(item => 'savedLookaheadDates' in (item as object));
+  it('the task shown carries the marker (shown only)', () => {
+    expect(shownFraming().savedLookaheadDates).toEqual({ startDate: '10/20/2026', finishDate: '10/30/2026', shownStartDate: '10/15/2026', shownFinishDate: '10/25/2026' });
+  });
+
+  it('the phone: Confirm Completed and Not Complete pass the shown copy whole; the saved task keeps its saved dates, no marker', () => {
+    const reported = { ...shownFraming(), completionVerification: { status: 'reported', priorScheduleStatus: 'Not Started', priorPercentComplete: 0, evidence: [], reportedAt: '2026-09-22T10:00:00.000Z', reportedBy: 'Field', claim: 'done' } } as unknown as ScheduleItem;
+    for (const copy of [
+      verifyScheduleItemCompletion(reported, { verifiedAt: '2026-09-22T12:00:00.000Z', verifiedBy: 'Project manager', note: '' }),
+      rejectScheduleItemCompletion(reported, { rejectedAt: '2026-09-22T12:00:00.000Z', rejectedBy: 'Project manager', note: '' }),
+    ]) {
+      expect('savedLookaheadDates' in copy).toBe(true);
+      const { saved: row, sent } = phoneUpdate(onWk2, framingId, copy as Partial<ScheduleItem>);
+      expect(noMarker([row, ...sent])).toEqual([]);
+      expect(dates(row)).toBe('10/20/2026-10/30/2026');
+      // Still week 1's task: deleting the newest lookahead shows week 1's dates again.
+      const after: State = { ...onWk2, items: onWk2.items.map(item => item.id === framingId ? row : item) };
+      expect(dates(one(deleteWithItems(after, WK2, '2026-09-23T12:00:00.000Z'), 'Framing'))).toBe('10/20/2026-10/30/2026');
+    }
+  });
+
+  it('the phone: a shown copy with dates David changed saves those dates, no marker', () => {
+    const { saved: row, sent } = phoneUpdate(onWk2, framingId, { ...shownFraming(), finishDate: '10/27/2026' });
+    expect(noMarker([row, ...sent])).toEqual([]);
+    expect(dates(row)).toBe('10/15/2026-10/27/2026');
+  });
+
+  it('the phone: an approval, a lookahead\'s delete and Set Active given the tasks as shown save none', () => {
+    const G = schedule('MASTER G', '2026-09-22T12:00:00.000Z');
+    const merged = mergeApprovedScheduleImportItems({
+      existing: shown(onWk2), imported: rows(G, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,50', 'Roof,Alpha,Lot,11/04/2026,11/08/2026,']),
+      completionMatch: () => null, mergeCompletion: item => item, isCurrent: () => true, approvedAt: G.importedAt,
+    });
+    expect(noMarker([...merged.next.filter(item => !shown(onWk2).includes(item)), ...merged.additions])).toEqual([]);
+    const documents = onWk2.documents.filter(document => document.id !== WK2.id);
+    expect(noMarker(scheduleItemsAfterScheduleDeleted({ items: shown(onWk2), removed: [], document: WK2, documents, updatedAt: '2026-09-23T12:00:00.000Z' }))).toEqual([]);
+    const onG = approve(onWk2, G, ['Framing,Alpha,Lot,10/16/2026,10/26/2026,', 'Roof,Alpha,Lot,11/04/2026,11/08/2026,']);
+    const backToF = scheduleDocumentsAfterActivation(onG.documents.find(document => document.id === F.id)!, onG.documents, 'project', '2026-09-24T12:00:00.000Z');
+    expect(noMarker(scheduleProgressCarriedOnActivation({ items: onG.items, documentsBefore: onG.documents, documentsAfter: backToF, now: '2026-09-24T12:00:00.000Z' }))).toEqual([]);
+    expect(noMarker(scheduleProgressCarriedToShownTasks({
+      before: shown(onG), after: shown({ items: onG.items, documents: backToF }), documentsBefore: onG.documents, documentsAfter: backToF, now: '2026-09-24T12:00:00.000Z',
+    }))).toEqual([]);
+  });
+
+  it('the web: every task write passes scheduleItemForCloud, which saves none (a save, Apply dates, an upload, a delete)', () => {
+    const provider = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
+    const writes = provider.match(/daveWebSupabaseGateway\.(?:create|update)AuthorizedScheduleItem\(\s*[^\n]*/g) || [];
+    expect(writes.length).toBeGreaterThanOrEqual(4);
+    writes.forEach(write => expect(write).toMatch(/scheduleItemForCloud\(item\)/));
+    const webShown = shown(onWk2).map(item => ({ ...item, projectId: 'alpha', cloudUpdatedAt: null })) as DAVEWebScheduleItem[];
+    const framing = webShown.find(item => item.id === framingId)!;
+    // Gantt "Apply dates": the shown copy with new dates.
+    const applied = scheduleItemForCloud({ ...framing, startDate: '10/21/2026', finishDate: '10/31/2026' });
+    expect(noMarker([applied])).toEqual([]);
+    expect(dates(applied)).toBe('10/21/2026-10/31/2026');
+    // The shown copy written whole with nothing changed: the saved dates, never the dates shown.
+    expect(dates(scheduleItemForCloud(framing))).toBe('10/20/2026-10/30/2026');
+    expect(noMarker([scheduleItemForCloud(framing)])).toEqual([]);
+    const built = buildDAVEWebScheduleItem({
+      draft: { projectId: 'alpha', itemType: 'Task', taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/15/2026', finishDate: '10/25/2026',
+        milestone: '', owner: '', contractor: '', percentComplete: '40', priority: 'Medium', status: 'In Progress', notes: '', nextAction: '', activityMessage: '' },
+      current: framing, id: framingId, now: '2026-09-22T15:00:00.000Z', actor: 'David',
+    });
+    expect(noMarker([scheduleItemForCloud(built)])).toEqual([]);
+    const W = schedule('MASTER W', '2026-09-22T12:00:00.000Z');
+    const upload = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown }, importedScheduleItems: rows(W, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,50']) });
+    expect(noMarker([...upload.additions, ...upload.revisions.map(revision => revision.item)])).toEqual([]);
+    const wk1 = { ...WK1, cloudUpdatedAt: null, linkedScheduleItems: webShown.filter(item => item.importBatchId === WK1.importBatchId) } as never;
+    const removed = planDAVEWebScheduleDocumentDelete({
+      snapshot: { scheduleItems: webShown, knownScheduleItems: onWk2.items.map(item => ({ ...item, projectId: 'alpha', cloudUpdatedAt: null })) as DAVEWebScheduleItem[], referenceDocuments: onWk2.documents as never },
+      document: wk1, updatedAt: '2026-09-23T12:00:00.000Z',
+    });
+    expect(noMarker(removed.map(revision => revision.item))).toEqual([]);
   });
 });

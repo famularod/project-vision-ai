@@ -11845,7 +11845,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
   ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
-    const next = withProjectControlsEditMerged(current, edit); // newer controls kept (audit A2 p4 L1)
+    const { savedLookaheadDates: shownDates, ...taskEdit } = edit; // the shown copy's marker is never saved, nor dates only shown (review N1 L1)
+    if (shownDates && taskEdit.startDate === shownDates.shownStartDate && taskEdit.finishDate === shownDates.shownFinishDate) { delete taskEdit.startDate; delete taskEdit.finishDate; }
+    const next = withProjectControlsEditMerged(current, taskEdit); // newer controls kept (audit A2 p4 L1)
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete

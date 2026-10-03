@@ -19,6 +19,7 @@ import {
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -641,7 +642,9 @@ export function scheduleItemForCloud(
   item: DAVEWebScheduleItem | ScheduleItem,
 ): ScheduleItem {
   const { cloudUpdatedAt: _cloudUpdatedAt, ...scheduleItem } = item as DAVEWebScheduleItem;
-  return scheduleItem;
+  // Every web write of a task passes here: the shown copy's marker (savedLookaheadDates) is never saved, and dates
+  // only shown go back to the saved ones (review N1 L1).
+  return scheduleItemAsSaved(scheduleItem);
 }
 
 function requiredText(value: string, label: string): string {
