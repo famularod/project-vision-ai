@@ -60,7 +60,8 @@ import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
   isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
-  scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud,
+  scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
+  scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -6312,6 +6313,9 @@ async function uploadQueueItem(
       ? changedFields.filter(field => !weighed.asked.includes(field) && !weighed.keptFromCloud.includes(field) && !weighed.held.includes(field) &&
         !(laterPercentInCloud && SCHEDULE_PROGRESS_FIELDS.includes(field)))
       : changedFields;
+    // That later percent, confirmed again just after this device's older entry when this device's is the later
+    // confirmed (review N1 finding 6): the device kept its entry, and its next Full Sync sent it whole over the cloud's.
+    const laterPercentGivenBack = laterPercentInCloud && remote ? scheduleItemLaterPercentGivenBack(payload.itemData, remote) : null;
     const sent: ScheduleItemRecordPayload = weighed ? { ...payload, itemData: weighed.itemData } : payload;
     // A whole copy the cloud's row has changed under only in what David types about the task stands for the rest
     // (review N1 finding 3): a note typed on another device had stamped the row newer, and the merge took it whole,
@@ -6393,6 +6397,7 @@ async function uploadQueueItem(
                 },
             remote,
           ),
+          ...(laterPercentGivenBack ?? {}),
           updatedAt: new Date().toISOString(),
         }
       : recovered

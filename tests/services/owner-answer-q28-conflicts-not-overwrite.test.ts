@@ -207,6 +207,8 @@ import { fieldUpdateConflictChanges } from '../../services/FieldUpdateEditBase';
 import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyBase, scheduleItemWholeCopyRestUnchanged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
+import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
+import { scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 
 /* Per-device module sets --------------------------------------------------- */
 type SyncModule = typeof import('../../services/SyncService');
@@ -1876,5 +1878,54 @@ describe('Review N1 finding 3: a lookahead approved offline keeps its dates when
     expect(scheduleItemWholeCopyRestUnchanged(base, { ...before, notes: 'b', owner: 'Mike', updatedAt: 'u2', projectId: 'p' } as unknown as ScheduleItem)).toBe(true);
     expect(scheduleItemWholeCopyRestUnchanged(base, { ...before, percentComplete: 30 } as unknown as ScheduleItem)).toBe(false);
     expect(scheduleItemWholeCopyRestUnchanged({ updatedAt: 'u1', fields: { notes: 'a' } }, before)).toBe(false); // a base of Build 230's first cut: as before
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1, finding 6 (Low, caused by 79a5ae1; seed 920346). The phone, offline, holds David's 20% of the 8th.
+ * He enters 10% on the iPad on the 9th. On the phone Talk then sets 40% and he taps Undo, which gives the 20% back,
+ * confirmed at that moment. The upload sent nothing of it (his later 10% stands), but the phone still held the 20%
+ * as the later confirmed, and its next Full Sync sent it whole: 20% on every device (10% at Build 229, and on one
+ * device). The cloud's 10% is now confirmed again just after the phone's entry, so every device takes it.
+ */
+describe('Review N1 finding 6: David\'s later percent stands after Talk and Undo on a device that had not heard it', () => {
+  it('the phone\'s older 20%, given back by Undo offline, does not end over the 10% he entered later on the iPad', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    await edit(phone, id, { percentComplete: 20 });
+    await refresh(ipad);
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, id, { percentComplete: 10 });
+    at('2026-09-10T08:00:00.000Z');
+    const previous = scheduleProgressUndoPoint(theRow(phone));
+    await edit(phone, id, { percentComplete: 40 }); // Talk
+    const written = scheduleProgressUndoPoint(theRow(phone));
+    at('2026-09-10T08:00:30.000Z');
+    const undo = scheduleTalkUndo(phone.ref.current as never, { id, taskName: 'Framing' }, previous, written, new Date().toISOString(), deviceShown(phone) as never);
+    if (!undo.ok) throw new Error('Undo refused');
+    await edit(phone, undo.taskId, undo.edit as Partial<ScheduleItem>, true);
+    expect(onDevice(phone).map(row => row[2])).toEqual([20]);
+    at('2026-09-11T08:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    expect(cloudRow(id)).toMatchObject({ percentComplete: 10 });
+    await fullSync(phone);
+    await fullSync(ipad);
+    await refresh(phone);
+    expect([onDevice(phone), onDevice(ipad), onWeb()].map(rows => rows.map(row => row[2]))).toEqual([[10], [10], [10]]);
+    // Still his entry of the 9th, for the record and for weighing field reports.
+    expect(cloudRow(id)?.progressJudgment).toMatchObject({ judgedAt: '2026-09-09T08:00:00.000Z' });
+  });
+
+  it('the cloud\'s entry is confirmed again just after this device\'s, only when this device\'s is the later confirmed', () => {
+    const row = (patch: Partial<ScheduleItem>) => ({ id: 't', percentComplete: 10, progressSource: 'project_manager', ...patch }) as ScheduleItem;
+    const local = row({ percentComplete: 20, progressConfirmedAt: '2026-09-10T08:00:30.000Z' });
+    expect(scheduleItemLaterPercentGivenBack(local, row({ progressConfirmedAt: '2026-09-09T08:00:00.000Z' }))).toEqual({
+      progressConfirmedAt: '2026-09-10T08:00:30.001Z', progressJudgment: { judgedAt: '2026-09-09T08:00:00.000Z', givenBackAt: '2026-09-10T08:00:30.001Z' },
+    });
+    expect(scheduleItemLaterPercentGivenBack(local, row({ progressConfirmedAt: '2026-09-11T08:00:00.000Z' }))).toBeNull();
   });
 });

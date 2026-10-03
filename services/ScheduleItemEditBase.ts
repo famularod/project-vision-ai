@@ -355,6 +355,29 @@ export function scheduleItemLaterPercentInCloud(
   return Number.isFinite(theirsAt) && (!Number.isFinite(oursAt) || theirsAt > oursAt);
 }
 
+/**
+ * The cloud's later percent of David's, given back over this device's older
+ * entry (review N1 finding 6, Low, caused by 79a5ae1). The upload sent nothing
+ * of the older entry, but the device still held it, confirmed later than the
+ * cloud's (Talk's Undo confirms the percent it gives back at that moment), so
+ * its next Full Sync sent it whole: after Talk and Undo offline, the phone's
+ * 20% of the 14th ended over the 10% David entered on the 16th. The cloud's
+ * entry is confirmed again just after this device's, with when he judged it
+ * kept (progressJudgment, as a percent given back is): every device then
+ * takes it. Null when the cloud's entry is already the later confirmed.
+ */
+export function scheduleItemLaterPercentGivenBack(
+  local: ScheduleItem,
+  remote: ScheduleItem,
+): Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment'> | null {
+  const time = (value: string | null | undefined) => (value ? Date.parse(value) : Number.NaN);
+  const ours = time(local.progressConfirmedAt);
+  const theirs = time(remote.progressConfirmedAt);
+  if (!Number.isFinite(ours) || (Number.isFinite(theirs) && theirs > ours)) return null;
+  const givenBackAt = new Date(ours + 1).toISOString();
+  return { progressConfirmedAt: givenBackAt, progressJudgment: { judgedAt: scheduleProgressJudgedAt(remote) ?? givenBackAt, givenBackAt } };
+}
+
 /** The activity log both copies added to: the cloud's entries, then this device's the cloud lacks. */
 export function scheduleItemActivityOfBoth(
   local: readonly ProjectItemActivity[] | null | undefined,
