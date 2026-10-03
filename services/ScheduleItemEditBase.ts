@@ -30,6 +30,13 @@ export type ScheduleItemEditBase = Readonly<{
    * own earlier text, not another device's change.
    */
   own?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * On a whole copy's base (review N1 finding 3): a mark of the rest of the
+   * task as that copy had it, everything but what is weighed field by field
+   * and its stamps. The cloud's row bearing the same mark has changed since
+   * only in what David types about the task.
+   */
+  rest?: string;
 }>;
 
 /**
@@ -83,7 +90,55 @@ export function scheduleItemWholeCopyBase(before: ScheduleItem | null | undefine
   return {
     updatedAt: typeof before.updatedAt === 'string' ? before.updatedAt : null,
     fields: Object.fromEntries(WHOLE_COPY_FIELDS_WEIGHED.map(field => [field, record[field] ?? null])),
+    rest: restMark(before),
   };
+}
+
+/** Not part of a task's rest: what is weighed field by field, the stamps, and the project id an upload binds. */
+const REST_ASIDE: ReadonlySet<string> = new Set<string>([
+  ...WHOLE_COPY_FIELDS_WEIGHED, ...Object.values(FIELD_COMPANIONS).flat(), 'updatedAt', 'cloudUpdatedAt', 'projectId',
+]);
+
+/** A mark of a task's rest: every field not weighed one by one, stamps aside; a field stored as null reads as a missing one. */
+function restMark(item: unknown): string {
+  const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+  const text = canonicalScheduleItemJson(Object.fromEntries(
+    Object.entries(record).filter(([field, value]) => !REST_ASIDE.has(field) && value !== undefined && value !== null)));
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
+}
+
+/**
+ * Whether the cloud's row has changed since a whole copy's base only in what
+ * David types about the task (review N1 finding 3, Low, caused by 79a5ae1).
+ * A lookahead approved offline met a note another device typed meanwhile: the
+ * note's upload had stamped the cloud's row newer, so the sync merge took the
+ * cloud's row whole and the lookahead's dates were on no device, with no
+ * card. With the rest of the cloud's row still as this copy started from it,
+ * this copy stands for the rest (its dates, lookahead, progress), and the
+ * typed fields are weighed one by one as before.
+ */
+export function scheduleItemWholeCopyRestUnchanged(base: ScheduleItemEditBase | null | undefined, remote: ScheduleItem): boolean {
+  return isEditBase(base) && typeof base.rest === 'string' && base.rest === restMark(remote);
+}
+
+/**
+ * The stamp of a row made from this device's copy and the cloud's: just after
+ * the later of the two (review N1 finding 3). Stamped with the time of the
+ * upload, the older of two lookaheads approved offline outranked the newer
+ * one, uploaded after it: its dates were shown on every device.
+ */
+export function scheduleItemStampAfter(...stamps: Array<string | null | undefined>): string {
+  const times = stamps.map(stamp => (stamp ? Date.parse(stamp) : Number.NaN)).filter(Number.isFinite);
+  return new Date(times.length > 0 ? Math.max(...times) + 1 : Date.now()).toISOString();
 }
 
 /**

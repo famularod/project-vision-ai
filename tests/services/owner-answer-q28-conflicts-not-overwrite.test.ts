@@ -204,7 +204,7 @@ import { PROJECT_DOCUMENT_CATEGORIES } from '../../services/ProjectDocumentClass
 import { cloudPhotoPreviewIsFresh } from '../../services/ProjectPhotoTransport';
 import { isResumableFieldUpdateStatus } from '../../services/FieldUpdateLifecycle';
 import { fieldUpdateConflictChanges } from '../../services/FieldUpdateEditBase';
-import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo } from '../../services/ScheduleItemEditBase';
+import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyBase, scheduleItemWholeCopyRestUnchanged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 
@@ -1811,5 +1811,70 @@ describe('Review N1 finding 2: a card follows its task to the row a newer master
       base: { updatedAt: 'b', fields: { notes: '' } },
     });
     expect(scheduleItemConflictCopyOnRow(copy, row('C', { notes: 'phone note', owner: 'Mike' }))).toBeNull(); // nothing left to ask
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1, finding 3 (Low, caused by 79a5ae1). A lookahead approved offline met another device's edit of the
+ * task: every device then showed the wrong dates, with no card (right at Build 229). Two causes. The whole copy that
+ * kept a value of the cloud's was stamped with the time of the upload, so the older of two offline lookaheads,
+ * uploaded first, outranked the newer one. And a note typed on another device stamped the cloud's row newer, so the
+ * sync merge took the cloud's row whole and dropped the lookahead's dates.
+ */
+describe('Review N1 finding 3: a lookahead approved offline keeps its dates when another device edited the task', () => {
+  const M = scheduleDoc('LOOKAHEAD M', '2026-09-11T12:00:00.000Z', 'lookahead');
+  const M_ROW = 'Framing,Alpha,Lot,10/23/2026,11/02/2026,';
+  const everywhere = async (phone: Device, ipad: Device) => { await refresh(phone); await refresh(ipad); return [onDevice(phone), onDevice(ipad), onWeb()]; };
+
+  it('a note typed on the iPad meanwhile: the lookahead\'s dates and the note are both kept, with no card', async () => {
+    const { phone, ipad } = await start();
+    setOnline(phone, false);
+    at(L.importedAt!);
+    await approve(phone, L, [L_ROW], true);
+    at('2026-09-10T14:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { notes: IPAD_NOTE }); // its upload stamps the cloud's row after the lookahead
+    at('2026-09-11T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await fullSync(ipad);
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 0, IPAD_NOTE, '']]));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  });
+
+  it('two lookaheads approved offline: the newer one\'s dates are shown, though the older went up first and kept the cloud\'s owner', async () => {
+    const { phone, ipad } = await start();
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { owner: 'Mike' }); // the phone never heard this
+    at(L.importedAt!);
+    await approve(phone, L, [L_ROW], true);
+    setOnline(ipad, false);
+    at(M.importedAt!);
+    await approve(ipad, M, [M_ROW], true);
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone); // the older lookahead first: its copy keeps the cloud's owner
+    expect(cloudRow(theRow(phone).id)).toMatchObject({ owner: 'Mike' });
+    at('2026-09-12T09:00:00.000Z');
+    setOnline(ipad, true);
+    shareDocuments(ipad);
+    await backgroundUpload(ipad);
+    await fullSync(phone);
+    await fullSync(ipad);
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/23/2026', '11/02/2026', 0, '', 'Mike']]));
+  });
+
+  it('the stamp of a merged row, and a whole copy\'s mark of the rest of its task', () => {
+    expect(scheduleItemStampAfter('2026-09-10T12:00:00.000Z', '2026-09-10T14:00:00.000Z')).toBe('2026-09-10T14:00:00.001Z');
+    expect(scheduleItemStampAfter('2026-09-10T12:00:00.000Z', undefined)).toBe('2026-09-10T12:00:00.001Z');
+    const before = { id: 't', taskName: 'Framing', startDate: '10/15/2026', percentComplete: 20, notes: 'a', owner: '', updatedAt: 'u1' } as unknown as ScheduleItem;
+    const base = scheduleItemWholeCopyBase(before);
+    // The cloud's row since: another note, a new stamp, the project id the upload binds: the rest is as it was.
+    expect(scheduleItemWholeCopyRestUnchanged(base, { ...before, notes: 'b', owner: 'Mike', updatedAt: 'u2', projectId: 'p' } as unknown as ScheduleItem)).toBe(true);
+    expect(scheduleItemWholeCopyRestUnchanged(base, { ...before, percentComplete: 30 } as unknown as ScheduleItem)).toBe(false);
+    expect(scheduleItemWholeCopyRestUnchanged({ updatedAt: 'u1', fields: { notes: 'a' } }, before)).toBe(false); // a base of Build 230's first cut: as before
   });
 });

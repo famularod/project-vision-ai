@@ -61,7 +61,7 @@ import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditB
 import {
   isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud,
-  scheduleItemRowAnsweringTo, scheduleItemWholeCopyAgainstCloud,
+  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -6313,8 +6313,12 @@ async function uploadQueueItem(
         !(laterPercentInCloud && SCHEDULE_PROGRESS_FIELDS.includes(field)))
       : changedFields;
     const sent: ScheduleItemRecordPayload = weighed ? { ...payload, itemData: weighed.itemData } : payload;
+    // A whole copy the cloud's row has changed under only in what David types about the task stands for the rest
+    // (review N1 finding 3): a note typed on another device had stamped the row newer, and the merge took it whole,
+    // dropping the dates of a lookahead approved offline.
+    const restUnchanged = Boolean(remote && !changedFields && !payload.forceLocal && scheduleItemWholeCopyRestUnchanged(payload.base, remote));
     const recovered = remote && !changedFields && !payload.forceLocal
-      ? recoverDAVEScheduleRecords({
+      ? restUnchanged ? payload.itemData : recoverDAVEScheduleRecords({
           local: [payload.itemData],
           cloud: [remote],
           allowCloudOnly: true,
@@ -6348,6 +6352,13 @@ async function uploadQueueItem(
       });
       return 'conflict';
     };
+    // A whole copy that stands for the rest and, weighed, is the cloud's row but for its stamp has nothing to write.
+    if (remote && restUnchanged && wholeWeighed &&
+      canonicalScheduleItemJson({ ...wholeWeighed.itemData, updatedAt: remote.updatedAt }) === canonicalScheduleItemJson(remote)) {
+      if (asked.length > 0) return askAbout(remote);
+      await settleScheduleItemConflicts(payload.id, settles);
+      return 'uploaded';
+    }
     // A carried percent lands only while the merge's rule holds against this copy (A7 pass 26 M-1).
     const carriedOnto = remote && sentFields && sent.carriedProgress === true
       ? scheduleItemCarriedOntoCloudCopy(sent, sentFields, remote)
@@ -6385,10 +6396,12 @@ async function uploadQueueItem(
           updatedAt: new Date().toISOString(),
         }
       : recovered
-        // Stamped now when it keeps a value of the cloud's over this device's copy: this device's copy, newer in its
-        // stamp alone, then outranked it again in the next merge (owner answer Q28).
-        ? wholeWeighed && JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered)
-          ? { ...wholeWeighed.itemData, updatedAt: new Date().toISOString() }
+        // Stamped anew when it keeps a value of the cloud's over this device's copy: this device's copy, newer in its
+        // stamp alone, then outranked it again in the next merge (owner answer Q28). Just after the later of the two
+        // copies, not with the time of the upload (review N1 finding 3): the older of two lookaheads approved offline,
+        // uploaded first, then outranked the newer one.
+        ? wholeWeighed && (restUnchanged || JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered))
+          ? { ...wholeWeighed.itemData, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) }
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
         // and earlier task ids (A8 pass 10 L2).
