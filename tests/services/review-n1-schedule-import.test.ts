@@ -629,3 +629,151 @@ describe('Review N1 (older; shown by ada8ef6, Q25): Talk\'s Undo keeps the looka
     expect(undo.ok && phoneUpdate(talked, framingId, undo.edit, true).saved.lookaheadOverlay).toEqual(note);
   });
 });
+
+describe('Review N1 (caused by 74940c6, the two-device rule of Q25): the master\'s word when masters not current disagree', () => {
+  const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T12:00:00.000Z`;
+  const doc = (id: string, day: number, extra: Partial<ReferenceDocument> = {}) =>
+    ({ ...schedule(id, at(day), id.startsWith('LOOK') ? 'lookahead' : undefined), ...extra }) as ReferenceDocument;
+  const row = (id: string, source: ReferenceDocument, start: string, finish: string, extra: Partial<ScheduleItem> = {}) => ({
+    id, taskName: 'Roof', projectName: 'Alpha', locationName: 'Lot', startDate: start, finishDate: finish, percentComplete: 0,
+    status: 'Not Started', priority: 'Medium', owner: '', contractor: '', milestone: '', notes: '', createdAt: source.importedAt,
+    importedAt: source.importedAt, importBatchId: source.importBatchId, sourceDocumentId: source.id, ...extra,
+  }) as ScheduleItem;
+  type Entry = NonNullable<ScheduleItem['lookaheadOverlay']>['lookaheads'][number];
+  const noted = (masterStart: string, masterFinish: string, entries: Entry[], also: ReferenceDocument[] = []) => ({
+    alsoImportedInBatchIds: [...entries.map(entry => entry.batchId), ...also.map(document => document.importBatchId!)],
+    lookaheadOverlay: { masterStartDate: masterStart, masterFinishDate: masterFinish, masterPercentComplete: 0, lookaheads: entries },
+  }) as Partial<ScheduleItem>;
+  const entry = (lookahead: ReferenceDocument, start: string, finish: string, extra: Partial<Entry> = {}): Entry =>
+    ({ batchId: lookahead.importBatchId!, startDate: start, finishDate: finish, percentComplete: null, ...extra });
+  const roofDates = (items: ScheduleItem[], documents: ReferenceDocument[]) => dates(one({ items, documents }, 'Roof'));
+  const MF = doc('MASTER F', 1);
+  const LA = doc('LOOKAHEAD A', 8);
+  const LB = doc('LOOKAHEAD B', 15); // the newest: it lists another task, so it replaces LA (and LC)
+
+  it('seed 982114: a master on the lookahead\'s dates, then a newer master on other dates: the newer one\'s', () => {
+    // LA moved F's Roof to 11/03. The phone's master P (not current now) restated 11/03 on its own row; the iPad's
+    // master I, newer, says 11/04. One device that had heard all three shows I's dates; so do two that had not.
+    const P = doc('MASTER P', 10, { isCurrent: false });
+    const I = doc('MASTER I', 12, { isCurrent: false });
+    const items = [
+      row('F-2', MF, '11/03/2026', '11/07/2026', noted('11/02/2026', '11/06/2026', [entry(LA, '11/03/2026', '11/07/2026')])),
+      row('P-2', P, '11/03/2026', '11/07/2026', { revisedFromTaskIds: ['F-2'] }),
+      row('I-2', I, '11/04/2026', '11/08/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [MF, P, I, LA, LB])).toBe('11/04/2026-11/08/2026');
+    // With no newer master, the restatement keeps the dates, as before.
+    expect(roofDates(items.slice(0, 2), [MF, P, LA, LB])).toBe('11/03/2026-11/07/2026');
+  });
+
+  it('seed 982544: the current master restated the lookahead\'s dates on the task (its note says so): they stay', () => {
+    // The web's master W, made current, restated F's Roof in place on the dates LA gave; the phone's master G, newer
+    // and not current, says 11/04. The task's note keeps the current master's dates.
+    const W = doc('MASTER W', 10, { webFileFingerprint: 'w'.repeat(64) });
+    const G = doc('MASTER G', 12, { isCurrent: false });
+    const items = [
+      row('F-2', MF, '11/03/2026', '11/07/2026',
+        noted('11/03/2026', '11/07/2026', [entry(LA, '11/03/2026', '11/07/2026', { datesReplacedByMaster: W.importBatchId! })], [W])),
+      row('G-2', G, '11/04/2026', '11/08/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [{ ...MF, isCurrent: false }, W, G, LA, LB])).toBe('11/03/2026-11/07/2026');
+    // Restated by a master that is not current: the newest master's word, as before.
+    expect(roofDates(items, [MF, { ...W, isCurrent: false }, G, LA, LB])).toBe('11/04/2026-11/08/2026');
+  });
+
+  it('seed 1300083: ...or a master before the current one did, and the current master holds the task on those dates', () => {
+    // The iPad's master P restated the lookahead's 11/05 on F's Roof; the web's master W, made current, lists it on
+    // 11/05 too (it holds the row). G, newer and not current, says 11/08.
+    const P = doc('MASTER P', 10, { isCurrent: false });
+    const W = doc('MASTER W', 12, { webFileFingerprint: 'w'.repeat(64) });
+    const G = doc('MASTER G', 14, { isCurrent: false });
+    const items = [
+      row('F-2', MF, '11/05/2026', '11/09/2026',
+        noted('11/05/2026', '11/09/2026', [entry(LA, '11/05/2026', '11/09/2026', { datesReplacedByMaster: P.importBatchId! })], [P, W])),
+      row('G-2', G, '11/08/2026', '11/12/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [{ ...MF, isCurrent: false }, P, W, G, LA, LB])).toBe('11/05/2026-11/09/2026');
+    // A master newer than the current one restated them: the newest master's word, as before.
+    const later = [{ ...items[0], ...noted('11/05/2026', '11/09/2026',
+      [entry(LA, '11/05/2026', '11/09/2026', { datesReplacedByMaster: 'batch-MASTER P2' })], [W]),
+      alsoImportedInBatchIds: [LA.importBatchId!, W.importBatchId!, 'batch-MASTER P2'] }, items[1]];
+    expect(roofDates(later, [{ ...MF, isCurrent: false }, doc('MASTER P2', 13, { isCurrent: false }), W, G, LA, LB])).toBe('11/08/2026-11/12/2026');
+    // The current master does not hold the task (it lists no Roof; the replaced lookahead keeps the task shown): it
+    // said nothing of it, so the newest master's word, as before.
+    const C = doc('MASTER C', 15);
+    const unheld = [{ ...items[0], alsoImportedInBatchIds: [LA.importBatchId!, P.importBatchId!] }, items[1]];
+    expect(roofDates(unheld, [{ ...MF, isCurrent: false }, P, G, C, LA, doc('LOOKAHEAD B', 16)])).toBe('11/08/2026-11/12/2026');
+  });
+
+  it('seed 982131: ...but not when the task\'s note missed a later lookahead that holds it: the newest master\'s word', () => {
+    // As 982544, on a copy whose note was merged without LC's entry (LC holds the task: its batch is on the row). The
+    // phone's master G, newer than LC, said 11/04 on its own row; one device that had heard all of it shows G's dates.
+    const W = doc('MASTER W', 10, { webFileFingerprint: 'w'.repeat(64) });
+    const LC = doc('LOOKAHEAD C', 11);
+    const G = doc('MASTER G', 12, { isCurrent: false });
+    const items = [
+      row('F-2', MF, '11/03/2026', '11/07/2026', { ...noted('11/03/2026', '11/07/2026',
+        [entry(LA, '11/03/2026', '11/07/2026', { datesReplacedByMaster: W.importBatchId! })], [W]),
+        alsoImportedInBatchIds: [LA.importBatchId!, W.importBatchId!, LC.importBatchId!] }),
+      row('G-2', G, '11/04/2026', '11/08/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [{ ...MF, isCurrent: false }, W, G, LA, LC, LB])).toBe('11/04/2026-11/08/2026');
+  });
+
+  it('M1 with two devices: a date he changed alone after the lookahead was replaced stands beside the newest master\'s other date', () => {
+    // LA moved F's Roof to 11/07 - 11/11; G, a newer master, says 11/05 - 11/09 on its own row; LB replaced LA.
+    const G = doc('MASTER G', 12, { isCurrent: false });
+    const task = (handAt: string) => row('F-2', MF, '11/07/2026', '11/12/2026', noted('11/02/2026', '11/06/2026',
+      [entry(LA, '11/07/2026', '11/11/2026', { dateByHand: { field: 'finishDate', at: handAt } })]));
+    const gRow = row('G-2', G, '11/05/2026', '11/09/2026', { revisedFromTaskIds: ['F-2'] });
+    // Finish changed on day 16, after LB (day 15): he saw G's dates, so G's start and his finish.
+    expect(roofDates([task(at(16)), gRow], [MF, G, LA, LB])).toBe('11/05/2026-11/12/2026');
+    // Changed on day 10, while LA was in effect: a hand move, as saved.
+    expect(roofDates([task(at(10)), gRow], [MF, G, LA, LB])).toBe('11/07/2026-11/12/2026');
+  });
+
+  it('seed 1303494: a newer master\'s row put back on the lookahead\'s dates speaks by its note, not by the dates it is on', () => {
+    // LA moved F's Roof to 11/03. The phone's master P (offline, not current) said 11/04 on its own row; a Set Active
+    // then put that row back on the lookahead's 11/03, its note keeping P's 11/04. That row is not a restatement.
+    const P = doc('MASTER P', 10, { isCurrent: false });
+    const items = [
+      row('F-2', MF, '11/03/2026', '11/07/2026', noted('11/02/2026', '11/06/2026', [entry(LA, '11/03/2026', '11/07/2026')])),
+      row('P-2', P, '11/03/2026', '11/07/2026', { revisedFromTaskIds: ['F-2'],
+        ...noted('11/04/2026', '11/08/2026', [entry(LA, '11/03/2026', '11/07/2026', { datesReplacedByMaster: P.importBatchId! })]),
+        alsoImportedInBatchIds: [] }),
+    ];
+    expect(roofDates(items, [MF, P, LA, LB])).toBe('11/04/2026-11/08/2026');
+  });
+
+  it('seed 982723: a web master saved between two lookaheads, on the dates the first gave: the master\'s word', () => {
+    // LA moved Roof to 11/03; the web's master W (not made current), which had not seen LA, said 11/03 on its own row;
+    // LC then moved it to 11/09. One device that had heard LA first took W's dates as the master's in the task's note.
+    const W = doc('MASTER W', 10, { isCurrent: false, webFileFingerprint: 'w'.repeat(64) });
+    const LC = doc('LOOKAHEAD C', 12);
+    const task = row('F-2', MF, '11/09/2026', '11/13/2026',
+      noted('11/02/2026', '11/06/2026', [entry(LA, '11/03/2026', '11/07/2026'), entry(LC, '11/09/2026', '11/13/2026')]));
+    const documents = [MF, W, LA, LC, LB];
+    expect(roofDates([task, row('W-2', W, '11/03/2026', '11/07/2026', { revisedFromTaskIds: ['F-2'] })], documents)).toBe('11/03/2026-11/07/2026');
+    // On other dates it is not the master's word (a web upload not made current), as before.
+    expect(roofDates([task, row('W-2', W, '11/05/2026', '11/09/2026', { revisedFromTaskIds: ['F-2'] })], documents)).toBe('11/02/2026-11/06/2026');
+    // Nor on the dates of a lookahead approved after it.
+    expect(roofDates([task, row('W-2', W, '11/09/2026', '11/13/2026', { revisedFromTaskIds: ['F-2'] })], [MF, { ...W, importedAt: at(9) }, LA, LC, LB]))
+      .toBe('11/02/2026-11/06/2026');
+  });
+
+  it('seed 1321728: ...but not over a newer master whose own row took the task and its note over', () => {
+    // LA moved F's Roof to 11/03 and the web's master W (not current) restated it there. The iPad's master G, newer and
+    // current, moved the task to its own row on 11/05, keeping the note's entries; LC then moved it to 11/09.
+    const W = doc('MASTER W', 10, { isCurrent: false, webFileFingerprint: 'w'.repeat(64) });
+    const G = doc('MASTER G', 11);
+    const LC = doc('LOOKAHEAD C', 12);
+    const items = [
+      row('F-2', MF, '11/03/2026', '11/07/2026',
+        noted('11/03/2026', '11/07/2026', [entry(LA, '11/03/2026', '11/07/2026', { datesReplacedByMaster: W.importBatchId! })], [W])),
+      row('G-2', G, '11/09/2026', '11/13/2026', { revisedFromTaskIds: ['F-2'], ...noted('11/05/2026', '11/09/2026',
+        [entry(LA, '11/03/2026', '11/07/2026', { datesReplacedByMaster: W.importBatchId! }), entry(LC, '11/09/2026', '11/13/2026')]),
+        alsoImportedInBatchIds: [LC.importBatchId!] }),
+    ];
+    expect(roofDates(items, [{ ...MF, isCurrent: false }, W, G, LA, LC, LB])).toBe('11/05/2026-11/09/2026');
+  });
+});

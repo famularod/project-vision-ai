@@ -352,17 +352,17 @@ export function selectAuthoritativeScheduleItems({
       ...later,
       ...earlier.flatMap(id => byEarlier.get(id) || []),
     ])].filter((row): row is ScheduleItem => Boolean(row) && row!.id !== item.id);
-    // A master saved after that lookahead stated the task on the very dates it gave (on its own row, from a device or the
-    // web that had not seen the lookahead yet): the master's word, as a restatement of this row would be.
-    const restating = later.some(row => row.id !== item.id &&
-      sameScheduleCalendarDay(row.startDate, item.startDate) && sameScheduleCalendarDay(row.finishDate, item.finishDate) &&
-      containingDocuments(row).some(document => !scheduleDocumentAddsToMaster(document) &&
-        timestamp(document.importedAt) > timestamp(lookahead.importedAt)));
-    if (restating) return { startDate: item.startDate, finishDate: item.finishDate };
     // The newest master file's word on the task, whichever of the task's rows it is on: the phone, the iPad and the web
     // agree on it whichever row a device that had not heard of a master moved, and whichever master a device made
     // current last.
     // (A web upload not made current is not the master's word yet, unless the task's own note took it as the master's.)
+    /** What a row's master says of the task: the dates its note keeps from before the lookaheads, else its own. */
+    const masterWordOf = (row: ScheduleItem): Pick<ScheduleItem, 'startDate' | 'finishDate'> => {
+      const note = row.lookaheadOverlay;
+      return note?.masterStartDate?.trim() && note.masterFinishDate?.trim()
+        ? { startDate: note.masterStartDate, finishDate: note.masterFinishDate }
+        : { startDate: row.startDate, finishDate: row.finishDate };
+    };
     const newestMaster = (row: ScheduleItem) => {
       const restatedBy = row === item ? row.lookaheadOverlay?.lookaheads?.at(-1)?.datesReplacedByMaster : undefined;
       return Math.max(-1, ...containingDocuments(row)
@@ -370,6 +370,40 @@ export function selectAuthoritativeScheduleItems({
           (typeof restatedBy === 'string' && normalize(restatedBy) === normalize(document.importBatchId || ''))))
         .map(document => timestamp(document.importedAt)));
     };
+    // A master saved after a lookahead stated the task on the very dates that lookahead gave (on its own row, from a
+    // device or the web that had not seen the lookahead yet): the master's word, as a restatement of this row would be.
+    // Review N1 (3 Oct 2026): the lookahead the task was on when that master was saved, the newest in its note older
+    // than the master, not only the latest (seed 982723); and not when a newer master's row of the task says other
+    // dates, as when the older master had restated this row in place (seed 982114).
+    const noted = item.lookaheadOverlay?.lookaheads || [];
+    const entries = noted.map((entry, index) => ({
+      entry,
+      at: timestamp(index === noted.length - 1 ? lookahead.importedAt : scheduleSources.find(document =>
+        scheduleDocumentAddsToMaster(document) && normalize(document.importBatchId || '') === normalize(entry.batchId || ''))?.importedAt),
+    }));
+    let restated: { at: number; word: Pick<ScheduleItem, 'startDate' | 'finishDate'> } | null = null;
+    later.filter(row => row.id !== item.id).forEach(row => containingDocuments(row).filter(document => !scheduleDocumentAddsToMaster(document)).forEach(document => {
+      const at = timestamp(document.importedAt);
+      const before = entries.filter(candidate => candidate.at > 0 && candidate.at < at).sort((x, y) => y.at - x.at)[0];
+      const word = masterWordOf(row);
+      if (!before || !sameScheduleCalendarDay(word.startDate, before.entry.startDate) || !sameScheduleCalendarDay(word.finishDate, before.entry.finishDate)) return;
+      if (!restated || at > restated.at) restated = { at, word };
+    }));
+    const restatedWord = restated as { at: number; word: Pick<ScheduleItem, 'startDate' | 'finishDate'> } | null;
+    // (Not when a newer master speaks for the task: another row's, or this row's own, which took the note over from
+    // the row it answers to.)
+    if (restatedWord && !(newestMaster(item) > restatedWord.at) && !family.some(row => newestMaster(row) > restatedWord.at)) return restatedWord.word;
+    // The current master itself restated the dates that lookahead gave this row (its note says so), or a master before
+    // it did and the current one holds the row: its note keeps the current master's dates, whatever a newer master
+    // that is not current says (review N1, seeds 982544 and 1300083). Not when a lookahead newer than the note's latest
+    // holds the row: the note missed it (a copy merged before it arrived), and what a master said since (seed 982131).
+    const currentMaster = currentByProject.get(scheduleTaskAppProject(item));
+    const restatedByMaster = noted.at(-1)?.datesReplacedByMaster;
+    const restater = typeof restatedByMaster === 'string'
+      ? scheduleSources.find(document => normalize(document.importBatchId || '') === normalize(restatedByMaster)) : undefined;
+    const held = containingDocuments(item);
+    if (currentMaster && restater && held.includes(currentMaster) && timestamp(restater.importedAt) <= timestamp(currentMaster.importedAt) &&
+      !held.some(document => scheduleDocumentAddsToMaster(document) && timestamp(document.importedAt) > timestamp(lookahead.importedAt))) return null;
     let best: ScheduleItem[] = [];
     let bestAt = newestMaster(item);
     family.forEach(row => {
@@ -377,12 +411,7 @@ export function selectAuthoritativeScheduleItems({
       if (at > bestAt) { best = [row]; bestAt = at; } else if (at === bestAt && best.length > 0) best.push(row);
     });
     // Two rows of that master (same-named tasks whose rows answer to the same earlier row): no telling which is this one.
-    const word = best.length === 1 ? best[0] : null;
-    if (!word) return null;
-    const note = word.lookaheadOverlay;
-    return note?.masterStartDate?.trim() && note.masterFinishDate?.trim()
-      ? { startDate: note.masterStartDate, finishDate: note.masterFinishDate }
-      : { startDate: word.startDate, finishDate: word.finishDate };
+    return best.length === 1 ? masterWordOf(best[0]) : null;
   });
 }
 
