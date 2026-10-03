@@ -320,6 +320,17 @@ describe('Q25: the newest lookahead for a project replaces older ones', () => {
     expect(dates(moved.items.find(item => item.id === framingId)!)).toBe('10/02/2026-10/31/2026');
   });
 
+  it('an approval given the tasks as shown saves their saved dates, never the dates shown', () => {
+    const G4 = schedule('MASTER G4', '2026-10-20T12:00:00.000Z');
+    const merged = mergeApprovedScheduleImportItems({
+      existing: shown(onL4), imported: rows(G4, ['Framing,Alpha,Lot,10/01/2026,10/30/2026,50']), completionMatch: () => null,
+      mergeCompletion: item => item, isCurrent: () => true, approvedAt: G4.importedAt,
+    });
+    const framing = merged.next.find(item => item.id === framingId)!;
+    expect('savedLookaheadDates' in framing).toBe(false);
+    expect(dates(framing)).toBe('10/03/2026-11/04/2026');
+  });
+
   it('a web upload restating the task as shown writes its saved dates, never the copy shown', () => {
     const G2 = schedule('MASTER G2', '2026-10-20T12:00:00.000Z');
     const plan = planDAVEWebScheduleImport({
@@ -331,21 +342,38 @@ describe('Q25: the newest lookahead for a project replaces older ones', () => {
     expect(dates(framing)).toBe('10/03/2026-11/04/2026');
   });
 
+  it('a web upload pairs the file\'s rows with the saved tasks as the phone\'s approval does, not with the dates shown', () => {
+    // Framing is saved on L3's dates and shown on the master's; a file stating L3's dates restates that task on both.
+    const G3 = schedule('MASTER G3', '2026-10-20T12:00:00.000Z');
+    const lines = ['Framing,Alpha,Lot,10/03/2026,11/04/2026,'];
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: shown(onL4).map(item => ({ ...item, cloudUpdatedAt: null })) as DAVEWebScheduleItem[] },
+      importedScheduleItems: rows(G3, lines),
+    });
+    expect(plan.additions.map(item => item.taskName)).toEqual([]);
+    expect(plan.revisions.map(revision => revision.item.id)).toContain(framingId);
+    const phone = approve(onL4, G3, lines);
+    expect(phone.items.filter(item => item.taskName === 'Framing' && item.importBatchId === G3.importBatchId)).toEqual([]);
+  });
+
   it('deleting an older file alone ("Delete PDF Only") does not bring its detail tasks back', () => {
     const withoutL1File: State = { items: onL4.items, documents: onL4.documents.filter(document => document.id !== L1.id) };
     expect(named(withoutL1File, 'Install sleeves')).toEqual([]);
     expect(shown(withoutL1File).map(item => item.taskName).sort()).toEqual(['Drywall', 'Flash vents', 'Framing', 'Roof']);
   });
 
-  it('deleting a replaced lookahead with its items changes no date shown, and saves the dates shown', () => {
+  it('deleting a replaced lookahead with its items changes no date shown', () => {
     for (const old of [L2, L3]) {
       const cleaned = deleteWithItems(onL4, old, '2026-10-20T12:00:00.000Z');
       expect(shown(cleaned).map(item => `${item.taskName} ${dates(item)}`).sort())
         .toEqual(shown(onL4).map(item => `${item.taskName} ${dates(item)}`).sort());
     }
-    // L3 last moved Framing: its delete gives back the master's dates (L2 and L1 are replaced too), as shown.
+    // L3 last moved Framing: its delete saves L2's dates back, as before owner answer Q25, and the master's are shown
+    // (L2 is replaced too). Changed deliberately (gen26 follow-up, 2 Oct): saving the master's dates read from this
+    // device's note made two devices that had heard of different schedules save different dates.
     const withoutL3 = deleteWithItems(onL4, L3, '2026-10-20T12:00:00.000Z');
-    expect(dates(withoutL3.items.find(item => item.id === framingId)!)).toBe('10/01/2026-10/30/2026');
+    expect(dates(withoutL3.items.find(item => item.id === framingId)!)).toBe('10/03/2026-11/02/2026');
+    expect(dates(one(withoutL3, 'Framing'))).toBe('10/01/2026-10/30/2026');
   });
 });
 
@@ -433,5 +461,110 @@ describe('Q25 with two devices: a master\'s task stays the master\'s whatever th
       } : item),
     };
     expect(dates(one(lost, 'Roof'))).toBe('11/04/2026-11/09/2026');
+  });
+});
+
+/**
+ * Q25 with two devices, the gen26 follow-up (2 Oct 2026): a task a replaced lookahead still holds is shown on the
+ * dates the newest master file gave it, worked out the same way whichever of the task's rows a device that had not
+ * heard of a schedule moved, and whichever master a device made current last (an approval made offline is made
+ * current when that device reconnects). Built by hand: the records two devices leave in the cloud.
+ */
+describe('Q25 with two devices: the reset reads the same whatever each device had heard', () => {
+  const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T12:00:00.000Z`;
+  const doc = (id: string, day: number, extra: Partial<ReferenceDocument> = {}) =>
+    ({ ...schedule(id, at(day), id.startsWith('LOOK') ? 'lookahead' : undefined), ...extra }) as ReferenceDocument;
+  const row = (id: string, source: ReferenceDocument, start: string, finish: string, extra: Partial<ScheduleItem> = {}) => ({
+    id, taskName: 'Roof', projectName: 'Alpha', locationName: 'Lot', startDate: start, finishDate: finish, percentComplete: 0,
+    status: 'Not Started', priority: 'Medium', owner: '', contractor: '', milestone: '', notes: '', createdAt: source.importedAt,
+    importedAt: source.importedAt, importBatchId: source.importBatchId, sourceDocumentId: source.id, ...extra,
+  }) as ScheduleItem;
+  const moved = (lookahead: ReferenceDocument, masterStart: string, masterFinish: string, start: string, finish: string,
+    extra: Partial<NonNullable<ScheduleItem['lookaheadOverlay']>['lookaheads'][number]> = {}) => ({
+    alsoImportedInBatchIds: [lookahead.importBatchId!],
+    lookaheadOverlay: {
+      masterStartDate: masterStart, masterFinishDate: masterFinish, masterPercentComplete: 0,
+      lookaheads: [{ batchId: lookahead.importBatchId!, startDate: start, finishDate: finish, percentComplete: null, ...extra }],
+    },
+  }) as Partial<ScheduleItem>;
+  const roofDates = (items: ScheduleItem[], documents: ReferenceDocument[]) => dates(one({ items, documents }, 'Roof'));
+  const F = doc('MASTER F', 1);
+  const G = doc('MASTER G', 5);
+  const LA = doc('LOOKAHEAD A', 8);
+  const LB = doc('LOOKAHEAD B', 15);
+  const fRoof = row('F-2', F, '11/02/2026', '11/06/2026');
+  const gRoof = row('G-2', G, '11/05/2026', '11/09/2026', { revisedFromTaskIds: ['F-2'] });
+
+  it('whichever master a device made current last, the task shows the newest master\'s dates', () => {
+    // LA moved G's Roof; LB (Drywall only) replaced LA. The cloud made G current, or F (a Set Active the iPad's
+    // reconnect did not see): the same dates either way.
+    const items = [fRoof, row('G-2', G, '11/07/2026', '11/11/2026', { revisedFromTaskIds: ['F-2'], ...moved(LA, '11/05/2026', '11/09/2026', '11/07/2026', '11/11/2026') })];
+    expect(roofDates(items, [{ ...F, isCurrent: false }, G, LA, LB])).toBe('11/05/2026-11/09/2026');
+    expect(roofDates(items, [F, { ...G, isCurrent: false }, LA, LB])).toBe('11/05/2026-11/09/2026');
+  });
+
+  it('a stale device moved the older master\'s row: the newest master\'s row of that task speaks for it', () => {
+    const items = [row('F-2', F, '11/07/2026', '11/11/2026', moved(LA, '11/02/2026', '11/06/2026', '11/07/2026', '11/11/2026')), gRoof];
+    expect(roofDates(items, [{ ...F, isCurrent: false }, G, LA, LB])).toBe('11/05/2026-11/09/2026');
+    // The same when the newest master saved its row without the ids it answers to (a device that had two Roofs shown).
+    const unlinked = [items[0], { ...gRoof, revisedFromTaskIds: [] }];
+    expect(roofDates(unlinked, [{ ...F, isCurrent: false }, G, LA, LB])).toBe('11/05/2026-11/09/2026');
+    // Not a master with two tasks of that name in the area: no telling which is this one.
+    const twins = [...unlinked, row('G-9', G, '11/20/2026', '11/24/2026')];
+    expect(dates(shown({ items: twins, documents: [{ ...F, isCurrent: false }, G, LA, LB] }).find(item => item.id === 'F-2')!))
+      .toBe('11/02/2026-11/06/2026');
+  });
+
+  it('a master saved after the lookahead, by a device or the web that had not seen it, on the very dates it gave: kept', () => {
+    const W = doc('MASTER W', 10, { isCurrent: false, webFileFingerprint: 'w'.repeat(64) });
+    const items = [
+      row('F-2', F, '11/07/2026', '11/11/2026', moved(LA, '11/02/2026', '11/06/2026', '11/07/2026', '11/11/2026')),
+      row('W-2', W, '11/07/2026', '11/11/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [F, W, LA, LB])).toBe('11/07/2026-11/11/2026');
+  });
+
+  it('a web upload not made current is not the master\'s word, unless the task\'s note took it as the master\'s', () => {
+    const W = doc('MASTER W', 10, { isCurrent: false, webFileFingerprint: 'w'.repeat(64) });
+    const items = [
+      row('F-2', F, '11/07/2026', '11/11/2026', moved(LA, '11/02/2026', '11/06/2026', '11/07/2026', '11/11/2026')),
+      row('W-2', W, '11/09/2026', '11/13/2026', { revisedFromTaskIds: ['F-2'] }),
+    ];
+    expect(roofDates(items, [F, W, LA, LB])).toBe('11/02/2026-11/06/2026');
+    // W restated F's Roof in place: its note's master dates are W's, newer than G's row of the task.
+    const restated = [{ ...items[0], ...moved(LA, '11/09/2026', '11/13/2026', '11/07/2026', '11/11/2026', { datesReplacedByMaster: W.importBatchId! }),
+      alsoImportedInBatchIds: [LA.importBatchId!, W.importBatchId!] }, gRoof];
+    expect(roofDates(restated, [{ ...F, isCurrent: false }, G, W, LA, LB])).toBe('11/09/2026-11/13/2026');
+  });
+
+  it('same-named tasks in the area (owner answer Q30): only the current master\'s own revision speaks, as before', () => {
+    const pour = (id: string, source: ReferenceDocument, start: string, finish: string, extra: Partial<ScheduleItem> = {}) =>
+      ({ ...row(id, source, start, finish, extra), taskName: 'Pour slab' }) as ScheduleItem;
+    // F lists two Pour slabs; G (newer, not current: F was made current again) lists one, a revision of F's first; LA
+    // moved F's first, LB replaced LA.
+    const items = [
+      pour('F-1', F, '10/07/2026', '10/09/2026', moved(LA, '10/05/2026', '10/07/2026', '10/07/2026', '10/09/2026')),
+      pour('F-2', F, '10/12/2026', '10/14/2026'),
+      pour('G-1', G, '10/06/2026', '10/08/2026', { revisedFromTaskIds: ['F-1'] }),
+    ];
+    const shownPour = shown({ items, documents: [F, { ...G, isCurrent: false }, LA, LB] }).filter(item => item.taskName === 'Pour slab');
+    expect(shownPour.map(dates).sort()).toEqual(['10/05/2026-10/07/2026', '10/12/2026-10/14/2026']);
+  });
+
+  it('two rows of the newest master answer to the task (a split): no telling which is it, so its note\'s dates', () => {
+    const items = [
+      row('F-2', F, '11/07/2026', '11/11/2026', moved(LA, '11/02/2026', '11/06/2026', '11/07/2026', '11/11/2026')),
+      row('G-2', G, '11/05/2026', '11/09/2026', { revisedFromTaskIds: ['F-2'], taskName: 'Roof deck' }),
+      row('G-3', G, '11/12/2026', '11/16/2026', { revisedFromTaskIds: ['F-2'], taskName: 'Roof flashing' }),
+    ];
+    expect(dates(shown({ items, documents: [F, G, LA, LB] }).find(item => item.id === 'F-2')!)).toBe('11/02/2026-11/06/2026');
+  });
+
+  it('a lookahead deleted and imported again keeps the note\'s entry: the newest saved lookahead holding the task speaks', () => {
+    const LA2 = doc('LOOKAHEAD A2', 9);
+    // The note still names LA (deleted); the task belongs to LA2, its file imported again, which LB replaced.
+    const items = [row('F-2', F, '11/07/2026', '11/11/2026', { ...moved(LA, '11/02/2026', '11/06/2026', '11/07/2026', '11/11/2026'),
+      alsoImportedInBatchIds: [LA.importBatchId!, LA2.importBatchId!] })];
+    expect(roofDates(items, [F, LA2, LB])).toBe('11/02/2026-11/06/2026');
   });
 });

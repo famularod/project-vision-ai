@@ -7,7 +7,6 @@ import {
   scheduleFullCopyLeftUnshown,
   scheduleDocumentIsScheduleLike,
   scheduleItemAsSaved,
-  scheduleLookaheadReplacedFor,
   scheduleLookaheadReplacement,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
@@ -310,24 +309,6 @@ export function scheduleTaskRestatedByLookahead(
 }
 
 /**
- * Whether a lookahead entry of a task's note is one a newer lookahead
- * replaced for the task's project, given the schedules saved (owner answer
- * Q25): its dates are never given back. An entry whose lookahead is not
- * saved, or the schedules not given, counts as not replaced, as before.
- */
-function lookaheadEntryReplacedByLookahead(
-  documents?: readonly ReferenceDocument[],
-): (entry: LookaheadEntry, task: ScheduleItem) => boolean {
-  if (!documents) return () => false;
-  const replacedFor = scheduleLookaheadReplacedFor(documents);
-  const byBatch = new Map(documents.filter(scheduleDocumentAddsToMaster).map(document => [key(document.importBatchId), document] as const));
-  return (entry, task) => {
-    const lookahead = byBatch.get(key(entry.batchId));
-    return Boolean(lookahead) && replacedFor(lookahead!, task.projectName || task.scheduleProjectName || '');
-  };
-}
-
-/**
  * A full schedule's row that says what the master said before a lookahead
  * restated the task: the new master did not change the task, so the
  * lookahead's dates stay. With the row's percent the same too, the master's
@@ -468,8 +449,6 @@ function tasksAfterLookaheadDeleted(
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
   const replaced = datesReplacedAtDelete(items, documents);
-  // An older lookahead a newer saved one replaces gives no dates back either (owner answer Q25).
-  const replacedByLookahead = lookaheadEntryReplacedByLookahead(documents);
   return items.flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
@@ -479,7 +458,9 @@ function tasksAfterLookaheadDeleted(
     const top = index === entries.length - 1 && sameDates(item, entries[index]);
     // An earlier lookahead's dates only when no newer master replaced them (A6 pass 19 M1); else the master's.
     // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
-    const back = [...remaining].reverse().find(entry => !replaced(entry, item) && !replacedByLookahead(entry, item)) ||
+    // An earlier lookahead a newer one replaced (owner answer Q25) is saved back too: the task is shown on the master's
+    // dates while it is replaced (selectAuthoritativeScheduleItems), worked out the same on every device.
+    const back = [...remaining].reverse().find(entry => !replaced(entry, item)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).

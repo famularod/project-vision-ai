@@ -302,20 +302,17 @@ export function selectAuthoritativeScheduleItems({
     ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments, inEffectFor)
     : shownItems);
   let rowsByEarlierId: Map<string, ScheduleItem[]> | null = null;
-  return withReplacedLookaheadDates(shown, scheduleSources, replacedFor, (item: ScheduleItem) => {
-    // A newer master that moved the task to its own row, current for the task's project, has the master's dates now.
+  let rowsById: Map<string, ScheduleItem> | null = null;
+  let rowsByName: Map<string, ScheduleItem[]> | null = null;
+  const nameKey = (row: ScheduleItem) =>
+    `${scheduleTaskAppProject(row)}\n${normalize(row.locationName || '')}\n${normalize(row.taskName || '')}`;
+  /** The current master's row of the task that answers to this one (one only), or the master of a row that does. */
+  const currentMasterRowOf = (item: ScheduleItem): ScheduleItem | null => {
     const current = currentByProject.get(scheduleTaskAppProject(item));
-    if (!current) return null;
-    if (!rowsByEarlierId) {
-      const index = new Map<string, ScheduleItem[]>();
-      scheduleItems.forEach(row => scheduleTaskEarlierIds(row).forEach(id => index.set(id, [...(index.get(id) || []), row])));
-      rowsByEarlierId = index;
-    }
+    if (!current || !rowsByEarlierId) return null;
     const ofCurrent = (row: ScheduleItem) => row.id !== item.id && containingDocuments(row).includes(current);
     const rows = (rowsByEarlierId.get(item.id.trim()) || []).filter(ofCurrent);
     if (rows.length > 0) return rows.length === 1 ? rows[0] : null;
-    // A device that had not heard of that master moved the task's older row: the master's row of the same task (a
-    // revision of the same earlier row) is the master's word, unless a later master restated the note's dates.
     const restatedLater = (item.lookaheadOverlay?.lookaheads || []).some(entry => {
       const by = entry.datesReplacedByMaster;
       if (!by) return false;
@@ -326,17 +323,80 @@ export function selectAuthoritativeScheduleItems({
     const index = rowsByEarlierId;
     const siblings = [...new Set(scheduleTaskEarlierIds(item).flatMap(id => index.get(id) || []))].filter(ofCurrent);
     return siblings.length === 1 ? siblings[0] : null;
+  };
+  return withReplacedLookaheadDates(shown, scheduleSources, replacedFor, (item: ScheduleItem, lookahead: ReferenceDocument) => {
+    if (!rowsByEarlierId || !rowsById || !rowsByName) {
+      const index = new Map<string, ScheduleItem[]>();
+      scheduleItems.forEach(row => scheduleTaskEarlierIds(row).forEach(id => index.set(id, [...(index.get(id) || []), row])));
+      rowsByEarlierId = index;
+      rowsById = new Map(scheduleItems.map(row => [row.id.trim(), row]));
+      const names = new Map<string, ScheduleItem[]>();
+      scheduleItems.forEach(row => names.set(nameKey(row), [...(names.get(nameKey(row)) || []), row]));
+      rowsByName = names;
+    }
+    const byEarlier = rowsByEarlierId, byId = rowsById;
+    const earlier = scheduleTaskEarlierIds(item);
+    // The master rows of a task of this name in this area: a device or the web that had a duplicate shown saved a
+    // master's row without the ids it answers to.
+    const sameNamed = rowsByName.get(nameKey(item)) || [];
+    const masterOf = (row: ScheduleItem) => normalize(row.importBatchId || '');
+    const twinned = new Set(sameNamed.map(masterOf).filter((batch, index, all) => batch && all.indexOf(batch) !== index));
+    // Same-named tasks in the area (owner answer Q30): their rows can answer to each other's, so only the current
+    // master's own revision of this row speaks for it, as before.
+    if (twinned.size > 0) return currentMasterRowOf(item);
+    // The task's other rows: those it answers to, those answering to it, other revisions of the same earlier row, and
+    // the master rows of its name.
+    const later = [...new Set([...(byEarlier.get(item.id.trim()) || []), ...sameNamed])];
+    const family = [...new Set([
+      ...earlier.map(id => byId.get(id)),
+      ...later,
+      ...earlier.flatMap(id => byEarlier.get(id) || []),
+    ])].filter((row): row is ScheduleItem => Boolean(row) && row!.id !== item.id);
+    // A master saved after that lookahead stated the task on the very dates it gave (on its own row, from a device or the
+    // web that had not seen the lookahead yet): the master's word, as a restatement of this row would be.
+    const restating = later.some(row => row.id !== item.id &&
+      sameScheduleCalendarDay(row.startDate, item.startDate) && sameScheduleCalendarDay(row.finishDate, item.finishDate) &&
+      containingDocuments(row).some(document => !scheduleDocumentAddsToMaster(document) &&
+        timestamp(document.importedAt) > timestamp(lookahead.importedAt)));
+    if (restating) return { startDate: item.startDate, finishDate: item.finishDate };
+    // The newest master file's word on the task, whichever of the task's rows it is on: the phone, the iPad and the web
+    // agree on it whichever row a device that had not heard of a master moved, and whichever master a device made
+    // current last.
+    // (A web upload not made current is not the master's word yet, unless the task's own note took it as the master's.)
+    const newestMaster = (row: ScheduleItem) => {
+      const restatedBy = row === item ? row.lookaheadOverlay?.lookaheads?.at(-1)?.datesReplacedByMaster : undefined;
+      return Math.max(-1, ...containingDocuments(row)
+        .filter(document => !scheduleDocumentAddsToMaster(document) && (document.isCurrent || !document.webFileFingerprint ||
+          (typeof restatedBy === 'string' && normalize(restatedBy) === normalize(document.importBatchId || ''))))
+        .map(document => timestamp(document.importedAt)));
+    };
+    let best: ScheduleItem[] = [];
+    let bestAt = newestMaster(item);
+    family.forEach(row => {
+      const at = newestMaster(row);
+      if (at > bestAt) { best = [row]; bestAt = at; } else if (at === bestAt && best.length > 0) best.push(row);
+    });
+    // Two rows of that master (same-named tasks whose rows answer to the same earlier row): no telling which is this one.
+    const word = best.length === 1 ? best[0] : null;
+    if (!word) return null;
+    const note = word.lookaheadOverlay;
+    return note?.masterStartDate?.trim() && note.masterFinishDate?.trim()
+      ? { startDate: note.masterStartDate, finishDate: note.masterFinishDate }
+      : { startDate: word.startDate, finishDate: word.finishDate };
   });
 }
 
 /**
  * Owner answer Q25 (2 Oct 2026): a master task an older lookahead moved,
  * that the newest lookahead for its project does not list, is shown on the
- * master's dates (those its note keeps from before the lookaheads, or the
- * row of the master current for its project that moved it since), while it
- * is on the dates that older lookahead gave it: dates David moved by hand,
- * or a newer master's, stay. Worked out from the saved tasks and schedules
- * when they are shown, with nothing written, so the phone, the iPad and the
+ * master's dates while it is on the dates that older lookahead gave it:
+ * dates David moved by hand, or a newer master's, stay. The master's dates
+ * are those of the newest master file (by import) that lists the task, on
+ * whichever of the task's rows it is (those its note keeps from before the
+ * lookaheads on its own row): two devices that had heard of different
+ * schedules when they approved, or made different masters current, show the
+ * same (gen26 follow-up, 2 Oct 2026). Worked out from the saved tasks and
+ * schedules when they are shown, with nothing written, so the phone, the iPad and the
  * web show the same once they hold the same records, whichever device
  * approved which lookahead and in what order; deleting the newest lookahead
  * shows the one before it again. A change David saves on the task (on the
@@ -346,8 +406,8 @@ function withReplacedLookaheadDates(
   items: readonly ScheduleItem[],
   scheduleSources: readonly ReferenceDocument[],
   replacedFor: (document: ReferenceDocument, projectKey: string | null) => boolean,
-  /** The current master's own row of the task, when a newer master moved it (that row is the master's word). */
-  masterRowOf: (item: ScheduleItem) => ScheduleItem | null,
+  /** The master's dates for the task, when another of its rows has them (null: those its own note keeps). */
+  masterRowOf: (item: ScheduleItem, lookahead: ReferenceDocument) => Pick<ScheduleItem, 'startDate' | 'finishDate'> | null,
 ): ScheduleItem[] {
   if (!items.some(item => item.lookaheadOverlay?.lookaheads?.length)) return items as ScheduleItem[];
   const lookaheadByBatch = new Map(scheduleSources.filter(scheduleDocumentAddsToMaster)
@@ -368,9 +428,10 @@ function withReplacedLookaheadDates(
     const onDays = (days: Pick<ScheduleItem, 'startDate' | 'finishDate'>) =>
       sameScheduleCalendarDay(item.startDate, days.startDate) && sameScheduleCalendarDay(item.finishDate, days.finishDate);
     // On the dates the latest lookahead in its note gave it, that lookahead replaced.
-    const lookahead = lookaheadByBatch.get(normalize(latest.batchId || ''));
+    // (A file deleted and imported again keeps the note's entry: a saved lookahead holding the task speaks for it.)
+    const lookahead = lookaheadByBatch.get(normalize(latest.batchId || '')) ?? holding[holding.length - 1];
     if (!lookahead || !replacedFor(lookahead, project) || !onDays(latest)) return item;
-    const masterRow = masterRowOf(item);
+    const masterRow = masterRowOf(item, lookahead);
     const master = masterRow
       ? { startDate: masterRow.startDate, finishDate: masterRow.finishDate }
       : { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };

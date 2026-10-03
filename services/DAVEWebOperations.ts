@@ -26,7 +26,7 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
@@ -379,8 +379,10 @@ export function planDAVEWebScheduleImport({
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
+  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
+  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
   const saved = snapshot.scheduleItems.map(item => ({
-    item: scheduleItemForCloud(item),
+    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
     cloudUpdatedAt: item.cloudUpdatedAt ?? null,
   }));
   const merged = mergeApprovedScheduleImportItems({
