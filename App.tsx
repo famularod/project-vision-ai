@@ -17599,15 +17599,16 @@ function ProjectWorkspaceScreen({
         walkContext={projectWalkContext}
         candidateLocations={projectAreas.map(area => area.name)}
         keepSlot={`walk:${projectName}`}
-        onMemoryReady={result => {
+        onMemoryReady={(result, kept) => {
           projectWalkLocationRequest.current += 1;
-          const createdAt = new Date().toISOString();
+          // A recording brought back from the device keeps the time and area it was dictated in (review N1 L3).
+          const createdAt = kept?.recordedAt ?? new Date().toISOString();
           const memoryId = `voice-memory-${uid()}`;
           const proposedFields = result.understanding.status === 'succeeded'
             ? result.understanding.fields
             : { ...result.understanding.fields, generalMemory: result.transcript };
           const transcriptArea = result.understanding.recommendedLocation;
-          const gpsArea = projectWalkContext.recommendedArea;
+          const gpsArea = kept ? kept.walkArea : projectWalkContext.recommendedArea;
           const areasConflict = Boolean(
             transcriptArea.value && gpsArea &&
             transcriptArea.value.toLowerCase() !== gpsArea.name.toLowerCase(),

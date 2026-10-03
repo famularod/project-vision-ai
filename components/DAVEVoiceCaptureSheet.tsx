@@ -51,6 +51,16 @@ import {
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
 
+/**
+ * Review N1 L3: when a recording brought back from the device (everyday item
+ * 4) was dictated, and the saved project area the Project Walk had matched
+ * then. Its words can arrive days later and somewhere else.
+ */
+export type DAVEVoiceKeptCapture = Readonly<{
+  recordedAt: string;
+  walkArea: DAVEProjectWalkContext['recommendedArea'];
+}>;
+
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
 // A recording that ends this close to the limit is treated as having reached it.
@@ -119,7 +129,8 @@ export function DAVEVoiceCaptureSheet({
    * Without one it is kept in the sheet only, while Vitruvius stays open.
    */
   keepSlot?: string;
-  onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
+  /** `kept` only for a recording brought back from the device after the app was closed (review N1 L3). */
+  onMemoryReady: (result: DAVEVoiceUnderstandingResponse, kept?: DAVEVoiceKeptCapture) => void;
   onProjectChange?: (projectName: string) => void;
   onTaskChange?: (taskId: string | null) => void;
   onOperation?: () => void;
@@ -161,6 +172,9 @@ export function DAVEVoiceCaptureSheet({
   const keepEpochRef = useRef(0);
   const keepUnderWayRef = useRef<Promise<void> | null>(null);
   const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
+  // Review N1 L3: when this recording was dictated and the walk's area then;
+  // `restored` when it was brought back from the device.
+  const captureRef = useRef<(DAVEVoiceKeptCapture & { restored: boolean }) | null>(null);
   const recordingUriRef = useRef<string | null>(null);
   recordingUriRef.current = recordingUri;
 
@@ -252,6 +266,7 @@ export function DAVEVoiceCaptureSheet({
     const abandoned = generation !== transcriptionOperationRef.current;
     if (uri && !abandoned) {
       recordingDurationRef.current = duration;
+      noteRecordingCaptured();
       setRecordingUri(uri);
       setRecordingDuration(duration);
     }
@@ -283,6 +298,7 @@ export function DAVEVoiceCaptureSheet({
     setNotice(null);
     await removeRecording(recordingUri);
     forgetRecordingKeptOnDevice();
+    captureRef.current = null;
     setRecordingUri(null);
     setRecordingDuration(0);
     recordingDurationRef.current = 0;
@@ -334,12 +350,13 @@ export function DAVEVoiceCaptureSheet({
       if (!kept || recordingUriRef.current || recordingActiveRef.current || recordingFinishingRef.current) return;
       if (kept.projectName.trim().toLowerCase() !== projectName.trim().toLowerCase()) return;
       keptCopyRef.current = kept.uri;
+      captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true };
       recordingGenerationRef.current += 1;
       recordingDurationRef.current = kept.durationMs;
       setRecordingUri(kept.uri);
       setRecordingDuration(kept.durationMs);
       void transcribeRecording(kept.uri, kept.durationMs);
-      setNotice(`Kept from ${keptTimeLabel(kept.keptAt)}, when there was no signal. Trying it again now.`);
+      setNotice(`Kept from ${keptTimeLabel(kept.recordedAt)}, when there was no signal. Trying it again now.`);
     });
     return () => {
       current = false;
@@ -347,6 +364,24 @@ export function DAVEVoiceCaptureSheet({
     // Read once each time the sheet opens, for its account, sheet and project.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, keptOwner, keepSlot, projectName]);
+
+  /** A recording just finished: when, and the walk's matched area then (review N1 L3). */
+  function noteRecordingCaptured() {
+    captureRef.current = { recordedAt: new Date().toISOString(), walkArea: walkContext?.recommendedArea ?? null, restored: false };
+  }
+
+  /**
+   * Hands the recording's words on. One brought back from the device says
+   * when and where it was dictated: the Project Walk stamped such a memory
+   * with the time its words arrived and the area he was standing in then,
+   * as "during capture" (review N1 L3).
+   */
+  function handOverWords(result: DAVEVoiceUnderstandingResponse) {
+    const capture = captureRef.current;
+    captureRef.current = null;
+    if (capture?.restored) onMemoryReady(result, { recordedAt: capture.recordedAt, walkArea: capture.walkArea });
+    else onMemoryReady(result);
+  }
 
   /** Keeps this recording on the device past a closed app (everyday item 4); the sheet keeps using its own copy. */
   function keepRecordingOnDevice(uri: string, duration: number): Promise<void> {
@@ -360,7 +395,16 @@ export function DAVEVoiceCaptureSheet({
     const keep: Promise<void> = (async () => {
       try {
         const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
-        const kept = await keepVoiceRecording(owner, slot, { uri, durationMs: duration, projectId, projectName });
+        // Where the walk had him when he finished speaking; when that was not known yet, where it has him now.
+        const capture = captureRef.current;
+        const kept = await keepVoiceRecording(owner, slot, {
+          uri,
+          durationMs: duration,
+          projectId,
+          projectName,
+          recordedAt: capture?.recordedAt,
+          walkArea: capture?.restored ? capture.walkArea : capture?.walkArea ?? walkContext?.recommendedArea ?? null,
+        });
         // Discarded, used or recorded again meanwhile: this copy does not stay kept.
         if (epoch !== keepEpochRef.current) await forgetKeptVoiceRecording(owner, slot, kept);
         else keptCopyRef.current = kept;
@@ -405,6 +449,7 @@ export function DAVEVoiceCaptureSheet({
       const uri = recorder.uri || status.url;
       if (!uri) throw new Error('Recording file missing.');
       recordingDurationRef.current = stoppedDuration;
+      noteRecordingCaptured();
       setRecordingUri(uri);
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
@@ -431,7 +476,7 @@ export function DAVEVoiceCaptureSheet({
       await removeRecording(uri);
       forgetRecordingKeptOnDevice();
       setRecordingUri(null);
-      onMemoryReady(held.result);
+      handOverWords(held.result);
       return;
     }
     const operation = ++transcriptionOperationRef.current;
@@ -459,7 +504,7 @@ export function DAVEVoiceCaptureSheet({
       await removeRecording(uri);
       forgetRecordingKeptOnDevice();
       setRecordingUri(null);
-      onMemoryReady(result);
+      handOverWords(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
       // Waiting for signal: kept on this device past a closed app when this sheet keeps it (everyday item 4).
@@ -543,6 +588,7 @@ export function DAVEVoiceCaptureSheet({
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
     forgetRecordingKeptOnDevice();
+    captureRef.current = null;
     setRecordingUri(null);
     setNotice(null);
     recordingDurationRef.current = 0;

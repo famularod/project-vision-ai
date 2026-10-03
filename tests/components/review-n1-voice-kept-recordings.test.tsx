@@ -1,8 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
+import fs from 'fs';
+import path from 'path';
+import ts from 'typescript';
+
 import { DAVEVoiceCaptureSheet } from '../../components/DAVEVoiceCaptureSheet';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
+import { createCaptureMemory, type DAVECaptureMemory } from '../../services/DAVECaptureMemory';
+import type { DAVEProjectWalkContext } from '../../services/DAVEProjectWalk';
 import { daveVoiceWaitingForSignalError } from '../../services/DAVEVoiceSignalWait';
 import {
   keepVoiceRecording,
@@ -97,6 +103,8 @@ const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 const KEPT_NO_SIGNAL = 'No signal. Your recording is kept on this device — tap Continue when you have signal. If Vitruvius closes, it is tried again the next time you open this.';
 const keptFiles = () => [...mockFiles].filter(file => file.startsWith(KEPT_FOLDER));
 const entryKeys = () => [...mockStorage.keys()].filter(key => key.includes('/voice-recording/'));
+/** A recording brought back from the device also says when and where it was dictated (review N1 L3). */
+const WHEN_AND_WHERE = { recordedAt: expect.any(String), walkArea: null };
 const settle = (ms = 50) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
 
 function resetRecorder() {
@@ -128,13 +136,25 @@ function closeApp() {
   mockFiles.delete(CACHE_URI);
   resetRecorder();
 }
-afterEach(closeApp);
+afterEach(() => {
+  closeApp();
+  jest.useRealTimers();
+});
+
+/** The phone's clock reads `iso`; timers still run. */
+function clockReads(iso: string) {
+  jest.useFakeTimers({
+    now: Date.parse(iso),
+    doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'queueMicrotask'],
+  });
+}
 
 type SheetOptions = {
   owner?: string;
   projectName?: string;
   keepSlot?: string;
   autoStartRecording?: boolean;
+  walkContext?: DAVEProjectWalkContext;
   onMemoryReady?: jest.Mock;
   onCancel?: jest.Mock;
 };
@@ -145,6 +165,7 @@ function openSheet({
   projectName = 'Canopy Project',
   keepSlot = 'talk',
   autoStartRecording = false,
+  walkContext,
   onMemoryReady = jest.fn(),
   onCancel = jest.fn(),
 }: SheetOptions = {}) {
@@ -161,6 +182,7 @@ function openSheet({
         continueLabel="Continue"
         keepSlot={keepSlot}
         autoStartRecording={autoStartRecording}
+        walkContext={walkContext}
         onMemoryReady={onMemoryReady}
         onTypeInstead={jest.fn()}
         onCancel={onCancel}
@@ -209,7 +231,7 @@ describe('review N1 M1: a kept recording is only removed by Use, Discard or Reco
     const onMemoryReady = jest.fn();
     transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Rebar passed.' });
     openSheet({ keepSlot: 'field-note', projectName: 'Canopy Project', autoStartRecording: true, onMemoryReady });
-    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Rebar passed.' }));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Rebar passed.' }, WHEN_AND_WHERE));
     expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenLastCalledWith(expect.objectContaining({ uri: canopyAudio, projectName: 'Canopy Project' }));
     await waitFor(() => expect(keptFiles()).toHaveLength(0));
     expect(entryKeys()).toHaveLength(0);
@@ -255,7 +277,7 @@ describe('review N1 M1: a kept recording is only removed by Use, Discard or Reco
     const onMemoryReady = jest.fn();
     transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Harbor words.' });
     openSheet({ keepSlot: 'ask', projectName: 'Harbor North', onMemoryReady });
-    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Harbor words.' }));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Harbor words.' }, WHEN_AND_WHERE));
     expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenLastCalledWith(expect.objectContaining({ uri: harbor?.uri, projectName: 'Harbor North' }));
     await waitFor(() => expect(keptFiles()).toEqual([canopy?.uri]));
     expect(entryKeys()).toHaveLength(1);
@@ -413,8 +435,141 @@ describe('review N1 M1: audio with no entry is swept safely', () => {
     const onMemoryReady = jest.fn();
     transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Old words.' });
     openSheet({ onMemoryReady });
-    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Old words.' }));
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Old words.' }, WHEN_AND_WHERE));
     await waitFor(() => expect(keptFiles()).toHaveLength(0));
     expect(entryKeys()).toHaveLength(0);
+  });
+});
+
+describe('review N1 L3: a Project Walk memory brought back from the device keeps the time and area it was dictated in', () => {
+  const LEVEL_2 = { id: 'area-level-2', name: 'Level 2 East', confidence: 'high', distanceFeet: 12 } as const;
+  const ROOF = { id: 'area-roof', name: 'Roof', confidence: 'high', distanceFeet: 20 } as const;
+  const walkAt = (area: DAVEProjectWalkContext['recommendedArea']): DAVEProjectWalkContext => ({
+    schemaVersion: 1,
+    projectName: 'Canopy Project',
+    locationStatus: area ? 'matched' : 'unavailable',
+    locationMessage: area ? `You appear to be near ${area.name}.` : 'Location is not available.',
+    recommendedArea: area,
+    prompt: { guidance: 'What changed here?', whyItMatters: 'It keeps the record current.' },
+  } as unknown as DAVEProjectWalkContext);
+
+  it('the sheet hands on when and where it was dictated; a recording used in the same session hands on only its words', async () => {
+    clockReads('2026-10-01T21:14:00.000Z');
+    openSheet({ keepSlot: 'walk:Canopy Project', walkContext: walkAt(LEVEL_2) });
+    await recordAndWaitForSignal();
+    await expect(readKeptVoiceRecording('owner-a', 'walk:Canopy Project', 'Canopy Project')).resolves.toMatchObject({
+      recordedAt: '2026-10-01T21:14:00.000Z',
+      walkArea: LEVEL_2,
+    });
+
+    // The next day, on the roof, with signal: the walk sheet opens and its words arrive.
+    closeApp();
+    clockReads('2026-10-02T15:30:00.000Z');
+    const onMemoryReady = jest.fn();
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Rebar inspection passed.' });
+    openSheet({ keepSlot: 'walk:Canopy Project', walkContext: walkAt(ROOF), onMemoryReady });
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledTimes(1));
+    expect(onMemoryReady).toHaveBeenCalledWith(
+      { transcript: 'Rebar inspection passed.' },
+      { recordedAt: '2026-10-01T21:14:00.000Z', walkArea: LEVEL_2 },
+    );
+
+    // A recording made and used now says nothing more than its words: the walk stamps it as before.
+    const sameSession = jest.fn();
+    openSheet({ keepSlot: 'walk:Canopy Project', walkContext: walkAt(ROOF), onMemoryReady: sameSession });
+    await settle();
+    await record();
+    transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Roof drains clear.' });
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(sameSession).toHaveBeenCalledTimes(1));
+    expect(sameSession.mock.calls[0]).toEqual([{ transcript: 'Roof drains clear.' }]);
+  });
+
+  it('where the walk had not placed him yet when he finished speaking, the area it had when the recording was kept is kept', async () => {
+    clockReads('2026-10-01T21:14:00.000Z');
+    openSheet({ keepSlot: 'walk:Canopy Project', walkContext: walkAt(null) });
+    await record();
+    view?.rerender(
+      <NativeWorkspaceOwnerContext.Provider value="owner-a">
+        <DAVEVoiceCaptureSheet
+          visible
+          projectId={PROJECT_ID}
+          projectName="Canopy Project"
+          candidateProjects={['Canopy Project', 'Harbor North']}
+          candidateLocations={[]}
+          title="Talk"
+          continueLabel="Continue"
+          keepSlot="walk:Canopy Project"
+          walkContext={walkAt(LEVEL_2)}
+          onMemoryReady={jest.fn()}
+          onTypeInstead={jest.fn()}
+          onCancel={jest.fn()}
+        />
+      </NativeWorkspaceOwnerContext.Provider>,
+    );
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
+    fireEvent.press(screen.getByText('Continue'));
+    await waitFor(() => expect(keptFiles()).toHaveLength(1));
+    await expect(readKeptVoiceRecording('owner-a', 'walk:Canopy Project')).resolves.toMatchObject({ walkArea: LEVEL_2 });
+  });
+
+  it('an entry kept before this change has its kept time and no area', async () => {
+    mockFiles.add(`${KEPT_FOLDER}recording-7-old.m4a`);
+    mockStorage.set('@vitruvius/kept-drafts/v1/voice-recording/owner-a/walk%3ACanopy%20Project', JSON.stringify({
+      version: 1,
+      keptAt: '2026-10-01T21:14:00.000Z',
+      value: { fileName: 'recording-7-old.m4a', durationMs: 9_000, projectId: PROJECT_ID, projectName: 'Canopy Project', walkArea: { id: 7 } },
+    }));
+    await expect(readKeptVoiceRecording('owner-a', 'walk:Canopy Project')).resolves.toMatchObject({
+      recordedAt: '2026-10-01T21:14:00.000Z',
+      walkArea: null,
+    });
+  });
+
+  /** The Project Walk's own handler, as App.tsx has it, run with the walk standing on the roof today. */
+  function walkMemoryFrom(result: unknown, kept?: unknown): DAVECaptureMemory {
+    const app = fs.readFileSync(path.join(__dirname, '../../App.tsx'), 'utf8');
+    const sheet = app.indexOf('keepSlot={`walk:${projectName}`}');
+    const from = app.indexOf('onMemoryReady={', sheet) + 'onMemoryReady={'.length;
+    const to = app.indexOf('onTypeInstead={', from);
+    expect(sheet).toBeGreaterThan(0);
+    const source = app.slice(from, app.lastIndexOf('}', to));
+    const compiled = ts.transpileModule(`const handler = ${source};`, { compilerOptions: { target: ts.ScriptTarget.ES2019 } }).outputText;
+    const setCaptureDraft = jest.fn();
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const handler = new Function(
+      'projectWalkLocationRequest', 'uid', 'projectWalkContext', 'setCaptureDraft', 'createCaptureMemory', 'projectName', 'closeProjectWalkCapture',
+      `${compiled}; return handler;`,
+    )({ current: 0 }, () => 'm1', walkAt(ROOF), setCaptureDraft, createCaptureMemory, 'Canopy Project', jest.fn()) as (result: unknown, kept?: unknown) => void;
+    handler(result, kept);
+    expect(setCaptureDraft).toHaveBeenCalledTimes(1);
+    return setCaptureDraft.mock.calls[0][0] as DAVECaptureMemory;
+  }
+  const words = {
+    transcript: 'Rebar inspection passed.',
+    understanding: { status: 'failed', fields: {}, recommendedLocation: { value: null, confidence: 'unknown' } },
+  };
+
+  it('the Project Walk stamps a memory brought back from the device with its own time and area, not now and here', () => {
+    clockReads('2026-10-02T15:30:00.000Z');
+    const restored = walkMemoryFrom(words, { recordedAt: '2026-10-01T21:14:00.000Z', walkArea: LEVEL_2 });
+    expect(restored.createdAt).toBe('2026-10-01T21:14:00.000Z');
+    expect(restored.recommendedLocation.value).toBe('Level 2 East');
+    expect(restored.evidence.filter(evidence => evidence.kind === 'location_record')).toEqual([
+      expect.objectContaining({ sourceRecordId: 'area-level-2', summary: 'Current device location matched this saved project area during capture.' }),
+    ]);
+
+    // Dictated where the walk had matched no area: none is claimed, though he stands on the roof now.
+    const nowhere = walkMemoryFrom(words, { recordedAt: '2026-10-01T21:14:00.000Z', walkArea: null });
+    expect(nowhere.recommendedLocation.value).toBeNull();
+    expect(nowhere.evidence.filter(evidence => evidence.kind === 'location_record')).toEqual([]);
+
+    // A recording used as it is made: now, and the area he is in, as before.
+    const live = walkMemoryFrom(words);
+    expect(live.createdAt).toBe('2026-10-02T15:30:00.000Z');
+    expect(live.recommendedLocation.value).toBe('Roof');
+    expect(live.evidence.filter(evidence => evidence.kind === 'location_record')).toEqual([
+      expect.objectContaining({ sourceRecordId: 'area-roof' }),
+    ]);
   });
 });

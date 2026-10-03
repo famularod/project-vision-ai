@@ -168,7 +168,12 @@ describe('a recording waiting for signal survives iOS closing the app (everyday 
     mockFiles.delete(CACHE_URI);
     transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Pour moved to Friday.' });
     const { onMemoryReady } = openSheet();
-    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith({ transcript: 'Pour moved to Friday.' }));
+    // Review N1 L3: a recording brought back from the device also says when it was dictated,
+    // and the Project Walk area matched then (none here). Before, only its words were handed on.
+    await waitFor(() => expect(onMemoryReady).toHaveBeenCalledWith(
+      { transcript: 'Pour moved to Friday.' },
+      { recordedAt: expect.any(String), walkArea: null },
+    ));
     expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenLastCalledWith(expect.objectContaining({
       uri: expect.stringMatching(/^file:\/\/\/documents\/kept-recordings\//),
       projectId: PROJECT_ID,

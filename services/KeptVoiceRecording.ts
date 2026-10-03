@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
+import type { DAVEProjectWalkContext } from './DAVEProjectWalk';
 import { forgetKeptDrafts, keepDraft, keptDraftScopes, keptDraftsOnDevice, readKeptDraft } from './KeptDraftStore';
 
 /**
@@ -29,7 +30,17 @@ export type KeptVoiceRecording = Readonly<{
   projectId: string | null;
   projectName: string;
   keptAt: string;
+  /**
+   * When it was dictated, and the saved project area a Project Walk had
+   * matched then (review N1 L3): a recording used after the app was closed
+   * is a memory of that time and place, not of when its words arrived.
+   */
+  recordedAt: string;
+  walkArea: KeptVoiceWalkArea | null;
 }>;
+
+/** The Project Walk's matched area, as the walk hands it to the voice sheet. */
+export type KeptVoiceWalkArea = NonNullable<DAVEProjectWalkContext['recommendedArea']>;
 
 type KeptVoiceRecordingEntry = Readonly<{
   /** The sheet that keeps it. An entry kept before review N1 M1 has none: its scope is its sheet. */
@@ -38,6 +49,9 @@ type KeptVoiceRecordingEntry = Readonly<{
   durationMs: number;
   projectId: string | null;
   projectName: string;
+  /** An entry kept before review N1 L3 has neither: its time is when it was kept, its area unknown. */
+  recordedAt?: string;
+  walkArea?: KeptVoiceWalkArea | null;
 }>;
 
 /** An entry as it is stored: `scope` is its key, `slot` the sheet that keeps it. */
@@ -60,6 +74,19 @@ function keptUri(fileName: string): string | null {
 export function isKeptVoiceRecordingUri(uri: string | null | undefined): boolean {
   const folder = keptFolder();
   return Boolean(folder && uri && uri.startsWith(folder));
+}
+
+function validTime(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function walkAreaOf(value: unknown): KeptVoiceWalkArea | null {
+  const area = value as Partial<KeptVoiceWalkArea> | null | undefined;
+  if (!area || typeof area !== 'object') return null;
+  if (typeof area.id !== 'string' || typeof area.name !== 'string') return null;
+  if (area.confidence !== 'high' && area.confidence !== 'medium') return null;
+  if (typeof area.distanceFeet !== 'number' || !Number.isFinite(area.distanceFeet)) return null;
+  return Object.freeze({ id: area.id, name: area.name, confidence: area.confidence, distanceFeet: area.distanceFeet });
 }
 
 function sameProject(left: string, right: string): boolean {
@@ -96,7 +123,14 @@ function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
 export function keepVoiceRecording(
   ownerKey: string,
   slot: string,
-  recording: Readonly<{ uri: string; durationMs: number; projectId: string | null; projectName: string }>,
+  recording: Readonly<{
+    uri: string;
+    durationMs: number;
+    projectId: string | null;
+    projectName: string;
+    recordedAt?: string;
+    walkArea?: KeptVoiceWalkArea | null;
+  }>,
 ): Promise<string> {
   return oneAtATime(async () => {
     const folder = keptFolder();
@@ -116,6 +150,8 @@ export function keepVoiceRecording(
       durationMs: Math.max(0, Math.round(recording.durationMs)),
       projectId: recording.projectId?.trim() || null,
       projectName: recording.projectName,
+      recordedAt: validTime(recording.recordedAt) ? recording.recordedAt : new Date().toISOString(),
+      walkArea: walkAreaOf(recording.walkArea),
     };
     // An entry kept before review N1 M1 (its scope is its sheet) is rewritten where it is.
     const scope = (await storedKeptVoiceRecordings(ownerKey)).find(stored => stored.fileName === fileName)?.scope
@@ -147,10 +183,12 @@ async function storedKeptVoiceRecordings(ownerKey: string): Promise<StoredKeptVo
         projectId: typeof entry.projectId === 'string' ? entry.projectId : null,
         projectName: entry.projectName,
         keptAt: kept.keptAt,
+        recordedAt: validTime(entry.recordedAt) ? entry.recordedAt : kept.keptAt,
+        walkArea: walkAreaOf(entry.walkArea),
       }),
     });
   }
-  return stored.sort((left, right) => left.recording.keptAt.localeCompare(right.recording.keptAt));
+  return stored.sort((left, right) => Date.parse(left.recording.recordedAt) - Date.parse(right.recording.recordedAt));
 }
 
 /**
