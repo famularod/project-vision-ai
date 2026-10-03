@@ -2007,3 +2007,42 @@ describe('Schedule review N1 M3: his own percent reaches the cloud as his, and a
     expect(scheduleItemFieldsWithOwnProgress(his, edit, task({ percentComplete: 15, progressSource: 'project_manager', progressConfirmedBy: 'David' }))).toEqual(edit);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule review pass 1, L3 (Low, caused by 79a5ae1; seed 1103076). The phone, offline, holds David's 10% of the
+ * 12th. On the iPad he enters 20% on the 13th, and a master then states 50% over it ("Schedule update", his 20% noted
+ * under it). On the phone Talk sets 30% and he taps Undo, which gives the 10% back. Back online, that older 10% went
+ * up over the master's 50% and below his own 20%, on every device (50% at Build 229, and on one device). His later
+ * word noted under a file's percent now counts as his later word shown does: the older entry is not sent.
+ */
+describe('Schedule review N1 L3: Talk\'s Undo does not put an older percent over a master\'s percent that stands over his later one', () => {
+  it('the phone\'s 10%, given back by Undo offline, does not go over the master\'s 50% that stands over his 20%', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-12T04:00:00.000Z');
+    await edit(phone, id, { percentComplete: 10 });
+    await refresh(ipad);
+    setOnline(phone, false);
+    at('2026-09-13T06:00:00.000Z');
+    await edit(ipad, id, { percentComplete: 20 });
+    at('2026-09-15T15:00:00.000Z');
+    const previous = scheduleProgressUndoPoint(theRow(phone));
+    await edit(phone, id, { percentComplete: 30 }); // Talk
+    const written = scheduleProgressUndoPoint(theRow(phone));
+    at('2026-09-15T15:00:30.000Z');
+    const undo = scheduleTalkUndo(phone.ref.current as never, { id, taskName: 'Framing' }, previous, written, new Date().toISOString(), deviceShown(phone) as never);
+    if (!undo.ok) throw new Error('Undo refused');
+    await edit(phone, undo.taskId, undo.edit as Partial<ScheduleItem>, true);
+    at('2026-09-16T03:00:00.000Z');
+    await approve(ipad, G, [F_ROW.replace('10/25/2026,', '10/25/2026,50'), SURVEY]); // the master states 50% over his 20%
+    shareDocuments(ipad); await backgroundUpload(ipad);
+    expect(cloudRow(id)).toMatchObject({ percentComplete: 50, progressConfirmedBy: 'Schedule update', managersPercentUnderFile: 20 });
+    at('2026-09-18T05:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    expect(cloudRow(id)).toMatchObject({ percentComplete: 50, managersPercentUnderFile: 20 }); // was 10% by David
+    await fullSync(phone); await fullSync(ipad); await refresh(phone);
+    expect([onDevice(phone), onDevice(ipad), onWeb()].map(rows => rows.map(view => view[2]))).toEqual([[50], [50], [50]]);
+  });
+});

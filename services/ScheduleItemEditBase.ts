@@ -353,11 +353,12 @@ export const SCHEDULE_PROGRESS_FIELDS: readonly string[] = [...SCHEDULE_CARRIED_
  * Whether an edit's percent meets a later percent of David's own in the cloud
  * (owner answer Q28): his later entry stands, as the sync merge orders his
  * entries. The edit's percent changed here and the cloud's changed since the
- * copy the edit started from, to a percent he stated himself (not a file's,
- * nor one Talk's Undo gave back or took back), judged after the edit's own.
- * Sent as it was, the phone's older entry went over the web's newer 30%, and
- * with the task sent whole no more, nothing put the 30% back. Anything else
- * goes as before: the edit's percent goes up.
+ * copy the edit started from, and the cloud holds a percent he stated himself
+ * (the one shown, or the one noted under a file's percent that stands over
+ * it; not one Talk's Undo took back), judged after the edit's own. Sent as it
+ * was, the phone's older entry went over the web's newer 30%, and with the
+ * task sent whole no more, nothing put the 30% back. Anything else goes as
+ * before: the edit's percent goes up.
  */
 export function scheduleItemLaterPercentInCloud(
   local: ScheduleItem,
@@ -370,7 +371,10 @@ export function scheduleItemLaterPercentInCloud(
     Object.prototype.hasOwnProperty.call(base.fields, field));
   if (progress.length === 0 || !progress.some(field => fieldValue(remote, field) !== fieldValue(base.fields, field))) return false;
   const theirs = scheduleManagersOwnPercent(remote);
-  if (!theirs || !scheduleProgressIsManagers(remote) || scheduleEntryUndone(local, theirs) || scheduleEntryUndone(remote, theirs)) return false;
+  // His own word in the cloud: the percent shown, or the one noted under a file's (schedule review N1 L3: a master's
+  // 50% stood over his 20% of the 13th; Talk's Undo, offline, gave the phone's 10% of the 12th back, and it went up over
+  // both, below his 20%).
+  if (!theirs || scheduleEntryUndone(local, theirs) || scheduleEntryUndone(remote, theirs)) return false;
   const time = (value: string | null | undefined) => (value ? Date.parse(value) : Number.NaN);
   const theirsAt = time(theirs.judgedAt);
   const oursAt = time(scheduleProgressJudgedAt(local));
