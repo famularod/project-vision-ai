@@ -10,7 +10,16 @@ import {
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
-import { forgetDAVEWebOwnReportSends, forgetDAVEWebReportPeriods, forgetDAVEWebReportTabMemory } from '../../services/DAVEWebReportSend';
+import {
+  approveDAVEWebReportPeriod,
+  daveWebReportSnapshotCloud,
+  daveWebReportStorage,
+  forgetDAVEWebOwnReportSends,
+  forgetDAVEWebReportPeriods,
+  forgetDAVEWebReportTabMemory,
+  recordDAVEWebReportSend,
+} from '../../services/DAVEWebReportSend';
+import { buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 // Review N1 of reports and sending (3 Oct 2026), the web Reports page
@@ -622,5 +631,52 @@ describe('review N1 L5 (web): before an approval replaces an approved report tha
     await settle();
     expect(sharedSnapshot()?.sourceFingerprint).not.toBe(r1.sourceFingerprint);
     expect(screen.queryByText(TITLE)).toBeNull();
+  });
+});
+
+describe('review N1 (Low): a report another tab of this browser sent is not called "your other device"', () => {
+  const store = () => ({
+    storage: daveWebReportStorage(async () => 'owner-1'),
+    cloud: daveWebReportSnapshotCloud(mockAuth.loadReportPeriod, mockAuth.saveReportPeriod as never),
+  });
+  /** Another tab of the same browser (the same storage and sender id) approves the report on its page and sends it. */
+  async function otherTabSends() {
+    const truths = buildDAVEWebReportTruths(mockAuth.snapshot, null);
+    const facts = buildDAVEReportSourceFingerprint(truths);
+    const current = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: facts, capturedAt: '2026-10-01T12:00:00.000Z', reportFormat: 'project_manager' });
+    expect((await approveDAVEWebReportPeriod(store(), current, '2026-10-01T10:00:00.000Z')).status).toBe('saved');
+    const sentAt = new Date().toISOString();
+    expect((await recordDAVEWebReportSend(store(), { scopeKey: 'tower', reportFormat: 'project_manager' }, facts, sentAt))?.status).toBe('saved');
+    // This tab's own memory knows nothing of it until it reads the period again.
+    forgetDAVEWebOwnReportSends();
+    return current;
+  }
+
+  it('Approve in a tab that has not read the period since is still stopped, and says another tab sent the report', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await waitFor(() => expect(since().getByText('Tower: Frame walls was completed.')).toBeTruthy());
+    await otherTabSends();
+    fireEvent.press(screen.getByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    // Its report still counts from the older one, so it is not approved; but it was this browser that sent.
+    expect(await screen.findByText(/^Another tab of this browser sent a report .*, so this report now covers what changed since then\. Regenerate it from current facts, then approve\.$/)).toBeTruthy();
+    expect(screen.queryByText(/Your other device/)).toBeNull();
+    expect(screen.queryByText('Share Approved Report')).toBeNull();
+  });
+
+  it('the store says whose the later report is: this browser\'s, or another device\'s', async () => {
+    table = PHONE_AT_10();
+    const sent = await otherTabSends();
+    const newer = { ...sent, sourceFingerprint: 'newer-facts', capturedAt: '2026-10-01T12:10:00.000Z' };
+    await expect(approveDAVEWebReportPeriod(store(), newer, '2026-10-01T10:00:00.000Z')).resolves.toMatchObject({ status: 'later_send', fromThisBrowser: true });
+    // The phone's later report is another device's.
+    forgetDAVEWebReportPeriods('owner-1');
+    forgetDAVEWebOwnReportSends();
+    const phone = phoneSent(100, '2026-10-01T13:00:00.000Z');
+    table = new Map([['tower|project_manager', { snapshot: phone, deliveredAt: '2026-10-01T13:00:00.000Z' }]]);
+    const outcome = await approveDAVEWebReportPeriod(store(), newer, '2026-10-01T10:00:00.000Z');
+    expect(outcome.status).toBe('later_send');
+    expect((outcome as { fromThisBrowser?: boolean }).fromThisBrowser).toBeUndefined();
   });
 });

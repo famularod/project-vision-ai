@@ -401,7 +401,23 @@ export async function loadDAVEWebReportPeriod(
 export type DAVEWebPeriodOutcome =
   | Readonly<{ status: 'saved'; snapshot: DAVEReportSnapshot | null }>
   /** The other device sent a later report than the one this counted from (A6 pass 7 on the phone). */
-  | Readonly<{ status: 'later_send'; later: DAVEReportSnapshot }>;
+  | Readonly<{
+    status: 'later_send';
+    later: DAVEReportSnapshot;
+    /**
+     * The later report was sent from this browser, by another tab or window
+     * (review N1, 3 Oct 2026): this tab had not read the period since, so the
+     * report here still counts from the older one and is stopped all the
+     * same, but the page does not call it "your other device".
+     */
+    fromThisBrowser?: true;
+  }>;
+
+/** The later send that stops an approval or a record, and whether it was this browser's own (another tab's). */
+async function laterSendOutcome(store: DAVEWebReportStore, later: DAVEReportSnapshot): Promise<DAVEWebPeriodOutcome> {
+  const sentHere = await reportSnapshotSentHere(reportPeriodSend(later), store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false);
+  return sentHere ? { status: 'later_send', later, fromThisBrowser: true } : { status: 'later_send', later };
+}
 
 /**
  * Approving here, as on the phone: the period is read again first, and a
@@ -416,7 +432,7 @@ export async function approveDAVEWebReportPeriod(
 ): Promise<DAVEWebPeriodOutcome> {
   const loaded = await loadDAVEReportPeriod(current.scopeKey, current.reportFormat as DAVEReportFormat, store.storage, store.cloud);
   const later = reportPeriodSentAfter(loaded.snapshot, sinceSentAt, ownSends);
-  if (later) return { status: 'later_send', later };
+  if (later) return laterSendOutcome(store, later);
   const toSave = reportSnapshotToSave(current, loaded.snapshot);
   if (toSave) await saveDAVEReportSnapshot(toSave, store.storage, store.cloud);
   else if (loaded.snapshot?.deliveredAt === null && !await reportApprovalSavedHere(loaded.snapshot, store.storage).catch(() => true)) {
@@ -472,7 +488,7 @@ export async function recordDAVEWebReportSend(
   if (!approval) return null;
   const loaded = await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, store.cloud);
   const later = reportPeriodSentAfter(loaded.snapshot, reportPeriodSentAt(approval), ownSends);
-  if (later) return { status: 'later_send', later };
+  if (later) return laterSendOutcome(store, later);
   ownSends.add(deliveredAt);
   await rememberReportSentHere(deliveredAt, store.storage);
   const sentBy = await reportSenderId(store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => null);

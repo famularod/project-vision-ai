@@ -5725,7 +5725,7 @@ function ReportWorkspace({
       return false;
     }
     if (outcome.status === 'later_send') {
-      setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'record') });
+      setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'record', outcome.fromThisBrowser) });
       return false;
     }
     // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
@@ -5937,7 +5937,7 @@ function ReportWorkspace({
       }
       if (outcome.status === 'later_send') {
         setPeriodReload(count => count + 1);
-        setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'approve') });
+        setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'approve', outcome.fromThisBrowser) });
         setPending(false);
         return;
       }

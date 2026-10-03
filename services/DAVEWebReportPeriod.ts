@@ -185,11 +185,17 @@ export function daveWebReportBehindMessage(send: DAVEReportSnapshot): string {
  * from (A6 pass 7 on the phone): an approval stops, and a send is not
  * recorded (owner answer 2 Oct, web sends count).
  */
-export function daveWebReportLaterSendMessage(later: DAVEReportSnapshot, moment: 'approve' | 'record'): string {
+export function daveWebReportLaterSendMessage(
+  later: DAVEReportSnapshot,
+  moment: 'approve' | 'record',
+  /** Sent from this browser by another tab or window: never called "your other device" (review N1, 3 Oct 2026). */
+  fromThisBrowser = false,
+): string {
   const when = describeReportSendTime(reportPeriodSentAt(later) ?? '');
+  const who = fromThisBrowser ? 'Another tab of this browser' : 'Your other device';
   return moment === 'approve'
-    ? `Your other device sent a report ${when}, so this report now covers what changed since then. Regenerate it from current facts, then approve.`
-    : `Your other device sent a report ${when}, after this one was approved, so this one was not recorded as sent. The next report counts from your other device's report.`;
+    ? `${who} sent a report ${when}, so this report now covers what changed since then. Regenerate it from current facts, then approve.`
+    : `${who} sent a report ${when}, after this one was approved, so this one was not recorded as sent. The next report counts from ${fromThisBrowser ? 'that report' : "your other device's report"}.`;
 }
 
 /** This computer's send, recorded (owner answer 2 Oct): where the next report counts from. */
