@@ -364,3 +364,76 @@ describe('Review N1 M2 (caused by ada8ef6, Q25): a task only lookaheads listed c
     expect(view(back)).toEqual(['11/12/2026-11/12/2026 @30 "Call inspector Monday"']);
   });
 });
+
+describe('Review N1 web M1 (caused by ada8ef6, Q25): the web\'s delete of a replaced lookahead leaves the dates the phone\'s delete leaves', () => {
+  const AT = '2026-09-22T12:00:00.000Z';
+  const asWeb = (items: readonly ScheduleItem[]) => items.map(item => ({ ...item, projectId: 'alpha', cloudUpdatedAt: '2026-09-21T12:00:00.000Z' })) as DAVEWebScheduleItem[];
+  /** The web's Delete Document (Only) or Delete Document + Tasks: its plan's task writes, then the deletion records. */
+  function webDelete(state: State, document: ReferenceDocument, keepTasks: boolean): State {
+    const linked = scheduleItemsOnlyInImportBatch(state.items, document, state.documents.filter(scheduleDocumentIsScheduleLike));
+    const revisions = planDAVEWebScheduleDocumentDelete({
+      snapshot: { scheduleItems: asWeb(shown(state)), knownScheduleItems: asWeb(state.items), referenceDocuments: state.documents as never },
+      document: { ...document, cloudUpdatedAt: '2026-09-21T12:00:00.000Z', linkedScheduleItems: asWeb(linked), lookaheadReplaced: 'Replaced by the lookahead of Sep 21, 2026' } as never,
+      updatedAt: AT, keepTasks,
+    });
+    const written = new Map(revisions.map(revision => [revision.item.id, revision.item as ScheduleItem]));
+    const removedIds = new Set(keepTasks ? [] : linked.map(item => item.id));
+    return {
+      items: state.items.filter(item => !removedIds.has(item.id)).map(item => written.get(item.id) || item),
+      documents: state.documents.filter(other => other.id !== document.id),
+    };
+  }
+
+  it('week 1, replaced, moved Framing: shown on the master\'s dates, and the phone\'s Delete PDF + Items leaves them', () => {
+    expect(dates(one(onWk2, 'Framing'))).toBe('10/15/2026-10/25/2026');
+    expect(dates(one(deleteWithItems(onWk2, WK1, AT), 'Framing'))).toBe('10/15/2026-10/25/2026');
+    // The file gone with no task written was the jump: the deleted lookahead's dates.
+    expect(dates(one({ items: onWk2.items, documents: onWk2.documents.filter(document => document.id !== WK1.id) }, 'Framing'))).toBe('10/20/2026-10/30/2026');
+  });
+
+  it('"Delete Document Only" and "Delete Document + Tasks" both leave the master\'s dates', () => {
+    for (const keepTasks of [true, false]) {
+      const after = webDelete(onWk2, WK1, keepTasks);
+      expect(dates(one(after, 'Framing'))).toBe('10/15/2026-10/25/2026');
+      expect(dates(saved(after, framingId))).toBe('10/15/2026-10/25/2026');
+      expect(named(after, 'Detail 1')).toEqual([]);
+      expect(after.items.some(item => item.taskName === 'Detail 1')).toBe(keepTasks);
+    }
+  });
+
+  it('"Delete Document Only" removes no task: a link to the lookahead\'s own task stays; "+ Tasks" drops it with the task', () => {
+    const detailId = onWk2.items.find(item => item.taskName === 'Detail 1')!.id;
+    const roofId = one(onWk2, 'Roof').id;
+    const linked: State = { ...onWk2, items: onWk2.items.map(item => item.id === roofId
+      ? { ...item, dependencies: [{ predecessorItemId: detailId, type: 'FS' as const, lagDays: 0 }], dependenciesUpdatedAt: '2026-09-21T13:00:00.000Z' } as ScheduleItem : item) };
+    const links = (state: State) => (saved(state, roofId).dependencies || []).map(link => link.predecessorItemId);
+    expect(links(webDelete(linked, WK1, true))).toEqual([detailId]);
+    expect(links(webDelete(linked, WK1, false))).toEqual([]);
+  });
+
+  it('a replaced lookahead with no task of its own ("Delete Document"): the same', () => {
+    const A1 = schedule('LOOKAHEAD a', '2026-09-14T12:00:00.000Z', 'lookahead');
+    const A2 = schedule('LOOKAHEAD b', '2026-09-21T12:00:00.000Z', 'lookahead');
+    const onA2 = approve(approve(onF, A1, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,']), A2, ['Framing,Alpha,Lot,10/16/2026,10/26/2026,']);
+    expect(dates(one(onA2, 'Roof'))).toBe('11/02/2026-11/06/2026');
+    expect(dates(one(webDelete(onA2, A1, true), 'Roof'))).toBe('11/02/2026-11/06/2026');
+  });
+
+  it('a master deleted without its tasks writes no task, as before', () => {
+    const G = schedule('MASTER G', '2026-09-22T12:00:00.000Z');
+    const onG = approve(onWk2, G, ['Framing,Alpha,Lot,10/16/2026,10/26/2026,', 'Roof,Alpha,Lot,11/04/2026,11/08/2026,']);
+    expect(planDAVEWebScheduleDocumentDelete({
+      snapshot: { scheduleItems: asWeb(shown(onG)), knownScheduleItems: asWeb(onG.items), referenceDocuments: onG.documents as never },
+      document: { ...F, isCurrent: false, cloudUpdatedAt: '2026-09-21T12:00:00.000Z', linkedScheduleItems: [] } as never, updatedAt: AT, keepTasks: true,
+    })).toEqual([]);
+  });
+
+  it('the web plans it for a lookahead whichever button deletes it, and never makes a lookahead current', () => {
+    const provider = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
+    expect(provider).toContain('current && (deleteLinkedTasks || scheduleDocumentAddsToMaster(document))');
+    expect(provider).toContain('planDAVEWebScheduleDocumentDelete({ snapshot: current, document, keepTasks: !deleteLinkedTasks })');
+    const makeCurrent = provider.slice(provider.indexOf('const setCurrentSchedule = useCallback('));
+    expect(makeCurrent.indexOf('if (scheduleDocumentAddsToMaster(document)) {')).toBeGreaterThan(0);
+    expect(makeCurrent.indexOf('if (scheduleDocumentAddsToMaster(document)) {')).toBeLessThan(makeCurrent.indexOf('setAuthorizedCurrentSchedule'));
+  });
+});

@@ -425,13 +425,20 @@ export function planDAVEWebScheduleDocumentDelete({
   snapshot,
   document,
   updatedAt = new Date().toISOString(),
+  keepTasks = false,
 }: {
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
   document: DAVEWebReferenceDocument;
   updatedAt?: string;
+  /** "Delete Document" / "Delete Document Only": no task is removed. */
+  keepTasks?: boolean;
 }): readonly DAVEWebScheduleImportRevision[] {
-  const removedIds = new Set(document.linkedScheduleItems.map(item => item.id));
-  if (removedIds.size === 0) return Object.freeze([]);
+  const removedIds = new Set(keepTasks ? [] : document.linkedScheduleItems.map(item => item.id));
+  // Review N1 web M1 (3 Oct 2026, caused by ada8ef6): a lookahead a newer one replaced (owner answer Q25) is a prior
+  // version the web may delete. Deleted with no task written, a master task it had moved jumped from the master's
+  // dates to the deleted lookahead's on the web, the phone and the iPad. Its delete, with its tasks or without, now
+  // gives the master tasks it restated their dates back as the phone's Delete PDF + Items does.
+  if (removedIds.size === 0 && !scheduleDocumentAddsToMaster(document)) return Object.freeze([]);
   const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
   const kept = saved.filter(item => !removedIds.has(item.id));
   const keptById = new Map(kept.map(item => [item.id, item]));

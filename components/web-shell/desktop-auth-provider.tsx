@@ -46,6 +46,7 @@ import type {
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
 import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
 import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { scheduleDocumentAddsToMaster } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemIdsDeletedWithTask } from '../../services/DAVEDeletedTaskEvidence';
 import {
   initialDAVEWebFreshnessState,
@@ -1047,15 +1048,19 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
   ) => {
-    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1).
+    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1). A lookahead's delete
+    // gives the master tasks it restated their dates back, with its tasks or without (review N1 web M1).
     const current = snapshotRef.current;
+    const revisions = current && (deleteLinkedTasks || scheduleDocumentAddsToMaster(document))
+      ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document, keepTasks: !deleteLinkedTasks })
+      : [];
     await daveWebSupabaseGateway.deleteAuthorizedReferenceDocument(
       document.id,
       document.cloudUpdatedAt,
       deleteLinkedTasks ? document.linkedScheduleItems : [],
-      deleteLinkedTasks && current ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document }) : [],
+      revisions,
     );
-    const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks
+    const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks || revisions.length > 0
       ? ['sync_tombstones', 'reference_documents', 'schedule_items']
       : ['sync_tombstones', 'reference_documents'];
     announceMutation(collections);
@@ -1124,6 +1129,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   }, [announceMutation, refreshSnapshotInBackground]);
 
   const setCurrentSchedule = useCallback(async (document: DAVEWebReferenceDocument) => {
+    // A lookahead adds to the master (owner answer Q22): never made current, replaced or not (review N1 web M1).
+    if (scheduleDocumentAddsToMaster(document)) {
+      throw new DAVEWebDocumentMutationError('conflict', 'A lookahead adds to the master schedule. It is never made the current schedule.');
+    }
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );

@@ -4062,6 +4062,7 @@ function DocumentManagementWorkspace({
   async function makeCurrent(document: DAVEWebReferenceDocument) {
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
+    if (!documentOffersMakeCurrent(document)) return; // a lookahead is never made current (review N1 web M1)
     const readiness = buildECOSDocumentReadiness(document);
     // Every task the import contains counts, unchanged ones shared with the
     // prior revision included; linkedScheduleItems is only those no other
@@ -4907,7 +4908,7 @@ function DocumentList({
           </Pressable>
           {onDelete ? (
             <View style={styles.taskCardActions}>
-              {onMakeCurrent ? (
+              {onMakeCurrent && documentOffersMakeCurrent(document) ? (
                 <Pressable
                   style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed, !documentCanBeMadeCurrent(document) && styles.buttonDisabled]}
                   onPress={() => onMakeCurrent(document)}
@@ -5158,7 +5159,7 @@ function DocumentDetailsPanel({
             <Text style={styles.secondaryButtonText}>Legacy browser re-index (manual fallback)</Text>
           </Pressable>
         ) : null}
-        {onMakeCurrent ? (
+        {onMakeCurrent && documentOffersMakeCurrent(document) ? (
           <Pressable
             style={({ pressed }) => [
               styles.primaryButton,
@@ -7129,6 +7130,14 @@ function documentStatusLabel(document: DAVEWebReferenceDocument, allDocuments?: 
   if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current', allDocuments);
   if (kind === 'prior') return document.lookaheadReplaced || 'Prior version'; // "Replaced by the lookahead of …" (owner answer Q25)
   return buildECOSDocumentReadiness(document).label;
+}
+
+/**
+ * Make Current is never offered for a lookahead, replaced or not (review N1 web M1, caused by ada8ef6): it adds to
+ * the master (owner answer Q22), and the cloud's activation, which knows no lookahead, would retire the master.
+ */
+function documentOffersMakeCurrent(document: DAVEWebReferenceDocument) {
+  return !scheduleDocumentAddsToMaster(document);
 }
 
 function documentCanBeMadeCurrent(document: DAVEWebReferenceDocument) {

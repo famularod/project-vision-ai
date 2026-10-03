@@ -257,3 +257,24 @@ describe('owner answer Q25: a lookahead a newer one replaced is a prior version 
     expect(screen.queryByText('Keep Lookahead')).toBeNull();
   });
 });
+
+describe('review N1 web M1 (caused by ada8ef6): Make Current is never offered for a lookahead', () => {
+  const replaced = scheduleDocument('Alpha lookahead wk 39', {
+    scheduleRole: 'lookahead', isCurrent: true, importedAt: '2026-09-18T12:00:00.000Z',
+    lookaheadReplaced: 'Replaced by the lookahead of Sep 25, 2026',
+  });
+
+  it('a replaced lookahead\'s row among the prior versions has no Make Current Schedule; a prior master\'s does', async () => {
+    withDocuments([master, lookahead, replaced, prior]);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    // One prior master and one replaced lookahead are listed as prior versions: one Make Current, the master's.
+    expect(screen.getAllByText('Make Current Schedule')).toHaveLength(1);
+    fireEvent.press(screen.getByLabelText('View Alpha lookahead wk 39'));
+    await screen.findAllByText('Replaced by the lookahead of Sep 25, 2026');
+    expect(screen.getAllByText('Make Current Schedule')).toHaveLength(1);
+    expect(mockAuth.setCurrentSchedule).not.toHaveBeenCalled();
+    // The prior master's details still offer it.
+    fireEvent.press(screen.getByLabelText('View Alpha rev 1'));
+    expect((await screen.findAllByText('Make Current Schedule')).length).toBeGreaterThanOrEqual(2);
+  });
+});
