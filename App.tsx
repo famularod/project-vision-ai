@@ -5160,7 +5160,7 @@ function AppShell() {
           const latest = scheduleItemsCurrentRef.current.find(
             candidate => candidate.id === itemId,
           );
-          if (latest) void syncScheduleItemRevision(latest, generation);
+          if (latest) void syncScheduleItemRevision(latest, generation, undefined, undefined, true); // sends what waits, never a new whole copy (review N1)
         },
       });
     });
@@ -11740,9 +11740,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     generation?: number,
     changedFields?: readonly (keyof ScheduleItem)[],
     before?: ScheduleItem, // the task the edit started from (owner answer Q28)
+    followUp = false, // the editor sending again what it queued: nothing new is queued (review N1)
   ): Promise<boolean> {
     try {
-      const result = await runScheduleItemCloudSync(item, changedFields, before);
+      const result = await runScheduleItemCloudSync(item, changedFields, before, followUp);
       const itemStillExists = scheduleItemsCurrentRef.current.some(
         candidate => candidate.id === item.id,
       );
@@ -11831,7 +11832,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         const latest = scheduleItemsCurrentRef.current.find(
           candidate => candidate.id === readyItemId,
         );
-        if (latest) void syncScheduleItemRevision(latest, readyGeneration);
+        if (latest) void syncScheduleItemRevision(latest, readyGeneration, undefined, undefined, true); // sends what waits, never a new whole copy (review N1)
       },
     });
   }
@@ -11938,7 +11939,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     cancelScheduleItemTextSync(itemId);
     const generation = scheduleItemSyncGenerationsRef.current.get(itemId);
-    return syncScheduleItemRevision(latest, generation);
+    return syncScheduleItemRevision(latest, generation, undefined, undefined, true); // Save sends what waits, never a new whole copy (review N1)
   }
 
   /** This phone's own deletions reach the realtime applier at once, not at the next refresh (audit A7 pass 3). */

@@ -296,6 +296,88 @@ export function scheduleItemEditBaseAfterLanding(
   return { updatedAt: typeof landedData.updatedAt === 'string' ? landedData.updatedAt : current.base.updatedAt, fields };
 }
 
+/** A task conflict's copy of this device's, as far as these rules read it. */
+type ConflictCopy = Readonly<{
+  itemData?: unknown;
+  changedFields?: unknown;
+  base?: unknown;
+  askedFields?: unknown;
+}> & Readonly<Record<string, unknown>>;
+
+/**
+ * This device's copy in a task's conflict, saved over the conflict already
+ * open for the task (review N1, High, caused by 79a5ae1): nothing David typed
+ * that the open card holds is dropped. `sent` names the fields this upload
+ * wrote of his (null for a whole copy, which decides none).
+ *
+ * A card of the fields changed on both devices keeps those fields, with this
+ * device's values and the copy they started from, when a whole copy of the
+ * task (a lookahead deleted, a schedule approved, a queue item of Build 229)
+ * ends in the older whole-copy conflict: saved alone, that conflict took the
+ * card's place and the note in it was in no card, on no device and not in the
+ * cloud. And a whole copy waiting in a card stays there when a field of the
+ * task is asked about later, with the field's new value on it. Keep Phone then
+ * sends the whole copy with those values; Keep Cloud leaves the cloud's row.
+ */
+export function scheduleItemConflictCopyKeeping<T extends ConflictCopy>(
+  open: ConflictCopy | null | undefined,
+  incoming: T,
+  sent: readonly string[] | null,
+  /** The cloud's row after this upload: the fields it wrote, for a whole copy staying in its card. */
+  cloudRow?: unknown,
+): T {
+  const record = (value: unknown): Record<string, unknown> | null =>
+    (value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null);
+  const openData = record(open?.itemData);
+  if (!open || !openData) return incoming;
+  const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((field): field is string => typeof field === 'string') : []);
+  const incomingAsked = strings(incoming.askedFields);
+  const kept = strings(open.askedFields).filter(field => !incomingAsked.includes(field) && !(sent ?? []).includes(field));
+  const openWhole = !Array.isArray(open.changedFields);
+  const incomingWhole = !Array.isArray(incoming.changedFields);
+  // The open card holds nothing this one lacks: a card of fields this one asks about again, or a whole copy under a newer whole copy.
+  if (kept.length === 0 && (!openWhole || incomingWhole)) return incoming;
+  const incomingData = record(incoming.itemData) ?? {};
+  const openBase = isEditBase(open.base) ? open.base : undefined;
+  const incomingBase = isEditBase(incoming.base) ? incoming.base : undefined;
+  const fieldsOf = (source: Record<string, unknown>, fields: readonly string[]) => Object.fromEntries(fields.map(field => [field, source[field]]));
+  const baseOf = (base: ScheduleItemEditBase | undefined, fields: readonly string[]) =>
+    Object.fromEntries(fields.map(field => [field, base?.fields[field] ?? null]));
+  if (incomingWhole) {
+    // A whole copy over a card of fields: the whole copy, with the card's fields as David left them.
+    const fields = scheduleItemFieldsWithCompanions(kept);
+    return {
+      ...incoming,
+      itemData: { ...incomingData, ...fieldsOf(openData, fields) },
+      askedFields: [...kept, ...incomingAsked],
+      base: { updatedAt: incomingBase?.updatedAt ?? openBase?.updatedAt ?? null, fields: { ...(incomingBase?.fields ?? {}), ...baseOf(openBase, kept) } },
+    };
+  }
+  const incomingFields = strings(incoming.changedFields);
+  if (openWhole) {
+    // Fields asked about over a whole copy waiting in its card: the whole copy stays, with those fields' new values
+    // and the ones this upload wrote.
+    const { changedFields: _fields, ...whole } = incoming;
+    const stamp = (field: string) => field !== 'updatedAt';
+    return {
+      ...open,
+      ...whole,
+      itemData: { ...openData, ...fieldsOf(record(cloudRow) ?? {}, (sent ?? []).filter(stamp)), ...fieldsOf(incomingData, incomingFields.filter(stamp)) },
+      askedFields: [...kept, ...incomingAsked],
+      base: { updatedAt: openBase?.updatedAt ?? incomingBase?.updatedAt ?? null, fields: { ...(openBase?.fields ?? {}), ...(incomingBase?.fields ?? {}) } },
+    } as unknown as T;
+  }
+  // Fields asked about over fields asked about before: both, each with its own value and base.
+  const keptWith = scheduleItemFieldsWithCompanions(kept).filter(field => strings(open.changedFields).includes(field));
+  return {
+    ...incoming,
+    itemData: { ...incomingData, ...fieldsOf(openData, keptWith) },
+    askedFields: [...kept, ...incomingAsked],
+    changedFields: [...new Set([...keptWith, ...incomingFields])],
+    base: { updatedAt: incomingBase?.updatedAt ?? null, fields: { ...(incomingBase?.fields ?? {}), ...baseOf(openBase, kept) } },
+  };
+}
+
 /** The fields a task conflict found changed on both, for Review Conflicts; empty for a conflict of whole copies. */
 export function scheduleItemConflictFields(localPayload: unknown): string[] {
   const asked = localPayload && typeof localPayload === 'object' ? (localPayload as { askedFields?: unknown }).askedFields : undefined;

@@ -197,7 +197,8 @@ import { PROJECT_DOCUMENT_CATEGORIES } from '../../services/ProjectDocumentClass
 import { cloudPhotoPreviewIsFresh } from '../../services/ProjectPhotoTransport';
 import { isResumableFieldUpdateStatus } from '../../services/FieldUpdateLifecycle';
 import { fieldUpdateConflictChanges } from '../../services/FieldUpdateEditBase';
-import { scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
+import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
+import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 
 /* Per-device module sets --------------------------------------------------- */
 type SyncModule = typeof import('../../services/SyncService');
@@ -444,6 +445,79 @@ async function edit(device: Device, itemId: string, change: Partial<ScheduleItem
   update(itemId, change, undefined, restoresProgress);
   await Promise.all(device.pendingEffects.splice(0));
   await render(device);
+}
+
+/* The task editor's own path (review N1) ----------------------------------------------------------------------- */
+type FollowUpResult = { uploaded: number; queued: number; conflicts: number };
+const FOLLOW_UP_SOURCE = appSlice('\n  function queueDebouncedScheduleItemTextSync(', '\n  function updateScheduleItem(');
+/** What App.tsx passes on to runScheduleItemCloudSync from syncScheduleItemRevision (its own call, read from the source). */
+const followUpRun = (device: Device) => (item: ScheduleItem, _generation: number | undefined, changedFields?: unknown, before?: unknown, ...rest: unknown[]) =>
+  (device.m.sync.runScheduleItemCloudSync as (...args: unknown[]) => Promise<FollowUpResult>)(item, changedFields, before, ...rest);
+/** The follow-up send 700 ms after the typing stops: App.tsx's own (the debounce's onReady), compiled. */
+async function editorFollowUp(device: Device, itemId: string): Promise<FollowUpResult | null> {
+  on(device);
+  let sent: Promise<FollowUpResult> | null = null;
+  compiled<(id: string, generation: number) => void>(`module.exports = (() => { ${FOLLOW_UP_SOURCE}\n return queueDebouncedScheduleItemTextSync; })();`, {
+    scheduleItemSyncGenerationsRef: { current: device.generation }, scheduleItemTextSyncLifecycleRef: { current: {} }, scheduleItemsCurrentRef: device.ref,
+    scheduleScheduleItemTextSync: ({ onReady, itemId: id, generation }: { onReady: (id: string, generation: number) => void; itemId: string; generation: number }) => onReady(id, generation),
+    syncScheduleItemRevision: (...args: unknown[]) => { sent = (followUpRun(device) as (...values: unknown[]) => Promise<FollowUpResult>)(...args); },
+  })(itemId, device.generation.get(itemId) as number);
+  const result = await sent;
+  await render(device);
+  return result;
+}
+/** Save in the task editor: App.tsx's own saveScheduleItemChanges, compiled. */
+async function saveInEditor(device: Device, itemId: string): Promise<FollowUpResult | null> {
+  on(device);
+  let sent: Promise<FollowUpResult> | null = null;
+  const save = evaluate<{ saveScheduleItemChanges: (id: string) => Promise<unknown> }>(
+    transpile(`${componentFunction('saveScheduleItemChanges')}\nmodule.exports = { saveScheduleItemChanges };`), {
+      Keyboard: { dismiss: () => undefined }, delay: async () => undefined, scheduleItemsCurrentRef: device.ref, cancelScheduleItemTextSync: () => undefined,
+      scheduleItemSyncGenerationsRef: { current: device.generation },
+      syncScheduleItemRevision: (...args: unknown[]) => { sent = (followUpRun(device) as (...values: unknown[]) => Promise<FollowUpResult>)(...args); return sent; },
+    });
+  await save.saveScheduleItemChanges(itemId);
+  const result = await sent;
+  await render(device);
+  return result;
+}
+/** The phone hears only the cloud's writes since `from` (its own upload's); what it had not heard before, it hears later. */
+async function ownEcho(device: Device, from: number) {
+  const mark = heard.get(device.name) ?? 0;
+  heard.set(device.name, from);
+  try { await echoes(device); } finally { heard.set(device.name, mark); }
+}
+/**
+ * A change typed in the task editor (a note, an owner, a percent), in the app's real order: App.tsx's updateScheduleItem
+ * with the app's own debounce rule queues it with its fields and base; the automatic upload it asks for runs; the device
+ * hears its own write (`hears`: 'own', or 'nothing' yet); then the follow-up send fires. Its answer is returned.
+ */
+async function typed(device: Device, itemId: string, change: Partial<ScheduleItem>, hears: 'own' | 'nothing' = 'own'): Promise<FollowUpResult | null> {
+  on(device);
+  const queued: Array<Promise<unknown>> = [];
+  let debounced = false;
+  const deps: Record<string, unknown> = {
+    scheduleItemsCurrentRef: device.ref, withProjectControlsEditMerged, reconcileScheduleProgressEdit,
+    normalizeScheduleItem: (value: ScheduleItem) => ({ ...value }), displayName: 'David',
+    resolveProjectItemWorkflowMutation: ({ candidate }: { candidate: ScheduleItem }) => ({ ok: true, item: candidate }),
+    advanceScheduleItemSyncGeneration: (id: string) => { const next = (device.generation.get(id) || 0) + 1; device.generation.set(id, next); return next; },
+    markScheduleItemsAuthorityReady: () => undefined, setScheduleItems: setter(device),
+    scheduleItemChangeUsesDebouncedSync, cancelScheduleItemTextSync: () => undefined, markScheduleItemTextSyncPending: () => undefined,
+    scheduleItemTextSyncLifecycleRef: { current: {} }, scheduleItemSyncGenerationsRef: { current: device.generation },
+    queueDebouncedScheduleItemTextSync: () => { debounced = true; },
+    syncScheduleItemRevision: () => { throw new Error('a typed change goes through the debounce'); },
+    queueScheduleItemRecord: (...args: unknown[]) => { const pending = (device.m.sync.queueScheduleItemRecord as (...values: unknown[]) => Promise<void>)(...args); queued.push(pending); return pending; },
+    Alert: { alert: () => undefined },
+  };
+  compiled<(id: string, change: Partial<ScheduleItem>) => void>(`module.exports = (() => { ${UPDATE_SOURCE}\n return updateScheduleItem; })();`, deps)(itemId, change);
+  await Promise.all(queued);
+  await render(device);
+  expect(debounced).toBe(true);
+  const eventsBefore = mockCloud.events.length;
+  await backgroundUpload(device);
+  if (hears === 'own') await ownEcho(device, eventsBefore);
+  jest.setSystemTime(Date.now() + 700);
+  return editorFollowUp(device, itemId);
 }
 
 const rebaseDep = (device: Device) => {
@@ -1285,7 +1359,7 @@ describe('Q28 schedule tasks: both devices\' changes kept field by field, asked 
     expect(APP).toContain('void queueScheduleItemRecord(updated, true, changedFields, current)');
     expect(APP).toContain('scheduleItemsBefore: scheduleItemsCurrentRef.current,');
     expect(APP.match(/void syncScheduleItemRevision\(item, advanceScheduleItemSyncGeneration\(item\.id\), undefined, shownBefore\.get\(item\.id\)\)/g)).toHaveLength(2);
-    expect(APP).toContain('const result = await runScheduleItemCloudSync(item, changedFields, before);');
+    expect(APP).toContain('const result = await runScheduleItemCloudSync(item, changedFields, before, followUp);'); // with the follow-up mark (review N1)
   });
 
   it('the copy a task edit started from lasts through a relaunch', async () => {
@@ -1347,5 +1421,162 @@ describe('Q28 task bases, one by one', () => {
     const current = { changedFields: ['notes', 'owner'], base: { updatedAt: null, fields: { notes: '', owner: '' } }, itemData: task({ notes: 'B', owner: 'Mike' }) };
     const landed = { changedFields: ['notes', 'updatedAt'], itemData: task({ notes: 'A', updatedAt: '2026-09-03T00:00:00.000Z' }) };
     expect(scheduleItemEditBaseAfterLanding(current, landed)).toEqual({ updatedAt: '2026-09-03T00:00:00.000Z', fields: { notes: 'A', owner: '' } });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1, finding 1 (High, caused by 79a5ae1). After each change typed in the task editor the app sent the task
+ * again 700 ms later, on Save and when it went to the background: WHOLE, with no copy it started from. Equal to the
+ * cloud's row, that copy closed every card of the task in Review Conflicts; otherwise the older whole-copy conflict
+ * took the card's place. The note David typed offline, waiting in the card for his choice, was then in no card, on no
+ * device and not in the cloud, with no alert. The follow-up send now queues nothing (what waits goes as it was queued,
+ * with its base), and a whole copy never closes or replaces a card of fields.
+ */
+describe('Review N1 finding 1: a card in Review Conflicts stays until David chooses, whatever the task editor sends afterwards', () => {
+  /** The phone's offline note meets the iPad's note: Review Conflicts asks about the note on the phone. */
+  async function noteCard() {
+    const { phone, ipad } = await start();
+    setOnline(phone, false);
+    at('2026-09-08T08:00:00.000Z');
+    await edit(phone, theRow(phone).id, { notes: PHONE_NOTE });
+    at('2026-09-08T09:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { notes: IPAD_NOTE });
+    at('2026-09-08T10:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    await refresh(phone);
+    return { phone, ipad, id: theRow(phone).id };
+  }
+  const cards = async (device: Device) => (await conflictsOf(device)).filter(conflict => conflict.entity === 'schedule_item')
+    .map(conflict => [scheduleItemConflictFields(conflict.localPayload), (conflict.localPayload as { itemData: ScheduleItem }).itemData.notes, (conflict.remotePayload as ScheduleItem).notes]);
+
+  it.each([
+    ['the owner', { owner: 'Bob' }, { owner: 'Bob' }],
+    ['the percent', { percentComplete: 40 }, { percentComplete: 40 }],
+  ] as Array<[string, Partial<ScheduleItem>, Partial<ScheduleItem>]>)(
+    'the card about the note stays when David then changes %s online: the upload lands, the phone hears its write, the follow-up fires, he taps Save',
+    async (_what, change, landed) => {
+      const { phone, id } = await noteCard();
+      expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+      at('2026-09-08T11:00:00.000Z');
+      const followUp = await typed(phone, id, change);
+      expect(cloudRow(id)).toMatchObject({ notes: IPAD_NOTE, ...landed }); // his change went up; the note waits for his choice
+      expect(followUp).toMatchObject({ uploaded: 0, queued: 0, conflicts: 1 }); // "choose which task copy to keep"
+      expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+      expect(await queueOf(phone)).toEqual([]);
+      expect(await saveInEditor(phone, id)).toMatchObject({ conflicts: 1 });
+      expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+      // Keep Phone still has the note to send (Review Conflicts reads the cards' cloud copies again as it opens).
+      await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+      await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_local');
+      expect(cloudRow(id)).toMatchObject({ notes: PHONE_NOTE, ...landed });
+      expect(await conflictsOf(phone)).toEqual([]);
+    });
+
+  it('online but not yet told of the iPad\'s note: what David types is asked about, and Save leaves the card', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T09:00:00.000Z');
+    await edit(ipad, id, { notes: IPAD_NOTE });
+    at('2026-09-08T10:00:00.000Z');
+    const followUp = await typed(phone, id, { notes: PHONE_NOTE }); // the phone hears its own upload's write: it shows the cloud's row
+    expect(onDevice(phone).map(row => row[3])).toEqual([IPAD_NOTE]);
+    expect(followUp).toMatchObject({ uploaded: 0, conflicts: 1 });
+    expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+    await echoes(phone);
+    await refresh(phone);
+    expect(await saveInEditor(phone, id)).toMatchObject({ conflicts: 1 }); // was: the whole task, equal to the cloud's row, closed the card
+    expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]); // the note he typed is still his to keep
+    expect(cloudRow(id)).toMatchObject({ notes: IPAD_NOTE });
+  });
+
+  it('the follow-up queues nothing: after the upload landed and before the phone heard it, no whole copy goes and no card appears (finding 5)', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T09:00:00.000Z');
+    await edit(ipad, id, { owner: 'Mike' }); // the phone has not heard this
+    at('2026-09-08T10:00:00.000Z');
+    const writes = mockCloud.writes.length;
+    const followUp = await typed(phone, id, { notes: 'Crew' }, 'nothing');
+    expect(followUp).toMatchObject({ uploaded: 1, queued: 0, conflicts: 0 });
+    expect(mockCloud.writes.slice(writes)).toEqual([`phone:${id}`]); // the note, once
+    expect(await conflictsOf(phone)).toEqual([]); // was: "This task changed on another device before the local edit finished syncing."
+    expect(cloudRow(id)).toMatchObject({ notes: 'Crew', owner: 'Mike' });
+    // Offline, the follow-up leaves the edit waiting as it was queued, with its fields and base.
+    setOnline(phone, false);
+    expect(await typed(phone, id, { notes: 'Crew short' })).toMatchObject({ uploaded: 0, queued: 1, conflicts: 0 });
+    expect((await queueOf(phone)).map(item => [(item.payload as { changedFields?: string[] }).changedFields, (item.payload as { base?: { fields: unknown } }).base?.fields]))
+      .toEqual([[['notes', 'updatedAt'], { notes: 'Crew' }]]);
+  });
+
+  it('a whole copy of the task never closes or replaces the card: one equal to the cloud\'s row, and one that ends in the older conflict', async () => {
+    const { phone, id } = await noteCard();
+    // As a queue item of Build 229, or the editor's follow-up before this fix: the whole task, no base, equal to the cloud's row.
+    on(phone);
+    await phone.m.sync.runScheduleItemCloudSync(theRow(phone));
+    expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+    // A whole copy the cloud's newer row outranks (a lookahead deleted offline, seed 911116): the older conflict keeps the card's note.
+    on(phone);
+    await phone.m.sync.runScheduleItemCloudSync({ ...theRow(phone), contractor: 'Old Co', updatedAt: '2026-09-07T13:00:00.000Z' });
+    const open = await conflictsOf(phone);
+    expect(open).toEqual([expect.objectContaining({ reason: 'This task changed on another device before the local edit finished syncing.' })]);
+    expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
+    expect((open[0].localPayload as { itemData: ScheduleItem; changedFields?: unknown }).changedFields).toBeUndefined(); // still a whole copy
+    await chooseInSettings(phone, open[0].id, 'keep_local');
+    expect(cloudRow(id)).toMatchObject({ notes: PHONE_NOTE, contractor: 'Old Co' });
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('a whole copy waiting in the card takes what David changes afterwards: Keep Phone does not put the older owner back', async () => {
+    const { phone, id } = await noteCard();
+    on(phone);
+    await phone.m.sync.runScheduleItemCloudSync({ ...theRow(phone), contractor: 'Old Co', updatedAt: '2026-09-07T13:00:00.000Z' });
+    at('2026-09-08T11:00:00.000Z');
+    await typed(phone, id, { owner: 'Bob' }); // lands; the card about the note stays, with the whole copy
+    const [open] = await conflictsOf(phone);
+    expect((open.localPayload as { itemData: ScheduleItem }).itemData).toMatchObject({ notes: PHONE_NOTE, owner: 'Bob', contractor: 'Old Co' });
+    on(phone);
+    await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+    await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_local');
+    expect(cloudRow(id)).toMatchObject({ notes: PHONE_NOTE, owner: 'Bob', contractor: 'Old Co' });
+  });
+
+  it('App.tsx: the debounce, Save and the background flush send the follow-up, which queues nothing', () => {
+    expect(APP).toContain('if (latest) void syncScheduleItemRevision(latest, readyGeneration, undefined, undefined, true);');
+    expect(APP).toContain('if (latest) void syncScheduleItemRevision(latest, generation, undefined, undefined, true);');
+    expect(APP).toContain('return syncScheduleItemRevision(latest, generation, undefined, undefined, true);');
+    expect(APP).toContain('const result = await runScheduleItemCloudSync(item, changedFields, before, followUp);');
+    // A task just added still goes whole: it has no row in the cloud yet.
+    expect(APP).toContain('void syncScheduleItemRevision(next, syncGeneration);');
+  });
+
+  describe('the copy a card keeps (scheduleItemConflictCopyKeeping)', () => {
+    const row = (patch: Record<string, unknown>) => ({ id: 't', taskName: 'Framing', notes: '', owner: '', contractor: '', ...patch });
+    const fieldCard = { id: 't', itemData: row({ notes: 'phone note' }), changedFields: ['notes', 'updatedAt'], askedFields: ['notes'], base: { updatedAt: 'b', fields: { notes: '' } } };
+
+    it('a whole copy over a card of fields keeps the fields asked about, with David\'s values and their base', () => {
+      const whole = { id: 't', itemData: row({ notes: 'ipad note', contractor: 'Old Co' }), base: { updatedAt: 'w', fields: { notes: 'ipad note', owner: '' } } };
+      expect(scheduleItemConflictCopyKeeping(fieldCard, whole, null)).toEqual({
+        id: 't', itemData: row({ notes: 'phone note', contractor: 'Old Co' }), askedFields: ['notes'],
+        base: { updatedAt: 'w', fields: { notes: '', owner: '' } },
+      });
+    });
+
+    it('a field asked about later joins a whole copy waiting in its card: the whole copy stays, with the newer values', () => {
+      const wholeCard = { id: 't', itemData: row({ contractor: 'Old Co', owner: 'Al' }) };
+      const later = { id: 't', itemData: row({ notes: 'typed', owner: 'Bob' }), changedFields: ['notes', 'updatedAt'], askedFields: ['notes'], base: { updatedAt: 'n', fields: { notes: '' } } };
+      const kept = scheduleItemConflictCopyKeeping(wholeCard, later, ['owner', 'updatedAt'], row({ notes: 'cloud', owner: 'Bob' }));
+      expect(kept).toEqual({ id: 't', itemData: row({ contractor: 'Old Co', owner: 'Bob', notes: 'typed' }), askedFields: ['notes'], base: { updatedAt: 'n', fields: { notes: '' } } });
+      expect('changedFields' in kept).toBe(false);
+    });
+
+    it('nothing is kept from a card whose fields the edit sent, or under a newer whole copy of a whole copy', () => {
+      const whole = { id: 't', itemData: row({ contractor: 'New Co' }) };
+      expect(scheduleItemConflictCopyKeeping({ id: 't', itemData: row({ contractor: 'Old Co' }) }, whole, null)).toBe(whole);
+      const again = { id: 't', itemData: row({ notes: 'typed again' }), changedFields: ['notes', 'updatedAt'], askedFields: ['notes'], base: { updatedAt: 'n', fields: { notes: 'x' } } };
+      expect(scheduleItemConflictCopyKeeping(fieldCard, again, [])).toBe(again);
+      expect(scheduleItemConflictCopyKeeping(null, again, null)).toBe(again);
+    });
   });
 });

@@ -60,7 +60,7 @@ import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
   isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
-  scheduleItemEditBasesMerged, scheduleItemFieldsWithCompanions, scheduleItemLaterPercentInCloud, scheduleItemWholeCopyAgainstCloud,
+  scheduleItemConflictCopyKeeping, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud, scheduleItemWholeCopyAgainstCloud,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -1860,20 +1860,39 @@ export async function runScheduleItemCloudSync(
   changedFields?: readonly (keyof ScheduleItem)[],
   /** The task as it was before this edit (owner answer Q28). */
   before?: ScheduleItem | null,
+  /**
+   * The task editor sending again what it already queued (700 ms after the
+   * typing stops, on Save, when the app goes to the background). Review N1
+   * (High, caused by 79a5ae1): each typed change is queued with the fields it
+   * changed and the copy it started from, and usually goes up at once. This
+   * send then found nothing waiting and queued the task again WHOLE, with no
+   * such copy. A whole copy equal to the cloud's row closed every card of the
+   * task in Review Conflicts, and one that differed took the card's place:
+   * the note David typed offline was then in no card, on no device and not
+   * in the cloud. This send now queues nothing: what waits for the task goes
+   * as it was queued, with its base, and the answer says how the task stands
+   * (sent, still waiting, or waiting for his choice).
+   */
+  followUp = false,
 ): Promise<SyncUploadResult> {
   const queueItemId = scheduleItemQueueItemId(item.id);
   let effectiveChangedFields = changedFields;
-  if (effectiveChangedFields === undefined) {
-    const existingQueue = await getOfflineQueue();
-    const existing = existingQueue.find(candidate => candidate.id === queueItemId);
-    const existingPayload = existing?.payload as
-      | Partial<ScheduleItemRecordPayload>
-      | undefined;
-    if (Array.isArray(existingPayload?.changedFields)) {
-      effectiveChangedFields = existingPayload.changedFields;
+  let nothingWaited = false;
+  if (followUp) {
+    nothingWaited = !(await getOfflineQueue()).some(candidate => candidate.id === queueItemId);
+  } else {
+    if (effectiveChangedFields === undefined) {
+      const existingQueue = await getOfflineQueue();
+      const existing = existingQueue.find(candidate => candidate.id === queueItemId);
+      const existingPayload = existing?.payload as
+        | Partial<ScheduleItemRecordPayload>
+        | undefined;
+      if (Array.isArray(existingPayload?.changedFields)) {
+        effectiveChangedFields = existingPayload.changedFields;
+      }
     }
+    await queueScheduleItemRecord(item, false, effectiveChangedFields, before);
   }
-  await queueScheduleItemRecord(item, false, effectiveChangedFields, before);
   let aggregateResult = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
   let remainingItem = remainingQueue.find(candidate => candidate.id === queueItemId);
@@ -1896,8 +1915,9 @@ export async function runScheduleItemCloudSync(
     conflict => conflict.entity === 'schedule_item' && conflict.localId === item.id,
   );
   const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId];
+  // A follow-up that found nothing waiting has nothing to send: the task's edits already went (review N1).
   const itemSucceeded =
-    itemOutcome === 'uploaded' && !remainingItem && !currentConflict;
+    (itemOutcome === 'uploaded' || (nothingWaited && !itemOutcome && aggregateResult.configured)) && !remainingItem && !currentConflict;
   const itemErrors = remainingItem?.lastError
     ? [formatQueueItemFailure(remainingItem, remainingItem.lastError)]
     : currentConflict
@@ -3792,53 +3812,53 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
  * of the fields changed on both devices (owner answer Q28) only when the edit
  * sent those fields too: a percent entered later is no choice about the note
  * in Review Conflicts, and closing it lost that note. `sentFields`: the fields
- * the edit wrote; null for a whole copy, which settles any.
+ * the edit wrote; null for a whole copy.
+ *
+ * Review N1 (High, caused by 79a5ae1): a whole copy never closes such a card.
+ * It closed any: the task editor's whole copy, equal to the cloud's row after
+ * the phone heard its own write, closed the card holding the note David typed
+ * offline, which was then nowhere. Only his choice closes it, or an edit of
+ * his that sends the fields it asks about. A whole copy waiting in a card that
+ * stays open takes the fields the edit wrote (`landed`), so Keep Phone does
+ * not put older values over them.
  */
-async function settleScheduleItemConflicts(itemId: string, sentFields: readonly string[] | null): Promise<void> {
+async function settleScheduleItemConflicts(itemId: string, sentFields: readonly string[] | null, landed?: ScheduleItem): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
-    const next = conflicts.filter(conflict => {
-      if (conflict.entity !== 'schedule_item' || conflict.localId !== itemId) return true;
-      const asked = (conflict.localPayload as Partial<ScheduleItemRecordPayload> | undefined)?.askedFields;
-      return Array.isArray(asked) && asked.length > 0 && sentFields !== null && !asked.every(field => sentFields.includes(field));
+    let changed = false;
+    const next = conflicts.flatMap(conflict => {
+      if (conflict.entity !== 'schedule_item' || conflict.localId !== itemId) return [conflict];
+      const payload = conflict.localPayload as Partial<ScheduleItemRecordPayload> | undefined;
+      const asked = payload?.askedFields;
+      const stays = Array.isArray(asked) && asked.length > 0 && (sentFields === null || !asked.every(field => sentFields.includes(field)));
+      if (!stays) { changed = true; return []; }
+      const written = (sentFields ?? []).filter(field => field !== 'updatedAt' && !asked.includes(field));
+      if (!landed || written.length === 0 || Array.isArray(payload?.changedFields) || !isRecord(payload?.itemData)) return [conflict];
+      changed = true;
+      const landedFields = landed as unknown as Record<string, unknown>;
+      return [{ ...conflict, localPayload: { ...payload, itemData: { ...payload.itemData, ...Object.fromEntries(written.map(field => [field, landedFields[field]])) } } }];
     });
-    if (next.length !== conflicts.length) await writeSyncConflicts(next);
+    if (changed) await writeSyncConflicts(next);
   });
 }
 
 /**
- * A task's conflict of the fields changed on both devices (owner answer Q28),
- * saved with any such conflict still open for the task: the fields asked about
- * before stay asked, with this phone's values and base for them, unless this
- * upload sent them (`sent`). Saved alone, a conflict about the owner replaced
- * the one about the note, and the phone's note was gone.
+ * A task's conflict saved with the one still open for the task (owner answer
+ * Q28; review N1): what the open card holds of David's stays in the card
+ * (scheduleItemConflictCopyKeeping). `sent`: the fields this upload wrote of
+ * his; null for a whole copy. Saved alone, a conflict about the owner replaced
+ * the one about the note, and a whole copy's conflict replaced a card of
+ * fields: the phone's note was gone.
  */
-async function recordScheduleItemFieldConflict(sent: readonly string[] | null, conflict: SyncConflict): Promise<void> {
+async function recordScheduleItemConflict(sent: readonly string[] | null, conflict: SyncConflict): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const open = conflicts.find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
-    const earlier = open?.localPayload as Partial<ScheduleItemRecordPayload> | undefined;
-    const incoming = conflict.localPayload as ScheduleItemRecordPayload;
-    const kept = (earlier?.askedFields ?? []).filter(field =>
-      !incoming.askedFields?.includes(field) && !(sent ?? []).includes(field) && isRecord(earlier?.itemData));
-    // With the stamps that go with them (the hand links' stamp, owner answer Q29).
-    const keptWith = scheduleItemFieldsWithCompanions(kept).filter(field => (earlier?.changedFields ?? []).map(String).includes(field));
-    const merged: SyncConflict = kept.length === 0 ? conflict : {
-      ...conflict,
-      localPayload: {
-        ...incoming,
-        itemData: { ...incoming.itemData, ...Object.fromEntries(keptWith.map(field => [field, (earlier!.itemData as unknown as Record<string, unknown>)[field]])) },
-        askedFields: [...kept, ...(incoming.askedFields ?? [])],
-        changedFields: [...new Set([...keptWith, ...(incoming.changedFields ?? [])])] as Array<keyof ScheduleItem>,
-        base: {
-          updatedAt: incoming.base?.updatedAt ?? null,
-          fields: { ...(incoming.base?.fields ?? {}), ...Object.fromEntries(kept.map(field => [field, earlier?.base?.fields?.[field] ?? null])) },
-        },
-      } satisfies ScheduleItemRecordPayload,
-    };
+    const localPayload = scheduleItemConflictCopyKeeping(
+      open?.localPayload as Record<string, unknown> | undefined, conflict.localPayload as Record<string, unknown>, sent, conflict.remotePayload);
     await writeSyncConflicts([
       ...conflicts.filter(item => item.entity !== conflict.entity || item.localId !== conflict.localId),
-      merged,
+      localPayload === conflict.localPayload ? conflict : { ...conflict, localPayload },
     ]);
   });
 }
@@ -6218,12 +6238,12 @@ async function uploadQueueItem(
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote)
       : null;
     const asked = weighed?.asked ?? wholeWeighed?.asked ?? [];
-    // What this upload decides for the task's open conflicts: the fields it sends of this device's own (owner answer
-    // Q28); a whole copy without a base, any.
-    const settles = wholeWeighed ? wholeWeighed.sentHere : sentFields;
+    // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
+    // answer Q28). A whole copy decides none of a card's fields (review N1): null.
+    const settles: readonly string[] | null = sentFields;
     const askAbout = async (row: ScheduleItem): Promise<'conflict'> => {
       const detectedAt = new Date().toISOString();
-      await recordScheduleItemFieldConflict(settles, {
+      await recordScheduleItemConflict(settles, {
         id: createQueueId('schedule_item_conflict', detectedAt),
         entity: 'schedule_item',
         localId: payload.id,
@@ -6301,7 +6321,8 @@ async function uploadQueueItem(
         return 'uploaded';
       }
 
-      await recordConflict({
+      // With what a card of fields already open for the task holds (review N1): this conflict took its place.
+      await recordScheduleItemConflict(null, {
         id: createQueueId('schedule_item_conflict', new Date().toISOString()),
         entity: 'schedule_item',
         localId: payload.id,
@@ -6318,7 +6339,7 @@ async function uploadQueueItem(
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, authoritative);
       if (asked.length > 0) return askAbout(authoritative);
-      if (!carryOnly) await settleScheduleItemConflicts(payload.id, settles);
+      if (!carryOnly) await settleScheduleItemConflicts(payload.id, settles, authoritative);
       return 'uploaded';
     }
     return result.error || result.message || 'Task sync is waiting for Supabase.';
