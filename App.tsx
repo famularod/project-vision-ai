@@ -13884,6 +13884,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onReportFormatChange={setReportFormat}
               updates={liveAuthorityInput.updates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
               scheduleItems={liveAuthorityInput.scheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
+              knownScheduleItems={liveAuthorityInput.knownScheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['knownScheduleItems']} knownScheduleDocuments={referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['knownScheduleDocuments']} // what a newer lookahead replaced (owner answer 3 Oct)
               currentUpdate={liveAuthorityInput.currentUpdate as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
               projectAreas={liveAuthorityInput.projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
               contacts={liveAuthorityInput.contacts as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}

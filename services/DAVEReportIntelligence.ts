@@ -12,6 +12,7 @@ import {
   compareDAVEReportSnapshots,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
+  reportTasksLeftByLookahead,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -199,6 +200,8 @@ export function buildDAVEReportBriefing({
   const comparison = compareDAVEReportSnapshots({
     current: currentSnapshot,
     previous: previousSnapshot,
+    // The detail tasks a replaced lookahead took with it are not said (owner answer 3 Oct 2026).
+    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
@@ -1270,7 +1273,12 @@ function stableHash(value: string): string {
  * David said a row is not (review N1 M3, 3 Oct 2026): which earlier task it
  * is compared with, not what it says.
  */
-const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds', 'notTaskIds']);
+const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
+  'generatedAt', 'earlierTaskIds', 'notTaskIds',
+  // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced): where a task's dates come from and
+  // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
+  'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
+]);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);

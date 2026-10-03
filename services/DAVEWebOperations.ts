@@ -636,6 +636,9 @@ function buildDAVEWebProjectTruths(
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
       scheduleItems: scope.scheduleItems,
       knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
+      // What a newer lookahead replaced, for "since the last report", as the phone reads it (owner answer 3 Oct 2026).
+      knownScheduleDocuments: snapshot.referenceDocuments,
+      reportLookaheadReplacement: true,
       projectAreas: scope.projectAreas,
       referenceDocuments: scope.referenceDocuments.map(document => ({
         ...document,

@@ -164,6 +164,8 @@ export function ReportsScreen({
   onReportFormatChange,
   updates,
   scheduleItems,
+  knownScheduleItems,
+  knownScheduleDocuments,
   currentUpdate,
   projectAreas,
   contacts,
@@ -213,6 +215,14 @@ export function ReportsScreen({
   onReportFormatChange: (format: ReportFormat) => void;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  /**
+   * Every saved task of these projects, hidden ones included, and every saved
+   * schedule (owner answer 3 Oct 2026, report wording after a lookahead is
+   * replaced): the report reads from them which detail tasks left the list
+   * because a newer lookahead replaced theirs, and says nothing of those.
+   */
+  knownScheduleItems?: ScheduleItem[];
+  knownScheduleDocuments?: ReferenceDocument[];
   currentUpdate?: ProjectUpdate | null;
   projectAreas?: ProjectArea[];
   contacts?: ContactBook;
@@ -338,6 +348,10 @@ export function ReportsScreen({
       projectName: selectedName,
       updates: scopedTruthInput.updates.map(update => ({ ...update, projectName: selectedName })),
       scheduleItems: scopedTruthInput.scheduleItems,
+      // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
+      ...(knownScheduleItems
+        ? { knownScheduleItems, knownScheduleDocuments: knownScheduleDocuments ?? referenceDocuments, reportLookaheadReplacement: true }
+        : {}),
       projectAreas: scopedTruthInput.projectAreas,
       referenceDocuments: scopedTruthInput.referenceDocuments.map(document => ({
         ...document,
@@ -346,6 +360,8 @@ export function ReportsScreen({
       })),
     });
   }), [
+    knownScheduleDocuments,
+    knownScheduleItems,
     projectAreas,
     referenceDocuments,
     scheduleItems,
