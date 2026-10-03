@@ -51,11 +51,11 @@ export function scheduleImportPairingRefusal(
 }
 
 /** The batch with David's answers: each row of a check to the saved task he chose, or null (a new task). */
-export function withScheduleImportPairingChoices(
-  batch: PIEScheduleImportBatch,
+export function withScheduleImportPairingChoices<T extends Pick<PIEScheduleImportBatch, 'pairingChoices'>>(
+  batch: T,
   questions: readonly ScheduleImportPairingQuestion[],
   answerOf: (question: ScheduleImportPairingQuestion) => ScheduleImportPairingAnswer,
-): PIEScheduleImportBatch {
+): T {
   if (questions.length === 0) return batch;
   const choices: Record<string, string | null> = { ...(batch.pairingChoices || {}) };
   questions.forEach(question => {

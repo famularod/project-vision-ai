@@ -1084,7 +1084,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // approval does (audit A5 pass 3 F5): unchanged tasks keep their
     // progress, changed tasks carry it.
     const plan = importsTasks
-      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems })
+      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices }) // his answers at the review (Q30)
       : null;
     try {
       await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({

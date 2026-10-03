@@ -10,7 +10,7 @@ import ts from 'typescript';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { rejectScheduleItemCompletion, verifyScheduleItemCompletion } from '../../services/DAVECompletionVerification';
 import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
-import { planDAVEWebScheduleDocumentDelete, planDAVEWebScheduleImport } from '../../services/DAVEWebOperations';
+import { daveWebScheduleImportPairingQuestions, planDAVEWebScheduleDocumentDelete, planDAVEWebScheduleImport } from '../../services/DAVEWebOperations';
 import { buildDAVEWebScheduleItem, scheduleItemForCloud, type DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
@@ -490,5 +490,61 @@ describe('Review N1 L5 (older, owner answer Q30): a lookahead row as near to one
     const asked = masterQuestions(['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,']);
     expect(asked.map(question => question.title)).toEqual(['2 tasks named Pour slab in Lot — confirm which is which']);
     expect(Object.values(asked[0].guess)).toEqual([null]);
+  });
+});
+
+describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review asks which same-named task is which', () => {
+  const M = schedule('MASTER M', '2026-09-07T12:00:00.000Z');
+  const W = schedule('MASTER W', '2026-09-14T12:00:00.000Z');
+  const base = approve(EMPTY, M, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/12/2026,10/16/2026,', 'Framing,Alpha,Lot,10/26/2026,10/30/2026,']);
+  const [first, second] = shown(base).filter(item => item.taskName === 'Pour slab').sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const started = patch(base, first.id, { percentComplete: 80, notes: 'Forms stripped' }, '2026-09-10T12:00:00.000Z');
+  const snapshot = { scheduleItems: shown(started).map(item => ({ ...item, projectId: 'alpha', cloudUpdatedAt: null })) as DAVEWebScheduleItem[] };
+  // Every date a week later, or the first pour dropped and a new one added: the dates alone cannot say.
+  const slipped = rows(W, ['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', 'Framing,Alpha,Lot,10/26/2026,10/30/2026,']);
+
+  it('asks, with the saved tasks beside the rows and the best guess', () => {
+    const asked = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: slipped });
+    expect(asked.map(question => question.title)).toEqual(['2 tasks named Pour slab in Lot — confirm which is which']);
+    expect(asked[0].saved.map(item => item.id)).toEqual([first.id, second.id]);
+    expect(asked[0].guess).toEqual({ [slipped[0].id]: first.id, [slipped[1].id]: second.id });
+    // Nothing to ask when the rows are on the saved days, or with no schedule read yet.
+    expect(daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: rows(W, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/12/2026,10/16/2026,']) })).toEqual([]);
+    expect(daveWebScheduleImportPairingQuestions({ snapshot: null, importedScheduleItems: slipped })).toEqual([]);
+  });
+
+  it('his answer decides the upload\'s pairing: his percent and note go with the task he chose', () => {
+    const view = (choices: Record<string, string | null>) => {
+      const plan = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: slipped, pairingChoices: choices });
+      return {
+        added: plan.additions.filter(item => item.taskName === 'Pour slab')
+          .map(item => `${item.startDate} @${item.percentComplete} "${item.notes}" after ${(item.revisedFromTaskIds || []).join(',') || 'nothing'}`),
+        restated: plan.revisions.filter(revision => revision.item.taskName === 'Pour slab').map(revision => revision.item.id),
+      };
+    };
+    // "Every date slipped a week": each row is its pour on new dates, the first with his 80% and note.
+    expect(view({ [slipped[0].id]: first.id, [slipped[1].id]: second.id })).toEqual({
+      added: [`10/12/2026 @80 "Forms stripped" after ${first.id}`, `10/19/2026 @0 "" after ${second.id}`], restated: [],
+    });
+    // "The first was dropped and a new one added": the first row is the second pour where it was, the other is new.
+    expect(view({ [slipped[0].id]: second.id, [slipped[1].id]: null })).toEqual({
+      added: ['10/19/2026 @0 "" after nothing'], restated: [second.id],
+    });
+  });
+
+  it('the web\'s review shows the check, waits for his confirmation, and sends his answers with the upload', () => {
+    const shell = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
+    expect(shell).toContain('daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })');
+    expect(shell).toContain('<ScheduleImportPairingCheck');
+    const upload = shell.slice(shell.indexOf('async function uploadPreparedDocument()'));
+    const refusal = upload.indexOf('const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);');
+    expect(refusal).toBeGreaterThan(0);
+    expect(refusal).toBeLessThan(upload.indexOf('setUploading(true);'));
+    // Refused while a question is unconfirmed: the notice, and nothing uploads.
+    expect(upload.slice(refusal, upload.indexOf('setUploading(true);')).replace(/\s+/g, ' '))
+      .toContain("if (pairingRefusal) { setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') }); return; }");
+    expect(upload).toContain('let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);');
+    const provider = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
+    expect(provider).toContain('importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices');
   });
 });

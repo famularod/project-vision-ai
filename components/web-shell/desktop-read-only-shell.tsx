@@ -2,6 +2,14 @@ import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ScheduleImportPairingCheck,
+  scheduleImportPairingGuess,
+  scheduleImportPairingRefusal,
+  withScheduleImportPairingChoices,
+  type ScheduleImportPairingAnswer,
+} from '../schedule-import-pairing-check';
+import type { ScheduleImportPairingQuestion } from '../../services/ScheduleImportMerge';
+import {
   ActivityIndicator,
   Image,
   Pressable,
@@ -91,6 +99,7 @@ import {
   createDAVEWebId,
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
+  daveWebScheduleImportPairingQuestions,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   prepareDAVEWebLinkedDocument,
@@ -3752,6 +3761,14 @@ function DocumentManagementWorkspace({
   );
   const [replacementId, setReplacementId] = useState<string>('');
   const [preparedUpload, setPreparedUpload] = useState<DAVEWebPreparedUpload | null>(null);
+  // Same-named tasks whose pairing the dates cannot settle: David confirms which is which before the upload, as in
+  // the phone's import review (owner answer Q30; review N1: the web's review asked nothing).
+  const pairingQuestions = useMemo(() => preparedUpload
+    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })
+    : [], [auth.snapshot, preparedUpload]);
+  const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${question.key}`;
+  const pairingAnswerOf = (question: ScheduleImportPairingQuestion) => pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
   const [preparedBytes, setPreparedBytes] = useState<ArrayBuffer | null>(null);
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -3975,11 +3992,16 @@ function DocumentManagementWorkspace({
 
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
+    const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
+    if (pairingRefusal) {
+      setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') });
+      return;
+    }
     setUploading(true);
     setUploadProgress(0);
     setNotice(null);
     try {
-      let reviewedUpload = preparedUpload;
+      let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);
       if (normalizedName(preparedUpload.document.category) === 'drawing') {
         const controls = { drawingNumber, drawingRevision, drawingDiscipline,
           drawingStatus, drawingIssuedAt, replacementDocumentId: replacementId || null };
@@ -4573,6 +4595,15 @@ function DocumentManagementWorkspace({
                   ))}
                 </View>
               ) : null}
+              {pairingQuestions.map(question => (
+                <ScheduleImportPairingCheck
+                  key={pairingKey(question)}
+                  question={question}
+                  answer={pairingAnswerOf(question)}
+                  disabled={uploading}
+                  onChange={answer => setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }))}
+                />
+              ))}
               <Pressable
                 style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, uploading && styles.buttonDisabled]}
                 onPress={() => { void uploadPreparedDocument(); }}

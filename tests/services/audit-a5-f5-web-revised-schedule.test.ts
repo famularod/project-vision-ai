@@ -255,7 +255,7 @@ describe('a revised schedule imported on the web keeps the manager\'s progress (
 
   it('plans at upload from the provider\'s snapshot and writes new rows and revised tasks separately', () => {
     const provider = readFileSync(resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
-    expect(provider).toContain('planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems })');
+    expect(provider).toContain('planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices })');
     expect(provider).toContain('scheduleItems: plan?.additions ?? []');
     expect(provider).toContain('revisedScheduleItems: plan?.revisions ?? []');
     expect(provider).not.toContain('scheduleItems: prepared.scheduleItems,');

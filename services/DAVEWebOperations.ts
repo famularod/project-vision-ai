@@ -31,7 +31,7 @@ import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
-import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
 import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
@@ -134,6 +134,8 @@ export type DAVEWebPreparedUpload = Readonly<{
   scheduleItems: readonly ScheduleItem[];
   reviewMessage: string;
   extractionStatus: 'not_applicable' | 'ready' | 'needs_manual_review';
+  /** David's answers at the upload review to which same-named task each row is (owner answer Q30, review N1). */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -372,9 +374,12 @@ export type DAVEWebScheduleImportPlan = Readonly<{
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
+  pairingChoices,
 }: {
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
   importedScheduleItems: readonly ScheduleItem[];
+  /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }): DAVEWebScheduleImportPlan {
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
@@ -394,6 +399,7 @@ export function planDAVEWebScheduleImport({
     isCurrent: () => true,
     // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
     current: false,
+    pairingChoices,
   });
   const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
   const revisions = merged.next.flatMap(item => {
@@ -405,6 +411,28 @@ export function planDAVEWebScheduleImport({
   return Object.freeze({
     additions: Object.freeze([...merged.additions]),
     revisions: Object.freeze(revisions),
+  });
+}
+
+/**
+ * Review N1 (3 Oct 2026, the gap owner answer Q30 left on the web): the
+ * upload's "Review before upload" asks, as the phone's import review does,
+ * which same-named task in one area each row is when the dates cannot settle
+ * it. The questions for the rows to upload against the tasks the web shows,
+ * as planDAVEWebScheduleImport pairs them.
+ */
+export function daveWebScheduleImportPairingQuestions({
+  snapshot,
+  importedScheduleItems,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> | null | undefined;
+  importedScheduleItems: readonly ScheduleItem[];
+}): ScheduleImportPairingQuestion[] {
+  if (!snapshot || importedScheduleItems.length === 0) return [];
+  return scheduleImportPairingQuestions({
+    existing: snapshot.scheduleItems.map(item => scheduleItemForCloud(scheduleItemAsSaved(item))),
+    imported: importedScheduleItems,
+    isCurrent: () => true,
   });
 }
 
