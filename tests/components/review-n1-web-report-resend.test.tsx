@@ -156,7 +156,7 @@ const copied = () => (globalThis as unknown as { navigator: { clipboard: { write
 const ownSendTimes = () => JSON.parse(profile.get('@vitruvius/web/owner-1/@vitruvius/report-snapshots/own-sends/v1') ?? '[]') as string[];
 // Review N1 L2 (3 Oct 2026): what the page says when a send cannot be recorded (was "There is no approval of this
 // report waiting to be recorded as sent on this computer."); pin updated deliberately.
-const NO_APPROVAL = 'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
+const NO_APPROVAL = 'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 const ALREADY_RECORDED = /^Shared again\. This report was already recorded as sent .*, so this is not counted as another send\.$/;
 const PHONE_AT_10 = () => new Map([['tower|project_manager', { snapshot: phoneSent(40, '2026-10-01T10:00:00.000Z'), deliveredAt: '2026-10-01T10:00:00.000Z' as string | null }]]);
 
@@ -366,7 +366,13 @@ describe('review N1 M2: an approved report this computer sent can be shared agai
     const changed = { ...webSnapshot(100, '2026-10-01T12:10:00.000Z'), scheduleItems: [task('frame', 'Frame walls', 100), task('pour', 'Pour slab', 75)] };
     mockAuth.snapshot = changed;
     const second = render(<DesktopReadOnlyShell page="reports" />);
-    await approveOnWeb();
+    await waitFor(() => expect(since().getByText('Tower: Frame walls was completed.')).toBeTruthy());
+    fireEvent.press(screen.getByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    // Review N1 L5 (3 Oct 2026): the earlier approval is not recorded as sent, so Approve asks first. Deliberate.
+    fireEvent.press(await screen.findByText('Approve Anyway'));
+    await screen.findByText('Share Approved Report');
+    await settle();
     fireEvent.press(screen.getByText('Share Approved Report'));
     await screen.findByText(/^Recorded as sent /);
     await settle();

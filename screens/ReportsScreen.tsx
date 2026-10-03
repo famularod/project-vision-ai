@@ -5,6 +5,7 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
+  Alert,
   AppState,
   Image,
   Pressable,
@@ -113,10 +114,15 @@ import {
   type VitruviusCommitmentControl,
 } from '../services/VitruviusCommitmentControl';
 import {
+  UNSENT_APPROVAL_APPROVE_ANYWAY,
+  UNSENT_APPROVAL_GO_BACK,
+  UNSENT_APPROVAL_WARNING_TITLE,
+  approvalReplacesUnsentApproval,
   describeSendWindowTime,
   manualReportMarkTime,
   manualReportSendTime,
   reportApprovalAwaitingSend,
+  unsentApprovalWarning,
 } from '../services/ReportManualSend';
 
 type IconName = keyof typeof Ionicons.glyphMap;
@@ -885,6 +891,23 @@ export function ReportsScreen({
       return;
     }
     if (approvalCheckRef.current) return;
+    // Review N1 L5 (3 Oct 2026): this approval would replace an approved report that is not recorded as sent,
+    // and only the newest approval can be marked sent. He is told first, and can go back and mark it.
+    if (approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportSourceFingerprint)) {
+      Alert.alert(UNSENT_APPROVAL_WARNING_TITLE, unsentApprovalWarning(approvalToMarkSent), [
+        { text: UNSENT_APPROVAL_GO_BACK, style: 'cancel' },
+        { text: UNSENT_APPROVAL_APPROVE_ANYWAY, onPress: () => approveAfterPeriodCheckRef.current() },
+      ]);
+      return;
+    }
+    approveAfterPeriodCheck();
+  };
+  const approveAfterPeriodCheck = () => {
+    if (!reportApprovalAllowed) {
+      setCommunicationError(reportApprovalMessage);
+      return;
+    }
+    if (approvalCheckRef.current) return;
     // Just before approving, the other device's last report is read again
     // (whole-app audit A6 pass 7): when it sent a later one, the report now
     // counts from it and the owner reviews that instead of approving this.
@@ -906,6 +929,9 @@ export function ReportsScreen({
         if (!later) approveCheckedReportRef.current(checkedTextKey);
       });
   };
+  // The answer to the warning approves the report on screen then, not the one drawn when it was asked.
+  const approveAfterPeriodCheckRef = useRef(approveAfterPeriodCheck);
+  approveAfterPeriodCheckRef.current = approveAfterPeriodCheck;
   /** The approval, with the report on screen once the check is back. */
   const approveCheckedReport = (checkedTextKey: string) => {
     if (!reportApprovalAllowed) {

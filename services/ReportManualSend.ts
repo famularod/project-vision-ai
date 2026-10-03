@@ -110,3 +110,37 @@ export function describeSendWindowTime(value: string, now: Date = new Date()): s
 export function manualReportMarkTime(sentAt: string, now: Date = new Date()): string | null {
   return now.getTime() > Date.parse(sentAt) ? now.toISOString() : null;
 }
+
+/**
+ * Review N1 L5 (3 Oct 2026): only the newest approval can be marked sent, so
+ * approving the next report first lost the earlier one's send. Monday's
+ * report went out from a saved Mail draft; on Tuesday he approved the next
+ * report before marking Monday's, and Monday's could no longer be recorded
+ * (its time was refused, and "just now" recorded Tuesday's, never sent).
+ *
+ * Of the two ways out, the warning is the safer: letting Mark as Sent reach
+ * back to the earlier approval would record a send under a report already
+ * approved on the older period, whose "since the last report" text would
+ * then be wrong and would have to be thrown away. So before an approval
+ * replaces an approved report that is not recorded as sent, he is told, and
+ * can go back and mark it first. Nothing changes when the report being
+ * approved is that same report.
+ */
+export const UNSENT_APPROVAL_WARNING_TITLE = 'An approved report is not recorded as sent';
+export const UNSENT_APPROVAL_GO_BACK = 'Go Back';
+export const UNSENT_APPROVAL_APPROVE_ANYWAY = 'Approve Anyway';
+
+/** What the warning says about the approval the next one would replace. */
+export function unsentApprovalWarning(approval: Pick<DAVEReportSnapshot, 'capturedAt'>, now: Date = new Date()): string {
+  return `The report you approved with the project facts as of ${describeSendWindowTime(approval.capturedAt, now)} isn't recorded as sent. ` +
+    'If you sent it, go back and use Mark as Sent first. Once you approve this report, that one can no longer be recorded as sent, ' +
+    'and the next report will repeat what it covered.';
+}
+
+/** Whether approving a report with `fingerprint` would replace an approval this device saved that is not recorded as sent. */
+export function approvalReplacesUnsentApproval(
+  unsent: Pick<DAVEReportSnapshot, 'sourceFingerprint'> | null | undefined,
+  fingerprint: string,
+): boolean {
+  return Boolean(unsent) && unsent!.sourceFingerprint !== fingerprint;
+}

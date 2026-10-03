@@ -20,6 +20,7 @@ jest.mock('react-native-reanimated', () => ({ getUseOfValueInStyleWarning: () =>
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
 import type { DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 import {
@@ -185,7 +186,14 @@ describe('a report sent after a change its text does not show is recorded as sen
 
     view.rerender(screenFor(facts({}, done)));
     jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('disk full'));
+    // Review N1 L5 (3 Oct 2026): approving over an approved report that is not recorded as sent now asks first;
+    // "Approve Anyway" is the approval this test is about. Deliberate.
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+      buttons?.find(button => button.text === 'Approve Anyway')?.onPress?.();
+    });
     await approve();
+    expect(alert).toHaveBeenCalledTimes(1);
+    alert.mockRestore();
     await screen.findByText(/its reporting-period snapshot could not be saved on this device/, {}, SLOW);
     await copy();
     expect(onCopyReport).toHaveBeenCalledTimes(1);

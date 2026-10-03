@@ -183,6 +183,8 @@ describe('review N1 M1: "Was the report sent?" is about the report that was shar
     expect(screen.getByLabelText('Mark as Sent')).toBeTruthy();
 
     fireEvent.press(screen.getByText('Approve Report'));
+    // Review N1 L5: the shared report is approved and not recorded as sent; he is told before it is replaced.
+    fireEvent.press(await screen.findByText('Approve Anyway'));
     await screen.findByText('Share Approved Report');
     await settle();
     // The new report, never shared: no question, and nothing recorded as sent.
@@ -466,7 +468,7 @@ describe('review N1 L2: a report approved in another browser (or before site dat
     await settle();
     return firstBrowser;
   }
-  const NOT_RECORDED = 'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
+  const NOT_RECORDED = 'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 
   it('with the shared record: its approval is known there, and the copy from this browser is recorded for every device', async () => {
     table = PHONE_AT_10();
@@ -480,7 +482,7 @@ describe('review N1 L2: a report approved in another browser (or before site dat
     // Sent by this browser, and kept here now.
     expect(sent.sentBy).toBe(profile.get('@vitruvius/report-sender-id/v1'));
     expect([...profile.keys()].some(key => key.includes('report-snapshots/v1:tower'))).toBe(true);
-    expect(screen.queryByText(/No approval of this report/)).toBeNull();
+    expect(screen.queryByText(/could not record that this report was sent/)).toBeNull();
   });
 
   it('with the shared record, when the facts have changed since: still that approved report, and still recorded', async () => {
@@ -555,5 +557,70 @@ describe('review N1 (Low): the page\'s fixed lines are true with and without the
     fireEvent.press(screen.getByText('Share Approved Report'));
     await screen.findByText(QUESTION);
     expect(screen.getByText('If you sent it, the next report on every device runs from this one. If not, nothing is recorded: once you send it, use Mark as Sent.')).toBeTruthy();
+  });
+});
+
+describe('review N1 L5 (web): before an approval replaces an approved report that is not recorded as sent, he is told', () => {
+  const TITLE = 'An approved report is not recorded as sent';
+  const WARNING = /^The report you approved with the project facts as of .* isn't recorded as sent\. If you sent it, go back and use Mark as Sent first\. Once you approve this report, that one can no longer be recorded as sent, and the next report will repeat what it covered\.$/;
+
+  it('Go Back keeps the earlier approval: it is marked sent, and then the next report is approved with no warning', async () => {
+    table = PHONE_AT_10();
+    const view = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    const r1 = sharedSnapshot() as DAVEReportSnapshot;
+    // The next day's facts; he regenerates and presses Approve before recording that the first report went out.
+    refreshWithPourAt70(view);
+    await settle();
+    fireEvent.press(screen.getByText('Regenerate from Current Facts'));
+    await settle();
+    fireEvent.press(screen.getByText('Approve Report'));
+    expect(await screen.findByText(TITLE)).toBeTruthy();
+    expect(screen.getByText(WARNING)).toBeTruthy();
+    // Nothing is approved or replaced yet.
+    expect(sharedSnapshot()?.sourceFingerprint).toBe(r1.sourceFingerprint);
+    expect(screen.queryByText('Share Approved Report')).toBeNull();
+
+    fireEvent.press(screen.getByText('Go Back'));
+    expect(screen.queryByText(TITLE)).toBeNull();
+    fireEvent.press(screen.getByLabelText('Mark as Sent'));
+    fireEvent.press(screen.getByLabelText('Record as Sent'));
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+    await settle();
+    const sent = sharedSnapshot() as DAVEReportSnapshot;
+    expect(sent.sourceFingerprint).toBe(r1.sourceFingerprint);
+    expect(typeof sent.deliveredAt).toBe('string');
+
+    // The first report is recorded: the next one is approved with no warning, and counts from it.
+    fireEvent.press(screen.getByText('Regenerate from Current Facts'));
+    await settle();
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    expect(screen.queryByText(TITLE)).toBeNull();
+    await settle();
+    expect((sharedSnapshot() as DAVEReportSnapshot).supersedes?.sourceFingerprint).toBe(r1.sourceFingerprint);
+  });
+
+  it('Approve Anyway approves the next report, as before; approving the same report again never warns', async () => {
+    table = PHONE_AT_10();
+    const view = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    const r1 = sharedSnapshot() as DAVEReportSnapshot;
+    // The same report approved again: nothing would be lost, so nothing is asked.
+    fireEvent.press(screen.getByText('Approve Report'));
+    await settle();
+    expect(screen.queryByText(TITLE)).toBeNull();
+    expect(sharedSnapshot()?.sourceFingerprint).toBe(r1.sourceFingerprint);
+
+    refreshWithPourAt70(view);
+    await settle();
+    fireEvent.press(screen.getByText('Regenerate from Current Facts'));
+    await settle();
+    fireEvent.press(screen.getByText('Approve Report'));
+    fireEvent.press(await screen.findByText('Approve Anyway'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    expect(sharedSnapshot()?.sourceFingerprint).not.toBe(r1.sourceFingerprint);
+    expect(screen.queryByText(TITLE)).toBeNull();
   });
 });

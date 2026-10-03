@@ -2,7 +2,14 @@ import { createElement, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
-import { describeSendWindowTime, manualReportSendWindow } from '../../services/ReportManualSend';
+import {
+  UNSENT_APPROVAL_APPROVE_ANYWAY,
+  UNSENT_APPROVAL_GO_BACK,
+  UNSENT_APPROVAL_WARNING_TITLE,
+  describeSendWindowTime,
+  manualReportSendWindow,
+  unsentApprovalWarning,
+} from '../../services/ReportManualSend';
 import { colors, spacing } from '../../theme';
 import { desktopSurfaces } from './desktop-surface-palette';
 
@@ -77,6 +84,48 @@ export function DesktopReportSentQuestion({
           accessibilityRole="button"
         >
           <Text style={styles.secondaryText}>Not yet</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Review N1 L5 (3 Oct 2026): Approve would replace an approved report this
+ * computer has not recorded as sent, and only the newest approval can be
+ * marked sent. He is told first, as on the phone, and can go back to Mark as
+ * Sent.
+ */
+export function DesktopReportUnsentApprovalWarning({
+  approval,
+  pending,
+  onApprove,
+  onGoBack,
+}: {
+  approval: DAVEReportSnapshot;
+  pending: boolean;
+  onApprove: () => void;
+  onGoBack: () => void;
+}) {
+  return (
+    <View style={styles.panel} accessibilityRole="alert" accessibilityLabel={UNSENT_APPROVAL_WARNING_TITLE}>
+      <Text style={styles.title}>{UNSENT_APPROVAL_WARNING_TITLE}</Text>
+      <Text style={styles.detail}>{unsentApprovalWarning(approval)}</Text>
+      <View style={styles.actions}>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+          onPress={onGoBack}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryText}>{UNSENT_APPROVAL_GO_BACK}</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, pending && styles.disabled, pressed && styles.pressed]}
+          onPress={onApprove}
+          disabled={pending}
+          accessibilityRole="button"
+        >
+          <Text style={styles.secondaryText}>{UNSENT_APPROVAL_APPROVE_ANYWAY}</Text>
         </Pressable>
       </View>
     </View>

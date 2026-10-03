@@ -154,8 +154,14 @@ import {
   type DAVEWebPeriodOutcome,
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
-import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
-import { DesktopReportMarkSent, DesktopReportSentQuestion, sameSharedReport, type DesktopSharedReport } from './desktop-report-send';
+import { approvalReplacesUnsentApproval, manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
+import {
+  DesktopReportMarkSent,
+  DesktopReportSentQuestion,
+  DesktopReportUnsentApprovalWarning,
+  sameSharedReport,
+  type DesktopSharedReport,
+} from './desktop-report-send';
 import {
   DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
@@ -5647,6 +5653,7 @@ function ReportWorkspace({
   const [sendQuestion, setSendQuestion] = useState<DesktopSharedReport | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
+  const [unsentApprovalWarningUp, setUnsentApprovalWarningUp] = useState(false);
   const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
   // Before the shared record exists a send from here is this computer's own period: the lines say so (review N1).
   const reportsSharedBetweenDevices = currentPeriodRead.status !== 'loaded' || currentPeriodRead.shared !== 'unavailable';
@@ -5694,8 +5701,9 @@ function ReportWorkspace({
       // browser before reports were shared, or this browser's site data was cleared). It is the approved report
       // on screen and its facts are the current ones, so this computer takes the approval as its own, as Approve
       // here would, and records the send; the later-send check applies as for any approval.
+      // Not over another approved report this computer still has to mark sent: that one would be lost (review N1 L5).
       if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && approvedFingerprint === reportFingerprint &&
-        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience) {
+        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience && !approvalToMarkSent) {
         const approved = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
         outcome = approved.status === 'later_send'
           ? approved
@@ -5888,8 +5896,15 @@ function ReportWorkspace({
     });
   };
 
-  const save = async (status: 'draft' | 'approved') => {
+  const save = async (status: 'draft' | 'approved', overUnsentApproval = false) => {
     if (pending || !reportTitle.trim() || !reportBody.trim()) return;
+    // Review N1 L5 (3 Oct 2026): this approval would replace an approved report not recorded as sent, and only
+    // the newest approval can be marked sent. He is told first, as on the phone, and can go back and mark it.
+    if (status === 'approved' && !overUnsentApproval && approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportFingerprint)) {
+      setUnsentApprovalWarningUp(true);
+      return;
+    }
+    setUnsentApprovalWarningUp(false);
     // Saved or approved again: no longer the approval that was shared (review N1 M1).
     setSendQuestion(null);
     // Approval waits for the period, and for this tab to have the other device's changes (everyday item 3).
@@ -6482,6 +6497,14 @@ function ReportWorkspace({
             </View>
             {sharedReportOnScreen ? (
               <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} sharedBetweenDevices={reportsSharedBetweenDevices} />
+            ) : null}
+            {unsentApprovalWarningUp && approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportFingerprint) ? (
+              <DesktopReportUnsentApprovalWarning
+                approval={approvalToMarkSent}
+                pending={pending}
+                onApprove={() => { void save('approved', true); }}
+                onGoBack={() => setUnsentApprovalWarningUp(false)}
+              />
             ) : null}
             {!reportFactsAreCurrent ? (
               <View style={styles.errorBanner} accessibilityRole="alert">

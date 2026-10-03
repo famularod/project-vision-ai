@@ -207,13 +207,14 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
 
 /**
  * A report that went out from this browser with no approval of it waiting
- * here or in the shared period, and facts that have changed since it was
- * prepared (review N1 L2, 3 Oct 2026): a later report was approved since, or
- * it was approved in another browser, or this browser's site data was
- * cleared. Said plainly: what was not recorded, and what follows.
+ * here or in the shared period, where this computer cannot take the approval
+ * as its own either (review N1 L2, 3 Oct 2026): its facts have changed since
+ * it was prepared, or another approved report is waiting here to be marked
+ * sent and would be lost (review N1 L5). Said plainly: what was not
+ * recorded, and what follows.
  */
 export const DAVE_WEB_REPORT_SEND_NOT_RECORDED =
-  'No approval of this report is waiting on this computer, and the project facts have changed since it was prepared, so this computer could not record that it was sent. The next report will count from the last report recorded as sent, and may repeat what this one covered.';
+  'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 
 /** Shared again after this computer had recorded it as sent (review N1): said plainly, never as an error. */
 export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
