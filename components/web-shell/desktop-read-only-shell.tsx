@@ -137,6 +137,7 @@ import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAt
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
+  daveWebReportSentHereAt,
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
   recordDAVEWebReportSend,
@@ -147,6 +148,7 @@ import { manualReportMarkTime, manualReportSendTime } from '../../services/Repor
 import { DesktopReportMarkSent, DesktopReportSentQuestion } from './desktop-report-send';
 import {
   daveWebReportAlreadyRecordedMessage,
+  daveWebReportAlreadySentNote,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportRecordedMessage,
@@ -154,6 +156,7 @@ import {
   daveWebReportPeriodMovedMessage,
   daveWebReportPeriodNote,
   daveWebReportPeriodState,
+  daveWebReportSentFromHereNote,
   readDAVEWebReportPeriod,
   type DAVEWebReportPeriodRead,
 } from '../../services/DAVEWebReportPeriod';
@@ -5596,12 +5599,26 @@ function ReportWorkspace({
     // Only a change of period regenerates the draft; facts changing alone still ask for a refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period.periodKey]);
-  const approvedPeriodMoved = reportStatus === 'approved' && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey);
   // Owner answer 2 Oct (web sends count): a share or email draft asks whether it went out; Mark as Sent records one sent another way.
   const [sendQuestion, setSendQuestion] = useState(false);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
   const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
+  // Review N1 M2 (2 Oct 2026): an approved report this computer had sent,
+  // reopened from Report history, could not be shared again. The saved report
+  // keeps the period it was prepared on; its own send had moved the period,
+  // and that read as "Your other device sent a report at <this computer's
+  // own send time>". This computer's own sends are never another device's:
+  // the report on screen is one it sent (`sentFromHereAt`), or the period
+  // now runs from a send of its own; only another device's later send stops
+  // an approval (A6 pass 8 M1).
+  const sentFromHereAt = reportStatus === 'approved'
+    ? daveWebReportSentHereAt(periodSnapshot, reportSource.fingerprint.split(':media-')[0])
+    : null;
+  const periodSentAt = reportPeriodSentAt(periodSnapshot);
+  const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
+  const approvedPeriodMoved = reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
+    daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey);
   const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
     periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
   /** The report on screen as the period records it: its facts, these projects, this format. */
@@ -5906,6 +5923,11 @@ function ReportWorkspace({
       };
       if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
         await navigator.share(shareData);
+        if (sentFromHereAt) {
+          // Already recorded as sent from here: nothing to ask, and nothing more to record (review N1 M2).
+          setNotice({ tone: 'good', text: `The approved report was handed to the system share menu. ${daveWebReportAlreadySentNote(sentFromHereAt)}` });
+          return;
+        }
         setNotice({ tone: 'good', text: 'The approved report was handed to the system share menu.' });
         // The share menu cannot say whether it went out (owner answer 2 Oct, web sends count).
         setSendQuestion(true);
@@ -5940,21 +5962,27 @@ function ReportWorkspace({
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
+    // Already recorded as sent from here: said, and nothing is asked (review N1 M2).
+    const alreadySent = sentFromHereAt ? ` ${daveWebReportAlreadySentNote(sentFromHereAt)}` : '';
     setNotice(emailBody.shortened
       ? {
         tone: 'danger',
-        text: 'An email draft was opened with a shortened report: the full text did not fit an email draft. Review it, and share the full report from Vitruvius if needed.',
+        text: `An email draft was opened with a shortened report: the full text did not fit an email draft. Review it, and share the full report from Vitruvius if needed.${alreadySent}`,
       }
       : {
         tone: 'good',
-        text: 'An email draft was opened. Review the recipients and content before sending.',
+        text: `An email draft was opened. Review the recipients and content before sending.${alreadySent}`,
       });
     // An email draft cannot say whether it was sent (owner answer 2 Oct, web sends count).
-    setSendQuestion(true);
+    if (!sentFromHereAt) setSendQuestion(true);
   };
 
+  // The report this computer sent to start the period now shown stands on
+  // that period, reopened as in the visit it was sent in (review N1 M2).
   const reportFactsAreCurrent = daveWebReportSourceIsCurrent(
-    reportSource.fingerprint,
+    (sentFromHereAt && `sent:${sentFromHereAt}` === period.periodKey
+      ? daveWebReportSourceOnPeriod(reportSource, period.periodKey)
+      : reportSource).fingerprint,
     currentReportSource,
   );
   const conditionTone = briefing.overallCondition === 'critical'
@@ -6219,9 +6247,11 @@ function ReportWorkspace({
                     ? daveWebReportBehindMessage(period.behindSend)
                     : approvedPeriodMoved
                       ? daveWebReportPeriodMovedMessage(period.periodKey)
-                      : reportFactsAreCurrent
-                        ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
-                        : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
+                      : sentFromHereAt
+                        ? daveWebReportSentFromHereNote(sentFromHereAt)
+                        : reportFactsAreCurrent
+                          ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
+                          : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
                 </Text>
                 <View style={styles.reportActionStack}>
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={resetFromCurrentTruth} disabled={pending}>

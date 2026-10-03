@@ -179,6 +179,16 @@ export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
   return `Shared again. This report was already recorded as sent ${describeReportSendTime(sentAt)}, so this is not counted as another send.`;
 }
 
+/** The same, after the share menu or an email draft: nothing is asked, since nothing more is recorded (review N1 M2). */
+export function daveWebReportAlreadySentNote(sentAt: string): string {
+  return `This report was already recorded as sent ${describeReportSendTime(sentAt)}, so sending it again is not counted as another send.`;
+}
+
+/** What the review panel says of an approved report this computer sent (review N1 M2). */
+export function daveWebReportSentFromHereNote(sentAt: string): string {
+  return `This report was sent from this computer ${describeReportSendTime(sentAt)}. Sharing it again is not counted as another send.`;
+}
+
 /** Why an approved report is no longer shared: a later report was sent after it was approved. */
 export function daveWebReportPeriodMovedMessage(currentKey: string): string {
   const sentAt = currentKey.startsWith('sent:') ? currentKey.slice('sent:'.length) : '';

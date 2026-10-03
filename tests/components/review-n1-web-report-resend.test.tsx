@@ -207,3 +207,192 @@ describe('review N1 (Low): a second Share of a report this computer already sent
     expect(sharedRow()?.deliveredAt).toBe('2026-10-01T10:00:00.000Z');
   });
 });
+
+describe('review N1 M2: an approved report this computer sent can be shared again when it is reopened from Report history', () => {
+  /** The approved report as the page saved it, back in Report history on a later visit. */
+  function reopenedLater() {
+    const calls = (mockAuth.saveReport as jest.Mock).mock.calls as unknown as Array<[{ id: string; projectName: string | null; report: Record<string, unknown> }]>;
+    const saved = calls[calls.length - 1][0];
+    expect(saved.report.status).toBe('approved');
+    mockAuth.snapshot = {
+      ...webSnapshot(100, '2026-10-01T12:00:00.000Z'),
+      referenceDocuments: [{
+        id: saved.id, name: String(saved.report.title), originalFileName: 'report.md', uri: '', mimeType: 'text/markdown',
+        category: 'Report', notes: 'Approved project report', isCurrent: true, importedAt: String(saved.report.generatedAt),
+        projectId: null, projectName: saved.projectName, importBatchId: null, webVersionGroupId: 'report:portfolio',
+        webReport: saved.report, cloudUpdatedAt: '2026-10-01T12:30:00.000Z', linkedScheduleItems: [], importedScheduleItemCount: 0,
+      }] as unknown as DAVEWebReadOnlySnapshot['referenceDocuments'],
+    };
+    return saved;
+  }
+  /** Approve and Share (a send from this computer), then leave the page. */
+  async function approveAndSendThenLeave() {
+    const visit = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(/^Recorded as sent .*\. The next report on every device runs from this one\.$/);
+    await settle();
+    const sentAt = sharedSnapshot()?.deliveredAt as string;
+    const saved = reopenedLater();
+    visit.unmount();
+    // A new visit: this tab knows no sends of its own until it reads them back.
+    forgetDAVEWebOwnReportSends();
+    forgetDAVEWebReportPeriodSession();
+    return { sentAt, saved };
+  }
+  async function openFromHistory() {
+    render(<DesktopReadOnlyShell page="reports" />);
+    await settle();
+    fireEvent.press(screen.getByText('Open'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+  }
+  const OTHER_DEVICE = /Your other device sent a report/;
+
+  it('Share copies it, says it was already sent, and records no new send; nothing calls this computer\'s send another device\'s', async () => {
+    table = PHONE_AT_10();
+    const { sentAt, saved } = await approveAndSendThenLeave();
+    // The saved report still names the period it was prepared on; this computer's send started the next one.
+    expect(saved.report.sourcePeriodKey).toBe('sent:2026-10-01T10:00:00.000Z');
+    await openFromHistory();
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    expect(screen.getByText(/^This report was sent from this computer .*\. Sharing it again is not counted as another send\.$/)).toBeTruthy();
+    expect(screen.getByText('Ready for review')).toBeTruthy();
+    expect(screen.queryByText(/^Project facts changed after this draft was prepared/)).toBeNull();
+
+    mockAuth.saveReportPeriod.mockClear();
+    copied().mockClear();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
+    await settle();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    expect(String(copied().mock.calls[0][0])).toContain(String(saved.report.title));
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    expect(screen.queryByText(NO_APPROVAL)).toBeNull();
+    // Not a new send.
+    expect(sharedRow()?.deliveredAt).toBe(sentAt);
+    expect(ownSendTimes()).toEqual([sentAt]);
+    expect(mockAuth.saveReportPeriod.mock.calls.every(([row]) => row.deliveredAt === sentAt)).toBe(true);
+  });
+
+  it('Prepare Email opens the draft and asks nothing; the share menu hands it over and asks nothing', async () => {
+    table = PHONE_AT_10();
+    const { sentAt } = await approveAndSendThenLeave();
+    await openFromHistory();
+    const open = (globalThis as unknown as { window: { open: jest.Mock } }).window.open;
+    open.mockClear();
+    fireEvent.press(screen.getByText('Prepare Email'));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(String(open.mock.calls[0][0])).toMatch(/^mailto:\?subject=/);
+    expect(await screen.findByText(/^An email draft was opened\. Review the recipients and content before sending\. This report was already recorded as sent .*, so sending it again is not counted as another send\.$/)).toBeTruthy();
+    expect(screen.queryByLabelText('Was the report sent?')).toBeNull();
+
+    const share = jest.fn(async () => undefined);
+    setNavigator({ share });
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^The approved report was handed to the system share menu\. This report was already recorded as sent /)).toBeTruthy();
+    expect(share).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('Was the report sent?')).toBeNull();
+    await settle();
+    expect(sharedRow()?.deliveredAt).toBe(sentAt);
+  });
+
+  it('after Sign Out of This Computer removed this account\'s copy: its send is still its own, by this browser\'s sender id in the shared period', async () => {
+    table = PHONE_AT_10();
+    const { sentAt } = await approveAndSendThenLeave();
+    for (const key of [...profile.keys()]) if (key.startsWith('@vitruvius/web/owner-1/')) profile.delete(key);
+    await openFromHistory();
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    copied().mockClear();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(sharedRow()?.deliveredAt).toBe(sentAt);
+  });
+
+  it('after the phone sends a later report, the report this computer sent can still be shared again', async () => {
+    table = PHONE_AT_10();
+    const { sentAt } = await approveAndSendThenLeave();
+    // The phone approves the next report (it remembers the web's as the one before) and sends it.
+    const webSent = sharedSnapshot() as DAVEReportSnapshot;
+    const after = (minutes: number) => new Date(Date.parse(sentAt) + minutes * 60_000).toISOString();
+    const phoneNext = markReportSnapshotDelivered(reportSnapshotToSave(buildDAVEReportSnapshot({
+      truths: buildDAVEWebReportTruths(webSnapshot(100, after(30)), null),
+      scopeKey: 'tower', sourceFingerprint: 'phone-next', capturedAt: after(30), reportFormat: 'project_manager',
+    }), webSent) as DAVEReportSnapshot, after(60), 'phone-install');
+    table = new Map([['tower|project_manager', { snapshot: JSON.parse(JSON.stringify(phoneNext)), deliveredAt: after(60) }]]);
+    // This computer has downloaded every task since the phone's send.
+    mockAuth.snapshot = { ...mockAuth.snapshot, refreshedAt: after(90), tasksPulledAt: after(90) };
+    await openFromHistory();
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    copied().mockClear();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    await settle();
+    // The period still runs from the phone's later send; the web's own earlier send was not recorded again.
+    expect(sharedRow()?.deliveredAt).toBe(after(60));
+    expect(ownSendTimes()).toEqual([sentAt]);
+  });
+
+  it('this computer\'s own later send of another report is never read as another device\'s: an earlier approval is not stopped by it', async () => {
+    table = PHONE_AT_10();
+    // An approval never sent, left in Report history.
+    const first = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    const calls = (mockAuth.saveReport as jest.Mock).mock.calls as unknown as Array<[{ id: string; projectName: string | null; report: Record<string, unknown> }]>;
+    const earlier = calls[calls.length - 1][0];
+    first.unmount();
+    // The facts change; the next report is approved and sent from this computer.
+    const changed = { ...webSnapshot(100, '2026-10-01T12:10:00.000Z'), scheduleItems: [task('frame', 'Frame walls', 100), task('pour', 'Pour slab', 75)] };
+    mockAuth.snapshot = changed;
+    const second = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(/^Recorded as sent /);
+    await settle();
+    const sentAt = sharedSnapshot()?.deliveredAt;
+    second.unmount();
+    forgetDAVEWebOwnReportSends();
+    forgetDAVEWebReportPeriodSession();
+    mockAuth.snapshot = {
+      ...changed,
+      referenceDocuments: [{
+        id: earlier.id, name: String(earlier.report.title), originalFileName: 'report.md', uri: '', mimeType: 'text/markdown',
+        category: 'Report', notes: 'Approved project report', isCurrent: true, importedAt: String(earlier.report.generatedAt),
+        projectId: null, projectName: earlier.projectName, importBatchId: null, webVersionGroupId: 'report:portfolio',
+        webReport: earlier.report, cloudUpdatedAt: '2026-10-01T12:30:00.000Z', linkedScheduleItems: [], importedScheduleItemCount: 0,
+      }] as unknown as DAVEWebReadOnlySnapshot['referenceDocuments'],
+    };
+    await openFromHistory();
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    copied().mockClear();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    // Copied; it is not the report that was sent, and no approval of it is waiting, so nothing is recorded, and the page says so.
+    expect(await screen.findByText(NO_APPROVAL)).toBeTruthy();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(OTHER_DEVICE)).toBeNull();
+    expect(sharedRow()?.deliveredAt).toBe(sentAt);
+    expect(ownSendTimes()).toEqual([sentAt]);
+  });
+
+  it('an approval this computer never sent is still stopped by another device\'s later send', async () => {
+    table = PHONE_AT_10();
+    const visit = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    reopenedLater();
+    visit.unmount();
+    forgetDAVEWebOwnReportSends();
+    forgetDAVEWebReportPeriodSession();
+    const later = phoneSent(100, '2026-10-01T13:00:00.000Z');
+    table = new Map([['tower|project_manager', { snapshot: later, deliveredAt: '2026-10-01T13:00:00.000Z' }]]);
+    mockAuth.snapshot = { ...mockAuth.snapshot, refreshedAt: '2026-10-01T14:00:00.000Z', tasksPulledAt: '2026-10-01T14:00:00.000Z' };
+    await openFromHistory();
+    copied().mockClear();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await settle();
+    expect(screen.getAllByText(/^Your other device sent a report .*, after this one was approved, so its "since the last report" section is out of date\. Regenerate it from current facts, then approve\.$/).length).toBeGreaterThan(0);
+    expect(copied()).not.toHaveBeenCalled();
+  });
+});
