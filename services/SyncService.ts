@@ -60,7 +60,8 @@ import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
   isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
-  scheduleItemConflictCopyKeeping, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud, scheduleItemWholeCopyAgainstCloud,
+  scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud,
+  scheduleItemRowAnsweringTo, scheduleItemWholeCopyAgainstCloud,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -86,8 +87,9 @@ import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository'
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
-import { withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { scheduleItemAnsweringToTaskId, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
+import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import {
   applyFieldUpdateDocumentPatches,
@@ -5586,6 +5588,76 @@ async function recordTaskCloudCopyIfChanged(
 }
 
 /**
+ * Review N1 finding 2 (Medium, caused by 79a5ae1): a card of the fields
+ * changed on both devices follows its task. Next week's master moved the task
+ * to a new row and hid the old one, with the card still on it: Keep Phone
+ * wrote David's note to the hidden row and closed the card, and every device
+ * went on showing the cloud's note. Each such card whose row is no longer
+ * shown now moves to the shown row that answers to it (the task's earlier
+ * ids, as a field update's task is found, ScheduleTaskRevisions), with this
+ * device's values of the fields asked about and that row as the cloud's copy;
+ * one whose fields the row already holds is closed. A card whose row is still
+ * shown stays. Run when Review Conflicts opens and before a choice. The id
+ * each moved card has now (null: closed), by the id it had.
+ */
+async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, string | null>> {
+  const moved = new Map<string, string | null>();
+  const fieldCards = (await getSyncConflicts())
+    .filter(conflict => conflict.entity === 'schedule_item' && scheduleItemConflictFields(conflict.localPayload).length > 0);
+  if (fieldCards.length === 0) return moved;
+  // The tasks shown, as the web desktop works them out: the cloud's rows under the cloud's schedules.
+  const [list, documents, tombstoneSync] = await Promise.all([listScheduleItems(), listReferenceDocuments(), synchronizeDAVESyncTombstones()]);
+  if (!list.ok || list.stubbed || !Array.isArray(list.data) || !documents.ok || documents.stubbed || !Array.isArray(documents.data) ||
+    !tombstoneSync.cloudAuthoritative) return moved;
+  const deletedIds = (entity: 'schedule_item' | 'reference_document') =>
+    new Set(deletedDAVERecordIds(tombstoneSync.tombstones, entity).map(id => id.trim().toLowerCase()));
+  const deletedRows = deletedIds('schedule_item');
+  const deletedDocuments = deletedIds('reference_document');
+  const rows = list.data.filter(row => !deletedRows.has(row.id.trim().toLowerCase()));
+  const schedules = documents.data.filter(document => !deletedDocuments.has(document.id.trim().toLowerCase()) && scheduleDocumentIsScheduleLike(document));
+  const shown = schedules.length > 0 ? selectAuthoritativeScheduleItems({ scheduleItems: rows, scheduleDocuments: schedules }) : null;
+  const shownIds = new Set((shown ?? []).map(row => row.id));
+  /** The row the task of this row is shown on now, when not this one; as the cloud saves it (the shown copy can carry display dates). */
+  const rowNow = (taskId: string): ScheduleItem | null => {
+    // A cloud with no schedule file: by the rows alone.
+    if (!shown) return scheduleItemRowAnsweringTo(taskId, rows);
+    if (shownIds.has(taskId)) return null;
+    const answering = scheduleItemAnsweringToTaskId(shown, taskId, {}, rows);
+    return (answering && rows.find(row => row.id === answering.id && row.id !== taskId)) || null;
+  };
+  await serializeSyncConflictMutation(async () => {
+    let conflicts = await readSyncConflictsUnsafe();
+    const before = conflicts;
+    for (const conflict of before) {
+      if (conflict.entity !== 'schedule_item' || scheduleItemConflictFields(conflict.localPayload).length === 0) continue;
+      const row = rowNow(conflict.localId);
+      if (!row || !conflicts.includes(conflict)) continue;
+      const copy = scheduleItemConflictCopyOnRow(conflict.localPayload as Record<string, unknown>, row);
+      const others = conflicts.filter(item => item !== conflict);
+      if (!copy) {
+        conflicts = others;
+        moved.set(conflict.id, null);
+        continue;
+      }
+      // With what a card already on that row holds.
+      const onRow = others.find(item => item.entity === 'schedule_item' && item.localId === row.id);
+      const next: SyncConflict = {
+        ...conflict,
+        id: createQueueId('schedule_item_conflict', new Date().toISOString()),
+        localId: row.id,
+        remoteChangedAt: row.updatedAt || null,
+        localPayload: onRow ? scheduleItemConflictCopyKeeping(onRow.localPayload as Record<string, unknown>, copy, null, row) : copy,
+        remotePayload: row,
+      };
+      conflicts = [...others.filter(item => item !== onRow), next];
+      moved.set(conflict.id, next.id);
+    }
+    if (conflicts !== before) await writeSyncConflicts(conflicts);
+  });
+  return moved;
+}
+
+/**
  * The cloud's row of each task in conflict, read again when Review Conflicts
  * opens (whole-app audit A7 pass 15 L-3, as field updates are): the "Cloud:"
  * line showed the copy saved when the conflict was found, after the web set
@@ -5593,6 +5665,7 @@ async function recordTaskCloudCopyIfChanged(
  * conflicts, as saved now.
  */
 export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConflict[]> {
+  await moveScheduleItemConflictsWithTheirTasks().catch(() => undefined); // each card on the row its task lives on now (review N1 finding 2)
   const conflicts = (await getSyncConflicts()).filter(conflict => conflict.entity === 'schedule_item');
   for (const conflict of conflicts) {
     const row = await currentCloudScheduleItem(conflict.localId).catch(() => null);
@@ -5656,6 +5729,18 @@ export async function resolveScheduleItemSyncConflict(
     throw new Error('sync_conflict_not_found');
   }
   const shown = cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown;
+  // A card of fields whose task a newer master moved since is chosen on the row the task lives on now (review N1
+  // finding 2): the same choice, when that row holds what the card showed for those fields; else David reviews the
+  // card again, with that row. With none of its fields left to ask about, it has closed.
+  const askedFields = scheduleItemConflictFields(conflict.localPayload);
+  const movedTo = askedFields.length > 0 ? (await moveScheduleItemConflictsWithTheirTasks()).get(conflict.id) : undefined;
+  if (movedTo !== undefined) {
+    const now = movedTo ? (await getSyncConflicts()).find(item => item.id === movedTo) : undefined;
+    if (!now) throw new Error('sync_conflict_closed');
+    const value = (copy: unknown, field: string) => JSON.stringify(isRecord(copy) ? copy[field] ?? null : null);
+    if (!askedFields.every(field => value(shown, field) === value(now.remotePayload, field))) throw new Error('sync_conflict_cloud_copy_changed');
+    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload });
+  }
   const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
   const tombstoneSync = await synchronizeDAVESyncTombstones();

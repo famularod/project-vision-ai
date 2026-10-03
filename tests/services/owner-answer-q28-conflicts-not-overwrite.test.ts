@@ -81,6 +81,8 @@ const mockCloud = {
   offline: new Set<string>(),
   /** Writes that reach the cloud while their answer does not come back (weak signal): how many more. */
   lostAnswers: 0,
+  /** The cloud's schedule documents (what the web desktop works the shown tasks out from). */
+  documents: [] as unknown[],
 };
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
@@ -143,6 +145,7 @@ jest.mock('../../services/SupabaseService', () => {
       return mockOk({ path: pathName });
     },
     listScheduleItems: read(() => [...mockCloud.rows.values()].map(mockCopy)),
+    listReferenceDocuments: read(() => mockCopy(mockCloud.documents)),
     getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockCopy(mockCloud.rows.get(id)) : null) : mockDown(); },
     upsertScheduleItem: async (item: { id: string }) => {
       mockTick();
@@ -201,6 +204,7 @@ import { PROJECT_DOCUMENT_CATEGORIES } from '../../services/ProjectDocumentClass
 import { cloudPhotoPreviewIsFresh } from '../../services/ProjectPhotoTransport';
 import { isResumableFieldUpdateStatus } from '../../services/FieldUpdateLifecycle';
 import { fieldUpdateConflictChanges } from '../../services/FieldUpdateEditBase';
+import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo } from '../../services/ScheduleItemEditBase';
 import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 
@@ -717,6 +721,7 @@ function syncDocuments(device: Device) {
     local: device.documents, cloud: cloudDocuments, deletedIds: [...deletedDocuments],
   }));
   cloudDocuments = merged;
+  mockCloud.documents = merged;
   device.documents = merged;
 }
 function shareDocuments(device: Device) { on(device); syncDocuments(device); }
@@ -848,6 +853,7 @@ function resetRig() {
   heard.clear();
   heardTombstones.clear();
   cloudDocuments = [];
+  mockCloud.documents = [];
   deletedDocuments.clear();
   mockDevice = 'phone';
 }
@@ -1477,6 +1483,7 @@ describe('Review N1 finding 1: a card in Review Conflicts stays until David choo
       expect(await saveInEditor(phone, id)).toMatchObject({ conflicts: 1 });
       expect(await cards(phone)).toEqual([[['notes'], PHONE_NOTE, IPAD_NOTE]]);
       // Keep Phone still has the note to send (Review Conflicts reads the cards' cloud copies again as it opens).
+      on(phone);
       await phone.m.sync.refreshScheduleItemConflictCloudCopies();
       await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_local');
       expect(cloudRow(id)).toMatchObject({ notes: PHONE_NOTE, ...landed });
@@ -1677,5 +1684,132 @@ describe('Review N1 finding 4: no card against this device\'s own earlier upload
     expect([cloudOf('Crew').asked, cloudOf('').asked, cloudOf('typed on the iPad').asked]).toEqual([[], [], ['notes']]);
     expect(scheduleItemEditBaseAfterLanding({ ...second, base: merged }, { changedFields: ['notes', 'updatedAt'], itemData: row('Crew') }))
       .toEqual({ updatedAt: 'b', fields: { notes: 'Crew' } });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1, finding 2 (Medium, caused by 79a5ae1). A card asks about the note; before David chooses, next week's
+ * master moves the task to a new row and hides the old one. Keep Phone wrote his note to the hidden row and closed
+ * the card: nothing he could see changed, and every device kept the cloud's note. The card now follows the task to
+ * the row it lives on, and the kept value is what every device shows.
+ */
+describe('Review N1 finding 2: a card follows its task to the row a newer master moved it to', () => {
+  const G_ROW = 'Framing,Alpha,Lot,10/20/2026,10/30/2026,';
+  /** The phone's offline note meets the iPad's note (a card on the phone); then master G, approved on the iPad, moves Framing. */
+  async function movedTask({ percentFirst = true } = {}) {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T07:00:00.000Z');
+    // With a percent of David's on the task, the master carries the note to the task's new row.
+    if (percentFirst) { await edit(phone, oldId, { percentComplete: 20 }); await refresh(ipad); }
+    setOnline(phone, false);
+    at('2026-09-08T08:00:00.000Z');
+    await edit(phone, oldId, { notes: PHONE_NOTE });
+    at('2026-09-08T09:00:00.000Z');
+    await edit(ipad, oldId, { notes: IPAD_NOTE });
+    at('2026-09-08T10:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    await refresh(phone);
+    at(G.importedAt!);
+    await approve(ipad, G, [G_ROW, SURVEY]);
+    shareDocuments(ipad);
+    await backgroundUpload(ipad);
+    await fullSync(phone);
+    await refresh(phone);
+    const card = (await conflictsOf(phone))[0];
+    expect([card.localId, scheduleItemConflictFields(card.localPayload)]).toEqual([oldId, ['notes']]);
+    expect(theRow(phone).id).not.toBe(oldId); // every device shows the task's new row
+    return { phone, ipad, oldId, card, newId: theRow(phone).id };
+  }
+  const everywhere = async (phone: Device, ipad: Device) => { await refresh(phone); await refresh(ipad); return [onDevice(phone), onDevice(ipad), onWeb()]; };
+
+  it('Keep Phone puts the note on the row every device shows (Review Conflicts opened first: the card shows that row)', async () => {
+    const { phone, ipad, oldId, newId } = await movedTask();
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/20/2026', '10/30/2026', 20, IPAD_NOTE, '']]));
+    on(phone);
+    const [opened] = await phone.m.sync.refreshScheduleItemConflictCloudCopies(); // Review Conflicts opens
+    expect([opened.localId, scheduleItemConflictFields(opened.localPayload), (opened.remotePayload as ScheduleItem).id]).toEqual([newId, ['notes'], newId]);
+    expect(scheduleItemConflictCopyOfFields((opened.localPayload as { itemData: ScheduleItem }).itemData, ['notes'])).toBe(`Note: ${PHONE_NOTE}`);
+    await chooseInSettings(phone, opened.id, 'keep_local');
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/20/2026', '10/30/2026', 20, PHONE_NOTE, '']]));
+    expect(cloudRow(oldId)).toMatchObject({ notes: IPAD_NOTE }); // the hidden row is left as it was
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('Keep Phone chosen on the card as it was (the task moved since it was shown): the same choice lands on the new row', async () => {
+    const { phone, ipad, card } = await movedTask();
+    await chooseInSettings(phone, card.id, 'keep_local');
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/20/2026', '10/30/2026', 20, PHONE_NOTE, '']]));
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('Keep Cloud leaves the note every device shows, writes nothing and closes the card', async () => {
+    const { phone, ipad, card } = await movedTask();
+    const writes = mockCloud.writes.length;
+    await chooseInSettings(phone, card.id, 'keep_cloud');
+    expect(mockCloud.writes.slice(writes)).toEqual([]);
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/20/2026', '10/30/2026', 20, IPAD_NOTE, '']]));
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('the new row does not hold what the card showed (the master carried no note): David reviews the card again, on that row', async () => {
+    const { phone, ipad, card, newId } = await movedTask({ percentFirst: false });
+    expect(cloudRow(newId)?.notes || '').toBe('');
+    on(phone);
+    await expect(phone.m.sync.resolveScheduleItemSyncConflict(card.id, 'keep_local', { cloudCopyShown: card.remotePayload }))
+      .rejects.toThrow('sync_conflict_cloud_copy_changed');
+    const [again] = await conflictsOf(phone);
+    expect([again.localId, scheduleItemConflictFields(again.localPayload), (again.remotePayload as ScheduleItem).notes || '']).toEqual([newId, ['notes'], '']);
+    await chooseInSettings(phone, again.id, 'keep_local');
+    expect((await everywhere(phone, ipad)).map(rows => rows.map(row => row[3]))).toEqual(Array(3).fill([PHONE_NOTE]));
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('a card whose row is still shown stays on it (a lookahead approved on the phone after the master: the lookahead\'s row is the task)', async () => {
+    const { phone, ipad, oldId, newId } = await movedTask();
+    // The phone restores the old master as the current one: the task is shown on its old row again.
+    at('2026-09-11T08:00:00.000Z');
+    cloudDocuments = cloudDocuments.map(document => ({ ...document, isCurrent: document.id === F.id }));
+    mockCloud.documents = cloudDocuments;
+    phone.documents = cloudDocuments; ipad.documents = cloudDocuments;
+    expect(webShown().filter(item => item.taskName === 'Framing').map(item => item.id)).toEqual([oldId]);
+    on(phone);
+    const [opened] = await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+    expect([opened.localId, newId === oldId]).toEqual([oldId, false]); // not moved to the row that answers to it: that row is not shown
+    await chooseInSettings(phone, opened.id, 'keep_local');
+    expect(cloudRow(oldId)).toMatchObject({ notes: PHONE_NOTE });
+    expect(onWeb().map(row => row[3])).toEqual([PHONE_NOTE]);
+  });
+
+  it('a cloud that lists no schedule file: the card moves by the rows alone, to the last row that answers to its row', async () => {
+    const { phone, ipad, card } = await movedTask();
+    mockCloud.documents = [];
+    await chooseInSettings(phone, card.id, 'keep_local');
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/20/2026', '10/30/2026', 20, PHONE_NOTE, '']]));
+    const row = (id: string, patch: Record<string, unknown> = {}) => ({ id, taskName: 'Framing', ...patch }) as unknown as ScheduleItem;
+    const rows = [row('A'), row('B', { revisedFromTaskIds: ['A'] }), row('C', { revisedFromTaskIds: ['A', 'B'] }), row('X')];
+    expect(['A', 'B', 'C', 'X'].map(id => scheduleItemRowAnsweringTo(id, rows)?.id ?? null)).toEqual(['C', 'C', null, null]);
+    // Masters approved on two devices each moved the task from the same row: the later imported.
+    expect(scheduleItemRowAnsweringTo('A', [row('A'), row('B', { revisedFromTaskIds: ['A'], importedAt: '2026-09-15T00:00:00.000Z' }),
+      row('D', { revisedFromTaskIds: ['A'], importedAt: '2026-09-17T00:00:00.000Z' })])?.id).toBe('D');
+    // A lookahead approved on the old row after the master, on a device that had not heard of the master: that row is the task shown.
+    const overlay = (batchId: string, replaced?: string) => ({ masterStartDate: '', masterFinishDate: '', masterPercentComplete: 0,
+      lookaheads: [{ batchId, startDate: '', finishDate: '', ...(replaced ? { datesReplacedByMaster: replaced } : {}) }] });
+    expect(scheduleItemRowAnsweringTo('A', [row('A', { lookaheadOverlay: overlay('L') }), row('B', { revisedFromTaskIds: ['A'] })])).toBeNull();
+    expect(scheduleItemRowAnsweringTo('A', [row('A', { lookaheadOverlay: overlay('L') }), row('B', { revisedFromTaskIds: ['A'], lookaheadOverlay: overlay('L', 'batch-B') })])?.id).toBe('B');
+    // The same at a row along the way: A moved to B, B holds a lookahead C has not heard of.
+    expect(scheduleItemRowAnsweringTo('A', [row('A'), row('B', { revisedFromTaskIds: ['A'], lookaheadOverlay: overlay('L') }), row('C', { revisedFromTaskIds: ['A', 'B'] })])?.id).toBe('B');
+  });
+
+  it('the card\'s copy on the row its task moved to', () => {
+    const row = (id: string, patch: Record<string, unknown> = {}) => ({ id, taskName: 'Framing', notes: '', owner: '', ...patch }) as unknown as ScheduleItem;
+    const copy = { id: 'A', itemData: row('A', { notes: 'phone note', owner: 'Mike' }), changedFields: ['notes', 'owner', 'updatedAt'], askedFields: ['notes', 'owner'], base: { updatedAt: 'b', fields: { notes: '', owner: '' } } };
+    expect(scheduleItemConflictCopyOnRow(copy, row('C', { notes: 'ipad note', owner: 'Mike', startDate: '10/20/2026' }))).toEqual({
+      id: 'C', itemData: row('C', { notes: 'phone note', owner: 'Mike', startDate: '10/20/2026' }), changedFields: ['notes', 'updatedAt'], askedFields: ['notes'],
+      base: { updatedAt: 'b', fields: { notes: '' } },
+    });
+    expect(scheduleItemConflictCopyOnRow(copy, row('C', { notes: 'phone note', owner: 'Mike' }))).toBeNull(); // nothing left to ask
   });
 });

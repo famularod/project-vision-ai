@@ -1,5 +1,6 @@
 import type { ProjectItemActivity, ScheduleItem } from '../types';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
+import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS, scheduleEntryUndone, scheduleManagersOwnPercent, scheduleProgressIsManagers, scheduleProgressJudgedAt,
 } from './ScheduleProgressSource';
@@ -421,6 +422,61 @@ export function scheduleItemConflictCopyKeeping<T extends ConflictCopy>(
     askedFields: [...kept, ...incomingAsked],
     changedFields: [...new Set([...keptWith, ...incomingFields])],
     base: { updatedAt: incomingBase?.updatedAt ?? null, fields: { ...(incomingBase?.fields ?? {}), ...baseOf(openBase, kept) } },
+  };
+}
+
+/**
+ * The row a task lives on now, by the cloud's rows alone: for a cloud that
+ * lists no schedule file to work the shown tasks out from (review N1 finding
+ * 2). From this row, the next row that answers to it (a newer master moved
+ * the task and saved it as a new row naming this one among its earlier ids),
+ * and on from there (A→B→C: C); where masters approved on two devices each
+ * moved the task from the same row, the later imported. It stops at a row
+ * holding a lookahead's dates the next row has not heard of: the lookahead's
+ * row is then the task shown, and the master's row its hidden twin. Null
+ * when the task has not moved.
+ */
+export function scheduleItemRowAnsweringTo(taskId: string, rows: readonly ScheduleItem[]): ScheduleItem | null {
+  const byId = new Map(rows.map(row => [row.id, row] as const));
+  const time = (row: ScheduleItem) => Date.parse(row.importedAt || row.createdAt || '') || 0;
+  const passed = new Set([taskId]);
+  let id = taskId;
+  for (;;) {
+    const from = id;
+    const answering = rows.filter(row => !passed.has(row.id) && scheduleTaskEarlierIds(row).includes(from));
+    const next = answering.filter(row => !answering.some(other => other !== row && scheduleTaskEarlierIds(row).includes(other.id)))
+      .sort((left, right) => time(right) - time(left))[0];
+    if (!next) break;
+    const heardOf = new Set((next.lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId));
+    if ((byId.get(from)?.lookaheadOverlay?.lookaheads ?? []).some(entry => !entry.datesReplacedByMaster && !heardOf.has(entry.batchId))) break;
+    passed.add(next.id);
+    id = next.id;
+  }
+  return id === taskId ? null : byId.get(id) ?? null;
+}
+
+/**
+ * This device's copy in a card of fields, moved with its task to the row the
+ * task lives on now (review N1 finding 2, Medium, caused by 79a5ae1): that
+ * row, with this device's values of the fields asked about. A field the row
+ * already holds as this device has it is asked about no more; null when none
+ * is left. Before, the card stayed on the row a newer master had hidden:
+ * Keep Phone wrote the note there and closed the card, and every device went
+ * on showing the cloud's note.
+ */
+export function scheduleItemConflictCopyOnRow(copy: ConflictCopy | null | undefined, row: ScheduleItem): ConflictCopy | null {
+  const data = copy?.itemData && typeof copy.itemData === 'object' ? copy.itemData as Record<string, unknown> : null;
+  if (!copy || !data) return null;
+  const asked = scheduleItemConflictFields(copy).filter(field => fieldValue(data, field) !== fieldValue(row, field));
+  if (asked.length === 0) return null;
+  const fields = scheduleItemFieldsWithCompanions(asked);
+  const base = isEditBase(copy.base) ? copy.base : undefined;
+  return {
+    id: row.id,
+    itemData: { ...row, ...Object.fromEntries(fields.map(field => [field, data[field]])) },
+    changedFields: [...fields, 'updatedAt'],
+    askedFields: asked,
+    base: { updatedAt: base?.updatedAt ?? null, fields: Object.fromEntries(asked.map(field => [field, base?.fields[field] ?? null])) },
   };
 }
 
