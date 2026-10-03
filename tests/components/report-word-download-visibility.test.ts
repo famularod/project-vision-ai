@@ -49,7 +49,8 @@ describe('Report Word download visibility contract', () => {
     expect(outlookButtonIndex).toBeLessThan(menuEnd);
     expect(reportsScreen).toMatch(/onOutlookReport=\{\(\) => \{\s+completeCommunication\(report =>\s+onOutlookReport\(report, drawingReferences\)\);/);
     expect(app).toContain('onOutlookReport={outlookReport}');
-    expect(app).toContain("return downloadWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');");
+    // Audit A6 pass 3: the Outlook path shares the Word report and then asks whether it was sent.
+    expect(app).toContain("const shared = await shareWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');");
     expect(app).toContain("if (!proceed) return 'canceled';");
   });
 

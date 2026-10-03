@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { isAuthRetryableFetchError, type SupabaseClient } from '@supabase/supabase-js';
 import { parseECOSConversationReceipt, validECOSConversationRequest, type ECOSConversationReceipt, type ECOSConversationRequest } from './ECOSConversation';
 import type { DAVEAskEvidence } from './DAVEAsk';
 import { normalizeECOSSheetProvenance } from './ECOSSheetProvenance';
@@ -10,8 +10,25 @@ import {
   parseECOSQuestionDiagnostics,
   type ECOSQuestionDiagnostics,
 } from './ECOSQuestionProtocol';
+import { ecosProjectIdentifiers } from '../supabase/functions/_shared/ecos-project-reference';
+import {
+  ecosProjectReferenceMismatchMessage,
+  projectReferenceMismatchText,
+  type ECOSProjectRefusalContext,
+  type ECOSProjectRefusalWording,
+} from './ECOSProjectRefusal';
+
+// The refusal wording lives in ./ECOSProjectRefusal (no network or native
+// imports) so Talk can use the same words (audit A9 pass 6 L6).
+export { ecosProjectReferenceMismatchMessage, type ECOSProjectRefusalWording } from './ECOSProjectRefusal';
 
 export { ECOS_PROJECT_QUESTION_SCHEMA_VERSION } from './ECOSQuestionProtocol';
+// One wrong-project rule for the app and the ecos-ask-project edge function
+// (owner answer Q20, 30 Sep 2026; audit A9 pass 1 #2).
+export {
+  findECOSProjectReferenceMismatch,
+  type ECOSProjectReferenceMismatch,
+} from '../supabase/functions/_shared/ecos-project-reference';
 
 export type ECOSProjectQuestionConfidence = 'high' | 'medium' | 'low';
 export type ECOSProjectQuestionStatus =
@@ -66,37 +83,28 @@ export class ECOSProjectQuestionError extends Error {
   }
 }
 
-export type ECOSProjectReferenceMismatch = Readonly<{
-  selectedProjectIdentifier: string;
-  referencedProjectIdentifier: string;
-}>;
-
-export function findECOSProjectReferenceMismatch(
-  projectName: string,
-  question: string,
-): ECOSProjectReferenceMismatch | null {
-  const selectedIdentifiers = projectIdentifiers(projectName);
-  if (selectedIdentifiers.length === 0) return null;
-  const selected = new Set(selectedIdentifiers);
-  const referencedProjectIdentifier = projectIdentifiers(question).find(identifier => {
-    if (selected.has(identifier)) return false;
-    const numericIdentifier = Number(identifier);
-    return numericIdentifier < 1900 || numericIdentifier > 2099;
+/**
+ * The closed projects Ask ECOS checks a question against: archived names that
+ * are neither deleted nor open again, without repeats (audit A9 pass 3 L1).
+ */
+export function ecosClosedProjectNames({
+  archived,
+  deleted = [],
+  open = [],
+}: {
+  archived: readonly string[];
+  deleted?: readonly string[];
+  open?: readonly string[];
+}): string[] {
+  const key = (name: string) => name.trim().toLowerCase();
+  const excluded = new Set([...deleted, ...open].map(key));
+  const seen = new Set<string>();
+  return archived.map(name => name.trim()).filter(name => {
+    const nameKey = key(name);
+    if (!nameKey || excluded.has(nameKey) || seen.has(nameKey)) return false;
+    seen.add(nameKey);
+    return true;
   });
-  return referencedProjectIdentifier ? Object.freeze({
-    selectedProjectIdentifier: selectedIdentifiers[0],
-    referencedProjectIdentifier,
-  }) : null;
-}
-
-export function ecosProjectReferenceMismatchMessage(
-  projectName: string,
-  question: string,
-): string | null {
-  const mismatch = findECOSProjectReferenceMismatch(projectName, question);
-  return mismatch
-    ? `Project ${mismatch.selectedProjectIdentifier} is selected, but this question names ${mismatch.referencedProjectIdentifier}. Select project ${mismatch.referencedProjectIdentifier} above, then ask again.`
-    : null;
 }
 
 export async function askECOSProjectQuestion({
@@ -106,11 +114,20 @@ export async function askECOSProjectQuestion({
   question,
   conversationId,
   priorTurnId,
+  knownProjectNames,
+  closedProjectNames,
+  refusalWording = 'desktop',
 }: ECOSConversationRequest & {
   client: SupabaseClient | null;
   projectId: string | null;
   projectName: string;
   question: string;
+  /** Checked here only; the server reads its own project list and never receives this. */
+  knownProjectNames?: readonly string[] | null;
+  /** Closed (archived, not deleted) projects; checked here only (audit A9 pass 3 L1). */
+  closedProjectNames?: readonly string[] | null;
+  /** How a wrong-project refusal tells the owner to switch (audit A9 pass 3 L3). */
+  refusalWording?: ECOSProjectRefusalWording;
 }): Promise<ECOSProjectQuestionAnswer> {
   const cleanQuestion = question.replace(/\s+/g, ' ').trim();
   const cleanProjectName = projectName.trim();
@@ -142,13 +159,22 @@ export async function askECOSProjectQuestion({
       'Shorten the question to 1,000 characters or fewer.',
     );
   }
-  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion);
+  const refusal = { knownProjectNames, closedProjectNames, refusalWording };
+  const projectMismatchMessage = ecosProjectReferenceMismatchMessage(cleanProjectName, cleanQuestion, knownProjectNames, refusal);
   if (projectMismatchMessage) {
     throw new ECOSProjectQuestionError('project_reference_mismatch', projectMismatchMessage);
   }
 
   const { data: sessionResult, error: sessionError } = await client.auth.getSession();
   const accessToken = sessionResult.session?.access_token;
+  // A sign-in refresh that got no answer (no signal) keeps the session: it is
+  // not a sign-out (whole-app audit A9 #6, as owner answer Q13 reads it).
+  if (sessionError && isAuthRetryableFetchError(sessionError)) {
+    throw new ECOSProjectQuestionError(
+      'request_failed',
+      projectQuestionErrorMessage(0, 'request_failed', cleanProjectName, cleanQuestion, refusal, null),
+    );
+  }
   if (sessionError || !accessToken) {
     throw new ECOSProjectQuestionError(
       'signed_out',
@@ -176,7 +202,7 @@ export async function askECOSProjectQuestion({
     const diagnostics = parseECOSQuestionDiagnostics(body?.diagnostics);
     throw new ECOSProjectQuestionError(
       code,
-      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion),
+      projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, refusal, body),
       diagnostics?.traceId || null,
     );
   }
@@ -354,6 +380,8 @@ function projectQuestionErrorMessage(
   code: string,
   projectName: string,
   question: string,
+  refusal: ECOSProjectRefusalContext,
+  body: Record<string, unknown> | null,
 ) {
   if (code.startsWith('conversation_') || code === 'prior_turn_id_invalid') {
     return 'ECOS could not recover the prior question for this project. Please ask again using the full question.';
@@ -381,8 +409,22 @@ function projectQuestionErrorMessage(
   }
   if (status === 409 || code === 'question_in_progress') {
     if (code === 'project_reference_mismatch') {
-      return ecosProjectReferenceMismatchMessage(projectName, question) ||
-        'This question names a different project. Select the correct project above, then ask again.';
+      // The server names the numbers it matched against its own project list.
+      const selectedIdentifier = requiredText(body?.selectedProjectIdentifier);
+      const referencedIdentifier = requiredText(body?.referencedProjectIdentifier);
+      if (/^\d{3,6}$/.test(selectedIdentifier) && /^\d{3,6}$/.test(referencedIdentifier)) {
+        return projectReferenceMismatchText(
+          selectedIdentifier,
+          referencedIdentifier,
+          referencedProjectIsClosed(referencedIdentifier, refusal),
+          refusal.refusalWording ?? 'desktop',
+        );
+      }
+      return ecosProjectReferenceMismatchMessage(projectName, question, refusal.knownProjectNames, refusal) || (
+        refusal.refusalWording === 'phone'
+          ? 'This question names a different project. Close this, open that project, then ask again.'
+          : 'This question names a different project. Select the correct project above, then ask again.'
+      );
     }
     return 'ECOS is already reviewing that question. Wait a moment, then retry.';
   }
@@ -410,8 +452,15 @@ function projectQuestionErrorMessage(
   return 'Ask ECOS could not complete the question. Try again shortly.';
 }
 
-function projectIdentifiers(value: string): string[] {
-  return [...new Set(value.match(/\b\d{4,6}\b/g) || [])];
+/**
+ * Whether a number the server refused is a closed project's here and no open
+ * one's (audit A9 pass 3 L1), by any of its identifiers (audit A9 pass 13:
+ * "480V Switchgear Upgrade 2375" is 2375 too).
+ */
+function referencedProjectIsClosed(identifier: string, refusal: ECOSProjectRefusalContext) {
+  const has = (names: readonly string[] | null | undefined) =>
+    (names || []).some(name => ecosProjectIdentifiers(name).some(({ digits }) => digits === identifier));
+  return has(refusal.closedProjectNames) && !has(refusal.knownProjectNames);
 }
 
 function invalidResponse() {

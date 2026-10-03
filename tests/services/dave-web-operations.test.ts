@@ -10,10 +10,15 @@ import {
   prepareDAVEWebReportEmailBody,
   DAVE_WEB_REPORT_EMAIL_SHORTENED,
   prepareDAVEWebDocumentUpload,
+  planDAVEWebScheduleImport,
   recoverDAVEWebPreparedUploadBytes,
   validateDAVEWebBackup,
 } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
+import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
+import { createReportedCompletionVerification } from '../../services/DAVECompletionVerification';
+import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 describe('DAVE web phase 4 operations', () => {
   it('prepares a large Google Drive drawing without applying the 50 MB Supabase upload limit', () => {
@@ -326,6 +331,8 @@ describe('DAVE web phase 4 operations', () => {
         importBatchId: null,
         cloudUpdatedAt: '2026-07-22T12:00:31.000Z',
         linkedScheduleItems: [],
+        // Required since audit A5 pass 3 F5: the tasks a schedule import contains.
+        importedScheduleItemCount: 0,
       }],
     } as DAVEWebReadOnlySnapshot;
 
@@ -552,5 +559,201 @@ describe('desktop report email body', () => {
     expect(result.text.endsWith(`\n\n${DAVE_WEB_REPORT_EMAIL_SHORTENED}`)).toBe(true);
     const kept = result.text.slice(0, -(DAVE_WEB_REPORT_EMAIL_SHORTENED.length + 2)).split('\n');
     expect(kept.every(line => /^Line \d+: x{40}$/.test(line))).toBe(true);
+  });
+});
+
+// Whole-app audit A5 pass 3 F5 (30 Sep 2026): the web saved every row of a
+// revised schedule as a new task at the file's percent, so making it current
+// hid the manager's progress everywhere. The upload now joins the file to the
+// tasks the web shows, as the phone's approval does. Synthetic schedule data.
+describe('web schedule import plan (audit A5 pass 3 F5)', () => {
+  const HEADER = 'Task,Project,Location,Start,Finish,Owner,Status,Percent Complete';
+
+  function upload(version: string, rows: readonly string[]) {
+    return prepareDAVEWebDocumentUpload({
+      fileName: `alpha-${version}.csv`,
+      mimeType: 'text/csv',
+      sizeBytes: 200,
+      contents: [HEADER, ...rows].join('\n'),
+      category: 'Schedules',
+      projectName: 'Alpha Tower',
+      projects: ['Alpha Tower'],
+      fingerprint: version.padEnd(64, '0'),
+      now: '2026-09-01T12:00:00.000Z',
+    });
+  }
+
+  function saved(item: ScheduleItem, changes: Partial<ScheduleItem> = {}): DAVEWebScheduleItem {
+    return { ...item, ...changes, cloudUpdatedAt: `cloud-${item.taskName}-${item.finishDate}` };
+  }
+
+  function manager(percentComplete: number): Partial<ScheduleItem> {
+    return {
+      percentComplete,
+      status: percentComplete >= 100 ? 'Complete' : 'In Progress',
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-09-10T12:00:00.000Z',
+      progressConfirmedBy: 'PM',
+    };
+  }
+
+  const byName = (items: readonly ScheduleItem[], taskName: string) =>
+    items.find(item => item.taskName === taskName)!;
+
+  it('re-homes an unchanged task with its id, progress and owner, and adds only the new task', () => {
+    const first = upload('r1', ['Frame walls,Alpha Tower,Level 1,9/1/2026,9/5/2026,,Not Started,0']);
+    const framing = saved(first.scheduleItems[0], { ...manager(60), owner: 'Framing Co', notes: 'Crew of six' });
+    const revised = upload('r2', [
+      'Frame walls,Alpha Tower,Level 1,9/1/2026,9/5/2026,,Not Started,0',
+      'Paint,Alpha Tower,Level 1,9/16/2026,9/20/2026,,Not Started,0',
+    ]);
+
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: [framing] },
+      importedScheduleItems: revised.scheduleItems,
+    });
+
+    expect(plan.additions.map(item => item.taskName)).toEqual(['Paint']);
+    expect(plan.revisions).toHaveLength(1);
+    const [revision] = plan.revisions;
+    expect(revision.cloudUpdatedAt).toBe(framing.cloudUpdatedAt);
+    expect(revision.item).toMatchObject({
+      id: framing.id,
+      percentComplete: 60,
+      owner: 'Framing Co',
+      notes: 'Crew of six',
+      importBatchId: first.document.importBatchId,
+      alsoImportedInBatchIds: [revised.document.importBatchId],
+    });
+    // Browser-only revision metadata never reaches the saved task.
+    expect(revision.item).not.toHaveProperty('cloudUpdatedAt');
+    expect(revision.previous).not.toHaveProperty('cloudUpdatedAt');
+    expect(revision.previous).toMatchObject({ id: framing.id, percentComplete: 60 });
+    expect(revision.previous.alsoImportedInBatchIds).toBeUndefined();
+  });
+
+  it('carries the manager\'s 100% and 60% onto tasks whose dates changed', () => {
+    const first = upload('r1', [
+      'Pour slab,Alpha Tower,Level 1,9/2/2026,9/4/2026,,Not Started,0',
+      'Hang drywall,Alpha Tower,Level 1,9/8/2026,9/12/2026,,Not Started,0',
+    ]);
+    const current = [
+      saved(byName(first.scheduleItems, 'Pour slab'), manager(100)),
+      saved(byName(first.scheduleItems, 'Hang drywall'), { ...manager(60), owner: 'Drywall Co' }),
+    ];
+    const revised = upload('r2', [
+      'Pour slab,Alpha Tower,Level 1,9/3/2026,9/5/2026,,Not Started,0',
+      'Hang drywall,Alpha Tower,Level 1,9/10/2026,9/15/2026,,Not Started,0',
+    ]);
+
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: current },
+      importedScheduleItems: revised.scheduleItems,
+    });
+
+    expect(plan.revisions).toEqual([]);
+    expect(byName(plan.additions, 'Pour slab')).toMatchObject({
+      id: byName(revised.scheduleItems, 'Pour slab').id,
+      startDate: '09/03/2026',
+      percentComplete: 100,
+      status: 'Complete',
+      progressSource: 'project_manager',
+      importBatchId: revised.document.importBatchId,
+    });
+    expect(byName(plan.additions, 'Hang drywall')).toMatchObject({
+      finishDate: '09/15/2026',
+      percentComplete: 60,
+      status: 'In Progress',
+      owner: 'Drywall Co',
+    });
+  });
+
+  it('carries nothing when two tasks the manager sees could be the revised one', () => {
+    const first = upload('r1', [
+      'Install panels,Alpha Tower,Level 1,9/1/2026,9/3/2026,,Not Started,0',
+      'Install panels,Alpha Tower,Level 1,9/8/2026,9/10/2026,,Not Started,0',
+    ]);
+    const current = first.scheduleItems.map((item, index) => saved(item, manager(index ? 30 : 60)));
+    const revised = upload('r2', ['Install panels,Alpha Tower,Level 1,9/15/2026,9/17/2026,,Not Started,0']);
+
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: current },
+      importedScheduleItems: revised.scheduleItems,
+    });
+
+    expect(plan.revisions).toEqual([]);
+    expect(plan.additions).toHaveLength(1);
+    expect(plan.additions[0]).toMatchObject({ percentComplete: 0, status: 'Not Started' });
+    expect(plan.additions[0].progressSource).not.toBe('project_manager');
+  });
+
+  it('leaves a task entered by hand alone and does not add it twice', () => {
+    const revised = upload('r2', ['Frame walls,Alpha Tower,Level 1,9/1/2026,9/5/2026,,Not Started,0']);
+    const handEntered = saved({
+      ...revised.scheduleItems[0],
+      id: 'hand-entered',
+      importBatchId: null,
+      sourceDocumentId: null,
+      importedFrom: null,
+      ...manager(40),
+    });
+
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: [handEntered] },
+      importedScheduleItems: revised.scheduleItems,
+    });
+
+    expect(plan).toEqual({ additions: [], revisions: [] });
+  });
+
+  it('merges a completion claim into the task it names', () => {
+    const first = upload('r1', ['Frame walls,Alpha Tower,Level 1,9/1/2026,9/5/2026,,Not Started,0']);
+    const framing = saved(first.scheduleItems[0], manager(60));
+    const claim: ScheduleItem = {
+      ...upload('claim', ['Frame walls,Alpha Tower,Level 1,9/1/2026,9/5/2026,,Complete,100']).scheduleItems[0],
+      completionVerification: createReportedCompletionVerification({
+        sourceName: 'Superintendent email',
+        sourceRecordId: 'email-1',
+        summary: 'Framing is done on Level 1.',
+        reportedAt: '2026-09-12T12:00:00.000Z',
+      }),
+    };
+
+    const plan = planDAVEWebScheduleImport({
+      snapshot: { scheduleItems: [framing] },
+      importedScheduleItems: [claim],
+    });
+
+    expect(plan.additions).toEqual([]);
+    expect(plan.revisions).toHaveLength(1);
+    expect(plan.revisions[0].item).toMatchObject({
+      id: framing.id,
+      percentComplete: 60,
+      completionVerification: { status: 'reported_complete', priorPercentComplete: 60 },
+    });
+    expect(plan.revisions[0].previous.completionVerification).toBeUndefined();
+  });
+
+  it('plans against the tasks the web shows: an older revision\'s hidden copy would leave nothing to carry', () => {
+    const first = upload('r1', ['Hang drywall,Alpha Tower,Level 1,9/8/2026,9/12/2026,,Not Started,0']);
+    const second = upload('r2', ['Hang drywall,Alpha Tower,Level 1,9/10/2026,9/15/2026,,Not Started,0']);
+    const documents = [
+      { ...first.document, isCurrent: false },
+      { ...second.document, isCurrent: true },
+    ] as ReferenceDocument[];
+    const rows = [
+      saved(first.scheduleItems[0], manager(40)),
+      saved(second.scheduleItems[0], manager(60)),
+    ];
+    // The web snapshot's scheduleItems are these: the current schedule's.
+    const shown = selectAuthoritativeScheduleItems({ scheduleItems: rows, scheduleDocuments: documents }) as DAVEWebScheduleItem[];
+    expect(shown.map(item => item.id)).toEqual([second.scheduleItems[0].id]);
+    const third = upload('r3', ['Hang drywall,Alpha Tower,Level 1,9/12/2026,9/18/2026,,Not Started,0']);
+
+    const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: shown }, importedScheduleItems: third.scheduleItems });
+    const everyRow = planDAVEWebScheduleImport({ snapshot: { scheduleItems: rows }, importedScheduleItems: third.scheduleItems });
+
+    expect(plan.additions[0]).toMatchObject({ percentComplete: 60, progressSource: 'project_manager' });
+    expect(everyRow.additions[0]).toMatchObject({ percentComplete: 0 });
   });
 });

@@ -30,6 +30,7 @@ assert(sheet.includes('<Text style={styles.transcript}>{transcript}</Text>'), 'S
 assert(sheet.includes('buildMemoryConfirmation(working)') && sheet.includes('buildAssignmentUncertainty('), 'Sheet must use deterministic human-language builders.');
 
 assert(sheet.includes("correctCaptureMemory(current, 'project'") && sheet.includes("correctCaptureMemory(current, 'location'"), 'Project and location corrections must be independent.');
+assert(sheet.includes('onChooseNone={() => chooseLocation(null)}') && sheet.includes('>No location</Text>'), 'A recommended location must be clearable with No location (audit A11 pass 1 F6).');
 assert(sheet.includes('setFieldTexts(current => ({ ...current, [field]: value }))'), 'Structured fields must use local text buffers so spaces survive mid-edit.');
 assert(sheet.includes('onBlur={() => commitField(field)}') && sheet.includes('commitFieldText(current, field, fieldTexts[field])'), 'Buffered fields must commit on blur and Save.');
 assert(sheet.includes('confirmCaptureMemory(prepared') && sheet.includes('confirmedCaptureMemoryForSave(confirmed)'), 'Save must cross the confirmation boundary and use only confirmedCaptureMemoryForSave().');

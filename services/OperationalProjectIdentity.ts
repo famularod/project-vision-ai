@@ -132,9 +132,30 @@ export function resolveOperationalProjectIdentity(
  * identity contract above.
  */
 export function resolveOperationalReferenceDocumentScope(
-  record: OperationalReferenceDocumentScopeInput,
+  input: OperationalReferenceDocumentScopeInput,
   authority: OperationalProjectIdentityAuthority,
 ): OperationalReferenceDocumentScopeResult {
+  const result = resolveReferenceDocumentScope(input, authority);
+  if (result.ok || result.code !== 'project_identity_invalid') return result;
+  // A shared document whose project was deleted keeps that project's cloud
+  // id: the cloud's delete moves its project name to the next project on its
+  // list but leaves the id, so every later upload was refused for good
+  // (whole-app audit A3 pass 4). An id that matches no active project is set
+  // aside only when the document's own names all resolve to active projects;
+  // the names then decide, and every other refusal stands.
+  const projectId = exactProjectId(input.projectId);
+  const hasNames = Array.isArray(input.projectNames) &&
+    input.projectNames.some(name => typeof name === 'string' && name.trim());
+  if (!projectId || authority.byId.has(projectId) || !hasNames) return result;
+  const byNames = resolveReferenceDocumentScope({ ...input, projectId: null }, authority);
+  return byNames.ok ? byNames : result;
+}
+
+function resolveReferenceDocumentScope(
+  input: OperationalReferenceDocumentScopeInput,
+  authority: OperationalProjectIdentityAuthority,
+): OperationalReferenceDocumentScopeResult {
+  const record = withoutOwnLegacyProjectNameKey(input);
   const hasSingleIdentity = Boolean(
     record.projectId !== undefined && record.projectId !== null ||
     record.projectName?.trim(),
@@ -223,6 +244,60 @@ export function resolveOperationalReferenceDocumentScope(
       projectNames: identities.map(identity => identity.name),
     },
   };
+}
+
+/**
+ * The phone keys a project by a slug of its name (App.tsx authorityProjectId,
+ * "project-2375-main-st"). Project documents still use it as their local key.
+ * It is never a cloud project id.
+ */
+export function legacyProjectNameKey(projectName: string): string {
+  const normalized = projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return `project-${normalized || 'unassigned'}`;
+}
+
+/**
+ * Audit A7 M1: documents added on the phone were shared with the name key as
+ * their project id, which never resolves, so they never synced. A key that is
+ * the slug of the document's own project name is read as "identified by that
+ * name"; any other non-cloud id still fails closed.
+ */
+function withoutOwnLegacyProjectNameKey(
+  record: OperationalReferenceDocumentScopeInput,
+): OperationalReferenceDocumentScopeInput {
+  const projectId = record.projectId;
+  if (typeof projectId !== 'string' || exactProjectId(projectId)) return record;
+  const key = projectId.trim();
+  const projectName = record.projectName?.trim() || '';
+  const ownName = projectName
+    ? (legacyProjectNameKey(projectName) === key ? projectName : null)
+    : (record.projectNames || []).find(name =>
+      typeof name === 'string' && name.trim() && legacyProjectNameKey(name) === key,
+    )?.trim() || null;
+  return ownName ? { ...record, projectId: null, projectName: ownName } : record;
+}
+
+/**
+ * Which of the refusals above an upload error carries. Waiting does not clear
+ * them: 'not_open' clears once the named project is open in the cloud,
+ * 'unresolved' once the record's project is corrected (whole-app audit A3
+ * pass 6 M1, 30 Sep 2026).
+ */
+export function operationalProjectIdentityFailureKind(
+  errorText: string,
+): 'not_open' | 'unresolved' | null {
+  if (/could not be found\. The saved (?:item|document) was preserved|no longer matches an active cloud project|does not identify any active project/.test(errorText)) {
+    return 'not_open';
+  }
+  if (/invalid cloud project identity|cloud identity disagree|More than one cloud project is named|does not identify its project|not included in its project list/.test(errorText)) {
+    return 'unresolved';
+  }
+  return null;
 }
 
 export function exactProjectId(value: unknown): string | null {

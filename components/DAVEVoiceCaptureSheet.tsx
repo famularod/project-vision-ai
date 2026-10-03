@@ -11,6 +11,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Modal,
   StyleSheet,
   Text,
@@ -20,6 +21,7 @@ import {
   View,
 } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
+import { daveVoiceFailureMessage } from '../services/DAVEVoiceSignalWait';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import {
@@ -37,8 +39,18 @@ import {
   type DAVEVoiceTaskOption,
 } from './dave-voice-task-options';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
 
 const MAX_RECORDING_SECONDS = 180;
+// The last polled duration before the 3-minute limit can trail it by a poll or two.
+// A recording that ends this close to the limit is treated as having reached it.
+const RECORDING_LIMIT_TOLERANCE_MS = 2_000;
+const INTERRUPTED_RECORDING_NOTICE =
+  'Recording stopped when the phone was locked or a call came in. Replay it, then use it or record again.';
+// The limit stopped a dictation with no word (whole-app audit A11 pass 4 L4).
+const RECORDING_LIMIT_NOTICE = 'Stopped at the 3-minute limit. Anything after 3:00 was not recorded.';
+const RECORDING_LIMIT_WARNING = 'Less than 15 seconds left. Recording stops at 3:00.';
+const RECORDING_LIMIT_WARNING_MS = (MAX_RECORDING_SECONDS - 15) * 1_000;
 
 export function DAVEVoiceCaptureSheet({
   visible,
@@ -103,6 +115,7 @@ export function DAVEVoiceCaptureSheet({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState('');
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
@@ -110,11 +123,40 @@ export function DAVEVoiceCaptureSheet({
   const recordingDurationRef = useRef(0);
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
+  const recordingFinishingRef = useRef(false);
+  const signInPendingRef = useNativeWorkspaceSignInPendingRef(); // A11 pass 4 L1
+  // Whole-app audit A11 pass 4 M1: X while "Preparing…" asks first. "Keep
+  // Recording for Later" stops waiting for the upload under way; its answer is
+  // held for this recording only, and used by the next tap on continueLabel.
+  const recordingGenerationRef = useRef(0);
+  const preparingOperationRef = useRef<number | null>(null);
+  const stoppedWaitingRef = useRef<{ operation: number; recording: number } | null>(null);
+  const heldTranscriptRef = useRef<{ recording: number; result: DAVEVoiceUnderstandingResponse } | null>(null);
 
   useEffect(() => () => {
-    // A closed/unmounted sheet or different project must not start an upload retry.
+    // A closed/unmounted sheet or different project must not start an upload retry,
+    // nor use a held transcript for another note.
     transcriptionOperationRef.current += 1;
+    stoppedWaitingRef.current = null;
+    heldTranscriptRef.current = null;
   }, [visible, projectId]);
+
+  // The project changed while "Preparing…" (a walk's project record changed
+  // underneath): that upload's words are dropped above, and the sheet stayed
+  // on "Preparing…" with only Discard as a way out (whole-app audit A11 pass 5
+  // L2). It stops waiting and keeps the recording ready to try again.
+  const shownProjectIdRef = useRef(projectId);
+  useEffect(() => {
+    if (shownProjectIdRef.current === projectId) return;
+    shownProjectIdRef.current = projectId;
+    if (!visible || preparingOperationRef.current === null) return;
+    preparingOperationRef.current = null;
+    setIsTranscribing(false);
+    // A11 pass 7 L2: like "Stopped waiting", say it is kept only while Vitruvius stays open.
+    setNotice(`The project changed while this recording was being prepared. It is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
+    // Only a project change while the sheet is open does this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   useEffect(() => {
     if (!visible) {
@@ -122,6 +164,8 @@ export function DAVEVoiceCaptureSheet({
       return;
     }
     setError(null);
+    setNotice(null);
+    preparingOperationRef.current = null;
     setIsTranscribing(false);
     setTaskPickerOpen(false);
     setTaskSearch('');
@@ -146,16 +190,62 @@ export function DAVEVoiceCaptureSheet({
       return;
     }
     if (!recordingActiveRef.current || !recorderState.url) return;
+    // Claiming the recording here means the owner's Stop cannot also finish it.
     recordingActiveRef.current = false;
-    setRecordingUri(recorderState.url);
-    setRecordingDuration(recordingDurationRef.current);
-    void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
-      .catch(() => setError('Recording ended, but audio settings could not be reset. Close and reopen Talk.'));
+    void finishRecordingThatEndedOnItsOwn(
+      recorderState.url,
+      preserveDAVERecordingDuration(recordingDurationRef.current, recorderState.durationMillis),
+    );
+    // finishRecordingThatEndedOnItsOwn only reads refs and stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recorder, recorderState.durationMillis, recorderState.isRecording, recorderState.url]);
 
+  // The recorder stops reporting isRecording without the owner pressing Stop in two
+  // cases: the 3-minute limit (already stopped) or, on iOS, a phone lock, auto-lock or
+  // call, which only PAUSES it. A paused m4a has no moov atom and cannot be
+  // transcribed; only stop() finalizes it. So stop first and never resume.
+  async function finishRecordingThatEndedOnItsOwn(statusUrl: string, duration: number) {
+    const generation = transcriptionOperationRef.current;
+    recordingFinishingRef.current = true;
+    let uri: string | null = null;
+    try {
+      await recorder.stop();
+      uri = recorder.uri || recorder.getStatus().url || statusUrl;
+    } catch {
+      uri = null;
+    }
+    const abandoned = generation !== transcriptionOperationRef.current;
+    if (uri && !abandoned) {
+      recordingDurationRef.current = duration;
+      setRecordingUri(uri);
+      setRecordingDuration(duration);
+    }
+    try {
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+    } catch {
+      if (uri && !abandoned) setError('Recording ended, but audio settings could not be reset. Close and reopen Talk.');
+    } finally {
+      recordingFinishingRef.current = false;
+    }
+    if (abandoned) {
+      // The sheet was closed or the recording discarded while it was finishing.
+      await removeRecording(uri);
+      return;
+    }
+    if (!uri) {
+      setError('The recording stopped when the phone was locked or a call came in, and it could not be saved. Record again or type instead.');
+      return;
+    }
+    setNotice(duration < MAX_RECORDING_SECONDS * 1_000 - RECORDING_LIMIT_TOLERANCE_MS
+      ? INTERRUPTED_RECORDING_NOTICE
+      : RECORDING_LIMIT_NOTICE);
+  }
+
   async function startRecording() {
-    if (isTranscribing || recorderState.isRecording) return;
+    if (isTranscribing || recorderState.isRecording || recordingFinishingRef.current) return;
+    recordingGenerationRef.current += 1;
     setError(null);
+    setNotice(null);
     await removeRecording(recordingUri);
     setRecordingUri(null);
     setRecordingDuration(0);
@@ -189,7 +279,8 @@ export function DAVEVoiceCaptureSheet({
   }, [autoStartRecording, projectName, visible]);
 
   async function stopRecording() {
-    if (!recorderState.isRecording) return;
+    // A lock or call may already have claimed and be finishing this recording.
+    if (!recorderState.isRecording || !recordingActiveRef.current) return;
     const stoppedDuration = preserveDAVERecordingDuration(
       recordingDurationRef.current,
       recorderState.durationMillis,
@@ -218,8 +309,22 @@ export function DAVEVoiceCaptureSheet({
       setError(`The recording is too short. Speak for at least ${DAVE_MIN_RECORDING_DURATION_MS / 1_000} second, then try again.`);
       return;
     }
+    const recording = recordingGenerationRef.current;
+    const held = heldTranscriptRef.current;
+    heldTranscriptRef.current = null;
+    if (held?.recording === recording) {
+      // The words for this recording arrived after he stopped waiting for them.
+      setError(null);
+      setNotice(null);
+      await removeRecording(uri);
+      setRecordingUri(null);
+      onMemoryReady(held.result);
+      return;
+    }
     const operation = ++transcriptionOperationRef.current;
+    preparingOperationRef.current = operation;
     setError(null);
+    setNotice(null);
     setIsTranscribing(true);
     try {
       const result = await transcribeDAVECaptureMemoryAudio({
@@ -229,17 +334,42 @@ export function DAVEVoiceCaptureSheet({
         candidateLocations,
         purpose: transcriptionPurpose,
         isRequestCurrent: () => operation === transcriptionOperationRef.current,
+        signInPending: () => signInPendingRef.current,
       });
-      if (operation !== transcriptionOperationRef.current) return;
+      if (operation !== transcriptionOperationRef.current) {
+        const stopped = stoppedWaitingRef.current;
+        if (stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
+          heldTranscriptRef.current = { recording: stopped.recording, result };
+        }
+        return;
+      }
       await removeRecording(uri);
       setRecordingUri(null);
       onMemoryReady(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
-      setError(reason instanceof Error ? reason.message : 'The recording could not be transcribed.');
+      setError(daveVoiceFailureMessage(reason, continueLabel));
     } finally {
-      if (operation === transcriptionOperationRef.current) setIsTranscribing(false);
+      if (operation === transcriptionOperationRef.current) {
+        preparingOperationRef.current = null;
+        setIsTranscribing(false);
+      }
     }
+  }
+
+  // "Keep Recording for Later": stop waiting, keep the audio, back to "Recording ready".
+  // An upload already dropped (a project change) holds no words, but still
+  // ends the wait: it used to do nothing (whole-app audit A11 pass 5 L2).
+  function stopWaitingKeepRecording() {
+    const operation = preparingOperationRef.current;
+    if (operation !== null && operation === transcriptionOperationRef.current) {
+      stoppedWaitingRef.current = { operation, recording: recordingGenerationRef.current };
+      transcriptionOperationRef.current += 1;
+    }
+    preparingOperationRef.current = null;
+    setIsTranscribing(false);
+    // Kept in this sheet only, while the app stays open (A11 pass 6 L2).
+    setNotice(`Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
   }
 
   async function transcribe() {
@@ -247,37 +377,67 @@ export function DAVEVoiceCaptureSheet({
     await transcribeRecording(recordingUri, recordingDuration);
   }
 
-  async function cancel() {
+  // A finished recording that has not been used (for example after an offline
+  // transcription failure) is only deleted once the owner confirms, and so is one
+  // still being prepared (A11 pass 4 M1). While listening, or with nothing
+  // recorded, leaving discards at once as before.
+  function confirmDiscardThen(leave: () => Promise<void>) {
+    if (isTranscribing) {
+      Alert.alert(
+        'Stop preparing this recording?',
+        `It is still being turned into text. You can keep waiting, keep the recording here while Vitruvius stays open and try ${continueLabel} again later, or discard it.`,
+        [
+          { text: 'Keep Waiting', style: 'cancel' },
+          { text: 'Keep Recording for Later', onPress: stopWaitingKeepRecording },
+          { text: 'Discard', style: 'destructive', onPress: () => { void leave(); } },
+        ],
+      );
+      return;
+    }
+    if (!recordingUri || recorderState.isRecording) {
+      void leave();
+      return;
+    }
+    Alert.alert(
+      'Discard this recording?',
+      'It has not been used yet. Discarding deletes it from this device.',
+      [
+        { text: 'Keep', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => { void leave(); } },
+      ],
+    );
+  }
+
+  async function discardRecording() {
     transcriptionOperationRef.current += 1;
-    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
+    recordingGenerationRef.current += 1;
+    preparingOperationRef.current = null;
+    stoppedWaitingRef.current = null;
+    heldTranscriptRef.current = null;
+    setIsTranscribing(false);
+    // Claim the recording first so a lock or call cannot also finish and offer it.
     recordingActiveRef.current = false;
+    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
     setRecordingUri(null);
+    setNotice(null);
     recordingDurationRef.current = 0;
+  }
+
+  async function cancel() {
+    await discardRecording();
     onCancel();
   }
 
   async function typeInstead() {
-    transcriptionOperationRef.current += 1;
-    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
-    recordingActiveRef.current = false;
-    await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
-    await removeRecording(recordingUri || recorder.uri);
-    setRecordingUri(null);
-    recordingDurationRef.current = 0;
+    await discardRecording();
     onTypeInstead();
   }
 
   async function openOperation() {
     if (!onOperation) return;
-    transcriptionOperationRef.current += 1;
-    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
-    recordingActiveRef.current = false;
-    await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
-    await removeRecording(recordingUri || recorder.uri);
-    setRecordingUri(null);
-    recordingDurationRef.current = 0;
+    await discardRecording();
     onOperation();
   }
 
@@ -300,7 +460,7 @@ export function DAVEVoiceCaptureSheet({
     : null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={() => { void cancel(); }}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={() => confirmDiscardThen(cancel)}>
       <View style={[styles.backdrop, usesTabletSheet && styles.backdropTablet]}>
         <KeyboardAvoidingModalCard
           containerStyle={[
@@ -319,7 +479,7 @@ export function DAVEVoiceCaptureSheet({
               <Text style={styles.title}>{title}</Text>
               <Text style={styles.subtitle}>{contextLabel || projectName || 'Choose a project'}</Text>
             </View>
-            <TouchableOpacity style={styles.closeButton} onPress={() => { void cancel(); }} accessibilityLabel="Cancel memory capture">
+            <TouchableOpacity style={styles.closeButton} onPress={() => confirmDiscardThen(cancel)} accessibilityLabel="Cancel memory capture">
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -347,7 +507,7 @@ export function DAVEVoiceCaptureSheet({
           {onOperation && operationLabel ? (
             <TouchableOpacity
               style={[styles.operationCard, !projectName && styles.buttonDisabled]}
-              onPress={() => { void openOperation(); }}
+              onPress={() => confirmDiscardThen(openOperation)}
               accessibilityRole="button"
               accessibilityLabel={operationLabel}
               disabled={!projectName}
@@ -516,9 +676,13 @@ export function DAVEVoiceCaptureSheet({
           <View style={[styles.recorderCard, recorderState.isRecording && styles.recorderCardActive]}>
             <Text style={styles.timer}>{formatDuration(elapsed)}</Text>
             <Text style={styles.recordingLimit}>Up to 3 minutes</Text>
+            {recorderState.isRecording && recorderState.durationMillis >= RECORDING_LIMIT_WARNING_MS ? (
+              <Text style={styles.limitWarning} accessibilityLiveRegion="polite">{RECORDING_LIMIT_WARNING}</Text>
+            ) : null}
             {recordingUri && !recorderState.isRecording ? <DAVERecordingPlayback uri={recordingUri} /> : null}
           </View>
 
+          {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
           {recorderState.isRecording ? (
@@ -550,7 +714,7 @@ export function DAVEVoiceCaptureSheet({
           )}
 
           {!recorderState.isRecording ? (
-            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => { void typeInstead(); }} accessibilityRole="button">
+            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => confirmDiscardThen(typeInstead)} accessibilityRole="button">
               <Text style={styles.typeText}>Type Instead</Text>
             </TouchableOpacity>
           ) : null}
@@ -650,6 +814,7 @@ const styles = StyleSheet.create({
   recorderCardActive: { borderColor: colors.danger, backgroundColor: '#FFF7F7' },
   timer: { color: colors.text, fontSize: 38, fontWeight: '800', fontVariant: ['tabular-nums'] },
   recordingLimit: { color: colors.mutedText, fontSize: 12, marginTop: 4 },
+  limitWarning: { color: colors.danger, fontSize: 14, fontWeight: '800', lineHeight: 20, marginTop: spacing.sm, textAlign: 'center' },
   playbackButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: spacing.md, paddingHorizontal: spacing.md },
   recordButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   buttonDisabled: { opacity: 0.45 },
@@ -661,4 +826,5 @@ const styles = StyleSheet.create({
   typeButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   typeText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
   error: { color: colors.danger, fontSize: 14, lineHeight: 20, fontWeight: '700', marginTop: spacing.md, textAlign: 'center' },
+  notice: { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: 12, borderWidth: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700', marginTop: spacing.md, overflow: 'hidden', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, textAlign: 'center' },
 });

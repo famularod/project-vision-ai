@@ -143,6 +143,67 @@ export function photoProjectProgressFromAuthority(
   return 'unable_to_determine';
 }
 
+// Ceilings below are ranks in this order: low 0, medium 1, high 2.
+const COMPARISON_CONFIDENCE_RANK: ReadonlyMap<string, number> = new Map([
+  ['low', 0],
+  ['medium', 1],
+  ['high', 2],
+]);
+
+/**
+ * Owner answer Q9 (30 Sep 2026): a comparison's confidence cannot be higher
+ * than the two photos' comparability supports. Weak or not comparable caps it
+ * at low; probable caps it at medium; strong or an unknown comparability
+ * leaves it unchanged. A cap only lowers a known level (low, medium, high):
+ * it never invents a confidence for a missing or unrecognized value.
+ */
+export function capPhotoComparisonConfidence(
+  confidence: string | null,
+  comparability: string | null | undefined,
+): string | null {
+  if (confidence === null) return null;
+  const rank = COMPARISON_CONFIDENCE_RANK.get(confidence.trim().toLowerCase());
+  if (rank === undefined) return confidence;
+  const normalizedComparability = comparability?.trim().toLowerCase();
+  if (normalizedComparability === 'weak' || normalizedComparability === 'not_comparable') {
+    return rank > 0 ? 'low' : confidence;
+  }
+  if (normalizedComparability === 'probable') {
+    return rank > 1 ? 'medium' : confidence;
+  }
+  return confidence;
+}
+
+type StoredComparisonConfidence = {
+  comparisonConfidence?: string | null;
+  comparability?: string | null;
+};
+
+/**
+ * The confidence to read or show for a stored comparison (audit round 2 L1).
+ * A result analysed before the Q9 build (it has no provider value kept beside
+ * it) was saved uncapped and could still say "High confidence" next to
+ * "Comparability: probable/weak" and score 90, so the cap is applied when it
+ * is read. A result analysed since Q9 was capped when saved, and capping it
+ * again changes nothing, so this never reads the raw provider value.
+ */
+export function storedPhotoComparisonConfidence(
+  result: StoredComparisonConfidence | null | undefined,
+): string | null {
+  const confidence = result?.comparisonConfidence ?? null;
+  if (!result) return confidence;
+  return capPhotoComparisonConfidence(confidence, result.comparability);
+}
+
+/** The same stored result with its confidence capped; the same object when nothing changes. */
+export function withStoredPhotoComparisonCap<T extends StoredComparisonConfidence>(
+  result: T | null | undefined,
+): T | null {
+  if (!result) return null;
+  const confidence = storedPhotoComparisonConfidence(result);
+  return confidence === (result.comparisonConfidence ?? null) ? result : { ...result, comparisonConfidence: confidence };
+}
+
 export function photoDisplayResultHasExplicitFinding(
   result: PhotoAssessmentDisplayResult | null | undefined,
 ) {

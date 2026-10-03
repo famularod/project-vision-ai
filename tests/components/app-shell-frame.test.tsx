@@ -1,6 +1,6 @@
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { useState } from 'react';
-import { Dimensions, Pressable, StyleSheet, Text } from 'react-native';
+import { Dimensions, Keyboard, Pressable, StyleSheet, Text, TextInput } from 'react-native';
 
 import { AppShellFrame } from '../../components/app-shell-frame';
 
@@ -49,6 +49,62 @@ describe('AppShellFrame', () => {
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Tasks' }));
     expect(onScreenChange).toHaveBeenCalledWith('Schedule');
+  });
+
+  it('lets a field being typed blur and save before the screen changes (audit A2 M3)', async () => {
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const onScreenChange = jest.fn();
+      const screen = await render(
+        <AppShellFrame currentScreen="Home" onScreenChange={onScreenChange} onTalk={jest.fn()}>
+          <Text>Current project overview</Text>
+        </AppShellFrame>,
+      );
+      await fireEvent.press(screen.getByRole('tab', { name: 'Tasks' }));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(onScreenChange).not.toHaveBeenCalled();
+      act(() => { jest.advanceTimersByTime(80); });
+      expect(onScreenChange).toHaveBeenCalledWith('Schedule');
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
+  });
+
+  it('lets a field being typed blur and save before the rail task project changes (audit A2 pass 2 M2)', async () => {
+    setWindowDimensions({ width: 1194, height: 834, scale: 2, fontScale: 1 });
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const onTaskProjectChange = jest.fn();
+      const screen = await render(
+        <AppShellFrame
+          currentScreen="Schedule"
+          onScreenChange={jest.fn()}
+          onTalk={jest.fn()}
+          taskProjects={['Project A', 'Project B']}
+          selectedTaskProject="Project A"
+          onTaskProjectChange={onTaskProjectChange}
+        >
+          <Text>Task workspace</Text>
+        </AppShellFrame>,
+      );
+      await fireEvent.press(screen.getByRole('radio', { name: 'Show tasks for Project B' }));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(onTaskProjectChange).not.toHaveBeenCalled();
+      act(() => { jest.advanceTimersByTime(80); });
+      expect(onTaskProjectChange).toHaveBeenCalledWith('Project B');
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
   });
 
   it('uses a compact navigation rail at medium iPad width', async () => {

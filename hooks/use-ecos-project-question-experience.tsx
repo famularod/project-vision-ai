@@ -6,6 +6,7 @@ import { ECOSProjectAnswerSheet } from '../components/ECOSProjectAnswerSheet';
 import type { DAVEAskEvidence } from '../services/DAVEAsk';
 import {
   askECOSProjectQuestion,
+  ecosClosedProjectNames,
   type ECOSProjectQuestionAnswer,
 } from '../services/ECOSProjectQuestion';
 import type { ProjectRecord } from '../services/ProjectCoverPhotoService';
@@ -22,16 +23,32 @@ type QuestionState = Readonly<{
   error: string | null;
 }>;
 
+function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): string | null {
+  return projectRecords.find(project =>
+    project.name.trim().toLowerCase() === name.trim().toLowerCase(),
+  )?.id?.trim() || null;
+}
+
+const NO_NAMES: readonly string[] = [];
+
+const alertChooseProject = () =>
+  Alert.alert('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
+
 export function useECOSProjectQuestionExperience({
   contextualProjectName,
   projectRecords,
   candidateProjects,
+  archivedProjectNames = NO_NAMES,
+  deletedProjectNames = NO_NAMES,
   onOpenEvidence,
   documentEvidenceVisible = false,
 }: {
   contextualProjectName: string | null;
   projectRecords: readonly ProjectRecord[];
   candidateProjects: readonly string[];
+  /** Closed projects; a deleted one is left out (audit A9 pass 3 L1). */
+  archivedProjectNames?: readonly string[];
+  deletedProjectNames?: readonly string[];
   onOpenEvidence: (projectName: string, evidence: DAVEAskEvidence) => void;
   documentEvidenceVisible?: boolean;
 }) {
@@ -39,17 +56,31 @@ export function useECOSProjectQuestionExperience({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [typedOpen, setTypedOpen] = useState(false);
   const [result, setResult] = useState<QuestionState | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<Readonly<{ projectName: string; question: string }> | null>(null);
+  // Bumped only by askFor: a question sent from Talk starts a new Ask ECOS
+  // conversation, so the server cannot read it against an older Ask ECOS
+  // question of the project (audit A9 pass 2 F2).
+  const [conversationEpoch, setConversationEpoch] = useState(0);
   const requestGeneration = useRef(0);
   const dismissResult = useCallback(() => {
     requestGeneration.current += 1;
     setResult(null);
   }, []);
   useEffect(() => () => { requestGeneration.current += 1; }, []);
-  const projectId = useMemo(() => projectRecords.find(project =>
-    project.name.trim().toLowerCase() === projectName.trim().toLowerCase(),
-  )?.id?.trim() || null, [projectName, projectRecords]);
+  const projectId = useMemo(() => projectIdFor(projectRecords, projectName), [projectName, projectRecords]);
+  // The unarchived projects the user can pick, so Ask ECOS refuses a number only
+  // when it names one of them (owner answer Q20; audit A9 pass 1 #2).
+  const knownProjectNames = useMemo(
+    () => [...new Set(candidateProjects.map(name => name.trim()).filter(Boolean))],
+    [candidateProjects],
+  );
+  // Closed projects are not pickable, but a question naming one is still refused (audit A9 pass 3 L1).
+  const closedProjectNames = useMemo(
+    () => ecosClosedProjectNames({ archived: archivedProjectNames, deleted: deletedProjectNames, open: knownProjectNames }),
+    [archivedProjectNames, deletedProjectNames, knownProjectNames],
+  );
   const ownerKey = useNativeWorkspaceOwner();
-  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
+  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName, conversationEpoch]));
   useEffect(() => { dismissResult(); }, [conversation, dismissResult]);
 
   const open = useCallback(() => {
@@ -63,7 +94,7 @@ export function useECOSProjectQuestionExperience({
     const selectedProjectName = projectName.trim();
     const cleanQuestion = question.replace(/\s+/g, ' ').trim();
     if (!selectedProjectName || !projectId) {
-      Alert.alert('Choose a project', 'Ask ECOS needs one synchronized project before it can review project evidence.');
+      alertChooseProject();
       return;
     }
     setVoiceOpen(false);
@@ -77,6 +108,10 @@ export function useECOSProjectQuestionExperience({
         projectId,
         projectName: selectedProjectName,
         question: cleanQuestion,
+        knownProjectNames,
+        closedProjectNames,
+        // The answer sheet has no project picker (audit A9 pass 3 L3).
+        refusalWording: 'phone',
         ...turn.request,
       });
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
@@ -91,7 +126,37 @@ export function useECOSProjectQuestionExperience({
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
         : current);
     }
-  }, [projectId, projectName, conversation]);
+  }, [projectId, projectName, conversation, knownProjectNames, closedProjectNames]);
+
+  // Runs after the reset effect above, once the named project's conversation exists.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    setPendingQuestion(null);
+    if (pendingQuestion.projectName === projectName) void ask(pendingQuestion.question);
+  }, [ask, pendingQuestion, projectName]);
+
+  /** Whether Ask ECOS can ask about this project: it has a cloud record (audit A9 pass 2 F4). */
+  const canAskFor = useCallback(
+    (name: string) => Boolean(name.trim() && projectIdFor(projectRecords, name.trim())),
+    [projectRecords],
+  );
+
+  /**
+   * Asks one question for a named project, e.g. from a Talk document match
+   * (audit A9 pass 1 #3), in a new Ask ECOS conversation. Returns whether it
+   * started, so Talk keeps its answer when it did not (audit A9 pass 2 F4).
+   */
+  const askFor = useCallback((name: string, question: string): boolean => {
+    const selectedProjectName = name.trim();
+    if (!canAskFor(selectedProjectName)) {
+      alertChooseProject();
+      return false;
+    }
+    setProjectName(selectedProjectName);
+    setConversationEpoch(epoch => epoch + 1);
+    setPendingQuestion({ projectName: selectedProjectName, question });
+    return true;
+  }, [canAskFor]);
 
   const sheets = <>
     <DAVEVoiceCaptureSheet
@@ -156,5 +221,13 @@ export function useECOSProjectQuestionExperience({
     />
   </>;
 
-  return { open, sheets };
+  // Closes every Ask ECOS sheet (a panel that failed to render, audit A2 pass 2).
+  const close = useCallback(() => {
+    setVoiceOpen(false);
+    setTypedOpen(false);
+    dismissResult();
+  }, [dismissResult]);
+
+  // Talk refuses a question naming a closed project with the same list (audit A9 pass 6 L6b).
+  return { open, close, askFor, canAskFor, sheets, closedProjectNames };
 }

@@ -136,9 +136,20 @@ export function correctCaptureMemory(
     sourceRecordId: memory.id,
     summary: `PM corrected ${field}.`,
   })]);
+  // A location heard or suggested for one project is not kept when the note
+  // moves to another; a confirmed choice stays (whole-app audit A9 F5).
+  const dropsLocation = field === 'project' && Boolean(memory.recommendedLocation.value) &&
+    !memory.recommendedLocation.confirmed &&
+    (previousValue || '').trim().toLowerCase() !== (value || '').toLowerCase();
   if (field === 'project') return replace(memory, {
     recommendedProject: Object.freeze({ ...memory.recommendedProject, value, confirmed: Boolean(value), confidence: 'high' }),
-    corrections: [...memory.corrections, correction], evidence,
+    ...(dropsLocation ? {
+      recommendedLocation: Object.freeze({ value: null, confidence: 'unknown' as const, evidenceIds: Object.freeze([]), confirmed: false }),
+    } : {}),
+    corrections: [...memory.corrections, correction, ...(dropsLocation ? [Object.freeze({
+      field: 'location' as const, previousValue: memory.recommendedLocation.value, correctedValue: null, correctedAt,
+    })] : [])],
+    evidence,
   });
   if (field === 'location') return replace(memory, {
     recommendedLocation: Object.freeze({ ...memory.recommendedLocation, value, confirmed: Boolean(value), confidence: 'high' }),

@@ -22,7 +22,13 @@ const {
   authorityInputSignature,
 } = moduleUnderTest.exports;
 
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.4');
+// 2.4 -> 2.5 (audit round 2 L3, 30 Sep 2026): the project-local as-of day
+// joined the evidence signature so the Home schedule line rolls over at
+// midnight; it is not part of the scope signature.
+// 2.5 -> 2.6 (whole-app audit A10 pass 7 L2, 30 Sep 2026): every saved task
+// (knownScheduleItems) joined the evidence signature, since the runtime's
+// reconciliation now reads it; it is not part of the scope signature.
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.6');
 
 function input() {
   return {
@@ -273,9 +279,12 @@ assert(
     provider.includes(': await buildLivePIECoreIntelligence(coreInput)'),
   'Ephemeral portfolio authority must use the non-persisting Core builder.',
 );
+// A10 pass 2 F4 (30 Sep 2026), pin changed deliberately: Project Truth is
+// saved only under 'persist_project' (an ephemeral portfolio, or a name that
+// is no project of the owner's, saves none).
 assert(
   provider.includes('if (!ephemeralPortfolio && result.longitudinalPhotoIntelligence)') &&
-    provider.includes("if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;"),
+    provider.includes("if ((authorityInput.projectTruthPersistencePolicy || 'persist_project') !== 'persist_project') return;"),
   'Ephemeral portfolio authority must skip photo-progress and project-truth persistence.',
 );
 assert(
@@ -313,6 +322,21 @@ assert(
     realityCacheRecovery.includes("'projectVisionAI.pieRealityModel.snapshots.v1.'") &&
     !realityCacheRecovery.includes("'projectPhotoUpdates.v2'"),
   'Startup must remove only legacy derived Reality Model cache keys before v2 authority starts.',
+);
+
+// Audit round 2 L3: a new project-local day rebuilds authority (overdue and
+// due-today change at midnight) without looking like a scope change.
+const today = { ...input(), asOfDay: '2026-09-30' };
+const tomorrow = { ...input(), asOfDay: '2026-10-01' };
+assert.notStrictEqual(
+  authorityInputSignature(tomorrow),
+  authorityInputSignature(today),
+  'a new project-local day must produce a new evidence signature',
+);
+assert.strictEqual(
+  authorityInputScopeSignature(tomorrow),
+  authorityInputScopeSignature(today),
+  'a new day is not a project or report scope change',
 );
 
 console.log('DAVE live-authority semantic signature tests passed.');

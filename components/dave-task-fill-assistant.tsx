@@ -126,6 +126,7 @@ export function DAVETaskFillAssistant({
   projectNames,
   projectRecords,
   locationNames,
+  locationNamesForProject,
   ownerNames,
   contractorNames,
   milestoneNames = [],
@@ -137,13 +138,16 @@ export function DAVETaskFillAssistant({
   initiallyGuided?: boolean;
   projectNames: readonly string[];
   projectRecords: readonly DAVETaskFillProjectRecord[];
+  /** The current project's areas; an instruction naming another project uses that project's. */
   locationNames: readonly string[];
+  locationNamesForProject?: (projectName: string) => readonly string[];
   ownerNames: readonly string[];
   contractorNames: readonly string[];
   milestoneNames?: readonly string[];
   taskCandidates: readonly DAVETaskFillTaskCandidate[];
   currentValues: DAVETaskFillValues;
-  onApply: (patch: DAVETaskFillPatch) => void;
+  /** May return the patch as applied (a changed project brings its location). */
+  onApply: (patch: DAVETaskFillPatch) => DAVETaskFillPatch | void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -214,14 +218,26 @@ export function DAVETaskFillAssistant({
     setGuidedComplete(false);
   }, [active]);
 
-  function goToGuidedQuestion(nextIndex: number) {
+  // The area question's answer follows the form's Location while David has
+  // not edited it: a GPS suggestion can land while the question is showing,
+  // and the answer stayed blank above a filled form (Q31 review L5, 1 Oct 2026).
+  const formLocation = currentValues.locationName;
+  const formLocationRef = useRef(formLocation);
+  useEffect(() => {
+    const previous = formLocationRef.current;
+    formLocationRef.current = formLocation;
+    if (previous === formLocation || !guided || currentGuidedField !== 'locationName') return;
+    setGuidedAnswer(answer => (answer === previous ? formLocation : answer));
+  }, [currentGuidedField, formLocation, guided]);
+
+  function goToGuidedQuestion(nextIndex: number, values: DAVETaskFillValues = currentValues) {
     if (nextIndex >= GUIDED_FIELD_NAMES.length) {
       setGuidedComplete(true);
       return;
     }
     const boundedIndex = Math.max(0, nextIndex);
     setGuidedIndex(boundedIndex);
-    setGuidedAnswer(guidedValue(currentValues, GUIDED_FIELD_NAMES[boundedIndex]));
+    setGuidedAnswer(guidedValue(values, GUIDED_FIELD_NAMES[boundedIndex]));
     setGuidedError(null);
   }
 
@@ -250,13 +266,14 @@ export function DAVETaskFillAssistant({
       setGuidedError(result.error);
       return false;
     }
-    if (Object.keys(result.patch).length > 0) onApply(result.patch);
+    const applied = Object.keys(result.patch).length > 0 ? onApply(result.patch) || result.patch : {};
     setGuidedSkipped(previous => {
       const next = new Set(previous);
       next.delete(currentGuidedField);
       return next;
     });
-    if (advance) goToGuidedQuestion(guidedIndex + 1);
+    // The next question prefills from the form as this answer left it.
+    if (advance) goToGuidedQuestion(guidedIndex + 1, { ...currentValues, ...applied });
     return true;
   }
 
@@ -281,15 +298,22 @@ export function DAVETaskFillAssistant({
   }
 
   function reviewInstruction() {
-    setReview(parseDAVETaskFillTranscript(instruction, {
-      mode: 'create',
+    const context = {
+      mode: 'create' as const,
       projectNames: candidateProjects,
-      locationNames: candidateLocations,
       ownerNames,
       contractorNames,
       taskCandidates,
       currentValues,
-    }));
+    };
+    const understood = parseDAVETaskFillTranscript(instruction, { ...context, locationNames: candidateLocations });
+    // An instruction naming another project names one of that project's areas.
+    const namedProject = understood.fields.projectName.value;
+    const otherProject = namedProject && locationNamesForProject &&
+      namedProject.trim().toLowerCase() !== currentValues.projectName.trim().toLowerCase();
+    setReview(otherProject
+      ? parseDAVETaskFillTranscript(instruction, { ...context, locationNames: locationNamesForProject(namedProject) })
+      : understood);
     setDuplicateConfirmed(false);
     setApplied(false);
   }

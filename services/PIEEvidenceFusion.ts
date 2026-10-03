@@ -27,13 +27,14 @@ import {
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   distanceBetweenCoordinatesFeet,
   findClosestProjectArea,
   findProjectAreaSuggestions,
   hasSavedAreaLocation,
 } from './AreaSuggestion';
-import { gpsAccuracyFeet, isConfidentlyInsideArea } from './GpsPrecision';
+import { isConfidentlyInsideArea, isConfidentlyOutsideArea as isPlacementConfidentlyOutside } from './GpsPrecision';
 import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
 import { fixIsCurrent } from './DraftPhotoGps';
@@ -345,6 +346,8 @@ export type BuildFusedEvidenceParams = {
   currentUpdate?: ProjectUpdate | null;
   photoProgressEvidence?: PIEPhotoProgressEvidence[];
   scheduleItems?: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2, pass 7 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectAreas?: ProjectArea[];
   referenceDocuments?: ReferenceDocument[];
   reportHistory?: ProjectReportHistoryMetadata[];
@@ -378,6 +381,7 @@ export function buildFusedEvidence({
   currentUpdate = null,
   photoProgressEvidence = [],
   scheduleItems = [],
+  knownScheduleItems = [],
   projectAreas = [],
   referenceDocuments = [],
   reportHistory = [],
@@ -405,6 +409,7 @@ export function buildFusedEvidence({
   });
   const scheduleReconciliation = buildPIEScheduleReconciliation({
     scheduleItems,
+    knownScheduleItems, // as the phone's and the web's summaries take them (A10 pass 7 L2)
     updates: currentUpdate && !updates.some(update => update.id === currentUpdate.id)
       ? [currentUpdate, ...updates]
       : updates,
@@ -556,7 +561,8 @@ export function extractScheduleEvidence({
             label: `${item.progressConfirmedBy || 'Project manager'} progress judgment`,
             recordId: item.id,
             confidence: 'high' as const,
-            capturedAt: item.progressConfirmedAt || item.createdAt,
+            // When the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+            capturedAt: scheduleProgressJudgedAt(item) || item.createdAt,
             actorId: item.progressConfirmedBy || null,
             confirmationEventId: item.progressConfirmedAt
               ? `schedule-progress-confirmation:${item.id}:${item.progressConfirmedAt}`
@@ -1764,13 +1770,16 @@ function matchesProject(projectName: string | null | undefined, value: string | 
   return normalizedKey(projectName) === normalizedKey(value || '');
 }
 
-/** The fix's whole error margin lies outside the area's circle. */
+/** The fix's whole error margin lies outside the area's circle; never for an unknown margin (pass 1 low, G-L1). */
 function isConfidentlyOutsideArea(
   fix: Readonly<{ latitude: number; longitude: number; accuracy: number | null }>,
   area: ProjectArea,
 ) {
-  const distance = distanceBetweenCoordinatesFeet(fix, area);
-  return distance - (gpsAccuracyFeet(fix.accuracy) ?? 0) > area.radiusFeet;
+  return isPlacementConfidentlyOutside({
+    distanceFeet: distanceBetweenCoordinatesFeet(fix, area),
+    accuracyMeters: fix.accuracy,
+    radiusFeet: area.radiusFeet,
+  });
 }
 
 function sameArea(left: string | null | undefined, right: string | null | undefined) {

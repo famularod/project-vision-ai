@@ -146,6 +146,23 @@ export async function restoreVerifiedReferenceDocumentBytes(
   });
 }
 
+/**
+ * Applies a restored file to this phone's copy of the document only. Its edit
+ * time is kept and nothing is queued: an open is not an edit, and queuing it
+ * rewrote the cloud record and could overwrite a newer web edit held in a
+ * stale local copy (whole-app audit A8 pass 1 F4 (30 Sep 2026)).
+ */
+export function withRestoredReferenceDocumentBytes<
+  T extends Readonly<{ id: string; uri: string; sizeBytes?: number | null; contentSha256?: string | null }>,
+>(
+  documents: readonly T[],
+  restored: Pick<ReferenceDocumentByteRestoreResult, 'documentId' | 'uri' | 'sizeBytes' | 'sha256'>,
+): T[] {
+  return documents.map(document => document.id === restored.documentId
+    ? { ...document, uri: restored.uri, sizeBytes: restored.sizeBytes, contentSha256: restored.sha256 }
+    : document);
+}
+
 function requireIdentity(value: unknown): string {
   const normalized = typeof value === 'string' ? value.trim() : '';
   if (!normalized || /[/\\\0]/.test(normalized) || normalized === '.' || normalized === '..') {

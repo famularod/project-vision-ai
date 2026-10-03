@@ -1,0 +1,201 @@
+import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectRefusal';
+import { resolveDAVEConversationContext } from '../../services/DAVEConversationContext';
+import { buildDAVETalkMemoryDraft, mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+
+// Audit A9 pass 15 (1 Oct 2026): owner answer Q20 refuses a question that
+// names another known project's number (open or closed, not deleted) and
+// never the selected project's own. When unsure, refuse. A plain number
+// belongs to the project whose name continues furthest around it. Synthetic
+// project names.
+
+const SELECTED = '2321 Compliance Project';
+
+const phone = (question: string, known: readonly string[] | undefined, closed?: readonly string[], selected = SELECTED) =>
+  ecosProjectReferenceMismatchMessage(selected, question, known, { closedProjectNames: closed, refusalWording: 'phone' });
+const desktop = (question: string, known: readonly string[] | undefined, closed?: readonly string[], selected = SELECTED) =>
+  ecosProjectReferenceMismatchMessage(selected, question, known, { closedProjectNames: closed, refusalWording: 'desktop' });
+const switchOnPhone = (number: string, selected = '2321') =>
+  `Project ${selected} is selected, but this question names ${number}. Close this, open project ${number}, then ask again.`;
+const switchOnDesktop = (number: string, selected = '2321') =>
+  `Project ${selected} is selected, but this question names ${number}. Select project ${number} above, then ask again.`;
+
+/** What Talk says instead of answering, on `selected`, or null when it answers. */
+function talkAnswer(question: string, open: readonly string[], closed: readonly string[] = [], selected = SELECTED) {
+  const context = resolveDAVEConversationContext({
+    transcript: question,
+    history: [],
+    projectId: `project-${selected}`,
+    projectName: selected,
+    projectNames: open,
+    closedProjectNames: closed,
+  });
+  return context.status === 'ambiguous_follow_up' ? context.effectiveQuestion : null;
+}
+
+describe('audit A9 pass 15 M1: an address with a compass word is that project\'s address', () => {
+  const MAIN = '24117 - 400 N Main St';
+  const OAK = '400 Oak Ave';
+  const MAIN_LABEL = '400 (24117 - 400 N Main St)';
+
+  it.each([
+    ['Is 400 N. Main done?', MAIN, MAIN_LABEL],
+    ['Is 400 North Main done?', MAIN, MAIN_LABEL],
+    ['Is 1200 S. Broadway done?', '24117 - 1200 S Broadway', '1200 (24117 - 1200 S Broadway)'],
+    ['Is 2375 W. 7th St done?', '24117 - 2375 W 7th St', '2375 (24117 - 2375 W 7th St)'],
+    ['Is 780 SW Harbor done?', '23088 - 780 Southwest Harbor Dr', '780 (23088 - 780 Southwest Harbor Dr)'],
+  ])('on 2321, "%s" names "%s" (was answered from 2321)', (question, other, label) => {
+    expect(phone(question, [SELECTED, other])).toBe(switchOnPhone(label));
+    expect(desktop(question, [SELECTED, other])).toBe(switchOnDesktop(label));
+    expect(mentionedDAVEProject(question, [SELECTED, other])).toBe(other);
+  });
+
+  it('with 400 Oak Ave also open, "Is 400 N. Main done?" names 24117 - 400 N Main St, and Talk moves there (was 400 Oak Ave)', () => {
+    expect(phone('Is 400 N. Main done?', [SELECTED, MAIN, OAK])).toBe(switchOnPhone(MAIN_LABEL));
+    expect(mentionedDAVEProject('Is 400 N. Main done?', [SELECTED, MAIN, OAK])).toBe(MAIN);
+    expect(mentionedDAVEProject('Crew finished framing at 400 N. Main today', [SELECTED, MAIN, OAK])).toBe(MAIN);
+  });
+
+  it('on 24117 - 400 N Main St its own "400 N. Main St" is answered in Ask ECOS and Talk (was refused as 400 Oak Ave)', () => {
+    for (const question of ['Is 400 N. Main St done?', 'Is 400 North Main St done?', 'Is 400 N. Main done?']) {
+      expect(phone(question, [SELECTED, MAIN, OAK], [], MAIN)).toBeNull();
+      expect(desktop(question, [SELECTED, MAIN, OAK], [], MAIN)).toBeNull();
+      expect(talkAnswer(question, [SELECTED, MAIN, OAK], [], MAIN)).toBeNull();
+    }
+  });
+
+  it('a compass word spelled out matches only with another of the name\'s words ("Is 400 North done?" is not N Main St)', () => {
+    expect(desktop('Is 400 North done?', [SELECTED, MAIN, OAK], [], OAK)).toBeNull();
+  });
+
+  it('a spaced capital that is a project\'s letter is still read as one ("Is 2375 B done?" with 2375B Annex)', () => {
+    expect(desktop('Is 2375 B done?', [SELECTED, '2375B Annex', '2375 Main St'])).toBe(switchOnDesktop('2375B'));
+  });
+});
+
+describe('audit A9 pass 15 L1: a name said in full beats one said in part only against the selected project', () => {
+  const PHASE_2 = '2375 Main St Phase 2';
+  const MAIN = '2375 Main St';
+
+  it('on 2321, with "2375 Main St Phase 2" open and "2375 Main St" closed, "What is left at 2375 Main St?" names open 2375 (was "closed project")', () => {
+    expect(phone('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(switchOnPhone('2375'));
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(switchOnDesktop('2375'));
+  });
+
+  it('Talk moves to Phase 2 again and answers there (stayed on 2321 and said "closed project")', () => {
+    expect(mentionedDAVEProject('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN])).toBe(PHASE_2);
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, PHASE_2], [MAIN], PHASE_2)).toBeNull();
+  });
+
+  it('against the selected project a name said in full still decides (pass 14 L2)', () => {
+    expect(desktop('Is 2375 Main St done?', [SELECTED, MAIN], ['24117 - 2375 Main St'], MAIN)).toBeNull();
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, '24117 - 450 Elm St', '450 Elm St'], [], '24117 - 450 Elm St'))
+      .toBe(switchOnDesktop('450', '24117'));
+  });
+});
+
+/** Whether a Talk note on `selected` is pre-confirmed to it, the way App.tsx builds the draft. */
+function notePreConfirmed(note: string, selected: string, open: readonly string[], closed: readonly string[] = []) {
+  const projectName = mentionedDAVEProject(note, open, closed) || selected;
+  return buildDAVETalkMemoryDraft({
+    id: 'talk-memory-1',
+    createdAt: '2026-10-01T12:00:00.000Z',
+    projectName,
+    switchedProject: projectName !== selected,
+    projectNames: open,
+    closedProjectNames: closed,
+    transcript: note,
+    fields: { generalMemory: note },
+  }).recommendedProject.confirmed;
+}
+
+describe('audit A9 pass 15 L2: projects sharing the selected job number are its own in a tie, and a Talk note Ask would refuse is not pre-confirmed', () => {
+  const ANNEX = '24117 - 2375 Main St Annex';
+  const OLD_MAIN = '24117 - 2375 Main St';
+
+  it('on the Annex, "What is left at 2375 Main St?" is its own with a closed "24117 - 2375 Main St" (was "names two projects")', () => {
+    expect(phone('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN], ANNEX)).toBeNull();
+  });
+
+  it('a tie that also names a project with another job number still asks which', () => {
+    const other = '23088 - 2375 Main St';
+    const expected = 'This question names two projects, 2375 (24117 - 2375 Main St Annex) and 2375 (23088 - 2375 Main St). '
+      + 'Which one do you mean? Ask again about just that project.';
+    expect(phone('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN, other], ANNEX)).toBe(expected);
+    expect(talkAnswer('What is left at 2375 Main St?', [SELECTED, ANNEX], [OLD_MAIN, other], ANNEX)).toBe(expected);
+  });
+
+  it.each([
+    ['Crew finished framing at 400 Court St today', OLD_MAIN, ['24117 - 400 Court St']],
+    ['Inspector signed off 2375 Main St this morning', '24117 - 450 A Street', [ANNEX]],
+  ])('the note "%s" on "%s" is not pre-confirmed when Ask ECOS would refuse it (was confirmed)', (note, selected, closed) => {
+    expect(phone(note, [SELECTED, selected], closed, selected)).not.toBeNull();
+    expect(notePreConfirmed(note, selected, [SELECTED, selected], closed)).toBe(false);
+  });
+
+  it('a note Ask ECOS would answer stays pre-confirmed', () => {
+    expect(notePreConfirmed('Crew finished framing at 2375 Main St today', ANNEX, [SELECTED, ANNEX], [OLD_MAIN])).toBe(true);
+    expect(notePreConfirmed('Ordered 2375 feet of conduit', SELECTED, [SELECTED, '2375 Main St'])).toBe(true);
+    expect(notePreConfirmed('The gate code is 2321, tell the crew', SELECTED, [SELECTED, '2375 Main St'])).toBe(true);
+  });
+});
+
+describe('audit A9 pass 15 L4: any tie between projects with different numbers asks which, with one count everywhere', () => {
+  const ELM_24117 = '24117 - 450 Elm St';
+  const ELM_23088 = '23088 - 450 Elm St';
+  const ELM_22001 = '22001 - 450 Elm St';
+  const together = (...labels: string[]) =>
+    `This question names ${labels.length === 2 ? 'two' : labels.length} projects, ${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}. `
+    + 'Which one do you mean? Ask again about just that project.';
+  const BOTH = together('450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)');
+
+  it('two closed jobs at the same address: Ask ECOS asks which, as Talk does (was "... or ... is a closed project. Reopen it")', () => {
+    expect(phone('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED], [ELM_24117, ELM_23088])).toBe(BOTH);
+  });
+
+  it('an open and a closed job at the same address: Ask ECOS asks which, as Talk does (was "open project 450 (24117 ...)")', () => {
+    expect(phone('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBe(BOTH);
+    expect(mentionedDAVEProject('What is left at 450 Elm St?', [SELECTED, ELM_24117], [ELM_23088])).toBeNull();
+  });
+
+  it('a three-way tie with the selected project has one count in Ask ECOS and Talk (Ask said two, leaving out the closed job)', () => {
+    const expected = together('450 (24117 - 450 Elm St)', '450 (23088 - 450 Elm St)', '450 (22001 - 450 Elm St)');
+    expect(phone('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+    expect(desktop('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+    expect(talkAnswer('What is left at 450 Elm St?', [SELECTED, ELM_24117, ELM_23088], [ELM_22001], ELM_24117)).toBe(expected);
+  });
+
+  it('a name said in full decides nothing between other projects: "450 Elm St" with a closed "23088 - 450 Elm St" asks which', () => {
+    const expected = together('450', '450 (23088 - 450 Elm St)');
+    expect(desktop('Is 450 Elm St done?', [SELECTED, '450 Elm St'], [ELM_23088])).toBe(expected);
+    expect(talkAnswer('Is 450 Elm St done?', [SELECTED, '450 Elm St'], [ELM_23088])).toBe(expected);
+  });
+
+  it('other projects sharing one number still name the open one (pass 15 L1)', () => {
+    expect(desktop('What is left at 2375 Main St?', [SELECTED, '2375 Main St Phase 2'], ['2375 Main St'])).toBe(switchOnDesktop('2375'));
+  });
+});
+
+describe('audit A9 pass 15 L5: the word "a" is not the capital A of a name', () => {
+  const ELM = '450 Elm St';
+  const A_STREET = '24117 - 450 A Street';
+  const PROJECTS = [SELECTED, ELM, A_STREET];
+
+  it('on 450 Elm St, "Is 450 a priority this week?" is its own, and Talk stays (was "names 450 (24117 - 450 A Street)")', () => {
+    expect(phone('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(desktop('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(talkAnswer('Is 450 a priority this week?', PROJECTS, [], ELM)).toBeNull();
+    expect(mentionedDAVEProject('Is 450 a priority this week?', PROJECTS)).toBe(ELM);
+  });
+
+  it('a capital A, or "a Street" with the next name word, still continues "450 A Street"', () => {
+    expect(desktop('What is left at 450 A Street?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+    expect(desktop('What is left at 450 A?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+    expect(desktop('What is left at 450 a Street?', PROJECTS, [], ELM)).toBe(switchOnDesktop('450 (24117 - 450 A Street)', '450'));
+  });
+});

@@ -1,3 +1,5 @@
+import { storedPhotoComparisonConfidence } from './PhotoAssessment';
+
 export type DAVEUpdateWorkspaceTab =
   | 'Needs Action'
   | 'Drafts'
@@ -22,6 +24,8 @@ export type DAVEUpdateWorkspaceRecord = {
   photos: Array<{
     id: string;
     uri: string;
+    /** 'unavailable': the sync found no file to upload, so the cloud holds none either. */
+    cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
     selectedAreaId?: string | null;
     photoIntelligence?: {
       title?: string | null;
@@ -41,7 +45,16 @@ export type DAVEUpdateWorkspaceRecord = {
   }>;
 };
 
-export type DAVEUpdatePhotoComparison = {
+export type DAVEUpdatePhotoComparison<
+  TPhoto = DAVEUpdateWorkspaceRecord['photos'][number],
+> = {
+  /**
+   * The photos themselves, so each side can show a photo this device holds
+   * only in the cloud (whole-app audit A4 pass 7 M2): a photo taken on the
+   * other device has no path here, and its `uri` is empty.
+   */
+  currentPhoto: TPhoto;
+  priorPhoto: TPhoto;
   currentPhotoId: string;
   currentPhotoUri: string;
   currentUpdateId: string;
@@ -153,33 +166,63 @@ export function resolveUpdateWorkspaceUpdate<
   return updates.find(update => update.id === selectedUpdateId) || updates[0] || null;
 }
 
+/**
+ * The exact prior photo an analysis recorded (its chosen photo id, or its
+ * asset id), from the same project's updates. Shared by the Updates
+ * comparison and the Before/After row of a photo being edited.
+ */
+export function findDAVEExactPriorPhoto<T extends DAVEUpdateWorkspaceRecord>(
+  updates: readonly T[],
+  projectName: string,
+  current: Readonly<{ updateId: string | null; photoId: string }>,
+  intelligence: NonNullable<DAVEUpdateWorkspaceRecord['photos'][number]['photoIntelligence']>,
+): { update: T; photo: T['photos'][number] } | undefined {
+  const selectedPriorPhotoId = intelligence.diagnostics?.selectedPriorPhotoId?.trim();
+  const priorAssetId = intelligence.priorPhotoAssetId?.trim();
+  return updates
+    .filter(update => sameProject(update.projectName, projectName))
+    .flatMap(update => update.photos.map(photo => ({ update, photo })))
+    .find(({ update, photo }) => {
+      // No update id (a photo being edited): its own saved copy is not its prior.
+      if ((current.updateId === null || update.id === current.updateId) && photo.id === current.photoId) return false;
+      if (selectedPriorPhotoId && photo.id === selectedPriorPhotoId) return true;
+      return Boolean(
+        priorAssetId &&
+        photo.photoIntelligence?.currentPhotoAssetId === priorAssetId,
+      );
+    });
+}
+
+/**
+ * The first photo of the update with an analysed prior photo, both shown side
+ * by side. A pair where either photo is marked 'unavailable' is passed over
+ * for the next one: nothing was uploaded for that photo, so its side was a
+ * blank image, signed again and again while on screen (whole-app audit A4
+ * pass 8 F4, 30 Sep 2026).
+ */
 export function buildDAVEUpdatePhotoComparison<
   T extends DAVEUpdateWorkspaceRecord,
->(currentUpdate: T | null, updates: T[]): DAVEUpdatePhotoComparison | null {
+>(currentUpdate: T | null, updates: T[]): DAVEUpdatePhotoComparison<T['photos'][number]> | null {
   if (!currentUpdate) return null;
 
   for (const currentPhoto of currentUpdate.photos) {
     const intelligence = currentPhoto.photoIntelligence;
     if (!intelligence) continue;
     if (intelligence.userReview === 'incorrect' || intelligence.userReview === 'not_useful') continue;
+    if (currentPhoto.cloudRecoveryStatus === 'unavailable') continue;
 
-    const selectedPriorPhotoId = intelligence.diagnostics?.selectedPriorPhotoId?.trim();
-    const priorAssetId = intelligence.priorPhotoAssetId?.trim();
-    const exactPrior = updates
-      .filter(update => sameProject(update.projectName, currentUpdate.projectName))
-      .flatMap(update => update.photos.map(photo => ({ update, photo })))
-      .find(({ update, photo }) => {
-        if (update.id === currentUpdate.id && photo.id === currentPhoto.id) return false;
-        if (selectedPriorPhotoId && photo.id === selectedPriorPhotoId) return true;
-        return Boolean(
-          priorAssetId &&
-          photo.photoIntelligence?.currentPhotoAssetId === priorAssetId,
-        );
-      });
+    const exactPrior = findDAVEExactPriorPhoto(
+      updates,
+      currentUpdate.projectName,
+      { updateId: currentUpdate.id, photoId: currentPhoto.id },
+      intelligence,
+    );
 
-    if (!exactPrior) continue;
+    if (!exactPrior || exactPrior.photo.cloudRecoveryStatus === 'unavailable') continue;
 
     return {
+      currentPhoto,
+      priorPhoto: exactPrior.photo,
       currentPhotoId: currentPhoto.id,
       currentPhotoUri: currentPhoto.uri,
       currentUpdateId: currentUpdate.id,
@@ -194,7 +237,7 @@ export function buildDAVEUpdatePhotoComparison<
         intelligence.currentObservation,
         intelligence.summary,
       ),
-      comparisonConfidence: firstText(intelligence.comparisonConfidence),
+      comparisonConfidence: firstText(storedPhotoComparisonConfidence(intelligence)),
       comparability: firstText(intelligence.comparability),
     };
   }

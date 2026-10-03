@@ -43,10 +43,13 @@ export function resolveReportProjectSelection({
   const availableMatch = (candidate: string) => availableProjectNames.find(
     name => normalizedProjectKey(name) === normalizedProjectKey(candidate),
   );
+  // Never an unavailable name: with no active project left the selection is
+  // empty, which crashed the report scope ("A daily report requires one
+  // selected project", whole-app audit A6 pass 5).
   const fallback = availableMatch(selectedWorkspaceProject) ||
     (initialProjectName.trim() ? availableMatch(initialProjectName) : undefined) ||
-    availableProjectNames[0] || selectedWorkspaceProject;
-  const selections = validSelections.length > 0 ? validSelections : [fallback];
+    availableProjectNames[0];
+  const selections = validSelections.length > 0 ? validSelections : fallback ? [fallback] : [];
 
   return reportType === 'daily_project_update'
     ? selections.slice(0, 1)

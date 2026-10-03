@@ -15,6 +15,7 @@ import {
   classifyDAVESafety,
 } from './DAVEAssertionParser';
 import type { PIEDeliberationResult } from './PIEDeliberationEngine';
+import type { PIEPhotoProgressEvidence } from './PIEPhotoProgress';
 import type {
   PIEDecisionQualityScore,
   PIEScientificResult,
@@ -325,7 +326,7 @@ export type PIEReporterRuntimeInput = {
     scheduleReconciliation?: PIEScheduleReconciliationResult;
   } | null;
   photoProgressSummary?: string;
-  photoProgress?: { acceptedEvidence: unknown[] } | null;
+  photoProgress?: { acceptedEvidence: PIEPhotoProgressEvidence[] } | null;
   recommendedWalkAreas?: string[];
   reflectionSummary?: string | { summary?: string; recommendedEvidence?: string[] };
   lessonsLearned?: unknown[];
@@ -642,21 +643,11 @@ export function collectReportEvidence(
     });
   }
 
-  if (
-    runtime?.photoProgressSummary &&
-    Boolean(runtime.photoProgress?.acceptedEvidence.length) &&
-    !isEmptyRuntimeSummary(runtime.photoProgressSummary) &&
-    isConstructionRelevantObservation(runtime.photoProgressSummary)
-  ) {
-    evidence.push({
-      id: 'runtime-photo-progress',
-      source: 'photo',
-      projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
-      areaName: input.currentUpdate?.selectedAreaName || '',
-      summary: cleanReportBulletText(runtime.photoProgressSummary),
-      confidence: 'medium',
-    });
-  }
+  // Audit round 2 H1: only a comparison the owner CONFIRMED is reported as
+  // fact, with its own project and area. photoProgressSummary is the newest
+  // comparison, confirmed or not, and printed an unconfirmed AI finding.
+  const confirmedPhotoNote = recentConfirmedPhotoNote(input, updates);
+  if (confirmedPhotoNote) evidence.push(confirmedPhotoNote);
 
   return uniqueEvidence(
     evidence
@@ -665,6 +656,39 @@ export function collectReportEvidence(
       .filter(item => !isIncidentalReportEvidence(item))
       .filter(item => !containsGenericAiWording(item.summary)),
   );
+}
+
+// A confirmed comparison older than this is history, not today's photo note
+// (the same 7 days ProjectIntelligenceEngine treats as recent activity).
+const REPORT_CURRENT_PHOTO_NOTE_DAYS = 7;
+
+function recentConfirmedPhotoNote(
+  input: PIEReportDraftInput,
+  updates: ProjectUpdate[],
+): PIEReportSourceEvidence | null {
+  // Newest first, so [0] is the newest confirmed comparison.
+  const confirmed = input.runtime?.photoProgress?.acceptedEvidence?.[0];
+  if (!confirmed?.summary || isEmptyRuntimeSummary(confirmed.summary)) return null;
+  if (!isConstructionRelevantObservation(confirmed.summary)) return null;
+  // Its photo must belong to this report's updates; project and area come
+  // from that update, never from the open draft.
+  const source = updates.find(update =>
+    update.photos.some(photo => photo.id === confirmed.currentPhotoId),
+  );
+  if (!source) return null;
+  const seenAt = Date.parse(confirmed.acceptedAt || '');
+  const reportAt = (input.generatedAt || new Date()).getTime();
+  if (!Number.isFinite(seenAt)) return null;
+  if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
+  const context = reportContextForUpdate(source, input.scheduleItems || []);
+  return {
+    id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
+    source: 'photo',
+    projectName: context.projectName,
+    areaName: confirmed.areaName?.trim() || context.areaName,
+    summary: cleanReportBulletText(confirmed.summary),
+    confidence: 'medium',
+  };
 }
 
 function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {

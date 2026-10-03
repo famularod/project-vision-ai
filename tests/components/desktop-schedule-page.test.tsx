@@ -4,6 +4,13 @@ import { DesktopSchedulePage } from '../../components/web-shell/desktop-schedule
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+// The page now reads the gateway's conflict error (audit round 2 F7), and the
+// gateway module loads the storage adapter.
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
 const mockCreateTask = jest.fn();
 const mockUpdateTask = jest.fn();
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({

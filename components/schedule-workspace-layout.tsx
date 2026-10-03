@@ -10,6 +10,7 @@ import {
 } from '../services/DAVEScheduleWorkspace';
 import type { DAVETaskAreaSummary } from '../services/DAVETaskAreaSummary';
 import { formatAppDate } from '../utils/date';
+import { afterTextInputBlur } from './after-text-input-blur';
 
 export function ScheduleWideWorkspace({
   items,
@@ -64,7 +65,7 @@ export function ScheduleWideWorkspace({
             <ScheduleTaskMasterRow
               item={item}
               selected={item.id === selectedTaskId}
-              onPress={() => onSelectTask(item.id)}
+              onPress={() => afterTextInputBlur(() => onSelectTask(item.id))}
             />
           )}
           renderSectionHeader={({ section }) => (
@@ -81,7 +82,7 @@ export function ScheduleWideWorkspace({
                   else next.add(section.areaKey);
                   return next;
                 });
-                onSelectArea?.(section);
+                afterTextInputBlur(() => onSelectArea?.(section));
               }}
             />
           )}

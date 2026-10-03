@@ -17,8 +17,17 @@ import {
   scheduleImportReviewFields,
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
+import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
+import {
+  scheduleImportAsksRole,
+  scheduleImportRoleRefusal,
+  suggestScheduleImportRole,
+  withScheduleImportRole,
+  type ScheduleImportRole,
+  type ScheduleImportRoleSuggestion,
+} from '../services/ScheduleLookahead';
 import { colors, spacing, typography } from '../theme';
-import type { ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import {
   scheduleCompletionVerificationLabel,
   scheduleItemNeedsCompletionVerification,
@@ -35,6 +44,7 @@ export function ScheduleImportFlow({
   onCancel,
   incomingBatch = null,
   onIncomingBatchConsumed,
+  roleContext,
 }: {
   screenshotImportAvailable: boolean;
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
@@ -44,6 +54,8 @@ export function ScheduleImportFlow({
   onCancel: (batch: PIEScheduleImportBatch) => void;
   incomingBatch?: PIEScheduleImportBatch | null;
   onIncomingBatchConsumed?: () => void;
+  /** The schedules and tasks saved now: the review's "Full schedule" or "Lookahead" default (owner answer Q22). */
+  roleContext?: Readonly<{ documents: readonly ReferenceDocument[]; items: readonly ScheduleItem[] }>;
 }) {
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -51,6 +63,8 @@ export function ScheduleImportFlow({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pendingBatch, setPendingBatch] = useState<PIEScheduleImportBatch | null>(null);
   const [expandedItemIds, setExpandedItemIds] = useState<string[]>([]);
+  // How the schedule is used: suggested when the review opens, David's choice after (owner answer Q22).
+  const [roleReview, setRoleReview] = useState<ScheduleImportRoleSuggestion & { batchId: string; chosen: ScheduleImportRole | null } | null>(null);
   const importOperationRef = useRef(0);
   const pendingChoiceRef = useRef<'file' | 'screenshots' | 'manual' | null>(null);
   const counts = useMemo(
@@ -62,12 +76,34 @@ export function ScheduleImportFlow({
     [pendingBatch],
   );
 
-  useEffect(() => {
-    if (!incomingBatch || pendingBatch || busyLabel || saveBusy) return;
+  function openReview(batch: PIEScheduleImportBatch) {
     setExpandedItemIds([]);
     setSaveError(null);
-    setPendingBatch(incomingBatch);
+    setRoleReview({
+      ...suggestScheduleImportRole({ batch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || [] }),
+      batchId: batch.id,
+      chosen: null,
+    });
+    setPendingBatch(batch);
+  }
+
+  /** The batch with its schedule file marked as reviewed. */
+  function withReviewedRole(batch: PIEScheduleImportBatch): PIEScheduleImportBatch {
+    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return batch;
+    return withScheduleImportRole(batch, roleReview.chosen || roleReview.role);
+  }
+
+  /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3; the file's full copy shown, M1). */
+  function reviewedRoleRefusal(batch: PIEScheduleImportBatch): string | null {
+    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return null;
+    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role, roleContext?.documents);
+  }
+
+  useEffect(() => {
+    if (!incomingBatch || pendingBatch || busyLabel || saveBusy) return;
+    openReview(incomingBatch);
     onIncomingBatchConsumed?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- openReview reads the saved schedules when the review opens
   }, [busyLabel, incomingBatch, onIncomingBatchConsumed, pendingBatch, saveBusy]);
 
   async function beginImport(
@@ -86,11 +122,7 @@ export function ScheduleImportFlow({
         if (batch) onCancel(batch);
         return;
       }
-      if (batch) {
-        setExpandedItemIds([]);
-        setSaveError(null);
-        setPendingBatch(batch);
-      }
+      if (batch) openReview(batch);
     } finally {
       if (operationId === importOperationRef.current) setBusyLabel(null);
     }
@@ -147,11 +179,13 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
+    const refusal = reviewedRoleRefusal(batchToReview);
+    if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove({ ...batchToReview, items: readyItems });
+      await onApprove(withReviewedRole({ ...batchToReview, items: readyItems }));
 
       if (remainingItems.length) {
         setPendingBatch(current => current?.id === batchToReview.id ? {
@@ -164,8 +198,8 @@ export function ScheduleImportFlow({
         setPendingBatch(current => current?.id === batchToReview.id ? null : current);
         setExpandedItemIds([]);
       }
-    } catch {
-      setSaveError(scheduleImportSaveErrorMessage);
+    } catch (error) {
+      setSaveError(scheduleImportSaveErrorText(error));
     } finally {
       setSaveBusy(false);
     }
@@ -179,14 +213,16 @@ export function ScheduleImportFlow({
     ) return;
 
     const batchToSave = pendingBatch;
+    const refusal = reviewedRoleRefusal(batchToSave);
+    if (refusal) return setSaveError(refusal);
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(batchToSave);
+      await onApprove(withReviewedRole(batchToSave));
       setPendingBatch(current => current?.id === batchToSave.id ? null : current);
       setExpandedItemIds([]);
-    } catch {
-      setSaveError(scheduleImportSaveErrorMessage);
+    } catch (error) {
+      setSaveError(scheduleImportSaveErrorText(error));
     } finally {
       setSaveBusy(false);
     }
@@ -323,6 +359,13 @@ export function ScheduleImportFlow({
                 </View>
               </View>
             ) : null}
+            {pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id ? (
+              <ScheduleRoleReview
+                review={roleReview}
+                disabled={saveBusy}
+                onChoose={chosen => setRoleReview(current => current ? { ...current, chosen } : current)}
+              />
+            ) : null}
             {pendingBatch ? (
               <Text style={styles.bulkSaveText}>
                 Review Project, Area, Task, Dates, Status, and Owner. Accept only the activities you want ECOS to use.
@@ -435,6 +478,62 @@ export function ScheduleImportFlow({
   );
 }
 
+const SCHEDULE_ROLE_CHOICES: readonly { role: ScheduleImportRole; title: string; detail: string }[] = [
+  {
+    role: 'master',
+    title: 'Full schedule (replaces)',
+    detail: 'Use this file as the whole schedule for its projects. It replaces the schedule in use for them.',
+  },
+  {
+    role: 'lookahead',
+    title: 'Lookahead / partial (adds to the master)',
+    detail: 'Keep the master schedule. A task in both files shows once, with this file’s dates and progress. Tasks only in this file are added. The master’s other tasks stay.',
+  },
+];
+
+/** "How should Vitruvius use this schedule?" (owner answer Q22). */
+function ScheduleRoleReview({
+  review,
+  disabled,
+  onChoose,
+}: {
+  review: ScheduleImportRoleSuggestion & { chosen: ScheduleImportRole | null };
+  disabled: boolean;
+  onChoose: (role: ScheduleImportRole) => void;
+}) {
+  const selected = review.chosen || review.role;
+  const suggested = SCHEDULE_ROLE_CHOICES.find(choice => choice.role === review.role);
+  return (
+    <View style={styles.bulkSaveCard} accessibilityRole="radiogroup">
+      <Text style={styles.bulkSaveTitle}>How should Vitruvius use this schedule?</Text>
+      {SCHEDULE_ROLE_CHOICES.map(choice => (
+        <TouchableOpacity
+          key={choice.role}
+          style={[styles.roleChoice, selected === choice.role && styles.roleChoiceSelected, disabled && styles.controlDisabled]}
+          onPress={() => onChoose(choice.role)}
+          disabled={disabled}
+          accessibilityRole="radio"
+          accessibilityLabel={`${choice.title}. ${choice.detail}`}
+          accessibilityState={{ checked: selected === choice.role, disabled }}
+        >
+          <Ionicons
+            name={selected === choice.role ? 'radio-button-on' : 'radio-button-off'}
+            size={22}
+            color={colors.primary}
+          />
+          <View style={styles.itemHeaderText}>
+            <Text style={styles.choiceTitle}>{choice.title}</Text>
+            <Text style={styles.choiceDetail}>{choice.detail}</Text>
+          </View>
+        </TouchableOpacity>
+      ))}
+      <Text style={styles.bulkSaveText}>
+        {`Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
+      </Text>
+    </View>
+  );
+}
+
 function ModalHeader({
   title,
   subtitle,
@@ -518,6 +617,13 @@ function ReviewInput({
 const scheduleImportSaveErrorMessage =
   'Vitruvius could not finish saving this schedule. Your review is still open and unchanged. Try again.';
 
+/** A reason the manager can fix in the review is shown as is (whole-app audit A5, 30 Sep 2026). */
+function scheduleImportSaveErrorText(error: unknown) {
+  return error instanceof ScheduleImportReviewError
+    ? `${error.message} Your review is still open.`
+    : scheduleImportSaveErrorMessage;
+}
+
 function scheduleImportWarnings(batch: PIEScheduleImportBatch | null) {
   if (!batch) return [];
   const warnings = (
@@ -580,4 +686,6 @@ const styles = StyleSheet.create({
   editLink: { minHeight: 36, alignSelf: 'flex-start', justifyContent: 'center' },
   editLinkText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
   controlDisabled: { opacity: 0.45 },
+  roleChoice: { minHeight: 64, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.sm, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  roleChoiceSelected: { borderColor: colors.primary, borderWidth: 2 },
 });

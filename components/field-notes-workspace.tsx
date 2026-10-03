@@ -23,6 +23,7 @@ import {
   type FieldNoteStatus,
 } from '../services/FieldNoteRepository';
 import type { FieldNoteWorkspaceDataSource } from '../services/FieldNoteMobileSync';
+import { clearFieldNoteDraftIfUnchanged, useFieldNoteDraft } from '../hooks/use-field-note-draft';
 import { colors, radius, spacing } from '../theme';
 
 const ACTION_OPTIONS: ReadonlyArray<Readonly<{
@@ -74,6 +75,7 @@ function FieldNotesWorkspaceContent({
   voiceDraft = null,
   onVoiceDraftConsumed,
   onRecordVoice,
+  typeNoteRequest = 0,
   dataSource = LOCAL_FIELD_NOTE_DATA_SOURCE,
   presentation = 'mobile_capture',
 }: {
@@ -85,6 +87,8 @@ function FieldNotesWorkspaceContent({
   voiceDraft?: FieldNoteVoiceDraft | null;
   onVoiceDraftConsumed?: (id: string) => void;
   onRecordVoice?: (projectName: string | null) => void;
+  /** Raised by "Type Instead" in the voice sheet: opens the typed editor. */
+  typeNoteRequest?: number;
   dataSource?: FieldNoteWorkspaceDataSource;
   presentation?: 'mobile_capture' | 'desktop_inbox';
 }) {
@@ -92,13 +96,28 @@ function FieldNotesWorkspaceContent({
   const compactMobileLayout = presentation === 'mobile_capture' && windowWidth <= 480;
   const [notes, setNotes] = useState<readonly FieldNote[]>([]);
   const [filter, setFilter] = useState<FieldNoteStatus>('open');
-  const [text, setText] = useState('');
-  const [source, setSource] = useState<FieldNoteSource>('typed');
-  const [projectName, setProjectName] = useState(initialProjectName?.trim() || '');
-  const [locationName, setLocationName] = useState('');
-  const [actionKind, setActionKind] = useState<FieldNoteActionKind>('none');
-  const [actionText, setActionText] = useState('');
-  const [captureOpen, setCaptureOpen] = useState(false);
+  // Kept outside the screen until Save, so leaving it keeps the note
+  // (whole-app audit A2 M3).
+  const draftKey = `${presentation}:${ownerKey}`;
+  // On the phone it is also kept in phone storage for this account until
+  // Save (whole-app audit A11 pass 4 L3).
+  const [draft, updateDraft, draftKeptAt] = useFieldNoteDraft(draftKey, {
+    text: '',
+    source: 'typed',
+    projectName: initialProjectName?.trim() || '',
+    locationName: '',
+    actionKind: 'none',
+    actionText: '',
+    captureOpen: false,
+  }, presentation === 'mobile_capture' ? ownerKey : null);
+  const { text, source, projectName, locationName, actionKind, actionText, captureOpen } = draft;
+  const setText = (value: string) => updateDraft('text', value);
+  const setSource = (value: FieldNoteSource) => updateDraft('source', value);
+  const setProjectName = (value: string) => updateDraft('projectName', value);
+  const setLocationName = (value: string) => updateDraft('locationName', value);
+  const setActionKind = (value: FieldNoteActionKind) => updateDraft('actionKind', value);
+  const setActionText = (value: string) => updateDraft('actionText', value);
+  const setCaptureOpen = (value: boolean) => updateDraft('captureOpen', value);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger' | 'info'; text: string } | null>(null);
@@ -122,6 +141,35 @@ function FieldNotesWorkspaceContent({
     });
     return Array.from(byName.values());
   }, [projectRecords, projects]);
+
+  // A new note is offered open projects only: closing a project only adds it
+  // to the archived list, so closed (and deleted) projects were offered too
+  // (whole-app audit A11 pass 4 L2). One the note already names stays, shown
+  // as closed, and keeps its id when saved.
+  const draftProjectOptions = useMemo(() => {
+    const open = new Set(projects.map(normalized));
+    const offered = projectOptions
+      .filter(option => open.has(normalized(option.name)))
+      .map(option => ({ ...option, closed: false }));
+    const named = projectName.trim();
+    if (!named || offered.some(option => normalized(option.name) === normalized(named))) return offered;
+    const own = projectOptions.find(option => normalized(option.name) === normalized(named));
+    return [...offered, { id: own?.id ?? null, name: own?.name ?? named, closed: true }];
+  }, [projectName, projectOptions, projects]);
+
+  // The note being edited keeps its own project even when it is closed and so
+  // missing from the chips; saving a text edit cleared it and synced the
+  // change (whole-app audit A11 pass 1 F5, 30 Sep 2026).
+  const editProjectOptions = useMemo(() => {
+    const own = editingNote?.projectName?.trim()
+      ? { id: editingNote.projectId?.trim() || null, name: editingNote.projectName.trim() }
+      : null;
+    if (!own || projectOptions.some(option =>
+      (own.id && option.id === own.id) || normalized(option.name) === normalized(own.name))) {
+      return projectOptions.map(option => ({ ...option, closed: false }));
+    }
+    return [...projectOptions.map(option => ({ ...option, closed: false })), { ...own, closed: true }];
+  }, [editingNote, projectOptions]);
 
   async function loadNotes() {
     const operation = ++noteOperationRef.current;
@@ -212,14 +260,39 @@ function FieldNotesWorkspaceContent({
   useEffect(() => {
     if (!voiceDraft || consumedVoiceDraftRef.current === voiceDraft.id) return;
     consumedVoiceDraftRef.current = voiceDraft.id;
-    setText(voiceDraft.text.trim());
-    setSource('voice');
+    // A note finished by voice keeps what was typed, and a typed location
+    // wins; the dictation replaced both (audit A11 pass 1 F4).
+    const spoken = voiceDraft.text.trim();
+    setText(text.trim() ? `${text.trimEnd()} ${spoken}` : spoken);
+    if (!text.trim()) setSource('voice');
+    // A note closed with X is still unsaved: the words join it in the
+    // reopened editor, and it says so (whole-app audit A11 pass 2 #2).
+    const addedToClosedNote = Boolean(text.trim()) && !captureOpen;
     setCaptureOpen(true);
     if (voiceDraft.projectName?.trim()) setProjectName(voiceDraft.projectName.trim());
-    if (voiceDraft.locationName?.trim()) setLocationName(voiceDraft.locationName.trim());
-    setNotice({ tone: 'info', text: 'Voice note is ready. Review it, then save.' });
+    if (voiceDraft.locationName?.trim() && !locationName.trim()) setLocationName(voiceDraft.locationName.trim());
+    setNotice({
+      tone: 'info',
+      text: addedToClosedNote
+        ? 'Added to your unsaved note. Review it, then save.'
+        : 'Voice note is ready. Review it, then save.',
+    });
     onVoiceDraftConsumed?.(voiceDraft.id);
   }, [onVoiceDraftConsumed, voiceDraft]);
+
+  useEffect(() => {
+    if (draftKeptAt) setNotice({ tone: 'info', text: 'Your unsaved note was kept on this phone. Review it, then save.' });
+  }, [draftKeptAt]);
+
+  // "Type Instead" closed the voice sheet and opened nothing (whole-app audit
+  // A11 pass 1 F10); an unsaved note opens with its text as it is.
+  const typeNoteRequestRef = useRef(typeNoteRequest);
+  useEffect(() => {
+    if (typeNoteRequest === typeNoteRequestRef.current) return;
+    typeNoteRequestRef.current = typeNoteRequest;
+    setCaptureOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeNoteRequest]);
 
   const visibleNotes = notes.filter(note => {
     if (note.status !== filter) return false;
@@ -246,7 +319,10 @@ function FieldNotesWorkspaceContent({
       const saved = dataSource.saveLocal
         ? await dataSource.saveLocal(ownerKey, note)
         : await dataSource.save(ownerKey, note);
-      if (operation !== noteOperationRef.current) return;
+      if (operation !== noteOperationRef.current) {
+        clearFieldNoteDraftIfUnchanged(draftKey, { text, locationName, actionKind, actionText });
+        return;
+      }
       setLoading(false);
       setNotes(current => [saved, ...current.filter(item => item.id !== saved.id)]);
       setText('');
@@ -340,7 +416,11 @@ function FieldNotesWorkspaceContent({
   function beginEdit(note: FieldNote) {
     setEditingNote(note);
     setEditText(note.originalText);
-    setEditProjectName(note.projectName || '');
+    // A renamed project is matched by id and shown under its current name.
+    setEditProjectName(
+      projectOptions.find(option => note.projectId && option.id === note.projectId)?.name ||
+      note.projectName || '',
+    );
     setEditLocationName(note.locationName || '');
     setEditActionKind(note.actionKind);
     setEditActionText(note.actionText || '');
@@ -353,12 +433,15 @@ function FieldNotesWorkspaceContent({
     setSaving(true);
     setNotice(null);
     try {
-      const selectedProject = projectOptions.find(
+      const selectedProject = editProjectOptions.find(
         option => normalized(option.name) === normalized(editProjectName),
       );
+      const keepsOwnProject = Boolean(selectedProject) && (
+        (Boolean(editingNote.projectId) && selectedProject?.id === editingNote.projectId) ||
+        normalized(selectedProject?.name) === normalized(editingNote.projectName));
       const changed = updateFieldNoteDetails(editingNote, {
         text: editText,
-        projectId: selectedProject?.id || null,
+        projectId: selectedProject?.id || (keepsOwnProject ? editingNote.projectId : null) || null,
         projectName: selectedProject?.name || null,
         locationName: editLocationName,
         actionKind: editActionKind,
@@ -504,10 +587,10 @@ function FieldNotesWorkspaceContent({
               selected={!projectName}
               onPress={() => setProjectName('')}
             />
-            {projectOptions.map(project => (
+            {draftProjectOptions.map(project => (
               <ChoiceChip
                 key={project.id || project.name}
-                label={project.name}
+                label={project.closed ? `${project.name} (closed)` : project.name}
                 selected={normalized(projectName) === normalized(project.name)}
                 onPress={() => setProjectName(project.name)}
               />
@@ -666,10 +749,10 @@ function FieldNotesWorkspaceContent({
                   selected={!editProjectName}
                   onPress={() => setEditProjectName('')}
                 />
-                {projectOptions.map(project => (
+                {editProjectOptions.map(project => (
                   <ChoiceChip
                     key={`edit-${project.id || project.name}`}
-                    label={project.name}
+                    label={project.closed ? `${project.name} (closed)` : project.name}
                     selected={normalized(editProjectName) === normalized(project.name)}
                     onPress={() => setEditProjectName(project.name)}
                   />

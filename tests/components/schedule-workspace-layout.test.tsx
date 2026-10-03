@@ -1,6 +1,6 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 import { useState } from 'react';
-import { Text } from 'react-native';
+import { Keyboard, Text, TextInput } from 'react-native';
 
 import { ScheduleWideWorkspace } from '../../components/schedule-workspace-layout';
 import type { ScheduleItem } from '../../types';
@@ -32,6 +32,56 @@ const taskA: ScheduleItem = {
 };
 
 describe('ScheduleWideWorkspace', () => {
+  it('lets a field being typed blur and save before another task is picked (audit A2 M3)', async () => {
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const screen = await render(<WorkspaceProbe />);
+      await fireEvent.press(screen.getByRole('button', { name: 'Open task Install rails' }));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Inspecting task-a')).toBeTruthy();
+      act(() => { jest.advanceTimersByTime(80); });
+      expect(screen.getByText('Inspecting task-b')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
+  });
+
+  it('lets a field being typed blur and save before an area header opens its summary (audit A2 pass 2 L3)', async () => {
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const onSelectArea = jest.fn();
+      const screen = await render(
+        <ScheduleWideWorkspace
+          items={[taskA]}
+          selectedTaskId="task-a"
+          onSelectTask={jest.fn()}
+          onSelectArea={onSelectArea}
+          masterHeader={<Text>Task controls</Text>}
+          inspector={<Text>Inspecting task-a</Text>}
+          inspectorFooter={null}
+          emptyState={<Text>No tasks</Text>}
+        />,
+      );
+      await fireEvent.press(screen.getByRole('button', { name: 'Collapse Canopy A' }));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(onSelectArea).not.toHaveBeenCalled();
+      act(() => { jest.advanceTimersByTime(80); });
+      expect(onSelectArea).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
+  });
+
   it('provides an accessible task master list and controlled inspector selection', async () => {
     const screen = await render(<WorkspaceProbe />);
 

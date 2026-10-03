@@ -40,6 +40,20 @@ const confirmed = memory.confirmCaptureMemory(confirmedLocation, '2026-07-12T08:
 assert.strictEqual(memory.confirmedCaptureMemoryForSave(confirmed), confirmed);
 assert.strictEqual(confirmed.transcript, draft.transcript, 'Confirmation must preserve transcript evidence.');
 
+// Whole-app audit A11 pass 1 F6 (30 Sep 2026): a recommended location can be
+// cleared ("No location" in the sheet), and the memory then saves without one.
+const leftoverLocation = memory.createCaptureMemory({
+  id: 'memory-3', transcript: 'Ordered 2375 feet of conduit.', transcriptSourceRecordId: 't3', createdAt: '2026-09-30T08:00:00.000Z',
+  recommendedProject: { value: 'Canopy B', confidence: 'high', confirmed: true },
+  recommendedLocation: { value: 'Electrical room', confidence: 'medium' },
+});
+assert.throws(() => memory.confirmCaptureMemory(leftoverLocation, '2026-09-30T08:01:00.000Z'), /Location confirmation/);
+const noLocation = memory.correctCaptureMemory(leftoverLocation, 'location', null, '2026-09-30T08:01:00.000Z');
+assert.strictEqual(noLocation.recommendedLocation.value, null);
+const savedWithoutLocation = memory.confirmCaptureMemory(noLocation, '2026-09-30T08:02:00.000Z');
+assert.strictEqual(memory.confirmedCaptureMemoryForSave(savedWithoutLocation), savedWithoutLocation, 'Clearing the location must let the memory be saved.');
+assert.strictEqual(savedWithoutLocation.recommendedLocation.value, null);
+
 const ambiguous = memory.createCaptureMemory({ id: 'memory-2', transcript: 'They will call tomorrow.', transcriptSourceRecordId: 't2', createdAt: '2026-07-12T09:00:00.000Z' });
 assert.strictEqual(ambiguous.recommendedProject.value, null);
 assert.throws(() => memory.confirmCaptureMemory(ambiguous, '2026-07-12T09:01:00.000Z'), /Project confirmation/);

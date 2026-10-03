@@ -1,5 +1,6 @@
-import { askDAVE, type DAVEAskAnswer, type DAVEAskEvidence } from './DAVEAsk';
+import { askDAVE, routeDAVEAskIntent, type DAVEAskAnswer, type DAVEAskEvidence } from './DAVEAsk';
 import type { DAVEAskConversationEntry } from './DAVEAskConversation';
+import { classifyDAVEConversationIntent, talkProjectQuestionRefusal } from './DAVEConversationRouter';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 
 export type DAVEConversationFollowUpKind =
@@ -7,7 +8,8 @@ export type DAVEConversationFollowUpKind =
   | 'explanation'
   | 'schedule'
   | 'next_action'
-  | 'prior_answer';
+  | 'prior_answer'
+  | 'added_subject';
 
 export type DAVEConversationContextResolution = Readonly<{
   status: 'standalone' | 'resolved_follow_up' | 'ambiguous_follow_up';
@@ -19,30 +21,65 @@ export type DAVEConversationContextResolution = Readonly<{
   reason: string;
 }>;
 
+/**
+ * Whole-app audit A9 pass 2 F1 (30 Sep 2026): `history` is the answers given
+ * since Talk was opened (hooks/use-talk-session.ts), not every saved answer of
+ * the project. A question that only leans on "this", "that", "it" or "they"
+ * ("Why is this wall cracked?") is answered in the owner's own words, on its
+ * own records (audit A9 pass 3 L4: it no longer borrows the earlier answer's).
+ * "Why?", "Show me the evidence", "Explain that" and "And…/Also…/What about…"
+ * stay follow-ups, and the answer they explain is the underlying one, so
+ * replies never nest.
+ */
 export function resolveDAVEConversationContext({
   transcript,
   history,
   projectId,
   now = new Date(),
   maxAgeDays = 30,
+  projectName,
+  projectNames,
+  closedProjectNames,
 }: {
   transcript: string;
   history: readonly DAVEAskConversationEntry[];
   projectId: string;
   now?: Date;
   maxAgeDays?: number;
+  /** Talk's project (after any move), the open projects and the closed (archived, not deleted) ones. */
+  projectName?: string;
+  projectNames?: readonly string[] | null;
+  closedProjectNames?: readonly string[] | null;
 }): DAVEConversationContextResolution {
   const originalQuestion = clean(transcript);
-  if (!looksContextDependent(originalQuestion)) {
+  // Audit A9 pass 6 L6: a question naming two projects, or a project Talk did
+  // not move to (a closed one), is not answered from this project, whether it
+  // is new or a follow-up ("What about 200?"). Talk asks instead, in the
+  // "One detail needed" alert; a note is not checked here. Audit A9 pass 7
+  // L6b: also when Talk opened with no project selected (projectName '').
+  // Audit A9 pass 8 L6: a task update too ("Mark 4410 framing complete" with
+  // 4410 closed offered this project's framing task), in the same words.
+  const intent = classifyDAVEConversationIntent(originalQuestion);
+  const projectRefusal = projectNames && (intent === 'ask' || intent === 'task_update')
+    ? talkProjectQuestionRefusal(originalQuestion, projectName ?? '', projectNames, closedProjectNames || [])
+    : null;
+  if (projectRefusal) {
+    return resolution('ambiguous_follow_up', originalQuestion, projectRefusal, null, null,
+      'The question names another project, so it is not answered from this one.');
+  }
+  const projectHistory = history.filter(entry => entry.projectId === projectId);
+  const latest = latestEntry(projectHistory.filter(entry => recentEnough(entry.createdAt, now, maxAgeDays)));
+  const dependence = contextDependence(originalQuestion, Boolean(latest));
+  if (!dependence) {
     return resolution('standalone', originalQuestion, originalQuestion, null, null, 'The question is self-contained.');
   }
 
-  const prior = [...history]
-    .filter(entry => entry.projectId === projectId)
-    .filter(entry => recentEnough(entry.createdAt, now, maxAgeDays))
-    .sort((left, right) => timestamp(right.createdAt) - timestamp(left.createdAt))[0] || null;
-
-  if (!prior) {
+  if (!latest && dependence === 'pronoun') {
+    // Whole-app audit A9 pass 1 #1 (30 Sep 2026): "Did they send it?" with
+    // nothing earlier to point at is answered as asked, not refused.
+    return resolution('standalone', originalQuestion, originalQuestion, null, null, 'No recent answer exists, so the question is answered as asked.');
+  }
+  if (!latest) {
     return resolution(
       'ambiguous_follow_up',
       originalQuestion,
@@ -53,38 +90,81 @@ export function resolveDAVEConversationContext({
     );
   }
 
-  const text = normalize(originalQuestion);
-  if (/\b(?:evidence|record|records|source|sources|show me|prove|support)\b/.test(text)) {
-    return resolved(originalQuestion, 'Show the supporting evidence for the previous answer.', prior, 'supporting_evidence', 'The follow-up asks for records supporting the previous answer.');
+  if (dependence === 'pronoun') {
+    // A9 pass 2 F1a: his own words are the question answered and searched.
+    return resolved(originalQuestion, originalQuestion, latest, 'prior_answer', 'The question is answered as asked, on its own records.');
   }
-  if (/\b(?:why|explain|how come|reason)\b/.test(text)) {
+
+  const text = normalize(originalQuestion);
+  const subject = addedSubjectWords(text);
+  const kind = subject
+    ? subject.length === 0 ? null : FOLLOW_UP_RULES.find(rule => subject.every(word => rule.words.has(word)))?.kind || 'added_subject'
+    : FOLLOW_UP_RULES.find(rule => rule.pattern.test(text))?.kind || null;
+  // Evidence and explanation are about the answer itself, never a reply about a reply (A9 pass 2 F1c).
+  const basis = answerBasis(latest, projectHistory);
+  if (kind === 'supporting_evidence') {
+    return resolved(originalQuestion, 'Show the supporting evidence for the previous answer.', basis, 'supporting_evidence', 'The follow-up asks for records supporting the previous answer.');
+  }
+  if (kind === 'explanation') {
     return resolved(
       originalQuestion,
-      prior.answer.recommendedNextAction
+      basis.answer.recommendedNextAction
         ? 'Why did you recommend the next action?'
-        : `Explain why the project answer to "${shorten(prior.question, 90)}" is supported.`,
-      prior,
+        : `Explain why the project answer to "${shorten(answeredQuestion(basis), 90)}" is supported.`,
+      basis,
       'explanation',
       'The follow-up asks ECOS to explain the previous conclusion or recommendation.',
     );
   }
-  if (/\b(?:schedule|dates?|deadline|deadlines|late|overdue|due)\b/.test(text)) {
-    return resolved(originalQuestion, 'What is the project status, especially the schedule and overdue work?', prior, 'schedule', 'The follow-up narrows the prior project discussion to schedule status.');
+  if (kind === 'schedule') {
+    return resolved(originalQuestion, 'What is the project status, especially the schedule and overdue work?', latest, 'schedule', 'The follow-up narrows the prior project discussion to schedule status.');
   }
-  if (/\b(?:what next|next|do now|should i do|action)\b/.test(text)) {
-    return resolved(originalQuestion, 'What should I do next?', prior, 'next_action', 'The follow-up asks for the next accountable action.');
+  if (kind === 'next_action') {
+    return resolved(originalQuestion, 'What should I do next?', latest, 'next_action', 'The follow-up asks for the next accountable action.');
   }
-  if (/\b(?:that|this|it|those|them|they|one|ones|and)\b/.test(text)) {
+  if (kind === 'added_subject') {
+    // A9 pass 2 F1d: "And the drywall?" keeps "drywall" next to the question it continues.
     return resolved(
       originalQuestion,
-      `Summarize the project with emphasis on the previous question: "${shorten(prior.question, 90)}".`,
-      prior,
-      'prior_answer',
-      'The pronoun refers to the latest answer in this project conversation.',
+      `${clean(baseQuestionEntry(latest, projectHistory).question)} ${originalQuestion}`,
+      latest,
+      'added_subject',
+      'The follow-up asks the earlier question about another subject.',
     );
   }
+  return resolved(
+    originalQuestion,
+    `Summarize the project with emphasis on the previous question: "${shorten(answeredQuestion(basis), 90)}".`,
+    latest,
+    'prior_answer',
+    'The follow-up refers to the latest answer in this Talk session.',
+  );
+}
 
-  return resolution('standalone', originalQuestion, originalQuestion, null, null, 'The question can be answered without prior-turn context.');
+/**
+ * Whole-app audit A9 pass 2 F2 (30 Sep 2026): the question "Ask in Ask ECOS"
+ * sends for a Talk answer. Ask ECOS reads it on its own, so a follow-up's bare
+ * words ("Show me the evidence", "Why?") are never sent: an evidence or "why"
+ * follow-up sends the question it is about, "And the ramp?" sends the earlier
+ * question followed by those words, and anything else returns null (the owner
+ * asks the full question himself).
+ */
+export function askECOSQuestionForTalk(
+  context: DAVEConversationContextResolution,
+  history: readonly DAVEAskConversationEntry[],
+): string | null {
+  if (context.status === 'ambiguous_follow_up') return null;
+  if (context.status === 'standalone') return askable(context.originalQuestion);
+  if (context.followUpKind === 'added_subject') return askable(context.effectiveQuestion);
+  const prior = history.find(entry => entry.id === context.priorEntryId) || context.priorEntry;
+  if (context.followUpKind === 'supporting_evidence' || context.followUpKind === 'explanation') {
+    return prior ? ecosQuestionForEntry(answerBasis(prior, history)) : null;
+  }
+  if (sameWords(context.effectiveQuestion, context.originalQuestion)) return askable(context.originalQuestion);
+  // "And the schedule?" is answered here as a schedule summary; Ask ECOS gets his words after the question they continue.
+  return prior && addedSubjectWords(normalize(context.originalQuestion))?.length
+    ? askable(`${clean(baseQuestionEntry(prior, history).question)} ${context.originalQuestion}`)
+    : null;
 }
 
 export function answerDAVEConversationContext({
@@ -130,13 +210,16 @@ export function answerDAVEConversationContext({
     };
   }
 
-  if (context.followUpKind === 'prior_answer') return prior;
-
   const focused = askDAVE({
     question: context.effectiveQuestion,
     intelligence,
     interface: conversationInterface,
   });
+  // Audit A9 pass 3 L4 (30 Sep 2026): after "What is overdue?", "Is this wall
+  // rated for 3 hours?" listed the overdue task as its support, and "Show me the
+  // evidence" then cited it for the wall answer. A question answered in his own
+  // words ("this", "it", "they") stands on its own records.
+  if (answersOwnWords(context)) return focused;
   return {
     ...focused,
     supportingEvidence: uniqueEvidence([
@@ -151,17 +234,157 @@ export function answerDAVEConversationContext({
       ...prior.navigationTargets,
       ...focused.navigationTargets,
     ]),
-    limitations: uniqueText([...prior.limitations, ...focused.limitations]),
+    // A new subject or "What about that?" takes only the earlier records, not its caveats.
+    limitations: context.followUpKind === 'prior_answer' || context.followUpKind === 'added_subject'
+      ? focused.limitations
+      : uniqueText([...prior.limitations, ...focused.limitations]),
   };
 }
 
-function looksContextDependent(value: string) {
+const FOLLOW_UP_RULES: ReadonlyArray<Readonly<{ kind: DAVEConversationFollowUpKind; pattern: RegExp; words: ReadonlySet<string> }>> = [
+  {
+    kind: 'supporting_evidence',
+    pattern: /\b(?:evidence|record|records|source|sources|show me|prove|support)\b/,
+    words: new Set(['evidence', 'record', 'records', 'source', 'sources', 'prove', 'proof', 'support', 'supporting']),
+  },
+  { kind: 'explanation', pattern: /\b(?:why|explain|how come|reason)\b/, words: new Set(['why', 'explain', 'reason', 'reasons', 'come']) },
+  {
+    kind: 'schedule',
+    pattern: /\b(?:schedule|dates?|deadline|deadlines|late|overdue|due)\b/,
+    words: new Set(['schedule', 'date', 'dates', 'deadline', 'deadlines', 'late', 'overdue', 'due']),
+  },
+  {
+    kind: 'next_action',
+    pattern: /\b(?:what next|next|do now|should i do|action)\b/,
+    words: new Set(['next', 'action', 'actions', 'step', 'steps', 'do', 'now', 'should', 'i']),
+  },
+];
+
+/**
+ * Whole-app audit A11 pass 3 (30 Sep 2026): after an answer, "And the dumpster
+ * full" or "Also the roof hatch open" (no "?") was answered as a follow-up and
+ * never reached Confirm Memory. Without "?", only these subjects continue the
+ * answer ("And the schedule", "Also the inspections"); anything else is a note.
+ */
+const FOLLOW_UP_TOPIC_WORDS: ReadonlySet<string> = new Set([
+  ...FOLLOW_UP_RULES.flatMap(rule => [...rule.words]),
+  'status', 'risk', 'risks', 'attention', 'issues', 'problems', 'blockers', 'changes', 'commitments',
+  'inspection', 'inspections', 'updates',
+]);
+
+// Words that carry no subject in "And the…?", "Also what about that?".
+const FOLLOW_UP_FILLER = new Set([
+  'the', 'a', 'an', 'and', 'also', 'what', 'about', 'how', 'is', 'are', 'me', 'show', 'please', 'of', 'for', 'to',
+  'on', 'at', 'in', 'with', 'that', 'this', 'it', 'those', 'them', 'they', 'one', 'ones', 'then', 'so', 'just', 'there',
+]);
+
+/** The subject words after "And", "Also" or "What about"; null for any other opening. */
+function addedSubjectWords(text: string): string[] | null {
+  const match = /^(?:and|also|what about)\b(.*)$/.exec(text);
+  return match ? match[1].split(' ').filter(word => word && !FOLLOW_UP_FILLER.has(word)) : null;
+}
+
+// A9 pass 2 F3: words that make "And…"/"Also…" a field note rather than a question.
+const FIELD_NOTE_WORDS = new Set([
+  'said', 'says', 'say', 'told', 'tell', 'tells', 'asked', 'will', 'would', 'wont', 'going', 'gonna', 'is', 'are',
+  'was', 'were', 'be', 'been', 'being', 'am', 'has', 'have', 'had', 'did', 'does', 'done', 'got', 'get', 'gets',
+  'finished', 'finish', 'finishes', 'completed', 'complete', 'started', 'start', 'installed', 'install', 'delivered',
+  'deliver', 'arrived', 'arrive', 'passed', 'pass', 'failed', 'fail', 'promised', 'promise', 'committed', 'approved',
+  'rejected', 'decided', 'need', 'needs', 'needed', 'called', 'call', 'remind', 'remember', 'note', 'noted', 'moved',
+  'move', 'delayed', 'rescheduled', 'broke', 'broken', 'cracked', 'leaking', 'leaked', 'came', 'left', 'went', 'back',
+  'today', 'tomorrow', 'yesterday', 'tonight', 'morning', 'afternoon', 'monday', 'tuesday', 'wednesday', 'thursday',
+  'friday', 'saturday', 'sunday', 'week', 'll', 're', 've',
+]);
+
+/**
+ * Whole-app audit A9 pass 1 #1 (30 Sep 2026): every short Talk input with
+ * "it", "this" or "they" was read as a follow-up, so a field note or task
+ * update was answered with the previous reply, or refused when there was
+ * none. Only a question can point back at an answer. 'explicit' openings
+ * ("And…", "Why?", "Show me the evidence") need one; a 'pronoun' question
+ * uses one when it exists and is otherwise answered as asked.
+ */
+function contextDependence(value: string, hasPriorAnswer: boolean): 'explicit' | 'pronoun' | null {
   const text = normalize(value);
   const words = text.split(' ').filter(Boolean);
-  if (words.length > 14) return false;
-  if (/^(?:and\b|also\b|what about\b|what next\b|show me (?:the |that |those )?(?:evidence|records?|sources?)\b|explain (?:that|this|it)\b)/.test(text)) return true;
-  if (/^(?:why|how come)(?:\s+(?:that|this|it|so|the recommendation))?$/.test(text)) return true;
-  return /\b(?:that|this|it|those|them|they|previous)\b/.test(text);
+  if (words.length > 14) return null;
+  const intent = classifyDAVEConversationIntent(value);
+  if (intent !== 'ask') {
+    // The router files "Show me the evidence" as a note, yet it asks about the previous answer.
+    if (/^show me (?:the |that |those )?(?:evidence|records?|sources?)\b/.test(text)) return 'explicit';
+    // A9 pass 2 F3: "And the schedule" without "?" continues this Talk session's answer, unless it reads as a note.
+    return hasPriorAnswer && intent !== 'task_update' && intent !== 'navigate' &&
+      /^(?:and|also|what about)\b/.test(text) && !/\d/.test(text) && words.length <= 8 &&
+      !words.some(word => FIELD_NOTE_WORDS.has(word)) &&
+      (addedSubjectWords(text) || []).every(word => FOLLOW_UP_TOPIC_WORDS.has(word)) ? 'explicit' : null;
+  }
+  if (/^(?:and\b|also\b|what about\b|what next\b|show me (?:the |that |those )?(?:evidence|records?|sources?)\b|explain (?:that|this|it)\b)/.test(text)) return 'explicit';
+  if (/^(?:why|how come)(?:\s+(?:(?:is|was)\s+)?(?:that|this|it|so|the recommendation))?$/.test(text)) return 'explicit';
+  if (routeDAVEAskIntent(value) !== 'unknown') return null;
+  return /\b(?:that|this|it|those|them|they|previous)\b/.test(text) ? 'pronoun' : null;
+}
+
+/** The newest entry; of two saved in the same millisecond, the later one. */
+function latestEntry(entries: readonly DAVEAskConversationEntry[]) {
+  let latest: DAVEAskConversationEntry | null = null;
+  for (const entry of entries) {
+    if (!latest || timestamp(entry.createdAt) >= timestamp(latest.createdAt)) latest = entry;
+  }
+  return latest;
+}
+
+function earlierEntry(entry: DAVEAskConversationEntry, history: readonly DAVEAskConversationEntry[]) {
+  return entry.priorEntryId ? history.find(item => item.id === entry.priorEntryId && item.id !== entry.id) || null : null;
+}
+
+/** Walks back through "Show me the evidence" and "Why?" replies to the answer they are about. */
+function answerBasis(entry: DAVEAskConversationEntry, history: readonly DAVEAskConversationEntry[]) {
+  let current = entry;
+  for (let step = 0; step < history.length && (current.followUpKind === 'supporting_evidence' || current.followUpKind === 'explanation'); step += 1) {
+    const earlier = earlierEntry(current, history);
+    if (!earlier) break;
+    current = earlier;
+  }
+  return current;
+}
+
+/** Walks back to the last question the owner asked in full ("What is overdue?" behind "And the drywall?"). */
+function baseQuestionEntry(entry: DAVEAskConversationEntry, history: readonly DAVEAskConversationEntry[]) {
+  let current = entry;
+  for (let step = 0; step < history.length && !ownWordsAnswered(current); step += 1) {
+    const earlier = earlierEntry(current, history);
+    if (!earlier) break;
+    current = earlier;
+  }
+  return current;
+}
+
+function ownWordsAnswered(entry: DAVEAskConversationEntry) {
+  return entry.contextStatus !== 'resolved_follow_up' || !entry.resolvedQuestion || sameWords(entry.resolvedQuestion, entry.question);
+}
+
+function answeredQuestion(entry: DAVEAskConversationEntry) {
+  return entry.followUpKind === 'added_subject' && entry.resolvedQuestion ? entry.resolvedQuestion : entry.question;
+}
+
+function ecosQuestionForEntry(entry: DAVEAskConversationEntry) {
+  if (entry.followUpKind === 'added_subject') return askable(entry.resolvedQuestion || '');
+  return ownWordsAnswered(entry) ? askable(entry.question) : null;
+}
+
+/** Ask ECOS accepts 3 to 1,000 characters (services/ECOSProjectQuestion.ts). */
+function askable(question: string) {
+  const text = clean(question);
+  return text.length >= 3 && text.length <= 1_000 ? text : null;
+}
+
+/** A pronoun question ("Is this wall rated?"): a follow-up only in name, answered as asked. */
+function answersOwnWords(context: DAVEConversationContextResolution) {
+  return context.followUpKind === 'prior_answer' && sameWords(context.effectiveQuestion, context.originalQuestion);
+}
+
+function sameWords(left: string, right: string) {
+  return normalize(left) === normalize(right);
 }
 
 function resolved(

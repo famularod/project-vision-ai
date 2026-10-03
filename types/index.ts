@@ -245,6 +245,20 @@ export type ReferenceDocument = {
   projectName?: string | null;
   /** Projects explicitly covered when one shared document applies to more than one project. */
   projectNames?: string[];
+  /**
+   * Projects a current combined schedule no longer speaks for, because a
+   * schedule for them was made current (owner answer Q15, 30 Sep 2026).
+   * Written and cleared only by the cloud's activation call; the project
+   * list itself is never trimmed.
+   */
+  retiredForProjectNames?: string[];
+  /**
+   * How a schedule is used, chosen at import review (owner answer Q22, 30 Sep
+   * 2026): 'lookahead' adds to the master schedule of its projects and is in
+   * effect for as long as it is kept; 'master' (or none, every schedule
+   * imported before) is a full schedule that replaces the one before it.
+   */
+  scheduleRole?: 'master' | 'lookahead' | null;
   /** Immutable identity of the import review that created this document. */
   importBatchId?: string | null;
   /** Protected cloud object path. Cloud-only documents may not have a local uri. */
@@ -271,6 +285,8 @@ export type ReferenceDocument = {
   updatedAt?: string | null;
   /** Cloud row revision. Transport metadata only; never persisted inside document_data. */
   cloudUpdatedAt?: string | null;
+  /** This device's record of the cloud copy's shared details when it last merged it; never sent (A7 pass 6 L1). */
+  cloudDetailsSeen?: string | null;
   /** Browser upload/version metadata retained when mobile refreshes the shared record. */
   webFileFingerprint?: string | null;
   webVersionGroupId?: string | null;
@@ -706,6 +722,71 @@ export type DAVECompletionVerification = {
   evidence: DAVECompletionEvidence[];
 };
 
+/** A schedule row waiting for its schedule to become current (ScheduleItem.scheduleRowsAwaitingCurrent). */
+export type ScheduleRowAwaitingCurrent = {
+  importBatchId: string;
+  sourceDocumentId?: string | null;
+  startDate: string;
+  finishDate: string;
+  percentComplete: number;
+  /** False when the file stated no percent for the row (A5 pass 5 H1). */
+  percentCompleteStated?: boolean | null;
+  status: ScheduleStatus;
+};
+
+export type ScheduleLookaheadOverlay = {
+  /** The task's dates and percent before the first lookahead changed it. */
+  masterStartDate: string;
+  masterFinishDate: string;
+  masterPercentComplete: number;
+  /**
+   * Who stated masterPercentComplete (whole-app audit A5 pass 6 M2, 30 Sep
+   * 2026): the task's progress source and confirmer, and when, before the
+   * first lookahead; put back with the percent when deleting the lookaheads
+   * gives it back. Missing on a task restated before.
+   */
+  masterProgressSource?: 'project_manager' | 'schedule_import' | null;
+  masterProgressConfirmedBy?: string | null;
+  masterProgressConfirmedAt?: string | null;
+  /**
+   * The status stated with masterPercentComplete (whole-app audit A5 pass 7
+   * L3, 30 Sep 2026), given back with it: David's "Waiting 40%" comes back
+   * Waiting. Missing on a note made before, which gives back the task's
+   * status then, as before.
+   */
+  masterStatus?: ScheduleStatus | null;
+  /**
+   * The percent the master schedule file itself last stated for the task,
+   * which the manager's own percent may stand over (A5 pass 6 M2): null when
+   * no master file has stated one since the manager's. Missing on a task
+   * restated before, whose masterPercentComplete was the file's.
+   */
+  masterFilePercentComplete?: number | null;
+  /**
+   * Each lookahead import that restated the task, oldest first, with the
+   * dates it gave and the percent it gave (null: it left progress alone;
+   * missing: approved before 30 Sep 2026 audit A5 pass 5 H1, not noted).
+   * datesReplacedByMaster: a newer master changed the task's dates since
+   * this lookahead, so deleting a later lookahead never gives its dates back
+   * (whole-app audit A6 pass 19 M1); missing on an entry noted before. The
+   * import batch id of the master that changed them (whole-app audit A5 pass
+   * 20 P1): they stay replaced only while that master, or one newer, is
+   * current; true on an entry marked before, replaced whatever is current.
+   * percentStated: true when the lookahead's row stated a percent but it gave
+   * none (at or below David's own, Q22), a newer word than an older master's
+   * percent (whole-app audit A5 pass 21 R3); missing otherwise, and on an
+   * entry noted before.
+   */
+  lookaheads: {
+    batchId: string;
+    startDate: string;
+    finishDate: string;
+    percentComplete?: number | null;
+    datesReplacedByMaster?: boolean | string;
+    percentStated?: true;
+  }[];
+};
+
 export type ScheduleItem = {
   id: string;
   /** Immutable cloud project identity. Display names are never write authority. */
@@ -733,9 +814,62 @@ export type ScheduleItem = {
   baselineStartDate?: string | null;
   baselineFinishDate?: string | null;
   percentComplete: number;
+  /**
+   * An imported row only (whole-app audit A5 pass 5 H1, 30 Sep 2026): false
+   * when its file stated no percent for it (no % Complete column, or a blank
+   * cell), so approving it leaves the task's progress alone. Missing means
+   * stated, as for every row read before. Never kept on a saved task.
+   */
+  percentCompleteStated?: boolean | null;
   progressSource?: 'project_manager' | 'schedule_import' | null;
   progressConfirmedAt?: string | null;
   progressConfirmedBy?: string | null;
+  /**
+   * When the manager judged the percent the task holds, when that percent
+   * was given back later (whole-app audit A10 pass 5 L1, 30 Sep 2026):
+   * deleting a lookahead, or a file stating less than the manager's noted
+   * percent, puts the manager's percent back confirmed at that moment
+   * (givenBackAt = progressConfirmedAt, so every device takes it back,
+   * DAVEScheduleRecovery), while judgedAt keeps when the manager said it,
+   * for weighing field reports and dating the record
+   * (scheduleProgressJudgedAt). It stands only while progressConfirmedAt is
+   * still givenBackAt: any later confirmation is a newer judgment.
+   */
+  progressJudgment?: { judgedAt: string; givenBackAt: string } | null;
+  /**
+   * The percent David last entered himself, when a schedule file's higher
+   * percent replaced it as the task's (whole-app audit A5 recorded Low, the
+   * Q22 floor gap, 1 Oct 2026): while the task's percent is still a file's,
+   * a lookahead never sets it below this (owner answer Q22). Kept in the
+   * task's JSON record. Missing on every other task, and on one saved
+   * before.
+   */
+  managersPercentUnderFile?: number | null;
+  /**
+   * When David judged the percent kept in managersPercentUnderFile (whole-app
+   * audit A6 pass 24 L1, 2 Oct 2026): the floor is his latest own entry, so
+   * a merge keeps the later of the two copies' entries, never an older floor
+   * over a percent he entered since. Kept in the task's JSON record; missing
+   * on a floor saved before, which counts as older than any dated entry.
+   */
+  managersPercentUnderFileJudgedAt?: string | null;
+  /**
+   * The earlier row a sync carry took this task's percent from, and when
+   * David judged that percent (whole-app audit A7 pass 28 L, 2 Oct 2026): a
+   * copy still holding it is weighed as a carried percent, not as David's
+   * word on this row, also after that row is deleted. It goes with the
+   * percent, and stops counting once the percent changes. Kept in the task's
+   * JSON record.
+   */
+  progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
+  /**
+   * The percent Talk wrote on this task that its Undo took back, and when
+   * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
+   * device may still hold that entry, or a floor made from it, and neither
+   * counts as David's word. Kept in the task's JSON record; the latest Undo's
+   * stays.
+   */
+  progressUndone?: { percentComplete: number; confirmedAt: string | null } | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
@@ -749,6 +883,52 @@ export type ScheduleItem = {
   importedAt?: string | null;
   /** Immutable import identity; filenames are display data only. */
   importBatchId?: string | null;
+  /**
+   * Later imports this task was found unchanged in. The task keeps its own
+   * import identity and belongs to each of these too, so a revision shows it
+   * without taking it over (whole-app audit A5 pass 2).
+   */
+  alsoImportedInBatchIds?: string[] | null;
+  /**
+   * The row number the latest of those imports gives the task, when its file
+   * numbers rows (Microsoft Project), so twins keep that file's order after a
+   * revision moved one of them (whole-app audit A5 pass 19 L4, 1 Oct 2026).
+   * sourceRowNumber stays the task's own import's. Kept in the task's JSON
+   * record. Missing on a row saved before.
+   */
+  alsoImportedSourceRow?: { importBatchId: string; sourceRowNumber: number } | null;
+  /**
+   * A task a lookahead added (no master had it): its own import
+   * (importBatchId) is a lookahead's (whole-app audit A6 pass 19 M2, 1 Oct
+   * 2026). The merge knew lookaheads only by the notes of the tasks they
+   * restated, which deleting the lookahead clears, so a later lookahead still
+   * holding the task left it counted as a master's. Kept in the task's JSON
+   * record. Missing on every other task, and on one added before.
+   */
+  importedAsLookahead?: boolean | null;
+  /**
+   * The lookaheads that restated this task in place (owner answer Q22), and
+   * what it said before the first of them, so deleting a lookahead gives the
+   * task back its master schedule dates.
+   */
+  lookaheadOverlay?: ScheduleLookaheadOverlay | null;
+  /**
+   * The ids this task had before new masters moved its dates, oldest first
+   * (whole-app audit A10 pass 5 M1, 30 Sep 2026): a new master saves a moved
+   * task as a new row with a new id, and a field update linked to an earlier
+   * id stays this task's (ScheduleTaskRevisions). Kept in the task's JSON
+   * record, as lookaheadOverlay is. Missing on a row saved before.
+   */
+  revisedFromTaskIds?: string[] | null;
+  /**
+   * A task entered by hand: the rows of schedules uploaded on the web, not
+   * current yet, that restate it (whole-app audit A5 pass 18 L3, 1 Oct
+   * 2026). Each restates the task when its schedule is made current for the
+   * task's project (Make Current on the web, Set Active on the phone), and
+   * is dropped then. Kept in the task's JSON record. Missing on every other
+   * task.
+   */
+  scheduleRowsAwaitingCurrent?: ScheduleRowAwaitingCurrent[] | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
   /** Immutable activity identifier captured from the source schedule row. */

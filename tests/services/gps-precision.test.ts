@@ -45,8 +45,11 @@ describe('GPS accuracy units', () => {
     // 175 ft area even at its centre. Read as feet, it used to pass.
     expect(isConfidentlyInsideArea({ distanceFeet: 0, accuracyMeters: 65, radiusFeet: 175 })).toBe(false);
     expect(isConfidentlyInsideArea({ distanceFeet: 100, accuracyMeters: 65, radiusFeet: 175 })).toBe(false);
-    // No accuracy reported: distance alone decides, as before.
-    expect(isConfidentlyInsideArea({ distanceFeet: 170, accuracyMeters: null, radiusFeet: 175 })).toBe(true);
+    // No accuracy reported: the margin is unknown, so the fix is never
+    // confidently inside (GPS review pass 1 low, G-L1; this line used to
+    // expect true, treating such a fix as exact). See
+    // tests/services/audit-r2-gps-lows.test.ts.
+    expect(isConfidentlyInsideArea({ distanceFeet: 170, accuracyMeters: null, radiusFeet: 175 })).toBe(false);
   });
 
   it('widens the clear-winner margin by the error in feet', () => {
@@ -347,7 +350,8 @@ describe('GPS wiring in the app', () => {
   // Review pass 2: the fix was checked against the previous draft and discarded.
   it('captures GPS for the draft just started, against its own project’s areas', () => {
     expect(app).not.toContain('captureDraftLocation();');
-    expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(2);
+    // Three since audit A4 batch 3: the Project Walk draft sets the ref too, before its files are handled.
+    expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(3);
     expect(app.match(/draftLocationCaptureRef\.current = captureDraftLocation\(nextDraft\);/g)).toHaveLength(2);
     expect(app).toContain('const generation = draftFixTracker.start(targetDraft.id);');
     expect(app).toContain('projectName: targetDraft.projectName,');
@@ -377,7 +381,11 @@ describe('GPS wiring in the app', () => {
 
   it('drops a pending fix when a save starts, and re-fixes only a draft left open by that save', () => {
     expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*const droppedPendingFix = draftFixTracker\.beginSave\(draftSnapshot\.id\);/);
-    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
+    // Audit A4 batch 3: the cancelled draft write is put back before the re-fix.
+    // Audit A4 batch 4: the saved list may be re-persisted between the draft write and the recapture.
+    // Audit A4 pass 4: the failed branch guards that re-persist on the store not being declared unreadable.
+    // A7 pass 3: after a blocked save the draft is not rewritten (recovery owns the store).
+    expect(app).toMatch(/setFieldUpdateSaving\(false\);\n(?:\s*\/\/.*\n)*\s+if \(!\(error instanceof FieldUpdatePersistenceBlockedError\)\) \{\n\s+void persistDraftNow\(draftRef\.current\);\n\s+persistStorageItem\(UPDATES_STORAGE_KEY, JSON\.stringify\(savedUpdatesRef\.current\)\)\.catch\([\s\S]*?\);\n\s+\}\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);\n\s+return;/);
     expect(app).toMatch(/setScreen\('ProjectWorkspace'\);\n\s+\} else \{\n\s+recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/);
     expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
   });

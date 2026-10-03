@@ -8,7 +8,21 @@ import {
   type ReferenceDocumentByteRestoreResult,
 } from './ReferenceDocumentByteRestore';
 
-const RESTORED_REFERENCE_DOCUMENTS_FOLDER = 'restored-reference-documents';
+const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
+
+/**
+ * A restored file is saved flat in Documents/project-documents, where
+ * normalizeReferenceDocument keeps its path and document delete removes it.
+ * The nested restored-reference-documents/<id>/ path was dropped on
+ * normalize, so every open downloaded the file again (whole-app audit A8
+ * pass 1 F4 (30 Sep 2026)).
+ */
+export function restoredReferenceDocumentFileName(
+  documentId: string,
+  originalFileName: string,
+): string {
+  return `restored-${safeSegment(documentId)}-${safeFileName(originalFileName)}`;
+}
 
 /**
  * Expo/Supabase adapter for the pure verified-byte restore contract.
@@ -29,11 +43,9 @@ export function restoreReferenceDocumentBytesFromCloud(
       return blobToBytes(result.data);
     },
     createOwnedDestination: async (documentId, originalFileName) => {
-      const root = new Directory(Paths.document, RESTORED_REFERENCE_DOCUMENTS_FOLDER);
+      const root = new Directory(Paths.document, REFERENCE_DOCUMENTS_FOLDER);
       root.create({ intermediates: true, idempotent: true });
-      const documentDirectory = new Directory(root, safeSegment(documentId));
-      documentDirectory.create({ intermediates: true, idempotent: true });
-      return new File(documentDirectory, safeFileName(originalFileName)).uri;
+      return new File(root, restoredReferenceDocumentFileName(documentId, originalFileName)).uri;
     },
     writeBytes: async (uri, bytes) => {
       const file = new File(uri);

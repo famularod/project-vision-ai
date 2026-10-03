@@ -1,26 +1,56 @@
 import type { ReactElement, ReactNode } from 'react';
 import {
   FlatList,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 
+import { ProjectPhotoImage } from './ProjectPhotoImage';
+import type { DAVEUpdatePhotoComparison } from '../services/DAVEUpdateWorkspace';
 import { colors, radius, spacing } from '../theme';
+import type { UpdatePhoto } from '../types';
 
 type IdentifiedUpdate = { id: string };
 
 export type UpdatePhotoComparisonViewModel = {
+  /** This device's file for the photo, or '' when it holds none. */
   priorUri: string;
+  /** The photo itself, so a cloud-only photo signs its preview when shown (A4 pass 7 M2). */
+  priorPhoto?: Partial<UpdatePhoto>;
   priorLabel: string;
   currentUri: string;
+  currentPhoto?: Partial<UpdatePhoto>;
   currentLabel: string;
   summary: string | null;
   confidence: string | null;
   comparability: string | null;
 };
+
+/**
+ * The comparison as shown. Its photos used to be passed as their `uri`, which
+ * is empty for a photo taken on the other device, so both sides were blank
+ * there (whole-app audit A4 pass 7 M2, 30 Sep 2026).
+ */
+export function updatePhotoComparisonViewModel(
+  comparison: DAVEUpdatePhotoComparison<Partial<UpdatePhoto>> | null,
+  formatDate: (date: string) => string,
+  localUri: (photo: Partial<UpdatePhoto>) => string,
+): UpdatePhotoComparisonViewModel | null {
+  if (!comparison) return null;
+  return {
+    priorUri: localUri(comparison.priorPhoto),
+    priorPhoto: comparison.priorPhoto,
+    priorLabel: formatDate(comparison.priorUpdateDate),
+    currentUri: localUri(comparison.currentPhoto),
+    currentPhoto: comparison.currentPhoto,
+    currentLabel: formatDate(comparison.currentUpdateDate),
+    summary: comparison.summary,
+    confidence: comparison.comparisonConfidence,
+    comparability: comparison.comparability,
+  };
+}
 
 export function UpdatesWideWorkspace<T extends IdentifiedUpdate>({
   items,
@@ -109,11 +139,13 @@ export function UpdatePhotoComparison({
           label="Previous evidence"
           detail={comparison.priorLabel}
           uri={comparison.priorUri}
+          photo={comparison.priorPhoto}
         />
         <EvidencePhoto
           label="Current evidence"
           detail={comparison.currentLabel}
           uri={comparison.currentUri}
+          photo={comparison.currentPhoto}
         />
       </View>
 
@@ -135,15 +167,18 @@ function EvidencePhoto({
   label,
   detail,
   uri,
+  photo,
 }: {
   label: string;
   detail: string;
   uri: string;
+  photo?: Partial<UpdatePhoto>;
 }) {
   return (
     <View style={styles.evidencePhoto}>
-      <Image
-        source={{ uri }}
+      <ProjectPhotoImage
+        photo={photo ?? {}}
+        localUri={uri}
         style={styles.comparisonImage}
         resizeMode="cover"
         accessible

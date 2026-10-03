@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import type { ReferenceDocument } from '../types';
+import { canonicalReferenceCategory } from '../services/AuthoritativeDocumentSystem';
 import {
   PROJECT_DOCUMENT_CATEGORIES,
   type ProjectDocumentCategory,
@@ -79,6 +80,7 @@ function projectDocumentStatusDetail(document: ProjectDocumentCardDocument) {
 export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocument>({
   document,
   sharedReferenceDocument,
+  scheduleCurrent,
   projectAreas,
   updates,
   onOpen,
@@ -91,6 +93,11 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
 }: {
   document: TDocument;
   sharedReferenceDocument: ReferenceDocument | null;
+  /**
+   * A schedule card's current state as this phone shows the schedules; the
+   * card's own flag when not given (whole-app audit A8 pass 3 L1).
+   */
+  scheduleCurrent?: boolean;
   projectAreas: ProjectDocumentCardArea[];
   updates: ProjectDocumentCardUpdate[];
   onOpen: () => void;
@@ -102,11 +109,18 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
   onDelete: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const isCurrentSchedule = document.category === 'Schedule' && (scheduleCurrent ?? Boolean(document.isCurrent));
   const selectedUpdate = updates.find(update => update.id === document.updateId);
   const selectedArea = projectAreas.find(area => area.id === document.areaId);
   const updateDocument = (next: Partial<ProjectDocumentCardDocument>) => {
     onUpdate(next as Partial<TDocument>);
   };
+  // The cloud refuses to move a Current drawing out of Drawing outside Make
+  // Current (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+  const categoryLockedToDrawing = Boolean(
+    sharedReferenceDocument?.isCurrent &&
+    canonicalReferenceCategory(sharedReferenceDocument) === 'drawing',
+  );
 
   return (
     <View style={styles.photoCard}>
@@ -123,7 +137,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           <Text style={styles.rowSub}>
             {document.category} · {projectDocumentStatusDetail(document)}
           </Text>
-          {document.category === 'Schedule' && document.isCurrent ? (
+          {isCurrentSchedule ? (
             <View style={[styles.statusPill, styles.documentCurrentBadge]}>
               <Text style={[styles.statusPillText, { color: colors.success }]}>Current Schedule</Text>
             </View>
@@ -192,21 +206,21 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           style={[
             styles.photoControlButton,
             styles.documentCurrentControl,
-            document.isCurrent && { backgroundColor: colors.successSoft, borderColor: colors.success },
+            isCurrentSchedule && { backgroundColor: colors.successSoft, borderColor: colors.success },
           ]}
           onPress={onSetCurrentSchedule}
-          disabled={document.isCurrent}
+          disabled={isCurrentSchedule}
         >
           <Ionicons
-            name={document.isCurrent ? 'checkmark-circle' : 'calendar-outline'}
+            name={isCurrentSchedule ? 'checkmark-circle' : 'calendar-outline'}
             size={18}
-            color={document.isCurrent ? colors.success : colors.primary}
+            color={isCurrentSchedule ? colors.success : colors.primary}
           />
           <Text style={[
             styles.photoControlText,
-            document.isCurrent && { color: colors.success },
+            isCurrentSchedule && { color: colors.success },
           ]}>
-            {document.isCurrent ? 'Current Schedule' : 'Make Current Schedule'}
+            {isCurrentSchedule ? 'Current Schedule' : 'Make Current Schedule'}
           </Text>
         </TouchableOpacity>
       ) : null}
@@ -226,11 +240,13 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           <View style={styles.areaChipWrap}>
             {PROJECT_DOCUMENT_CATEGORIES.map(category => {
               const selected = document.category === category;
+              const locked = categoryLockedToDrawing && category !== 'Drawing';
               return (
                 <TouchableOpacity
                   key={category}
-                  style={[styles.areaChip, selected && styles.areaChipSelected]}
+                  style={[styles.areaChip, selected && styles.areaChipSelected, locked && styles.disabledButton]}
                   onPress={() => updateDocument({ category })}
+                  disabled={locked}
                 >
                   <Text style={[styles.areaChipText, selected && styles.areaChipTextSelected]}>
                     {category}
@@ -239,6 +255,11 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
               );
             })}
           </View>
+          {categoryLockedToDrawing ? (
+            <Text style={styles.locationDetailText}>
+              This drawing is Current for ECOS. Make another revision current before changing its category.
+            </Text>
+          ) : null}
 
           {document.category === 'Drawing' ? (
             <View style={styles.phase4DetailBlock}>

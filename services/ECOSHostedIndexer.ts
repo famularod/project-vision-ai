@@ -45,12 +45,23 @@ export type ECOSHostedEnqueueResult = Readonly<{
   message: string | null;
 }>;
 
+/**
+ * How the cloud's activation retires other current schedules (owner answer
+ * Q15, 30 Sep 2026). 'project': a combined schedule stays current for the
+ * projects the chosen schedule does not cover. 'schedule': the database
+ * before that migration, which retires every current schedule sharing a
+ * project with the chosen one.
+ */
+export type ScheduleRetirementScope = 'project' | 'schedule';
+
 export type ECOSCurrentReferenceActivationResult = Readonly<{
   status: 'activated' | 'not_prepared' | 'conflict' | 'unavailable' | 'failed';
   documentId: string | null;
   updatedAt: string | null;
   changedCount: number;
   message: string | null;
+  /** Read from an accepted activation's response; null otherwise. */
+  scheduleRetirementScope?: ScheduleRetirementScope | null;
 }>;
 
 export async function enqueueECOSHostedIndex({
@@ -153,13 +164,38 @@ export async function activateECOSCurrentReferenceDocument({
       'Vitruvius could not verify the current revision change.',
     );
   }
-  return activationResult(
-    'activated',
-    activatedDocumentId,
-    updatedAt,
-    count(row.changed_count),
-    null,
-  );
+  return Object.freeze({
+    ...activationResult('activated', activatedDocumentId, updatedAt, count(row.changed_count), null),
+    scheduleRetirementScope: row.schedule_retirement_scope === 'project' ? 'project' : 'schedule',
+  });
+}
+
+/**
+ * Asked before a schedule is made current, so what the owner is told matches
+ * what the cloud will do. A database without the Q15 migration has no such
+ * call and retires whole schedules; null when the answer is unknown (no
+ * client, no connection, or no answer within the time allowed, so a phone
+ * on poor signal is not held up).
+ */
+export async function loadECOSScheduleRetirementScope(
+  client: SupabaseClient | null,
+  timeoutMs = 5000,
+): Promise<ScheduleRetirementScope | null> {
+  if (!client) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const answer = await Promise.race([
+      Promise.resolve(client.rpc('ecos_schedule_retirement_scope')),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); }),
+    ]);
+    if (!answer) return null;
+    if (answer.error) return rpcUnavailable(answer.error) ? 'schedule' : null;
+    return answer.data === 'project' ? 'project' : 'schedule';
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function loadECOSHostedIndexStatuses({
@@ -183,6 +219,66 @@ export async function loadECOSHostedIndexStatuses({
     throw new Error(safeCustomerMessage(error.message));
   }
   return Object.freeze((Array.isArray(data) ? data : []).map(normalizeStatus).filter(isPresent));
+}
+
+/** The preparation-status copy the hosted indexer's status is mirrored into on a document. */
+export const ECOS_HOSTED_INDEX_STATUS_FIELDS = [
+  'ecosHostedIndexStatus',
+  'ecosHostedIndexProgressPercent',
+  'ecosHostedIndexCustomerMessage',
+  'ecosHostedIndexLimitationCount',
+  'ecosHostedIndexSupportReference',
+  'ecosHostedIndexEvidenceVersion',
+  'ecosHostedIndexUpdatedAt',
+] as const;
+
+const ECOS_HOSTED_INDEX_SAME_FILE_FIELDS = [
+  'contentSha256',
+  'webFileFingerprint',
+  'storagePath',
+] as const;
+
+/**
+ * A live (Realtime) document row carries the document's stored copy of its
+ * preparation status, which is often missing or older than the status the
+ * last refresh read from the hosted indexer: the echo of Make Current only
+ * flips isCurrent. Laid over the held document, it turned "Prepared — not
+ * current" back into "Preparing for ECOS" and disabled Make Current until a
+ * full refresh (whole-app audit round 2 F3, 30 Sep 2026). The held status is
+ * carried onto the incoming document when it is newer (the row has none, or
+ * an earlier ecosHostedIndexUpdatedAt), and only when the file is the same
+ * one (contentSha256, webFileFingerprint and storagePath unchanged), so a
+ * replaced file never inherits "Prepared". Shared by the web and the phone.
+ */
+export function carryECOSHostedIndexStatus<T extends object>(
+  incoming: T,
+  held: object | null | undefined,
+): T {
+  if (!held) return incoming;
+  const next = incoming as Record<string, unknown>;
+  const previous = held as Record<string, unknown>;
+  if (!hasHostedIndexStatus(previous)) return incoming;
+  const sameFile = ECOS_HOSTED_INDEX_SAME_FILE_FIELDS.every(field =>
+    text(next[field]) === text(previous[field]));
+  if (!sameFile) return incoming;
+  if (
+    hasHostedIndexStatus(next) &&
+    hostedIndexStatusTime(next) >= hostedIndexStatusTime(previous)
+  ) return incoming;
+  const carried: Record<string, unknown> = { ...next };
+  ECOS_HOSTED_INDEX_STATUS_FIELDS.forEach(field => {
+    carried[field] = previous[field] ?? null;
+  });
+  return carried as T;
+}
+
+function hasHostedIndexStatus(value: Record<string, unknown>): boolean {
+  return Boolean(text(value.ecosHostedIndexStatus));
+}
+
+function hostedIndexStatusTime(value: Record<string, unknown>): number {
+  const parsed = Date.parse(text(value.ecosHostedIndexUpdatedAt));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function normalizeStatus(value: unknown): ECOSHostedIndexStatus | null {

@@ -25,7 +25,15 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import {
+  findExactScheduleTaskForCompletionClaim,
+  mergeReportedCompletionClaim,
+} from './DAVECompletionVerification';
+import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
+import { scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
@@ -316,6 +324,121 @@ export function prepareDAVEWebLinkedDocument(
   });
 }
 
+export type DAVEWebScheduleImportRevision = Readonly<{
+  /** The saved task as this import leaves it. */
+  item: ScheduleItem;
+  /** The saved task as the web read it; written back if the import rolls back. */
+  previous: ScheduleItem;
+  /** The cloud revision the web read; the task changes only while it still matches. */
+  cloudUpdatedAt: string | null;
+}>;
+
+export type DAVEWebScheduleImportPlan = Readonly<{
+  /** New rows: tasks new to the schedule, and changed tasks carrying the manager's progress. */
+  additions: readonly ScheduleItem[];
+  /** Saved tasks the import changes: unchanged tasks re-homed into it, merged completion claims. */
+  revisions: readonly DAVEWebScheduleImportRevision[];
+}>;
+
+/**
+ * How a schedule uploaded on the web joins the tasks the manager sees, at
+ * upload time (whole-app audit A5 pass 3 F5, 30 Sep 2026). The web saved
+ * every row of a revised file as a new task at the file's percent, so making
+ * it current hid all of the manager's progress on the web, iPhone and iPad.
+ * It now runs the phone's approval merge (ScheduleImportMerge): an unchanged
+ * task keeps its id, progress, owner and notes and also belongs to this
+ * import; a changed task takes the manager's progress; a completion claim
+ * merges into its task.
+ *
+ * Only the tasks the web shows (snapshot.scheduleItems, the current
+ * schedules) are offered: with every saved row, a task changed in two
+ * revisions running has two manager-progress copies and carries nothing.
+ *
+ * Whole-app audit A5 pass 18 L3 (1 Oct 2026): the upload is not current
+ * until Make Current, so a task entered by hand is no longer restated here
+ * (that moved David's task on every device even if he never made the file
+ * current): the row is noted on the task and restates it at Make Current
+ * (scheduleProgressCarriedToShownTasks with the schedules before and after).
+ */
+export function planDAVEWebScheduleImport({
+  snapshot,
+  importedScheduleItems,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
+  importedScheduleItems: readonly ScheduleItem[];
+}): DAVEWebScheduleImportPlan {
+  if (importedScheduleItems.length === 0) {
+    return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
+  }
+  const saved = snapshot.scheduleItems.map(item => ({
+    item: scheduleItemForCloud(item),
+    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
+  }));
+  const merged = mergeApprovedScheduleImportItems({
+    existing: saved.map(({ item }) => item),
+    imported: importedScheduleItems,
+    completionMatch: findExactScheduleTaskForCompletionClaim,
+    mergeCompletion: mergeReportedCompletionClaim,
+    // Every task offered is one the web shows.
+    isCurrent: () => true,
+    // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
+    current: false,
+  });
+  const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
+  const revisions = merged.next.flatMap(item => {
+    const before = savedById.get(item.id);
+    return before && before.item !== item
+      ? [Object.freeze({ item, previous: before.item, cloudUpdatedAt: before.cloudUpdatedAt })]
+      : [];
+  });
+  return Object.freeze({
+    additions: Object.freeze([...merged.additions]),
+    revisions: Object.freeze(revisions),
+  });
+}
+
+/**
+ * Whole-app audit A10 pass 8 M1 / A8 pass 9 M1 (30 Sep 2026): "Delete
+ * Document + N Tasks" on the web wrote only the deletion records. A row a new
+ * master saved for a task it moved before 79f49d3 lists no earlier id, so a
+ * field update linked to the old row became "Historical evidence — linked
+ * task was deleted." on the web and the phone, and left every summary; the
+ * phone's "Delete PDF + Items" writes the removed id onto the task shown
+ * first (A10 pass 6 M1). The saved tasks the web delete now changes before
+ * its deletion records, worked out by the phone's own helper
+ * (scheduleItemsAfterScheduleDeleted) over every saved task the web read,
+ * each saved only while its cloud revision is the one read. None when the
+ * delete keeps the tasks.
+ */
+export function planDAVEWebScheduleDocumentDelete({
+  snapshot,
+  document,
+  updatedAt = new Date().toISOString(),
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
+  document: DAVEWebReferenceDocument;
+  updatedAt?: string;
+}): readonly DAVEWebScheduleImportRevision[] {
+  const removedIds = new Set(document.linkedScheduleItems.map(item => item.id));
+  if (removedIds.size === 0) return Object.freeze([]);
+  const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
+  const kept = saved.filter(item => !removedIds.has(item.id));
+  const keptById = new Map(kept.map(item => [item.id, item]));
+  const changed = scheduleItemsAfterScheduleDeleted({
+    items: kept,
+    removed: saved.filter(item => removedIds.has(item.id)),
+    document,
+    documents: snapshot.referenceDocuments.filter(other => other.id !== document.id),
+    updatedAt,
+  });
+  return Object.freeze(changed.flatMap(item => {
+    const before = keptById.get(item.id);
+    return before
+      ? [Object.freeze({ item: scheduleItemForCloud(item), previous: scheduleItemForCloud(before), cloudUpdatedAt: before.cloudUpdatedAt ?? null })]
+      : [];
+  }));
+}
+
 function canonicalSha256(value: string): string | null {
   const normalized = value.trim().toLowerCase();
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
@@ -329,6 +452,8 @@ export function buildDAVEWebReportDraft(
   return buildDAVEReportBriefing({
     truths,
     selectedProjectNames: truths.map(truth => truth.projectName),
+    // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
+    scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
 }
 
@@ -422,6 +547,7 @@ function buildDAVEWebProjectTruths(
       projectName: project.name,
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
       scheduleItems: scope.scheduleItems,
+      knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
       projectAreas: scope.projectAreas,
       referenceDocuments: scope.referenceDocuments.map(document => ({
         ...document,
@@ -574,13 +700,21 @@ export function formatDAVEWebReport(
   return lines.join('\n');
 }
 
+/**
+ * Whole-app audit A5 pass 12 K1 (1 Oct 2026): a task is a duplicate of
+ * another only in the same app project. Keyed by the Microsoft Project root a
+ * combined master keeps on every row ("2400 Compliance Project"), Harbor
+ * North's and Harbor South's Install HVAC on the same dates read as one task
+ * twice, and Data health reported a conflict for every such twin. Keyed now
+ * by the app project, as the merge and the shown schedule key a task
+ * (scheduleTaskProjectKey).
+ */
 export function buildDAVEWebTruthDiagnostics(
   snapshot: DAVEWebReadOnlySnapshot,
 ): DAVEWebTruthDiagnostics {
   const groups = new Map<string, string[]>();
   snapshot.scheduleItems.forEach(item => {
-    const key = [item.scheduleProjectName || item.projectName, item.locationName, item.taskName, item.finishDate]
-      .map(normalized)
+    const key = [scheduleTaskProjectKey(item), ...[item.locationName, item.taskName, item.finishDate].map(normalized)]
       .join('|');
     const ids = groups.get(key) || [];
     ids.push(item.id);
@@ -589,15 +723,17 @@ export function buildDAVEWebTruthDiagnostics(
   const duplicateTaskGroups = [...groups.entries()]
     .filter(([, ids]) => ids.length > 1)
     .map(([key, taskIds]) => Object.freeze({ key, taskIds: Object.freeze(taskIds) }));
+  // A lookahead adds to the master: not a second current schedule (owner answer Q22).
   const currentSchedules = snapshot.referenceDocuments.filter(document =>
-    scheduleDocumentIsScheduleLike(document) && document.isCurrent,
+    scheduleDocumentIsScheduleLike(document) && document.isCurrent && !scheduleDocumentAddsToMaster(document),
   );
   const completedTaskCount = snapshot.scheduleItems.filter(item =>
     scheduleTaskIsComplete(item),
   ).length;
   const conflicts = [
     ...(duplicateTaskGroups.length ? [`${duplicateTaskGroups.length} duplicate task occurrence group${duplicateTaskGroups.length === 1 ? '' : 's'} need review.`] : []),
-    ...(currentSchedules.length > 1 ? ['More than one current schedule is visible after reconciliation.'] : []),
+    // One current schedule per project is expected; two for the same project is a conflict (audit A5).
+    ...(currentSchedules.length > currentScheduleDocumentWinners(currentSchedules).length ? ['More than one current schedule is visible for the same project after reconciliation.'] : []),
   ];
   return Object.freeze({
     projectCount: snapshot.projects.length,

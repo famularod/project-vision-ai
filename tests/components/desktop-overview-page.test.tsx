@@ -84,12 +84,18 @@ const updates: CloudProjectUpdate<ProjectUpdate>[] = [
 
 describe('DesktopOverviewPage', () => {
   it('counts only active-parent updates and retains unmatched history without misattributing it', () => {
-    const historical = projectUpdate({id: 'historical', projectName: 'Project Alpha', areaName: '', updatedAt: '2026-09-14', notes: 'Historical task update'});
+    // A10 pass 2 F1 (30 Sep 2026), pin changed deliberately: an update whose
+    // task is no current task (a revision re-created it under a new id) is
+    // counted under the project it names, as the native Home and workspace
+    // now count it; one naming no active project stays unmatched history.
+    const historical = projectUpdate({id: 'historical', projectName: 'Retired Project', areaName: '', updatedAt: '2026-09-14', notes: 'Historical task update'});
     historical.updateData.scheduleItemId = 'superseded-task';
+    const revisedTask = projectUpdate({id: 'revised-task', projectName: 'Project Alpha', areaName: '', updatedAt: '2026-09-14', notes: 'Update on a revised task'});
+    revisedTask.updateData.scheduleItemId = 'superseded-task';
     const ambiguous = projectUpdate({id: 'ambiguous', projectName: 'Shared Area', areaName: '', updatedAt: '2026-09-14', notes: 'Ambiguous legacy update'});
     const exact = projectUpdate({id: 'exact', projectName: 'Shared Area', areaName: '', updatedAt: '2026-09-14', notes: 'Exact Beta task update'});
     exact.updateData.scheduleItemId = openTask.id;
-    const allUpdates = [...updates, historical, ambiguous, exact];
+    const allUpdates = [...updates, historical, revisedTask, ambiguous, exact];
     const before = JSON.stringify(allUpdates);
     const screen = render(<DesktopOverviewPage
       projects={[{id: 'alpha', name: 'Project Alpha'}, {id: 'beta', name: 'Project Beta'}]}
@@ -97,12 +103,14 @@ describe('DesktopOverviewPage', () => {
       tasks={[{...overdueTask, locationName: 'Shared Area'}, {...openTask, locationName: 'Shared Area'}, completedTask]}
       updates={allUpdates}
     />);
-    expect(screen.getByText('4')).toBeTruthy();
+    expect(screen.getByText('5')).toBeTruthy();
     expect(screen.getByText('2 additional field updates are retained in Field Activity but cannot be matched to the active projects.')).toBeTruthy();
     expect(screen.queryByText('Historical task update')).toBeNull();
     expect(screen.queryByText('Ambiguous legacy update')).toBeNull();
     expect(screen.getByText('Exact Beta task update')).toBeTruthy();
-    expect(screen.getAllByText('2 updates')).toHaveLength(2);
+    expect(screen.getByText('Update on a revised task')).toBeTruthy();
+    expect(screen.getByText('3 updates')).toBeTruthy();
+    expect(screen.getAllByText('2 updates')).toHaveLength(1);
     expect(JSON.stringify(allUpdates)).toBe(before);
   });
 

@@ -19,6 +19,8 @@ import {
   type OwnedLocalFileManifestRecord,
 } from './OwnedLocalFileRepository';
 import { MAX_PROJECT_DOCUMENT_FILE_BYTES } from './FileSizePreflight';
+import { exactProjectId, legacyProjectNameKey } from './OperationalProjectIdentity';
+import { canonicalReferenceCategory } from './AuthoritativeDocumentSystem';
 import type { ReferenceDocument } from '../types';
 import type { ProjectDocumentCategory } from './ProjectDocumentClassification';
 
@@ -129,8 +131,16 @@ export function findSharedReferenceDocumentForProjectDocument(
   referenceDocuments: readonly ReferenceDocument[],
 ): ReferenceDocument | null {
   const projectId = document.projectId.trim();
-  const belongsToProject = (candidate: ReferenceDocument) =>
-    !candidate.projectId || candidate.projectId === projectId;
+  // A shared record names its project; once uploaded it carries the cloud
+  // project id while the phone's document keeps the name key (audit A7 M1).
+  const belongsToProject = (candidate: ReferenceDocument) => {
+    if (candidate.projectId === projectId) return true;
+    const candidateProjectName = candidate.projectName?.trim();
+    if (candidateProjectName) {
+      return legacyProjectNameKey(candidateProjectName) === projectId;
+    }
+    return !candidate.projectId;
+  };
   const referenceDocumentId = document.referenceDocumentId?.trim();
 
   if (referenceDocumentId) {
@@ -151,6 +161,28 @@ export function findSharedReferenceDocumentForProjectDocument(
   return referenceDocuments.find(candidate =>
     candidate.storagePath === storagePath && belongsToProject(candidate),
   ) || null;
+}
+
+/**
+ * The project id a shared record carries for a phone document. The phone's
+ * name key never syncs (audit A7 M1), so a known project is written by name
+ * (the upload resolves its cloud id) or keeps the cloud id the shared record
+ * already holds for that name. An unknown project keeps the phone key, so the
+ * upload is held for review instead of being sent without a project.
+ */
+function sharedReferenceProjectId(
+  localProjectId: string,
+  projectName: string | null,
+  existing?: Readonly<{ projectId?: string | null; projectName?: string | null }>,
+): string | null {
+  const local = localProjectId.trim();
+  if (exactProjectId(local)) return local;
+  const name = projectName?.trim().toLowerCase();
+  if (!name) return local || null;
+  const existingId = exactProjectId(existing?.projectId);
+  return existingId && existing?.projectName?.trim().toLowerCase() === name
+    ? existingId
+    : null;
 }
 
 export function referenceCategoryForProjectDocument(
@@ -188,7 +220,7 @@ export function buildSharedReferenceDocument({
     // current schedule or drawing revision.
     isCurrent: false,
     importedAt: document.importedAt,
-    projectId: document.projectId,
+    projectId: sharedReferenceProjectId(document.projectId, projectName),
     projectName,
     projectNames: projectName ? [projectName] : [],
     importBatchId: null,
@@ -225,6 +257,13 @@ export function synchronizeSharedReferenceDocumentMetadata({
   projectName: string | null;
   updatedAt?: string;
 }>): ReferenceDocument {
+  // A copy shared with several projects, this one among them, keeps them. It
+  // was narrowed to this project, which the cloud refuses for a Current
+  // document, and the edit was held with the wrong advice (whole-app audit A8
+  // pass 2 #9).
+  const sharedProjects = sharedDocument.projectNames || [];
+  const keepsProjects = Boolean(projectName?.trim()) && sharedProjects.length > 1 && sharedProjects.some(name =>
+    typeof name === 'string' && name.trim().toLowerCase() === projectName?.trim().toLowerCase());
   return Object.freeze({
     ...sharedDocument,
     name: document.name.replace(/\.[^/.]+$/, '') || document.name,
@@ -232,15 +271,24 @@ export function synchronizeSharedReferenceDocumentMetadata({
     mimeType: document.mimeType || null,
     category: referenceCategoryForProjectDocument(document.category),
     notes: document.note || '',
-    projectId: document.projectId,
-    projectName: projectName || sharedDocument.projectName || null,
-    projectNames: projectName
+    projectId: keepsProjects ? sharedDocument.projectId ?? null : sharedReferenceProjectId(
+      document.projectId,
+      projectName || sharedDocument.projectName || null,
+      sharedDocument,
+    ),
+    projectName: keepsProjects ? sharedDocument.projectName ?? null : projectName || sharedDocument.projectName || null,
+    projectNames: keepsProjects
+      ? sharedProjects
+      : projectName
       ? [projectName]
       : sharedDocument.projectNames || [],
     storagePath: document.storagePath || sharedDocument.storagePath || null,
     sizeBytes: document.sizeBytes || sharedDocument.sizeBytes || null,
     webVersionGroupId:
-      document.webVersionGroupId || sharedDocument.webVersionGroupId || null,
+      document.webVersionGroupId ||
+      sharedDocument.webVersionGroupId ||
+      currentDrawingFamilyBeforeRenumbering(sharedDocument, document.drawingNumber) ||
+      null,
     drawingNumber: document.drawingNumber || null,
     drawingRevision: document.drawingRevision || null,
     drawingDiscipline: document.drawingDiscipline || null,
@@ -248,6 +296,27 @@ export function synchronizeSharedReferenceDocumentMetadata({
     drawingIssuedAt: document.drawingIssuedAt || null,
     updatedAt,
   });
+}
+
+/**
+ * A Current drawing's family is its webVersionGroupId or, without one, its
+ * drawing number, and the cloud refuses to move a Current drawing out of its
+ * family outside Make Current. Correcting the number on the phone did that,
+ * so the edit was refused. The old number, lowercased as the cloud reads it,
+ * becomes the webVersionGroupId and the drawing stays in its family (whole-app
+ * audit A8 pass 1 F3 (30 Sep 2026)). Accepted caveat: an unrelated sheet later
+ * given the old number joins that family.
+ */
+function currentDrawingFamilyBeforeRenumbering(
+  sharedDocument: ReferenceDocument,
+  nextDrawingNumber: string | null | undefined,
+): string | null {
+  if (!sharedDocument.isCurrent || canonicalReferenceCategory(sharedDocument) !== 'drawing') {
+    return null;
+  }
+  const previous = (sharedDocument.drawingNumber || '').trim().toLowerCase();
+  const next = (nextDrawingNumber || '').trim().toLowerCase();
+  return previous && previous !== next ? previous : null;
 }
 
 /**

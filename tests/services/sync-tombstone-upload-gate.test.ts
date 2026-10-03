@@ -121,6 +121,9 @@ const mockGetProjectUpdateSyncMetadata = jest.fn((id: string) =>
     } | null,
   }),
 );
+const mockListArchivedProjects = jest.fn((..._args: unknown[]): Promise<{
+  ok: boolean; configured: boolean; stubbed: boolean; data?: Array<{ id: string; name: string }>; error?: string;
+}> => Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }));
 const mockSaveProjectUpdate = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
@@ -149,6 +152,9 @@ jest.mock('../../services/SupabaseService', () => ({
     message: 'Configured.',
   }),
   listProjects: (...args: unknown[]) => mockListProjects(...args),
+  // A field update whose project is not active is looked up among closed
+  // projects (audit A7 M2); none are closed unless a test says so.
+  listArchivedProjects: (...args: unknown[]) => mockListArchivedProjects(...args),
   listDAVESyncTombstones: (...args: unknown[]) =>
     mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) =>
@@ -156,6 +162,13 @@ jest.mock('../../services/SupabaseService', () => ({
   upsertDAVESyncTombstones: (tombstones: unknown[]) =>
     Promise.resolve({ ok: true, configured: true, stubbed: false, data: tombstones }),
   listScheduleItems: (...args: unknown[]) => mockListScheduleItems(...args),
+  // A conflict choice reads the task's row by its id (whole-app audit A7
+  // pass 15 L-2), here the row the cloud list gives: each read takes the
+  // list's next answer, as the list read it replaced did.
+  getScheduleItem: async (id: string) => {
+    const cloud = await mockListScheduleItems();
+    return cloud.ok ? { ...cloud, data: cloud.data.find(item => item.id === id) ?? null } : cloud;
+  },
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: (...args: unknown[]) =>
     mockListReferenceDocuments(...args),
@@ -195,7 +208,9 @@ import {
   enqueuePendingChange,
   getOfflineQueue,
   getSyncConflicts,
+  projectUpdateUploadedSince,
   queueScheduleItemRecord,
+  resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   runScheduleImportCloudSync,
   runScheduleItemCloudSync,
@@ -238,6 +253,8 @@ beforeEach(() => {
   };
   mockListDAVESyncTombstones.mockClear();
   mockListProjects.mockClear();
+  mockListArchivedProjects.mockReset();
+  mockListArchivedProjects.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: [] });
   mockUpsertDAVESyncTombstone.mockClear();
   mockListScheduleItems.mockClear();
   mockUpsertScheduleItem.mockReset();
@@ -370,7 +387,12 @@ describe('offline upload deletion barriers', () => {
       errors: [],
     });
 
-    expect(mockListScheduleItems).toHaveBeenCalledTimes(1);
+    // Pin changed on purpose (whole-app audit A7 pass 16 L-5): the task list
+    // is still read once for the batch, but neither task is in it, so each
+    // field edit's row is then read by its id before anything is written.
+    // This file's mock answers a by-id read from the list, so it counts here:
+    // 1 list read + 2 by-id reads.
+    expect(mockListScheduleItems).toHaveBeenCalledTimes(3);
     expect(
       mockUpsertScheduleItem.mock.calls.map(([item]) => (item as ScheduleItem).id),
     ).toEqual([newestTask.id, olderTask.id]);
@@ -648,8 +670,11 @@ describe('offline upload deletion barriers', () => {
         'reference-document-document-waiting-behind-task': 'uploaded',
       },
     });
+    // A record the cloud does not have yet is inserted; one it has is
+    // updated (whole-app audit A8 pass 1 F3, 30 Sep 2026).
     expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
       expect.objectContaining({ id: document.id }),
+      { existing: false },
     );
     await expect(getOfflineQueue()).resolves.toEqual([
       expect.objectContaining({
@@ -728,6 +753,7 @@ describe('offline upload deletion barriers', () => {
         id: document.id,
         storagePath: document.storagePath,
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
@@ -783,6 +809,7 @@ describe('offline upload deletion barriers', () => {
         contentSha256: 'a'.repeat(64),
         sizeBytes: 1024,
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
   });
 
@@ -837,6 +864,7 @@ describe('offline upload deletion barriers', () => {
         projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
         storagePath: 'mobile/mrv3pyi1-9o6xn6mt/shared-master-schedule.pdf',
       }),
+      { existing: false }, // not in the cloud yet: inserted (A8 pass 1 F3)
     );
   });
 
@@ -867,7 +895,8 @@ describe('offline upload deletion barriers', () => {
       errors: [],
     });
     expect(mockPrepareReferenceDocumentForCloud).not.toHaveBeenCalled();
-    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(document);
+    // Not in the cloud yet: inserted (whole-app audit A8 pass 1 F3).
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(document, { existing: false });
   });
 
   it('keeps document metadata queued when protected file upload is incomplete', async () => {
@@ -1608,7 +1637,15 @@ describe('offline upload deletion barriers', () => {
       notes: '',
       updatedAt: '2026-07-26T22:48:30.000Z',
     };
+    // The sync that finds the conflict; Keep Phone's own read of the row
+    // (A7 pass 15 L-3); its upload's.
     mockListScheduleItems
+      .mockResolvedValueOnce({
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [newerCloudTask],
+      })
       .mockResolvedValueOnce({
         ok: true,
         configured: true,
@@ -1640,6 +1677,342 @@ describe('offline upload deletion barriers', () => {
     );
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  // Whole-app audit A5 pass 3 F6 (30 Sep 2026): Keep Phone uploaded the phone's
+  // copy verbatim, so a revision another device had re-homed the task into lost
+  // it, and the task disappeared everywhere while that revision was current.
+  describe('Keep Phone keeps the revisions another device re-homed the task into', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-phone-rehomed',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'PLACE ASPHALT AT EMPLOYEE PARKING AREA',
+      startDate: '',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Keep this phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'schedule.pdf',
+      importBatchId: 'batch-rev-1',
+      createdAt: '2026-07-21T22:31:36.387Z',
+      updatedAt: '2026-07-26T22:47:59.197Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+
+    async function conflictWithRehomedCloudCopy() {
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...phoneTask,
+        percentComplete: 100,
+        status: 'Complete',
+        notes: '',
+        alsoImportedInBatchIds: ['batch-rev-2'],
+        updatedAt: '2026-07-26T22:48:30.000Z',
+      }]));
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      return conflict;
+    }
+
+    it('uploads the phone copy with every revision either copy names, and keeps it on the phone', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      // Meanwhile a third revision also took the task in. Keep Phone reads the
+      // task's row first, then its upload reads the list (A7 pass 15 L-3).
+      const current = cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      // The phone keeps every revision the cloud's row names now (A7 pass 15
+      // L-3): it kept only those of the copy saved with the conflict, ['batch-rev-2'].
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+        status: phoneTask.status,
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+      });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({
+        notes: phoneTask.notes,
+        status: phoneTask.status,
+        importBatchId: 'batch-rev-1',
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+      }));
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    // Whole-app audit A5 pass 20 P3 (1 Oct 2026): a Microsoft Project
+    // revision also records the row it gave the task (alsoImportedSourceRow),
+    // which Keep Phone keeps from the copy that knows that import. Changed on
+    // the cloud's row alone, it made Keep Phone ask David to review again.
+    it('a revision that re-homed the task with its row number is no change of David\'s: Keep Phone goes ahead and keeps the row', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      const current = cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'],
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({
+        notes: phoneTask.notes,
+        alsoImportedSourceRow: { importBatchId: 'batch-rev-3', sourceRowNumber: 7 },
+      }));
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+    });
+
+    it('settles without a new conflict when the cloud differs only by a newer revision', async () => {
+      const conflict = await conflictWithRehomedCloudCopy();
+      const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
+      // Keep Phone's own read of the row, then its upload's (A7 pass 15 L-3).
+      const current = cloudList([
+        { ...phoneCopy, alsoImportedInBatchIds: ['batch-rev-2', 'batch-rev-3'] },
+      ]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({
+        notes: phoneTask.notes,
+      });
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+  });
+
+  // Whole-app audit A8 pass 10 L2 (1 Oct 2026): "Delete PDF + Items" on the
+  // web (or on another phone) writes the removed row's id onto the row shown
+  // (revisedFromTaskIds). Keep Phone on that row's conflict uploaded the
+  // phone's copy, which lacked the id, so the field update linked to the
+  // removed row became "Historical evidence — linked task was deleted." on
+  // every device. Keep Phone keeps every earlier id either copy knows, as the
+  // recovery merge does.
+  describe('Keep Phone keeps the earlier task ids another device wrote', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-phone-earlier-ids',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'Pour slab',
+      startDate: '2026-10-03',
+      finishDate: '2026-10-07',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Keep this phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'master-n.csv',
+      importBatchId: 'batch-n',
+      revisedFromTaskIds: ['row-a'],
+      createdAt: '2026-09-28T08:00:00.000Z',
+      updatedAt: '2026-09-28T09:00:00.000Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+
+    async function conflictWithWebDelete() {
+      // The web deleted master M: its row X now answers to this task.
+      mockListScheduleItems.mockResolvedValueOnce(cloudList([{
+        ...phoneTask,
+        notes: '',
+        revisedFromTaskIds: ['row-x', 'row-a'],
+        updatedAt: '2026-09-29T12:00:00.000Z',
+      }]));
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      return conflict;
+    }
+
+    it('uploads the phone copy with every earlier id either copy names, and keeps them on the phone', async () => {
+      const conflict = await conflictWithWebDelete();
+      expect(conflict).toBeDefined();
+      // Meanwhile another delete handed it one more. Keep Phone reads the
+      // task's row first, then its upload reads the list (A7 pass 15 L-3).
+      const current = cloudList([{
+        ...(conflict.remotePayload as ScheduleItem),
+        revisedFromTaskIds: ['row-w', 'row-x', 'row-a'],
+      }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      const kept = await resolveScheduleItemSyncConflict(conflict.id, 'keep_local');
+      expect(kept).toMatchObject({ notes: phoneTask.notes });
+      // The phone answers to row W too (A7 pass 15 L-3): it kept only the ids
+      // of the copy saved with the conflict, ['row-a', 'row-x'].
+      expect([...(kept.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
+      const uploaded = mockUpsertScheduleItem.mock.calls[mockUpsertScheduleItem.mock.calls.length - 1][0] as ScheduleItem;
+      expect(uploaded).toMatchObject({ notes: phoneTask.notes, importBatchId: 'batch-n' });
+      expect([...(uploaded.revisedFromTaskIds || [])].sort()).toEqual(['row-a', 'row-w', 'row-x']);
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    it('settles without a new conflict when the cloud differs only by an earlier id', async () => {
+      const conflict = await conflictWithWebDelete();
+      const phoneCopy = (conflict.localPayload as { itemData: ScheduleItem }).itemData;
+      // Keep Phone's own read of the row, then its upload's (A7 pass 15 L-3).
+      const current = cloudList([{ ...phoneCopy, revisedFromTaskIds: ['row-a', 'row-x'] }]);
+      mockListScheduleItems.mockResolvedValueOnce(current).mockResolvedValueOnce(current);
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_local')).resolves.toMatchObject({ notes: phoneTask.notes });
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+  });
+
+  // Whole-app audit A8 pass 12 L2 (1 Oct 2026): Keep Cloud on a task wrote
+  // back the cloud's copy saved when the conflict was found. An earlier task
+  // id a web delete handed the task since (row W), and the 50% David entered
+  // on the web, were lost. Keep Cloud now keeps the cloud's row as it is now,
+  // and writes nothing back unless this phone's own upload put a discarded
+  // edit there while the choice ran.
+  describe('Keep Cloud keeps the cloud copy as it is now', () => {
+    const phoneTask: ScheduleItem = {
+      id: 'task-keep-cloud-current',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'Pour slab',
+      startDate: '2026-10-03',
+      finishDate: '2026-10-07',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: 'Phone note.',
+      nextAction: '',
+      activity: [],
+      importedFrom: 'master-n.csv',
+      importBatchId: 'batch-n',
+      revisedFromTaskIds: ['row-a'],
+      createdAt: '2026-09-28T08:00:00.000Z',
+      updatedAt: '2026-09-28T09:00:00.000Z',
+    };
+    const cloudList = (data: ScheduleItem[]) => ({ ok: true, configured: true, stubbed: false, data });
+    /** The cloud's task rows; null: the cloud cannot be read. */
+    let cloudRows: ScheduleItem[] | null = [];
+
+    beforeEach(() => {
+      cloudRows = [];
+      mockListScheduleItems.mockImplementation(() => Promise.resolve(cloudRows
+        ? cloudList(cloudRows)
+        : { ok: false, configured: true, stubbed: false, data: [] }));
+    });
+    afterEach(() => {
+      mockListScheduleItems.mockImplementation(() => Promise.resolve(cloudList([])));
+    });
+
+    async function conflictWithWebDelete() {
+      // The web deleted master M: its row X now answers to this task.
+      cloudRows = [{ ...phoneTask, notes: '', revisedFromTaskIds: ['row-x', 'row-a'], updatedAt: '2026-09-29T12:00:00.000Z' }];
+      await runScheduleItemCloudSync(phoneTask);
+      const [conflict] = await getSyncConflicts();
+      expect(conflict).toBeDefined();
+      return conflict;
+    }
+
+    /** Meanwhile another web delete handed the task row W, and David entered 50% on the web. */
+    function cloudCopyNow(conflict: { remotePayload?: unknown }): ScheduleItem {
+      return {
+        ...(conflict.remotePayload as ScheduleItem),
+        revisedFromTaskIds: ['row-w', 'row-x', 'row-a'],
+        percentComplete: 50,
+        status: 'In Progress',
+        updatedAt: '2026-09-30T09:00:00.000Z',
+      };
+    }
+
+    it('keeps the earlier id and the 50% the web wrote since, and writes nothing back', async () => {
+      const conflict = await conflictWithWebDelete();
+      const current = cloudCopyNow(conflict);
+      cloudRows = [current];
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(current);
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
+
+    it('changes nothing when the cloud copy cannot be read', async () => {
+      const conflict = await conflictWithWebDelete();
+      await queueScheduleItemRecord(
+        { ...phoneTask, notes: 'A newer phone edit.', updatedAt: '2026-09-30T10:00:00.000Z' },
+        false,
+        ['notes', 'updatedAt'],
+      );
+      const queued = await getOfflineQueue();
+      cloudRows = null;
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'))
+        .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([conflict]);
+      await expect(getOfflineQueue()).resolves.toEqual(queued);
+    });
+
+    it('closes the conflict, writing nothing, when the cloud no longer has the task', async () => {
+      const conflict = await conflictWithWebDelete();
+      cloudRows = [];
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'))
+        .rejects.toThrow('sync_conflict_record_deleted');
+      expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+    });
+
+    it('puts the cloud copy back when an upload already under way lands a discarded phone edit during the choice', async () => {
+      const conflict = await conflictWithWebDelete();
+      const current = cloudCopyNow(conflict);
+      cloudRows = [current];
+      // A newer phone edit, which Keep Cloud discards, is on its way up when David chooses.
+      await queueScheduleItemRecord(
+        { ...phoneTask, notes: 'A newer phone edit.', updatedAt: '2026-09-30T10:00:00.000Z' },
+        false,
+        ['notes', 'updatedAt'],
+      );
+      let landEdit: () => void = () => undefined;
+      const landing = new Promise<void>(resolve => { landEdit = resolve; });
+      let editSending: () => void = () => undefined;
+      const sending = new Promise<void>(resolve => { editSending = resolve; });
+      mockUpsertScheduleItem.mockImplementationOnce(async (...args: unknown[]) => {
+        editSending();
+        await landing;
+        cloudRows = [args[0] as ScheduleItem];
+        return { ok: true, configured: true, stubbed: false };
+      });
+      const inFlight = uploadPendingChanges();
+      await sending;
+      // Keep Cloud reads the cloud before the edit lands; it lands, and that
+      // upload finishes, before Keep Cloud goes on.
+      mockListScheduleItems.mockImplementationOnce(async () => {
+        const answer = cloudList([current]);
+        landEdit();
+        await inFlight;
+        return answer;
+      });
+
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(current);
+      expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2);
+      expect(mockUpsertScheduleItem.mock.calls[0][0]).toMatchObject({ notes: 'A newer phone edit.' });
+      expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(current);
+      await expect(getSyncConflicts()).resolves.toEqual([]);
+      await expect(getOfflineQueue()).resolves.toEqual([]);
+    });
   });
 
   it('removes newer queued phone edits when the project manager keeps the cloud task copy', async () => {
@@ -1689,13 +2062,20 @@ describe('offline upload deletion barriers', () => {
       false,
       ['notes', 'updatedAt'],
     );
+    // Keep Cloud reads the cloud's row now, and again after withdrawing the
+    // phone's edits (A8 pass 12 L2).
+    mockListScheduleItems
+      .mockResolvedValueOnce({ ok: true, configured: true, stubbed: false, data: [cloudTask] })
+      .mockResolvedValueOnce({ ok: true, configured: true, stubbed: false, data: [cloudTask] });
 
     await expect(
       resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud'),
     ).resolves.toEqual(cloudTask);
     await expect(getOfflineQueue()).resolves.toEqual([]);
     await expect(getSyncConflicts()).resolves.toEqual([]);
-    expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(cloudTask);
+    // Was: the conflict-time cloud copy written back. The cloud already holds
+    // its own copy, so Keep Cloud writes nothing (A8 pass 12 L2).
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
   });
 
   it('clears a stale task conflict instead of restoring a deleted task', async () => {
@@ -1881,5 +2261,249 @@ describe('offline upload deletion barriers', () => {
     expect(mockDeleteProjectUpdate).toHaveBeenCalledTimes(1);
     expect(mockConfirmProjectUpdateCloudDeletion).toHaveBeenCalledTimes(2);
     expect(mockStorage.get(QUEUE_KEY)).toBe('[]');
+  });
+});
+
+// Whole-app audit, A3 pass 2 and A4 pass 5 (30 Sep 2026).
+describe('project and field-update queue rules from the audit', () => {
+  const CONFLICTS_KEY = 'projectVisionAI.syncConflicts.v1';
+  const deletionJournal = jest.requireMock('../../services/ProjectUpdateDeletionJournal') as {
+    hasProjectUpdateDeletionIntent: jest.Mock;
+  };
+  const updateItem = (id: string, note: string, changedAt: string) => ({
+    id: `project-update-${id}`,
+    entity: 'project_update' as const,
+    operation: 'update' as const,
+    payload: {
+      id,
+      projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+      projectName: '2375 Compliance Project',
+      selectedAreaName: 'Canopy A',
+      updateData: { id, note },
+      pendingPhotoAssetIds: [],
+    },
+    changedAt,
+    autoUpload: false,
+  });
+  const cloudCopy = (id: string) => ({
+    id,
+    projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+    projectName: '2375 Compliance Project',
+    selectedAreaName: 'Canopy A',
+    note: 'The copy the owner chose',
+  });
+  const storeConflict = (id: string) => mockStorage.set(CONFLICTS_KEY, JSON.stringify([{
+    id: `project_update_conflict-${id}`,
+    entity: 'project_update',
+    localId: id,
+    localChangedAt: '2026-08-14T08:00:00.000Z',
+    remoteChangedAt: '2026-08-15T08:00:00.000Z',
+    reason: 'Remote update changed after the local pending change.',
+    detectedAt: '2026-08-15T09:00:00.000Z',
+    localPayload: updateItem(id, 'Phone copy', '2026-08-14T08:00:00.000Z').payload,
+    remotePayload: cloudCopy(id),
+  }]));
+
+  /**
+   * The cloud still holds the copy the conflict recorded. Keep Cloud reads
+   * the cloud's copy again before writing it (whole-app audit A4 pass 11 O1:
+   * an iPad edit made after the conflict was found was overwritten); the
+   * default receipt here is another copy, which it would now take.
+   */
+  const cloudUnchangedSinceConflict = () => mockGetProjectUpdateSyncMetadata.mockImplementation((id: string) =>
+    Promise.resolve({
+      ok: true, configured: true, stubbed: false,
+      data: {
+        id, projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9', updatedAt: '2026-08-15T08:00:00.000Z',
+        projectName: '2375 Compliance Project', areaName: 'Canopy A', updateData: cloudCopy(id),
+      },
+    }));
+
+  beforeEach(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(false);
+  });
+  afterAll(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(true);
+  });
+
+  it('retires a deleted project’s cover, archive and reopen items that carry only its previous name', async () => {
+    mockCloudTombstonesResult = {
+      ok: true, configured: true, stubbed: false,
+      data: [{ entityType: 'project' as never, recordId: 'roof 2400', deletedAt: '2026-09-30T12:00:00.000Z' }],
+    };
+    await enqueuePendingChange({
+      id: 'project-cover-roof',
+      entity: 'project',
+      operation: 'update',
+      payload: { previousName: 'Roof 2400', data: { coverPhotoMode: 'manual' } },
+      changedAt: '2026-09-30T11:00:00.000Z',
+      autoUpload: false,
+    });
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      queued: 0,
+      itemOutcomes: { 'project-cover-roof': 'superseded' },
+    });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Keep Cloud withdraws the phone’s queued copies and keeps the chosen copy in the cloud', async () => {
+    storeConflict('u-keep-cloud');
+    cloudUnchangedSinceConflict();
+    await enqueuePendingChange(updateItem('u-keep-cloud', 'A newer phone edit', '2026-08-16T08:00:00.000Z'));
+    const [conflict] = await getSyncConflicts();
+
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(cloudCopy('u-keep-cloud'));
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    // Pin changed in A4 pass 11 O1: Keep Cloud reads the cloud's copy again
+    // and writes that one, which the cloud already holds, so nothing is
+    // saved. Before, it wrote the copy recorded with the conflict over the
+    // receipt this mock returns by default (an iPad edit made since).
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+  });
+
+  it('Keep Cloud judges its own item: another update still waiting on photos does not fail it (A7 pass 3)', async () => {
+    storeConflict('u-own-item');
+    cloudUnchangedSinceConflict();
+    await enqueuePendingChange({
+      ...updateItem('u-waiting-on-photos', 'Unrelated, photos not uploaded yet', '2026-08-16T09:00:00.000Z'),
+      payload: {
+        ...updateItem('u-waiting-on-photos', 'Unrelated, photos not uploaded yet', '2026-08-16T09:00:00.000Z').payload,
+        pendingPhotoAssetIds: ['photo-not-uploaded'],
+      },
+    });
+    const [conflict] = await getSyncConflicts();
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).resolves.toEqual(cloudCopy('u-own-item'));
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    const queue = await getOfflineQueue();
+    expect(queue.map(item => item.id)).toEqual(['project-update-u-waiting-on-photos']);
+  });
+
+  it('Keep Cloud never writes back an update deleted on any device', async () => {
+    storeConflict('u-deleted');
+    mockCloudTombstonesResult = {
+      ok: true, configured: true, stubbed: false,
+      data: [{ entityType: 'project_update' as never, recordId: 'u-deleted', deletedAt: '2026-08-16T08:00:00.000Z' }],
+    };
+    const [conflict] = await getSyncConflicts();
+    await expect(resolveProjectUpdateSyncConflict(conflict.id, 'keep_cloud')).rejects.toThrow('sync_conflict_record_deleted');
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  // Pin changed in A4 pass 15 H1: nothing automatic sends an update in
+  // conflict. A copy David chose to send over the conflict (a Retry he
+  // confirmed; Keep Phone) carries that conflict's id and settles it; any
+  // other copy waits in the queue, untouched, with no retry owed.
+  it('an upload of the phone’s copy David chose to send over a conflict settles that conflict', async () => {
+    storeConflict('u-retried');
+    const chosen = updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z');
+    await enqueuePendingChange({ ...chosen, payload: { ...chosen.payload, overConflict: 'project_update_conflict-u-retried' } });
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      itemOutcomes: { 'project-update-u-retried': 'uploaded' },
+    });
+    expect(mockSaveProjectUpdate).toHaveBeenCalledTimes(1);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('any other copy of an update in conflict waits for review: not sent, still queued, the conflict open (A4 pass 15 H1)', async () => {
+    storeConflict('u-retried');
+    await enqueuePendingChange(updateItem('u-retried', 'Phone copy, retried', '2026-08-16T08:00:00.000Z'));
+    const before = await getOfflineQueue();
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      itemOutcomes: { 'project-update-u-retried': 'blocked' }, errors: [],
+    });
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual(before);
+    await expect(getSyncConflicts()).resolves.toHaveLength(1);
+  });
+});
+
+describe('work queued for a project that was then closed (audit A7 M2)', () => {
+  const deletionJournal = jest.requireMock('../../services/ProjectUpdateDeletionJournal') as {
+    hasProjectUpdateDeletionIntent: jest.Mock;
+  };
+  const CLOSED_ID = '0f3b6a51-2d9c-4c55-9b7e-51c1d0a7c2e4';
+  const closed = () => mockListArchivedProjects.mockResolvedValue({
+    ok: true, configured: true, stubbed: false,
+    data: [{ id: CLOSED_ID, name: 'Fire Pump House' }],
+  });
+  const queueUpdate = (updateId: string, projectId: string | null = null) => enqueuePendingChange({
+    id: `project-update-${updateId}`,
+    entity: 'project_update',
+    operation: 'update',
+    payload: {
+      id: updateId,
+      projectId,
+      projectName: 'Fire Pump House',
+      updateData: { id: updateId, projectName: 'Fire Pump House', notes: 'Last walk before closeout.' },
+      pendingPhotoAssetIds: [],
+    },
+    changedAt: '2026-09-30T09:00:00.000Z',
+    autoUpload: false,
+  });
+
+  beforeEach(() => {
+    mockGetProjectUpdateSyncMetadata.mockResolvedValue({ ok: true, configured: true, stubbed: false, data: null });
+    // These updates were never deleted, so the upload reaches the save.
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(false);
+  });
+  afterAll(() => {
+    deletionJournal.hasProjectUpdateDeletionIntent.mockResolvedValue(true);
+  });
+
+  it('uploads a field update saved before its project was closed, under the closed project', async () => {
+    closed();
+    await queueUpdate('closeout-update');
+    await queueUpdate('closeout-update-by-id', CLOSED_ID);
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 2, queued: 0, errors: [] });
+    expect(mockSaveProjectUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'closeout-update', projectId: CLOSED_ID, projectName: 'Fire Pump House',
+    }));
+    expect(mockSaveProjectUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'closeout-update-by-id', projectId: CLOSED_ID,
+    }));
+    expect(mockListArchivedProjects).toHaveBeenCalledTimes(1);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('remembers when this device put an update in the cloud, for the refresh (audit A7 M5)', async () => {
+    closed();
+    const before = Date.now();
+    await queueUpdate('remembered-update');
+    expect(projectUpdateUploadedSince('remembered-update', before)).toBe(false);
+    await uploadPendingChanges();
+    expect(projectUpdateUploadedSince('remembered-update', before)).toBe(true);
+    expect(projectUpdateUploadedSince('remembered-update', Date.now() + 1)).toBe(false);
+
+    mockSaveProjectUpdate.mockResolvedValueOnce({ ok: false, configured: true, stubbed: false, error: 'offline' } as never);
+    await queueUpdate('failed-update');
+    await uploadPendingChanges();
+    expect(projectUpdateUploadedSince('failed-update', before)).toBe(false);
+  });
+
+  it('keeps a task for a closed project waiting until it is reopened', async () => {
+    closed();
+    const task = scheduleQueueItem('closeout-task');
+    await enqueuePendingChange({
+      ...task,
+      payload: { ...task.payload, itemData: { ...task.payload.itemData, projectName: 'Fire Pump House' } },
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 0, queued: 1 });
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+  });
+
+  it('keeps the update, with the original reason, when closed projects cannot be read', async () => {
+    mockListArchivedProjects.mockResolvedValue({
+      ok: false, configured: true, stubbed: false, error: 'Network request failed',
+    });
+    await queueUpdate('closeout-update');
+
+    const result = await uploadPendingChanges();
+    expect(result).toMatchObject({ uploaded: 0, queued: 1 });
+    expect(result.errors.join(' ')).toContain('could not be found');
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
   });
 });

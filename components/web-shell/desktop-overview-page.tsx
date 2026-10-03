@@ -22,11 +22,14 @@ export function DesktopOverviewPage({
   projects,
   selectedProject,
   tasks,
+  knownTasks,
   updates: availableUpdates,
 }: {
   projects: readonly CloudProject[];
   selectedProject: string | null;
   tasks: readonly ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownTasks?: readonly ScheduleItem[];
   updates: readonly CloudProjectUpdate<ProjectUpdate>[];
 }) {
   const { width } = useWindowDimensions();
@@ -48,6 +51,7 @@ export function DesktopOverviewPage({
   const openTasks = tasks.filter(task => !taskIsComplete(task));
   const commitmentControl = buildVitruviusCommitmentControl({
     scheduleItems: tasks,
+    knownScheduleItems: knownTasks,
     updates: updates.map(update => update.updateData),
     projectNames: selectedProject ? [selectedProject] : undefined,
   });

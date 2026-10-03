@@ -104,12 +104,34 @@ assert.strictEqual(
   '2321 Compliance Project',
 );
 
+// Whole-app audit A11 pass 1 F6 (30 Sep 2026): a quantity, an amount or a
+// date is not a project number, and a name matches whole words only.
+const numberedProjects = ['100 Main Street', '2026 Clinic Expansion', '2321 Compliance Project', '2375 Compliance Project'];
+for (const note of [
+  'Ordered 2375 feet of conduit',
+  'Ordered 2375 ft of conduit',
+  'Change order for $2375 was approved',
+  'Framing is 100% complete',
+  'Inspection passed on 9/30/2026',
+  'Inspection passed on 2026-09-30',
+  'Inspection passed Sep 30, 2026',
+  'Inspection passed 30 September 2026',
+]) {
+  assert.strictEqual(mentionedDAVEProject(note, numberedProjects), null, `${note} must not move the note to another project.`);
+}
+assert.strictEqual(mentionedDAVEProject('Shipment arrived from Oakland', ['Oak', 'Pine']), null);
+assert.strictEqual(mentionedDAVEProject('Shipment arrived at Oak today', ['Oak', 'Pine']), 'Oak');
+assert.strictEqual(mentionedDAVEProject('What changed at 2026?', numberedProjects), '2026 Clinic Expansion');
+assert.strictEqual(mentionedDAVEProject('Framing at 100 Main Street is done', numberedProjects), '100 Main Street');
+
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const tabs = fs.readFileSync(path.join(root, 'components/app-bottom-tabs.tsx'), 'utf8');
 const voiceSheet = fs.readFileSync(path.join(root, 'components/DAVEVoiceCaptureSheet.tsx'), 'utf8');
 const typedSheet = fs.readFileSync(path.join(root, 'components/DAVETypedCaptureSheet.tsx'), 'utf8');
 
 assert(app.includes('routeDAVEConversation({'), 'The live app must use the unified conversation router.');
+assert(app.includes('buildDAVETalkMemoryDraft({') && app.includes('switchedProject: projectName !== talkProjectName,'),
+  'A Talk note moved to another project must reach the draft as moved (audit A11 pass 1 F6).');
 assert(app.includes('onTalk={openTalk}'), 'The live app must wire the global Talk action.');
 assert(app.includes('showWalkContext={false}'), 'Global Talk must not masquerade as a Project Walk.');
 assert(app.includes('<DAVEConversationAnswerSheet'), 'Questions must show an answer in the live app.');

@@ -9,7 +9,8 @@
  */
 import type { AreaSuggestion, ProjectArea } from '../types';
 import { distanceBetweenCoordinatesFeet, hasSavedAreaLocation } from './AreaSuggestion';
-import { withDraftGps, type DraftGpsFields } from './DraftPhotoGps';
+import { UNASSIGNED_AREA_NAME } from './DraftAreaPresentation';
+import { withDraftGps, withDraftLocation, type DraftGpsFields } from './DraftPhotoGps';
 
 export type LocationFix = Readonly<{
   latitude: number;
@@ -80,6 +81,31 @@ type FixableDraft<TPhoto> = {
   areaStatus?: 'confirmed' | 'suggested' | 'unknown';
   photos: TPhoto[];
 };
+
+type AreaPhoto = DraftGpsFields & Readonly<{ selectedAreaId?: string | null; selectedAreaName?: string | null }>;
+
+/**
+ * The draft after a project area is deleted (GPS review pass 1 low, G-L2).
+ * When it was the draft's area, the draft goes back to no choice made, as a
+ * new draft starts: no area, the placeholder name and an unknown status, so
+ * the current suggestion, if any, is offered and named again. Deleting it
+ * used to clear the area the way choosing Unassigned does, and the area row
+ * then read as though David had chosen Unassigned. Any other area, or a
+ * draft whose Unassigned David chose, is unchanged.
+ */
+export function draftAfterAreaDeleted<
+  TPhoto extends AreaPhoto,
+  TDraft extends FixableDraft<TPhoto> & DraftGpsFields & { selectedAreaName?: string | null },
+>(draft: TDraft, areaId: string): TDraft {
+  if (!areaId || draft.selectedAreaId !== areaId) return draft;
+  const fields = { ...areaChangeLocationFields(draft, null), selectedAreaName: UNASSIGNED_AREA_NAME };
+  return {
+    ...draft,
+    ...fields,
+    areaStatus: 'unknown',
+    photos: draft.photos.map(photo => withDraftLocation(photo, fields)),
+  };
+}
 
 /** The GPS fields a landed fix writes onto its draft. */
 export type DraftFixFields = {

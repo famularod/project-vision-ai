@@ -179,27 +179,35 @@ function uniqueTimelineReferencesFromAnswers(items: DAVEAskTimelineReference[]) 
 
 export const answerDAVEQuestion = askDAVE;
 
+/**
+ * Whole-app audit A9 pass 2 (30 Sep 2026): the question types matched parts
+ * of words, so "Is the anchor bolt torque verified at this base plate?" was
+ * an overdue question ("plate"), "What blocking does this wall need?" a
+ * needs-attention question ("blocking", the framing) and "heat exchanges" a
+ * what-changed question. Each word now matches whole (with its plural or past
+ * form); "what is blocking…" still asks what needs attention.
+ */
 export function routeDAVEAskIntent(question: string): DAVEAskIntent {
   const value = question.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   if (!value) return 'unknown';
-  if (/draft.*owner.*update|owner.*update.*draft/.test(value)) return 'draft_owner_update';
-  if (/draft.*contractor.*follow|contractor.*follow.*draft/.test(value)) return 'draft_contractor_follow_up';
-  if (/summari[sz]e.*project|project.*summary/.test(value)) return 'summarize_project';
-  if (/what changed|changes?/.test(value)) return 'what_changed';
-  if (/why.*at risk|at risk.*why/.test(value)) return 'why_at_risk';
-  if (/what should i do next|next action|what.*do next|what(?: s| is).*next|coming up|upcoming work|due soon/.test(value)) return 'next_action';
-  if (/project status|project health|how.*project.*(?:doing|going)|how are we doing|how are things going|on track/.test(value)) return 'project_status';
-  if (/what.*need.*attention|needs attention|open issues?|open problems?|what.*concern|what.*risk|what.*block|what.*problem/.test(value)) return 'needs_attention';
-  if (/what happened.*this week|this week.*happened/.test(value)) return 'happened_this_week';
-  if (/what happened.*since.*last update|since.*last update/.test(value)) return 'since_last_update';
-  if (/latest.*(?:field )?update|last.*(?:field )?update|most recent.*update|recent field activity/.test(value)) return 'latest_field_update';
-  if (/open.*commitments?|commitments?.*open|current commitments?|who.*promised|what.*promised/.test(value)) return 'open_commitments';
-  if (/how confident|evidence strength|can i trust|how reliable|confidence.*evidence/.test(value)) return 'evidence_confidence';
-  if (/commitments?.*overdue|overdue.*commitments?|what.*overdue|what.*late|behind schedule/.test(value)) return 'overdue_commitments';
-  if (/safety.*issues?|issues?.*safety/.test(value)) return 'safety_issues';
-  if (/evidence.*missing|missing.*evidence/.test(value)) return 'missing_evidence';
-  if (/why.*recommend|recommend.*why/.test(value)) return 'recommendation_reason';
-  if (/show.*supporting evidence|supporting evidence/.test(value)) return 'supporting_evidence';
+  if (/\bdraft\b.*\bowners?\b.*\bupdates?\b|\bowners?\b.*\bupdates?\b.*\bdraft\b/.test(value)) return 'draft_owner_update';
+  if (/\bdraft\b.*\bcontractors?\b.*\bfollow\b|\bcontractors?\b.*\bfollow\b.*\bdraft\b/.test(value)) return 'draft_contractor_follow_up';
+  if (/\bsummari[sz]e\b.*\bprojects?\b|\bprojects?\b.*\bsummary\b/.test(value)) return 'summarize_project';
+  if (/\bwhat changed\b|\bchang(?:e|es|ed)\b/.test(value)) return 'what_changed';
+  if (/\bwhy\b.*\bat risk\b|\bat risk\b.*\bwhy\b/.test(value)) return 'why_at_risk';
+  if (/\bwhat should i do next\b|\bnext actions?\b|\bwhat\b.*\bdo next\b|\bwhat(?: s| is)\b.*\bnext\b|\bcoming up\b|\bupcoming work\b|\bdue soon\b/.test(value)) return 'next_action';
+  if (/\bproject status\b|\bproject health\b|\bhow\b.*\bprojects?\b.*\b(?:doing|going)\b|\bhow are we doing\b|\bhow are things going\b|\bon track\b/.test(value)) return 'project_status';
+  if (/\bwhat\b.*\bneeds?\b.*\battention\b|\bneeds attention\b|\bopen issues?\b|\bopen problems?\b|\bwhat\b.*\bconcern(?:s|ed|ing)?\b|\bwhat\b.*\brisks?\b|\bwhat\b.*\bblock(?:s|ed|ers?)?\b|\bwhat\b.*\b(?:is|are|s) blocking\b|\bwhat\b.*\bproblems?\b/.test(value)) return 'needs_attention';
+  if (/\bwhat happened\b.*\bthis week\b|\bthis week\b.*\bhappened\b/.test(value)) return 'happened_this_week';
+  if (/\bwhat happened\b.*\bsince\b.*\blast update\b|\bsince\b.*\blast update\b/.test(value)) return 'since_last_update';
+  if (/\blatest\b.*\bupdat(?:e|es|ed)\b|\blast\b.*\bupdat(?:e|es|ed)\b|\bmost recent\b.*\bupdat(?:e|es|ed)\b|\brecent field activity\b/.test(value)) return 'latest_field_update';
+  if (/\bopen\b.*\bcommitments?\b|\bcommitments?\b.*\bopen\b|\bcurrent commitments?\b|\bwho\b.*\bpromised\b|\bwhat\b.*\bpromised\b/.test(value)) return 'open_commitments';
+  if (/\bhow confident\b|\bevidence strength\b|\bcan i trust\b|\bhow reliable\b|\bconfidence\b.*\bevidence\b/.test(value)) return 'evidence_confidence';
+  if (/\bcommitments?\b.*\boverdue\b|\boverdue\b.*\bcommitments?\b|\bwhat\b.*\boverdue\b|\bwhat\b.*\blate\b|\bbehind schedule\b/.test(value)) return 'overdue_commitments';
+  if (/\bsafety\b.*\bissues?\b|\bissues?\b.*\bsafety\b/.test(value)) return 'safety_issues';
+  if (/\bevidence\b.*\bmissing\b|\bmissing\b.*\bevidence\b/.test(value)) return 'missing_evidence';
+  if (/\bwhy\b.*\brecommend(?:s|ed|ation|ations)?\b|\brecommend(?:s|ed|ation|ations)?\b.*\bwhy\b/.test(value)) return 'recommendation_reason';
+  if (/\bshow\b.*\bsupporting evidence\b|\bsupporting evidence\b/.test(value)) return 'supporting_evidence';
   return 'unknown';
 }
 

@@ -35,7 +35,8 @@ assert(reports.includes('completeCommunication(onCopyReport)'), 'Copy action mus
 assert(reports.includes('completeCommunication(onTextReport)'), 'Text action must pass through the reviewed communication boundary.');
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&
-    reports.includes('if (!reportApproved || !reportApprovalAllowed)') &&
+    reports.includes('if ((requireApproval && !reportApproved) || !reportApprovalAllowed)') && // audit A6: the Word review copy alone skips approval, never the authority check
+    reports.includes('), { requireApproval: false });') &&
     reports.includes('reportEdits.sourceFingerprint === reportSourceFingerprint') &&
     reports.includes('shouldApplyCommunicationOutcome({'),
   'Approval and every communication path must revalidate report review authority.',
@@ -81,11 +82,21 @@ assert(
     app.includes('buildCombinedReportAuthorityScope({') &&
     app.includes('buildDailyReportAuthorityScope({') &&
     app.includes("reportType === 'combined_project_update'") &&
-    app.includes("combinedReportScope?.projectTruthPersistencePolicy || 'persist_project'") &&
+    // A10 pass 2 F4 (30 Sep 2026), pin changed deliberately: Project Truth
+    // is persisted only for a project the owner has.
+    app.includes('combinedReportScope?.projectTruthPersistencePolicy || projectTruthPersistencePolicyFor(projectName, projects)') &&
+    reportScope.includes("? 'persist_project' : 'no_project_truth'") &&
     reportScope.includes('matches.length === 1 && scopedScheduleSet.has(matches[0])') &&
     reportScope.includes('owners?.size === 1') &&
     reportScope.includes('if (!allowUniquelyOwnedLegacyAreas) return false;'),
   'Daily and combined reports must use exact parent/task authority and fail closed for ambiguous area-only evidence.',
+);
+// Audit round 2 L2 (30 Sep 2026): Home, workspace and capture get this
+// project's evidence only, scoped as a daily report scopes it.
+assert(
+  app.includes('const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName,') &&
+    reportScope.includes('export function buildProjectIntelligenceAuthorityScope('),
+  'Non-report live authority must be scoped to the one project it describes.',
 );
 assert(
   app.includes('reportEvidenceScope ? reportEvidenceScope.projectAreas : projectAreas') &&

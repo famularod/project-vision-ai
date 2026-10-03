@@ -31,6 +31,10 @@ assert(
 );
 assert(gateway.includes(".eq('owner_id', ownerId)"), 'Task updates and checks must be explicitly owner-scoped.');
 assert(gateway.includes(".eq('updated_at', expectedCloudUpdatedAt)"), 'Task updates must reject stale cloud revisions.');
+// Audit A5 pass 3 F5: a schedule import inserts its new rows and changes a
+// saved task (re-homed, completion merged) only at the revision the web read.
+assert(!gateway.includes(".upsert(rows, { onConflict: 'id' })"), 'A schedule import must not upsert its rows over saved tasks by id.');
+assert(gateway.includes(".eq('updated_at', revision.cloudUpdatedAt)"), 'A schedule import must change a saved task only at the cloud revision the web read.');
 assert(gateway.includes(".from('dave_sync_tombstones')"), 'Task deletion must use the shared durable deletion journal.');
 assert(gateway.includes("entity_type: 'schedule_item'"), 'Task deletion markers must use the shared schedule-item entity identity.');
 assert(gateway.includes("entity_type: 'reference_document'"), 'Document deletion markers must use the shared reference-document entity identity.');

@@ -18,14 +18,8 @@ import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
   resolveLegacyOwnedLocalFilePath,
 } from './OwnedLocalFileRepository';
+import { referenceDocumentCategory, referenceDocumentName } from './ReferenceDocumentSharedFields';
 
-const REFERENCE_DOCUMENT_CATEGORIES = new Set([
-  'Plans', 'Specifications', 'Permits', 'Inspection', 'Safety', 'Quality',
-  'Contract', 'Change Order', 'RFI', 'Submittal', 'Environmental',
-  'Electrical', 'Mechanical', 'Schedules', 'Schedule', 'Drawing', 'Scope',
-  'Compliance', 'Permit Card', 'RFI / Field Decision', 'Vendor Document',
-  'Report', 'Other',
-]);
 const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
 const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
@@ -44,17 +38,16 @@ export function resolveReferenceDocumentUri(uri: string) {
 export function normalizeReferenceDocument(
   value: Partial<ReferenceDocument>,
 ): ReferenceDocument {
-  const category = stringOrNull(value.category) || 'Other';
   const importedAt = typeof value.importedAt === 'string'
     ? value.importedAt
     : new Date().toISOString();
   return {
     id: stringOrNull(value.id) || createProjectId(),
-    name: stringOrNull(value.name) || stringOrNull(value.originalFileName) || 'Reference Document',
+    name: referenceDocumentName(value.name, value.originalFileName), // one rule with the shared-details record (A7 pass 7 L1)
     originalFileName: stringOrNull(value.originalFileName) || 'reference-document',
     uri: typeof value.uri === 'string' ? resolveReferenceDocumentUri(value.uri) : '',
     mimeType: stringOrNull(value.mimeType),
-    category: REFERENCE_DOCUMENT_CATEGORIES.has(category) ? category : 'Other',
+    category: referenceDocumentCategory(value.category),
     notes: typeof value.notes === 'string' ? value.notes : '',
     isCurrent: Boolean(value.isCurrent),
     importedAt,
@@ -63,6 +56,10 @@ export function normalizeReferenceDocument(
     projectNames: Array.isArray(value.projectNames)
       ? value.projectNames.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
       : [],
+    // Owner answer Q15: kept, or every refresh would drop the cloud's per-project retirement.
+    ...retiredForProjectNames(value.retiredForProjectNames),
+    // Owner answer Q22: a lookahead adds to the master; kept, or a refresh would make it a full schedule.
+    ...(value.scheduleRole === 'lookahead' || value.scheduleRole === 'master' ? { scheduleRole: value.scheduleRole } : {}),
     importBatchId: stringOrNull(value.importBatchId),
     storagePath: stringOrNull(value.storagePath),
     sourceProvider:
@@ -81,6 +78,7 @@ export function normalizeReferenceDocument(
       canonicalSha256(value.webFileFingerprint),
     updatedAt: stringOrNull(value.updatedAt) || importedAt,
     cloudUpdatedAt: stringOrNull(value.cloudUpdatedAt),
+    ...(stringOrNull(value.cloudDetailsSeen) ? { cloudDetailsSeen: stringOrNull(value.cloudDetailsSeen) } : {}),
     webFileFingerprint: stringOrNull(value.webFileFingerprint),
     webVersionGroupId: stringOrNull(value.webVersionGroupId),
     webContentReview: stringOrNull(value.webContentReview),
@@ -235,6 +233,14 @@ export async function prepareReferenceDocumentForCloud(
 
 function stringOrNull(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** Present only when non-empty, so documents without it normalize exactly as before. */
+function retiredForProjectNames(value: unknown): { retiredForProjectNames?: string[] } {
+  const names = Array.isArray(value)
+    ? value.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+    : [];
+  return names.length > 0 ? { retiredForProjectNames: names } : {};
 }
 
 function finiteNumberOrNull(value: unknown) {

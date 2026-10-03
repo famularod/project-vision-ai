@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -17,6 +17,12 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
+import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
+import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
+import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
+import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
+import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
+import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -42,27 +48,43 @@ import {
   getCurrentSessionAccessToken,
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
+  readSavedSignIn,
   signIn,
+  SIGN_IN_ALREADY_ENDED_ON_SERVER,
   signOut,
+  SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
+  SIGNED_OUT_ON_THIS_DEVICE_ONLY,
   signUp,
   subscribeToAuthStateChange,
   testSupabaseConnection,
+  type SignOutScope,
   type SupabaseConnectionStatus,
   type SupabaseConnectionTestResult,
 } from '../services/SupabaseService';
 import {
   getSyncConflicts,
   getSyncStatus,
+  newerPhoneEditForFieldUpdateConflict,
+  projectUpdateCopyIsLastInCloud,
   reconcileSyncConflicts,
+  refreshFieldUpdateConflictCloudCopies,
+  refreshScheduleItemConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
+  syncConflictChoiceStopReason,
   uploadPendingChanges,
   type MissingSyncPhoto,
   type FullSyncResult,
   type SyncConflict,
+  type SyncQueueItem,
   type SyncStatus,
 } from '../services/SyncService';
+import {
+  projectDocumentsStillUploadingNotice,
+  startProjectDocumentUploadRun,
+  type ProjectDocumentUploadRetryResult,
+} from '../services/ProjectDocumentUploadRetry';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -80,6 +102,19 @@ const ENABLE_DEV_AUTH_SIGNUP =
 const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
 const SETTINGS_STATUS_TIMEOUT_MS = 8_000;
 const SETTINGS_SYNC_TIMEOUT = Symbol('settings_sync_timeout');
+/**
+ * What Settings › Sync Now downloaded, and when it started (whole-app audit
+ * A6 pass 11 L1, 30 Sep 2026). Sync Now recorded no download, so Reports,
+ * waiting for the other device's changes, told David to use it and kept
+ * waiting: tasks applied with a verified deletion history are now recorded as
+ * downloaded at this time.
+ */
+export type SyncNowRecovery = FullSyncResult['recovered'] & Readonly<{ syncStartedAt: string }>;
+
+/** What each Sign Out choice does, in the owner's words (owner answer Q21). */
+const SIGN_OUT_CHOICES =
+  'This Device: your other devices stay signed in.\n' +
+  'All Devices: your other devices are signed out too, within an hour or when they next have signal. Use this if a device is lost.';
 
 const APP_VERSION = Constants.expoConfig?.version || 'Unknown';
 const APP_BUILD_NUMBER = getInstalledBuildNumber();
@@ -140,6 +175,8 @@ export function AdminScreen({
   onUseCurrentLocationForArea,
   onRemoveMissingPhotos,
   onRetryUpdateSync,
+  onRetryDocumentUploads,
+  failedDocumentCount,
   onApplyCloudConflictUpdate,
   onApplyCloudConflictScheduleItem,
   onApplyCloudRecovery,
@@ -163,10 +200,18 @@ export function AdminScreen({
   onDeleteArea: (areaId: string) => void;
   onUseCurrentLocationForArea: (areaId: string) => void;
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
-  onRetryUpdateSync: (update: ProjectUpdate) => Promise<{ status?: string }>;
+  /** `automatic`: Retry Sync's, not a choice made for this update; one in conflict is left for review (whole-app audit A7 pass 12 M-1). */
+  onRetryUpdateSync: (
+    update: ProjectUpdate,
+    sync?: { automatic?: boolean },
+  ) => Promise<{ status?: string; heldForConflictReview?: boolean }>;
+  /** Uploads the documents saved on this phone whose file has not uploaded. */
+  onRetryDocumentUploads: () => Promise<ProjectDocumentUploadRetryResult>;
+  /** Those documents: they are not in the sync queue (whole-app audit A8 pass 1 F5, 30 Sep 2026). */
+  failedDocumentCount: number;
   onApplyCloudConflictUpdate: (update: ProjectUpdate) => void;
   onApplyCloudConflictScheduleItem: (item: ScheduleItem) => void;
-  onApplyCloudRecovery: (recovered: FullSyncResult['recovered']) => void;
+  onApplyCloudRecovery: (recovered: SyncNowRecovery) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
 }) {
   const aiStatus = getAIConfigurationStatus();
@@ -186,6 +231,15 @@ export function AdminScreen({
   const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [lastFullSyncIssueCount, setLastFullSyncIssueCount] = useState(0);
+  // Read when a sync ends, while the document uploads it started may still run.
+  const failedDocumentCountRef = useRef(failedDocumentCount);
+  failedDocumentCountRef.current = failedDocumentCount;
+  // Read after a conflict choice's cloud calls (whole-app audit A4 pass 18
+  // L1) to tell a newer phone edit, and an archive Keep Phone kept. The App's
+  // Retry then sends its own card as it is (A4 pass 19 L1): this copy can
+  // still miss a photo analysis that landed before Settings re-rendered.
+  const savedUpdatesRef = useRef(savedUpdates);
+  savedUpdatesRef.current = savedUpdates;
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [conflictReviewVisible, setConflictReviewVisible] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
@@ -199,6 +253,28 @@ export function AdminScreen({
   const [capturePreviewDraft, setCapturePreviewDraft] = useState<DAVECaptureMemory>(() => createCapturePreviewDraft());
   const [capturePreviewSaved, setCapturePreviewSaved] = useState<DAVEConfirmedCaptureMemory | null>(null);
   const statusRefreshRunRef = useRef(0);
+  // Whole-app audit A1 pass 2 #1: open offline on a saved sign-in that could
+  // not refresh (owner answer Q13), the session lookup finds no session, and
+  // Settings said "Sign in to enable cloud sync" with a Sign In button and no
+  // Sign Out. The account is signed in here, pending its refresh.
+  const workspaceSignInPending = useNativeWorkspaceSignInPending();
+  // Field notes are kept per account (none outside the workspace boundary).
+  const workspaceOwner = useContext(NativeWorkspaceOwnerContext);
+  const fieldNoteOwnerKey = workspaceOwner === undefined ? null : workspaceOwner ?? 'local-device';
+  const signInPending = workspaceSignInPending && !connectionStatus?.authenticated;
+  const [pendingAccountEmail, setPendingAccountEmail] = useState<string | null>(null);
+  const signedInHere = Boolean(connectionStatus?.authenticated) || signInPending;
+
+  useEffect(() => {
+    if (!workspaceSignInPending) return;
+    let active = true;
+    void readSavedSignIn().then(saved => {
+      if (active) setPendingAccountEmail(saved?.email ?? null);
+    }, () => undefined);
+    return () => {
+      active = false;
+    };
+  }, [workspaceSignInPending]);
 
   useEffect(() => {
     let active = true;
@@ -247,7 +323,9 @@ export function AdminScreen({
     connectionStatus?.clientReady &&
     connectionStatus.authenticated,
   );
-  const connectionLabel = isCheckingConnection
+  const connectionLabel = signInPending
+    ? 'Offline, sign-in pending'
+    : isCheckingConnection
     ? 'Checking…'
     : connected
       ? 'Connected'
@@ -255,9 +333,9 @@ export function AdminScreen({
   const updateSyncAttentionCount = savedUpdates.filter(
     update => update.status === 'queued' || update.status === 'failed',
   ).length;
-  const pendingSyncCount = syncStatus
+  const pendingSyncCount = (syncStatus
     ? syncStatus.queuedChanges
-    : updateSyncAttentionCount;
+    : updateSyncAttentionCount) + failedDocumentCount;
   const recoveryCopyCount = syncStatus?.recoveryCopies || 0;
   const recoveryCopyLabel = `${recoveryCopyCount} protected sync ${recoveryCopyCount === 1 ? 'copy' : 'copies'}`;
   const recoveryCopyVerb = recoveryCopyCount === 1 ? 'needs' : 'need';
@@ -348,27 +426,30 @@ export function AdminScreen({
               disabled={isSyncing}
             />
           ) : null}
-          {pendingSyncCount === 0 && syncStatus?.conflicts ? (
+          {/* Whenever a conflict is saved here, pending work or not: it is the only way into conflict review (whole-app audit A7 pass 12 M-1). */}
+          {syncStatus?.conflicts || syncConflicts.length > 0 ? (
             <SecondaryButton
               label="Review Conflicts"
               icon="git-compare-outline"
-              onPress={() => setConflictReviewVisible(true)}
+              onPress={openConflictReview}
             />
           ) : null}
           {syncAttemptMessage ? (
             <Text style={styles.cardText} selectable>{syncAttemptMessage}</Text>
           ) : null}
 
-          {connectionStatus?.authenticated ? (
+          {signedInHere ? (
             <>
               <Text style={styles.cardText}>
-                Signed in as {connectionStatus.userEmail || 'your account'}.
+                {signInPending
+                  ? `Signed in as ${pendingAccountEmail || 'your account'} (offline, sign-in pending).`
+                  : `Signed in as ${connectionStatus?.userEmail || 'your account'}.`}
               </Text>
 
               <SecondaryButton
                 label={signingOut ? 'Signing out…' : 'Sign Out'}
                 icon="log-out-outline"
-                onPress={handleSignOut}
+                onPress={() => { void handleSignOut(); }}
                 disabled={signingOut}
               />
             </>
@@ -411,7 +492,7 @@ export function AdminScreen({
         conflicts={syncConflicts}
         resolvingConflictId={resolvingConflictId}
         onKeepPhone={conflict => confirmConflictResolution(conflict, 'keep_local')}
-        onKeepCloud={conflict => confirmConflictResolution(conflict, 'keep_cloud')}
+        onKeepCloud={(conflict, newerPhoneEdit) => confirmConflictResolution(conflict, 'keep_cloud', newerPhoneEdit)}
         onClose={() => {
           if (!resolvingConflictId) setConflictReviewVisible(false);
         }}
@@ -520,7 +601,7 @@ export function AdminScreen({
               <ScreenMetric label="Active Projects" value={localProjects.length} detail="Projects currently shown in Vitruvius" icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="AI Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Build" value={APP_BUILD_NUMBER} detail={`Version ${APP_VERSION} · True Photo Intelligence`} tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
-              <ScreenMetric label="Auth" value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={connectionStatus?.userEmail || 'No active account session'} tone={connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Auth" value={signInPending ? 'Sign-in Pending' : connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={signInPending ? `${pendingAccountEmail || 'Saved sign-in'}: offline, refreshes when there is signal` : connectionStatus?.userEmail || 'No active account session'} tone={signInPending ? 'warning' : connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
             </ScreenMetricGrid>
 
             <ScreenCard>
@@ -575,6 +656,19 @@ export function AdminScreen({
     const isCurrentRefresh = () =>
       isActive() && statusRefreshRunRef.current === refreshRun;
     setIsCheckingConnection(true);
+    // This phone's own sync status and conflicts do not wait for the cloud
+    // check (whole-app audit A7 pass 12 M-1): read after it, they stayed
+    // unread while it ran, and when it timed out, and a conflict saved here
+    // had no Review Conflicts. Read again once its conflicts are reconciled.
+    const readLocalStatus = () => withSyncTimeout(
+      Promise.all([getSyncStatus(), getSyncConflicts()]),
+      SETTINGS_STATUS_TIMEOUT_MS,
+    ).then(([currentSyncStatus, currentConflicts]) => {
+      if (!isCurrentRefresh()) return;
+      setSyncStatus(currentSyncStatus);
+      setSyncConflicts(currentConflicts);
+    });
+    void readLocalStatus().catch(() => undefined);
 
     try {
       const [, connection, test] = await withSyncTimeout(
@@ -585,17 +679,12 @@ export function AdminScreen({
         ]),
         SETTINGS_STATUS_TIMEOUT_MS,
       );
-      const [currentSyncStatus, currentConflicts] = await withSyncTimeout(
-        Promise.all([getSyncStatus(), getSyncConflicts()]),
-        SETTINGS_STATUS_TIMEOUT_MS,
-      );
+      await readLocalStatus();
 
       if (!isCurrentRefresh()) return;
 
       setConnectionStatus(connection);
       setTestResult(test);
-      setSyncStatus(currentSyncStatus);
-      setSyncConflicts(currentConflicts);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setAdminActionSummary(
@@ -639,12 +728,19 @@ export function AdminScreen({
     setAdminActionSummary('Cloud sync tools are available.');
 
     try {
+      // Started first (whole-app audit A8 pass 1 F5), not waited for: a slow
+      // upload kept the field updates from being retried (A8 pass 2 #6).
+      const documentRun = startProjectDocumentUploadRun(onRetryDocumentUploads);
       const updatesToRetry = savedUpdates.filter(
         update => update.status === 'queued' || update.status === 'failed',
       );
+      // Retry Sync is not a choice between two copies (whole-app audit A7
+      // pass 12 M-1): it retried an update in conflict as its card's Retry
+      // does, sent it whole over the iPad's newer edit and said it synced, a
+      // silent Keep Phone. Left for Review Conflicts, as Sync Now leaves it.
       const retryResults = updatesToRetry.length > 0
         ? await withSyncTimeout(
-            Promise.all(updatesToRetry.map(update => onRetryUpdateSync(update))),
+            Promise.all(updatesToRetry.map(update => onRetryUpdateSync(update, { automatic: true }))),
           )
         : [];
       const queueResult = updatesToRetry.length === 0
@@ -657,22 +753,30 @@ export function AdminScreen({
       setSyncStatus(nextSyncStatus);
 
       const syncedUpdates = retryResults.filter(update => update.status === 'sent').length;
-      const unsyncedUpdates = retryResults.length - syncedUpdates;
-      const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
-      const remainingConflicts = nextSyncStatus.conflicts;
+      const heldForReview = retryResults.filter(update => update.heldForConflictReview).length;
+      const unsyncedUpdates = retryResults.length - syncedUpdates - heldForReview;
+      // An update held for conflict review is counted once, as a conflict
+      // (whole-app audit A4 pass 15b F2): a newer edit of it, waiting in the
+      // queue for review, was also counted as an item needing attention.
+      const heldInQueue = nextSyncStatus.heldForConflictReview;
+      const remainingQueue = Math.max(0, (queueResult?.queued ?? nextSyncStatus.queuedChanges) - heldInQueue);
+      const remainingConflicts = Math.max(nextSyncStatus.conflicts, heldForReview);
       const recoveryAvailable = nextSyncStatus.recoveryAvailable;
+      const unsyncedCount = Math.max(unsyncedUpdates, remainingQueue) + documentRun.remaining(failedDocumentCountRef.current);
       const syncSucceeded =
-        unsyncedUpdates === 0 &&
-        remainingQueue === 0 &&
+        unsyncedCount === 0 &&
         remainingConflicts === 0 &&
         !recoveryAvailable;
       const message = recoveryAvailable
         ? `Cloud sync finished. Current changes are protected, but ${nextSyncStatus.recoveryCopies} older recovery ${nextSyncStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${remainingConflicts > 0 ? ` ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        : remainingConflicts > 0 && unsyncedCount > 0
+        ? `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone. ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.`
         : remainingConflicts > 0
-        ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
+        // Not "clear" while the queue still holds an edit waiting for review.
+        ? `${heldInQueue > 0 ? 'Nothing else is waiting to sync' : 'The sync queue is clear'}, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
         ? `${syncedUpdates || queueResult?.uploaded || 0} pending ${syncedUpdates === 1 || queueResult?.uploaded === 1 ? 'item' : 'items'} synced successfully.`
-        : `${Math.max(unsyncedUpdates, remainingQueue)} ${Math.max(unsyncedUpdates, remainingQueue) === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
+        : `${unsyncedCount} ${unsyncedCount === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
       setSyncConflicts(
@@ -694,12 +798,16 @@ export function AdminScreen({
   }
 
   async function handleFullSyncNow() {
+    // Every task this download brings was in the cloud by now (A6 pass 11 L1).
+    const syncStartedAt = new Date().toISOString();
     setIsSyncing(true);
     setLastFullSyncIssueCount(0);
     setSyncAttemptMessage('Preparing project data…');
     setAdminActionSummary('Preparing project data…');
 
     try {
+      // Started first (whole-app audit A8 pass 1 F5), not waited for: the data sync waited for every upload (A8 pass 2 #6).
+      const documentRun = startProjectDocumentUploadRun(onRetryDocumentUploads);
       const result = await synchronizeLocalData(
         {
           projects: localProjects,
@@ -722,30 +830,47 @@ export function AdminScreen({
         getSyncConflicts(),
       ]);
       setSyncStatus(nextStatus);
-      onApplyCloudRecovery(result.recovered);
+      onApplyCloudRecovery({ ...result.recovered, syncStartedAt });
       setSyncConflicts(nextConflicts);
+      const documentsRemaining = documentRun.remaining(failedDocumentCountRef.current);
       setLastFullSyncIssueCount(Math.max(
         result.errors.length,
         nextStatus.recoveryAvailable ? 1 : 0,
-      ));
-      const message = nextStatus.recoveryAvailable
-        ? `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+      ) + documentsRemaining);
+      const failedItems = [
+        ...result.errors.slice(0, 3).map(error => `• ${error}`),
+        ...(result.errors.length > 3
+          ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
+          : []),
+      ];
+      // Named after a review sentence too (whole-app audit A4 pass 14 #5): a
+      // conflict stays open through Sync Now (A4 pass 13 G2), and its sentence
+      // alone hid every other item that failed, each time.
+      const otherFailedItems = result.errors.length > 0
+        ? [`${result.errors.length} other ${result.errors.length === 1 ? 'item still needs' : 'items still need'} attention:`, ...failedItems]
+        : [];
+      const syncMessage = nextStatus.recoveryAvailable
+        ? [
+            `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`,
+            ...otherFailedItems,
+          ].join('\n')
         : nextConflicts.length > 0
-        ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
+        ? [
+            `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`,
+            ...otherFailedItems,
+          ].join('\n')
         : result.errors.length === 0
         ? `Cloud sync completed. Shared record refreshed: ${result.details.cloudProjectsDownloaded} projects, ${result.details.cloudSchedulesDownloaded} tasks, ${result.details.cloudUpdatesDownloaded} field updates, ${result.details.cloudAreasDownloaded} areas, and ${result.details.cloudDocumentsDownloaded} documents.${result.uploaded > 0 ? ` ${result.uploaded} device change${result.uploaded === 1 ? '' : 's'} uploaded.` : ''}`
         : [
             `Cloud sync finished with ${result.errors.length} ${result.errors.length === 1 ? 'item' : 'items'} still needing attention:`,
-            ...result.errors.slice(0, 3).map(error => `• ${error}`),
-            ...(result.errors.length > 3
-              ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
-              : []),
+            ...failedItems,
           ].join('\n');
+      const message = [syncMessage, projectDocumentsStillUploadingNotice(documentsRemaining)].filter(Boolean).join('\n');
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
       if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);
     } catch {
-      let actualIssueCount = updateSyncAttentionCount;
+      let actualIssueCount = updateSyncAttentionCount + failedDocumentCount;
 
       try {
         const [nextStatus, nextConflicts] = await Promise.all([
@@ -754,11 +879,15 @@ export function AdminScreen({
         ]);
         setSyncStatus(nextStatus);
         setSyncConflicts(nextConflicts);
+        // An update held for conflict review is counted once, as its
+        // conflict (whole-app audit A4 pass 16; as Retry Sync, A4 pass 15b
+        // F2): its newer edit waiting in the queue was counted again.
         actualIssueCount = Math.max(
           actualIssueCount,
-          nextStatus.queuedChanges +
+          Math.max(0, nextStatus.queuedChanges - (nextStatus.heldForConflictReview || 0)) +
             nextConflicts.length +
-            (nextStatus.recoveryAvailable ? 1 : 0),
+            (nextStatus.recoveryAvailable ? 1 : 0) +
+            failedDocumentCount,
         );
       } catch {
         // Keep the known local update count when sync status itself cannot load.
@@ -775,9 +904,24 @@ export function AdminScreen({
     }
   }
 
+  /**
+   * Review Conflicts opens on the cloud's copies as they are now (whole-app
+   * audit A4 pass 16 L3, A7 pass 14 M-1): the "Cloud:" line showed the copy
+   * saved when the conflict was found, however often the iPad edited since.
+   * Tasks' copies too (A7 pass 15 L-3): it said "Cloud: 0%" after the web
+   * set a task to 50%.
+   */
+  function openConflictReview() {
+    setConflictReviewVisible(true);
+    void refreshFieldUpdateConflictCloudCopies().then(setSyncConflicts, () => undefined);
+    void refreshScheduleItemConflictCloudCopies().then(setSyncConflicts, () => undefined);
+  }
+
   function confirmConflictResolution(
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
+    /** Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1). */
+    newerPhoneEdit = false,
   ) {
     const update = conflictUpdate(conflict, resolution);
     const task = conflictScheduleItem(conflict, resolution);
@@ -785,7 +929,7 @@ export function AdminScreen({
     const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
     const message = resolution === 'keep_local'
       ? `The version saved on this phone for ${recordName} will replace the cloud copy.`
-      : `The cloud version for ${recordName} will replace the copy saved on this phone.`;
+      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
 
     Alert.alert(title, message, [
       { text: 'Cancel', style: 'cancel' },
@@ -803,38 +947,128 @@ export function AdminScreen({
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
   ) {
-    setResolvingConflictId(conflict.id);
-
-    try {
-      if (conflict.entity === 'schedule_item') {
-        const resolvedItem = await resolveScheduleItemSyncConflict(
-          conflict.id,
-          resolution,
-        );
-        onApplyCloudConflictScheduleItem(resolvedItem);
-      } else {
-        const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
-          conflict.id,
-          resolution,
-        );
-        if (resolution === 'keep_cloud') {
-          onApplyCloudConflictUpdate(resolvedUpdate);
-        }
-      }
-
+    /** The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it. */
+    const showConflictsAfterChoice = async (closed: string | null) => {
       const [nextConflicts, nextStatus] = await Promise.all([
         getSyncConflicts(),
         getSyncStatus(),
       ]);
       setSyncConflicts(nextConflicts);
       setSyncStatus(nextStatus);
-      setSyncAttemptMessage(
-        nextConflicts.length > 0
-          ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
-          : 'Cloud conflicts resolved.',
-      );
+      const remaining = nextConflicts.length > 0
+        ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
+        : null;
+      setSyncAttemptMessage(closed
+        ? [closed, remaining].filter(Boolean).join(' ')
+        : remaining || 'Cloud conflicts resolved.');
       if (nextConflicts.length === 0) setConflictReviewVisible(false);
-    } catch {
+    };
+    setResolvingConflictId(conflict.id);
+
+    try {
+      if (conflict.entity === 'schedule_item') {
+        // A task's choice too is checked against the cloud copy its row
+        // showed (whole-app audit A7 pass 15): Keep Cloud puts that copy back
+        // over an edit of this phone's it discards that landed meanwhile.
+        const resolvedItem = await resolveScheduleItemSyncConflict(
+          conflict.id,
+          resolution,
+          { cloudCopyShown: conflict.remotePayload },
+        );
+        onApplyCloudConflictScheduleItem(resolvedItem);
+      } else {
+        // Checked against the cloud copy this row showed when David chose
+        // (whole-app audit A4 pass 17 L1), not one the open-time read saved
+        // into the conflict while "Keep Phone Copy?" was up.
+        const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
+          conflict.id,
+          resolution,
+          {
+            cloudCopyShown: conflict.remotePayload,
+            // Keep Cloud's copy goes on the card before the conflict is
+            // cleared (A4 pass 19): a document upload finishing in between
+            // sent the discarded edit.
+            ...(resolution === 'keep_cloud' ? { beforeClose: onApplyCloudConflictUpdate } : {}),
+          },
+        );
+        // Either choice is now the cloud's copy, with nothing more queued for
+        // it: the phone shows it as sent. Keep Phone left the card failed,
+        // and a document change then sent the phone's whole copy over a newer
+        // iPad edit (whole-app audit A7 pass 9 L1). A newer edit made on the
+        // phone since the conflict stays as it is: it still owes its own sync.
+        // A card reading Sent is not one: a refresh or echo during the
+        // conflict showed the iPad's copy there (A4 pass 12 L3).
+        // An archive Keep Phone kept is no newer edit (whole-app audit A4
+        // pass 17 L2; the check leaves it aside). The card as it is now, not
+        // as it was when David tapped (A4 pass 18 L1): sent as it was, it
+        // wrote over a photo analysis that landed meanwhile.
+        const phoneCopy = savedUpdatesRef.current.find(update => update.id === conflict.localId);
+        const newerPhoneEdit = Boolean(phoneCopy) && (phoneCopy!.status === 'queued' || phoneCopy!.status === 'failed') &&
+          !projectUpdateCopyIsLastInCloud(phoneCopy!);
+        if (resolution === 'keep_cloud') {
+          // On the card already: put there before the conflict was cleared.
+        } else if (!newerPhoneEdit) {
+          onApplyCloudConflictUpdate(resolvedUpdate);
+        } else {
+          // The newer edit goes up now, after the kept copy, through Settings'
+          // Retry callback (A4 pass 17): its card already read Waiting to
+          // Sync, so nothing started the waiting-update sync that checks its
+          // photos, and it waited for the app to come back to the front.
+          // No conflict is open now, and it never sends over one. The card
+          // takes the kept copy's archive, which hides it, and goes up
+          // archived (L2): left as it was, the waiting-update sync sent it
+          // un-archived over the kept copy. This callback is the one way
+          // Settings writes a card that still owes its sync. The App sends
+          // its own card as it is then, with only this archive (A4 pass 19 L1).
+          const kept = resolvedUpdate as ArchivableUpdate;
+          const card: ArchivableUpdate = kept.isArchived && !(phoneCopy as ArchivableUpdate).isArchived
+            ? { ...phoneCopy!, isArchived: true, archivedAt: kept.archivedAt ?? null }
+            : phoneCopy!;
+          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined);
+        }
+      }
+
+      await showConflictsAfterChoice(null);
+    } catch (error) {
+      // Deleted on another device (whole-app audit A4 pass 16 L2): its
+      // conflict is closed, whichever copy was chosen, and nothing was sent.
+      // It said "Conflict not resolved", and the list still showed it.
+      const stopReason = syncConflictChoiceStopReason(error);
+      if (stopReason === 'record_deleted') {
+        await showConflictsAfterChoice(conflict.entity === 'schedule_item'
+          ? 'This task was deleted on another device, so the conflict is closed.'
+          : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
+        return;
+      }
+      // A task's conflict closed while Keep Phone read the cloud (whole-app
+      // audit A7 pass 16 L-6): this phone's own edit, already on its way up,
+      // landed. It said "The cloud copy changed — review again" over an
+      // empty list.
+      if (stopReason === 'conflict_closed') {
+        await showConflictsAfterChoice(
+          'This task\'s conflict closed by itself (an edit from this phone reached the cloud), so nothing was sent.',
+        ).catch(() => undefined);
+        return;
+      }
+      // The cloud's copy changed since the screen showed it (whole-app audit
+      // A4 pass 16 L3, A7 pass 14 M-1): nothing was sent, and the conflict
+      // now holds the copy in the cloud, which the list shows. Keep Phone had
+      // put the phone's copy over an iPad edit the screen never showed.
+      if (stopReason === 'cloud_copy_changed') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert('Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.');
+        return;
+      }
+      // A task's Keep Cloud wrote the cloud copy back and the cloud did not
+      // answer (whole-app audit A7 pass 16 L-2): the write may have landed,
+      // so it does not say "Neither copy was changed". The conflict stays.
+      if (stopReason === 'save_unconfirmed') {
+        Alert.alert(
+          'Conflict not resolved',
+          'The cloud did not confirm the change, so it may or may not have been saved. The conflict is still open — check the cloud connection and choose again.',
+        );
+        return;
+      }
       Alert.alert(
         'Conflict not resolved',
         'Neither copy was changed. Check the cloud connection and try again.',
@@ -951,30 +1185,76 @@ export function AdminScreen({
     }
   }
 
-  function handleSignOut() {
-    const queuedCount = savedUpdates.filter(update => update.status === 'queued').length;
+  async function handleSignOut() {
+    // Every unsynced item, not only updates still marked queued: failed
+    // updates and queued task, area and document changes were left out of the
+    // warning (whole-app audit A1 pass 1); so were documents whose file has
+    // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5),
+    // and field notes waiting to sync, and an unsaved field note, which a
+    // sign-out discards (whole-app audit A11 pass 4 L5); and an unsaved
+    // Project Walk memory, which it discards too (A11 pass 5 L3).
+    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview] = fieldNoteOwnerKey
+      ? await Promise.all([
+          fieldNotesWaitingToSync(fieldNoteOwnerKey),
+          unsavedFieldNoteExists(fieldNoteOwnerKey),
+          unsavedWalkMemoryExists(fieldNoteOwnerKey),
+          fieldNotesNeedingReview(fieldNoteOwnerKey),
+        ])
+      : [0, false, false, 0];
+    const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
+    const notInCloudCount = unsyncedCount + waitingFieldNotes;
+    const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
+      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
     const message =
-      queuedCount > 0
-        ? `${queuedCount} update${queuedCount === 1 ? '' : 's'} still queued to sync will keep failing until you sign in again. Sign out anyway?`
-        : 'You will need to sign in again to resume cloud sync and photo intelligence.';
+      notInCloudCount > 0
+        // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
+        ? `${discarded}${signOutNotInCloudSentences(notInCloudCount, fieldNotesForReview)} Sign out anyway?`
+        : `${discarded}You will need to sign in again to resume cloud sync and photo intelligence.`;
 
-    Alert.alert('Sign Out', message, [
+    // Owner answer Q21 (30 Sep 2026): he chooses this device or all devices.
+    // Every Sign Out used to sign out his other devices too. The warning above
+    // still comes first; both choices clear this phone the same way.
+    Alert.alert('Sign Out', `${message}\n\n${SIGN_OUT_CHOICES}`, [
+      { text: 'Sign Out of This Device', style: 'destructive', onPress: () => { void performSignOut('local'); } },
+      { text: 'Sign Out of All Devices', style: 'destructive', onPress: () => { void performSignOut('global'); } },
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: () => {
-          void performSignOut();
-        },
-      },
     ]);
   }
 
-  async function performSignOut() {
+  async function performSignOut(scope: SignOutScope) {
     setSigningOut(true);
 
     try {
-      await signOut();
+      const result = await signOut(scope);
+      if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {
+        // No silent sign-out of this device alone (owner answer Q21): he is
+        // told why, and this device is his to choose.
+        Alert.alert(
+          'Other devices not signed out',
+          `${result.error}\n\nYou can sign out of this device now. Your other devices stay signed in.`,
+          [
+            { text: 'Sign Out of This Device', style: 'destructive', onPress: () => { void performSignOut('local'); } },
+            { text: 'Cancel', style: 'cancel' },
+          ],
+        );
+      } else if (!result.ok) {
+        // A sign-out that did not happen used to say nothing (owner answer Q13).
+        Alert.alert('Sign Out did not finish', result.error || result.message || 'Try Sign Out again.');
+      } else if (result.code === SIGNED_OUT_ON_THIS_DEVICE_ONLY) {
+        // With no signal only this device signs out; the owner is told so
+        // (auth security review, 30 Sep 2026).
+        Alert.alert(
+          'Signed out on this device',
+          result.message || 'Signed out on this device only. Your other devices stay signed in.',
+        );
+      } else if (result.code === SIGN_IN_ALREADY_ENDED_ON_SERVER) {
+        // All Devices with signal back, and the server had already ended this
+        // sign-in: this device is signed out, the others were not signed out
+        // from here, and he is told how (whole-app audit A1 pass 3 L1).
+        Alert.alert('Signed out on this device', result.message || 'This device is signed out.');
+      } else if (scope === 'global') {
+        Alert.alert('Signed out of all devices', 'Your other devices will be signed out within an hour or when they next have signal.');
+      }
       await refreshAdminStatus();
     } finally {
       setSigningOut(false);
@@ -1199,7 +1479,8 @@ function SyncConflictReviewModal({
   conflicts: SyncConflict[];
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
-  onKeepCloud: (conflict: SyncConflict) => void;
+  /** `newerPhoneEdit`: the phone side shown is an edit saved during the conflict, which Keep Cloud discards too. */
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
   onClose: () => void;
 }) {
   return (
@@ -1228,55 +1509,112 @@ function SyncConflictReviewModal({
 
           {conflicts.length === 0 ? (
             <Text style={styles.cardText}>No cloud conflicts remain.</Text>
-          ) : conflicts.map(conflict => {
-            const phoneUpdate = conflictUpdate(conflict, 'keep_local');
-            const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
-            const phoneTask = conflictScheduleItem(conflict, 'keep_local');
-            const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
-            const resolving = resolvingConflictId === conflict.id;
-
-            return (
-              <View key={conflict.id} style={styles.conflictCard}>
-                <Text style={styles.conflictTitle}>
-                  {phoneTask?.taskName ||
-                    cloudTask?.taskName ||
-                    phoneUpdate?.projectName ||
-                    cloudUpdate?.projectName ||
-                    'Project record'}
-                </Text>
-                <Text style={styles.settingsRowDetail}>
-                  Phone: {phoneTask
-                    ? formatTaskConflictCopy(phoneTask)
-                    : formatConflictCopy(phoneUpdate)}
-                </Text>
-                <Text style={styles.settingsRowDetail}>
-                  Cloud: {cloudTask
-                    ? formatTaskConflictCopy(cloudTask)
-                    : formatConflictCopy(cloudUpdate)}
-                </Text>
-                <View style={styles.conflictActions}>
-                  <SecondaryButton
-                    label={resolving ? 'Saving…' : 'Keep Phone'}
-                    icon="phone-portrait-outline"
-                    onPress={() => onKeepPhone(conflict)}
-                    disabled={Boolean(resolvingConflictId)}
-                    compact
-                  />
-                  <SecondaryButton
-                    label={resolving ? 'Saving…' : 'Keep Cloud'}
-                    icon="cloud-outline"
-                    onPress={() => onKeepCloud(conflict)}
-                    disabled={Boolean(resolvingConflictId)}
-                    compact
-                  />
-                </View>
-              </View>
-            );
-          })}
+          ) : (
+            <SyncConflictReviewList
+              conflicts={conflicts}
+              resolvingConflictId={resolvingConflictId}
+              onKeepPhone={onKeepPhone}
+              onKeepCloud={onKeepCloud}
+            />
+          )}
         </KeyboardAvoidingModalCard>
       </View>
     </Modal>
   );
+}
+
+/**
+ * The conflicts under review, each with the phone's copy and the cloud's.
+ * The phone's side is what Keep Phone ends with (whole-app audit A4 pass 15b
+ * F1): an edit David saved on this phone during the conflict waits, and Keep
+ * Phone sends it after the conflict's own copy, so it is that edit, read from
+ * this phone's queue, and not the older copy saved with the conflict. Shown
+ * only while Review Conflicts is open.
+ */
+function SyncConflictReviewList({
+  conflicts,
+  resolvingConflictId,
+  onKeepPhone,
+  onKeepCloud,
+}: {
+  conflicts: SyncConflict[];
+  resolvingConflictId: string | null;
+  onKeepPhone: (conflict: SyncConflict) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+}) {
+  const queue = useSyncExternalStore(subscribeToQueuedDocumentChanges, queuedDocumentChangesSnapshot);
+  return (
+    <>
+      {conflicts.map(conflict => {
+        const newerPhoneUpdate = conflictNewerPhoneUpdate(conflict, queue);
+        const phoneUpdate = newerPhoneUpdate ?? conflictUpdate(conflict, 'keep_local');
+        const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
+        const phoneTask = conflictScheduleItem(conflict, 'keep_local');
+        const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
+        const resolving = resolvingConflictId === conflict.id;
+
+        return (
+          <View key={conflict.id} style={styles.conflictCard}>
+            <Text style={styles.conflictTitle}>
+              {phoneTask?.taskName ||
+                cloudTask?.taskName ||
+                phoneUpdate?.projectName ||
+                cloudUpdate?.projectName ||
+                'Project record'}
+            </Text>
+            <Text style={styles.settingsRowDetail}>
+              Phone: {phoneTask
+                ? formatTaskConflictCopy(phoneTask)
+                : formatConflictCopy(phoneUpdate)}
+            </Text>
+            {newerPhoneUpdate ? (
+              <Text style={styles.settingsRowDetail}>{CONFLICT_NEWER_PHONE_EDIT_NOTE}</Text>
+            ) : null}
+            <Text style={styles.settingsRowDetail}>
+              Cloud: {cloudTask
+                ? formatTaskConflictCopy(cloudTask)
+                : formatConflictCopy(cloudUpdate)}
+            </Text>
+            <View style={styles.conflictActions}>
+              <SecondaryButton
+                label={resolving ? 'Saving…' : 'Keep Phone'}
+                icon="phone-portrait-outline"
+                onPress={() => onKeepPhone(conflict)}
+                disabled={Boolean(resolvingConflictId)}
+                compact
+              />
+              <SecondaryButton
+                label={resolving ? 'Saving…' : 'Keep Cloud'}
+                icon="cloud-outline"
+                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate))}
+                disabled={Boolean(resolvingConflictId)}
+                compact
+              />
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
+/** A field update as the App stores it, with its archive (the shared type leaves it out). */
+type ArchivableUpdate = ProjectUpdate & { isArchived?: boolean; archivedAt?: string | null };
+
+const CONFLICT_NEWER_PHONE_EDIT_NOTE = 'Includes a change you made after the conflict was found.';
+/** Keep Cloud withdraws every copy of the update waiting on this phone, that edit too, and the card takes the cloud's copy. */
+const CONFLICT_NEWER_PHONE_EDIT_DISCARDED = 'The change you made after the conflict was found will also be discarded.';
+
+/** The field update edit saved on this phone during the conflict that Keep Phone sends last, if any (A4 pass 15b F1). */
+function conflictNewerPhoneUpdate(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+): ProjectUpdate | null {
+  if (conflict.entity !== 'project_update') return null;
+  const newer = newerPhoneEditForFieldUpdateConflict(conflict, queue);
+  const update = (newer?.payload as { updateData?: unknown } | undefined)?.updateData;
+  if (!update || typeof update !== 'object' || Array.isArray(update)) return null;
+  return update as ProjectUpdate;
 }
 
 function conflictUpdate(

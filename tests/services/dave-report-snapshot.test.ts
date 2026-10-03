@@ -91,9 +91,10 @@ describe('DAVE approved-report snapshots', () => {
       openDelta: -1,
       overdueDelta: 0,
     });
-    expect(comparison.changes.map(change => change.kind)).toEqual(
-      expect.arrayContaining(['completed', 'status', 'finish_date', 'owner']),
-    );
+    // Whole-app audit A6 pass 8 L1 (30 Sep 2026): "was completed" already says
+    // the status moved to Complete, so the status line is no longer added for
+    // the same task (it took a second of the report's six "since" lines).
+    expect(comparison.changes.map(change => change.kind)).toEqual(['completed', 'finish_date', 'owner']);
   });
 
   it('reports a completed task that is reopened', () => {

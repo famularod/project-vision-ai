@@ -16,16 +16,23 @@ import {
 } from '../../services/DAVEWebReadOnlyRepository';
 import {
   DAVEWebAuthorizationError,
+  DAVEWebDocumentMutationError,
+  DAVEWebTaskMutationError,
   daveWebSupabaseGateway,
+  type DAVEWebSignInResult,
+  type DAVEWebSignOutScope,
   type DAVEWebStorageBucket,
+  type DAVEWebTabSignOutOutcome,
 } from '../../services/DAVEWebSupabaseClient';
 import {
   scheduleItemForCloud,
   type DAVEWebScheduleItem,
 } from '../../services/DAVEWebTaskEditing';
-import type {
-  DAVEWebPreparedUpload,
-  DAVEWebReportRecord,
+import {
+  planDAVEWebScheduleDocumentDelete,
+  planDAVEWebScheduleImport,
+  type DAVEWebPreparedUpload,
+  type DAVEWebReportRecord,
 } from '../../services/DAVEWebOperations';
 import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
 import type { ECOSDrawingPageAnalysisInput } from '../../services/ECOSDrawingPageAnalysis';
@@ -37,6 +44,9 @@ import type {
   ECOSDocumentProofClaim,
 } from '../../services/ECOSDocumentProofAuthority';
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
+import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
+import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { scheduleItemIdsDeletedWithTask } from '../../services/DAVEDeletedTaskEvidence';
 import {
   initialDAVEWebFreshnessState,
   recordDAVEWebRefreshFailure,
@@ -48,6 +58,7 @@ import {
   shouldRefreshDAVEOperationalDataOnForeground,
   type DAVEOperationalCollectionName,
 } from '../../services/DAVEOperationalRefresh';
+import { isAuthStorageSecure } from '../../services/SupabaseAuthStorage.web';
 
 export type DesktopAuthPhase =
   | 'checking'
@@ -56,6 +67,8 @@ export type DesktopAuthPhase =
   | 'loading'
   | 'ready'
   | 'unauthorized'
+  /** Signed in, but the owner check or first load could not finish; retrying. */
+  | 'unavailable'
   | 'error';
 
 type DesktopAuthContextValue = Readonly<{
@@ -66,7 +79,8 @@ type DesktopAuthContextValue = Readonly<{
   freshness: DAVEWebFreshnessState;
   message: string | null;
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
-  signOutOfDesktop: () => Promise<void>;
+  /** This computer only unless 'global' (owner answer Q21); throws when it did not finish. */
+  signOutOfDesktop: (scope?: DAVEWebSignOutScope) => Promise<void>;
   refreshSnapshot: () => Promise<boolean>;
   loadDocumentCoverageSummary: (
     documentId: string,
@@ -104,7 +118,8 @@ type DesktopAuthContextValue = Readonly<{
     file?: Blob,
     onProgress?: (fraction: number) => void,
   ) => Promise<void>;
-  setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<void>;
+  /** Resolves with how the cloud retired other schedules (owner answer Q15). */
+  setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<ScheduleRetirementScope>;
   setCurrentDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   updateDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   enqueueDocumentPreparation: (documentId: string) => Promise<void>;
@@ -121,6 +136,8 @@ type DesktopAuthContextValue = Readonly<{
     question: string;
     conversationId?: string;
     priorTurnId?: string;
+    knownProjectNames?: readonly string[];
+    closedProjectNames?: readonly string[];
   }) => Promise<ECOSProjectQuestionAnswer>;
   analyzeDrawingPage: (input: ECOSDrawingPageAnalysisInput) => Promise<ECOSDrawingPageAnalysisResult>;
   beginOrResumeDocumentIndexJob: (input: {
@@ -144,8 +161,62 @@ type DesktopAuthContextValue = Readonly<{
 }>;
 
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
+
+/**
+ * The tabs of this browser tell each other which account signed out of this
+ * computer (whole-app audit A12 pass 5 L2, 30 Sep 2026). Each tab keeps its
+ * own sign-in; auth-js passes every tab's SIGNED_OUT to the others without
+ * saying whose it was.
+ */
+export const DESKTOP_SIGN_OUT_CHANNEL_NAME = 'vitruvius-desktop-sign-out-v1';
+const SIGNED_OUT_OF_THIS_COMPUTER = 'signed-out-of-this-computer';
+
+/** The account another tab says signed out of this computer, or null. */
+function signedOutUserId(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const { type, userId } = data as { type?: unknown; userId?: unknown };
+  return type === SIGNED_OUT_OF_THIS_COMPUTER && typeof userId === 'string' && userId.trim()
+    ? userId
+    : null;
+}
 const AUTOMATIC_REFRESH_WAITING_MESSAGE =
   'Automatic cloud refresh is waiting. Your current workspace remains available.';
+const WORKSPACE_UNAVAILABLE_MESSAGE =
+  'Your projects could not be loaded just now. Vitruvius will try again automatically, or choose Try Again.';
+/**
+ * Signed in, but nothing has loaded yet: try again after 5 s, 15 s, 30 s,
+ * then every minute while the tab is visible (audit round 2 follow-up).
+ */
+export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
+/**
+ * The longest a sign-in waits for this tab's sign-in to finish ending
+ * (whole-app audit A12 pass 7 L1, 30 Sep 2026).
+ */
+export const DESKTOP_SIGN_IN_ENDING_WAIT_MS = 10_000;
+
+const SIGN_IN_FAILED_MESSAGE =
+  'Sign-in could not be completed. Check your email and password, then try again.';
+/** This tab cannot store a sign-in: the browser blocks site data (A12 pass 11 L2). */
+const SITE_STORAGE_BLOCKED_MESSAGE =
+  "This browser is blocking site storage, so Vitruvius can't keep you signed in. Allow site data for this site, then try again.";
+
+/** What a sign-in here answered when it opened nothing (A12 pass 11 L1). */
+type DesktopSignInAnswer = Readonly<{ phase: 'signed_out' | 'unauthorized'; message: string }>;
+
+/** This tab ending its sign-in because another tab signed out. */
+type DesktopSignInEnding = {
+  /** Settles once the ending has, either way. */
+  settled: Promise<void>;
+  /** A sign-in was made here during it: its settling leaves the view be. */
+  signInMadeDuring: boolean;
+  /**
+   * A sign-in here answered during it and opened nothing (a mistyped
+   * password, a dropped connection, an account that is not the owner's):
+   * its settling shows that answer again, not the plain sign-in page (A12
+   * pass 11 L1).
+   */
+  signInAnsweredDuring: DesktopSignInAnswer | null;
+};
 
 export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<DesktopAuthPhase>('checking');
@@ -156,16 +227,39 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     initialDAVEWebFreshnessState,
   );
   const [message, setMessage] = useState<string | null>(null);
+  /** Loads in a row that could not finish before any workspace loaded. */
+  const [unavailableAttempts, setUnavailableAttempts] = useState(0);
   const mountedRef = useRef(true);
   const loadSequenceRef = useRef(0);
   const snapshotRef = useRef<DAVEWebReadOnlySnapshot | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const signOutChannelRef = useRef<BroadcastChannel | null>(null);
   const backgroundRefreshRef = useRef<Promise<void> | null>(null);
   const pendingBackgroundCollectionsRef = useRef<Set<DAVEOperationalCollectionName>>(new Set());
   const pendingFullBackgroundRefreshRef = useRef(false);
   const maintenanceOwnerRef = useRef<string | null>(null);
   const realtimeHealthyRef = useRef(false);
   const lastSuccessfulRefreshAtRef = useRef<string | null>(null);
+  /**
+   * The sign-in the owner check said is not the owner's, while this browser
+   * signs it out (whole-app audit A12 pass 4 L3, 30 Sep 2026).
+   */
+  const notOwnerRef = useRef<Readonly<{ userId: string; message: string }> | null>(null);
+  const notOwnerSignOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notOwnerSignOutRunningRef = useRef(false);
+  /**
+   * Set while this tab ends its sign-in because another tab of the same
+   * account signed out (whole-app audit A1 pass 6 L1, 30 Sep 2026), until
+   * that ending settles (A12 pass 7 L1) or a sign-in made here after the
+   * time limit succeeds (A12 pass 8 L1).
+   */
+  const endingSignInRef = useRef<DesktopSignInEnding | null>(null);
+  /**
+   * Sign-ins here that have not answered yet, from the moment one is chosen
+   * (its wait for an ending included) until the cloud answers it (A12 pass
+   * 10 L1).
+   */
+  const signInsAwaitingAnswerRef = useRef(0);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -180,9 +274,94 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     pendingFullBackgroundRefreshRef.current = false;
     setSnapshot(null);
     setFreshness(initialDAVEWebFreshnessState());
-    setMessage(null);
-    setPhase(nextPhase);
+    setUnavailableAttempts(0);
+    // While the owner check's "not the owner" stands, the view stays on it:
+    // the browser's own sign-out going through (SIGNED_OUT, now or on a
+    // quiet retry) does not turn it into a plain sign-in page (A12 pass 4 L3).
+    const notOwner = notOwnerRef.current;
+    setMessage(notOwner ? notOwner.message : null);
+    setPhase(notOwner ? 'unauthorized' : nextPhase);
   }, []);
+
+  /**
+   * This tab's sign-in ended: the sign-in page. While a sign-in here awaits
+   * its answer, the button stays busy and that sign-in's own result decides
+   * what shows: an ending starting or settling then had shown "Sign in
+   * securely" while his request was still out (A12 pass 10 L1). An ending
+   * settling after his sign-in answered without opening anything clears the
+   * view, then shows that answer again: it had replaced it with the plain
+   * sign-in page (A12 pass 11 L1).
+   */
+  const showSignInEnded = useCallback((answer: DesktopSignInAnswer | null = null) => {
+    const awaitingAnswer = signInsAwaitingAnswerRef.current > 0;
+    clearSessionView(awaitingAnswer ? 'signing_in' : 'signed_out');
+    if (answer && !awaitingAnswer && mountedRef.current) {
+      setPhase(answer.phase);
+      setMessage(answer.message);
+    }
+  }, [clearSessionView]);
+
+  /**
+   * A sign-in here answered (null: it opened the workspace, or a new one
+   * started); the ending under way, if any, keeps that answer for its
+   * settling (A12 pass 11 L1).
+   */
+  const noteSignInAnswer = useCallback((answer: DesktopSignInAnswer | null) => {
+    const ending = endingSignInRef.current;
+    if (ending) ending.signInAnsweredDuring = answer;
+  }, []);
+
+  /** A new sign-in: the earlier "not the owner" no longer applies. */
+  const forgetNotOwner = useCallback(() => {
+    notOwnerRef.current = null;
+    if (notOwnerSignOutTimerRef.current) {
+      clearTimeout(notOwnerSignOutTimerRef.current);
+      notOwnerSignOutTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Signs a sign-in that is not the owner's out of this browser only (owner
+   * answer Q21), and when that cannot reach the server (a dropped
+   * connection) tries again after 5 s, 15 s, 30 s, then every minute, with
+   * nothing on screen (A12 pass 4 L3). Never throws.
+   */
+  const signOutNotOwnerQuietly = useCallback(async () => {
+    if (notOwnerSignOutRunningRef.current) return;
+    if (notOwnerSignOutTimerRef.current) {
+      clearTimeout(notOwnerSignOutTimerRef.current);
+      notOwnerSignOutTimerRef.current = null;
+    }
+    const attempt = async (index: number): Promise<void> => {
+      const notOwner = notOwnerRef.current;
+      if (!mountedRef.current || !notOwner) return;
+      notOwnerSignOutRunningRef.current = true;
+      try {
+        await daveWebSupabaseGateway.signOut('local');
+        notOwnerSignOutRunningRef.current = false;
+        if (mountedRef.current && notOwnerRef.current === notOwner) {
+          // Signed out: nothing is left to retry; the answer stays on screen,
+          // an ending settling later included (A12 pass 11 L1).
+          notOwnerRef.current = null;
+          setPhase('unauthorized');
+          setMessage(notOwner.message);
+          noteSignInAnswer({ phase: 'unauthorized', message: notOwner.message });
+        }
+        return;
+      } catch {
+        notOwnerSignOutRunningRef.current = false;
+      }
+      if (!mountedRef.current || notOwnerRef.current !== notOwner) return;
+      const delay = DESKTOP_WORKSPACE_RETRY_DELAYS_MS[
+        Math.min(index, DESKTOP_WORKSPACE_RETRY_DELAYS_MS.length - 1)
+      ];
+      notOwnerSignOutTimerRef.current = setTimeout(() => {
+        notOwnerSignOutTimerRef.current = null;
+        void attempt(index + 1);
+      }, delay);
+    };
+    await attempt(0);
+  }, [noteSignInAnswer]);
 
   const loadAuthorizedSnapshot = useCallback(async (
     session: Session | null,
@@ -195,6 +374,17 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       clearSessionView();
       return false;
     }
+    const notOwner = notOwnerRef.current;
+    if (notOwner && notOwner.userId === session.user.id) {
+      // The owner check already said this sign-in is not the owner's and its
+      // sign-out has not gone through yet: nothing is read again (a second
+      // check on a dropping connection showed "still signed in"), and the
+      // sign-out is tried again now (A12 pass 4 L3).
+      clearSessionView('unauthorized');
+      await signOutNotOwnerQuietly();
+      return false;
+    }
+    if (notOwner) forgetNotOwner();
 
     const loadSequence = loadSequenceRef.current + 1;
     loadSequenceRef.current = loadSequence;
@@ -212,6 +402,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
       setSnapshot(nextSnapshot);
       setPhase('ready');
+      setUnavailableAttempts(0);
       setFreshness(recordDAVEWebRefreshSuccess(nextSnapshot.refreshedAt));
       if (options.background) {
         setMessage(current =>
@@ -225,11 +416,16 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
       if (error instanceof DAVEWebAuthorizationError) {
-        await daveWebSupabaseGateway.signOut();
-        if (mountedRef.current) {
-          setPhase('unauthorized');
-          setMessage(error.message);
-        }
+        // Not the owner: the not-authorized page, whatever the browser's
+        // sign-out does next. A sign-out that could not reach the server had
+        // thrown out of here, and the start-up check showed "Your projects
+        // are not loaded yet… You are still signed in" (whole-app audit A12
+        // pass 4 L3, 30 Sep 2026). Nothing loaded is kept. This browser only:
+        // an automatic sign-out never ends the owner's iPhone and iPad
+        // sign-ins (owner answer Q21).
+        notOwnerRef.current = { userId: session.user.id, message: error.message };
+        clearSessionView('unauthorized');
+        await signOutNotOwnerQuietly();
         return false;
       }
       if (snapshotRef.current) {
@@ -238,12 +434,17 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
           recordDAVEWebRefreshFailure(current, new Date().toISOString()));
         setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
       } else {
-        setPhase('error');
-        setMessage('Authorized project data could not be loaded. Try refreshing the workspace.');
+        // Still signed in; the owner check or first read did not finish (a
+        // timeout, a dropped connection). This had shown the password form
+        // with no way to try again, and nothing retried until a workspace had
+        // loaded (audit round 2 follow-up, 30 Sep 2026).
+        setPhase('unavailable');
+        setMessage(WORKSPACE_UNAVAILABLE_MESSAGE);
+        setUnavailableAttempts(count => count + 1);
       }
       return false;
     }
-  }, [clearSessionView]);
+  }, [clearSessionView, forgetNotOwner, signOutNotOwnerQuietly]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -262,17 +463,60 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       }
       if (!cancelled) await loadAuthorizedSnapshot(status.session);
     }).catch(() => {
-      if (!cancelled) {
-        setPhase('error');
-        setMessage('The desktop session could not be checked.');
+      // The sign-in is kept but the check did not finish (an expired access
+      // token and no network). This had shown the password form with "The
+      // desktop session could not be checked." and no Try Again; it is now
+      // the "not loaded yet" page, with Try Again and the automatic retry.
+      // Nothing is shown until a check confirms the owner (A12 pass 3 L1).
+      // Never after the owner check has said "not the owner" (A12 pass 4 L3).
+      if (!cancelled && mountedRef.current && notOwnerRef.current) {
+        clearSessionView('unauthorized');
+        return;
+      }
+      if (!cancelled && mountedRef.current) {
+        setPhase('unavailable');
+        setMessage(WORKSPACE_UNAVAILABLE_MESSAGE);
+        setUnavailableAttempts(count => count + 1);
       }
     });
 
     const unsubscribe = daveWebSupabaseGateway.subscribeToAuthStateChange((event, session) => {
       if (cancelled) return;
+      // While this tab ends its sign-in because another tab signed out,
+      // only SIGNED_OUT counts. auth-js's sign-out first refreshes an
+      // expired sign-in (a tab hidden for an hour), and that refresh had
+      // started loading the workspace: with /logout failing, no SIGNED_OUT
+      // followed and the tab showed his projects or "This account is not
+      // authorized…" instead of the sign-in page (A1 pass 6 L1).
+      if (endingSignInRef.current && event !== 'SIGNED_OUT') return;
+      // auth-js also sends the start-up event without a session when the
+      // refresh could not reach the server and the sign-in is kept. The
+      // start-up check above decides that view; a real sign-out arrives as
+      // SIGNED_OUT (A12 pass 3 L1).
+      if (event === 'INITIAL_SESSION' && !session) return;
+      // auth-js tells every tab of the browser about any tab's SIGNED_OUT,
+      // without saying whose. While this tab still holds its own sign-in the
+      // event was another tab's: a non-owner's automatic sign-out had dropped
+      // the owner's working tab to the sign-in page, its typing lost, though
+      // its own sign-in was still there (A1 pass 5, 30 Sep 2026). Another tab
+      // of this account that signs out says so on the sign-out channel, and
+      // this tab's sign-in ends then (A12 pass 5 L2). A tab's own sign-out,
+      // or its sign-in expiring, removes the stored sign-in first.
+      if (event === 'SIGNED_OUT' && daveWebSupabaseGateway.storedSignInUserId()) return;
       if (event === 'SIGNED_OUT' || !session) {
-        clearSessionView();
+        showSignInEnded();
         return;
+      }
+      // auth-js also passes every other tab's refresh to this tab, with that
+      // tab's session. Only this tab's own sign-in is acted on: a visitor's
+      // tab refreshing had made the owner's tab say "Signed in as" the
+      // visitor and save his percent edits as confirmed by the visitor, and a
+      // signed-out tab showed "Checking…", then "Sign in is required…", and
+      // ran the automatic sign-out (whole-app audit A12 pass 6 L1, 30 Sep
+      // 2026). Another tab of the same account still reloads, as before.
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        const ownUserId = daveWebSupabaseGateway.storedSignInUserId();
+        if (!ownUserId || session.user?.id !== ownUserId) return;
       }
       if (
         event === 'INITIAL_SESSION' ||
@@ -287,29 +531,167 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       mountedRef.current = false;
       unsubscribe();
+      if (notOwnerSignOutTimerRef.current) {
+        clearTimeout(notOwnerSignOutTimerRef.current);
+        notOwnerSignOutTimerRef.current = null;
+      }
     };
-  }, [clearSessionView, loadAuthorizedSnapshot]);
+  }, [clearSessionView, loadAuthorizedSnapshot, showSignInEnded]);
+
+  /**
+   * A sign-in waits, at most DESKTOP_SIGN_IN_ENDING_WAIT_MS, for this tab's
+   * sign-in to finish ending (A12 pass 7 L1). auth-js does not hold a
+   * sign-in back while it signs out: a late /logout removed the new
+   * sign-in, a refresh thrown away made the ending delete it, and a
+   * mistyped password had turned the ending's guard off, so its refresh
+   * loaded the workspace as the sign-in was wiped. The ending's settling
+   * leaves the view to this sign-in.
+   */
+  const waitForSignInToFinishEnding = useCallback(async () => {
+    let ending = endingSignInRef.current;
+    if (!ending) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeUp = new Promise<'time-up'>(resolve => {
+      timer = setTimeout(() => resolve('time-up'), DESKTOP_SIGN_IN_ENDING_WAIT_MS);
+    });
+    try {
+      while (ending) {
+        const current: DesktopSignInEnding = ending;
+        current.signInMadeDuring = true;
+        const outcome = await Promise.race([current.settled.then(() => 'settled' as const), timeUp]);
+        if (outcome === 'time-up') return;
+        ending = endingSignInRef.current === current ? null : endingSignInRef.current;
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }, []);
 
   const signInWithPassword = useCallback(async (email: string, password: string) => {
+    forgetNotOwner();
     if (mountedRef.current) {
       setPhase('signing_in');
       setMessage(null);
     }
-    const result = await daveWebSupabaseGateway.signIn(email.trim(), password);
+    // An earlier sign-in's answer is no longer on screen.
+    noteSignInAnswer(null);
+    signInsAwaitingAnswerRef.current += 1;
+    let endingPastLimit: DesktopSignInEnding | null = null;
+    let result: DAVEWebSignInResult;
+    let failedMessage = SIGN_IN_FAILED_MESSAGE;
+    try {
+      // The ending's guard stays on until it settles; a sign-in starting no
+      // longer turns it off (A12 pass 7 L1).
+      await waitForSignInToFinishEnding();
+      // Still set: the ending ran past the time limit.
+      endingPastLimit = endingSignInRef.current;
+      // The button is busy while this sign-in goes out.
+      if (mountedRef.current) setPhase('signing_in');
+      result = await daveWebSupabaseGateway.signIn(email.trim(), password);
+    } catch {
+      // auth-js throws, rather than answering, when this tab cannot store
+      // the sign-in: with site data blocked, reading sessionStorage throws.
+      // Nothing was kept. The page had stayed "signing in" with no message,
+      // and every retry did the same (A12 pass 11 L2).
+      result = { ok: false, session: null };
+      if (!(await isAuthStorageSecure().catch(() => false))) {
+        failedMessage = SITE_STORAGE_BLOCKED_MESSAGE;
+      }
+    } finally {
+      signInsAwaitingAnswerRef.current -= 1;
+    }
     if (!result.ok || !result.session) {
       if (mountedRef.current) {
         setPhase('signed_out');
-        setMessage('Sign-in could not be completed. Check your email and password, then try again.');
+        setMessage(failedMessage);
       }
+      // An ending that settles after this keeps the message (A12 pass 11 L1).
+      noteSignInAnswer({ phase: 'signed_out', message: failedMessage });
       return false;
     }
+    // His sign-in worked: an ending past the time limit no longer holds this
+    // tab's guard. It had made every later sign-in here wait the full 10 s
+    // and ignored this tab's own refreshes until its hung request ended
+    // (A12 pass 8 L1). A late /logout that fails leaves this sign-in be: the
+    // gateway keeps a sign-in of another session than the one it ends (A12
+    // pass 9). One that succeeds still removes it: auth-js then deletes
+    // whatever this tab holds (`_removeSession`), with SIGNED_OUT, and the
+    // tab shows the sign-in page. A sign-in that failed leaves the guard on.
+    if (endingPastLimit && endingSignInRef.current === endingPastLimit) {
+      endingSignInRef.current = null;
+    }
     return loadAuthorizedSnapshot(result.session);
-  }, [loadAuthorizedSnapshot]);
+  }, [forgetNotOwner, loadAuthorizedSnapshot, noteSignInAnswer, waitForSignInToFinishEnding]);
 
-  const signOutOfDesktop = useCallback(async () => {
-    await daveWebSupabaseGateway.signOut();
+  const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
+    const userId = daveWebSupabaseGateway.storedSignInUserId();
+    await daveWebSupabaseGateway.signOut(scope);
     clearSessionView();
+    // The other tabs of this account open in this browser sign out too, so
+    // "This Computer" is this computer's browser, not this one tab: the
+    // other tabs had gone to the sign-in page while still signed in, and a
+    // reload showed his projects again (whole-app audit A12 pass 5 L2).
+    // Only a sign-out he chose says so; the automatic not-owner sign-out
+    // does not. Only tabs running now hear it: a tab closed or asleep
+    // (Chrome's Memory Saver, Reopen Closed Tab) keeps its sign-in, as the
+    // sign-out choice and the sign-in page say (A12 pass 6 L2).
+    if (userId) {
+      try {
+        signOutChannelRef.current?.postMessage({ type: SIGNED_OUT_OF_THIS_COMPUTER, userId });
+      } catch {
+        // A closed channel: the other tabs are not told, and keep their
+        // sign-ins until they sign out there (A12 pass 6 L2).
+      }
+    }
   }, [clearSessionView]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    let channel: BroadcastChannel;
+    try {
+      channel = new BroadcastChannel(DESKTOP_SIGN_OUT_CHANNEL_NAME);
+    } catch {
+      return;
+    }
+    signOutChannelRef.current = channel;
+    channel.onmessage = event => {
+      const userId = signedOutUserId(event.data);
+      // Another account's sign-out, or one that does not say whose, leaves
+      // this tab as it is (A1 pass 5).
+      if (!userId || daveWebSupabaseGateway.storedSignInUserId() !== userId) return;
+      // Nothing is shown without a confirmed owner while the sign-in ends,
+      // and, ended or not on the server, this tab then shows the sign-in
+      // page (A1 pass 6 L1); its stored sign-in is gone either way. Its
+      // promise is kept so a sign-in here waits for it, and the guard is
+      // cleared only when it settles (A12 pass 7 L1).
+      const ending: DesktopSignInEnding = {
+        settled: Promise.resolve(),
+        signInMadeDuring: false,
+        signInAnsweredDuring: null,
+      };
+      endingSignInRef.current = ending;
+      showSignInEnded();
+      ending.settled = daveWebSupabaseGateway.signOutThisTabToo(userId)
+        .catch((): DAVEWebTabSignOutOutcome => 'ended')
+        .then(outcome => {
+          if (endingSignInRef.current !== ending) return;
+          endingSignInRef.current = null;
+          // A sign-in made here meanwhile shows its own outcome: one that
+          // waited on this ending, or one it kept. An ending started while
+          // his sign-in was out had shown the sign-in page as it kept his
+          // new sign-in, the workspace open on it (A12 pass 10 L1). One that
+          // answered during it and opened nothing keeps its answer on the
+          // sign-in page; nothing loaded stays (A12 pass 11 L1).
+          if (outcome !== 'kept' && !ending.signInMadeDuring) {
+            showSignInEnded(ending.signInAnsweredDuring);
+          }
+        });
+    };
+    return () => {
+      signOutChannelRef.current = null;
+      channel.close();
+    };
+  }, [showSignInEnded]);
 
   const refreshSnapshot = useCallback(async () => {
     const status = await daveWebSupabaseGateway.getSessionStatus();
@@ -319,6 +701,39 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     }
     return loadAuthorizedSnapshot(status.session);
   }, [clearSessionView, loadAuthorizedSnapshot]);
+
+  useEffect(() => {
+    if (phase !== 'unavailable' || unavailableAttempts === 0) return;
+    const delay = DESKTOP_WORKSPACE_RETRY_DELAYS_MS[
+      Math.min(unavailableAttempts, DESKTOP_WORKSPACE_RETRY_DELAYS_MS.length) - 1
+    ];
+    const visible = () =>
+      typeof document === 'undefined' || document.visibilityState === 'visible';
+    let due = false;
+    const retry = () => {
+      due = false;
+      // A retry that fails before reaching the load still schedules the next.
+      void refreshSnapshot().catch(() => {
+        if (mountedRef.current) setUnavailableAttempts(count => count + 1);
+      });
+    };
+    const timer = setTimeout(() => {
+      if (visible()) retry();
+      else due = true;
+    }, delay);
+    const retryWhenVisible = () => {
+      if (due && visible()) retry();
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', retryWhenVisible);
+    }
+    return () => {
+      clearTimeout(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', retryWhenVisible);
+      }
+    };
+  }, [phase, refreshSnapshot, unavailableAttempts]);
 
   const getArtifactUrl = useCallback((
     bucket: DAVEWebStorageBucket,
@@ -557,6 +972,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const updateTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     let updated = 0;
+    let failed = false;
     try {
       for (const item of items) {
         await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
@@ -565,20 +981,34 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         );
         updated += 1;
       }
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      if (updated > 0) {
-        const collections = ['schedule_items'] as const;
-        announceMutation(collections);
-        await refreshSnapshotInBackground(collections);
-      }
+      const collections = ['schedule_items'] as const;
+      if (updated > 0) announceMutation(collections);
+      // A refusal on the first item refreshes too: "Apply all date changes"
+      // says the schedule was refreshed, and the next try needs the latest
+      // revisions (whole-app audit round 2 F7, 30 Sep 2026). After a refusal
+      // it is a full read: a targeted one was answered from the copy an
+      // earlier save in the batch had marked up to date, so the refused task
+      // kept the version the web had opened (audit round 2 follow-up).
+      if (failed) await refreshSnapshot().catch(() => false);
+      else if (updated > 0) await refreshSnapshotInBackground(collections);
     }
     return updated;
-  }, [announceMutation, refreshSnapshotInBackground]);
+  }, [announceMutation, refreshSnapshot, refreshSnapshotInBackground]);
 
   const deleteTask = useCallback(async (item: DAVEWebScheduleItem) => {
+    // With the hidden rows of its revision chain, as the phone deletes it (A10 pass 8 L3).
+    const current = snapshotRef.current;
+    const withHiddenRows = current
+      ? scheduleItemIdsDeletedWithTask(current.knownScheduleItems ?? current.scheduleItems, item, current.referenceDocuments)
+      : [item.id];
     await daveWebSupabaseGateway.deleteAuthorizedScheduleItem(
       item.id,
       item.cloudUpdatedAt,
+      withHiddenRows.filter(id => id !== item.id),
     );
     const collections = ['sync_tombstones', 'schedule_items'] as const;
     announceMutation(collections);
@@ -606,10 +1036,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
   ) => {
+    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1).
+    const current = snapshotRef.current;
     await daveWebSupabaseGateway.deleteAuthorizedReferenceDocument(
       document.id,
       document.cloudUpdatedAt,
       deleteLinkedTasks ? document.linkedScheduleItems : [],
+      deleteLinkedTasks && current ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document }) : [],
     );
     const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks
       ? ['sync_tombstones', 'reference_documents', 'schedule_items']
@@ -624,19 +1057,40 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     file?: Blob,
     onProgress?: (fraction: number) => void,
   ) => {
-    await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
-      document: prepared.document,
-      bytes,
-      file,
-      scheduleItems: prepared.scheduleItems,
-      onProgress,
-    });
-    const collections: readonly DAVEOperationalCollectionName[] = prepared.scheduleItems.length > 0
+    const importsTasks = prepared.scheduleItems.length > 0;
+    if (importsTasks && !snapshot) {
+      throw new DAVEWebDocumentMutationError(
+        'conflict',
+        'The workspace is still loading its tasks. Refresh the workspace, then upload the schedule again.',
+      );
+    }
+    // Joined to the tasks the web shows now, at upload time, as the phone's
+    // approval does (audit A5 pass 3 F5): unchanged tasks keep their
+    // progress, changed tasks carry it.
+    const plan = importsTasks
+      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems })
+      : null;
+    try {
+      await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
+        document: prepared.document,
+        bytes,
+        file,
+        scheduleItems: plan?.additions ?? [],
+        revisedScheduleItems: plan?.revisions ?? [],
+        onProgress,
+      });
+    } catch (error) {
+      if (importsTasks && error instanceof DAVEWebDocumentMutationError && error.code === 'conflict') {
+        void refreshSnapshotInBackground(['reference_documents', 'schedule_items']);
+      }
+      throw error;
+    }
+    const collections: readonly DAVEOperationalCollectionName[] = importsTasks
       ? ['reference_documents', 'schedule_items']
       : ['reference_documents'];
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
-  }, [announceMutation, refreshSnapshotInBackground]);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot]);
 
   const linkDocument = useCallback(async (
     prepared: DAVEWebPreparedUpload,
@@ -662,11 +1116,23 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );
-    await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
+    const shownBefore = snapshotRef.current?.scheduleItems ?? [];
+    const scope = await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
     const collections = ['reference_documents'] as const;
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
-  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
+    // Progress recorded after the upload, on a task this schedule's upload
+    // paired, follows the task now shown (whole-app audit A5 pass 4 #3).
+    const carried = scheduleProgressCarriedToShownTasks({
+      before: shownBefore,
+      after: snapshotRef.current?.scheduleItems ?? [],
+      // A task entered by hand waiting on this schedule is restated now (whole-app audit A5 pass 18 L3).
+      documentsBefore: scheduleDocuments,
+      documentsAfter: snapshotRef.current?.referenceDocuments ?? [],
+    }) as DAVEWebScheduleItem[];
+    if (carried.length > 0) await updateTasks(carried).catch(() => 0);
+    return scope;
+  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments, updateTasks]);
 
   const setCurrentDocument = useCallback(async (document: DAVEWebReferenceDocument) => {
     const documents = snapshot?.referenceDocuments || [];
@@ -705,17 +1171,38 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
+    const candidates = items.filter(item => !currentIds.has(item.id));
+    // Missing means gone from the cloud: not hidden (a schedule that is not
+    // current) and not deleted on purpose (whole-app audit round 2 F8).
+    const unrestorable = candidates.length > 0
+      ? await daveWebSupabaseGateway.listAuthorizedUnrestorableScheduleItemIds(
+          candidates.map(item => item.id),
+        )
+      : new Set<string>();
     let restored = 0;
-    for (const item of items) {
-      if (currentIds.has(item.id)) continue;
-      await daveWebSupabaseGateway.createAuthorizedScheduleItem(scheduleItemForCloud(item));
-      currentIds.add(item.id);
-      restored += 1;
-    }
-    if (restored > 0) {
+    let failed = false;
+    try {
+      for (const item of candidates) {
+        if (currentIds.has(item.id) || unrestorable.has(item.id)) continue;
+        await daveWebSupabaseGateway.createAuthorizedScheduleItem(scheduleItemForCloud(item));
+        currentIds.add(item.id);
+        restored += 1;
+      }
+    } catch (error) {
+      failed = true;
+      if (restored > 0) {
+        throw new DAVEWebTaskMutationError(
+          'write_failed',
+          `${restored} missing task${restored === 1 ? ' was' : 's were'} restored before one could not be saved. The workspace has been refreshed; validate the export again to restore the rest.`,
+        );
+      }
+      throw error;
+    } finally {
       const collections = ['schedule_items'] as const;
-      announceMutation(collections);
-      await refreshSnapshotInBackground(collections);
+      if (restored > 0) announceMutation(collections);
+      // Refreshed after a part-way failure too, so the workspace shows what
+      // was restored.
+      if (restored > 0 || failed) await refreshSnapshotInBackground(collections);
     }
     return restored;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);
@@ -726,6 +1213,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     question: string;
     conversationId?: string;
     priorTurnId?: string;
+    knownProjectNames?: readonly string[];
+    closedProjectNames?: readonly string[];
   }) => daveWebSupabaseGateway.askAuthorizedProjectQuestion(input), []);
 
   const analyzeDrawingPage = useCallback((input: ECOSDrawingPageAnalysisInput) =>

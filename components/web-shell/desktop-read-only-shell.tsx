@@ -1,6 +1,6 @@
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -26,7 +26,9 @@ import {
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
 import {
   DAVEWebDocumentMutationError,
+  DAVEWebSignOutNeedsConnectionError,
   DAVEWebTaskMutationError,
+  type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
@@ -36,7 +38,12 @@ import {
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
+  DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
+  daveWebNewTaskProjectId,
+  daveWebPercentFromBox,
+  mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
@@ -47,7 +54,17 @@ import {
 } from '../../services/dave-project-schedule-rollup';
 import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
-import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
+import {
+  scheduleDocumentAddsToMaster,
+  scheduleDocumentCurrentLabel,
+  scheduleDocumentIsCurrentEverywhere,
+  scheduleDocumentIsScheduleLike,
+} from '../../services/PIEScheduleReconciliation';
+import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
+import {
+  formatScheduleCalendarDay,
+  scheduleCalendarDay,
+} from '../../services/ScheduleCalendarDay';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -235,6 +252,41 @@ function DesktopSessionGate() {
     if (accepted) setPassword('');
   };
 
+  if (auth.phase === 'unavailable') {
+    // Still signed in: the owner check or first load did not finish. No
+    // password form; Try Again, and the provider retries on its own
+    // (audit round 2 follow-up, 30 Sep 2026).
+    return (
+      <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
+        <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />
+        <View style={styles.gateCard}>
+          <Text style={styles.eyebrow}>VITRUVIUS PROJECT INTELLIGENCE</Text>
+          <Text style={styles.gateTitle}>Your projects are not loaded yet</Text>
+          <Text style={styles.description}>
+            {auth.userEmail
+              ? `You are still signed in as ${auth.userEmail}. The cloud check did not finish; nothing was changed.`
+              : 'You are still signed in. The cloud check did not finish; nothing was changed.'}
+          </Text>
+          {auth.message ? (
+            <View style={styles.errorBanner} accessibilityRole="alert">
+              <Text style={styles.errorText}>{auth.message}</Text>
+            </View>
+          ) : null}
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+            onPress={() => { void auth.refreshSnapshot().catch(() => undefined); }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>Try Again</Text>
+          </Pressable>
+          <Text style={styles.sessionNote}>
+            Vitruvius tries again automatically while this tab is open.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
       <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />
@@ -304,8 +356,9 @@ function DesktopSessionGate() {
             </Pressable>
           </>
         )}
+        {/* Only the tabs open then hear a sign-out (whole-app audit A12 pass 6 L2, 30 Sep 2026). */}
         <Text style={styles.sessionNote}>
-          The session is limited to this browser tab and is removed when the tab closes or you sign out.
+          The session is limited to this browser tab. Signing out in any tab signs out the Vitruvius tabs open in this browser; a tab closed or asleep at that moment may still be signed in when you reopen it, so sign out there too.
         </Text>
       </View>
     </ScrollView>
@@ -542,6 +595,7 @@ function DesktopPageData({
       <DesktopOverviewPage
         projects={projects}
         tasks={tasks}
+        knownTasks={snapshot.knownScheduleItems}
         updates={updates}
         selectedProject={selectedProject}
       />
@@ -596,7 +650,14 @@ function DesktopPageData({
         ownerKey={auth.userEmail || ''}
         projectId={selectedProjectRecord?.id || null}
         projectName={selectedProjectRecord?.name || selectedProject}
-        onAsk={auth.askProjectQuestion}
+        // Unarchived projects, so Ask ECOS refuses a number only when it names
+        // one of them (owner answer Q20; audit A9 pass 1 #2), and closed ones,
+        // whose numbers are refused as closed (audit A9 pass 3 L1).
+        onAsk={input => auth.askProjectQuestion({
+          ...input,
+          knownProjectNames: snapshot.projects.map(project => project.name),
+          closedProjectNames: snapshot.closedProjectNames ?? [],
+        })}
       />
     );
   }
@@ -915,6 +976,8 @@ type TaskWorkspaceStatusFilter = 'all' | 'overdue' | ScheduleStatus;
 type TaskConflictDraft = Readonly<{
   taskId: string;
   draft: DAVEWebTaskDraft;
+  /** The version the form was opened on: fields equal to it were left alone. */
+  base: DAVEWebScheduleItem;
 }>;
 
 function TaskEditingWorkspace({
@@ -944,6 +1007,11 @@ function TaskEditingWorkspace({
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   const [conflictDraft, setConflictDraft] = useState<TaskConflictDraft | null>(null);
   const [editorRevision, setEditorRevision] = useState(0);
+  /** The open editor's form as it is now; Apply My Changes reads it. */
+  const liveEditorFormRef = useRef<TaskFormState | null>(null);
+  const rememberEditorForm = useCallback((form: TaskFormState | null) => {
+    liveEditorFormRef.current = form;
+  }, []);
   const projectOptions = uniqueOptions([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
@@ -1091,9 +1159,14 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
-      const selectedProjectId = editingTask?.projectId || auth.snapshot?.projects.find(project =>
-        matchesProject(project.name, draft.projectName),
-      )?.id || null;
+      // A new task's cloud project: the one open project with its name, as
+      // in the Schedule Builder (whole-app audit A12 pass 5 M1, 30 Sep 2026).
+      let selectedProjectId = editingTask?.projectId?.trim() || null;
+      if (!selectedProjectId) {
+        const project = daveWebNewTaskProjectId(auth.snapshot, draft.projectName);
+        if (!project.ok) throw new DAVEWebTaskValidationError(project.message);
+        selectedProjectId = project.projectId;
+      }
       const item = buildDAVEWebScheduleItem({
         draft: { ...draft, projectId: selectedProjectId },
         current: editingTask,
@@ -1123,7 +1196,7 @@ function TaskEditingWorkspace({
         error instanceof DAVEWebTaskMutationError &&
         error.code === 'conflict'
       ) {
-        setConflictDraft({ taskId: editingTask.id, draft });
+        setConflictDraft({ taskId: editingTask.id, draft, base: editingTask });
         setNotice({
           tone: 'danger',
           text: 'Another device changed this task while you were editing. Choose which version to continue with.',
@@ -1171,15 +1244,37 @@ function TaskEditingWorkspace({
       });
       return;
     }
+    // The form as it is now: the editor stays open under the card, and what
+    // he typed after it appeared had been dropped because the draft of the
+    // refused save was used (audit round 2 follow-up, 30 Sep 2026). `base`
+    // stays the version he opened.
+    const liveForm = liveEditorFormRef.current;
+    const prepared = liveForm
+      ? taskEditorDraftForSave(liveForm, conflictDraft.base, conflictDraft.draft.workflowAction)
+      : { ok: true as const, draft: conflictDraft.draft };
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
+      return;
+    }
     setPending(true);
     setNotice(null);
     try {
+      const now = new Date().toISOString();
+      const actor = auth.userEmail || 'Project manager';
+      // Only the fields he changed go over the other device's newer version
+      // (whole-app audit round 2 F4, 30 Sep 2026).
       const item = buildDAVEWebScheduleItem({
-        draft: conflictDraft.draft,
+        draft: mergeDAVEWebConflictDraft({
+          draft: prepared.draft,
+          base: conflictDraft.base,
+          latest,
+          now,
+          actor,
+        }),
         current: latest,
         id: latest.id,
-        now: new Date().toISOString(),
-        actor: auth.userEmail || 'Project manager',
+        now,
+        actor,
       });
       await auth.updateTask(item);
       setSelectedTaskId(item.id);
@@ -1188,7 +1283,7 @@ function TaskEditingWorkspace({
       setConflictDraft(null);
       setNotice({
         tone: 'good',
-        text: 'Your changes were applied to the latest shared version and synced.',
+        text: 'The fields you changed were applied to the latest shared version and synced.',
       });
     } catch (error) {
       await auth.refreshSnapshot().catch(() => undefined);
@@ -1424,9 +1519,7 @@ function TaskEditingWorkspace({
         <View style={styles.conflictResolutionCard} accessibilityRole="alert">
           <View style={styles.dataGrow}>
             <Text style={styles.conflictResolutionTitle}>Choose how to resolve this edit</Text>
-            <Text style={styles.dataDetail}>
-              Load the latest task to review the other device’s changes, or apply your form values to that latest version.
-            </Text>
+            <Text style={styles.dataDetail}>{DAVE_WEB_CONFLICT_CHOICE_TEXT}</Text>
           </View>
           <View style={styles.inlineButtons}>
             <Pressable
@@ -1536,6 +1629,7 @@ function TaskEditingWorkspace({
                   setConflictDraft(null);
                 }}
                 onSave={saveTask}
+                onFormChange={rememberEditorForm}
               />
             ) : selectedTask ? (
               <TaskDetailsPanel
@@ -1939,6 +2033,49 @@ function toggleSetValue(current: Set<string>, value: string): Set<string> {
   return next;
 }
 
+/**
+ * The task editor's form as the draft a save sends, or why it cannot be
+ * saved. Save Task Changes, Close/Reopen, and Apply My Changes after a
+ * conflict all use it, so a later Apply sends exactly what Save would.
+ */
+function taskEditorDraftForSave(
+  form: TaskFormState,
+  task: DAVEWebScheduleItem | null,
+  workflowAction?: 'close' | 'reopen',
+): Readonly<{ ok: true; draft: DAVEWebTaskDraft }> | Readonly<{ ok: false; message: string }> {
+  // An emptied box keeps the percent the task was opened with, and so its
+  // source; it had saved 0% as his judgment (whole-app audit A12 pass 5 L1).
+  const percent = daveWebPercentFromBox(form.percentComplete, task?.percentComplete);
+  if (!percent.ok) return percent;
+  const percentComplete = percent.percentComplete;
+  if (workflowAction) {
+    return {
+      ok: true,
+      draft: { ...form, percentComplete, workflowAction },
+    };
+  }
+  const structuredWorkflow = form.itemType !== 'Task';
+  const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
+  if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
+    return {
+      ok: false,
+      message: `Use "Close ${form.itemType}" after the required information is complete.`,
+    };
+  }
+  return {
+    ok: true,
+    draft: {
+      ...form,
+      percentComplete,
+      status: structuredWorkflow
+        ? form.status
+        : form.status === 'Waiting' && percentComplete < 100
+          ? 'Waiting'
+          : automaticTaskStatus(percentComplete),
+    },
+  };
+}
+
 function automaticTaskStatus(percentComplete: number): ScheduleStatus {
   if (percentComplete >= 100) return 'Complete';
   if (percentComplete > 0) return 'In Progress';
@@ -1957,6 +2094,7 @@ function TaskEditor({
   onAddPhoto,
   onCancel,
   onSave,
+  onFormChange,
 }: {
   task: DAVEWebScheduleItem | null;
   defaultProject: string;
@@ -1969,9 +2107,15 @@ function TaskEditor({
   onAddPhoto?: (file: File | null) => void;
   onCancel: () => void;
   onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
+  /** Told the form on every change, and null when the editor closes. */
+  onFormChange?: (form: TaskFormState | null) => void;
 }) {
   const [draft, setDraft] = useState<TaskFormState>(() => taskFormState(task, defaultProject));
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  useEffect(() => {
+    onFormChange?.(draft);
+  }, [draft, onFormChange]);
+  useEffect(() => () => onFormChange?.(null), [onFormChange]);
   const workflowCandidate = taskEditorWorkflowCandidate(task, draft);
   const structuredWorkflow = draft.itemType !== 'Task';
   const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
@@ -1981,9 +2125,9 @@ function TaskEditor({
   const structuredStatusOptions: readonly ScheduleStatus[] = workflowClosed
     ? ['Complete']
     : ['Not Started', 'In Progress', 'Waiting'];
-  const parsedPercentComplete = Number(draft.percentComplete);
+  const percentFromBox = daveWebPercentFromBox(draft.percentComplete, task?.percentComplete);
   const derivedTaskStatus = automaticTaskStatus(
-    Number.isFinite(parsedPercentComplete) ? parsedPercentComplete : 0,
+    percentFromBox.ok ? percentFromBox.percentComplete : 0,
   );
   const taskStatusOptions = Array.from(new Set<ScheduleStatus>([
     derivedTaskStatus,
@@ -1998,7 +2142,16 @@ function TaskEditor({
     const normalizedValue = value.replace(/[^0-9]/g, '').slice(0, 3);
     setDraft(previous => {
       if (!normalizedValue) {
-        return { ...previous, percentComplete: '' };
+        // Blank keeps the stored percent (A12 pass 5 L1); the status shown
+        // follows it, as the save will.
+        const storedPercent = task?.percentComplete ?? 0;
+        return {
+          ...previous,
+          percentComplete: '',
+          status: previous.status === 'Waiting' && storedPercent < 100
+            ? 'Waiting'
+            : automaticTaskStatus(storedPercent),
+        };
       }
       const percentComplete = Number(normalizedValue);
       if (!Number.isFinite(percentComplete)) {
@@ -2016,27 +2169,13 @@ function TaskEditor({
 
   const submit = async () => {
     setValidationMessage(null);
-    const percentComplete = Number(draft.percentComplete);
-    if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-      setValidationMessage('Percent complete must be a number from 0 to 100.');
-      return;
-    }
-    if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
-      setValidationMessage(
-        `Use "Close ${draft.itemType}" after the required information is complete.`,
-      );
+    const prepared = taskEditorDraftForSave(draft, task);
+    if (!prepared.ok) {
+      setValidationMessage(prepared.message);
       return;
     }
     try {
-      await onSave({
-        ...draft,
-        percentComplete,
-        status: structuredWorkflow
-          ? draft.status
-          : draft.status === 'Waiting' && percentComplete < 100
-            ? 'Waiting'
-            : automaticTaskStatus(percentComplete),
-      });
+      await onSave(prepared.draft);
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }
@@ -2048,12 +2187,13 @@ function TaskEditor({
       setValidationMessage(workflowReadiness.message);
       return;
     }
+    const prepared = taskEditorDraftForSave(draft, task, workflowClosed ? 'reopen' : 'close');
+    if (!prepared.ok) {
+      setValidationMessage(prepared.message);
+      return;
+    }
     try {
-      await onSave({
-        ...draft,
-        percentComplete: Number(draft.percentComplete),
-        workflowAction: workflowClosed ? 'reopen' : 'close',
-      });
+      await onSave(prepared.draft);
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }
@@ -2106,7 +2246,20 @@ function TaskEditor({
           />
         )}
       </View>
-      <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
+      {task ? (
+        // A task keeps its project, as in the Schedule Builder: a move had
+        // saved the new name with the old project's cloud id, and the phone
+        // refused every upload of it (whole-app audit A3 pass 9 M1, 30 Sep 2026).
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Project</Text>
+          <View style={styles.workflowProtectedField}>
+            <Text style={styles.workflowProtectedValue}>{draft.projectName}</Text>
+            <Text style={styles.dataMeta}>{DAVE_WEB_TASK_PROJECT_FIXED_TEXT}</Text>
+          </View>
+        </View>
+      ) : (
+        <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
+      )}
       <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
       {task && onAddPhoto ? (
         <TaskPhotoPicker
@@ -2629,9 +2782,9 @@ function TaskList({
             <View style={styles.taskCompactFacts}>
               <Text style={styles.dataDetail}>{task.percentComplete}% complete</Text>
               <Text style={styles.taskFactDivider}>•</Text>
-              <Text style={styles.dataDetail}>Start {formatDate(task.startDate)}</Text>
+              <Text style={styles.dataDetail}>Start {formatCalendarDate(task.startDate)}</Text>
               <Text style={styles.taskFactDivider}>•</Text>
-              <Text style={styles.dataDetail}>Finish / Due {formatDate(task.finishDate)}</Text>
+              <Text style={styles.dataDetail}>Finish / Due {formatCalendarDate(task.finishDate)}</Text>
               <Text style={styles.taskFactDivider}>•</Text>
               <Text style={styles.dataDetail}>{task.priority} priority</Text>
               {task.owner ? (
@@ -2740,8 +2893,8 @@ function TaskDetailsPanel({
       </View>
 
       <View style={styles.taskDetailsFacts}>
-        <TaskDetailFact label="Start" value={formatDate(task.startDate)} />
-        <TaskDetailFact label="Finish / due" value={formatDate(task.finishDate)} />
+        <TaskDetailFact label="Start" value={formatCalendarDate(task.startDate)} />
+        <TaskDetailFact label="Finish / due" value={formatCalendarDate(task.finishDate)} />
         <TaskDetailFact label="Owner" value={task.owner || 'Unassigned'} />
         <TaskDetailFact label="Contractor" value={task.contractor || 'Not assigned'} />
       </View>
@@ -3856,6 +4009,18 @@ function DocumentManagementWorkspace({
       setReplacementId('');
       resetDrawingIntake();
     } catch (error) {
+      // A schedule import refused because a task changed on another device
+      // was rolled back and its document id retired; the next try prepares
+      // the file again, so it gets fresh ids (audit A5 pass 3 F5).
+      if (
+        preparedUpload.scheduleItems.length > 0 &&
+        error instanceof DAVEWebDocumentMutationError &&
+        error.code === 'conflict'
+      ) {
+        setPreparedUpload(null);
+        setPreparedBytes(null);
+        setPreparedFile(null);
+      }
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
     } finally {
       setUploading(false);
@@ -3867,7 +4032,10 @@ function DocumentManagementWorkspace({
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
     const readiness = buildECOSDocumentReadiness(document);
-    if (isSchedule && document.linkedScheduleItems.length === 0) {
+    // Every task the import contains counts, unchanged ones shared with the
+    // prior revision included; linkedScheduleItems is only those no other
+    // schedule has, the ones Delete takes (audit A5 pass 3 F5).
+    if (isSchedule && document.importedScheduleItemCount === 0) {
       setNotice({ tone: 'danger', text: 'Review and save the imported schedule tasks before making this schedule current.' });
       return;
     }
@@ -3878,12 +4046,16 @@ function DocumentManagementWorkspace({
     setUploading(true);
     setNotice(null);
     try {
-      if (isSchedule) await auth.setCurrentSchedule(document);
-      else await auth.setCurrentDocument(document);
+      // Before the Q15 migration the cloud retires a combined schedule for
+      // every project; after it the schedule stays current for its others,
+      // which the activation's response says and the notice names.
+      const documentsBefore = auth.snapshot?.referenceDocuments ?? [];
+      const scope = isSchedule ? await auth.setCurrentSchedule(document) : null;
+      if (!isSchedule) await auth.setCurrentDocument(document);
       setNotice({
         tone: 'good',
         text: isSchedule
-          ? `“${document.name}” is now the current schedule. The prior schedule remains available as history.`
+          ? scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')
           : `“${document.name}” is now current. Vitruvius will use it only after the hosted index confirms this exact source, project, and revision. Prior revisions remain available as history.`,
       });
     } catch (error) {
@@ -4127,7 +4299,7 @@ function DocumentManagementWorkspace({
       await auth.updateDocument({ ...document, ...next } as DAVEWebReferenceDocument);
       setNotice({
         tone: 'good',
-        text: document.isCurrent
+        text: documentInEffect(document)
           ? `“${document.name}” document details were updated. The current ECOS source now uses the revised information.`
           : `“${document.name}” document details were updated. Review ECOS readiness before making it current.`,
       });
@@ -4330,7 +4502,7 @@ function DocumentManagementWorkspace({
                         <View style={styles.dataGrow}>
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
                           <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
-                          <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatDate(item.finishDate)}</Text>
+                          <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
                           {uploadProjects.length > 1 ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
@@ -4401,7 +4573,11 @@ function DocumentManagementWorkspace({
             <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.name}”?</Text>
             <Text style={styles.dataDetail}>Imported {formatDateTime(deleteCandidate.importedAt)}.</Text>
             {protectedCurrentDocument ? (
-              <Text style={styles.errorText}>This is the current project schedule and is protected. Make a replacement schedule current before deleting this version.</Text>
+              <Text style={styles.errorText}>
+                {scheduleDocumentAddsToMaster(deleteCandidate)
+                  ? "This lookahead adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back."
+                  : 'This is the current project schedule and is protected. Make a replacement schedule current before deleting this version.'}
+              </Text>
             ) : (
               <Text style={styles.dataMeta}>
                 {currentEvidenceDocument
@@ -4427,7 +4603,11 @@ function DocumentManagementWorkspace({
               disabled={deleting}
               accessibilityRole="button"
             >
-              <Text style={styles.secondaryButtonText}>{protectedCurrentDocument ? 'Keep Current Document' : 'Cancel'}</Text>
+              <Text style={styles.secondaryButtonText}>
+                {!protectedCurrentDocument
+                  ? 'Cancel'
+                  : scheduleDocumentAddsToMaster(deleteCandidate) ? 'Keep Lookahead' : 'Keep Current Document'}
+              </Text>
             </Pressable>
             {!protectedCurrentDocument ? (
               <Pressable
@@ -4516,7 +4696,9 @@ function DocumentManagementWorkspace({
           <View style={styles.documentGroups}>
             <DocumentGroup
               title="Current schedule"
-              detail="The schedule currently used for project planning. It is protected from deletion."
+              detail={visibleGroups.currentSchedule.some(scheduleDocumentAddsToMaster)
+                ? 'The schedule currently used for project planning. It is protected from deletion. A lookahead that adds to it is deleted on the iPhone or iPad.'
+                : 'The schedule currently used for project planning. It is protected from deletion.'}
               documents={visibleGroups.currentSchedule}
               emptyText="No current schedule matches this view."
               selectedDocumentId={selectedDocumentId}
@@ -4563,7 +4745,9 @@ function DocumentManagementWorkspace({
                   : openDeleteCandidate
               }
               onMakeCurrent={
-                !selectedDocument.isCurrent
+                // A combined schedule retired for some of its projects (owner answer Q15), or one a newer
+                // partial schedule replaces for some (audit A5 pass 4 #2), can be made current again.
+                !scheduleDocumentIsCurrentEverywhere(selectedDocument, auth.snapshot?.referenceDocuments)
                   ? document => { void makeCurrent(document); }
                   : undefined
               }
@@ -4641,6 +4825,7 @@ function DocumentList({
   onMakeCurrent?: (document: DAVEWebReferenceDocument) => void;
   emptyText?: string;
 }) {
+  const auth = useDesktopAuth();
   const progressive = useProgressiveListLimit(
     documents.length,
     `${documents.length}:${documents[0]?.id || ''}:${documents[documents.length - 1]?.id || ''}`,
@@ -4682,8 +4867,8 @@ function DocumentList({
               </View>
               <View style={styles.documentListStatus}>
                 <StatusBadge
-                  label={documentStatusLabel(document)}
-                  tone={document.isCurrent ? 'good' : 'neutral'}
+                  label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
+                  tone={documentInEffect(document) ? 'good' : 'neutral'}
                 />
                 <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
               </View>
@@ -4818,8 +5003,8 @@ function DocumentDetailsPanel({
       />
       <View style={styles.taskDetailsBadges}>
         <StatusBadge
-          label={documentStatusLabel(document)}
-          tone={document.isCurrent ? 'good' : 'neutral'}
+          label={documentStatusLabel(document, auth.snapshot?.referenceDocuments)}
+          tone={documentInEffect(document) ? 'good' : 'neutral'}
         />
         <StatusBadge label={document.category} tone="neutral" />
       </View>
@@ -4914,7 +5099,8 @@ function DocumentDetailsPanel({
           <Text key={item} style={styles.taskDetailsSectionText}>• {item}</Text>
         ))}
       </View>
-      {(!document.isCurrent || !isSchedule) && onSaveDetails ? (
+      {/* A lookahead stays one: changing its category ended its role and let it be deleted without putting the master's dates back (A12 pass 3 L2). */}
+      {(!documentInEffect(document) || !isSchedule) && onSaveDetails ? (
         <DocumentECOSDetailsEditor
           document={document}
           projects={projects}
@@ -4962,7 +5148,9 @@ function DocumentDetailsPanel({
           <View style={styles.documentProtectedNotice}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.success} />
             <Text style={styles.documentProtectedText}>
-              Current schedule · protected from deletion
+              {scheduleDocumentAddsToMaster(document)
+                ? LOOKAHEAD_DELETION_NOTICE
+                : 'Current schedule · protected from deletion'}
             </Text>
           </View>
         ) : null}
@@ -5879,6 +6067,77 @@ function ReportWorkspace({
   );
 }
 
+/**
+ * Owner answer Q21 (30 Sep 2026): Sign out asks which devices. Every sign-out
+ * used to end the iPhone's and iPad's sign-ins as well. Signing out every
+ * device needs the cloud; without it nothing is signed out and he is told.
+ * Either choice signs out the other tabs of his account open in this browser
+ * (whole-app audit A12 pass 5 L2). Only tabs running then hear it: a tab
+ * closed or asleep (Chrome's Memory Saver, Reopen Closed Tab) keeps its
+ * sign-in, which the This Computer line now says (A12 pass 6 L2).
+ */
+function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
+  const auth = useDesktopAuth();
+  const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
+  const [problem, setProblem] = useState('');
+
+  const signOut = async (scope: DAVEWebSignOutScope) => {
+    if (pending) return;
+    setPending(scope);
+    setProblem('');
+    try {
+      // Once signed out, the sign-in page replaces this workspace.
+      await auth.signOutOfDesktop(scope);
+    } catch (error) {
+      // On the web, This Computer needs the cloud too, so it is not offered as
+      // the way out here (unlike the phone, which can sign out with no signal).
+      setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
+        ? `${error.message} Try again when this computer is back online.`
+        : 'Sign out did not finish. Check the internet connection and try again.');
+      setPending(null);
+    }
+  };
+
+  return (
+    <View style={styles.deleteConfirm} accessibilityRole="alert">
+      <View style={styles.dataGrow}>
+        <Text style={styles.deleteConfirmTitle}>Sign out of which devices?</Text>
+        <Text style={styles.dataMeta}>This Computer: the Vitruvius tabs open in this browser are signed out. Your iPhone and iPad stay signed in. A tab closed or asleep now may still be signed in when you reopen it; sign out there too.</Text>
+        <Text style={styles.dataMeta}>
+          All Devices: your iPhone and iPad are signed out too, within an hour or when they next have signal. Use this if a device is lost.
+        </Text>
+        {problem ? <Text style={styles.errorText}>{problem}</Text> : null}
+      </View>
+      <View style={styles.inlineButtons}>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+          onPress={onCancel}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+          onPress={() => { void signOut('local'); }}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>{pending === 'local' ? 'Signing out…' : 'Sign Out of This Computer'}</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+          onPress={() => { void signOut('global'); }}
+          disabled={pending !== null}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>{pending === 'global' ? 'Signing out…' : 'Sign Out of All Devices'}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function SettingsWorkspace({
   snapshot,
   displayName,
@@ -5898,6 +6157,7 @@ function SettingsWorkspace({
     'connected' | 'disconnected' | 'uncertain'
   >(() => googleDriveSessionIsAuthorized() ? 'connected' : 'disconnected');
   const [driveConnectionNotice, setDriveConnectionNotice] = useState('');
+  const [signOutChoiceOpen, setSignOutChoiceOpen] = useState(false);
 
   useEffect(() => {
     setDisplayNameDraft(displayName);
@@ -5997,12 +6257,13 @@ function SettingsWorkspace({
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
-            onPress={() => { void auth.signOutOfDesktop(); }}
+            onPress={() => setSignOutChoiceOpen(true)}
             accessibilityRole="button"
           >
             <Text style={styles.secondaryButtonText}>Sign out</Text>
           </Pressable>
         </View>
+        {signOutChoiceOpen ? <DesktopSignOutChoice onCancel={() => setSignOutChoiceOpen(false)} /> : null}
       </View>
 
       <View style={styles.syncGuideGrid}>
@@ -6226,7 +6487,7 @@ function OperationsWorkspace({
         ) : null}
       </Section>
 
-      <Section title="Data export and recovery" detail="Download an unencrypted JSON export of project records and media metadata, or validate a previous export before restoring missing tasks. Photo and document files are not included.">
+      <Section title="Data export and recovery" detail="Download an unencrypted JSON export of project records and media metadata as this workspace shows them, or validate a previous export before restoring missing tasks. Photo and document files are not included, and neither are deleted tasks or the tasks of schedules that are not current.">
         <View style={styles.inlineButtonsLeft}>
           <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => {
             const created = createDAVEWebBackup(snapshot);
@@ -6243,7 +6504,7 @@ function OperationsWorkspace({
           <View style={styles.editorCard}>
             <Text style={styles.cardTitle}>Validated recovery preview</Text>
             <Text style={styles.dataDetail}>{backup.projects.length} projects · {backup.scheduleItems.length} tasks · {backup.projectUpdates.length} field updates · {backup.referenceDocuments.length} documents</Text>
-            <Text style={styles.dataMeta}>For safety, this recovery restores missing task IDs only. It does not overwrite newer tasks, restore deleted IDs, or replace documents.</Text>
+            <Text style={styles.dataMeta}>For safety, this recovery adds back only tasks that are no longer in the shared record. Tasks that still exist, including those of schedules that are not current, are left unchanged; tasks deleted on purpose stay deleted; documents are not replaced.</Text>
             <LabeledTextField label="Type RESTORE MISSING TASKS to continue" value={restorePhrase} onChangeText={setRestorePhrase} />
             <View style={styles.inlineButtons}>
               <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => setBackup(null)} disabled={pending}>
@@ -6304,7 +6565,14 @@ function WebFilePicker({
         type: 'file',
         accept,
         'aria-label': label,
-        onChange: (event: any) => onFile(event.target.files?.[0] || null),
+        onChange: (event: any) => {
+          const file = event.target?.files?.[0] || null;
+          // Emptied once read, so choosing the same file again (after a
+          // refused schedule import, say) still arrives; the browser sends no
+          // change for an unchanged value (whole-app audit round 2 F6).
+          if (event.target) event.target.value = '';
+          onFile(file);
+        },
         style: {
           minHeight: 52,
           border: `1px solid ${desktopSurfaces.border}`,
@@ -6534,30 +6802,47 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
   return `${names.length} projects · ${names.join(' + ')}`;
 }
 
+/**
+ * Current, or a lookahead, which is in effect by its role whatever its flag:
+ * the cloud's activation of a master clears that flag (owner answer Q22).
+ */
+function documentInEffect(document: DAVEWebReferenceDocument): boolean {
+  return document.isCurrent || scheduleDocumentAddsToMaster(document);
+}
+
+/**
+ * Where a lookahead is deleted, until the owner decides whether a newer one
+ * replaces an older (Q25): the web keeps it, and the phone's or iPad's
+ * Delete PDF + Items also puts back the master's dates (A12 pass 3 A8-L2).
+ */
+const LOOKAHEAD_DELETION_NOTICE =
+  "Lookahead · adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back.";
+
 function documentStatusKind(document: DAVEWebReferenceDocument): Exclude<DocumentStatusFilter, 'all'> {
-  if (document.isCurrent) return 'current';
+  if (documentInEffect(document)) return 'current'; // a lookahead is in effect by its role (owner answer Q22)
   return scheduleDocumentIsScheduleLike(document) ? 'prior' : 'other';
 }
 
-function documentStatusLabel(document: DAVEWebReferenceDocument): string {
+/** With every document: "Current for Beta" when a newer partial schedule shows for Alpha (audit A5 pass 4 #2). */
+function documentStatusLabel(document: DAVEWebReferenceDocument, allDocuments?: readonly ReferenceDocument[]): string {
   if (!scheduleDocumentIsScheduleLike(document)) {
     return buildECOSDocumentReadiness(document).label;
   }
   const kind = documentStatusKind(document);
-  if (kind === 'current') return 'Current';
+  if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current', allDocuments);
   if (kind === 'prior') return 'Prior version';
   return buildECOSDocumentReadiness(document).label;
 }
 
 function documentCanBeMadeCurrent(document: DAVEWebReferenceDocument) {
   return scheduleDocumentIsScheduleLike(document)
-    ? document.linkedScheduleItems.length > 0
+    ? document.importedScheduleItemCount > 0
     : buildECOSDocumentReadiness(document).canMakeCurrent;
 }
 
 function documentMakeCurrentLabel(document: DAVEWebReferenceDocument) {
   if (scheduleDocumentIsScheduleLike(document)) {
-    return document.linkedScheduleItems.length > 0 ? 'Make Current Schedule' : 'Task Review Required';
+    return document.importedScheduleItemCount > 0 ? 'Make Current Schedule' : 'Task Review Required';
   }
   const readiness = buildECOSDocumentReadiness(document);
   if (readiness.status === 'needs_metadata') return 'Complete Document Details';
@@ -6732,18 +7017,31 @@ function formatDesktopDate(date: Date): string {
   });
 }
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return 'No date';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+/**
+ * A task's start, finish / due or other plain-day date as text: the
+ * calendar day it names, read as the date boxes read it, with no time-zone
+ * shift; text that names no day ("TBD", "Week 41") as written. Timestamps
+ * (created, updated, recorded, imported) use formatDateTime.
+ *
+ * Whole-app audit A12 pass 4 residual R1 (30 Sep 2026): this had used the
+ * browser's date parser, so 2026-10-05, the form older web builder saves
+ * wrote, showed as 4 Oct on David's Pacific-time computer (anywhere west of
+ * UTC), and "Week 41" as 1 Jan 2041.
+ */
+function formatCalendarDate(value: string | null | undefined): string {
+  if (!value?.trim()) return 'No date';
+  return formatScheduleCalendarDay(value) ?? value.trim();
 }
 
+/**
+ * The date box's 2026-10-05 for a stored date, read as the calendar day it
+ * names, as in the Schedule Builder (whole-app audit A12 pass 4 L2, 30 Sep
+ * 2026). Through toISOString, 10/05/2026 showed as 4 Oct anywhere east of
+ * UTC; the browser's parser also read "Week 41" as 1 Jan 2041. Text that
+ * names no day shows an empty box; the task keeps it unless he picks a date.
+ */
 function dateInputValue(value: string | null | undefined): string {
-  if (!value) return '';
-  const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-  if (direct) return direct;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  return scheduleCalendarDay(value) ?? '';
 }
 
 async function fingerprintBytes(bytes: ArrayBuffer): Promise<string> {

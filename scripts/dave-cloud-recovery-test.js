@@ -13,8 +13,46 @@ const receiptCompiled = ts.transpileModule(fs.readFileSync(receiptSourcePath, 'u
     target: ts.ScriptTarget.ES2020,
   },
 }).outputText;
+// The receipt aligns photo storage paths through a helper (audit A4 batch 4, 30 Sep 2026).
+const alignmentSourcePath = path.join(root, 'services/PhotoStoragePathAlignment.ts');
+const alignmentCompiled = ts.transpileModule(fs.readFileSync(alignmentSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const alignmentModule = { exports: {} };
+new Function('module', 'exports', alignmentCompiled)(alignmentModule, alignmentModule.exports);
 const receiptModule = { exports: {} };
-new Function('module', 'exports', receiptCompiled)(receiptModule, receiptModule.exports);
+const receiptRequire = specifier => {
+  if (specifier === './PhotoStoragePathAlignment') return alignmentModule.exports;
+  return require(specifier);
+};
+new Function('module', 'exports', 'require', receiptCompiled)(receiptModule, receiptModule.exports, receiptRequire);
+
+// The photo merge keeps this device's own path and usable preview through a
+// shared helper (audit A7 M3, 30 Sep 2026).
+const transportSourcePath = path.join(root, 'services/ProjectPhotoTransport.ts');
+const transportCompiled = ts.transpileModule(fs.readFileSync(transportSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const transportModule = { exports: {} };
+new Function('module', 'exports', transportCompiled)(transportModule, transportModule.exports);
+
+// Shared document details are read with the phone normalizer's own name and
+// category rules (audit A7 pass 7 L1, 30 Sep 2026).
+const sharedFieldsSourcePath = path.join(root, 'services/ReferenceDocumentSharedFields.ts');
+const sharedFieldsCompiled = ts.transpileModule(fs.readFileSync(sharedFieldsSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const sharedFieldsModule = { exports: {} };
+new Function('module', 'exports', sharedFieldsCompiled)(sharedFieldsModule, sharedFieldsModule.exports);
 
 const sourcePath = path.join(root, 'services/DAVECloudRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
@@ -26,6 +64,8 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
 const moduleUnderTest = { exports: {} };
 const localRequire = specifier => {
   if (specifier === './DAVEProjectUpdateCloudReceipt') return receiptModule.exports;
+  if (specifier === './ProjectPhotoTransport') return transportModule.exports;
+  if (specifier === './ReferenceDocumentSharedFields') return sharedFieldsModule.exports;
   return require(specifier);
 };
 new Function('module', 'exports', 'require', compiled)(

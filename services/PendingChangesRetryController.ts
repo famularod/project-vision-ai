@@ -26,6 +26,8 @@ export type PendingChangesUploadResult = Readonly<{
   queued: number;
   conflicts: number;
   errors: readonly string[];
+  /** Errors of items held until the owner edits them again; they ask for no retry. */
+  heldErrorCount?: number;
 }>;
 
 export type PendingChangesRetryState = Readonly<{
@@ -59,7 +61,11 @@ export function pendingChangesUploadNeedsRetry(
   result: PendingChangesUploadResult,
 ): boolean {
   if (result.queued <= 0) return false;
-  if (!result.configured || result.errors.length > 0) return true;
+  // A document the cloud refused for good (a Current drawing it keeps) is held
+  // with its reason until the owner edits it again: its error and its
+  // 'blocked' outcome ask for no tight retry (whole-app audit A8 pass 1 F3
+  // (30 Sep 2026)). Any other error still does.
+  if (!result.configured || result.errors.length > (result.heldErrorCount ?? 0)) return true;
 
   const outcomes = Object.values(result.itemOutcomes ?? {});
   if (outcomes.some(outcome => outcome === 'failed')) return true;

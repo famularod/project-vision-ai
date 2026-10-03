@@ -13,9 +13,15 @@ import {
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
+  DAVE_WEB_CONFLICT_CHOICE_TEXT,
+  daveWebNewTaskProjectId,
+  daveWebPercentFromBox,
+  daveWebScheduleDateForSave,
+  mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
+import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
@@ -42,12 +48,18 @@ import {
   scheduleParentOptions,
   schedulePredecessorOptions,
 } from '../../services/VitruviusScheduleWorkspace';
+import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
 import { useDesktopAuth } from './desktop-auth-provider';
 import { desktopSurfaces } from './desktop-surface-palette';
 
 type ScheduleEditorKind = 'task' | 'phase' | 'milestone';
+type ScheduleBuilderConflict = Readonly<{
+  taskId: string;
+  /** The version the editor was opened on: fields equal to it were left alone. */
+  base: DAVEWebScheduleItem;
+}>;
 type ScheduleWorkspaceView = 'builder' | 'gantt' | 'lookahead';
 
 type ScheduleEditorState = Readonly<{
@@ -90,26 +102,37 @@ export function DesktopSchedulePage({
   const [pending, setPending] = useState(false);
   const [impactPendingItemId, setImpactPendingItemId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const [conflict, setConflict] = useState<ScheduleBuilderConflict | null>(null);
   const projectNames = uniqueText([
     ...(selectedProject ? [selectedProject] : []),
     ...projects,
-    ...tasks.map(task => task.scheduleProjectName || task.projectName),
+    ...tasks.map(taskProjectName),
   ]);
+  // Each task under its app project (A5 pass 12 K1). The project chosen shows
+  // with no items only while there are none: chosen as a schedule's root, its
+  // tasks show under their buildings, not under an empty root heading.
   const groupedProjects = useMemo(
     () => projectNames
       .map(projectName => ({
         projectName,
-        tasks: tasks.filter(task =>
-          normalize(task.scheduleProjectName || task.projectName) === normalize(projectName),
-        ),
+        tasks: tasks.filter(task => inProject(task, projectName)),
       }))
-      .filter(group => group.tasks.length > 0 || selectedProject === group.projectName),
+      .filter(group => group.tasks.length > 0 || (selectedProject === group.projectName && tasks.length === 0)),
     [projectNames, selectedProject, tasks],
   );
   const defaultProject = selectedProject || projectNames[0] || '';
   const editorProjectTasks = editor
+    ? tasks.filter(task => inProject(task, editor.projectName))
+    : [];
+  // The task's own parent and predecessors in another building under its
+  // root, set while the page grouped by root (A5 pass 13 L1): listed so they
+  // can be seen and removed. Saving had kept them with no way to uncheck them.
+  const editorLinksElsewhere = editor && editingTask
     ? tasks.filter(task =>
-        normalize(task.scheduleProjectName || task.projectName) === normalize(editor.projectName),
+        !inProject(task, editor.projectName) &&
+        sameRoot(task, editingTask) &&
+        (task.id === editingTask.parentItemId?.trim() ||
+          (editingTask.dependencies || []).some(dependency => dependency.predecessorItemId === task.id)),
       )
     : [];
   const editorScenario = useMemo(() => {
@@ -131,16 +154,18 @@ export function DesktopSchedulePage({
         ),
         isMilestone: editor.kind === 'milestone',
         status: editor.status,
-        percentComplete: numberOrZero(editor.percentComplete),
+        // A blank box keeps the stored percent, as Save does (A12 pass 5 L1).
+        percentComplete: editor.percentComplete.trim()
+          ? numberOrZero(editor.percentComplete)
+          : editingTask.percentComplete,
       },
     });
   }, [editingTask, editor, tasks]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
-    const projectTasks = tasks.filter(task =>
-      normalize(task.scheduleProjectName || task.projectName) === normalize(defaultProject),
-    );
+    const projectTasks = tasks.filter(task => inProject(task, defaultProject));
     setEditingTask(null);
+    setConflict(null);
     setEditor({
       kind,
       taskName: '',
@@ -165,127 +190,164 @@ export function DesktopSchedulePage({
   };
 
   const openEdit = (task: DAVEWebScheduleItem) => {
-    const dependencyLag = task.dependencies?.[0]?.lagDays ?? 0;
     setEditingTask(task);
-    setEditor({
-      kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
-      taskName: task.taskName,
-      projectName: task.scheduleProjectName || task.projectName,
-      locationName: task.locationName,
-      wbsCode: task.wbsCode || '',
-      parentItemId: task.parentItemId || '',
-      startDate: dateInputValue(task.startDate),
-      finishDate: dateInputValue(task.finishDate),
-      baselineStartDate: dateInputValue(task.baselineStartDate || ''),
-      baselineFinishDate: dateInputValue(task.baselineFinishDate || ''),
-      durationDays: task.durationDays === null || task.durationDays === undefined
-        ? ''
-        : String(task.durationDays),
-      predecessorItemIds: (task.dependencies || []).map(dependency =>
-        dependency.predecessorItemId,
-      ),
-      lagDays: String(dependencyLag),
-      owner: task.owner,
-      contractor: task.contractor,
-      percentComplete: String(task.percentComplete),
-      status: task.status,
-      notes: task.notes,
-    });
+    setEditor(scheduleEditorStateFor(task));
+    setConflict(null);
     setNotice(null);
   };
 
-  const save = async () => {
-    if (!editor || pending) return;
-    if (!editor.taskName.trim() || !editor.projectName.trim()) {
-      setNotice({ tone: 'danger', text: 'Task name and project are required.' });
-      return;
+  /**
+   * The form checked and turned into a task draft. `opened` is the version
+   * the editor was opened on (null for a new item).
+   */
+  const prepareDraft = (
+    form: ScheduleEditorState,
+    opened: DAVEWebScheduleItem | null,
+  ): Readonly<{ ok: true; draft: DAVEWebTaskDraft }> | Readonly<{ ok: false; message: string }> => {
+    if (!form.taskName.trim() || !form.projectName.trim()) {
+      return { ok: false, message: 'Task name and project are required.' };
     }
     if (
-      editingTask &&
-      normalize(editor.projectName) !==
-        normalize(editingTask.scheduleProjectName || editingTask.projectName)
+      opened &&
+      normalize(form.projectName) !== normalize(taskProjectName(opened))
     ) {
-      setNotice({
-        tone: 'danger',
-        text: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
-      });
-      return;
+      return {
+        ok: false,
+        message: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
+      };
     }
-    const percentComplete = Number(editor.percentComplete);
-    if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
-      setNotice({ tone: 'danger', text: 'Percent complete must be from 0 to 100.' });
-      return;
-    }
-    const startDate = editor.startDate.trim();
-    const finishDate = editor.kind === 'milestone'
+    // An emptied box keeps the percent the item was opened with, and so its
+    // source; it had saved 0% as his judgment (whole-app audit A12 pass 5 L1).
+    const percent = daveWebPercentFromBox(form.percentComplete, opened?.percentComplete);
+    if (!percent.ok) return percent;
+    const percentComplete = percent.percentComplete;
+    const startDate = form.startDate.trim();
+    const finishDate = form.kind === 'milestone'
       ? startDate
-      : editor.finishDate.trim();
+      : form.finishDate.trim();
     const parsedStart = parseVitruviusScheduleDate(startDate);
     const parsedFinish = parseVitruviusScheduleDate(finishDate);
-    if (editor.kind === 'milestone' && !parsedStart) {
-      setNotice({ tone: 'danger', text: 'A milestone date is required.' });
-      return;
+    if (form.kind === 'milestone' && !parsedStart) {
+      return { ok: false, message: 'A milestone date is required.' };
     }
     if (startDate && !parsedStart) {
-      setNotice({ tone: 'danger', text: 'Start date is not valid.' });
-      return;
+      return { ok: false, message: 'Start date is not valid.' };
     }
     if (finishDate && !parsedFinish) {
-      setNotice({ tone: 'danger', text: 'Finish date is not valid.' });
-      return;
+      return { ok: false, message: 'Finish date is not valid.' };
     }
     if (
       parsedStart &&
       parsedFinish &&
       parsedFinish.getTime() < parsedStart.getTime()
     ) {
-      setNotice({ tone: 'danger', text: 'Finish date cannot be before the start date.' });
+      return { ok: false, message: 'Finish date cannot be before the start date.' };
+    }
+    const projectTasks = tasks.filter(task => inProject(task, form.projectName));
+    // A new item's cloud project is looked up by its project's name among
+    // the open projects, as on the Tasks page. It had been copied from
+    // another task of the project: with no task yet nothing could be added,
+    // and one task saved with another project's id passed that wrong id to
+    // every new item, which the phone would not upload (whole-app audit A12
+    // pass 5 M1, 30 Sep 2026). An existing item keeps its stored id.
+    let projectId = opened?.projectId?.trim() || null;
+    if (!projectId) {
+      const project = daveWebNewTaskProjectId(auth.snapshot, form.projectName);
+      if (!project.ok) return { ok: false, message: project.message };
+      projectId = project.projectId;
+    }
+    // Dates as the task stores them, not as the date inputs hold them; an
+    // unchanged day keeps its stored text (whole-app audit A12 pass 3 M2).
+    // A box that still shows what the stored date showed keeps the stored
+    // text exactly, "TBD" and other text that shows an empty box included
+    // (whole-app audit A12 pass 4 L1, 30 Sep 2026).
+    const storedDate = (value: string, stored: string | null | undefined) =>
+      opened && value.trim() === dateInputValue(stored)
+        ? stored ?? ''
+        : daveWebScheduleDateForSave(value, stored, scheduleDatesOf(opened));
+    // A phase's dates are not in the builder's form, so it never writes
+    // them: they had been saved blank, and Apply My Changes on a phase
+    // blanked the phone's newer phase dates (A12 pass 4 L1).
+    const phaseDate = (stored: string | null | undefined) => stored ?? '';
+    // Nor are a phase's predecessors, lag, duration, baseline dates or
+    // milestone flag: a phase leaves them out of its draft, so the save
+    // keeps them as stored and Apply My Changes keeps the newer version's.
+    // A phase had been saved with no dependencies, which wiped those set on
+    // the phone (whole-app audit A12 pass 4 residual R2, 30 Sep 2026).
+    const isPhase = form.kind === 'phase';
+    return {
+      ok: true,
+      draft: {
+        projectId,
+        // The item's own type: the builder saved every item as a Task, so an
+        // RFI or Issue lost its type and a closed one could not be saved
+        // (whole-app audit round 2 F5, 30 Sep 2026).
+        itemType: opened?.itemType ?? 'Task',
+        taskName: form.taskName,
+        projectName: form.projectName,
+        locationName: form.locationName,
+        startDate: isPhase
+          ? phaseDate(opened?.startDate)
+          : storedDate(startDate, opened?.startDate),
+        finishDate: isPhase
+          ? phaseDate(opened?.finishDate)
+          : storedDate(finishDate, opened?.finishDate),
+        milestone: scheduleBuilderMilestoneText(form, opened),
+        owner: form.owner,
+        contractor: form.contractor,
+        percentComplete,
+        priority: opened?.priority || 'Medium',
+        status: form.status,
+        notes: form.notes,
+        nextAction: opened?.nextAction || '',
+        activityMessage: '',
+        wbsCode: form.wbsCode,
+        parentItemId: form.parentItemId,
+        sortOrder: opened?.sortOrder ??
+          nextScheduleSortOrder(form.parentItemId || null, projectTasks),
+        durationDays: isPhase
+          ? undefined
+          : form.kind === 'milestone' ? 0 : form.durationDays,
+        dependencies: isPhase
+          ? undefined
+          : planningDependenciesFromIds(form.predecessorItemIds, form.lagDays),
+        isSummary: isPhase,
+        isMilestone: isPhase ? undefined : form.kind === 'milestone',
+        baselineStartDate: isPhase
+          ? undefined
+          : storedDate(form.baselineStartDate, opened?.baselineStartDate),
+        baselineFinishDate: isPhase
+          ? undefined
+          : storedDate(
+              form.kind === 'milestone' ? form.baselineStartDate : form.baselineFinishDate,
+              opened?.baselineFinishDate,
+            ),
+        projectControls: opened?.projectControls ?? null,
+      },
+    };
+  };
+
+  const closeEditor = () => {
+    setEditor(null);
+    setEditingTask(null);
+    setConflict(null);
+  };
+
+  const save = async () => {
+    // While another device's newer version is waiting for his choice, Save
+    // would send the version he opened and be refused again (audit round 2 F7).
+    if (!editor || pending || conflict) return;
+    const prepared = prepareDraft(editor, editingTask);
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
       return;
     }
     setPending(true);
     setNotice(null);
     try {
-      const projectTasks = tasks.filter(task =>
-        normalize(task.scheduleProjectName || task.projectName) === normalize(editor.projectName),
-      );
       const now = new Date().toISOString();
-      const draft: DAVEWebTaskDraft = {
-        projectId: editingTask?.projectId ??
-          projectTasks.find(task => Boolean(task.projectId))?.projectId ??
-          null,
-        itemType: 'Task',
-        taskName: editor.taskName,
-        projectName: editor.projectName,
-        locationName: editor.locationName,
-        startDate: editor.kind === 'phase' ? '' : startDate,
-        finishDate: editor.kind === 'phase' ? '' : finishDate,
-        milestone: editor.kind === 'milestone' ? editor.taskName : '',
-        owner: editor.owner,
-        contractor: editor.contractor,
-        percentComplete,
-        priority: editingTask?.priority || 'Medium',
-        status: editor.status,
-        notes: editor.notes,
-        nextAction: editingTask?.nextAction || '',
-        activityMessage: '',
-        wbsCode: editor.wbsCode,
-        parentItemId: editor.parentItemId,
-        sortOrder: editingTask?.sortOrder ??
-          nextScheduleSortOrder(editor.parentItemId || null, projectTasks),
-        durationDays: editor.kind === 'milestone' ? 0 : editor.durationDays,
-        dependencies: editor.kind === 'phase'
-          ? []
-          : planningDependenciesFromIds(editor.predecessorItemIds, editor.lagDays),
-        isSummary: editor.kind === 'phase',
-        isMilestone: editor.kind === 'milestone',
-        baselineStartDate: editor.baselineStartDate,
-        baselineFinishDate: editor.kind === 'milestone'
-          ? editor.baselineStartDate
-          : editor.baselineFinishDate,
-        projectControls: editingTask?.projectControls ?? null,
-      };
       const item = buildDAVEWebScheduleItem({
-        draft,
+        draft: prepared.draft,
         current: editingTask,
         id: editingTask?.id || createDAVEWebTaskId(),
         now,
@@ -293,8 +355,7 @@ export function DesktopSchedulePage({
       });
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
-      setEditor(null);
-      setEditingTask(null);
+      closeEditor();
       setNotice({
         tone: 'good',
         text: editingTask
@@ -302,6 +363,28 @@ export function DesktopSchedulePage({
           : 'Schedule item created and synced.',
       });
     } catch (error) {
+      // A save refused because another device changed the item keeps what
+      // he typed and offers the Tasks page's two choices. Loading the latest
+      // version over his edits threw them away (audit round 2 follow-up,
+      // 30 Sep 2026); before that the builder kept the stale copy and every
+      // later save was refused (audit round 2 F7).
+      if (editingTask && error instanceof DAVEWebTaskMutationError && error.code === 'conflict') {
+        const refreshed = await auth.refreshSnapshot().catch(() => false);
+        if (refreshed) {
+          setConflict({ taskId: editingTask.id, base: editingTask });
+          setNotice({
+            tone: 'danger',
+            text: 'Another device changed this schedule item while you were editing. Choose which version to continue with.',
+          });
+          return;
+        }
+        setNotice({
+          tone: 'danger',
+          text: 'Another device changed this schedule item while you were editing, and the latest version could not be loaded. Refresh the workspace, then open the item again.',
+        });
+        return;
+      }
+      if (await refreshAfterRefusedWrite(error)) closeEditor();
       setNotice({
         tone: 'danger',
         text: error instanceof Error
@@ -311,6 +394,98 @@ export function DesktopSchedulePage({
     } finally {
       setPending(false);
     }
+  };
+
+  const loadLatestAfterConflict = () => {
+    if (!conflict || pending) return;
+    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    if (!latest) {
+      closeEditor();
+      setNotice({
+        tone: 'danger',
+        text: 'This schedule item is no longer in the shared record.',
+      });
+      return;
+    }
+    setEditingTask(latest);
+    setEditor(scheduleEditorStateFor(latest));
+    setConflict(null);
+    setNotice({
+      tone: 'good',
+      text: 'The latest shared version is loaded. Review it before saving.',
+    });
+  };
+
+  const applyMyChangesAfterConflict = async () => {
+    if (!conflict || !editor || pending) return;
+    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    if (!latest) {
+      closeEditor();
+      setNotice({
+        tone: 'danger',
+        text: 'This schedule item is no longer in the shared record.',
+      });
+      return;
+    }
+    // The form as it is now, edits made after the choice appeared included,
+    // compared with the version he opened.
+    const prepared = prepareDraft(editor, conflict.base);
+    if (!prepared.ok) {
+      setNotice({ tone: 'danger', text: prepared.message });
+      return;
+    }
+    setPending(true);
+    setNotice(null);
+    try {
+      const now = new Date().toISOString();
+      const actor = auth.userEmail || 'Project manager';
+      // Only the fields he changed go over the other device's newer version,
+      // as on the Tasks page (whole-app audit round 2 F4).
+      const item = buildDAVEWebScheduleItem({
+        draft: mergeDAVEWebConflictDraft({
+          draft: prepared.draft,
+          base: conflict.base,
+          latest,
+          now,
+          actor,
+        }),
+        current: latest,
+        id: latest.id,
+        now,
+        actor,
+      });
+      await auth.updateTask(item);
+      closeEditor();
+      setNotice({
+        tone: 'good',
+        text: 'The fields you changed were applied to the latest shared version and synced.',
+      });
+    } catch (error) {
+      await auth.refreshSnapshot().catch(() => false);
+      setNotice({
+        tone: 'danger',
+        text: error instanceof DAVEWebTaskMutationError && error.code === 'conflict'
+          ? 'The schedule item changed again. Review the refreshed version before trying once more.'
+          : error instanceof Error
+            ? error.message
+            : 'The schedule item could not be saved.',
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  /**
+   * The gateway's refusal messages say "The workspace has been refreshed";
+   * the builder now does refresh (audit round 2 F7). True when the item is
+   * gone (deleted on another device), so its editor can close.
+   */
+  const refreshAfterRefusedWrite = async (error: unknown): Promise<boolean> => {
+    if (!(error instanceof DAVEWebTaskMutationError) || error.code === 'write_failed') {
+      return false;
+    }
+    await auth.refreshSnapshot().catch(() => false);
+    return error.code === 'deleted' || error.code === 'not_found';
   };
 
   const applyDependencyDateChange = async (itemId: string) => {
@@ -338,8 +513,7 @@ export function DesktopSchedulePage({
     try {
       await auth.updateTask({
         ...current,
-        startDate: calculated.startDate,
-        finishDate: calculated.finishDate,
+        ...calculatedDatesAsStored(current, calculated),
         durationDays: calculated.durationDays,
         updatedAt: new Date().toISOString(),
       });
@@ -348,6 +522,7 @@ export function DesktopSchedulePage({
         text: `${current.taskName} moved to ${shortDate(calculated.startDate)}–${shortDate(calculated.finishDate)} and synced.`,
       });
     } catch (error) {
+      await refreshAfterRefusedWrite(error);
       setNotice({
         tone: 'danger',
         text: error instanceof Error
@@ -380,8 +555,7 @@ export function DesktopSchedulePage({
       if (!calculated || !changedIds.has(current.id)) return [];
       return [{
         ...current,
-        startDate: calculated.startDate,
-        finishDate: calculated.finishDate,
+        ...calculatedDatesAsStored(current, calculated),
         durationDays: calculated.durationDays,
         updatedAt: new Date().toISOString(),
       }];
@@ -486,19 +660,47 @@ export function DesktopSchedulePage({
         </View>
       ) : null}
 
+      {editor && conflict ? (
+        <View style={styles.conflictCard} accessibilityRole="alert">
+          <View style={styles.conflictCopy}>
+            <Text style={styles.conflictTitle}>Choose how to resolve this edit</Text>
+            <Text style={styles.conflictText}>{DAVE_WEB_CONFLICT_CHOICE_TEXT}</Text>
+          </View>
+          <View style={styles.conflictActions}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={loadLatestAfterConflict}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryButtonText}>Load Latest Version</Text>
+            </Pressable>
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => { void applyMyChangesAfterConflict(); }}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              {pending ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : (
+                <Text style={styles.primaryButtonText}>Apply My Changes</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
       {editor ? (
         <ScheduleEditor
           state={editor}
           editingTask={editingTask}
           projects={projectNames}
           projectTasks={editorProjectTasks}
+          linksElsewhere={editorLinksElsewhere}
           scenario={editorScenario}
           pending={pending}
+          awaitingConflictChoice={Boolean(conflict)}
           onChange={setEditor}
-          onCancel={() => {
-            setEditor(null);
-            setEditingTask(null);
-          }}
+          onCancel={closeEditor}
           onSave={() => { void save(); }}
         />
       ) : null}
@@ -523,7 +725,7 @@ export function DesktopSchedulePage({
             <Text style={styles.emptyText}>Start with a phase, then add its tasks and milestones.</Text>
           </View>
         ) : groupedProjects.map(group => {
-          const hierarchy = buildVitruviusScheduleHierarchy(group.tasks);
+          const hierarchy = buildingScheduleHierarchy(group.tasks, tasks);
           return (
             <View key={group.projectName} style={styles.projectGroup}>
               <View style={styles.projectHeading}>
@@ -541,7 +743,9 @@ export function DesktopSchedulePage({
               {hierarchy.rows.map(row => {
                 if (ancestorIsCollapsed(row.item, group.tasks, collapsedIds)) return null;
                 const dependencyLabels = (row.item.dependencies || []).map(dependency => {
-                  const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId);
+                  // One in another building under the same root is not missing (set when the page grouped by root).
+                  const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId) ??
+                    tasks.find(task => task.id === dependency.predecessorItemId && sameRoot(task, row.item));
                   const label = predecessor?.wbsCode || predecessor?.taskName || 'Missing';
                   return `${label}${dependency.lagDays ? ` +${dependency.lagDays}d` : ''}`;
                 });
@@ -582,7 +786,7 @@ export function DesktopSchedulePage({
                           {row.item.taskName}
                         </Text>
                         <Text style={styles.itemKind}>
-                          {row.item.isSummary ? 'Phase' : row.item.isMilestone ? 'Milestone' : 'Task'}
+                          {row.item.isSummary ? 'Phase' : row.item.isMilestone ? 'Milestone' : row.item.itemType || 'Task'}
                         </Text>
                       </View>
                     </View>
@@ -652,7 +856,8 @@ function GanttWorkspace({
   const [showBaselines, setShowBaselines] = useState(true);
   const [showImpactPreview, setShowImpactPreview] = useState(false);
   const model = useMemo(
-    () => buildVitruviusGanttModel({ items: tasks, zoom }),
+    // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
+    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject' }),
     [tasks, zoom],
   );
   const analytics = useMemo(
@@ -936,7 +1141,8 @@ function LookaheadWorkspace({
   onOpenItem: (item: ScheduleItem) => void;
 }) {
   const lookahead = useMemo(
-    () => buildVitruviusLookahead({ items: tasks, weeks }),
+    // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
+    () => buildVitruviusLookahead({ items: tasks, weeks, groupBy: 'appProject' }),
     [tasks, weeks],
   );
   const groupedRows = useMemo(
@@ -1286,8 +1492,10 @@ function ScheduleEditor({
   editingTask,
   projects,
   projectTasks,
+  linksElsewhere = [],
   scenario,
   pending,
+  awaitingConflictChoice = false,
   onChange,
   onCancel,
   onSave,
@@ -1296,24 +1504,41 @@ function ScheduleEditor({
   editingTask: DAVEWebScheduleItem | null;
   projects: readonly string[];
   projectTasks: readonly DAVEWebScheduleItem[];
+  /** The task's parent and predecessors in another building under the same root (A5 pass 13 L1). */
+  linksElsewhere?: readonly DAVEWebScheduleItem[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
+  /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
+  awaitingConflictChoice?: boolean;
   onChange: (value: ScheduleEditorState) => void;
   onCancel: () => void;
   onSave: () => void;
 }) {
-  const parentOptions = scheduleParentOptions(editingTask?.id || null, projectTasks);
-  const predecessorOptions = schedulePredecessorOptions(editingTask?.id || null, projectTasks);
+  // The building's own choices, then the task's existing links in another
+  // building under its root, labelled with that building (A5 pass 13 L1).
+  const parentOptions = [
+    ...scheduleParentOptions(editingTask?.id || null, projectTasks),
+    ...linksElsewhere.filter(item => item.id === editingTask?.parentItemId?.trim()),
+  ];
+  const predecessorOptions = [
+    ...schedulePredecessorOptions(editingTask?.id || null, projectTasks),
+    ...linksElsewhere.filter(item =>
+      (editingTask?.dependencies || []).some(dependency => dependency.predecessorItemId === item.id),
+    ),
+  ];
+  const buildingLabel = (item: ScheduleItem) =>
+    linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
     (state.kind === 'milestone' || state.finishDate.trim()),
   );
-  const saveBlocked = pending || Boolean(
+  const scheduleIssues = Boolean(
     editingTask &&
     scenario &&
     !scenario.safety.safeToApply,
   );
+  const saveBlocked = pending || awaitingConflictChoice || scheduleIssues;
   const update = <K extends keyof ScheduleEditorState>(
     key: K,
     value: ScheduleEditorState[K],
@@ -1346,7 +1571,10 @@ function ScheduleEditor({
           label="Parent phase"
           value={state.parentItemId}
           options={parentOptions.map(item => item.id)}
-          optionLabel={value => parentOptions.find(item => item.id === value)?.taskName || value}
+          optionLabel={value => {
+            const parent = parentOptions.find(item => item.id === value);
+            return parent ? `${parent.taskName}${buildingLabel(parent)}` : value;
+          }}
           onChange={value => update('parentItemId', value)}
           allowNone
         />
@@ -1434,7 +1662,7 @@ function ScheduleEditor({
                     color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
                   />
                   <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
-                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{buildingLabel(item)}
                   </Text>
                 </Pressable>
               );
@@ -1532,11 +1760,13 @@ function ScheduleEditor({
         >
           {pending ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : (
             <Text style={styles.primaryButtonText}>
-              {saveBlocked && editingTask
-                ? 'Correct Schedule Issues'
-                : editingTask
-                  ? 'Save Changes'
-                  : `Create ${capitalize(state.kind)}`}
+              {awaitingConflictChoice
+                ? 'Choose a Version Above'
+                : scheduleIssues
+                  ? 'Correct Schedule Issues'
+                  : editingTask
+                    ? 'Save Changes'
+                    : `Create ${capitalize(state.kind)}`}
             </Text>
           )}
         </Pressable>
@@ -1790,12 +2020,84 @@ function ancestorIsCollapsed(
   return false;
 }
 
-function dateInputValue(value: string) {
-  if (!value) return '';
-  const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-  if (direct) return direct;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+function scheduleEditorStateFor(task: DAVEWebScheduleItem): ScheduleEditorState {
+  const dependencyLag = task.dependencies?.[0]?.lagDays ?? 0;
+  return {
+    kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
+    taskName: task.taskName,
+    projectName: taskProjectName(task),
+    locationName: task.locationName,
+    wbsCode: task.wbsCode || '',
+    parentItemId: task.parentItemId || '',
+    startDate: dateInputValue(task.startDate),
+    finishDate: dateInputValue(task.finishDate),
+    baselineStartDate: dateInputValue(task.baselineStartDate || ''),
+    baselineFinishDate: dateInputValue(task.baselineFinishDate || ''),
+    durationDays: task.durationDays === null || task.durationDays === undefined
+      ? ''
+      : String(task.durationDays),
+    predecessorItemIds: (task.dependencies || []).map(dependency =>
+      dependency.predecessorItemId,
+    ),
+    lagDays: String(dependencyLag),
+    owner: task.owner,
+    contractor: task.contractor,
+    percentComplete: String(task.percentComplete),
+    status: task.status,
+    notes: task.notes,
+  };
+}
+
+/**
+ * The milestone text a builder save keeps (whole-app audit round 2 F5,
+ * 30 Sep 2026). A save cleared it on every item not marked as a milestone,
+ * so an imported milestone (its text set, the flag not) lost it on any edit,
+ * and a marked milestone had its text replaced by its name. It follows the
+ * name only for a new milestone, or when the owner renames a milestone whose
+ * text was its name (or empty); otherwise the existing text stays.
+ */
+function scheduleBuilderMilestoneText(
+  editor: ScheduleEditorState,
+  editingTask: DAVEWebScheduleItem | null,
+): string {
+  const existing = editingTask?.milestone ?? '';
+  if (editor.kind !== 'milestone') return existing;
+  if (!editingTask || !existing.trim()) return editor.taskName;
+  const renamed = editor.taskName.trim() !== editingTask.taskName.trim();
+  return renamed && existing.trim() === editingTask.taskName.trim()
+    ? editor.taskName
+    : existing;
+}
+
+/** The dates a task already has, which set the format its saved dates take. */
+function scheduleDatesOf(task: ScheduleItem | null): string[] {
+  return task
+    ? [task.startDate, task.finishDate, task.baselineStartDate || '', task.baselineFinishDate || '']
+    : [];
+}
+
+/** Calculated dates (2026-10-12) written as the task stores dates (A12 pass 3 M2). */
+function calculatedDatesAsStored(
+  current: ScheduleItem,
+  calculated: Pick<ScheduleItem, 'startDate' | 'finishDate'>,
+) {
+  return {
+    startDate: daveWebScheduleDateForSave(calculated.startDate, current.startDate, scheduleDatesOf(current)),
+    finishDate: daveWebScheduleDateForSave(calculated.finishDate, current.finishDate, scheduleDatesOf(current)),
+  };
+}
+
+/**
+ * The date input's 2026-10-05 for a stored date. 10/05/2026 and Oct 5, 2026
+ * are read as calendar days: through toISOString they became the day before
+ * in any time zone east of UTC. The same reading as the same-day check
+ * (whole-app audit A12 pass 4 L1, 30 Sep 2026): the browser's own parser
+ * showed days the check did not recognise, so a save rewrote them, and it
+ * reads "Week 41" as 1 Jan 2041. Text that names no day ("TBD") shows an
+ * empty box and is kept as stored unless he picks a date.
+ */
+function dateInputValue(value: string | null | undefined) {
+  return scheduleCalendarDay(value) ?? '';
 }
 
 function shortDate(value: string) {
@@ -1814,6 +2116,51 @@ function numberOrNull(value: string) {
   if (!value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+/**
+ * The project a task is grouped, numbered and edited under: its app project
+ * (projectName), the schedule's root (scheduleProjectName) only when it names
+ * none, as scheduleTaskProjectKey keys the merge, the delete and the shown
+ * schedule. Whole-app audit A5 pass 12 K1 (1 Oct 2026): a combined Microsoft
+ * Project master keeps its root ("2400 Compliance Project") as every row's
+ * schedule project, so the Schedule page put Harbor North's and Harbor
+ * South's tasks under one root heading, the twin Install HVAC rows side by
+ * side with nothing to tell them apart, and offered either building's phases
+ * and predecessors to the other. Each building's tasks now show under it. A
+ * CSV master's rows name the same project both ways.
+ */
+function taskProjectName(task: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>): string {
+  return task.projectName || task.scheduleProjectName || '';
+}
+
+function inProject(task: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>, projectName: string): boolean {
+  return normalize(taskProjectName(task)) === normalize(projectName);
+}
+
+function sameRoot(left: ScheduleItem, right: ScheduleItem): boolean {
+  return Boolean(normalize(left.scheduleProjectName)) && normalize(left.scheduleProjectName) === normalize(right.scheduleProjectName);
+}
+
+/**
+ * A building's rows, a parent phase in another building under the same root
+ * counted as present. Whole-app audit A5 pass 13 L1 (1 Oct 2026): a phase
+ * added under a combined master's root while the page grouped by root holds
+ * North's and South's tasks; grouped by building, its children showed as
+ * orphan rows with "1 hierarchy issue need review." in each building. A
+ * parent that is missing, or under another root, is still an issue.
+ */
+function buildingScheduleHierarchy(buildingTasks: readonly ScheduleItem[], allTasks: readonly ScheduleItem[]) {
+  const hierarchy = buildVitruviusScheduleHierarchy(buildingTasks);
+  const parentUnderSameRoot = (itemId: string) => {
+    const item = buildingTasks.find(candidate => candidate.id === itemId);
+    const parentId = item?.parentItemId?.trim();
+    return Boolean(item && parentId && allTasks.some(task => task.id === parentId && sameRoot(task, item)));
+  };
+  return {
+    rows: hierarchy.rows.map(row => row.orphaned && parentUnderSameRoot(row.item.id) ? { ...row, orphaned: false } : row),
+    issues: hierarchy.issues.filter(issue => issue.code !== 'missing_parent' || !parentUnderSameRoot(issue.itemId)),
+  };
 }
 
 function uniqueText(values: readonly (string | null | undefined)[]) {
@@ -1875,6 +2222,12 @@ const styles = StyleSheet.create({
   noticeDanger: { borderColor: '#E5A4A4', backgroundColor: '#FFF1F1' },
   noticeText: { color: '#195B35', fontSize: 14, lineHeight: 20, fontWeight: '700' },
   noticeTextDanger: { color: '#922323' },
+  // The Tasks page's conflict card (conflictResolutionCard), so both read alike.
+  conflictCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
+  conflictCopy: { flexGrow: 1, flexShrink: 1, flexBasis: 320, gap: spacing.xs },
+  conflictTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  conflictText: { color: desktopSurfaces.text, fontSize: 14, lineHeight: 20 },
+  conflictActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
   editor: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   editorHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   editorEyebrow: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.2 },

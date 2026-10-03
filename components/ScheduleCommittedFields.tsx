@@ -7,6 +7,8 @@ import {
   type TextStyle,
 } from 'react-native';
 
+import { useTextDraftSavedOnLeave } from '../hooks/use-text-draft-saved-on-leave';
+
 type SharedFieldStyleProps = {
   labelStyle: StyleProp<TextStyle>;
   inputStyle: StyleProp<TextStyle>;
@@ -27,24 +29,12 @@ export function ScheduleCommittedTextField({
   placeholder: string;
   onCommit: (value: string) => void;
 } & SharedFieldStyleProps) {
-  const [draftValue, setDraftValue] = useState(value);
-  const focusedRef = useRef(false);
-  const committedValueRef = useRef(value);
-
-  useEffect(() => {
-    if (!focusedRef.current) {
-      committedValueRef.current = value;
-      setDraftValue(value);
-    }
-  }, [value]);
-
-  function commitDraft() {
-    focusedRef.current = false;
-    const committed = draftValue.trim();
-    if (committed === committedValueRef.current) return;
-    committedValueRef.current = committed;
-    onCommit(committed);
-  }
+  // Whole-app audit A2 pass 2 M2: a field removed while being typed in (the
+  // iPad rail's project list, a view tab or filter switching the inspector's
+  // task) gets no blur from React Native; the shared draft saves it as the
+  // field goes, unless the account changed meanwhile.
+  const { draftValue, setDraftValue, onFocus, commitDraft } =
+    useTextDraftSavedOnLeave(value, onCommit);
 
   return (
     <>
@@ -53,9 +43,7 @@ export function ScheduleCommittedTextField({
         style={inputStyle}
         value={draftValue}
         onChangeText={setDraftValue}
-        onFocus={() => {
-          focusedRef.current = true;
-        }}
+        onFocus={onFocus}
         onBlur={commitDraft}
         onEndEditing={commitDraft}
         onSubmitEditing={() => {

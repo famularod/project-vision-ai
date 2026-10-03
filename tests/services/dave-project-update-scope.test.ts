@@ -80,7 +80,11 @@ describe('DAVE parent-project update scope', () => {
     )).toEqual([]);
   });
 
-  it('fails closed for missing or ambiguous task ids', () => {
+  // A10 pass 2 F1 (30 Sep 2026), pin changed deliberately: a task id in none
+  // of the given tasks (a revision re-created the task under a new id and hid
+  // the old row) no longer fails closed; the update's own parent decides.
+  // An ambiguous id still fails closed.
+  it('lets the update\'s own parent decide a missing task id; fails closed for an ambiguous one', () => {
     const missing = update('missing', {
       scheduleItemId: 'missing-task',
       scheduleProjectName: PROJECT_A,
@@ -94,6 +98,11 @@ describe('DAVE parent-project update scope', () => {
     expect(projectUpdatesForParentProject(
       [missing],
       PROJECT_A,
+      scheduleItems,
+    )).toEqual([missing]);
+    expect(projectUpdatesForParentProject(
+      [missing],
+      PROJECT_B,
       scheduleItems,
     )).toEqual([]);
     expect(projectUpdatesForParentProject(

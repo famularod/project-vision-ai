@@ -158,7 +158,6 @@ const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems',
   'Queued update waiting to sync',
   'Sync failed · Retry',
   'Update ready to sync',
-  'Missing recipients',
   'Blocker tagged',
   'Document upload failed · Retry',
   'areaLabel',
@@ -172,6 +171,9 @@ const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems',
 ].forEach(marker => {
   assert(attentionBuilder.includes(marker), `Needs Attention should include ${marker}`);
 });
+// The app never sends an update to its recipients, so Needs Attention does
+// not ask for them (owner answer Q18, 30 Sep 2026).
+assert(!attentionBuilder.includes("title: 'Missing recipients'"), 'Needs Attention must not ask for recipients the app never sends to');
 assert(
   !attentionBuilder.includes('Open item needs follow-up'),
   'Needs Attention must not use repeated generic Open item needs follow-up copy.',
@@ -257,15 +259,17 @@ assert(
 );
 
 const savedUpdatesScreen = sliceBetween(app, 'function SavedUpdatesScreen', 'function UpdateFilterSheet');
+// Pins changed in A4 pass 15 H1: the Retry carries David's choice to send over
+// a conflict (`choice`), which only the card's confirmed "Send" makes.
 assert(
-  savedUpdatesScreen.includes('function retryUpdate(update: ProjectUpdate)') &&
+  savedUpdatesScreen.includes('function retryUpdate(update: ProjectUpdate, choice?: FieldUpdateSyncChoice)') &&
     savedUpdatesScreen.includes('if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto)') &&
     savedUpdatesScreen.includes('updateCanInlineRetry(update)'),
   'Analysis unavailable Needs Attention retry must rerun photo analysis for the source update/photo.',
 );
 assert(
   savedUpdatesScreen.includes("lifecycle === 'queued' || lifecycle === 'failed'") &&
-    savedUpdatesScreen.includes('onRetryQueuedUpdate(update)'),
+    savedUpdatesScreen.includes('onRetryQueuedUpdate(update, choice)'),
   'Queued or failed send Needs Attention retry must route to the source queued update.',
 );
 assert(
@@ -275,8 +279,12 @@ assert(
 
 const updateHistoryCard = sliceBetween(app, 'function UpdateHistoryCard', 'function UpdateOverflowMenu');
 assert(
-  updateHistoryCard.includes('onRetry?: () => void') &&
-    updateHistoryCard.includes('onPress={onRetry}') &&
+  updateHistoryCard.includes('onRetry?: FieldUpdateRetry') &&
+    // Pin changed in A7 pass 12 M-1: the same Retry, which asks first only when
+    // the update waits for conflict review. Changed again in A4 pass 21 F3:
+    // and only when this Retry sends it (Waiting to Sync or failed); a Sent
+    // card's Retry runs its photo analysis again, and sends nothing.
+    updateHistoryCard.includes("onPress={retryOverConflictConfirmed(conflictReview && (lifecycle === 'queued' || lifecycle === 'failed'), onRetry)}") &&
     updateHistoryCard.includes('onPress={onOpen}'),
   'Retryable Needs Attention cards must expose an inline Retry action distinct from the card tap target.',
 );

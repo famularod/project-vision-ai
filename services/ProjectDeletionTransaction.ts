@@ -11,6 +11,7 @@ import {
 import { mergeDAVESyncTombstones } from './DAVESyncTombstones';
 import { projectUpdateBelongsToParentProject } from './DAVEProjectUpdateScope';
 import type { ProjectUpdateDeletionIntent } from './ProjectUpdateDeletionJournal';
+import { exactProjectId, legacyProjectNameKey } from './OperationalProjectIdentity';
 
 export const PROJECT_DELETION_TRANSACTION_JOURNAL_KEY =
   'projectPhotoUpdate.projectDeletionTransaction.v1';
@@ -57,7 +58,7 @@ export type ProjectDeletionStorageKeys = Readonly<{
   fileCleanupIntents: string;
 }>;
 
-type ProjectRecordLike = Readonly<{ name: string }>;
+type ProjectRecordLike = Readonly<{ name: string; id?: string | null }>;
 type ProjectUpdateLike = Readonly<{
   id: string;
   projectName: string;
@@ -70,6 +71,7 @@ type ReferenceDocumentLike = Readonly<{
   id: string;
   projectId?: string | null;
   projectName?: string | null;
+  projectNames?: readonly unknown[] | null;
 }>;
 type ScheduleItemLike = Readonly<{
   id: string;
@@ -105,6 +107,8 @@ export type ProjectDeletionCascade<
   removedProjectDocuments: TProjectDocument[];
   remainingReferenceDocuments: TReferenceDocument[];
   removedReferenceDocuments: TReferenceDocument[];
+  /** Shared documents kept for the other projects, as rewritten (audit A3 pass 4). */
+  sharedReferenceDocuments: TReferenceDocument[];
   remainingProjectAreas: TProjectArea[];
   removedProjectAreas: TProjectArea[];
   remainingScheduleItems: TScheduleItem[];
@@ -131,6 +135,34 @@ export function createProjectDeletionTransactionRepository({
     createTransactionId,
     now,
   });
+}
+
+/**
+ * Whether deleting this project takes the update: the shared scope rule, or
+ * an update kept as historical evidence for a task deleted earlier. That
+ * update belonged to no project by the scope rule (it failed closed on a
+ * missing task until A10 pass 2 F1, 30 Sep 2026; the rule now lets the
+ * update's own parent decide), so a project deletion left it behind, still listed under
+ * the deleted project's name (whole-app audit A3, 30 Sep 2026). For the
+ * deletion only, it goes with the project it names, the explicit parent
+ * first, as the scope rule reads it. The cascade, the App's file cleanup
+ * list and its open-draft check all use this one rule (audit A4 pass 5).
+ */
+export function projectDeletionTakesUpdate({
+  update,
+  projectName,
+  scheduleItems,
+}: Readonly<{
+  update: Pick<ProjectUpdateLike, 'projectName' | 'scheduleItemId' | 'scheduleProjectName'>;
+  projectName: string;
+  scheduleItems: readonly ScheduleItemLike[];
+}>): boolean {
+  if (projectUpdateBelongsToParentProject({ update, projectName, scheduleItems })) return true;
+  const target = normalizedScope(projectName);
+  const scheduleItemId = normalizedScope(update.scheduleItemId);
+  if (!target || !scheduleItemId) return false;
+  if (scheduleItems.some(item => normalizedScope(item.id) === scheduleItemId)) return false;
+  return normalizedScope(normalizedScope(update.scheduleProjectName) || update.projectName) === target;
 }
 
 /**
@@ -215,11 +247,7 @@ export function buildProjectDeletionCascade<
   const projectMatches = (value: string | null | undefined) =>
     normalizedScope(value) === normalizedProjectName;
   const updateMatchesProject = (update: TUpdate) =>
-    projectUpdateBelongsToParentProject({
-      update,
-      projectName,
-      scheduleItems,
-    });
+    projectDeletionTakesUpdate({ update, projectName, scheduleItems });
   const remainingUpdates = updates.filter(update => !updateMatchesProject(update));
   const removedUpdates = updates.filter(update => updateMatchesProject(update));
   const remainingProjectDocuments = projectDocuments.filter(document =>
@@ -228,11 +256,21 @@ export function buildProjectDeletionCascade<
   const removedProjectDocuments = projectDocuments.filter(document =>
     projectDocumentMatchesProject(document, projectName, authorityProjectId),
   );
-  const remainingReferenceDocuments = referenceDocuments.filter(document =>
-    !referenceDocumentMatchesProject(document, projectName, authorityProjectId),
-  );
+  // A document shared with other projects stays with them, as the cloud's
+  // delete does: this project leaves its list and the next one becomes its
+  // project name. Removing it (and writing a deletion record) hid a combined
+  // schedule from the projects still using it (audit A3 pass 3).
+  const sharedReferenceDocuments = new Map(referenceDocuments.flatMap(document => {
+    const shared = withoutDeletedSharedProject(document, projectName, projectRecords);
+    return shared ? [[document.id, shared] as const] : [];
+  }));
+  const remainingReferenceDocuments = referenceDocuments.flatMap(document => {
+    const shared = sharedReferenceDocuments.get(document.id);
+    if (shared) return [shared];
+    return referenceDocumentMatchesProject(document, projectName, authorityProjectId) ? [] : [document];
+  });
   const removedReferenceDocuments = referenceDocuments.filter(document =>
-    referenceDocumentMatchesProject(document, projectName, authorityProjectId),
+    referenceDocumentDeletedWithProject(document, projectName, authorityProjectId),
   );
   const remainingProjectAreas = projectAreas.filter(area =>
     !projectMatches(area.projectName),
@@ -307,6 +345,7 @@ export function buildProjectDeletionCascade<
     removedProjectDocuments,
     remainingReferenceDocuments,
     removedReferenceDocuments,
+    sharedReferenceDocuments: [...sharedReferenceDocuments.values()],
     remainingProjectAreas,
     removedProjectAreas,
     remainingScheduleItems,
@@ -367,6 +406,48 @@ export function buildProjectDeletionOperations<
   ];
   if (cascade.draftReplaced) operations.push(setJson(keys.activeDraft, cascade.nextDraft));
   return operations;
+}
+
+/**
+ * Mirrors dave_delete_project_atomically (migration 20260726030000): a
+ * document whose projectNames list has more than one project and includes the
+ * deleted one keeps the others, with the first of them as its project name.
+ * Its project id follows that name: it kept the deleted project's cloud id,
+ * and every later upload was refused as "no longer matches an active cloud
+ * project" (whole-app audit A3 pass 4). The id becomes the new project's
+ * cloud id when this phone knows it, otherwise it is cleared and the upload
+ * finds the project by name. The cloud function still leaves the old id in
+ * the cloud copy (recorded for owner sign-off, not changed here).
+ */
+export function withoutDeletedSharedProject<TReferenceDocument extends ReferenceDocumentLike>(
+  document: TReferenceDocument,
+  projectName: string,
+  projectRecords: readonly ProjectRecordLike[] = [],
+): TReferenceDocument | null {
+  const projectNames = Array.isArray(document.projectNames)
+    ? document.projectNames.filter((name): name is string => typeof name === 'string')
+    : [];
+  const target = normalizedScope(projectName);
+  if (projectNames.length <= 1 || !projectNames.some(name => normalizedScope(name) === target)) return null;
+  const remaining = projectNames.filter(name => normalizedScope(name) !== target);
+  const nextProjectName = remaining[0] ?? null;
+  const shared = { ...document, projectNames: remaining, projectName: nextProjectName };
+  const projectId = typeof document.projectId === 'string' ? document.projectId.trim() : '';
+  if (!projectId || !nextProjectName) return shared;
+  const cloudId = exactProjectId(projectRecords.find(record =>
+    normalizedScope(record.name) === normalizedScope(nextProjectName))?.id) ?? null;
+  if (projectId === cloudId || projectId === legacyProjectNameKey(nextProjectName)) return shared;
+  return { ...shared, projectId: cloudId };
+}
+
+/** Removed with the project: explicitly its own and not shared with another project. */
+export function referenceDocumentDeletedWithProject(
+  document: ReferenceDocumentLike,
+  projectName: string,
+  authorityProjectId: string,
+): boolean {
+  return !withoutDeletedSharedProject(document, projectName) &&
+    referenceDocumentMatchesProject(document, projectName, authorityProjectId);
 }
 
 export function referenceDocumentMatchesProject(

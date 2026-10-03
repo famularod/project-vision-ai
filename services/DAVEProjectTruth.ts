@@ -6,7 +6,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import { scheduleDocumentAddsToMaster, scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
@@ -29,6 +29,8 @@ import {
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
+import { scheduleTaskEarlierIds, scheduleTaskLinks } from './ScheduleTaskRevisions';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -107,6 +109,14 @@ export type DAVEPhotoComparisonTruth = {
 
 export type DAVEScheduleTruth = {
   taskId: string;
+  /**
+   * The ids this task had before new masters moved its dates, oldest first
+   * (revisedFromTaskIds, as the import recorded them; ScheduleTaskRevisions).
+   * Absent when there are none. Whole-app audit A6 pass 12 L1 (30 Sep 2026):
+   * "since the last report" pairs a revised task with the earlier report's
+   * task by these, as field updates do, before any guess by name.
+   */
+  earlierTaskIds?: string[];
   taskName: string;
   itemType: ScheduleItem['itemType'];
   areaName: string | null;
@@ -194,6 +204,8 @@ export type BuildDAVEProjectTruthInput = {
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectAreas?: ProjectArea[];
   referenceDocuments?: ReferenceDocument[];
   projectDocuments?: DAVEDailyBriefDocument[];
@@ -236,7 +248,9 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     // Report artifacts are derived outputs. They must not participate in the
     // current-truth fingerprint that governs their own freshness.
     if (normalizedKey(document.category) === 'report') return false;
-    if (!document.isCurrent) return false;
+    if (!document.isCurrent && !scheduleDocumentAddsToMaster(document)) return false; // a lookahead is in effect by its role (Q22)
+    // A combined schedule retired for this project is current only for its others (owner answer Q15).
+    if (scheduleDocumentRetiredForProject(document, input.projectName)) return false;
     const explicitProjectId = clean(document.projectId);
     const explicitProjectName = clean(document.projectName);
     const explicitProjectNames = (document.projectNames ?? []).map(clean).filter(Boolean);
@@ -264,7 +278,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
         status: 'reference',
         createdAt: document.importedAt,
         importedAt: document.importedAt,
-        isArchived: !document.isCurrent,
+        isArchived: !document.isCurrent && !scheduleDocumentAddsToMaster(document),
       })),
     ],
     scheduleItems,
@@ -289,6 +303,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const photoComparisons = buildPhotoComparisons(updates, entityLinks);
   const correlations = buildDAVEEvidenceCorrelations({
     scheduleItems,
+    knownScheduleItems: input.knownScheduleItems,
     updates,
     now: generatedAt,
   });
@@ -351,15 +366,18 @@ function buildEvidenceLedger(
   },
 ): DAVEEvidenceLedgerRecord[] {
   const records: DAVEEvidenceLedgerRecord[] = [];
+  // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(input.scheduleItems, input.knownScheduleItems);
   for (const update of input.updates) {
     const areaName = clean(update.selectedAreaName);
+    const taskId = linkOf(update)?.item.id || clean(update.scheduleItemId);
     records.push(record({
       id: `update:${update.id}`,
       kind: 'update',
       sourceRecordId: update.id,
       projectName: update.projectName,
       areaName,
-      taskId: clean(update.scheduleItemId),
+      taskId,
       text: update.notes,
       capturedAt: update.date,
       summary: clean(update.notes) || `Field update with ${update.photos.length} photo${update.photos.length === 1 ? '' : 's'}.`,
@@ -369,7 +387,7 @@ function buildEvidenceLedger(
         : 'Project is known, but no area or task relationship is recorded.',
     }));
     for (const photo of update.photos) {
-      records.push(photoRecord(update, photo));
+      records.push(photoRecord(update, photo, taskId));
       const gps = photoGpsOrUpdate(photo, update);
       if (gps.gpsLatitude !== null && gps.gpsLongitude !== null) {
         records.push(record({
@@ -378,7 +396,7 @@ function buildEvidenceLedger(
           sourceRecordId: photo.id,
           projectName: update.projectName,
           areaName: clean(photo.selectedAreaName) || areaName,
-          taskId: clean(update.scheduleItemId),
+          taskId,
           text: `${gps.gpsLatitude},${gps.gpsLongitude}`,
           capturedAt: photo.locationCapturedAt || update.locationCapturedAt || update.date,
           summary: `GPS evidence captured${clean(photo.selectedAreaName) || areaName ? ` for ${clean(photo.selectedAreaName) || areaName}` : ''}.`,
@@ -396,7 +414,7 @@ function buildEvidenceLedger(
           sourceRecordId: photo.id,
           projectName: update.projectName,
           areaName: clean(photo.selectedAreaName) || areaName,
-          taskId: clean(update.scheduleItemId),
+          taskId,
           text: photoIntelligenceText(photo),
           capturedAt: photoIntelligence.updatedAt,
           summary: photoIntelligence.visibleChange || photoIntelligence.currentObservation || photoIntelligence.summary,
@@ -418,7 +436,8 @@ function buildEvidenceLedger(
       areaName: clean(item.locationName),
       taskId: item.id,
       text: `${item.taskName} ${item.milestone} ${item.notes} ${item.owner} ${item.contractor}`,
-      capturedAt: item.progressConfirmedAt || item.importedAt || item.createdAt,
+      // Dated when the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+      capturedAt: scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt,
       summary: `${item.taskName}: ${item.status}, ${item.percentComplete}% complete${item.finishDate ? `, due ${item.finishDate}` : ''}${pmProgressJudgment ? ' — project manager judgment.' : '.'}`,
       connected: Boolean(item.taskName.trim()),
       reason: item.taskName.trim()
@@ -478,7 +497,7 @@ function buildEvidenceLedger(
   return markDuplicates(records);
 }
 
-function photoRecord(update: ProjectUpdate, photo: UpdatePhoto): DAVEEvidenceLedgerRecord {
+function photoRecord(update: ProjectUpdate, photo: UpdatePhoto, taskId: string | null): DAVEEvidenceLedgerRecord {
   const areaName = clean(photo.selectedAreaName) || clean(update.selectedAreaName);
   return record({
     id: `photo:${photo.id}`,
@@ -486,7 +505,7 @@ function photoRecord(update: ProjectUpdate, photo: UpdatePhoto): DAVEEvidenceLed
     sourceRecordId: photo.id,
     projectName: update.projectName,
     areaName,
-    taskId: clean(update.scheduleItemId),
+    taskId,
     text: `${photo.caption} ${photo.actionRequired} ${photoIntelligenceText(photo)}`,
     capturedAt: photo.locationCapturedAt || update.date,
     summary: clean(photo.caption) || clean(photo.photoIntelligence?.currentObservation) || 'Field photo.',
@@ -693,8 +712,10 @@ function buildScheduleTruth(
       .sort((left, right) =>
         (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
       )[0];
+    const earlierTaskIds = scheduleTaskEarlierIds(item);
     return {
       taskId: item.id,
+      ...(earlierTaskIds.length > 0 ? { earlierTaskIds } : {}),
       taskName: item.taskName,
       itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),

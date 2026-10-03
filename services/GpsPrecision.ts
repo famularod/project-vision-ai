@@ -30,23 +30,38 @@ export function formatGpsAccuracy(accuracyMeters: number | null | undefined): st
   return feet === null ? null : `±${Math.max(1, Math.round(feet)).toLocaleString('en-US')} ft`;
 }
 
-/** Inside the area's circle even at the far edge of the fix's error. */
+/**
+ * Inside the area's circle even at the far edge of the fix's error. A fix
+ * with no usable accuracy (none, negative, not a number) has an unknown
+ * margin, so it is never confidently inside or outside an area (GPS review
+ * pass 1 low, G-L1: it used to count as exact; Save GPS already treated it
+ * as imprecise).
+ */
 export function isConfidentlyInsideArea(input: Readonly<{
   distanceFeet: number;
   accuracyMeters: number | null | undefined;
   radiusFeet: number;
 }>): boolean {
-  return input.distanceFeet + (gpsAccuracyFeet(input.accuracyMeters) ?? 0) <= input.radiusFeet;
+  const margin = gpsAccuracyFeet(input.accuracyMeters);
+  return margin !== null && input.distanceFeet + margin <= input.radiusFeet;
 }
 
-/** The fix's whole error margin lies outside the area's circle. */
+/** The fix's whole error margin lies outside the area's circle; never for an unknown margin. */
 export function isConfidentlyOutsideArea(input: Readonly<{
   distanceFeet: number;
   accuracyMeters: number | null | undefined;
   radiusFeet: number;
 }>): boolean {
-  return input.distanceFeet - (gpsAccuracyFeet(input.accuracyMeters) ?? 0) > input.radiusFeet;
+  const margin = gpsAccuracyFeet(input.accuracyMeters);
+  return margin !== null && input.distanceFeet - margin > input.radiusFeet;
 }
+
+/**
+ * The least margin by which the nearest wins outright: the nearest project
+ * on the home screen, and the area Add Task fills in (owner answer Q31,
+ * 1 Oct 2026). Moved here from App.tsx so both use the one value.
+ */
+export const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
 
 /** How much nearer the closest project must be to win outright. */
 export function clearWinnerMarginFeet(

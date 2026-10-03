@@ -20,6 +20,7 @@ import {
   cloudPhotoPreviewIsFresh,
   getOfflineQueue,
   hydrateProjectUpdatePhotoPreviews,
+  projectUpdateUploadedSince,
   hydrateRecoveredProjectUpdatePhotos,
   markMissingPhotosUnavailable,
   requestPendingChangesUpload,
@@ -29,12 +30,12 @@ import {
   runScheduleImportCloudSync,
   runScheduleItemCloudSync,
   queueProjectAreaRecord,
-  queueReferenceDocumentRecord,
-  queueProjectUpdateRecord,
+  queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
+  queueProjectUpdateRecord, queueProjectUpdateDocumentChange, queueProjectUpdatePhotoAnalysis, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
   queueScheduleItemRecord,
-  removeOperationalRecordFromSyncQueue,
+  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
   synchronizeLocalData,
-  uploadPendingChanges,
+  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
   type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -52,7 +53,6 @@ import {
 } from './services/ScheduleItemTextSyncLifecycle';
 import {
   accountDisplayNameForUser,
-  getCurrentUser,
   getCurrentSessionAccessToken,
   getSupabaseClient,
   listArchivedProjects,
@@ -65,7 +65,6 @@ import {
   signUp,
   subscribeToAuthStateChange,
   subscribeToDAVEOperationalChanges,
-  updateCurrentUserDisplayName,
   uploadPhoto,
 } from './services/SupabaseService';
 import {
@@ -91,14 +90,21 @@ import {
   ScheduleCommittedPercentField,
   ScheduleCommittedTextField,
 } from './components/ScheduleCommittedFields';
+import { afterTextInputBlur } from './components/after-text-input-blur';
 import {
   mailComposerOutcome,
   smsComposerOutcome,
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
+import { OverlayErrorBoundary } from './components/overlay-error-boundary';
+import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
+import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
+import { useProjectDocumentSharedRecordSync } from './hooks/use-project-document-shared-record-sync';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
+import { OfflineSignInPendingBanner } from './components/offline-sign-in-pending-banner';
+import { workspaceAccountChange } from './services/OwnerWorkspaceAuthDecision';
 import {
   appShellContentTopPadding,
   appShellLayoutForWidth,
@@ -111,11 +117,10 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
+import { bindStableScheduleImportItemIds } from './services/ScheduleImportSourceIdentity';
 import {
-  bindStableScheduleImportItemIds,
-  buildScheduleImportSourceIdentity,
-} from './services/ScheduleImportSourceIdentity';
-import {
+  ScheduleImportReviewError,
+  scheduleImportApprovalBlocker,
   validateScheduleImportScope,
 } from './services/ScheduleImportScopeGuard';
 import { buildVitruviusMyWork } from './services/VitruviusMyWork';
@@ -141,6 +146,7 @@ import {
 import {
   UpdatePhotoComparison,
   UpdatesWideWorkspace,
+  updatePhotoComparisonViewModel,
 } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { SharedReferenceDocumentCard } from './components/shared-reference-document-card';
@@ -175,6 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
+import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -191,7 +198,10 @@ import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
 import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
-import { useNativeWorkspaceOwner } from './components/native-workspace-owner';
+import { useNativeWorkspaceOwner, useNativeWorkspaceSignInPending, useNativeWorkspaceSignInPendingRef } from './components/native-workspace-owner';
+import { fieldUpdateSyncCategoryWithoutSession } from './services/FieldUpdateSessionWait';
+import { ProjectPhotoImage } from './components/ProjectPhotoImage';
+import { PhotoComparisonPreviewRow, SavedFieldUpdatesContext } from './components/photo-comparison-preview-row';
 import {
   DailyBriefSection,
   DAVEProjectNeedsVerificationLabel,
@@ -202,18 +212,26 @@ import {
 import { StartupErrorBoundary } from './components/StartupErrorBoundary';
 import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
 import {
-  flushPendingStoragePersistence, persistStorageItem,
+  cancelPendingStoragePersistence, flushPendingStoragePersistence, persistStorageItem,
   removePersistedStorageItem,
   reportStoragePersistenceFailure,
   useJsonStoragePersistence,
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
+import { useAccountDisplayName } from './hooks/use-account-display-name';
+import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
+import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
 import {
   isStartupHydrationReady,
   useStartupHydration,
 } from './hooks/use-startup-hydration';
 import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
+import { useCommittedText } from './hooks/use-committed-text';
+import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
+import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
+import { scheduleProgressUndoPoint, scheduleTalkUndo } from './services/ScheduleProgressSource';
+import { scheduleSavedTasksOfProjects } from './services/ScheduleTaskRevisions';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -244,6 +262,7 @@ import {
   areaPointSavedMessage,
   clearWinnerMarginFeet,
   formatGpsAccuracy,
+  GPS_CLEAR_WINNER_DISTANCE_FEET,
   isConfidentlyInsideArea,
   overviewFixMaxAgeMs,
   PRECISE_LOCATION_OFF_MESSAGE,
@@ -251,7 +270,7 @@ import {
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
 import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
-import { applyFixToDraft, areaChangeLocationFields } from './services/DraftFix';
+import { applyFixToDraft, areaChangeLocationFields, draftAfterAreaDeleted } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
@@ -267,6 +286,17 @@ import {
 } from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
+import { normalizeFieldUpdateSyncDiagnostics, type FieldUpdateSyncDiagnostics, type FieldUpdateSyncFailureCategory, type FieldUpdateSyncStepResult } from './services/FieldUpdateSyncDiagnosticsRecord';
+import { reissueDraftAsNewUpdate } from './services/DraftReissue';
+import { classifySyncFailureText } from './services/SyncFailureCategory';
+import { forgetAllReportSessionState } from './services/ReportSessionState';
+import {
+  archiveDraftEnvelopeForValidation,
+  archiveUpdateForValidation,
+  archiveUpdatePhotosAreLocated,
+  markPhotoUnavailableInBackup,
+} from './services/BackupArchivePhotos';
+import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
 import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
@@ -288,7 +318,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateECOSCurrentReferenceDocument } from './services/ECOSHostedIndexer';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -296,9 +326,11 @@ import {
   validateECOSMobileDrawingControls,
 } from './services/ECOSMobileDrawingOnboarding';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
+import { withRestoredReferenceDocumentBytes, type ReferenceDocumentByteRestoreResult } from './services/ReferenceDocumentByteRestore';
 import { openGoogleDriveReferenceDocument } from './services/ReferenceDocumentBrowser';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
+import { startNewUpdate } from './services/StartNewUpdate';
 import { cleanupProjectPhotoDirectory } from './services/PhotoDirectoryCleanupPolicy';
 import {
   normalizeStartupArray,
@@ -318,12 +350,13 @@ import {
   isStartupStandaloneProjectDocumentRecord,
   salvageStartupContactBook,
 } from './services/StartupRecordValidation';
-import { normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
-import { normalizeProjectControls } from './services/VitruviusProjectControls';
+import { dependencyChangesForDeletedTask, normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
+import { normalizeProjectControls, withProjectControlsEditMerged } from './services/VitruviusProjectControls';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
-import { hasMatchingQueuedProjectUpdateRevision } from './services/ProjectUpdateQueueRevision';
+import { refreshKeepsLocalProjectUpdate } from './services/ProjectUpdateQueueRevision';
 import { scheduleItemRevisionForCloudRefresh } from './services/ScheduleItemQueueRevision';
+import { queueScheduleProgressCarriedToCloud } from './services/ScheduleProgressCarryUpload';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
 import {
   runAutomaticSyncQueue,
@@ -331,13 +364,14 @@ import {
   startAutomaticSyncBackgroundTask,
 } from './services/AutomaticSyncState';
 import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
-import { buildProjectDeletionCascade, buildProjectDeletionOperations,
-  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject,
+import { buildProjectDeletionCascade, buildProjectDeletionOperations, projectDeletionTakesUpdate,
+  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject, referenceDocumentDeletedWithProject,
   scheduleItemMatchesProject as scheduleItemMatchesDeletedProject, selectProjectDeletionFallback,
   PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
   PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
 import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
+import { archivedProjectNameMessage, deletedProjectNameMessage, projectNameAvailability, queuedProjectNameChanges, similarProjectNameMessage } from './services/ProjectNameRules';
 import {
   FileSizePreflightError,
   hashExpoFileSha256,
@@ -355,6 +389,7 @@ import {
 import {
   buildCombinedReportAuthorityScope,
   buildDailyReportAuthorityScope,
+  buildProjectIntelligenceAuthorityScope, captureIntelligenceProjectName, projectTruthPersistencePolicyFor,
 } from './services/ReportAuthorityScope';
 import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
@@ -374,6 +409,12 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
+import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
+import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
+import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
+import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -401,6 +442,7 @@ import {
   decryptedBytesAssetProvider, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
   type UnavailableBackupDocument, type UnavailableBackupPhoto,
+  unavailablePhotosNotice,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
@@ -433,6 +475,7 @@ import {
   photoAssessmentReviewCopy,
   photoDisplayResultCanInformProject,
   photoDisplayResultIsReviewCandidate,
+  withStoredPhotoComparisonCap,
 } from './services/PhotoAssessment';
 import {
   attentionCategoryForPhotoCategory,
@@ -444,8 +487,7 @@ import { talkContextProjectForScreen } from './services/ECOSTalkProjectContext';
 import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
 import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
-  mergeDAVECloudRecoveredProjectUpdate,
-  mergeDAVECloudRecoveryRecords,
+  mergeLocalUpdateWithCloudCopy,
   mergeDAVEReferenceDocumentRecoveryRecords,
 } from './services/DAVECloudRecovery';
 import {
@@ -453,6 +495,7 @@ import {
   reconcileDAVEScheduleRecords,
   recoverDAVEScheduleRecords,
 } from './services/DAVEScheduleRecovery';
+import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
 import {
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
@@ -463,17 +506,19 @@ import {
 } from './services/DAVESyncTombstones';
 import {
   DELETED_TASK_EVIDENCE_LABEL,
-  partitionProjectUpdatesByDeletedTask,
+  partitionProjectUpdatesByDeletedTask, scheduleItemIdsDeletedWithTask,
 } from './services/DAVEDeletedTaskEvidence';
 import { createDAVEPhotoContinuityAnchor } from './services/PIEVisualContinuity';
 import { buildDAVEActionInbox } from './services/DAVEActionInbox';
 import {
+  buildDAVETalkMemoryDraft,
   mentionedDAVEProject,
   routeDAVEConversation,
   type DAVEConversationNavigationTarget,
 } from './services/DAVEConversationRouter';
 import {
   answerDAVEConversationContext,
+  askECOSQuestionForTalk,
   resolveDAVEConversationContext,
 } from './services/DAVEConversationContext';
 import {
@@ -526,10 +571,10 @@ import {
   normalizeProjectRecords,
   projectRecordFromCloud,
   removeCachedProjectCoverPhoto,
-  resolveProjectCoverPhotoUri,
   type ProjectCoverPhoto,
   type ProjectRecord,
 } from './services/ProjectCoverPhotoService';
+import { mostRecentProjectHeroPhoto, resolveProjectCoverImage, type ProjectCoverImage } from './services/ProjectCoverImage';
 import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
@@ -569,6 +614,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
+  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -597,7 +643,8 @@ import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
-  scheduleItemsForExactImportBatch,
+  scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument,
+  scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
   resolveScheduleParentActions,
   scheduleParentProjectNames,
@@ -614,8 +661,10 @@ import {
   reconcileScheduleProgress,
   reconcileScheduleProgressEdit,
 } from './services/ScheduleProgressInvariant';
+import { checkScheduleTaskProject, scheduleTaskSaveNotice } from './services/ScheduleTaskProject';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
+  parseMonthNameDateParts,
   projectDateRelativeDays,
   projectTimeZoneOrDefault,
 } from './services/ProjectDateTime';
@@ -632,9 +681,15 @@ import {
 } from './services/DAVEProjectBlockerState';
 import {
   canonicalizeDAVEScheduleItems,
+  daveRegisteredIdentityNames,
   scheduleTaskGroupName,
 } from './services/DAVEIdentity';
+import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
+import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
   isDavePdfTextExtractionAvailable,
@@ -650,6 +705,7 @@ import {
   loadAuthorizedECOSDocumentProofBundle,
 } from './services/ECOSDocumentProofAuthority';
 import { useECOSProjectQuestionExperience } from './hooks/use-ecos-project-question-experience';
+import { useTalkSession } from './hooks/use-talk-session';
 import { countLabel, pluralWord } from './utils/pluralization';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -741,58 +797,6 @@ type QuickContext =
   | 'Inspection'
   | 'Other';
 type FieldUpdateStatus = PersistedFieldUpdateStatus;
-type FieldUpdateSyncFailureCategory =
-  | 'offline'
-  | 'signed_out'
-  | 'auth'
-  | 'rls_denied'
-  | 'storage_upload_failed'
-  | 'database_insert_failed'
-  | 'malformed_payload'
-  | 'unknown';
-type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
-type FieldUpdateSyncDiagnostics = {
-  networkState: 'online' | 'offline' | 'unknown';
-  connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
-  sessionTokenPresent: boolean | null;
-  lastSyncAttemptAt: string | null;
-  lastSyncResult: 'success' | 'failed' | 'skipped' | null;
-  lastSyncFailureCategory: FieldUpdateSyncFailureCategory | null;
-  cloudUpdateInsertAttempted: boolean;
-  photoStorageUploadAttempted: boolean;
-  storageUploadResult: FieldUpdateSyncStepResult;
-  databaseUpsertResult: FieldUpdateSyncStepResult;
-  rlsOrAuthFailureDetected: boolean;
-  retryAvailable: boolean;
-  storageBucketName: string | null;
-  storageBucketExists: 'yes' | 'no' | 'unknown';
-  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
-  storageHttpStatus: number | null;
-  storageErrorCode: string | null;
-  retryAttemptNumber: number | null;
-  localFileExists: boolean | null;
-  localFileReadable: boolean | null;
-  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
-  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
-  storageContentType: string | null;
-  objectPathCategory: string | null;
-  databaseSyncRanAfterUpload: boolean | null;
-  failedOperationName: string | null;
-  failedLogicalTarget: string | null;
-  rlsDenied: boolean;
-  authenticatedUserIdPresent: boolean | null;
-  projectIdPresent: boolean | null;
-  organizationIdPresent: boolean | null;
-  membershipCheckResult:
-    | 'present'
-    | 'missing_or_denied'
-    | 'not_checked'
-    | 'unavailable'
-    | null;
-  queuedUpdateCount: number;
-  projectRollupsIncludeQueuedUpdates: boolean;
-  projectCardWorkspaceSameSource: boolean;
-};
 type FieldUpdatePIEStatus =
   | 'not_started'
   | 'analyzing'
@@ -945,7 +949,6 @@ const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
 };
 const ANALYSIS_TIMEOUT_SECONDS = 135;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
-const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
 const MAX_BACKUP_FILE_BYTES = MAX_DEVICE_BACKUP_BYTES;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
@@ -1212,12 +1215,6 @@ const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Medium',
   'High',
 ];
-function canonicalProjectNameSet(projectNames: readonly string[]) {
-  return [...new Set(projectNames
-    .map(name => name.trim().toLowerCase().replace(/\s+/g, ' '))
-    .filter(Boolean))]
-    .sort();
-}
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1544,7 +1541,7 @@ function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
       photo.distanceFromSelectedAreaFeet,
     ),
     locationCapturedAt: optionalString(photo.locationCapturedAt),
-    photoIntelligence: photo.photoIntelligence || null,
+    photoIntelligence: withStoredPhotoComparisonCap(photo.photoIntelligence), // pre-Q9 results capped when read (audit round 2 L1)
   };
 }
 
@@ -1720,152 +1717,6 @@ function normalizeInterpretationDecisionLog(
       };
     })
     .filter(Boolean) as PIEInterpretationDecisionLogEntry[];
-}
-
-function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDiagnostics | null {
-  if (!isRecord(value)) return null;
-  const failureCategory =
-    value.lastSyncFailureCategory === 'offline' ||
-    value.lastSyncFailureCategory === 'signed_out' ||
-    value.lastSyncFailureCategory === 'auth' ||
-    value.lastSyncFailureCategory === 'rls_denied' ||
-    value.lastSyncFailureCategory === 'storage_upload_failed' ||
-    value.lastSyncFailureCategory === 'database_insert_failed' ||
-    value.lastSyncFailureCategory === 'malformed_payload' ||
-    value.lastSyncFailureCategory === 'unknown'
-      ? value.lastSyncFailureCategory
-      : null;
-
-  return {
-    networkState:
-      value.networkState === 'online' ||
-      value.networkState === 'offline' ||
-      value.networkState === 'unknown'
-        ? value.networkState
-        : 'unknown',
-    connectionType:
-      value.connectionType === 'wifi' ||
-      value.connectionType === 'cellular' ||
-      value.connectionType === 'none' ||
-      value.connectionType === 'unknown'
-        ? value.connectionType
-        : 'unknown',
-    sessionTokenPresent:
-      typeof value.sessionTokenPresent === 'boolean'
-        ? value.sessionTokenPresent
-        : null,
-    lastSyncAttemptAt: optionalString(value.lastSyncAttemptAt),
-    lastSyncResult:
-      value.lastSyncResult === 'success' ||
-      value.lastSyncResult === 'failed' ||
-      value.lastSyncResult === 'skipped'
-        ? value.lastSyncResult
-        : null,
-    lastSyncFailureCategory: failureCategory,
-    cloudUpdateInsertAttempted: value.cloudUpdateInsertAttempted === true,
-    photoStorageUploadAttempted: value.photoStorageUploadAttempted === true,
-    storageUploadResult:
-      value.storageUploadResult === 'success' ||
-      value.storageUploadResult === 'failed' ||
-      value.storageUploadResult === 'skipped'
-        ? value.storageUploadResult
-        : 'skipped',
-    databaseUpsertResult:
-      value.databaseUpsertResult === 'success' ||
-      value.databaseUpsertResult === 'failed' ||
-      value.databaseUpsertResult === 'skipped'
-        ? value.databaseUpsertResult
-        : 'skipped',
-    rlsOrAuthFailureDetected: value.rlsOrAuthFailureDetected === true,
-    retryAvailable: value.retryAvailable !== false,
-    storageBucketName: optionalString(value.storageBucketName),
-    storageBucketExists:
-      value.storageBucketExists === 'yes' ||
-      value.storageBucketExists === 'no' ||
-      value.storageBucketExists === 'unknown'
-        ? value.storageBucketExists
-        : 'unknown',
-    storageFailureCategory:
-      value.storageFailureCategory === 'bucket_missing' ||
-      value.storageFailureCategory === 'rls_denied' ||
-      value.storageFailureCategory === 'auth_missing' ||
-      value.storageFailureCategory === 'invalid_path' ||
-      value.storageFailureCategory === 'invalid_payload' ||
-      value.storageFailureCategory === 'unsupported_content_type' ||
-      value.storageFailureCategory === 'file_unreadable' ||
-      value.storageFailureCategory === 'stale_local_uri' ||
-      value.storageFailureCategory === 'network' ||
-      value.storageFailureCategory === 'unknown_storage_error'
-        ? value.storageFailureCategory
-        : null,
-    storageHttpStatus:
-      typeof value.storageHttpStatus === 'number' &&
-      Number.isFinite(value.storageHttpStatus)
-        ? value.storageHttpStatus
-        : null,
-    storageErrorCode: optionalString(value.storageErrorCode),
-    retryAttemptNumber:
-      typeof value.retryAttemptNumber === 'number' &&
-      Number.isFinite(value.retryAttemptNumber)
-        ? value.retryAttemptNumber
-        : null,
-    localFileExists:
-      typeof value.localFileExists === 'boolean'
-        ? value.localFileExists
-        : null,
-    localFileReadable:
-      typeof value.localFileReadable === 'boolean'
-        ? value.localFileReadable
-        : null,
-    fileByteSizeCategory:
-      value.fileByteSizeCategory === 'zero' ||
-      value.fileByteSizeCategory === 'nonzero' ||
-      value.fileByteSizeCategory === 'unknown'
-        ? value.fileByteSizeCategory
-        : 'unknown',
-    uploadPayloadType:
-      value.uploadPayloadType === 'ArrayBuffer' ||
-      value.uploadPayloadType === 'Blob' ||
-      value.uploadPayloadType === 'base64' ||
-      value.uploadPayloadType === 'unknown'
-        ? value.uploadPayloadType
-        : 'unknown',
-    storageContentType: optionalString(value.storageContentType),
-    objectPathCategory: optionalString(value.objectPathCategory),
-    databaseSyncRanAfterUpload:
-      typeof value.databaseSyncRanAfterUpload === 'boolean'
-        ? value.databaseSyncRanAfterUpload
-        : null,
-    failedOperationName: optionalString(value.failedOperationName),
-    failedLogicalTarget: optionalString(value.failedLogicalTarget),
-    rlsDenied: value.rlsDenied === true,
-    authenticatedUserIdPresent:
-      typeof value.authenticatedUserIdPresent === 'boolean'
-        ? value.authenticatedUserIdPresent
-        : null,
-    projectIdPresent:
-      typeof value.projectIdPresent === 'boolean'
-        ? value.projectIdPresent
-        : null,
-    organizationIdPresent:
-      typeof value.organizationIdPresent === 'boolean'
-        ? value.organizationIdPresent
-        : null,
-    membershipCheckResult:
-      value.membershipCheckResult === 'present' ||
-      value.membershipCheckResult === 'missing_or_denied' ||
-      value.membershipCheckResult === 'not_checked' ||
-      value.membershipCheckResult === 'unavailable'
-        ? value.membershipCheckResult
-        : null,
-    queuedUpdateCount:
-      typeof value.queuedUpdateCount === 'number' &&
-      Number.isFinite(value.queuedUpdateCount)
-        ? value.queuedUpdateCount
-        : 0,
-    projectRollupsIncludeQueuedUpdates: value.projectRollupsIncludeQueuedUpdates !== false,
-    projectCardWorkspaceSameSource: value.projectCardWorkspaceSameSource !== false,
-  };
 }
 
 function normalizeFieldUpdateDeleteDiagnostics(value: unknown): FieldUpdateDeleteDiagnostics | null {
@@ -2461,6 +2312,15 @@ function parseFlexibleDate(value: string) {
     }
   }
 
+  // "Jul 24, 2026": how schedule imports stored dates until 30 Sep 2026, so a
+  // saved row in that form is read and re-stored as MM/DD/YYYY (audit A5).
+  const named = parseMonthNameDateParts(trimmed);
+  if (named) {
+    const date = new Date(named.year, named.month - 1, named.day);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
+
   return null;
 }
 
@@ -2635,6 +2495,7 @@ function canonicalizeScheduleIdentityItems(
   items: ScheduleItem[],
   projectAreas: ProjectArea[] = [],
   corrections: readonly DAVEIdentityCorrection[] = [],
+  registeredNames: readonly string[] = [],
 ) {
   const projectNames = Array.from(new Set([
     ...DEFAULT_PROJECTS,
@@ -2647,6 +2508,7 @@ function canonicalizeScheduleIdentityItems(
       projectNames,
       projectAreas: projectAreas as unknown as import('./types').ProjectArea[],
       corrections,
+      registeredNames,
     },
   ).items as unknown as ScheduleItem[];
 }
@@ -2692,9 +2554,27 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
   };
 }
 
-function normalizeBackupData(value: unknown) {
+function normalizeBackupData(value: unknown, options: Readonly<{ archive?: boolean }> = {}) {
+  // An archive locates carried photos by asset id and may declare photos
+  // unavailable; judged as such, or the whole backup was refused (whole-app
+  // audit A7, 30 Sep 2026). The device rules themselves are unchanged, and
+  // the device's uri resolver is asked only about a real uri: a placeholder
+  // is never a file on this phone (audit A7 pass 2: the wrapper refused
+  // every carried photo, and the export then refused to write the backup).
+  const deviceResolves = (photo: unknown) =>
+    Boolean(resolveProjectPhotoDisplayUri(photo as Partial<UpdatePhoto>));
+  const savedUpdate = options.archive
+    ? (item: unknown) =>
+        isStartupSavedUpdateRecord(archiveUpdateForValidation(item)) &&
+        archiveUpdatePhotosAreLocated(item, deviceResolves)
+    : isStartupDeviceSavedUpdateRecord;
+  const draftEnvelope = options.archive
+    ? (item: unknown) =>
+        isStartupDraftEnvelope(archiveDraftEnvelopeForValidation(item)) &&
+        (!isRecord(item) || !('draft' in item) || archiveUpdatePhotosAreLocated(item.draft, deviceResolves))
+    : isStartupDeviceDraftEnvelope;
   const preflight = preflightAppBackup(value, {
-    savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
+    savedUpdate, projectName: isStartupProjectName,
     projectRecord: value => normalizeProjectRecord(value) !== null,
     contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
     referenceDocument: isStartupReferenceDocumentRecord,
@@ -2707,7 +2587,7 @@ function normalizeBackupData(value: unknown) {
         return false;
       }
     },
-    draftEnvelope: isStartupDeviceDraftEnvelope,
+    draftEnvelope,
   });
   if (!preflight.ok) return preflight;
   const data = preflight.data;
@@ -3732,12 +3612,15 @@ function mergeSavedUpdatesWithTombstones({
     update: ProjectUpdate,
     sourceAfterReload: FieldUpdateDeleteDiagnostics['sourceAfterReload'],
   ) => {
+    // A local update takes a cloud copy's receipt only when there is one:
+    // merged with itself it read "Cloud Synced" before any upload (whole-app
+    // audit A4, 29 Sep 2026).
+    // A row read from the cloud has been uploaded: it is synced whatever
+    // status the phone wrote into it (rows carry 'queued' verbatim; audit
+    // A4/A7, 30 Sep 2026).
     const effectiveUpdate = sourceAfterReload === 'local'
-      ? mergeDAVECloudRecoveredProjectUpdate(
-          update,
-          cloudUpdateById.get(update.id) || update,
-        )
-      : update;
+      ? mergeLocalUpdateWithCloudCopy(update, cloudUpdateById.get(update.id))
+      : { ...update, status: 'sent' as const };
     const tombstone = tombstoneById.get(update.id);
     const localArchiveCanStayHidden =
       tombstone?.action === 'archive_sent_update' && sourceAfterReload === 'local';
@@ -3824,25 +3707,24 @@ function upsertDeletedUpdateTombstone(
   ];
 }
 
+/** How long a save's or retry's own sync is left alone by the queued-updates loop. */
+const DIRECT_SYNC_GRACE_MS = 20_000;
+
+function directSyncIsRecent(update: ProjectUpdate, now: number): boolean {
+  const attemptedAt = Date.parse(update.lastSendAttemptAt ?? '');
+  if (!Number.isFinite(attemptedAt)) return false;
+  // A stamp from a clock later corrected is not "still running" (audit A4 pass 3).
+  const age = now - attemptedAt;
+  return age >= 0 && age < DIRECT_SYNC_GRACE_MS;
+}
+
+// The rules live in services/SyncFailureCategory.ts (whole-app audit A4,
+// 29 Sep 2026): they now recognise the sanitised sentences the queue writes
+// and treat a transport failure anywhere in a message as offline.
 function classifySyncFailureCategory(
   errors: string[],
 ): FieldUpdateSyncFailureCategory {
-  const message = errors.join(' ').toLowerCase();
-
-  if (!message.trim()) return 'unknown';
-  // Highest-confidence, most specific signals are checked first so a message
-  // that happens to also mention "network" or "fetch" (common in wrapped
-  // fetch/auth errors) is never misclassified as offline. Generic
-  // offline/network wording is checked last, only once nothing more
-  // specific has matched.
-  if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
-  if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
-  if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
-  if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
-  if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
-  if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
-  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
-  return 'unknown';
+  return classifySyncFailureText(errors);
 }
 
 function syncCategoryForStorageFailure(
@@ -4033,7 +3915,9 @@ function buildSyncDiagnosticsFromUpload(
     ? null
     : workAttempt.storageUploadResult === 'failed'
       ? syncCategoryForStorageFailure(workAttempt.storageFailureCategory)
-      : classifySyncFailureCategory(
+      // The queue item's recorded category first (audit A4): the sanitised
+      // sentence in `errors` used to read as 'unknown' and so as 'failed'.
+      : syncResult.failureCategory ?? classifySyncFailureCategory(
           combinedErrors.length > 0
             ? combinedErrors
             : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
@@ -4515,6 +4399,7 @@ function buildOverviewProjectRows(
   projects: string[],
   savedUpdates: ProjectUpdate[],
   scheduleItems: ScheduleItem[],
+  knownScheduleItems: ScheduleItem[] = [], // every saved task, for the name fallback (A10 pass 6 L2)
 ): OverviewProjectRow[] {
   return projects.map(project => {
     const scopeProjects = scheduleProjectScopeNames(
@@ -4542,6 +4427,7 @@ function buildOverviewProjectRows(
     });
     const scheduleReconciliation = buildPIEScheduleReconciliation({
       scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     });
     const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
@@ -4585,16 +4471,6 @@ function buildOverviewProjectRows(
     right.priorityRank - left.priorityRank ||
     left.project.localeCompare(right.project),
   );
-}
-
-function mostRecentHeroPhotoUri(
-  scopedUpdates: ProjectUpdate[],
-): string | null {
-  const candidateUpdates = scopedUpdates
-    .filter(update => update.photos.length > 0)
-    .sort((a, b) => updateSortTime(b) - updateSortTime(a));
-
-  return candidateUpdates[0]?.photos[0]?.uri || null;
 }
 
 function buildPhase2ActivityItems(
@@ -4713,30 +4589,16 @@ function buildPhase2AttentionItems(
               statusRole: 'needsRetry' as StatusStyleRole,
             }
           : null,
-        lifecycle === 'ready_to_send' && update.recipients.contactIds.length === 0
-          ? {
-              id: `${update.id}-missing-recipients`,
-              updateId: update.id,
-              actionTarget: 'update' as const,
-              projectName: update.projectName,
-              title: 'Missing recipients',
-              detail: 'Add recipients before sending this update.',
-              areaLabel: update.selectedAreaName || 'No area selected',
-              dateLabel: formatDisplayDate(update.date),
-              priority: ATTENTION_PRIORITY.readyToSend,
-              urgent: false,
-              retryable: false,
-              statusRole: 'informational' as StatusStyleRole,
-            }
-          : null,
-        lifecycle === 'ready_to_send' && update.recipients.contactIds.length > 0
+        // No "Missing recipients" item: the app never sends an update to
+        // its recipients, so none are needed (owner answer Q18, 30 Sep 2026).
+        lifecycle === 'ready_to_send'
           ? {
               id: `${update.id}-ready-to-send`,
               updateId: update.id,
               actionTarget: 'update' as const,
               projectName: update.projectName,
               title: 'Update ready to sync',
-              detail: 'Open the update to review recipients and send.',
+              detail: 'Open the update to review it.',
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
               priority: ATTENTION_PRIORITY.readyToSend,
@@ -4988,6 +4850,10 @@ export default function App() {
 
 function AppShell() {
   const workspaceOwnerId = useNativeWorkspaceOwner();
+  const signInPendingRef = useNativeWorkspaceSignInPendingRef(); // updates wait, not fail, offline (A4 pass 7 M1)
+  const workspaceSignInPending = useNativeWorkspaceSignInPending(); // Live updates resubscribe when it ends (A1 pass 2 #4).
+  useFieldNoteBackgroundRetry(workspaceOwnerId ?? 'local-device'); // notes saved offline reach the desktop (audit A11)
+  const hiddenSharedDocuments = useHiddenSharedDocuments(); // Delete from This Device (audit A8)
   const insets = useSafeAreaInsets();
   const { width: appShellWidth } = useWindowDimensions();
   const appShellLayout = appShellLayoutForWidth(appShellWidth);
@@ -5045,10 +4911,13 @@ function AppShell() {
   const [talkVoiceOpen, setTalkVoiceOpen] = useState(false);
   const [talkTypedOpen, setTalkTypedOpen] = useState(false);
   const [talkCaptureDraft, setTalkCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const keptTalkCapture = useKeptTalkCapture(talkCaptureDraft); // a failing panel keeps the memory (A11 F8)
+  const talkCaptureSheetDraft = keptTalkCapture.sheetDraft;
   const [talkAnswer, setTalkAnswer] = useState<{
     projectName: string;
     question: string;
     answer: DAVEAskAnswer;
+    askECOSQuestion: string | null; // what "Ask in Ask ECOS" sends (audit A9 pass 2 F2)
   } | null>(null);
   const [talkTaskAction, setTalkTaskAction] = useState<{
     projectName: string;
@@ -5112,6 +4981,7 @@ function AppShell() {
   }));
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const currentReferenceActivationIdsRef = useRef(new Set<string>());
+  const projectScheduleImportCardRef = useRef<{ batchId: string; documentId: string } | null>(null);
   const projectDocumentsCurrentRef = useRef(projectDocuments);
   const scheduleItemsCurrentRef = useRef(scheduleItems);
   const projectsCurrentRef = useRef(projects);
@@ -5128,6 +4998,12 @@ function AppShell() {
   projectRecordsCurrentRef.current = projectRecords;
   archivedProjectsCurrentRef.current = archivedProjects;
   operationalSyncTombstonesRef.current = operationalSyncTombstones;
+  const [projectDocumentUploadRetry] = useState(() => createProjectDocumentUploadRetryRunner(() => projectDocumentsCurrentRef.current)); // documents added without signal upload by themselves (whole-app audit A8 pass 1 F5, 30 Sep 2026)
+  // A card's typed text is queued once typing pauses (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
+  const projectDocumentSharedRecordSync = useProjectDocumentSharedRecordSync(documentId => {
+    const latest = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    if (latest) void queueReferenceDocumentRecord(latest);
+  });
 
   const [displayName, setDisplayName] =
     useState('');
@@ -5295,12 +5171,14 @@ function AppShell() {
   const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
   const backupRestoreInFlightRef = useRef(false);
+  const [operationalRefreshCommitGuard] = useState(createDAVEOperationalRefreshCommitGuard); // a restore stops a refresh (A4 pass 6 F3)
   const photoAnalysisCoordinator = useRef(createPhotoAnalysisCoordinator()).current;
   const talkHistoryPersistence = useRef(createDAVEAskHistoryPersistence({
     readItem: storageKey => AsyncStorage.getItem(storageKey),
     persistItem: persistStorageItem,
     removeItem: removePersistedStorageItem,
   })).current;
+  const talkSession = useTalkSession(); // "previous answer" = this Talk session only (audit A9 pass 2 F1)
   const legacyProjectStructureMigrationInFlight = useRef(false);
   const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
   const deletedProjectNamesRef = useRef(deletedProjectNames);
@@ -5334,7 +5212,7 @@ function AppShell() {
         documentUploadRequest ||
         talkVoiceOpen ||
         talkTypedOpen ||
-        talkCaptureDraft ||
+        talkCaptureSheetDraft ||
         talkAnswer ||
         talkTaskAction,
       ),
@@ -5358,6 +5236,8 @@ function AppShell() {
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
+      // Opening pass: cloud rows into the live list, no stale re-read (audit A2 pass 2 M1).
+      if (startupHydrationReady) return await mergeCloudSavedUpdates();
       await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, tombstoneResult] = await Promise.all([
         readStartupJsonArray<ProjectUpdate>(
@@ -5385,9 +5265,8 @@ useEffect(() => {
       setDeletedUpdateTombstones(tombstones);
       // Field fix 2026-07-18: deletion-journal reconciliation talks to the
       // cloud; its failure is a sync concern retried later, never a local
-      // hydration failure (that mis-filing drove the startup loop).
+      // hydration failure (that mis-filing drove the startup loop). Before opening, once.
       await reconcileProjectUpdateDeletionJournal(tombstones).catch(() => undefined);
-
       setSavedUpdates(mergeSavedUpdatesWithTombstones({
         localUpdates,
         cloudUpdates: [],
@@ -5396,44 +5275,45 @@ useEffect(() => {
       setUpdatesLocalLoaded(true);
       setUpdatesLoaded(true);
       setDeletedUpdateTombstonesLoaded(true);
-
-      if (!startupHydrationReady) return;
-      try {
-        const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
-        const normalizedCloudUpdates = normalizeStartupArray(
-          cloudUpdates,
-          normalizeStoredUpdateRecord,
-          'cloud saved updates',
-        ).value;
-        const effectiveTombstones = normalizedCloudUpdates
-          .filter(update => update.isArchived)
-          .map(update => buildUpdateTombstone(
-            update,
-            'hide_cloud_update',
-            update.archivedAt || update.date,
-          ))
-          .reduce(
-            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
-            deletedUpdateTombstonesRef.current,
-          );
-        deletedUpdateTombstonesRef.current = effectiveTombstones;
-        setDeletedUpdateTombstones(effectiveTombstones);
-
-        setSavedUpdates(current => {
-          const merged = mergeSavedUpdatesWithTombstones({
-            localUpdates: current,
-            cloudUpdates: normalizedCloudUpdates,
-            tombstones: effectiveTombstones,
-          });
-          savedUpdatesRef.current = merged;
-          return merged;
-        });
-      } catch {
-        // Cloud recovery failures are retried by sync (audit P1-27); local
-        // hydration already succeeded and must stay hydrated.
-      }
     } catch (error) {
       startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
+    }
+  }
+
+  async function mergeCloudSavedUpdates() {
+    try {
+      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+      const normalizedCloudUpdates = normalizeStartupArray(
+        cloudUpdates,
+        normalizeStoredUpdateRecord,
+        'cloud saved updates',
+      ).value;
+      const effectiveTombstones = normalizedCloudUpdates
+        .filter(update => update.isArchived)
+        .map(update => buildUpdateTombstone(
+          update,
+          'hide_cloud_update',
+          update.archivedAt || update.date,
+        ))
+        .reduce(
+          (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+          deletedUpdateTombstonesRef.current,
+        );
+      deletedUpdateTombstonesRef.current = effectiveTombstones;
+      setDeletedUpdateTombstones(effectiveTombstones);
+
+      setSavedUpdates(current => {
+        const merged = mergeSavedUpdatesWithTombstones({
+          localUpdates: current,
+          cloudUpdates: normalizedCloudUpdates,
+          tombstones: effectiveTombstones,
+        });
+        savedUpdatesRef.current = merged;
+        return merged;
+      });
+    } catch {
+      // Cloud recovery failures are retried by sync (audit P1-27); local
+      // hydration already succeeded and must stay hydrated.
     }
   }
 
@@ -5498,7 +5378,7 @@ useEffect(() => {
       }
 
       const migratedUpdates = savedUpdates.map(migrateLegacyProjectUpdate);
-      const migratedSchedules = scheduleItems.map(migrateLegacyScheduleItem);
+      const migratedSchedules = identityAliasCleanup.scheduleItemsForFullSync.map(migrateLegacyScheduleItem);
       const syncResult = await synchronizeLocalData({
         projects: [...DEFAULT_PROJECTS],
         savedUpdates: migratedUpdates,
@@ -5598,14 +5478,23 @@ useEffect(() => {
   };
 }, [startupHydration.retryAttempt]);
 
+const identityAliasCleanup = useIdentityAliasCleanup({
+  retryAttempt: startupHydration.retryAttempt,
+  ready: identityCorrectionsLoaded && projectsLocalLoaded && projectAreasLocalLoaded,
+  projectNames: projects, projectAreas, scheduleItems,
+  onCorrections: corrections => setIdentityCorrections([...corrections]),
+});
+
 useEffect(() => {
   if (!identityCorrectionsLoaded || !scheduleItemsLocalLoaded || !projectAreasLocalLoaded) return;
+  if (!identityAliasCleanup.done) return;
   if (identityCorrections.length > 0 && scheduleItems.length > 0) {
     setScheduleItems(previous => {
       const canonical = canonicalizeScheduleIdentityItems(
         previous,
         projectAreas,
         identityCorrections,
+        daveRegisteredIdentityNames({ projectNames: projects, projectAreas }),
       );
       return JSON.stringify(canonical) === JSON.stringify(previous)
         ? previous
@@ -5614,8 +5503,10 @@ useEffect(() => {
   }
   setScheduleIdentityReady(true);
 }, [
+  identityAliasCleanup.done,
   identityCorrections,
   identityCorrectionsLoaded,
+  projects,
   projectAreas,
   projectAreasLocalLoaded,
   scheduleItems.length,
@@ -5646,6 +5537,8 @@ useEffect(() => {
 useEffect(() => {
   async function loadProjects() {
     try {
+      // Opening pass: cloud rows only, into the live lists (audit A2 pass 2 M1).
+      if (startupHydrationReady) return await mergeCloudProjects();
       await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, deletedProjectsResult, queuedChanges] = await Promise.all([
         readStartupJsonArray<ProjectRecord>(
@@ -5660,16 +5553,14 @@ useEffect(() => {
           'deleted project records',
           isStartupProjectName,
         ),
-        getOfflineQueue(),
+        // Read only for queued reopens and deletions: a queue that cannot be
+        // recovered is a sync matter, not a startup failure (audit A7 pass 3).
+        getOfflineQueue().catch(() => []),
       ]);
       if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
       const localProjects = normalizeProjectRecords(localResult.value);
-      const queuedDeletedNames = queuedChanges
-        .filter(item => item.entity === 'project' && item.operation === 'delete')
-        .map(item => {
-          const payload = item.payload as Record<string, unknown>;
-          return typeof payload.name === 'string' ? payload.name : '';
-        });
+      const queuedProjectChanges = queuedProjectNameChanges(queuedChanges);
+      const queuedDeletedNames = queuedProjectChanges.deletedNames;
       const deletedNames = mergeProjectNames(
         mergeProjectNames(
           mergeProjectNames(
@@ -5697,56 +5588,62 @@ useEffect(() => {
       setDeletedProjectNamesLocalLoaded(true);
       setProjectsLoaded(true);
       setDeletedProjectNamesLoaded(true);
-
-      if (!startupHydrationReady) return;
-      try {
-        const [cloudProjects, cloudArchivedProjects] = await Promise.all([
-          loadCloudProjectRecords(),
-          loadCloudArchivedProjectNames(),
-        ]);
-        const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
-        const visibleCloudProjects = cloudProjects.filter(
-          project => !isLegacyNonProjectShellName(project.name),
-        );
-        const shellMigrationComplete = await AsyncStorage.getItem(
-          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
-        );
-        if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
-          await queueCloudProjectArchives(nonProjectShellNames);
-          await persistStorageItem(
-            LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
-            'complete',
-          );
-        }
-        const currentDeletedNames = deletedProjectNamesRef.current;
-        const deletedKeys = new Set(
-          currentDeletedNames.map(name => name.toLowerCase()),
-        );
-        setProjectRecords(current => {
-          return mergeProjectRecords(
-            [],
-            current,
-            visibleCloudProjects,
-            currentDeletedNames,
-          );
-        });
-        setProjects(current => mergeProjectNames(
-          current,
-          visibleCloudProjects.map(project => project.name),
-        ).filter(project => !deletedKeys.has(project.toLowerCase())));
-        setArchivedProjects(previous =>
-          mergeProjectNames(previous, cloudArchivedProjects).filter(
-            project => !deletedKeys.has(project.toLowerCase()),
-          ),
-        );
-
-      } catch {
-        // Field fix 2026-07-18: cloud recovery failures are sync concerns
-        // (audit P1-27) and must never mis-file as a LOCAL hydration failure
-        // — that oscillated startupHydrationReady in an infinite loop.
-      }
     } catch (error) {
       startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
+    }
+  }
+
+  async function mergeCloudProjects() {
+    try {
+      const [cloudProjects, cloudArchivedProjects, queuedChanges] = await Promise.all([
+        loadCloudProjectRecords(),
+        loadCloudArchivedProjectNames(),
+        getOfflineQueue().catch(() => []),
+      ]);
+      const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
+      const visibleCloudProjects = cloudProjects.filter(
+        project => !isLegacyNonProjectShellName(project.name),
+      );
+      const shellMigrationComplete = await AsyncStorage.getItem(
+        LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+      );
+      if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
+        await queueCloudProjectArchives(nonProjectShellNames);
+        await persistStorageItem(
+          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+          'complete',
+        );
+      }
+      const currentDeletedNames = deletedProjectNamesRef.current;
+      const deletedKeys = new Set(
+        currentDeletedNames.map(name => name.toLowerCase()),
+      );
+      const { reopenedKeys } = queuedProjectNameChanges(queuedChanges);
+      setProjectRecords(current => {
+        return mergeProjectRecords(
+          [],
+          current,
+          visibleCloudProjects,
+          currentDeletedNames,
+        );
+      });
+      setProjects(current => mergeProjectNames(
+        current,
+        visibleCloudProjects.map(project => project.name),
+      ).filter(project => !deletedKeys.has(project.toLowerCase())));
+      setArchivedProjects(previous =>
+        // A reopen still in the offline queue is not re-archived (audit A3).
+        mergeProjectNames(
+          previous,
+          cloudArchivedProjects.filter(project => !reopenedKeys.has(project.trim().toLowerCase())),
+        ).filter(
+          project => !deletedKeys.has(project.toLowerCase()),
+        ),
+      );
+    } catch {
+      // Field fix 2026-07-18: cloud recovery failures are sync concerns
+      // (audit P1-27) and must never mis-file as a LOCAL hydration failure
+      // — that oscillated startupHydrationReady in an infinite loop.
     }
   }
 
@@ -5877,7 +5774,7 @@ useEffect(() => {
       .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
   }, [startupHydration.retryAttempt]);
 
-  useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
+  const scheduleCloudDownloadPending = useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
     retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
     localLoaded: scheduleItemsLocalLoaded, localAuthorityReady: scheduleItemsLoaded, localAuthorityRef: scheduleItemsAuthorityRef, resetLocalLoaded: () => { setScheduleItemsLocalLoaded(false); markScheduleItemsAuthorityReady(false); },
     readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
@@ -5900,18 +5797,16 @@ useEffect(() => {
     onCloudDeferred: () => setSyncCleanupNotice('Cloud schedule recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
   });
 
-  useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY),
-      getCurrentUser(),
-    ])
-      .then(([value, userResult]) => {
-        setDisplayName(accountDisplayNameForUser(userResult.data) || value || '');
-        startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
-        setDisplayNameLoaded(true);
-      })
-      .catch(error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error));
-  }, [startupHydration.retryAttempt]);
+  // Opens on the saved name; the account lookup follows (audit A2 M2).
+  const typeDisplayName = useAccountDisplayName({
+    storageKey: DISPLAY_NAME_STORAGE_KEY, retryAttempt: startupHydration.retryAttempt, workspaceOwnerId,
+    saveReady: startupHydrationReady && displayNameLoaded, displayName, setDisplayName,
+    onLoaded: () => {
+      startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
+      setDisplayNameLoaded(true);
+    },
+    onFailed: error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error),
+  });
 
   useEffect(() => {
     backupRestoreRuntime.recoverBeforeStartupReads()
@@ -6027,6 +5922,9 @@ useEffect(() => {
     return () => {
       if (savedUpdatesSaveTimer.current) {
         clearTimeout(savedUpdatesSaveTimer.current);
+        // Cleared too, or the background handler wrote the list after a
+        // blocked read took readiness away (whole-app audit A4 pass 5).
+        savedUpdatesSaveTimer.current = null;
       }
     };
   }, [savedUpdates, startupHydrationReady, updatesLoaded]);
@@ -6034,6 +5932,10 @@ useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'background' && state !== 'inactive') return;
       void flushPendingStoragePersistence();
+      // The draft's own timer too: a caption or photo added just before
+      // backgrounding sat only in memory while the app was suspended
+      // (whole-app audit A4, 29 Sep 2026). Only a pending write is flushed.
+      if (draftSaveTimer.current) void persistDraftNow(draftRef.current);
       if (!savedUpdatesSaveTimer.current) return;
       clearTimeout(savedUpdatesSaveTimer.current);
       savedUpdatesSaveTimer.current = null;
@@ -6095,6 +5997,27 @@ useEffect(() => {
     if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
+  useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) void queueScheduleProgressCarriedToCloud(scheduleItems); }, [scheduleItems, scheduleItemsLoaded, startupHydrationReady]); // a percent the sync merge carried goes up as itself (A7 pass 26 M-1)
+  useEffect(() => {
+    // A schedule labelled with projects none of its rows belong to (every
+    // project the import could use, before 30 Sep) is narrowed to its rows'
+    // projects, or it hid another project's schedule (audit A5 pass 2).
+    if (!startupHydrationReady || !scheduleItemsLoaded || !referenceDocumentsLoaded) return;
+    const repair = narrowScheduleDocumentLabels(referenceDocuments, scheduleItems, new Date().toISOString());
+    if (repair.changed.length === 0) return;
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = repair.documents;
+    setReferenceDocuments(repair.documents);
+    void Promise.all(repair.changed.map(document => queueReferenceDocumentRecord(document))).catch(() => undefined);
+  }, [referenceDocuments, referenceDocumentsLoaded, scheduleItems, scheduleItemsLoaded, startupHydrationReady]);
+  useEffect(() => { // shared records of documents deleted on Build 228 or earlier (audit A7 pass 4)
+    if (!startupHydrationReady || !projectDocumentsLoaded || !referenceDocumentsLoaded) return;
+    const orphanIds = legacyOrphanedProjectDocumentBridges(referenceDocuments, projectDocuments).map(document => document.id);
+    if (orphanIds.length === 0) return;
+    markReferenceDocumentsAuthorityReady(true);
+    setReferenceDocuments(prev => prev.filter(document => !orphanIds.includes(document.id)));
+    void Promise.all(orphanIds.map(id => removeOperationalRecordFromSyncQueue('reference_document', id))).catch(() => undefined);
+  }, [projectDocuments, projectDocumentsLoaded, referenceDocuments, referenceDocumentsLoaded, startupHydrationReady]);
 
   useStringStoragePersistence({
     enabled: startupHydrationReady && displayNameLoaded,
@@ -6102,13 +6025,6 @@ useEffect(() => {
     value: displayName,
     label: 'profile setting',
   });
-  useEffect(() => {
-    if (!startupHydrationReady || !displayNameLoaded || !displayName.trim()) return;
-    const timer = setTimeout(() => {
-      void updateCurrentUserDisplayName(displayName).catch(() => undefined);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [displayName, displayNameLoaded, startupHydrationReady]);
   useJsonStoragePersistence({
     enabled: startupHydrationReady && contactsLoaded,
     storageKey: CONTACTS_STORAGE_KEY,
@@ -6123,28 +6039,7 @@ useEffect(() => {
     }
 
     draftSaveTimer.current = setTimeout(() => {
-      if (!hasMeaningfulDraft(draft)) {
-        setDraftSavedAt(null);
-
-        removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-          reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-        );
-
-        return;
-      }
-
-      const savedAt = new Date().toISOString();
-
-      const storedDraft: StoredDraft = {
-        draft,
-        savedAt,
-      };
-
-      setDraftSavedAt(savedAt);
-
-      persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
-        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-      );
+      void persistDraftNow(draft);
     }, 750);
 
     return () => {
@@ -6153,6 +6048,41 @@ useEffect(() => {
       }
     };
   }, [draft, draftLoaded, startupHydrationReady]);
+
+  /**
+   * Writes the draft now (the 750 ms timer's own work, run at once): the
+   * timer when it fires, the background flush, and a draft replacement
+   * before the old draft's files go (whole-app audit A4, 29 Sep 2026).
+   */
+  function persistDraftNow(nextDraft: ProjectUpdate): Promise<void> {
+    if (draftSaveTimer.current) {
+      clearTimeout(draftSaveTimer.current);
+      draftSaveTimer.current = null;
+    }
+    if (!hasMeaningfulDraft(nextDraft)) {
+      setDraftSavedAt(null);
+      return removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
+    }
+    const savedAt = new Date().toISOString();
+    const storedDraft: StoredDraft = { draft: nextDraft, savedAt };
+    setDraftSavedAt(savedAt);
+    return persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+    );
+  }
+
+  /**
+   * The replacement draft (already in draftRef) is on disk before the
+   * discarded draft's photo files are deleted: a kill inside the timer's
+   * window restored the old draft pointing at deleted files (audit A4; the
+   * same window on every path that replaces a draft, PR #83's included).
+   */
+  async function discardDraftAfterReplacement(discardedDraft: ProjectUpdate): Promise<void> {
+    await persistDraftNow(draftRef.current);
+    await deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdatesRef.current);
+  }
 
   useEffect(() => {
     if (!startupHydrationReady || !updatesLoaded || !draftLoaded || photoCleanupRan.current) {
@@ -6185,14 +6115,13 @@ useEffect(() => {
     if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
     startAutomaticSyncBackgroundTask('queued_updates_detected', hydrateQueuedUpdates);
   }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
+  useEffect(() => { if (startupHydrationReady && projectDocumentsLoaded) void projectDocumentUploadRetry.run(retryProjectDocumentUpload); }, [projectDocumentsLoaded, startupHydrationReady]);
 
   useEffect(() => {
     const operationalDataLoaded = projectsLoaded || updatesLoaded || projectAreasLoaded ||
       referenceDocumentsLoaded || scheduleItemsLoaded;
     if (!startupHydrationReady || !operationalDataLoaded) return;
     let active = true;
-    const operationalRefreshCommitGuard =
-      createDAVEOperationalRefreshCommitGuard();
 
     const applyRealtimeOperationalPayload = createDAVEOperationalRealtimeApplier({
       isActive: () => active,
@@ -6206,7 +6135,8 @@ useEffect(() => {
       getPendingQueue: getOfflineQueue, normalizeUpdate: normalizeStoredUpdateRecord,
       normalizeAreas: normalizeProjectAreas, normalizeSchedule: normalizeScheduleItems,
       normalizeDocuments: normalizeReferenceDocuments, migrateSchedule: migrateLegacyScheduleItem,
-      localPhotoUri: resolveProjectPhotoUri, mergeProjectNames,
+      localPhotoUri: resolveProjectPhotoUri, mergeProjectNames, deviceDocuments: () => projectDocumentsCurrentRef.current,
+      updateHasPendingLocalWork: updateNeedsAutomaticSyncRetry,
       mergeUpdates: mergeSavedUpdatesWithTombstones, buildUpdateTombstone,
       buildCloudDeletionBarrier: buildCloudUpdateDeletionBarrier,
       upsertDeletedUpdate: upsertDeletedUpdateTombstone,
@@ -6235,6 +6165,7 @@ useEffect(() => {
       const shouldRefresh = (name: DAVEOperationalCollectionName) =>
         !requestedCollectionSet || requestedCollectionSet.has(name);
       const refreshCommit = operationalRefreshCommitGuard.begin();
+      const refreshStartedAt = new Date().toISOString(); // what the downloads below can hold (A6 pass 10 M1)
       const tombstones = await loadDAVEOperationalTombstones();
       if (!active || !refreshCommit.isCurrent()) return;
       const latestOperationalTombstones = tombstones.tombstones;
@@ -6339,6 +6270,9 @@ useEffect(() => {
       }});
 
       if (updatesLoaded && shouldRefresh('project_updates')) collectionRefreshes.push({ name: 'project_updates', run: async () => {
+        // A row listed before this device's own upload landed is older than
+        // the phone's copy (audit A7 M5).
+        const listStartedAt = Date.now();
         const updatesResult = await listProjectUpdates<ProjectUpdate>();
         if (!updatesResult.ok || updatesResult.stubbed || !Array.isArray(updatesResult.data)) {
           throw new Error('field_update_refresh_incomplete');
@@ -6356,31 +6290,21 @@ useEffect(() => {
           normalizedCloudUpdates.map(async cloudUpdate => {
             if (cloudUpdate.isArchived) return cloudUpdate;
             const localUpdate = currentById.get(cloudUpdate.id);
-            const photos = cloudUpdate.photos.map(cloudPhoto => {
-              const localPhoto = localUpdate?.photos.find(photo => photo.id === cloudPhoto.id);
-              const localUri = localPhoto ? resolveProjectPhotoUri(localPhoto) : '';
-              return localUri
-                ? {
-                    ...cloudPhoto,
-                    uri: localUri,
-                    cloudRecoveredAt: localPhoto?.cloudRecoveredAt || cloudPhoto.cloudRecoveredAt,
-                    cloudRecoveryStatus: localPhoto?.cloudRecoveryStatus || cloudPhoto.cloudRecoveryStatus,
-                    cloudSignedUrlExpiresAt:
-                      localPhoto?.cloudSignedUrlExpiresAt || cloudPhoto.cloudSignedUrlExpiresAt,
-                  }
-                : cloudPhoto;
-            });
-            const cloudUpdateWithLocalPhotoCache = { ...cloudUpdate, photos };
-            return photos.some(photo => !resolveProjectPhotoDisplayUri(photo))
-              ? hydrateProjectUpdatePhotoPreviews(cloudUpdateWithLocalPhotoCache)
-              : cloudUpdateWithLocalPhotoCache;
+            // Every photo is judged on this device: a resolved path can still
+            // name a file that is not here (audit A7 M3). Previews are signed
+            // when shown, not here (whole-app audit A4 pass 6 (30 Sep 2026)).
+            return hydrateProjectUpdatePhotoPreviews({
+              ...cloudUpdate,
+              photos: cloudUpdate.photos.map(cloudPhoto =>
+                preserveLocalPhotoTransport(cloudPhoto, localUpdate, resolveProjectPhotoUri)),
+            }, { sign: false });
           }),
         );
         if (!active || !refreshCommit.isCurrent()) return;
 
-        const [currentUpdates, pendingQueue] = await Promise.all([
+        const [currentUpdates, pendingQueue, removedDocuments] = await Promise.all([
           Promise.resolve(savedUpdatesRef.current),
-          getOfflineQueue(),
+          getOfflineQueue(), loadRemovedFieldUpdateDocuments(), // documents taken off here stay off (A7 pass 6 M1)
         ]);
         const currentUpdateTombstones = deletedUpdateTombstonesRef.current;
         const refreshedUpdateTombstones = hydratedCloudUpdates
@@ -6404,13 +6328,14 @@ useEffect(() => {
         const localUpdatesForMerge = currentUpdates.map(localUpdate => {
           const cloudUpdate = cloudUpdateById.get(localUpdate.id);
           return cloudUpdate &&
-            !hasMatchingQueuedProjectUpdateRevision(localUpdate, pendingQueue)
-            ? cloudUpdate
+            !refreshKeepsLocalProjectUpdate(localUpdate, pendingQueue) && // or one still waiting (A4 pass 12 H1)
+            !projectUpdateUploadedSince(localUpdate.id, listStartedAt)
+            ? cloudCopyShownOnDevice(withLatestLocalPhotoTransport(cloudUpdate, currentById.get(localUpdate.id), localUpdate, resolveProjectPhotoUri), projectDocumentsCurrentRef.current, pendingQueue, removedDocuments) // this device's upload state and waiting document changes (A7 pass 5 M1, pass 6 M1), as sent (pass 9 L1)
             : localUpdate;
         });
         const mergedUpdates = mergeSavedUpdatesWithTombstones({
           localUpdates: localUpdatesForMerge,
-          cloudUpdates: hydratedCloudUpdates,
+          cloudUpdates: hydratedCloudUpdates.map(update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)), // a receipt whatever this device's upload attempts (A4 pass 8 F2)
           tombstones: effectiveTombstones,
         });
         refreshCommit.commit(() => {
@@ -6424,6 +6349,9 @@ useEffect(() => {
               ? currentUpdates
               : mergedUpdates,
           );
+          documentsUploadedAfterCloudCopy(hydratedCloudUpdates, currentUpdates, pendingQueue, projectDocumentsCurrentRef.current) // the iPad's copy says so too (A7 pass 5 M1)
+            .forEach(documentId => resendUpdatesListingDocument(documentId, update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)));
+          void requeueRemovedFieldUpdateDocuments(hydratedCloudUpdates, mergedUpdates, removedDocuments).then(queued => queued > 0 && requestPendingChangesUpload('removed_document_back_in_cloud')).catch(() => undefined); // the iPad's older copy (A7 pass 6 M1)
         });
       }});
 
@@ -6470,6 +6398,8 @@ useEffect(() => {
           scheduleItemsCurrentRef.current = mergedItems;
           setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
             ? currentItems : mergedItems);
+          identityAliasCleanup.markScheduleRefreshed(); // true names are back (audit A11 pass 2)
+          if (tombstones.cloudAuthoritative) void recordScheduleCloudPull(tombstones.readStartedAt ?? refreshStartedAt); // every task, deletions too, from when the history used was read: Reports stops waiting (A6 pass 10 M1, M2; pass 11)
         });
       }});
 
@@ -6508,6 +6438,7 @@ useEffect(() => {
       },
     });
     refreshController.start();
+    const stopReportPullRequests = registerScheduleCloudPullRequest(() => void refreshController.request('foreground', ['schedule_items'])); // Reports waiting for the other device's changes (A6 pass 10 L2)
 
     let realtimeHasSubscribed = false;
     let realtimeUnsubscribe: () => void = () => undefined;
@@ -6530,6 +6461,11 @@ useEffect(() => {
         if (status === 'subscribed') {
           realtimeHealthy = true;
           requestPendingChangesUpload('realtime_reconnected');
+          // The durable queue moves rows; only this loop re-stages photos, so
+          // updates saved offline sync when the connection returns (audit
+          // A4, 30 Sep 2026: they waited for a token refresh or a relaunch).
+          startAutomaticSyncBackgroundTask('realtime_reconnected', hydrateQueuedUpdates);
+          void projectDocumentUploadRetry.run(retryProjectDocumentUpload); // and documents (whole-app audit A8 pass 1 F5)
           if (realtimeHasSubscribed) void refreshController.request('realtime');
           realtimeHasSubscribed = true;
         }
@@ -6544,7 +6480,10 @@ useEffect(() => {
     }).catch(() => { if (active) setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE); });
 
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active' && shouldRefreshDAVEOperationalDataOnForeground({
+      if (state !== 'active') return;
+      startAutomaticSyncBackgroundTask('app_active', hydrateQueuedUpdates);
+      void projectDocumentUploadRetry.run(retryProjectDocumentUpload);
+      if (shouldRefreshDAVEOperationalDataOnForeground({
         realtimeHealthy, lastSuccessfulRefreshAt,
       })) {
         void refreshController.request('foreground');
@@ -6554,6 +6493,7 @@ useEffect(() => {
       active = false;
       operationalRefreshCommitGuard.invalidate();
       refreshController.stop();
+      stopReportPullRequests();
       realtimeUnsubscribe();
       subscription.remove();
     };
@@ -6564,6 +6504,7 @@ useEffect(() => {
     scheduleItemsLoaded,
     startupHydrationReady,
     updatesLoaded,
+    workspaceSignInPending,
   ]);
 
   const activeProjects = useMemo(
@@ -6584,10 +6525,11 @@ useEffect(() => {
       savedUpdates,
       operationalSyncTombstones,
       update => update,
+      { scheduleItems: scheduleItems as unknown as import('./types').ScheduleItem[] }, // a task a new master moved still answers to its old id (A10 pass 6 M1), never by name (A10 pass 7 L1)
     ),
-    [operationalSyncTombstones, savedUpdates],
+    [operationalSyncTombstones, savedUpdates, scheduleItems],
   );
-  const activeSavedUpdates = savedUpdateTaskEvidence.active;
+  const activeSavedUpdates = useMemo(() => savedUpdateTaskEvidence.active.filter(update => !update.isArchived), [savedUpdateTaskEvidence.active]); // an archived update stops counting at once, not when the cloud copy returns (audit round 2 L4)
   const deletedTaskEvidenceIds = useMemo(
     () => new Set(savedUpdateTaskEvidence.historical.map(update => update.id)),
     [savedUpdateTaskEvidence.historical],
@@ -6965,33 +6907,33 @@ useEffect(() => {
     setScreen('BuildUpdate');
   }
 
+  /**
+   * Changes one document wherever it is listed, and only while it is still
+   * listed. The whole list was set from a snapshot, so an upload's progress
+   * landing between a delete or archive and the next render put the
+   * document back (whole-app audit A8 pass 3 L3).
+   */
   function updateDocumentEverywhere(
     documentId: string,
     updater: (document: ProjectDocument) => ProjectDocument,
   ) {
-    const nextProjectDocuments = projectDocumentsCurrentRef.current.map(document =>
-      document.id === documentId ? updater(document) : document,
-    );
-    projectDocumentsCurrentRef.current = nextProjectDocuments;
-    setProjectDocuments(nextProjectDocuments);
+    const update = (documents: ProjectDocument[]) => documents.map(document =>
+      document.id === documentId ? updater(document) : document);
+    projectDocumentsCurrentRef.current = update(projectDocumentsCurrentRef.current);
+    setProjectDocuments(update);
+    setDraft(prev => ({ ...prev, documents: update(prev.documents || []) }));
+    setSavedUpdates(prev => prev.map(saved => ({ ...saved, documents: update(saved.documents || []) })));
+    return projectDocumentsCurrentRef.current.find(document => document.id === documentId) || null;
+  }
 
-    setDraft(prev => ({
-      ...prev,
-      documents: (prev.documents || []).map(document =>
-        document.id === documentId ? updater(document) : document,
-      ),
-    }));
-
-    setSavedUpdates(prev =>
-      prev.map(update => ({
-        ...update,
-        documents: (update.documents || []).map(document =>
-          document.id === documentId ? updater(document) : document,
-        ),
-      })),
-    );
-
-    return nextProjectDocuments.find(document => document.id === documentId) || null;
+  /** A document change the other devices must see goes up again with each sent update listing it (whole-app audit A7 pass 5 M1). */
+  function resendUpdatesListingDocument(documentId: string, change: (update: ProjectUpdate) => ProjectUpdate) {
+    const resent = new Map(fieldUpdatesToResendForDocument(savedUpdatesRef.current, documentId, change).map(update => [update.id, update]));
+    savedUpdatesRef.current = savedUpdatesRef.current.map(update => resent.get(update.id) || change(update));
+    setSavedUpdates(prev => prev.map(update => resent.get(update.id) || change(update)));
+    // A patch on the cloud's copy, not this older copy (A7 pass 6 M1); a sent update stays sent and only the patch goes up (A7 pass 7 M1).
+    resent.forEach(update => void queueProjectUpdateDocumentChange(update, documentId).catch(() => undefined)
+      .finally(() => update.status === 'sent' ? requestPendingChangesUpload('field_update_document_change') : requestQueuedUpdateSync()));
   }
 
   async function persistProjectDocumentsImmediately(
@@ -7029,50 +6971,39 @@ useEffect(() => {
 
   async function publishUploadedProjectDocument(
     document: ProjectDocument,
+    sameAccount: () => boolean,
   ) {
-    const ownedRecord = document.ownedFileId
-      ? parseOwnedLocalFileManifest(document.ownedFileManifest)
-          .files[document.ownedFileId]
-      : null;
-    const projectName =
-      projectsCurrentRef.current.find(
-        name => authorityProjectId(name) === document.projectId,
-      ) || null;
-    const sharedDocument = normalizeReferenceDocument(
-      buildSharedReferenceDocument({
-        document,
-        projectName,
-        contentSha256: ownedRecord?.sha256 || null,
-        updatedAt: document.updatedAt,
-      }),
-    );
-    const nextReferenceDocuments = [
-      sharedDocument,
-      ...referenceDocumentsCurrentRef.current.filter(
-        item => item.id !== sharedDocument.id,
-      ),
-    ];
-
+    const sharedCopyOf = (source: ProjectDocument) => normalizeReferenceDocument(buildSharedReferenceDocument({
+      document: source,
+      projectName: projectsCurrentRef.current.find(name => authorityProjectId(name) === source.projectId) || null,
+      contentSha256: (source.ownedFileId && parseOwnedLocalFileManifest(source.ownedFileManifest).files[source.ownedFileId]?.sha256) || null,
+      updatedAt: source.updatedAt,
+    }));
+    const sharedId = sharedCopyOf(document).id;
+    const linkedDocument = updateDocumentEverywhere(document.id, current => ({ ...current, referenceDocumentId: sharedId }));
+    if (!linkedDocument) return; // no longer listed: nothing shared (whole-app audit A8 pass 4 L4)
+    // A failed save is this phone's storage failure; the copy is still shared, as a card edit's is (A8 pass 5 L1).
+    await persistProjectDocumentsImmediately(projectDocumentsCurrentRef.current).catch(error => reportStoragePersistenceFailure({ storageKey: PROJECT_DOCUMENTS_STORAGE_KEY, label: 'project document', error }));
+    // Read again after the save: a delete, an archive or another account's sign-in meanwhile shares and queues nothing (A8 pass 4 L4).
+    const listed = uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, document.id, sameAccount, operationalSyncTombstonesRef.current);
+    if (!listed) return;
+    const sharedDocument = sharedCopyOf({ ...listed, referenceDocumentId: sharedId }); // as listed now, under the id linked above: text typed during either save goes with it (A8 pass 5 L1)
+    const nextReferenceDocuments = [sharedDocument, ...referenceDocumentsCurrentRef.current.filter(item => item.id !== sharedDocument.id)];
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = nextReferenceDocuments;
     setReferenceDocuments(nextReferenceDocuments);
-
-    const linkedDocument = updateDocumentEverywhere(document.id, current => ({
-      ...current,
-      referenceDocumentId: sharedDocument.id,
-    }));
-    if (linkedDocument) {
-      await persistProjectDocumentsImmediately(
-        projectDocumentsCurrentRef.current,
-      );
-    }
     await queueReferenceDocumentRecord(sharedDocument);
   }
+
+  /** The owner's Retry: passed the document, so a failure is said (whole-app audit A8 pass 3). */
+  const retryProjectDocumentUploadAsked = (documentId: string) => void retryProjectDocumentUpload(documentId,
+    projectDocumentsCurrentRef.current.find(item => item.id === documentId) || draft.documents?.find(item => item.id === documentId));
 
   async function retryProjectDocumentUpload(
     documentId: string,
     providedDocument?: ProjectDocument,
   ) {
+    const sameAccount = bindProjectDocumentUploadToAccount(); // nothing written or shared once another account signs in (whole-app audit A8 pass 3 M3)
     const target =
       providedDocument ||
       projectDocumentsCurrentRef.current.find(
@@ -7112,6 +7043,7 @@ useEffect(() => {
 
     try {
       await verifyOwnedProjectDocument(target);
+      if (!sameAccount()) return false;
       let lastReportedPercent = -1;
       const result = await uploadPhoto({
         bucket: PROJECT_DOCUMENT_UPLOAD_FOLDER,
@@ -7131,7 +7063,7 @@ useEffect(() => {
           }));
         },
       });
-
+      if (!sameAccount()) return false;
       const completedAt = new Date().toISOString();
       const uploaded = result.ok && !result.stubbed;
       const completedDocument = updateDocumentEverywhere(documentId, document => ({
@@ -7141,6 +7073,8 @@ useEffect(() => {
         uploadedAt: uploaded ? completedAt : document.uploadedAt,
         updatedAt: completedAt,
         uploadProgress: uploaded ? 1 : document.uploadProgress,
+        // A failure for want of signal is not counted toward the backoff (whole-app audit A8 pass 2 #5).
+        uploadAttemptCount: uploaded ? document.uploadAttemptCount : projectDocumentUploadAttemptsAfterFailure(document.uploadAttemptCount, result.error),
       }));
       await persistProjectDocumentsImmediately(
         projectDocumentsCurrentRef.current,
@@ -7159,9 +7093,10 @@ useEffect(() => {
         return false;
       }
 
-      if (completedDocument) {
+      const toShare = uploadedProjectDocumentToShare(projectDocumentsCurrentRef.current, documentId, sameAccount); // as listed after the save: deleted or archived meanwhile, not shared (A8 pass 2 #4, pass 4 L4)
+      if (toShare) {
         try {
-          await publishUploadedProjectDocument(completedDocument);
+          await publishUploadedProjectDocument(toShare, sameAccount);
         } catch {
           if (providedDocument) {
             Alert.alert(
@@ -7171,8 +7106,10 @@ useEffect(() => {
           }
         }
       }
+      if (completedDocument && sameAccount()) resendUpdatesListingDocument(documentId, update => withDeviceDocumentUploadState(update, projectDocumentsCurrentRef.current)); // the iPad sees it uploaded (A7 pass 5 M1)
       return true;
     } catch (error) {
+      if (!sameAccount()) return false;
       if (error instanceof Error &&
           error.message === PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE) {
         Alert.alert(
@@ -7194,6 +7131,7 @@ useEffect(() => {
         status: 'failed',
         updatedAt: new Date().toISOString(),
         uploadProgress: null,
+        uploadAttemptCount: projectDocumentUploadAttemptsAfterFailure(document.uploadAttemptCount, error),
       }));
       await persistProjectDocumentsImmediately(
         projectDocumentsCurrentRef.current,
@@ -7742,8 +7680,10 @@ useEffect(() => {
 
   function applyFieldUpdateSyncResultIfCurrent(
     attemptedUpdate: ProjectUpdate,
-    syncResult: ProjectUpdate,
+    sent: ProjectUpdate,
   ) {
+    // Sent with the results that went up (whole-app audit A4 pass 27 L2).
+    const syncResult = sent.status === 'sent' ? withAnalysisResultsLastInCloud(sent) : sent;
     const reconciliation = reconcileFieldUpdateSyncResult(
       savedUpdatesRef.current,
       attemptedUpdate,
@@ -7835,19 +7775,45 @@ useEffect(() => {
           currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
           keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones }),
       );
+      if (!persisted.applied) {
+        // A deletion barrier for this id dropped the save: the update was
+        // deleted while it was open as the draft, on this phone or another
+        // device. Nothing was written; the draft is kept and can be saved as
+        // a new update (whole-app audit A4, 29 Sep 2026).
+        fieldUpdateSaveInFlightRef.current = false;
+        setFieldUpdateSaving(false);
+        // The save cancelled the pending draft and saved-updates writes; put both back.
+        void persistDraftNow(draftRef.current);
+        persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
+          reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+        );
+        recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
+        offerToSaveDeletedDraftAsNewUpdate(draftSnapshot.projectName, persisted.barrierAction);
+        return;
+      }
       savedUpdatesRef.current = persisted.nextUpdates;
       deletedUpdateTombstonesRef.current = persisted.nextTombstones;
       setSavedUpdates(persisted.nextUpdates);
       setDeletedUpdateTombstones(persisted.nextTombstones);
       setSelectedWorkspaceProject(queuedUpdate.projectName);
     } catch (error) {
-      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      if (error instanceof FieldUpdatePersistenceBlockedError) blockFieldUpdateStores(error);
       Alert.alert(
         'Update not saved',
         'The device could not verify the saved update. Your draft is still here; try again.',
       );
       fieldUpdateSaveInFlightRef.current = false;
       setFieldUpdateSaving(false);
+      // A store the save found unreadable stays as it is for recovery; only
+      // a plain commit failure re-arms the cancelled write (audit A4 pass 4)
+      // and rewrites the draft: after a blocked save its rewrite broke the
+      // recovery's check for good (A7 pass 3).
+      if (!(error instanceof FieldUpdatePersistenceBlockedError)) {
+        void persistDraftNow(draftRef.current);
+        persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(persistError =>
+          reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error: persistError }),
+        );
+      }
       recaptureDroppedDraftLocation(draftSnapshot.id, droppedPendingFix);
       return;
     }
@@ -7878,6 +7844,48 @@ useEffect(() => {
     void syncQueuedFieldUpdateInBackground(queuedUpdate);
   }
 
+  /**
+   * The open draft is replaced by a blank one for the project, on disk
+   * first; the discarded draft's own photo files go afterwards when it is
+   * passed (audit A4, 30 Sep 2026: they were left as orphans, or deleted
+   * before the blank draft was on disk).
+   */
+  function clearOpenDraft(projectName: string, discardedDraft?: ProjectUpdate) {
+    const blank = createDraft(projectName);
+    draftRef.current = blank;
+    setDraft(blank);
+    if (discardedDraft) {
+      void discardDraftAfterReplacement(discardedDraft);
+    } else {
+      void persistDraftNow(blank);
+    }
+  }
+
+  function offerToSaveDeletedDraftAsNewUpdate(
+    projectName: string,
+    barrierAction: string | null | undefined,
+  ) {
+    const archived = barrierAction === 'hide_cloud_update' || barrierAction === 'archive_sent_update';
+    Alert.alert(
+      archived ? 'Update was archived' : 'Update was deleted',
+      archived
+        ? 'This update was archived in the cloud while it was open, so it cannot be saved under its old record. Save it as a new update?'
+        : 'This update was deleted while it was open, on this phone or another device, so it cannot be saved under its old record. Save it as a new update?',
+      [
+        { text: 'Discard draft', style: 'destructive', onPress: () => clearOpenDraft(projectName, draftRef.current) },
+        {
+          text: 'Save as new update',
+          onPress: () => {
+            const reissued = reissueDraftAsNewUpdate(draftRef.current, uid());
+            draftRef.current = reissued;
+            setDraft(reissued);
+            void saveFieldUpdateFromReview();
+          },
+        },
+      ],
+    );
+  }
+
   async function syncQueuedFieldUpdateInBackground(queuedUpdate: ProjectUpdate) {
     let finalUpdate: ProjectUpdate;
     const attemptedAt = queuedUpdate.lastSendAttemptAt || new Date().toISOString();
@@ -7887,14 +7895,14 @@ useEffect(() => {
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth',
+          await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current),
           attemptedAt,
           1,
           false,
         );
         finalUpdate = {
           ...queuedUpdate,
-          status: 'failed',
+          status: statusForSyncDiagnostics(syncDiagnostics),
           syncDiagnostics,
           workflowTimestamps: {
             ...(queuedUpdate.workflowTimestamps || {}),
@@ -7902,7 +7910,8 @@ useEffect(() => {
           },
         };
       } else {
-        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+        const { syncResult, workAttempt, heldForConflictReview } = await runFieldUpdateCloudSync(queuedUpdate);
+        if (heldForConflictReview) return; // left Waiting to Sync (Needs Review), as the waiting-update sync leaves it (A4 pass 16 M1)
         const syncDiagnostics = buildSyncDiagnosticsFromUpload(
           syncResult,
           attemptedAt,
@@ -7964,16 +7973,23 @@ useEffect(() => {
       setDeletedUpdateTombstones(persisted.nextTombstones);
       return persisted.applied;
     } catch (error) {
-      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      if (error instanceof FieldUpdatePersistenceBlockedError) blockFieldUpdateStores(error);
       throw error;
     }
+  }
+
+  /** A save found the field-update stores blocked: recovery owns them, so no pending write may land (audit A4 pass 5). */
+  function blockFieldUpdateStores(error: FieldUpdatePersistenceBlockedError) {
+    startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+    cancelPendingStoragePersistence(DELETED_UPDATES_STORAGE_KEY);
   }
 
   async function syncFieldUpdateWithMissingPhotoRepair(
     update: ProjectUpdate,
     onRepair?: (repairedUpdate: ProjectUpdate) => void,
+    sync: FieldUpdateSyncChoice = {}, // an update in conflict is left for review unless David chose to send it over (A4 pass 15 H1)
   ) {
-    const firstAttempt = await runFieldUpdateCloudSync(update);
+    const firstAttempt = await runFieldUpdateCloudSync(update, sync);
     if (firstAttempt.missingPhotos.length === 0) {
       return { ...firstAttempt, update };
     }
@@ -7986,11 +8002,25 @@ useEffect(() => {
     const repairPersisted = await persistSavedUpdateImmediately(repairedUpdate, update);
     if (!repairPersisted) return { ...firstAttempt, update };
     onRepair?.(repairedUpdate);
-    const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate);
+    const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate, sync);
     return { ...repairedAttempt, update: repairedUpdate };
   }
 
-  async function retryQueuedUpdate(update: ProjectUpdate) {
+  // Only a Retry David confirmed over a conflict sends it (A7 pass 12 M-1, A4 pass 15 H1).
+  // The App's card as it is now (whole-app audit A4 pass 19 L1), not the copy
+  // a screen read earlier: that wrote over a photo analysis landed since. Only
+  // the archive Settings puts on after Keep Phone kept one comes from `given`.
+  // Over a conflict, a card that no longer owes its own sync is the cloud's
+  // copy a refresh or echo put there, not David's version (A4 pass 20 M1),
+  // which keeps only the card's finished photo analyses (A4 pass 21 F2) and
+  // this device's document upload state (A4 pass 22 L4).
+  async function retryQueuedUpdate(given: ProjectUpdate, sync: FieldUpdateSyncChoice = {}) {
+    const current = savedUpdatesRef.current.find(item => item.id === given.id);
+    const base = !current ? given : sync.overConflict && current.status !== 'queued' && current.status !== 'failed'
+      ? withDeviceDocumentUploadState(withPhoneAnalysisResults(given, [current]) as ProjectUpdate, projectDocumentsCurrentRef.current) : current;
+    const archived = [given, current].find(copy => copy?.isArchived); // nothing un-archives an update
+    const update: ProjectUpdate = archived && !base.isArchived
+      ? { ...base, isArchived: true, archivedAt: archived.archivedAt ?? null } : base;
     const now = new Date().toISOString();
     const retryUpdate: ProjectUpdate = {
       ...update,
@@ -8010,16 +8040,14 @@ useEffect(() => {
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+          await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current),
           now,
           1,
           false,
         );
         const finalUpdate: ProjectUpdate = {
           ...retryUpdate,
-          status: 'failed',
+          status: statusForSyncDiagnostics(syncDiagnostics),
           syncDiagnostics,
           workflowTimestamps: {
             ...(retryUpdate.workflowTimestamps || {}),
@@ -8037,12 +8065,16 @@ useEffect(() => {
         syncResult,
         workAttempt,
         update: syncReadyUpdate,
+        heldForConflictReview,
       } = await syncFieldUpdateWithMissingPhotoRepair(
         retryUpdate,
         repairedUpdate => {
           activeRetryUpdate = repairedUpdate;
         },
+        sync,
       );
+      // Left for review, as the waiting-update sync leaves it: its card as it was.
+      if (heldForConflictReview) return { ...(applyFieldUpdateSyncResultIfCurrent(retryUpdate, update).current || update), heldForConflictReview };
       activeRetryUpdate = syncReadyUpdate;
       const syncDiagnostics = buildSyncDiagnosticsFromUpload(
         syncResult,
@@ -8088,6 +8120,8 @@ useEffect(() => {
     }
   }
 
+  const queuedHydrationDeferredRerun = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   async function hydrateQueuedUpdates() {
     if (queuedHydrationInFlight.current) return;
     queuedHydrationInFlight.current = true;
@@ -8111,7 +8145,21 @@ useEffect(() => {
   }
 
   async function hydrateQueuedUpdatesPass() {
-    const queuedUpdates = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
+    // An update whose own save or retry is still syncing is left to it: the
+    // loop used to stage and upload the same photos a second time, alongside
+    // the direct sync (audit A4, 30 Sep 2026). One deferred pass follows.
+    const now = Date.now();
+    const retryable = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
+    const queuedUpdates = retryable.filter(update => !directSyncIsRecent(update, now));
+    if (queuedUpdates.length < retryable.length && !queuedHydrationDeferredRerun.current) {
+      queuedHydrationDeferredRerun.current = setTimeout(() => {
+        queuedHydrationDeferredRerun.current = null;
+        // A pass still running owes one more (as a late analysis result
+        // does); a new task could be dropped by the guard's run cap.
+        if (queuedHydrationInFlight.current) queuedHydrationRerunRequested.current = true;
+        else startAutomaticSyncBackgroundTask('after_direct_sync', hydrateQueuedUpdates);
+      }, DIRECT_SYNC_GRACE_MS);
+    }
 
     if (queuedUpdates.length === 0) return;
 
@@ -8122,16 +8170,17 @@ useEffect(() => {
     const resolvedAt = new Date().toISOString();
 
     if (!sessionTokenPresent) {
-      const failureCategory =
-        tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+      const failureCategory = await fieldUpdateSyncCategoryWithoutSession(tokenLookup, signInPendingRef.current);
+      const stampedStatus = persistedStatusForSyncResult({ result: 'skipped', failureCategory });
       // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
       // stamping is idempotent. Updates already marked failed for this
       // same auth condition are NOT re-stamped — re-stamping every 30s
       // rewrote the full saved-updates store to disk and changed the
       // authority input each pass, driving a continuous core recompute
       // until iOS terminated the app for CPU/disk-write exhaustion.
+      // Nor is one already waiting offline (A4 pass 7 M1).
       const needsStamp = queuedUpdates.filter(update =>
-        lifecycleStatusForUpdate(update) !== 'failed' ||
+        lifecycleStatusForUpdate(update) !== stampedStatus ||
         update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
       );
       if (needsStamp.length === 0) return;
@@ -8145,7 +8194,7 @@ useEffect(() => {
       needsStamp.forEach(update => {
         applyFieldUpdateSyncResultIfCurrent(update, {
           ...update,
-          status: 'failed',
+          status: stampedStatus,
           syncDiagnostics,
           workflowTimestamps: {
             ...(update.workflowTimestamps || {}),
@@ -8157,13 +8206,20 @@ useEffect(() => {
       return;
     }
 
-    await runAutomaticSyncQueue(queuedUpdates, async update => {
+    await runAutomaticSyncQueue(queuedUpdates, async ({ id }) => {
+        // The card as it is now (whole-app audit A4 pass 19 M1): Keep Cloud
+        // or Keep Phone may have settled it while this pass sent another's
+        // photos, and the copy read at the start went up over the one kept.
+        const update = savedUpdatesRef.current.find(item => item.id === id);
+        if (!update || !updateNeedsAutomaticSyncRetry(update)) return;
         const attemptStartedAt = new Date().toISOString();
         const {
           syncResult,
           workAttempt,
           update: syncReadyUpdate,
-        } = await syncFieldUpdateWithMissingPhotoRepair(update);
+          heldForConflictReview,
+        } = await syncFieldUpdateWithMissingPhotoRepair(update, undefined, { automatic: true });
+        if (heldForConflictReview) return; // Keep Phone, Keep Cloud or Retry sends it; its card stays (A4 pass 13 M1)
         const syncDiagnostics = buildSyncDiagnosticsFromUpload(
           syncResult,
           attemptStartedAt,
@@ -8234,13 +8290,19 @@ useEffect(() => {
       (activeProjects.length === 1 ? activeProjects[0] : null) ||
       (projectDetectionStatus === 'detected' ? detectedProjectName : null);
 
-    function proceed() {
-      if (confidentTarget) {
-        beginDraftForProject(confidentTarget);
-      } else {
-        setScreen('SelectProject');
-      }
-    }
+    const proceed = (discardedDraft: ProjectUpdate | null) =>
+      startNewUpdate({
+        target: confidentTarget,
+        discardedDraft,
+        beginDraftForProject,
+        replaceDraftWithBlank: () => {
+          const blank = createDraft(activeProjects[0] || '');
+          draftRef.current = blank;
+          setDraft(blank);
+        },
+        openProjectPicker: () => setScreen('SelectProject'),
+        deleteDiscardedPhotos: discardDraftAfterReplacement,
+      });
 
     if (hasDraftContent(draft)) {
       Alert.alert(
@@ -8254,16 +8316,7 @@ useEffect(() => {
           {
             text: 'Start New',
             style: 'destructive',
-            onPress: () => {
-              const discardedDraft = draft;
-
-              proceed();
-
-              void deleteUnreferencedPhotosFromUpdate(
-                discardedDraft,
-                savedUpdates,
-              );
-            },
+            onPress: () => proceed(draft),
           },
         ],
       );
@@ -8271,7 +8324,7 @@ useEffect(() => {
       return;
     }
 
-    proceed();
+    proceed(null);
   }
 
   function createNewUpdateForScheduleTask(
@@ -8320,9 +8373,9 @@ useEffect(() => {
           text: 'Start Task Update',
           style: 'destructive',
           onPress: () => {
-            const discardedDraft = draft;
+            const discardedDraft = draftRef.current;
             proceed();
-            void deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdates);
+            void discardDraftAfterReplacement(discardedDraft);
           },
         },
       ],
@@ -8379,11 +8432,16 @@ useEffect(() => {
           reviewOpenedAt: new Date().toISOString(),
         },
       };
+      // The replaced draft's files go only after this draft is on disk
+      // (audit A4, 30 Sep 2026: they were left behind, and the ref lagged).
+      const discardedDraft = draftRef.current;
+      draftRef.current = nextDraft;
       setDraft(nextDraft);
       setSelectedWorkspaceProject(projectName);
-      setDraftSavedAt(null);
       setScreen('BuildUpdate');
       onPrepared?.();
+      if (hasDraftContent(discardedDraft)) void discardDraftAfterReplacement(discardedDraft);
+      else void persistDraftNow(nextDraft);
     }
 
     if (hasDraftContent(draft)) {
@@ -8454,35 +8512,10 @@ useEffect(() => {
     memory: DAVEConfirmedCaptureMemory,
     walkSessionId?: string,
   ) {
+    // A corrected project or area belongs to this memory only. It was saved
+    // as a name alias that renamed every task of the real area (whole-app
+    // audit A11 pass 2, 30 Sep 2026).
     await localDAVECaptureMemoryRepository.save(memory);
-    const identityLearning = memory.corrections
-      .filter(correction =>
-        (correction.field === 'project' || correction.field === 'location') &&
-        correction.previousValue?.trim() &&
-        correction.correctedValue?.trim(),
-      )
-      .map(correction => ({
-        id: `identity:${memory.id}:${correction.field}:${correction.correctedAt}`,
-        kind: correction.field === 'project' ? 'project' as const : 'area' as const,
-        rawName: correction.previousValue || '',
-        canonicalName: correction.correctedValue || '',
-        parentProjectName: correction.field === 'location'
-          ? memory.recommendedProject.value
-          : null,
-        sourceRecordId: memory.id,
-        confirmedAt: memory.confirmedAt,
-        confirmedBy: 'Project manager',
-      }));
-    if (identityLearning.length > 0) {
-      try {
-        await Promise.all(identityLearning.map(correction =>
-          localDAVEIdentityRepository.save(correction),
-        ));
-        setIdentityCorrections([...await localDAVEIdentityRepository.list()]);
-      } catch {
-        // The confirmed capture remains saved even if optional identity learning cannot persist.
-      }
-    }
     const refreshedMemories = await localDAVECaptureMemoryRepository.list();
     setCaptureMemories([...refreshedMemories]);
     if (walkSessionId) {
@@ -8708,21 +8741,8 @@ useEffect(() => {
           text: 'Discard',
           style: 'destructive',
           onPress: () => {
-            const discardedDraft = draft;
-            const projectName =
-              activeProjects[0] || '';
-
-            setDraft(createDraft(projectName));
-            setDraftSavedAt(null);
-
-            removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-              reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-            );
-
-            void deleteUnreferencedPhotosFromUpdate(
-              discardedDraft,
-              savedUpdates,
-            );
+            // The blank draft is on disk before the discarded draft's files go (audit A4).
+            clearOpenDraft(activeProjects[0] || '', draftRef.current);
           },
         },
       ],
@@ -8772,23 +8792,34 @@ function addProject(projectName: string) {
     return false;
   }
 
-  const exists = projects.some(
-    project =>
-      project.toLowerCase() === trimmed.toLowerCase(),
-  );
-
-  if (exists) {
-    Alert.alert(
-      'Already added',
-      `${trimmed} is already in your project list.`,
-    );
-
+  // A deleted name is refused with the reason; an archived one is offered for reopening (audit A3).
+  const availability = projectNameAvailability({
+    projectName: trimmed, projects, archivedProjects,
+    deletedProjectNames: deletedProjectNamesRef.current, tombstones: operationalSyncTombstonesRef.current,
+  });
+  if (availability.kind === 'deleted') {
+    const deletedOn = availability.deletedAt ? formatSavedTime(availability.deletedAt) : null;
+    Alert.alert('Name not available', deletedProjectNameMessage(trimmed, deletedOn));
+    return false;
+  }
+  if (availability.kind === 'archived' || (availability.kind === 'similar' && availability.source === 'archived')) {
+    Alert.alert('Project is archived', archivedProjectNameMessage(trimmed, availability.projectName), [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Reopen', onPress: () => reopenProject(availability.projectName) },
+    ]);
+    return false;
+  }
+  if (availability.kind === 'exists') {
+    Alert.alert('Already added', `${trimmed} is already in your project list.`);
+    return false;
+  }
+  if (availability.kind === 'similar') {
+    Alert.alert('Name not available', similarProjectNameMessage(trimmed, availability.projectName, availability.source));
     return false;
   }
 
   setProjects(prev => [trimmed, ...prev]);
   setProjectRecords(prev => [{ name: trimmed }, ...prev]);
-  clearProjectDeletion(trimmed);
 
   saveCloudProject(trimmed);
 
@@ -8804,10 +8835,12 @@ function addProject(projectName: string) {
     return added;
   }
 
-  function closeProject(projectName: string) {
+  async function closeProject(projectName: string) {
+    // Work still queued for the project is named first (audit A7 M2).
+    const queue = await getOfflineQueue().catch(() => []);
     Alert.alert(
-      'Close project?',
-      `${projectName} will move to Archived Projects.`,
+      'Close Project?',
+      closeProjectMessage(projectName, queuedWorkForProject(queue, projectName)),
       [
         {
           text: 'Cancel',
@@ -8829,6 +8862,16 @@ function addProject(projectName: string) {
   }
 
   function reopenProject(projectName: string) {
+    const availability = projectNameAvailability({
+      projectName, projects: [], archivedProjects: [],
+      deletedProjectNames: deletedProjectNamesRef.current, tombstones: operationalSyncTombstonesRef.current,
+    });
+    if (availability.kind === 'deleted') {
+      // Deleted on another device: not revived from a stale archived list (audit A3 pass 2).
+      setArchivedProjects(prev => prev.filter(project => project.toLowerCase() !== projectName.toLowerCase()));
+      Alert.alert('Project was deleted', `${projectName} was deleted${availability.deletedAt ? ` on ${formatSavedTime(availability.deletedAt)}` : ''}, so it cannot be reopened.`);
+      return;
+    }
     setProjects(prev => mergeProjectNames(prev, [projectName]));
     setProjectRecords(prev =>
       prev.some(project => project.name.toLowerCase() === projectName.toLowerCase())
@@ -8878,14 +8921,15 @@ function addProject(projectName: string) {
             savedAt: deletedAt,
           };
           const explicitlyOwnedReferenceDocuments = referenceDocuments.filter(document =>
-            referenceDocumentMatchesDeletedProject(
+            referenceDocumentDeletedWithProject( // a shared schedule's file stays (audit A3 pass 3)
               document,
               projectName,
               authorityProjectId(projectName),
             ),
           );
+          // One rule with the cascade, historical evidence included (audit A4 pass 5).
           const removedUpdates = savedUpdatesRef.current.filter(update =>
-            projectUpdateBelongsToParentProject({
+            projectDeletionTakesUpdate({
               update,
               projectName,
               scheduleItems,
@@ -8896,7 +8940,7 @@ function addProject(projectName: string) {
               projectDocumentMatchesProject(document, projectName),
             ),
             ...removedUpdates.flatMap(update => update.documents || []),
-            ...(projectUpdateBelongsToParentProject({
+            ...(projectDeletionTakesUpdate({
               update: draftRef.current,
               projectName,
               scheduleItems,
@@ -8926,7 +8970,7 @@ function addProject(projectName: string) {
             scheduleItems,
             daveSyncTombstones: support.daveSyncTombstones,
             draft: currentDraftEnvelope,
-            draftBelongsToProject: projectUpdateBelongsToParentProject({
+            draftBelongsToProject: projectDeletionTakesUpdate({
               update: draftRef.current,
               projectName,
               scheduleItems,
@@ -8953,6 +8997,7 @@ function addProject(projectName: string) {
       );
       const { cascade, fallbackProject, replacementDraft } = deletionResult;
 
+      rememberOperationalTombstones(cascade.nextDAVESyncTombstones);
       deletedProjectNamesRef.current = cascade.nextDeletedProjectNames;
       deletedUpdateTombstonesRef.current = cascade.nextUpdateTombstones;
       savedUpdatesRef.current = cascade.remainingUpdates;
@@ -8988,9 +9033,12 @@ function addProject(projectName: string) {
         ...cascade.removedReferenceDocuments.map(document =>
           removeOperationalRecordFromSyncQueue('reference_document', document.id),
         ),
+        withdrawQueuedChangesOfDeletedProject(projectName, projectRecords), // cover, reopen, shared copies (audit A3 pass 4)
       ]);
       void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
       void synchronizeDAVESyncTombstones().catch(() => undefined);
+      const deletedCoverPhoto = projectRecords.find(project => project.name.toLowerCase() === projectName.toLowerCase())?.coverPhoto;
+      void removeCachedProjectCoverPhoto(deletedCoverPhoto).catch(() => undefined); // goes with the project (audit A3)
       const [cloudQueueResult, fileCleanupResult] = await Promise.allSettled([
         projectDeletionRuntime.processPendingCloudIntents(),
         projectDeletionRuntime.processPendingFileCleanupIntents(),
@@ -9089,14 +9137,15 @@ function addProject(projectName: string) {
           style: 'destructive',
           onPress: () => {
             void recordDAVESyncTombstone('project_area', areaId)
-              .then(() => removeOperationalRecordFromSyncQueue('project_area', areaId))
+              .then(tombstone => {
+                rememberOperationalTombstones([tombstone]);
+                return removeOperationalRecordFromSyncQueue('project_area', areaId);
+              })
               .then(() => {
                 markProjectAreasAuthorityReady(true);
                 setProjectAreas(prev => prev.filter(item => item.id !== areaId));
-
-                if (draft.selectedAreaId === areaId) {
-                  changeDraftArea('');
-                }
+                // Back to no choice made, not "chose Unassigned" (GPS pass 1 low, G-L2).
+                setDraft(prev => draftAfterAreaDeleted(prev, areaId));
               })
               .catch(() => {
                 Alert.alert(
@@ -9624,27 +9673,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setSavedUpdates(prev => prev.map(applyToUpdate));
     // A result that arrives after the update synced, or while it syncs, would
     // otherwise stay on this phone and the desktop would show "Analyzing" for
-    // good (code review 27 Sep 2026). Queue the update with the result and ask
-    // for a sync pass; one already running is followed by one more, so a
-    // second result a few seconds later is not left behind (review 28 Sep).
-    // Every pass uploads the update's single queue record, so the newest wins.
-    // The queue record is written at once, as a save does: until a queued
-    // record carries this revision, a realtime echo or a refresh would replace
-    // the phone's copy with the older cloud row and lose the result (review
-    // pass 6).
-    // Known limit (review pass 7): a result that lands while a pass is staging
-    // this same update can still be overwritten by that pass's older copy; the
-    // queue keeps the last write. Fixing it needs a monotonic local revision in
-    // queue writes (see handoff), a sync-protocol change.
+    // good (code review 27 Sep 2026). Only the result goes up, as a patch on
+    // the cloud's copy (whole-app audit A4 pass 13 G1): the whole copy, queued
+    // again stamped now, went over a newer iPad edit of the note. A Sent update
+    // stays Sent; its patch goes through the queue upload. An edit still
+    // waiting takes the result in its own queued copy, keeping the time David
+    // saved it, and asks for a sync pass (one running is followed by one more,
+    // review 28 Sep). Queued at once: a realtime echo or a refresh shows the
+    // cloud's copy with the result (review pass 6).
+    // A pass already checking this update's photos no longer writes its older
+    // copy over this record (whole-app audit A7 pass 7 M1). A pass that read
+    // the update before the result and has not written it yet still may; the
+    // rerun asked for here then stages the result again (review pass 7).
+    // A failed card too, one in conflict among them (A4 pass 14 #4).
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
     const withResult = saved ? applyToUpdate(saved) : null;
     if (
       saved && withResult && withResult !== saved && result.status !== 'analyzing' &&
-      (saved.status === 'sent' || saved.status === 'queued')
+      (saved.status === 'sent' || saved.status === 'queued' || saved.status === 'failed')
     ) {
-      const queued: ProjectUpdate = { ...withResult, status: 'queued' };
-      upsertSavedUpdateUnlessDeleted(queued);
-      void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);
+      upsertSavedUpdateUnlessDeleted(withResult);
+      void queueProjectUpdatePhotoAnalysis(withResult, photoId, saved).catch(() => undefined)
+        .finally(() => saved.status === 'queued' ? requestQueuedUpdateSync() : requestPendingChangesUpload('late_photo_analysis'));
     }
   }
 
@@ -9667,6 +9717,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setPhotoAuthRequest(null);
     setPhotoAuthPassword('');
     setPhotoAuthMessage(null);
+  }
+
+  function dismissAllOverlays() { // a sheet that failed to render closes (audit A2 pass 2)
+    closePhotoIntelligenceSignIn(); setPreviewPhoto(null); cancelDocumentProjectSelection(); ecosProjectQuestion.close();
+    setTalkVoiceOpen(false); setTalkTypedOpen(false); keptTalkCapture.keep(); setTalkAnswer(null); setTalkTaskAction(null);
+    ecosDocumentEvidence.close();
   }
 
   function markPhotoAnalysisRetryRoutedToSignIn(photoId: string) {
@@ -9824,19 +9880,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function removePhoto(photoId: string) {
-    const deletedPhoto = draft.photos.find(
+    const shownDraft = draftRef.current;
+    const deletedPhoto = shownDraft.photos.find(
       photo => photo.id === photoId,
     );
     const nextDraft = {
-      ...draft,
-      photos: draft.photos.filter(photo => photo.id !== photoId),
+      ...shownDraft,
+      photos: shownDraft.photos.filter(photo => photo.id !== photoId),
     };
     photoAnalysisCoordinator.invalidate({
-      projectId: authorityProjectId(draft.projectName),
-      updateId: draft.id,
+      projectId: authorityProjectId(shownDraft.projectName),
+      updateId: shownDraft.id,
       photoId,
     });
 
+    draftRef.current = nextDraft;
     setDraft(prev => ({
       ...prev,
       photos: prev.photos.filter(
@@ -9844,11 +9902,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ),
     }));
 
+    // The draft without the photo is on disk before its file goes: a kill in
+    // the 750 ms save window reopened it on a deleted file, and saving it
+    // marked the photo missing (whole-app audit A4 pass 6 F5 (30 Sep 2026)).
     if (deletedPhoto) {
-      void deleteStoredPhotoIfUnused(deletedPhoto.uri, [
-        nextDraft,
-        ...savedUpdates,
-      ]);
+      void persistDraftNow(nextDraft).then(() => deleteStoredPhotoIfUnused(
+        deletedPhoto.uri, [draftRef.current, ...savedUpdatesRef.current]));
     }
   }
 
@@ -10063,11 +10122,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Email unavailable',
         'The report was copied instead. Open your email app and paste it into a new message.',
       );
-      return 'unknown';
+      // The report is on the clipboard to be pasted and sent, as Copy Report leaves it (audit A6 pass 3).
+      return 'completed';
     }
 
     // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
-    const images = await reportImageFiles(report, REPORT_EMAIL_IMAGE_LIMIT);
+    // A body without citations (the executive format, or an edited body)
+    // takes no images and no "not attached" note (whole-app audit A6).
+    const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_EMAIL_IMAGE_LIMIT);
     const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
       subject: report.subject || report.title,
       body: report.body + note,
@@ -10081,6 +10143,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return compose([], `\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     });
     return mailComposerOutcome(result.status);
+  }
+
+  /** Whether the body as it will be sent still cites "See Image N" (an edited body may not). The executive body numbers no images, so "see image 4" there is the owner's own note (audit A6 pass 5). */
+  function reportBodyCitesImages(report: PIEReportDraft): boolean {
+    return reportFormat !== 'executive' && /\bSee Images?\s+\d/i.test(report.body);
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
@@ -10112,10 +10179,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Text unavailable',
         'The report was copied instead. Open Messages and paste it into a new text.',
       );
-      return 'unknown';
+      return 'completed';
     }
 
-    const images = await reportImageFiles(report, REPORT_TEXT_IMAGE_LIMIT);
+    const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);
     const reportText = `${report.title}\n\n${report.body}`;
     const textOnly = () => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     const attachments = await buildSmsAttachments(images.photos).catch(() => null);
@@ -10143,21 +10210,42 @@ Note: This update was opened through Outlook because PLZ email security may reje
       'Continue',
     );
     if (!proceed) return 'canceled';
-    return downloadWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');
+    const shared = await shareWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');
+    if (!shared) return 'unknown';
+    // The share sheet closes the same way whether the mail was sent, the
+    // file was saved or the sheet was dismissed: only the owner knows
+    // (audit A6 pass 3: a dismissed sheet started the next reporting period).
+    const sent = await askToContinue(
+      'Was the report sent?',
+      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded and you can send it later.',
+      'Yes, it was sent',
+      'Not yet',
+    );
+    return sent ? 'completed' : 'unknown';
   }
 
+  /** Saving or opening the Word file is not a delivery (audit A6 pass 3). */
   async function downloadWordReport(
     report: PIEReportDraft,
     drawingReferences: readonly ReportDrawingReference[],
-    shareTitle = 'Open or save the Word report',
   ): Promise<ReportCommunicationOutcome> {
+    await shareWordReport(report, drawingReferences, 'Open or save the Word report');
+    return 'unknown';
+  }
+
+  /** Builds the Word report and offers it through the share sheet; true when the sheet was shown. */
+  async function shareWordReport(
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+    shareTitle: string,
+  ): Promise<boolean> {
     const sharingAvailable = await Sharing.isAvailableAsync();
     if (!sharingAvailable) {
       Alert.alert(
         'Word report unavailable',
         'The iOS Share Sheet is not available on this device.',
       );
-      return 'unknown';
+      return false;
     }
 
     const directory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
@@ -10166,27 +10254,37 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Word report unavailable',
         'A temporary folder could not be found on this device.',
       );
-      return 'unknown';
+      return false;
     }
 
-    const reportPhotoIds = uniqueStrings(
-      report.locationGroups.flatMap(group =>
-        group.workAreas.flatMap(area =>
-          area.imageReferences.map(reference => reference.photoId))),
-    );
+    // No photo appendix for a body that cites no image (the executive
+    // format, or an edited body): as email and text (audit A6, pass 2).
     const reportPhotoNumbers = new Map(
-      report.locationGroups.flatMap(group =>
-        group.workAreas.flatMap(area =>
-          area.imageReferences.map(reference => [
-            reference.photoId,
-            reference.imageNumber,
-          ] as const))),
+      reportBodyCitesImages(report)
+        ? report.locationGroups.flatMap(group =>
+            group.workAreas.flatMap(area =>
+              area.imageReferences.map(reference => [
+                reference.photoId,
+                reference.imageNumber,
+              ] as const)))
+        : [],
+    );
+    // In the order the report text numbers them, so the Word file's "Photo
+    // 3" is the body's "Image 3" whether or not its file is present
+    // (whole-app audit A6, 29 Sep 2026).
+    const reportPhotoIds = [...reportPhotoNumbers.keys()].sort(
+      (left, right) => (reportPhotoNumbers.get(left) ?? 0) - (reportPhotoNumbers.get(right) ?? 0),
     );
     const reportPhotoIdSet = new Set(reportPhotoIds);
     const relevantUpdates = activeSavedUpdates.filter(update =>
       update.photos.some(photo => reportPhotoIdSet.has(photo.id)));
+    // Only the cited photos are fetched, not every cloud-only photo of their
+    // updates, as the email path already does (audit A6).
     const hydratedUpdates = await Promise.all(
-      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos(update)),
+      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos({
+        ...update,
+        photos: update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
+      })),
     );
     const readableDrawingReferences = await Promise.all(
       drawingReferences.map(async reference => {
@@ -10247,13 +10345,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         const unavailableDetail = unavailable === 1
           ? `\n\n${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
           : '';
-        Alert.alert(
+        // Read before anything else is asked (audit A6 pass 4: the Outlook
+        // question opened on top of this notice).
+        await new Promise<void>(resolve => Alert.alert(
           'Word report prepared',
           `${summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia)}` +
             `${unavailableDetail}\n\nEach unavailable source image is listed in Media Requiring Review.`,
-        );
+          [{ text: 'OK', onPress: () => resolve() }],
+          { cancelable: true, onDismiss: () => resolve() },
+        ));
       }
-      return 'completed';
+      return true;
     } catch (error) {
       Alert.alert(
         'Word report unavailable',
@@ -10261,7 +10363,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? error.message.trim()
           : 'The Word report could not be prepared from the current project files.',
       );
-      return 'unknown';
+      return false;
     } finally {
       await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
     }
@@ -10289,9 +10391,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const update = activeSavedUpdates.find(candidate =>
       candidate.photos.some(photo => photo.id === photoId));
     if (!update) return null;
-    try {
-      const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
-      return hydrated.photos.find(photo => photo.id === photoId)?.uri?.trim() || null;
+    try { // only the requested photo, as email and Word fetch (audit A6 pass 6)
+      const hydrated = await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: update.photos.filter(photo => photo.id === photoId) });
+      return hydrated.photos[0]?.uri?.trim() || null;
     } catch {
       return null;
     }
@@ -10353,8 +10455,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // the photo's metadata with no bytes and no asset id, so a restore never
       // looks for a file this archive does not have.
       if (!source) {
-        if (includeFiles) unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date });
-        photos.push({ ...photo, uri: '' });
+        // A photo with a cloud copy is restored from it. One with neither a
+        // file in this archive nor a cloud copy (records-only, or the file
+        // is gone) is declared unavailable, so the owner is told and the
+        // restore accepts the archive and drops that photo, instead of
+        // refusing the whole backup (whole-app audit A7, 30 Sep 2026).
+        if (photo.cloudStoragePath?.trim()) {
+          // The lookup above stamps a derived path even when it finds
+          // nothing (offline, or the object is gone): the record keeps the
+          // path so a later restore can look again, and the owner is told
+          // now (audit A7 pass 2: these were counted as cloud copies).
+          if (photo.cloudRecoveryStatus === 'unavailable') {
+            unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date, reason: 'cloud_unconfirmed' });
+          }
+          photos.push({ ...photo, uri: '' });
+          continue;
+        }
+        unavailablePhotos.push({ projectName: update.projectName, updateDate: update.date, reason: 'only_on_this_phone' });
+        photos.push(markPhotoUnavailableInBackup(photo));
         continue;
       }
       sources.push(source);
@@ -10370,9 +10488,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     } as ProjectUpdate;
   }
 
-  const askToContinue = (title: string, message: string, continueLabel: string) => new Promise<boolean>(resolve => Alert.alert(
+  const askToContinue = (title: string, message: string, continueLabel: string, cancelLabel = 'Cancel') => new Promise<boolean>(resolve => Alert.alert(
     title, message,
-    [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) }, { text: continueLabel, onPress: () => resolve(true) }],
+    [{ text: cancelLabel, style: 'cancel', onPress: () => resolve(false) }, { text: continueLabel, onPress: () => resolve(true) }],
     { cancelable: true, onDismiss: () => resolve(false) },
   ));
 
@@ -10512,6 +10630,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
             }
           : null,
       };
+      // What is about to be written must restore: the same check the
+      // restore runs, before anything is encrypted (audit A7).
+      const restorable = normalizeBackupData(backup, { archive: true });
+      if (!restorable.ok) {
+        onProgress?.('Backup not written.');
+        Alert.alert('Backup not written', `This backup would not restore: ${restorable.message}`);
+        return;
+      }
+      if (!includeFiles && unavailablePhotos.length > 0) {
+        // Records-only carries no files: photos not yet in the cloud will
+        // not be in this backup, and the owner decides with that known.
+        const proceed = await askToContinue(
+          'Some photos are not in this backup',
+          unavailablePhotosNotice(unavailablePhotos, { recordsOnly: true }),
+          'Back up without them',
+        );
+        if (!proceed) {
+          onProgress?.('Backup not written.');
+          return;
+        }
+      }
       const randomBytes = (length: number) => Crypto.getRandomBytesAsync(length);
 
       if (!includeFiles) {
@@ -10611,6 +10750,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return { values: result.values, result };
       });
 
+      operationalRefreshCommitGuard.invalidate(); // a refresh read before it commits nothing (whole-app audit A4 pass 6 F3 (30 Sep 2026))
       savedUpdatesRef.current = restored.savedUpdates; draftRef.current = restored.draft;
       setSavedUpdates(restored.savedUpdates); setProjectRecords(restored.projectRecords);
       setProjects(restored.projects); setArchivedProjects(restored.archivedProjects);
@@ -10691,7 +10831,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         expoBackupFileIO,
         onProgress,
       ));
-      const preflight = normalizeBackupData(opened.state);
+      const preflight = normalizeBackupData(opened.state, { archive: true });
 
       if (!preflight.ok) {
         onProgress?.('Restore did not finish.');
@@ -10743,7 +10883,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       importProjectDocument: importProjectDocumentIntoOwnedStorage,
                     },
                   );
-                  const normalized = normalizeBackupData(materialized.state);
+                  // Carried photos have their files now; photos declared
+                  // unavailable are accepted here and dropped by normalizeUpdate.
+                  const normalized = normalizeBackupData(materialized.state, { archive: true });
                   if (!normalized.ok) {
                     await materialized.cleanup();
                     onProgress?.('Restore did not finish.');
@@ -10855,97 +10997,95 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  function updateReferenceDocument(
-    documentId: string,
-    next: Partial<ReferenceDocument>,
-  ) {
-    const updatedAt = new Date().toISOString();
-    const updated = referenceDocumentsCurrentRef.current.map(document =>
-      document.id === documentId
-        ? normalizeReferenceDocument({ ...document, ...next, updatedAt })
-        : document,
-    );
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = updated;
-    setReferenceDocuments(updated);
-    const changed = updated.find(document => document.id === documentId);
-    if (changed) void queueReferenceDocumentRecord(changed);
-  }
-
-  function markReferenceDocumentCurrent(documentId: string) {
-    void (async () => {
-      const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-      if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
-        return;
-      }
-      const readiness = buildECOSDocumentReadiness(target);
-      if (!readiness.canMakeCurrent) {
-        Alert.alert('Document is not ready for ECOS', readiness.detail);
-        return;
-      }
-      const client = getSupabaseClient();
-      if (!client || !target.cloudUpdatedAt) {
+  async function activateReferenceDocument(documentId: string): Promise<boolean> {
+    const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    if (!target || scheduleDocumentIsCurrentEverywhere(target, referenceDocumentsCurrentRef.current) || currentReferenceActivationIdsRef.current.has(documentId)) {
+      return Boolean(target && scheduleDocumentIsCurrentEverywhere(target, referenceDocumentsCurrentRef.current)); // retired for some projects (Q15), or a newer partial schedule shows for some (A5 pass 4 #2): made current again
+    }
+    // A schedule has no ECOS preparation to wait for (audit A5 F4).
+    const readiness = buildECOSDocumentReadiness(target);
+    if (canonicalReferenceCategory(target) !== 'schedule' && !readiness.canMakeCurrent) {
+      Alert.alert('Document is not ready for ECOS', readiness.detail);
+      return false;
+    }
+    currentReferenceActivationIdsRef.current.add(documentId);
+    projectDocumentSharedRecordSync.flush(documentId); // text typed just before goes first (whole-app audit A8 pass 2 #7)
+    try {
+      const outcome = await activateSharedReferenceDocument({
+        documentId,
+        documents: referenceDocumentsCurrentRef.current,
+        client: getSupabaseClient(),
+        listDocuments: async () => {
+          const result = await listReferenceDocuments();
+          return result.ok && !result.stubbed && Array.isArray(result.data)
+            ? normalizeReferenceDocuments(result.data)
+            : null;
+        },
+        confirmRetiringProjects: effects => new Promise(resolve => Alert.alert(
+          'Change the current schedule?',
+          scheduleRetirementMessage(effects), // from the cloud's current flags (whole-app audit A5 pass 3 F2)
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Set Active', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        )),
+      });
+      if (outcome.status === 'cancelled') return false;
+      if (outcome.status === 'refresh_required') {
         Alert.alert(
           'Refresh required',
           'Sign in and refresh the project documents before changing the current revision.',
         );
-        return;
+        return false;
       }
-
-      currentReferenceActivationIdsRef.current.add(documentId);
-      try {
-        const activation = await activateECOSCurrentReferenceDocument({
-          client,
-          documentId,
-          expectedUpdatedAt: target.cloudUpdatedAt,
-        });
-        if (activation.status !== 'activated') {
-          Alert.alert(
-            activation.status === 'not_prepared'
-              ? 'Document is not ready for ECOS'
-              : 'Current revision was not changed',
-            activation.message || 'Refresh the project documents and try again.',
-          );
-          return;
-        }
-
-        const documentsResult = await listReferenceDocuments();
-        if (
-          !documentsResult.ok ||
-          documentsResult.stubbed ||
-          !Array.isArray(documentsResult.data)
-        ) {
-          Alert.alert(
-            'Current revision changed',
-            'The shared record was updated, but this device could not refresh it yet. Refresh Project Documents before making another change.',
-          );
-          return;
-        }
-
-        const cloudDocuments = normalizeReferenceDocuments(documentsResult.data);
-        const deletedIds = deletedDAVERecordIds(
-          operationalSyncTombstonesRef.current,
-          'reference_document',
-        );
-        const mergedDocuments = reconcileCurrentScheduleDocuments(
-          mergeDAVEReferenceDocumentRecoveryRecords({
-            local: referenceDocumentsCurrentRef.current,
-            cloud: cloudDocuments,
-            deletedIds,
-          }),
-        );
-        markReferenceDocumentsAuthorityReady(true);
-        referenceDocumentsCurrentRef.current = mergedDocuments;
-        setReferenceDocuments(mergedDocuments);
-      } catch {
+      if (outcome.status !== 'activated') {
         Alert.alert(
-          'Current revision was not changed',
-          'Vitruvius could not verify the shared revision change. Try again shortly.',
+          outcome.status === 'not_prepared'
+            ? 'Document is not ready for ECOS'
+            : 'Current revision was not changed',
+          outcome.message,
         );
-      } finally {
-        currentReferenceActivationIdsRef.current.delete(documentId);
+        return false;
       }
-    })();
+      if (!outcome.documents) {
+        Alert.alert(
+          'Current revision changed',
+          'The shared record was updated, but this device could not refresh it yet. Refresh Project Documents before making another change.',
+        );
+        return true;
+      }
+      const deletedIds = deletedDAVERecordIds(
+        operationalSyncTombstonesRef.current,
+        'reference_document',
+      );
+      const kept = await requeueReferenceDocumentEditsOutlivingActivation(outcome.documents).catch(() => []); // text typed first outlives the activation's stamp (whole-app audit A8 pass 3 M2)
+      const mergedDocuments = reconcileCurrentScheduleDocuments(
+        mergeDAVEReferenceDocumentRecoveryRecords({
+          local: [...referenceDocumentsCurrentRef.current, ...kept],
+          cloud: [...outcome.documents],
+          deletedIds,
+        }),
+      );
+      const carried = new Map(scheduleProgressCarriedOnActivation({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], documentsBefore: referenceDocumentsCurrentRef.current, documentsAfter: mergedDocuments }).map(item => [item.id, item as unknown as ScheduleItem])); // progress recorded since the import follows the task now shown (A5 pass 4 #3)
+      markReferenceDocumentsAuthorityReady(true);
+      referenceDocumentsCurrentRef.current = mergedDocuments;
+      setReferenceDocuments(mergedDocuments);
+      if (carried.size > 0) { markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); }); }
+      return true;
+    } catch {
+      Alert.alert(
+        'Current revision was not changed',
+        'Vitruvius could not verify the shared revision change. Try again shortly.',
+      );
+      return false;
+    } finally {
+      currentReferenceActivationIdsRef.current.delete(documentId);
+    }
+  }
+
+  function markReferenceDocumentCurrent(documentId: string) {
+    void activateReferenceDocument(documentId);
   }
 
   async function ensureVerifiedReferenceDocumentBytes(
@@ -10980,7 +11120,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         sizeBytes: restored.sizeBytes,
         contentSha256: restored.sha256,
       };
-      updateReferenceDocument(document.id, readableDocument);
+      saveRestoredReferenceDocumentLocally(restored);
       return readableDocument;
     }
 
@@ -10993,6 +11133,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ...document,
       uri: resolvedUri,
     };
+  }
+
+  /** An open keeps the restored file on this phone only: no new edit time, nothing queued (whole-app audit A8 pass 1 F4 (30 Sep 2026)). */
+  function saveRestoredReferenceDocumentLocally(restored: ReferenceDocumentByteRestoreResult) {
+    const updated = withRestoredReferenceDocumentBytes(referenceDocumentsCurrentRef.current, restored);
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
   }
 
   async function openReferenceDocument(document: ReferenceDocument) {
@@ -11162,17 +11310,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = updatedReferences;
     setReferenceDocuments(updatedReferences);
-    void queueReferenceDocumentRecord(synchronizedDocument);
+    projectDocumentSharedRecordSync.queueAfterChange(synchronizedDocument.id, next);
   }
 
-  async function makeProjectScheduleDocumentCurrent(documentId: string) {
+  async function makeProjectScheduleDocumentCurrent(documentId: string, hidingTasksConfirmed = false) {
     const document = projectDocuments.find(item => item.id === documentId);
     if (!document || document.category !== 'Schedule') return;
+    // Asked before either path: a schedule with no imported tasks hides the project's on every device (whole-app audit A8 pass 1 F6, 30 Sep 2026).
+    const projectName = projects.find(name => authorityProjectId(name) === document.projectId) || null;
+    const retirement = await loadECOSScheduleRetirementScope(getSupabaseClient()); // as the cloud retires (owner answer Q15); unknown (null): only this schedule changes here, the cloud settles the rest (A5 pass 4 #5)
+    // The same file already imported for the project is made current, unasked, not its task-less copy (whole-app audit A8 pass 2 #2).
+    const importedCopy = importedScheduleOfPhoneSchedule(document, projectName, referenceDocuments);
+    const warning = hidingTasksConfirmed || importedCopy ? null : scheduleTasksHiddenWarning(document.name, scheduleTasksHiddenByActivation(
+      phoneScheduleActivationTarget(document, projectName, referenceDocuments), referenceDocuments, scheduleItems, retirement ?? 'schedule')); // unknown: warned as the cloud may retire, as Set Active (A8 pass 5 L1)
+    if (warning) return Alert.alert(warning.title, warning.message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
+      { text: 'Make Current', onPress: () => { void makeProjectScheduleDocumentCurrent(documentId, true); } },
+    ]);
     const referenceUpdatedAt = new Date().toISOString();
 
-    let referenceDocument = document.referenceDocumentId
+    let referenceDocument = importedCopy || (document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
-      : null;
+      : null);
+    const alreadyShared = Boolean(referenceDocument);
 
     try {
       if (!referenceDocument) {
@@ -11242,23 +11403,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     const selectedReferenceDocument = referenceDocument;
-    const nextReferenceDocuments = [
-      ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
-        ? []
-        : [selectedReferenceDocument]),
-      ...referenceDocuments,
-    ].map(item => ({
-      ...item,
-      isCurrent: item.category === 'Schedules'
-        ? item.id === selectedReferenceDocument.id
-        : item.isCurrent,
-      updatedAt: item.category === 'Schedules'
-        ? referenceUpdatedAt
-        : item.updatedAt,
-    }));
+    // A schedule already shared is made current by the cloud; a flag flipped
+    // here never reached it (audit A5 F4).
+    if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;
+    // By the cloud's rule, not every schedule of every project retired (owner answer Q15).
+    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current
+      : scheduleDocumentsAfterActivation(selectedReferenceDocument, referenceDocuments, retirement, referenceUpdatedAt);
 
-    markReferenceDocumentsAuthorityReady(true);
-    setReferenceDocuments(nextReferenceDocuments);
+    if (!alreadyShared) {
+      markReferenceDocumentsAuthorityReady(true);
+      setReferenceDocuments(nextReferenceDocuments);
+    }
 
     const updatedAt = referenceUpdatedAt;
     const markCurrent = (documents: ProjectDocument[]) =>
@@ -11281,10 +11436,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       })),
     );
 
+    if (alreadyShared) return;
     referenceDocumentsCurrentRef.current = nextReferenceDocuments;
     const queueResults = await Promise.allSettled(
       nextReferenceDocuments
-        .filter(item => item.category === 'Schedules')
+        .filter(item => !referenceDocuments.includes(item))
         .map(document => queueReferenceDocumentRecord(document)),
     );
     if (queueResults.some(result => result.status === 'rejected')) {
@@ -11293,6 +11449,32 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'The shared cloud record could not be updated yet. Use Sync Now when connected.',
       );
     }
+  }
+
+  async function reviewProjectScheduleDocumentImport(document: ProjectDocument, projectName: string | null) {
+    try {
+      const { localUri } = await ensureVerifiedProjectDocumentBytes(document);
+      if (!localUri) throw new Error('Verified schedule path is missing.');
+      const batch = await prepareScheduleImportFromAsset({ uri: localUri, name: document.name, mimeType: document.mimeType, size: document.sizeBytes }, projectName ? [projectName] : undefined);
+      if (!batch) return;
+      projectScheduleImportCardRef.current = { batchId: batch.id, documentId: document.id }; // made current once approved (whole-app audit A8 pass 2 #2)
+      setIncomingScheduleImportBatch(batch); setScheduleProjectFilter(null); setScreen('Schedule');
+    } catch (error) {
+      Alert.alert('Schedule review unavailable', error instanceof Error ? error.message : 'The schedule file could not be read on this phone.');
+    }
+  }
+
+  /** A phone schedule card marked current on this phone, and saved; its shared copy is left as it is. */
+  function markProjectScheduleCardCurrent(documentId: string) {
+    const updatedAt = new Date().toISOString();
+    const markCurrent = (documents: ProjectDocument[]) => markCurrentProjectScheduleDocument({ documents, documentId, updatedAt });
+    const next = markCurrent(projectDocumentsCurrentRef.current);
+    projectDocumentsCurrentRef.current = next;
+    setProjectDocuments(next);
+    setDraft(prev => ({ ...prev, documents: markCurrent(prev.documents || []) }));
+    setSavedUpdates(prev => prev.map(update => ({ ...update, documents: markCurrent(update.documents || []) })));
+    void persistProjectDocumentsImmediately(next).catch(error => reportStoragePersistenceFailure({
+      storageKey: PROJECT_DOCUMENTS_STORAGE_KEY, label: 'project document metadata', error }));
   }
 
   function deleteProjectDocument(documentId: string) {
@@ -11304,71 +11486,97 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const title = sensitive
       ? 'Archive compliance-sensitive document?'
       : 'Delete project document?';
+    // The owner chooses this phone only or every device (owner answer Q14, audit A7 pass 4).
     const message = sensitive
       ? `${document.name} is categorized as ${document.category}. It will be hidden from active project documents.`
-      : `${document.name} will be removed from active project documents on this device.`;
+      : `Delete from This Device removes ${document.name} from this phone; a copy already shared stays on your other devices. Delete from All Devices also removes the shared copy from the iPad, the web and the cloud. Either way it is taken off any field update it was attached to. This cannot be undone.`;
+    const sharedRecord = findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current);
+    const sharedWithAnotherDocument = Boolean(sharedRecord) && projectDocumentsCurrentRef.current.some(item =>
+      item.id !== documentId && (item.referenceDocumentId === sharedRecord?.id || item.id === sharedRecord?.id));
 
-    Alert.alert(
-      title,
-      message,
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: sensitive ? `Archive ${document.category}` : 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
-              'not_recorded';
-            if (!sensitive) {
-              const cleanup = await deleteOwnedProjectDocument(document);
-              localFileCleanupStatus = cleanup.status;
-            }
-            const archivedAt = new Date().toISOString();
+    const removeFromDevice = async () => {
+      if (sharedRecord) projectDocumentSharedRecordSync.cancel(sharedRecord.id);
+      let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
+        'not_recorded';
+      if (!sensitive) {
+        const cleanup = await deleteOwnedProjectDocument(document);
+        localFileCleanupStatus = cleanup.status;
+      }
+      const archivedAt = new Date().toISOString();
+      const removeCard = (prev: ProjectDocument[]) => (
+        sensitive
+          ? prev.map(item =>
+              item.id === documentId
+                ? {
+                    ...item,
+                    isArchived: true,
+                    archivedAt,
+                    updatedAt: archivedAt,
+                  }
+                : item,
+            )
+          : prev.filter(item => item.id !== documentId));
+      projectDocumentsCurrentRef.current = removeCard(projectDocumentsCurrentRef.current); // an upload finishing meanwhile saves the list without it (audit A8 pass 3 L3)
+      setProjectDocuments(removeCard);
+      if (!sensitive && sharedRecord) hiddenSharedDocuments.hide(sharedRecord.id); // no card comes back here (audit A8)
+      if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
+        bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
+        remainingDocuments: projectDocumentsCurrentRef.current.filter(item => item.id !== documentId),
+        isQueued: async id => (await getOfflineQueue()).some(item => item.entity === 'reference_document' && (item.payload as { id?: string }).id === id),
+        withdraw: async id => { await removeOperationalRecordFromSyncQueue('reference_document', id); setReferenceDocuments(prev => prev.filter(item => item.id !== id)); },
+      }).catch(() => undefined);
 
-            setProjectDocuments(prev =>
-              sensitive
-                ? prev.map(item =>
-                    item.id === documentId
-                      ? {
-                          ...item,
-                          isArchived: true,
-                          archivedAt,
-                          updatedAt: archivedAt,
-                        }
-                      : item,
-                  )
-                : prev.filter(item => item.id !== documentId),
-            );
+      setDraft(prev => ({
+        ...prev,
+        documents: (prev.documents || []).filter(
+          item => item.id !== documentId,
+        ),
+      }));
 
-            setDraft(prev => ({
-              ...prev,
-              documents: (prev.documents || []).filter(
-                item => item.id !== documentId,
-              ),
-            }));
+      // An update is shared by every device: one that was sent goes up again without it, whichever delete (A7 pass 5 M1).
+      const withoutDocument = (update: ProjectUpdate) => withoutFieldUpdateDocument(update, documentId);
+      if (sensitive) setSavedUpdates(prev => prev.map(withoutDocument));
+      else resendUpdatesListingDocument(documentId, withoutDocument);
 
-            setSavedUpdates(prev =>
-              prev.map(update => ({
-                ...update,
-                documents: (update.documents || []).filter(
-                  item => item.id !== documentId,
-                ),
-              })),
-            );
+      if (!sensitive && localFileCleanupStatus === 'unavailable') {
+        Alert.alert(
+          'Document removed',
+          'The document record was removed. Its older local file was already unavailable and was left untouched.',
+        );
+      }
+    };
+    const removeFromAllDevices = () => {
+      if (sharedWithAnotherDocument) {
+        Alert.alert('Shared copy kept', 'Another document on this phone uses the same shared copy, so it stays on your other devices.');
+      }
+      if (!sharedRecord || sharedWithAnotherDocument) return void removeFromDevice();
+      void removeReferenceDocumentEverywhere(sharedRecord.id)
+        .then(removeFromDevice)
+        .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
+    };
 
-            if (!sensitive && localFileCleanupStatus === 'unavailable') {
-              Alert.alert(
-                'Document removed',
-                'The document record was removed. Its older local file was already unavailable and was left untouched.',
-              );
-            }
-          },
-        },
-      ],
-    );
+    Alert.alert(title, message, sensitive
+      ? [
+          { text: 'Cancel', style: 'cancel' },
+          { text: `Archive ${document.category}`, style: 'destructive', onPress: () => void removeFromDevice() },
+        ]
+      : [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete from This Device', style: 'destructive', onPress: () => void removeFromDevice() },
+          { text: 'Delete from All Devices', style: 'destructive', onPress: removeFromAllDevices },
+        ]);
+  }
+
+  // Deleted on every device: the durable deletion record first; the cloud
+  // then removes the row, its file and its ECOS index.
+  async function removeReferenceDocumentEverywhere(documentId: string) {
+    const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
+    rememberOperationalTombstones([tombstone]);
+    markReferenceDocumentsAuthorityReady(true);
+    const updated = referenceDocumentsCurrentRef.current.filter(item => item.id !== documentId);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void removeOperationalRecordFromSyncQueue('reference_document', documentId);
   }
 
   function deleteReferenceDocument(documentId: string) {
@@ -11388,14 +11596,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            void recordDAVESyncTombstone('reference_document', documentId)
+            void removeReferenceDocumentEverywhere(documentId)
               .then(() => {
-                markReferenceDocumentsAuthorityReady(true);
-                const updated = referenceDocumentsCurrentRef.current
-                  .filter(item => item.id !== documentId);
-                referenceDocumentsCurrentRef.current = updated;
-                setReferenceDocuments(updated);
-                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -11410,46 +11612,43 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  function setActiveScheduleDocument(documentId: string) {
-    const updatedAt = new Date().toISOString();
-    const updated = referenceDocumentsCurrentRef.current.map(document =>
-      document.category === 'Schedules'
-        ? { ...document, isCurrent: document.id === documentId, updatedAt }
-        : document,
-    );
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = updated;
-    setReferenceDocuments(updated);
-    void Promise.all(updated
-      .filter(document => document.category === 'Schedules')
-      .map(document => queueReferenceDocumentRecord(document)));
+  // The cloud makes the choice; a flag flipped on the phone was undone by the
+  // next refresh and never reached the other device (audit A5 F4). A schedule with no
+  // imported tasks asks first, as on the phone card (whole-app audit A8 pass 2 #8).
+  async function setActiveScheduleDocument(documentId: string) {
+    const target = referenceDocumentsCurrentRef.current.find(item => item.id === documentId);
+    const retirement = (await loadECOSScheduleRetirementScope(getSupabaseClient())) ?? 'schedule';
+    const warning = target && scheduleTasksHiddenWarning(target.name, scheduleTasksHiddenByActivation(
+      target, referenceDocumentsCurrentRef.current, scheduleItemsCurrentRef.current, retirement));
+    if (!warning) return markReferenceDocumentCurrent(documentId);
+    Alert.alert(warning.title, warning.message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Set Active', onPress: () => markReferenceDocumentCurrent(documentId) },
+    ]);
   }
 
   function deleteScheduleDocument(documentId: string) {
     const document = referenceDocuments.find(item => item.id === documentId);
 
     if (!document) return;
+    // Only the tasks no other schedule contains: one unchanged across revisions stays (audit A5 pass 2).
     const relatedScheduleItems = document.importBatchId
-      ? scheduleItemsForExactImportBatch(scheduleItems, document)
-      : scheduleItems.filter(item =>
-          item.importedFrom === document.originalFileName || item.importedFrom === document.name);
+      ? scheduleItemsOnlyInImportBatch(scheduleItems, document, referenceDocuments.filter(scheduleDocumentIsScheduleLike))
+      : scheduleItemsOfUnbatchedDocument(scheduleItems, document); // never another schedule's batch by file name (whole-app audit A8 pass 2 #1)
+    const sharedCount = document.importBatchId
+      ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
+      : 0;
 
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove schedule items that were extracted or added from this PDF so outdated dates do not confuse Upcoming.`,
+      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete PDF Only',
           onPress: () => {
-            void recordDAVESyncTombstone('reference_document', documentId)
+            void removeReferenceDocumentEverywhere(documentId)
               .then(() => {
-                markReferenceDocumentsAuthorityReady(true);
-                const updated = referenceDocumentsCurrentRef.current
-                  .filter(item => item.id !== documentId);
-                referenceDocumentsCurrentRef.current = updated;
-                setReferenceDocuments(updated);
-                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -11477,26 +11676,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   advanceScheduleItemSyncGeneration(item.id);
                   cancelScheduleItemTextSync(item.id);
                 });
-                const deletedKeys = new Set(tombstones.map(tombstone =>
-                  `${tombstone.entityType}:${tombstone.recordId}`,
-                ));
-                const nextTombstones = [
-                  ...operationalSyncTombstonesRef.current.filter(tombstone =>
-                    !deletedKeys.has(`${tombstone.entityType}:${tombstone.recordId}`),
-                  ),
-                  ...tombstones,
-                ];
-                operationalSyncTombstonesRef.current = nextTombstones;
-                setOperationalSyncTombstones(nextTombstones);
+                rememberOperationalTombstones(tombstones);
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
+                const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
                 const nextScheduleItems = scheduleItemsCurrentRef.current
-                  .filter(item => !deletedItemIds.has(item.id));
+                  .filter(item => !deletedItemIds.has(item.id)).map(item => restored.get(item.id) || item);
                 referenceDocumentsCurrentRef.current = updated;
                 scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
+                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); });
+                dropDeletedPredecessors([...deletedItemIds], updated); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026)); a link moves to the task shown that answers to its removed row (A6 pass 14 L1)
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
                   ...relatedScheduleItems.map(item =>
@@ -11520,10 +11712,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  function addScheduleItem(item: Partial<ScheduleItem>) {
+  function addScheduleItem(item: Partial<ScheduleItem>): false | void {
+    const project = checkScheduleTaskProject({ projectName: item.projectName || '', projects: projectsCurrentRef.current, closedProjects: archivedProjectsCurrentRef.current, projectRecords: projectRecordsCurrentRef.current });
+    if (!project.ok) { Alert.alert(project.title, project.message); return false; } // only an open project's task can upload (audit A3 pass 6 M1)
     const now = new Date().toISOString();
     const next = normalizeScheduleItem({
       ...item,
+      projectName: project.projectName,
       id: uid(),
       progressSource: 'project_manager',
       progressConfirmedAt: now,
@@ -11582,10 +11777,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_pending');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        Alert.alert(
-          'Task saved on this device',
-          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
-        );
+        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors, projectStillUploading: result.projectStillUploading }); // not "still retrying" when its project is not open, nor "device only" while it is on its way (audit A3 pass 6 M1, pass 7 L1)
+        Alert.alert(notice.title, notice.message);
       }
       return false;
     } catch {
@@ -11601,10 +11794,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_error');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        Alert.alert(
-          'Task saved on this device',
-          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
-        );
+        const notice = scheduleTaskSaveNotice({});
+        Alert.alert(notice.title, notice.message);
       }
       return false;
     }
@@ -11645,11 +11836,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function updateScheduleItem(
     itemId: string,
-    next: Partial<ScheduleItem>,
+    edit: Partial<ScheduleItem>,
     workflowRequest?: ProjectItemWorkflowMutationRequest,
+    restoresProgress = false, // Talk's Undo gives back who stated the progress; never marked the manager's (A10 pass 5 L3)
   ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
+    const next = withProjectControlsEditMerged(current, edit); // newer controls kept (audit A2 p4 L1)
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
@@ -11673,7 +11866,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ...next,
         ...(progress || {}),
         updatedAt: now,
-        ...(progressChanged ? {
+        ...(progressChanged && !restoresProgress ? {
           progressSource: 'project_manager' as const,
           progressConfirmedAt: now,
           progressConfirmedBy: displayName.trim() || 'Project manager',
@@ -11746,6 +11939,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
     return syncScheduleItemRevision(latest, generation);
   }
 
+  /** This phone's own deletions reach the realtime applier at once, not at the next refresh (audit A7 pass 3). */
+  function rememberOperationalTombstones(tombstones: readonly DAVESyncTombstone[]) {
+    const keys = new Set(tombstones.map(tombstone => `${tombstone.entityType}:${tombstone.recordId}`));
+    const next = [
+      ...operationalSyncTombstonesRef.current.filter(tombstone => !keys.has(`${tombstone.entityType}:${tombstone.recordId}`)),
+      ...tombstones,
+    ];
+    operationalSyncTombstonesRef.current = next;
+    setOperationalSyncTombstones(next);
+  }
+
+  /** Surviving tasks drop the deleted ones from their dependencies, through the normal task update (audit A5; batch A5 pass 3 F7); after a schedule's delete (schedulesAfter), a link moves to the task shown that answers to its removed row, dropped only when none does (A6 pass 14 L1). */
+  function dropDeletedPredecessors(deletedItemIds: readonly string[], schedulesAfter?: readonly ReferenceDocument[]) {
+    (schedulesAfter ? scheduleDependenciesAfterScheduleDeleted(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], deletedItemIds, schedulesAfter) : dependencyChangesForDeletedTask(scheduleItemsCurrentRef.current, deletedItemIds)).forEach(change => {
+      scheduleItemSyncWarningsRef.current.add(change.id); // no alert per successor offline (A5 pass 2)
+      updateScheduleItem(change.id, { dependencies: change.dependencies });
+    });
+  }
+
   function deleteScheduleItem(itemId: string) {
     const item = scheduleItemsCurrentRef.current.find(
       scheduleItem => scheduleItem.id === itemId,
@@ -11761,31 +11973,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            advanceScheduleItemSyncGeneration(itemId);
-            cancelScheduleItemTextSync(itemId);
-            void recordDAVESyncTombstone('schedule_item', itemId)
-              .then(tombstone => {
-                const nextTombstones = [
-                  ...operationalSyncTombstonesRef.current.filter(candidate =>
-                    candidate.entityType !== 'schedule_item' ||
-                    candidate.recordId !== itemId,
-                  ),
-                  tombstone,
-                ];
-                operationalSyncTombstonesRef.current = nextTombstones;
-                setOperationalSyncTombstones(nextTombstones);
-                return Promise.all([
-                  removeOperationalRecordFromSyncQueue('schedule_item', itemId),
-                  clearScheduleItemSyncConflicts(itemId),
-                ]);
+            const itemIds = scheduleItemIdsDeletedWithTask(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], item as unknown as import('./types').ScheduleItem, referenceDocumentsCurrentRef.current); // with the hidden rows it answers to (A10 pass 7 L5)
+            itemIds.forEach(id => { advanceScheduleItemSyncGeneration(id); cancelScheduleItemTextSync(id); });
+            void recordDAVESyncTombstones(itemIds.map(recordId => ({ entityType: 'schedule_item' as const, recordId })))
+              .then(tombstones => {
+                rememberOperationalTombstones(tombstones);
+                return Promise.all(itemIds.flatMap(id => [
+                  removeOperationalRecordFromSyncQueue('schedule_item', id),
+                  clearScheduleItemSyncConflicts(id),
+                ]));
               })
               .then(() => {
                 markScheduleItemsAuthorityReady(true);
                 scheduleItemsCurrentRef.current =
                   scheduleItemsCurrentRef.current.filter(
-                    scheduleItem => scheduleItem.id !== itemId,
+                    scheduleItem => !itemIds.includes(scheduleItem.id),
                   );
-                setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
+                setScheduleItems(prev => prev.filter(scheduleItem => !itemIds.includes(scheduleItem.id)));
+                dropDeletedPredecessors(itemIds);
               })
               .catch(() => {
                 Alert.alert(
@@ -11896,23 +12101,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
       uri: file.uri,
       reportedSizeBytes: file.size,
     });
-    const sourceIdentity = buildScheduleImportSourceIdentity({
-      bytes: sourcePayload.data,
-      projects: scopedProjectRecords,
+    // After a delete, the next generation (audit A5); an import, not a card's own shared copy (A8 pass 3 M1); a full schedule's file again, only as a lookahead and only while it is not the schedule shown (A8 pass 5 L3, M1).
+    const { identity: sourceIdentity, alreadyImported, asLookahead, alreadyAddedMessage } = scheduleImportOfFile({
+      bytes: sourcePayload.data, projects: scopedProjectRecords,
+      documentIdIsDeleted: id => deletedDAVERecordIds(operationalSyncTombstonesRef.current, 'reference_document').includes(id),
+      documents: referenceDocumentsCurrentRef.current, scheduleItems: scheduleItemsCurrentRef.current, projectNames: scopeProjects, onDocumentsScreen: screen === 'ProjectDocuments',
     });
-    const alreadyImported = referenceDocumentsCurrentRef.current.some(document =>
-      document.id === sourceIdentity.documentId ||
-      (
-        document.category === 'Schedules' &&
-        document.contentSha256 === sourceIdentity.contentSha256 &&
-        canonicalProjectNameSet(document.projectNames || []).join('|') ===
-          canonicalProjectNameSet(scopeProjects).join('|')
-      ),
-    );
     if (alreadyImported) {
       Alert.alert(
         'Schedule already added',
-        'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.',
+        alreadyAddedMessage, // the master in use, picked again: make the master current first (A8 pass 5 M1)
       );
       return null;
     }
@@ -11942,7 +12140,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectNames: scopeProjects,
       importBatchId: sourceIdentity.batchId,
       sizeBytes: sourcePayload.sizeBytes,
-      contentSha256: sourceIdentity.contentSha256,
+      contentSha256: sourceIdentity.contentSha256, ...(asLookahead ? { scheduleRole: 'lookahead' as const } : {}),
     });
     const validateAndBindItems = (
       sourceItems: ScheduleItem[],
@@ -12294,11 +12492,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         })),
       ],
     });
-    if (scopeValidation.needsProjectCount > 0) {
-      throw new Error(
-        'Choose an active project for every highlighted schedule item before saving.',
-      );
-    }
+    const approvalBlocker = scheduleImportApprovalBlocker(scopeValidation, batch.items);
+    if (approvalBlocker) throw new ScheduleImportReviewError(approvalBlocker);
 
     const approvedBatch = bindPIEScheduleImportBatchProvenance({
       ...batch,
@@ -12314,35 +12509,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ),
       projectAreasCurrentRef.current,
       identityCorrections,
+      daveRegisteredIdentityNames({ projectNames: projectsCurrentRef.current, projectAreas: projectAreasCurrentRef.current }),
     );
 
     let synchronizedItems = scheduleItemsCurrentRef.current;
     if (approvedItems.length) {
       ensureScheduleParentProjects(approvedItems);
-      let next = [...scheduleItemsCurrentRef.current];
-      const additions: ScheduleItem[] = [];
-      approvedItems.forEach(importedItem => {
-        const match = findExactScheduleTaskForCompletionClaim(
-          importedItem as unknown as import('./types').ScheduleItem,
-          next as unknown as import('./types').ScheduleItem[],
-        ) as unknown as ScheduleItem | null;
-        if (match) {
-          next = next.map(item => item.id === match.id
-            ? normalizeScheduleItem(mergeReportedCompletionClaim(
-                item as unknown as import('./types').ScheduleItem,
-                importedItem as unknown as import('./types').ScheduleItem,
-              ) as unknown as Partial<ScheduleItem>)
-            : item);
-          return;
-        }
-        const identity = scheduleImportItemIdentity(
-          importedItem as unknown as import('./types').ScheduleItem,
-        );
-        const duplicate = [...next, ...additions].some(item =>
-          scheduleImportItemIdentity(item as unknown as import('./types').ScheduleItem) === identity,
-        );
-        if (!duplicate) additions.push(importedItem);
+      // Unchanged tasks move to this import and changed tasks keep the
+      // manager's confirmed progress (audit A5: a re-import hid most tasks).
+      const merged = mergeApprovedScheduleImportItems({
+        existing: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[],
+        imported: approvedItems as unknown as import('./types').ScheduleItem[],
+        completionMatch: findExactScheduleTaskForCompletionClaim,
+        isCurrent: scheduleItemsVisibleBeforeImport(scheduleItemsCurrentRef.current, referenceDocumentsCurrentRef.current, approvedBatch.id),
+        overlay: scheduleImportAddsToMaster(approvedBatch, referenceDocumentsCurrentRef.current), // a lookahead restates the master's tasks in place (owner answer Q22)
+        mergeCompletion: (item, importedItem) => normalizeScheduleItem(
+          mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
+        ) as unknown as import('./types').ScheduleItem,
       });
+      const next = merged.next as unknown as ScheduleItem[];
+      const additions = merged.additions.map(item =>
+        normalizeScheduleItem(item as unknown as Partial<ScheduleItem>));
       synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
       const previousById = new Map(
         scheduleItemsCurrentRef.current.map(item => [item.id, item]),
@@ -12351,59 +12538,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
         .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)));
     }
 
-    let synchronizedDocuments = referenceDocumentsCurrentRef.current;
-    if (approvedBatch.documents.length) {
-      const referenceUpdatedAt = new Date().toISOString();
-      const importedProjectNames = scheduleParentProjectNames(
-        approvedItems as unknown as import('./types').ScheduleItem[],
+    // Labelled by the approved rows' projects (a later Accept Selected widens
+    // the saved one); no other schedule is demoted, since each project picks
+    // its own current schedule (audit A5 pass 2).
+    const labelledDocuments = scheduleDocumentsAfterApproval({
+      documents: referenceDocumentsCurrentRef.current,
+      approvedDocuments: approvedBatch.documents,
+      approvedItems: approvedItems as unknown as import('./types').ScheduleItem[],
+      updatedAt: new Date().toISOString(),
+    });
+    const previousDocuments = new Set<ReferenceDocument>(referenceDocumentsCurrentRef.current);
+    const synchronizedDocuments = labelledDocuments.map(document =>
+      previousDocuments.has(document) ? document : normalizeReferenceDocument(document));
+    const previousDocumentById = new Map(
+      referenceDocumentsCurrentRef.current.map(document => [document.id, document]),
+    );
+    referenceDocumentSyncRecords = synchronizedDocuments
+      .filter(document =>
+        JSON.stringify(document) !== JSON.stringify(previousDocumentById.get(document.id)),
       );
-      const scopedDocuments = approvedBatch.documents.map(document => {
-        const documentProjectNames = document.projectNames?.length
-          ? document.projectNames
-          : importedProjectNames;
-        const importedProjectName = documentProjectNames.length === 1
-          ? documentProjectNames[0]
-          : null;
-        return normalizeReferenceDocument({
-          ...document,
-          projectNames: documentProjectNames,
-          projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
-          projectName: importedProjectName,
-          updatedAt: referenceUpdatedAt,
-        });
-      });
-      const scopedById = new Map(
-        scopedDocuments.map(document => [document.id, document]),
-      );
-      const currentScheduleScope = new Set(
-        scopedDocuments
-          .filter(document => document.category === 'Schedules' && document.isCurrent)
-          .flatMap(document => document.projectNames || [])
-          .map(name => name.trim().toLowerCase()),
-      );
-      const existingDocuments = referenceDocumentsCurrentRef.current
-        .filter(document => !scopedById.has(document.id))
-        .map(document => {
-          const documentScope = (document.projectNames || [])
-            .map(name => name.trim().toLowerCase());
-          const sharesCurrentScope = documentScope.some(name =>
-            currentScheduleScope.has(name),
-          );
-          return sharesCurrentScope &&
-            document.category === 'Schedules' &&
-            document.isCurrent
-            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
-            : document;
-        });
-      synchronizedDocuments = [...scopedDocuments, ...existingDocuments];
-      const previousById = new Map(
-        referenceDocumentsCurrentRef.current.map(document => [document.id, document]),
-      );
-      referenceDocumentSyncRecords = synchronizedDocuments
-        .filter(document =>
-          JSON.stringify(document) !== JSON.stringify(previousById.get(document.id)),
-        );
-    }
 
     const syncResult = await runScheduleImportCloudSync({
       scheduleItems: scheduleSyncItems,
@@ -12447,10 +12600,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
       scheduleItemsCurrentRef.current = appliedSynchronizedItems;
       setScheduleItems(appliedSynchronizedItems);
     }
-    if (approvedBatch.documents.length) {
+    if (referenceDocumentSyncRecords.length > 0) {
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = appliedSynchronizedDocuments;
       setReferenceDocuments(appliedSynchronizedDocuments);
+    }
+    // "Import This Schedule" from a phone card: the card is current, as its import is; it stayed
+    // "Make Current Schedule", which then hid the imported tasks (whole-app audit A8 pass 2 #2).
+    const importedCard = projectScheduleImportCardRef.current;
+    if (importedCard?.batchId === batch.id) {
+      projectScheduleImportCardRef.current = null;
+      if (!approvedBatch.documents.some(document => supersededReferenceDocumentIds.has(document.id))) markProjectScheduleCardCurrent(importedCard.documentId);
     }
 
     if (protectedDeletionCount > 0) {
@@ -12458,11 +12618,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         protectedDeletionCount === 1
           ? 'Deleted schedule record stayed deleted'
           : 'Deleted schedule records stayed deleted',
-        `Vitruvius found ${protectedDeletionCount} protected deletion ${
-          protectedDeletionCount === 1 ? 'marker' : 'markers'
-        } and did not restore ${
-          protectedDeletionCount === 1 ? 'that record' : 'those records'
-        }. Any other unfinished cloud work will retry automatically.`,
+        `${protectedDeletionCount} ${
+          protectedDeletionCount === 1 ? 'record in this import was' : 'records in this import were'
+        } deleted earlier on this or another device, so ${
+          protectedDeletionCount === 1 ? 'it was' : 'they were'
+        } not added back. Add a task by hand if it is still needed. Any other unfinished cloud work will retry automatically.`,
       );
     } else if (!syncResult.fullySynced) {
       Alert.alert(
@@ -12529,6 +12689,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function cancelScheduleImport(batch: PIEScheduleImportBatch) {
+    if (projectScheduleImportCardRef.current?.batchId === batch.id) projectScheduleImportCardRef.current = null;
     batch.documents.forEach(document => {
       deleteStoredReferenceDocument(document.uri).catch(() => undefined);
     });
@@ -12538,7 +12699,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const lifecycle = lifecycleStatusForUpdate(update);
     updateDetailReturnScreenRef.current = returnScreen;
 
-    if (lifecycle === 'sent' || lifecycle === 'queued') {
+    if (!isResumableFieldUpdateStatus(lifecycle)) {
       // Audit P1-56: opening any update binds the workspace to that update's
       // project, so Back, Talk, and reports target the right project.
       setSelectedWorkspaceProject(update.projectName);
@@ -12547,10 +12708,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
+    if (draftRef.current.id === update.id) {
+      // Already open as the draft, possibly with newer edits than the saved
+      // copy: go to it. Replacing it discarded those edits and deleted their
+      // photo files (whole-app audit A4, 29 Sep 2026).
+      setSelectedWorkspaceProject(update.projectName);
+      setScreen(screenForUpdateResume(draftRef.current));
+      return;
+    }
+
     if (hasDraftContent(draft)) {
+      const photoCount = draft.photos.length;
       Alert.alert(
         'Unfinished update found',
-        'Opening a saved update will replace the current unfinished draft.',
+        `Opening a saved update will replace the current unfinished draft (${draft.projectName || 'no project'}, ${photoCount} photo${photoCount === 1 ? '' : 's'}).`,
         [
           {
             text: 'Cancel',
@@ -12560,16 +12731,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
             text: 'Open Saved Update',
             style: 'destructive',
             onPress: () => {
-              const discardedDraft = draft;
+              const discardedDraft = draftRef.current;
 
+              draftRef.current = update;
               setDraft(update);
               setSelectedWorkspaceProject(update.projectName);
               setScreen(screenForUpdateResume(update));
 
-              void deleteUnreferencedPhotosFromUpdate(
-                discardedDraft,
-                savedUpdates,
-              );
+              void discardDraftAfterReplacement(discardedDraft);
             },
           },
         ],
@@ -12634,10 +12803,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
               setDeletedUpdateTombstones(nextTombstones);
               setSavedUpdates(remainingUpdates);
 
+              // The deleted update was open as the draft: the draft goes
+              // too, or its next save would be dropped by the barrier behind
+              // "Field update saved" (whole-app audit A4, 29 Sep 2026).
+              const openDraftDeleted = draftRef.current.id === updateId;
+              if (openDraftDeleted) clearOpenDraft(deletedUpdate.projectName);
+
               void deleteUnreferencedPhotosFromUpdate(
                 deletedUpdate,
                 [
-                  ...(draft.id === updateId ? [] : [draft]),
+                  ...(openDraftDeleted ? [] : [draftRef.current]),
                   ...remainingUpdates,
                 ],
               );
@@ -12726,12 +12901,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
   function deleteResumedSavedDraft() {
     const projectName = draft.projectName;
 
+    // deleteSavedUpdate clears the open draft itself when it is the deleted update.
     deleteSavedUpdate(draft.id, () => {
-      setDraft(createDraft(projectName));
-      setDraftSavedAt(null);
-      removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
-        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
-      );
       setSelectedWorkspaceProject(projectName);
       setScreen(updateDetailReturnScreenRef.current);
     });
@@ -12840,14 +13011,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setLayer4IdentityReady(true);
     }
 
-    function scheduleIdentityRefresh() {
+    function scheduleIdentityRefresh(clearIdentity = true) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshGeneration += 1;
       const generation = refreshGeneration;
-      setLayer4Identity(null);
-      setLayer4IdentityReady(false);
-      setDecisionLedger([]);
-      setDecisionLedgerMigrationStatus(null);
+      // The same account's hourly token refresh keeps what Reports shows while
+      // it re-reads, instead of "Loading Project Data" (whole-app audit A6 pass 6 #5).
+      if (clearIdentity) {
+        setLayer4Identity(null);
+        setLayer4IdentityReady(false);
+        setDecisionLedger([]);
+        setDecisionLedgerMigrationStatus(null);
+      }
       const elapsed = Date.now() - lastRefreshStartedAt;
       const delay = Math.max(0, MIN_REFRESH_INTERVAL_MS - elapsed);
       refreshTimer = setTimeout(() => {
@@ -12857,12 +13032,33 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     scheduleIdentityRefresh();
-    const unsubscribe = subscribeToAuthStateChange((_event, session) => {
+    let lastUserId: string | null | undefined;
+    const unsubscribe = subscribeToAuthStateChange((event, session) => {
       // Defer client work until after Supabase's auth callback has returned.
-      photoAnalysisCoordinator.clear();
+      // A sign-out or another account drops photo analyses in progress; the
+      // hourly token refresh and a name save do not (whole-app audit A1 pass 1).
+      // A transient null (an offline start, owner answer Q13) is not an account.
+      const change = workspaceAccountChange(lastUserId, event, session?.user?.id);
+      if (!change) return;
+      const { firstEvent, accountChanged } = change;
+      lastUserId = change.userId;
+      if (accountChanged) photoAnalysisCoordinator.clear();
+      // The account's name is taken at startup or with another account, not
+      // from the echo of this phone's own save, which trimmed the field while
+      // it was being typed ("David " then "Famularo" became "DavidFamularo").
       const accountName = accountDisplayNameForUser(session?.user);
-      if (accountName) setDisplayName(accountName);
-      scheduleIdentityRefresh();
+      if (accountName && (firstEvent || accountChanged)) setDisplayName(accountName);
+      scheduleIdentityRefresh(accountChanged);
+      // Updates stamped "Sign in required to sync" re-sync after a sign-in
+      // anywhere, not only the photo-analysis modal (whole-app audit A4,
+      // 29 Sep 2026). Deferred, as above.
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        setTimeout(() => startAutomaticSyncBackgroundTask('signed_in', hydrateQueuedUpdates), 0);
+      }
+      // Another account must not inherit this one's report narrative or
+      // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
+      if (accountChanged) forgetAllReportSessionState();
+      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); } // nobody's unsaved note or walk memory carries over (A2 M3, A11 pass 4 L3)
     });
 
     return () => {
@@ -12973,6 +13169,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function openTalk() {
+    if (keptTalkCapture.reopen()) return; // a kept unconfirmed memory comes back first
     const contextualProject = talkContextProjectForScreen(
       screen,
       selectedWorkspaceProject,
@@ -12980,6 +13177,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
     setTalkProjectName(contextualProject || '');
     setTalkTaskId(null);
+    talkSession.start();
     setTalkAnswer(null);
     setTalkTypedOpen(false);
     setTalkVoiceOpen(true);
@@ -13022,9 +13220,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
     projectName: string,
     citation: DAVEAskEvidence,
   ) {
+    // Proof is a child view: the Talk answer stays and returns when it closes.
     if (citation.sourceType === 'document' && citation.documentCitation) {
-      setTalkAnswer(null);
-      void ecosDocumentEvidence.openEvidence(citation);
+      if (ecosDocumentProofClaimFromEvidence(citation)) {
+        void ecosDocumentEvidence.openEvidence(citation);
+        return;
+      }
+      // Talk answers are local; their document matches carry no proof claim (audit A9 pass 1 #3).
+      // A follow-up's bare words are never sent, and Talk closes only once Ask ECOS starts (A9 pass 2 F2/F4).
+      const question = talkAnswer?.askECOSQuestion || null;
+      const notChecked = 'Talk found this in a project document, but Ask ECOS has not checked it, so its page cannot open here.';
+      if (!ecosProjectQuestion.canAskFor(projectName)) {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask ECOS can check documents only for a synchronized project, and this project is not synchronized.`);
+      } else if (!question) {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask the full question in Ask ECOS for checked proof.`);
+      } else {
+        Alert.alert('Not checked by Ask ECOS', `${notChecked} Ask ECOS can check it with this question: “${question}”`, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Ask in Ask ECOS', onPress: () => { if (ecosProjectQuestion.askFor(projectName, question)) setTalkAnswer(null); } },
+        ]);
+      }
       return;
     }
     const intelligence = projectIntelligenceForTalk(projectName);
@@ -13080,7 +13295,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ? context.effectiveQuestion
         : null,
       priorEntryId: context?.priorEntryId || null,
+      followUpKind: context?.followUpKind || null,
     };
+    talkSession.add(entry); // before saving, so a quick follow-up sees it (audit A9 pass 2 F1)
     await talkHistoryPersistence.append(projectId, entry);
   }
 
@@ -13092,61 +13309,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  function talkMemoryDraft(
-    projectName: string,
-    transcript: string,
-    fields: Partial<import('./services/DAVECaptureMemory').DAVECaptureMemoryFields>,
-    voiceResult?: DAVEVoiceUnderstandingResponse,
-  ) {
-    const createdAt = new Date().toISOString();
-    const memoryId = `talk-memory-${uid()}`;
-    const location = voiceResult?.understanding.recommendedLocation;
-    return createCaptureMemory({
-      id: memoryId,
-      transcript,
-      transcriptSourceRecordId: voiceResult
-        ? `voice-transcription:${memoryId}`
-        : `typed-entry:${memoryId}`,
-      createdAt,
-      recommendedProject: {
-        value: projectName,
-        confidence: 'high',
-        confirmed: true,
-      },
-      recommendedLocation: {
-        value: location?.value || null,
-        confidence: location?.confidence || 'unknown',
-        confirmed: false,
-      },
-      fields,
-    });
-  }
-
   async function handleTalkInput(
     transcript: string,
     voiceResult?: DAVEVoiceUnderstandingResponse,
   ) {
     const mentionedProject = mentionedDAVEProject(
       transcript,
-      reportAvailableProjectNames,
+      reportAvailableProjectNames, ecosProjectQuestion.closedProjectNames, // closed names too (audit A9 pass 6 L6b)
+      talkProjectName, // naming it is no move; Talk stays here when Ask ECOS would refuse the move (A9 pass 17 L1)
     );
     const projectName = mentionedProject || talkProjectName;
     const taskContextId = mentionedProject && mentionedProject !== talkProjectName
       ? null
       : talkTaskId;
     const projectId = authorityProjectId(projectName);
-    let history: DAVEAskConversationEntry[];
-    try {
-      history = await talkHistoryPersistence.read(projectId);
-    } catch {
-      Alert.alert(
-        'Talk history unavailable',
-        'The saved conversation could not be opened safely. No history was changed. Try again after checking available phone storage.',
-      );
-      return;
-    }
+    // Only answers given since Talk was opened; saved history is not read back (audit A9 pass 2 F1).
+    const history = talkSession.history();
     const context = resolveDAVEConversationContext({
-      transcript,
+      transcript, projectName, projectNames: reportAvailableProjectNames, closedProjectNames: ecosProjectQuestion.closedProjectNames,
       history,
       projectId,
     });
@@ -13181,15 +13361,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
+    const askECOSQuestion = askECOSQuestionForTalk(context, history);
     if (contextualAnswer) {
-      setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer });
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer, askECOSQuestion });
       void persistTalkAnswer(projectName, transcript.trim(), contextualAnswer, context)
         .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;
     }
 
     if (route.intent === 'ask') {
-      setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer });
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer, askECOSQuestion });
       void persistTalkAnswer(projectName, transcript.trim(), route.answer, context)
         .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;
@@ -13235,31 +13416,35 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const hasUnderstoodFields = understoodFields
       ? Object.values(understoodFields).some(Boolean)
       : false;
-    setTalkCaptureDraft(talkMemoryDraft(
+    setTalkCaptureDraft(buildDAVETalkMemoryDraft({
+      id: `talk-memory-${uid()}`,
+      createdAt: new Date().toISOString(),
       projectName,
-      route.transcript,
-      hasUnderstoodFields ? understoodFields! : route.suggestedFields,
+      switchedProject: projectName !== talkProjectName, projectNames: reportAvailableProjectNames, closedProjectNames: ecosProjectQuestion.closedProjectNames, // A11 pass 7 L3
+      transcript: route.transcript,
+      fields: hasUnderstoodFields ? understoodFields! : route.suggestedFields,
       voiceResult,
-    ));
+    }));
   }
 
   function confirmTalkTaskAction() {
     if (!talkTaskAction?.selectedTaskId) return;
     const task = talkTaskAction.candidates.find(item => item.id === talkTaskAction.selectedTaskId);
     if (!task) return;
-    const previous = {
-      status: task.status as ScheduleStatus,
-      percentComplete: task.percentComplete,
-    };
+    const previous = scheduleProgressUndoPoint(scheduleItemsCurrentRef.current.find(item => item.id === task.id) ?? task as unknown as ScheduleItem); // with who stated it, given back by Undo (A10 pass 5 L3)
     const changes = talkTaskAction.command.changes as Partial<ScheduleItem>;
     updateScheduleItem(task.id, changes);
+    const written = scheduleProgressUndoPoint(scheduleItemsCurrentRef.current.find(item => item.id === task.id) ?? task as unknown as ScheduleItem); // Undo only over this (A10 pass 6 L4)
     const successMessage = `${task.taskName}: ${talkTaskAction.command.changeSummary}.`;
     setTalkTaskAction(null);
     Alert.alert('Task updated', successMessage, [
       {
         text: 'Undo',
         style: 'cancel',
-        onPress: () => updateScheduleItem(task.id, previous),
+        onPress: () => {
+          const undo = scheduleTalkUndo(scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], task, previous, written, new Date().toISOString(), selectAuthoritativeScheduleItems({ scheduleItems: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], scheduleDocuments: referenceDocumentsCurrentRef.current })); // the row Talk changed while shown (A10 pass 8 L2)
+          return undo.ok ? updateScheduleItem(undo.taskId, undo.edit, undefined, true) : Alert.alert('Not undone', undo.message);
+        },
       },
       { text: 'Done' },
     ]);
@@ -13274,6 +13459,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ),
     projectRecords,
     candidateProjects: reportAvailableProjectNames,
+    archivedProjectNames: archivedProjects,
+    deletedProjectNames,
     onOpenEvidence: (projectName, evidence) => {
       if (evidence.sourceType === 'document' && evidence.documentCitation) {
         void ecosDocumentEvidence.openEvidence(evidence);
@@ -13299,45 +13486,55 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const projectName =
       (authorityMode === 'reports' ? selectedReportProjectNames[0] : workspaceProjectName) ||
       (authorityMode === 'capture' || authorityMode === 'capture-review'
-        ? draft.projectName
+        ? captureIntelligenceProjectName(draft) // its parent, not an older task's building (A10 pass 2 F4)
         : primaryProjectName) ||
       primaryProjectName;
+    const reportHasProjects = selectedReportProjectNames.length > 0; // none left: no report (audit A6 pass 5)
     const authorityReportType: PIEReportType | undefined =
-      authorityMode !== 'reports'
+      authorityMode !== 'reports' || !reportHasProjects
         ? undefined
         : reportFormat === 'executive'
           ? 'executive_summary'
           : reportType;
-    const combinedReportScope = authorityMode === 'reports' && reportType === 'combined_project_update'
+    const combinedReportScope = authorityMode === 'reports' && reportHasProjects && reportType === 'combined_project_update'
       ? buildCombinedReportAuthorityScope({
           selectedProjectNames: selectedReportProjectNames,
           projectRecords,
-          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          // Recorded field updates only: the open draft had leaked into the
+          // report (its photos cited, then declared missing, since the
+          // attachments and the Word file read the saved updates); updates
+          // of a deleted task stay out (whole-app audit A6, 29 Sep 2026).
+          updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
-          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
-          projectAreas,
+          currentUpdate: null,
+          projectAreas, knownScheduleItems: scheduleItems, // every saved task: a revised task's hidden row (A10 pass 2 F1)
           referenceDocuments,
           projectDocuments,
           captureMemories,
           contacts: contactBook,
         })
       : null;
-    const dailyReportScope = authorityMode === 'reports' && reportType === 'daily_project_update'
+    const dailyReportScope = authorityMode === 'reports' && reportHasProjects && reportType === 'daily_project_update'
       ? buildDailyReportAuthorityScope({
           selectedProjectName: projectName,
           selectedProjectNames: [projectName],
           projectRecords,
-          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          // Recorded field updates only: the open draft had leaked into the
+          // report (its photos cited, then declared missing, since the
+          // attachments and the Word file read the saved updates); updates
+          // of a deleted task stay out (whole-app audit A6, 29 Sep 2026).
+          updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[],
           scheduleItems: authoritativeScheduleItems,
-          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
-          projectAreas,
+          currentUpdate: null,
+          projectAreas, knownScheduleItems: scheduleItems, // every saved task: a revised task's hidden row (A10 pass 2 F1)
           referenceDocuments,
           projectDocuments,
           captureMemories,
           contacts: contactBook,
         })
       : null;
-    const reportEvidenceScope = combinedReportScope || dailyReportScope;
+    // Home, workspace and capture: this project's evidence only, as a daily report scopes it (audit round 2 L2).
+    const reportEvidenceScope = combinedReportScope || dailyReportScope || buildProjectIntelligenceAuthorityScope({ selectedProjectName: projectName, projectRecords, updates: activeSavedUpdates as unknown as import('./types').ProjectUpdate[], scheduleItems: authoritativeScheduleItems, knownScheduleItems: scheduleItems, currentUpdate: draft, projectAreas, referenceDocuments, projectDocuments, captureMemories, contacts: contactBook });
     const scopedProjectId =
       combinedReportScope?.projectId || authorityProjectId(projectName);
     const verifiedLearningEvents =
@@ -13365,6 +13562,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       scheduleItems: (
         reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
       ) as unknown as PIELiveAuthorityInput['scheduleItems'],
+      knownScheduleItems: scheduleSavedTasksOfProjects(scheduleItems as unknown as import('./types').ScheduleItem[], (reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems) as unknown as import('./types').ScheduleItem[], reportEvidenceScope?.projectNames || [projectName]) as unknown as PIELiveAuthorityInput['scheduleItems'], // its projects' saved tasks, for the name fallback (A10 pass 6 L2, A10 pass 8 L4)
       currentUpdate: (
         reportEvidenceScope ? reportEvidenceScope.currentUpdate : draft
       ) as unknown as PIELiveAuthorityInput['currentUpdate'],
@@ -13388,7 +13586,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         layer4Identity.organizationStatus === 'verified',
       ),
       projectTruthPersistencePolicy:
-        combinedReportScope?.projectTruthPersistencePolicy || 'persist_project',
+        combinedReportScope?.projectTruthPersistencePolicy || projectTruthPersistencePolicyFor(projectName, projects),
     };
   }, [
     activeProjects,
@@ -13409,7 +13607,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     reportFormat,
     selectedReportProjectNames,
     activeSavedUpdates,
-    authoritativeScheduleItems,
+    authoritativeScheduleItems, scheduleItems, projects,
     selectedWorkspaceProject,
   ]);
 
@@ -13418,7 +13616,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     : null;
 
   return (
-    <PIELiveAuthorityProvider input={liveAuthorityInput}>
+    <PIELiveAuthorityProvider input={liveAuthorityInput}><SavedFieldUpdatesContext.Provider value={savedUpdates}>
       <StartupHydrationBoundary
         ready={startupHydrationReady}
         failures={startupHydration.failures}
@@ -13449,13 +13647,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
           }}
         >
           <LiveAuthorityStatusBanner />
+          <OfflineSignInPendingBanner />
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
               projects={activeProjects}
               archivedProjects={archivedProjects}
               savedUpdates={activeSavedUpdates}
-              scheduleItems={authoritativeScheduleItems}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -13515,9 +13714,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onContacts={openContacts}
               onChangeArea={changeDraftArea}
               onAddDocument={importFieldUpdateDocument}
-              onRetryDocumentUpload={documentId => {
-                void retryProjectDocumentUpload(documentId);
-              }}
+              onRetryDocumentUpload={retryProjectDocumentUploadAsked}
               onContinueWithoutPhotos={continueWithoutPhotos}
               onRetryPhotoAnalysis={photo => {
                 void retryPhotoAnalysis(draft, photo);
@@ -13554,9 +13751,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   setScreen('AddPhotos')
                 }
                 onAddDocument={importFieldUpdateDocument}
-                onRetryDocumentUpload={documentId => {
-                  void retryProjectDocumentUpload(documentId);
-                }}
+                onRetryDocumentUpload={retryProjectDocumentUploadAsked}
                 onConfirmInterpretation={confirmPIEInterpretation}
                 onDismissInterpretation={dismissPIEInterpretation}
                 onRetryPhotoAnalysis={photo => {
@@ -13586,21 +13781,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
               ]}
               projectAreas={selectedWorkspaceProjectAreas}
               projectDocuments={projectDocuments}
-              scheduleItems={authoritativeScheduleItems}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               contactBook={contactBook}
               coverPhoto={coverPhotoForProject(projectRecords, selectedWorkspaceProject)}
               coverPhotoMode={projectRecords.find(project =>
                 project.name.toLowerCase() === selectedWorkspaceProject.toLowerCase()
               )?.coverPhotoMode || 'automatic'}
-              coverPhotoUri={resolveProjectCoverPhotoUri(
+              coverImage={resolveProjectCoverImage(
                 projectRecords,
                 selectedWorkspaceProject,
-                mostRecentHeroPhotoUri(
+                mostRecentProjectHeroPhoto(
                   projectUpdatesForParentProject(
                     activeSavedUpdates,
                     selectedWorkspaceProject,
                     authoritativeScheduleItems,
                   ),
+                  updateSortTime,
+                  resolveProjectPhotoUri,
                 ),
               )}
               onTakeNewCoverPhoto={() => {
@@ -13658,7 +13855,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'Reports' && projectStatusReady && (
+          {screen === 'Reports' && projectStatusReady && selectedReportProjectNames.length === 0 && (
+            <View style={contentStyle}>
+              <EmptyState title="No active project to report on." text="Reopen an archived project or add a project, then come back to Reports." />
+            </View>
+          )}
+          {screen === 'Reports' && projectStatusReady && selectedReportProjectNames.length > 0 && (
             <ReportsScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
@@ -13703,7 +13905,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               documents={projectDocuments.filter(document => workspaceScopeNames(selectedWorkspaceProject)
                 .some(name => projectDocumentMatchesProject(document, name) ||
                   projectRecords.some(project => project.name === name && project.id === document.projectId)))}
-              referenceDocuments={referenceDocuments}
+              referenceDocuments={referenceDocuments.filter(document => !hiddenSharedDocuments.hidden.has(document.id))}
               projectNames={workspaceScopeNames(selectedWorkspaceProject)}
               projectIdentities={projectRecords}
               onOpenReference={openReferenceDocument}
@@ -13724,9 +13926,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUpdate={updateProjectDocument}
               onSetCurrentSchedule={makeProjectScheduleDocumentCurrent}
               onMakeCurrentDocument={markReferenceDocumentCurrent}
-              onRetry={documentId => {
-                void retryProjectDocumentUpload(documentId);
-              }}
+              onRetry={retryProjectDocumentUploadAsked}
               onReplaceFile={documentId => {
                 void replaceProjectDocumentFile(documentId);
               }}
@@ -13738,15 +13938,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ScheduleScreen
               contentStyle={contentStyle}
               screenshotImportAvailable={scheduleScreenshotOcrAvailable}
-              scheduleItems={authoritativeScheduleItems}
+              cloudDownloadPending={scheduleCloudDownloadPending}
+              scheduleItems={authoritativeScheduleItems} knownScheduleItems={scheduleItems}
               savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
+              closedProjects={archivedProjects}
               projectRecords={projectRecords}
               scheduleDocuments={referenceDocuments.filter(document =>
                 document.category === 'Schedules' ||
                 document.notes.includes('[Schedule communication screenshot]'),
               )}
+              reviewDocuments={referenceDocuments}
               onBack={() => {
                 setScheduleAddProjectName(null);
                 setScreen('Home');
@@ -13774,9 +13977,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               initialFilter={scheduleEntryFilter}
               initialAddProjectName={scheduleAddProjectName}
               initialAddGuided={scheduleAddGuided}
-              onInitialAddGuidedConsumed={() => setScheduleAddGuided(false)}
+              onInitialAddConsumed={() => { setScheduleAddGuided(false); setScheduleAddProjectName(null); }}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
+              getLocationFix={getCurrentLocationSnapshot} // a new fix each time Add Task opens, as a new update takes it (Q31; review L2)
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
             />
           )}
@@ -13804,11 +14008,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               localProjects={activeProjects}
               savedUpdates={savedUpdates}
               projectAreas={projectAreas}
-              scheduleItems={scheduleItems}
+              scheduleItems={identityAliasCleanup.scheduleItemsForFullSync}
               referenceDocuments={referenceDocuments}
               syncCleanupNotice={syncCleanupNotice}
               displayName={displayName}
-              onDisplayNameChange={setDisplayName}
+              onDisplayNameChange={typeDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
               onBackup={(passphrase, includeFiles = true, onProgress) => {
@@ -13824,14 +14028,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void useCurrentLocationForArea(areaId);
               }}
               onRemoveMissingPhotos={removeMissingSyncPhotos}
-              onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
+              onRetryUpdateSync={(update, sync) => retryQueuedUpdate(update as unknown as ProjectUpdate, sync)}
+              onRetryDocumentUploads={() => projectDocumentUploadRetry.run(retryProjectDocumentUpload, { ignoreBackoff: true })}
+              failedDocumentCount={projectDocumentsAwaitingUpload(projectDocuments).length}
               onApplyCloudConflictUpdate={update => {
-                const cloudUpdate = update as unknown as ProjectUpdate;
-                setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
-                  localUpdates: previous,
+                const cloudUpdate = normalizeStoredUpdateRecord(update);
+                // The owner chose the cloud copy: it replaces the local
+                // failed one rather than lending it a receipt (audit A4 pass 4);
+                // the resolver withdrew the phone's queued copies and wrote it back (pass 5).
+                // Held at once, as every card write is (A4 pass 19 L2): a photo
+                // analysis landing before the next render put the discarded copy back.
+                savedUpdatesRef.current = mergeSavedUpdatesWithTombstones({
+                  localUpdates: savedUpdatesRef.current.filter(item => item.id !== cloudUpdate.id),
                   cloudUpdates: [cloudUpdate],
                   tombstones: deletedUpdateTombstonesRef.current,
-                }));
+                });
+                setSavedUpdates(savedUpdatesRef.current);
               }}
               onApplyCloudConflictScheduleItem={item => {
                 const resolvedItem = migrateLegacyScheduleItem(
@@ -13898,9 +14110,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     allowCloudOnly: true,
                   }));
                   markScheduleItemsAuthorityReady(true);
+                  void recordScheduleCloudPull(recovered.syncStartedAt); // every task, deletions verified: Reports stops waiting (A6 pass 11 L1)
                 }
                 if (failed.referenceDocuments === null) {
-                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ // the newer copy wins, as in the refresh (A7 pass 5 L1)
                     local: previous,
                     cloud: normalizeReferenceDocuments(
                       recovered.referenceDocuments.filter(isStartupReferenceDocumentRecord),
@@ -13985,8 +14198,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onRetry={
                   liveDetailUpdate.status === 'queued' ||
                   liveDetailUpdate.status === 'failed'
-                    ? () => {
-                        void retryQueuedUpdate(liveDetailUpdate);
+                    ? choice => {
+                        void retryQueuedUpdate(liveDetailUpdate, choice);
                       }
                     : undefined
                 }
@@ -14007,249 +14220,243 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </ScreenScroll>
           )}
 
-          <SignInModal
-            visible={Boolean(photoAuthRequest)}
-            email={photoAuthEmail}
-            password={photoAuthPassword}
-            message={photoAuthMessage}
-            submitting={photoAuthSubmitting}
-            onEmailChange={setPhotoAuthEmail}
-            onPasswordChange={setPhotoAuthPassword}
-            onSubmit={() => {
-              void submitPhotoIntelligenceSignIn();
-            }}
-            developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
-            onDevelopmentSignUp={() => {
-              void submitPhotoIntelligenceDevelopmentSignUp();
-            }}
-            onClose={closePhotoIntelligenceSignIn}
-          />
+          <OverlayErrorBoundary screen={screen} onError={dismissAllOverlays}>
+            <SignInModal
+              visible={Boolean(photoAuthRequest)}
+              email={photoAuthEmail}
+              password={photoAuthPassword}
+              message={photoAuthMessage}
+              submitting={photoAuthSubmitting}
+              onEmailChange={setPhotoAuthEmail}
+              onPasswordChange={setPhotoAuthPassword}
+              onSubmit={() => {
+                void submitPhotoIntelligenceSignIn();
+              }}
+              developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
+              onDevelopmentSignUp={() => {
+                void submitPhotoIntelligenceDevelopmentSignUp();
+              }}
+              onClose={closePhotoIntelligenceSignIn}
+            />
 
-          <Modal
-            visible={Boolean(previewPhoto)}
-            animationType="fade"
-            transparent
-            onRequestClose={() => setPreviewPhoto(null)}
-          >
-            <View style={styles.photoModalBackdrop}>
-              <SafeAreaView style={styles.photoModalSafeArea}>
-                <View style={styles.photoModalHeader}>
-                  <View style={styles.photoModalTitleWrap}>
-                    <Text style={styles.photoModalTitle}>
-                      Photo Preview
-                    </Text>
-
-                    {previewPhoto?.caption.trim() ? (
-                      <Text
-                        style={styles.photoModalCaption}
-                        numberOfLines={2}
-                      >
-                        {previewPhoto.caption}
+            <Modal
+              visible={Boolean(previewPhoto)}
+              animationType="fade"
+              transparent
+              onRequestClose={() => setPreviewPhoto(null)}
+            >
+              <View style={styles.photoModalBackdrop}>
+                <SafeAreaView style={styles.photoModalSafeArea}>
+                  <View style={styles.photoModalHeader}>
+                    <View style={styles.photoModalTitleWrap}>
+                      <Text style={styles.photoModalTitle}>
+                        Photo Preview
                       </Text>
-                    ) : null}
+
+                      {previewPhoto?.caption.trim() ? (
+                        <Text
+                          style={styles.photoModalCaption}
+                          numberOfLines={2}
+                        >
+                          {previewPhoto.caption}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.photoModalCloseButton}
+                      onPress={() => setPreviewPhoto(null)}
+                      accessibilityLabel="Close photo preview"
+                      hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                    >
+                      <Ionicons
+                        name="close"
+                        size={30}
+                        color="#FFFFFF"
+                      />
+                    </TouchableOpacity>
                   </View>
 
-                  <TouchableOpacity
-                    style={styles.photoModalCloseButton}
-                    onPress={() => setPreviewPhoto(null)}
-                    accessibilityLabel="Close photo preview"
-                    hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                  >
-                    <Ionicons
-                      name="close"
-                      size={30}
-                      color="#FFFFFF"
+                  {previewPhoto ? (
+                    <Image
+                      source={{ uri: previewPhoto.uri }}
+                      style={styles.photoModalImage}
+                      resizeMode="contain"
                     />
-                  </TouchableOpacity>
-                </View>
+                  ) : null}
 
-                {previewPhoto ? (
-                  <Image
-                    source={{ uri: previewPhoto.uri }}
-                    style={styles.photoModalImage}
-                    resizeMode="contain"
-                  />
-                ) : null}
+                  <View style={styles.photoModalBottomBar}>
+                    <TouchableOpacity
+                      style={styles.photoModalBottomCloseButton}
+                      onPress={() => setPreviewPhoto(null)}
+                      accessibilityLabel="Close photo preview"
+                    >
+                      <Ionicons
+                        name="close-circle-outline"
+                        size={22}
+                        color="#FFFFFF"
+                      />
 
-                <View style={styles.photoModalBottomBar}>
-                  <TouchableOpacity
-                    style={styles.photoModalBottomCloseButton}
-                    onPress={() => setPreviewPhoto(null)}
-                    accessibilityLabel="Close photo preview"
-                  >
-                    <Ionicons
-                      name="close-circle-outline"
-                      size={22}
-                      color="#FFFFFF"
-                    />
+                      <Text style={styles.photoModalBottomCloseText}>
+                        Close Photo
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </SafeAreaView>
+              </View>
+            </Modal>
 
-                    <Text style={styles.photoModalBottomCloseText}>
-                      Close Photo
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </SafeAreaView>
-            </View>
-          </Modal>
-
-          <DocumentUploadDetailsSheet
-            visible={Boolean(documentUploadRequest)}
-            projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
-            selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
-            categories={PROJECT_DOCUMENT_CATEGORIES}
-            selectedCategory={documentUploadRequest?.category || 'Other'}
-            drawingControls={documentUploadRequest?.drawingControls}
-            replacementDocuments={
-              documentUploadRequest?.category === 'Drawing' &&
-              documentUploadRequest.selected.size === 1
-                ? referenceDocuments
-                    .filter(document => {
-                      const projectName = Array.from(documentUploadRequest.selected)[0];
-                      return document.isCurrent &&
-                        canonicalReferenceCategory(document) === 'drawing' &&
-                        (referenceDocumentAppliesToProject(document, projectName) ||
-                          document.projectId === authorityProjectId(projectName));
-                    })
-                    .map(document => ({
-                      id: document.id,
-                      name: document.name,
-                      revision: document.drawingRevision || null,
-                      isCurrent: document.isCurrent,
-                    }))
-                : []
-            }
-            onCategoryChange={setDocumentUploadCategory}
-            onDrawingControlsChange={setDocumentUploadDrawingControls}
-            onToggleProject={toggleDocumentUploadProject}
-            onConfirm={confirmDocumentProjectSelection}
-            onClose={cancelDocumentProjectSelection}
-          />
-
-          {ecosProjectQuestion.sheets}
-
-          <DAVEVoiceCaptureSheet
-            visible={talkVoiceOpen}
-            projectId={projectRecords.find(project => project.name.trim().toLowerCase() === talkProjectName.trim().toLowerCase())?.id?.trim() || null}
-            projectName={talkProjectName}
-            candidateProjects={reportAvailableProjectNames}
-            candidateTasks={talkCandidateTasks}
-            selectedTaskId={talkTaskId}
-            candidateLocations={talkProjectAreas.map(area => area.name)}
-            title="Talk"
-            prompt="What do you need?"
-            guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
-            continueLabel="Continue"
-            operationLabel="Create a task"
-            operationGuidance="Answer guided questions so every task field is reviewed before saving."
-            showWalkContext={false}
-            onMemoryReady={result => handleTalkInput(result.transcript, result)}
-            onProjectChange={projectName => {
-              setTalkProjectName(projectName);
-              setTalkTaskId(null);
-            }}
-            onTaskChange={setTalkTaskId}
-            onOperation={openGuidedTaskFromTalk}
-            onTypeInstead={() => {
-              setTalkVoiceOpen(false);
-              setTalkTypedOpen(true);
-            }}
-            onCancel={() => setTalkVoiceOpen(false)}
-          />
-
-          <DAVETypedCaptureSheet
-            visible={talkTypedOpen}
-            projectName={talkProjectName}
-            title="Talk"
-            prompt="What do you need?"
-            guidance="Ask a question, update a task, open a screen, or enter project information to remember."
-            placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
-            continueLabel="Continue"
-            accessibilityLabel="Talk message"
-            operationLabel="Create a task"
-            operationGuidance="Answer guided questions so every task field is reviewed before saving."
-            onContinue={text => handleTalkInput(text)}
-            onOperation={openGuidedTaskFromTalk}
-            onCancel={() => setTalkTypedOpen(false)}
-          />
-
-          {talkCaptureDraft ? (
-            <DAVECaptureConfirmationSheet
-              visible
-              transcript={talkCaptureDraft.transcript}
-              draft={talkCaptureDraft}
-              projects={reportAvailableProjectNames}
-              locations={talkProjectAreas.map(area => area.name)}
-              sourceLabel={talkCaptureDraft.evidence.some(
-                evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
-              ) ? 'Source transcript' : 'Source note'}
-              onSave={async memory => {
-                await saveCaptureMemory(memory);
-                setTalkCaptureDraft(null);
-                Alert.alert('Saved', 'The confirmed project information was added to memory.');
-              }}
-              onCancel={() => setTalkCaptureDraft(null)}
+            <DocumentUploadDetailsSheet
+              visible={Boolean(documentUploadRequest)}
+              projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
+              selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
+              categories={PROJECT_DOCUMENT_CATEGORIES}
+              selectedCategory={documentUploadRequest?.category || 'Other'}
+              drawingControls={documentUploadRequest?.drawingControls}
+              replacementDocuments={
+                documentUploadRequest?.category === 'Drawing' &&
+                documentUploadRequest.selected.size === 1
+                  ? referenceDocuments
+                      .filter(document => {
+                        const projectName = Array.from(documentUploadRequest.selected)[0];
+                        return document.isCurrent &&
+                          canonicalReferenceCategory(document) === 'drawing' &&
+                          (referenceDocumentAppliesToProject(document, projectName) ||
+                            document.projectId === authorityProjectId(projectName));
+                      })
+                      .map(document => ({
+                        id: document.id,
+                        name: document.name,
+                        revision: document.drawingRevision || null,
+                        isCurrent: document.isCurrent,
+                      }))
+                  : []
+              }
+              onCategoryChange={setDocumentUploadCategory}
+              onDrawingControlsChange={setDocumentUploadDrawingControls}
+              onToggleProject={toggleDocumentUploadProject}
+              onConfirm={confirmDocumentProjectSelection}
+              onClose={cancelDocumentProjectSelection}
             />
-          ) : null}
 
-          <DAVEConversationAnswerSheet
-            visible={Boolean(talkAnswer)}
-            projectName={talkAnswer?.projectName || talkProjectName}
-            question={talkAnswer?.question || ''}
-            answer={talkAnswer?.answer || null}
-            onOpenEvidence={citation => openTalkSupportingEvidence(
-              talkAnswer?.projectName || talkProjectName,
-              citation,
-            )}
-            onAskAnother={() => {
-              setTalkAnswer(null);
-              setTalkVoiceOpen(true);
-            }}
-            onClose={() => setTalkAnswer(null)}
-          />
+            {ecosProjectQuestion.sheets}
 
-          <ECOSDocumentEvidenceSheet
-            visible={Boolean(ecosDocumentEvidence.state)}
-            evidence={ecosDocumentEvidence.state?.evidence || null}
-            document={ecosDocumentEvidence.state?.document || null}
-            imageUri={ecosDocumentEvidence.state?.imageUri || null}
-            imageWidth={ecosDocumentEvidence.state?.imageWidth || 0}
-            imageHeight={ecosDocumentEvidence.state?.imageHeight || 0}
-            imageBounds={ecosDocumentEvidence.state?.imageBounds || null}
-            binding={ecosDocumentEvidence.state?.binding || null}
-            loading={ecosDocumentEvidence.state?.loading || false}
-            error={ecosDocumentEvidence.state?.error || null}
-            onOpenDocument={ecosDocumentEvidence.openFullDocument}
-            onClose={ecosDocumentEvidence.close}
-          />
+            <DAVEVoiceCaptureSheet
+              visible={talkVoiceOpen}
+              projectId={projectRecords.find(project => project.name.trim().toLowerCase() === talkProjectName.trim().toLowerCase())?.id?.trim() || null}
+              projectName={talkProjectName}
+              candidateProjects={reportAvailableProjectNames}
+              candidateTasks={talkCandidateTasks}
+              selectedTaskId={talkTaskId}
+              candidateLocations={talkProjectAreas.map(area => area.name)}
+              title="Talk"
+              prompt="What do you need?"
+              guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
+              continueLabel="Continue"
+              operationLabel="Create a task"
+              operationGuidance="Answer guided questions so every task field is reviewed before saving."
+              showWalkContext={false}
+              onMemoryReady={result => handleTalkInput(result.transcript, result)}
+              onProjectChange={projectName => {
+                setTalkProjectName(projectName);
+                setTalkTaskId(null);
+              }}
+              onTaskChange={setTalkTaskId}
+              onOperation={openGuidedTaskFromTalk}
+              onTypeInstead={() => {
+                setTalkVoiceOpen(false);
+                setTalkTypedOpen(true);
+              }}
+              onCancel={() => setTalkVoiceOpen(false)}
+            />
 
-          <DAVETaskActionConfirmationSheet
-            visible={Boolean(talkTaskAction)}
-            projectName={talkTaskAction?.projectName || talkProjectName}
-            command={talkTaskAction?.command || null}
-            candidates={talkTaskAction?.candidates || []}
-            selectedTaskId={talkTaskAction?.selectedTaskId || null}
-            onSelectTask={taskId => setTalkTaskAction(current => current ? {
-              ...current,
-              selectedTaskId: taskId,
-            } : null)}
-            onConfirm={confirmTalkTaskAction}
-            onCancel={() => setTalkTaskAction(null)}
-          />
+            <DAVETypedCaptureSheet
+              visible={talkTypedOpen}
+              projectName={talkProjectName}
+              title="Talk"
+              prompt="What do you need?"
+              guidance="Ask a question, update a task, open a screen, or enter project information to remember."
+              placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
+              continueLabel="Continue"
+              accessibilityLabel="Talk message"
+              operationLabel="Create a task"
+              operationGuidance="Answer guided questions so every task field is reviewed before saving."
+              onContinue={text => handleTalkInput(text)}
+              onOperation={openGuidedTaskFromTalk}
+              onCancel={() => setTalkTypedOpen(false)}
+            />
 
+            {talkCaptureSheetDraft ? (
+              <DAVECaptureConfirmationSheet
+                visible
+                transcript={talkCaptureSheetDraft.transcript}
+                draft={talkCaptureSheetDraft}
+                projects={reportAvailableProjectNames}
+                locationsForProject={chosen => projectAreasForProject({
+                  projectAreas, projectName: chosen, scheduleItems, updates: activeSavedUpdates,
+                }).map(area => area.name)}
+                sourceLabel={talkCaptureSheetDraft.evidence.some(
+                  evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
+                ) ? 'Source transcript' : 'Source note'}
+                onSave={async memory => {
+                  await saveCaptureMemory(memory);
+                  setTalkCaptureDraft(null);
+                  Alert.alert('Saved', 'The confirmed project information was added to memory.');
+                }}
+                onCancel={() => setTalkCaptureDraft(null)}
+                onWorkingChange={keptTalkCapture.track}
+              />
+            ) : null}
+
+            <DAVEConversationAnswerSheet
+              visible={Boolean(talkAnswer) && !ecosDocumentEvidence.state}
+              projectName={talkAnswer?.projectName || talkProjectName}
+              question={talkAnswer?.question || ''}
+              answer={talkAnswer?.answer || null}
+              onOpenEvidence={citation => openTalkSupportingEvidence(
+                talkAnswer?.projectName || talkProjectName,
+                citation,
+              )}
+              onAskAnother={() => {
+                setTalkAnswer(null);
+                setTalkVoiceOpen(true);
+              }}
+              onClose={() => setTalkAnswer(null)}
+            />
+
+            <ECOSDocumentEvidenceSheet
+              visible={Boolean(ecosDocumentEvidence.state)}
+              evidence={ecosDocumentEvidence.state?.evidence || null}
+              document={ecosDocumentEvidence.state?.document || null}
+              imageUri={ecosDocumentEvidence.state?.imageUri || null}
+              imageWidth={ecosDocumentEvidence.state?.imageWidth || 0}
+              imageHeight={ecosDocumentEvidence.state?.imageHeight || 0}
+              imageBounds={ecosDocumentEvidence.state?.imageBounds || null}
+              binding={ecosDocumentEvidence.state?.binding || null}
+              loading={ecosDocumentEvidence.state?.loading || false}
+              error={ecosDocumentEvidence.state?.error || null}
+              onOpenDocument={ecosDocumentEvidence.openFullDocument}
+              onClose={ecosDocumentEvidence.close}
+            />
+
+            <DAVETaskActionConfirmationSheet
+              visible={Boolean(talkTaskAction)}
+              projectName={talkTaskAction?.projectName || talkProjectName}
+              command={talkTaskAction?.command || null}
+              candidates={talkTaskAction?.candidates || []}
+              selectedTaskId={talkTaskAction?.selectedTaskId || null}
+              onSelectTask={taskId => setTalkTaskAction(current => current ? {
+                ...current,
+                selectedTaskId: taskId,
+              } : null)}
+              onConfirm={confirmTalkTaskAction}
+              onCancel={() => setTalkTaskAction(null)}
+            />
+          </OverlayErrorBoundary>
         </AppShellFrame>
       </StartupHydrationBoundary>
-    </PIELiveAuthorityProvider>
+    </SavedFieldUpdatesContext.Provider></PIELiveAuthorityProvider>
   );
-}
-
-function authorityProjectId(projectName: string) {
-  const normalized = projectName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-
-  return `project-${normalized || 'unassigned'}`;
 }
 
 type PIELiveAuthorityMode =
@@ -14309,7 +14516,7 @@ function HomeScreen({
   projects,
   archivedProjects,
   savedUpdates,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   displayName,
   unfinishedDraft,
   draftSavedAt,
@@ -14331,7 +14538,7 @@ function HomeScreen({
   projects: string[];
   archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   displayName: string;
   unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
@@ -14370,12 +14577,12 @@ function HomeScreen({
   const overviewRows = buildOverviewProjectRows(
     scopedProjects,
     savedUpdates,
-    scheduleItems,
+    scheduleItems, knownScheduleItems,
   );
   const attentionRows = overviewRows.filter(row => row.health !== 'Healthy');
   const topPriority = attentionRows[0] || null;
   const commitmentControl = buildVitruviusCommitmentControl({
-    scheduleItems,
+    scheduleItems, knownScheduleItems,
     updates: savedUpdates,
     projectNames: scopedProjects,
   });
@@ -14438,10 +14645,10 @@ function HomeScreen({
       projectName,
       scheduleItems,
     );
-    return resolveProjectCoverPhotoUri(
+    return resolveProjectCoverImage(
       projectRecords,
       projectName,
-      mostRecentHeroPhotoUri(scopedUpdates) || undefined,
+      mostRecentProjectHeroPhoto(scopedUpdates, updateSortTime, resolveProjectPhotoUri),
     );
   }
 
@@ -14607,8 +14814,8 @@ function HomeScreen({
       </View>
       <View style={styles.overviewPriorityCard}>
         {currentFocusProject && overviewPhotoForProject(currentFocusProject) ? (
-          <Image
-            source={{ uri: overviewPhotoForProject(currentFocusProject)! }}
+          <ProjectPhotoImage
+            {...overviewPhotoForProject(currentFocusProject)!}
             style={styles.overviewPriorityImage}
           />
         ) : currentFocusProject ? (
@@ -14763,7 +14970,7 @@ function HomeScreen({
                 onPress={() => onOpenProject(row.project)}
               >
                 {photo ? (
-                  <Image source={{ uri: photo }} style={styles.overviewProjectImage} />
+                  <ProjectPhotoImage {...photo} style={styles.overviewProjectImage} />
                 ) : (
                   <View style={styles.overviewProjectImagePlaceholder}>
                     <Ionicons name="business-outline" size={28} color={colors.primary} />
@@ -14892,8 +15099,9 @@ function Phase2ActivityRow({
 }: {
   item: Phase2ActivityItem;
   onPress: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
 }) {
+  const conflictReview = useFieldUpdateConflictReview(item.update.id); // its Retry asks first (A4 pass 15 M1)
   const statusStyle =
     item.pieStatus === PIE_STATUS_COPY.unavailableRetry ||
     item.pieStatus === PIE_STATUS_COPY.timeoutRetry ||
@@ -14921,7 +15129,7 @@ function Phase2ActivityRow({
         </Text>
       </View>
       {onRetry ? (
-        <TouchableOpacity style={styles.phase3ChangeButton} onPress={onRetry}>
+        <TouchableOpacity style={styles.phase3ChangeButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
           <Text style={styles.dashboardManageText}>Retry</Text>
         </TouchableOpacity>
       ) : (
@@ -15439,7 +15647,8 @@ function RecipientSummaryRow({
         <Text style={styles.phase2SelectorLabel}>Recipients</Text>
         <Text style={styles.projectName}>{label}</Text>
         <Text style={styles.rowSub}>
-          {contacts.length > 0 ? 'Recent recipients available' : 'Add recipients before sending'}
+          {/* Nothing sends an update to them; the list is kept with the update (owner answer Q18). */}
+          Optional · kept with the update; the app does not send it to them
         </Text>
       </View>
       <TouchableOpacity style={styles.phase3ChangeButton} onPress={onChange}>
@@ -16036,18 +16245,7 @@ function RootPhotoIntelligenceCard({
           </Text>
         </View>
       </View>
-      {result.priorPhotoUri && photo?.uri ? (
-        <View style={styles.photoComparisonPreviewRow}>
-          <View style={styles.photoComparisonPreviewItem}>
-            <Image source={{ uri: result.priorPhotoUri }} style={styles.photoComparisonPreviewImage} />
-            <Text style={styles.photoComparisonPreviewLabel}>Before</Text>
-          </View>
-          <View style={styles.photoComparisonPreviewItem}>
-            <Image source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.photoComparisonPreviewImage} />
-            <Text style={styles.photoComparisonPreviewLabel}>After</Text>
-          </View>
-        </View>
-      ) : null}
+      <PhotoComparisonPreviewRow result={result} photo={photo} projectName={projectName} localUri={resolveProjectPhotoUri} />
       <PIEDetailLine label="What changed" value={primaryFinding} />
       {reviewCandidate ? <PIEDetailLine label="Why it matters" value={whyItMatters} /> : null}
       {reviewCandidate ? <PIEDetailLine label="Next action" value={nextAction} /> : null}
@@ -16474,7 +16672,7 @@ function BuildUpdateScreen({
       {update.photos.length > 0 ? (
         <View style={styles.phase3ThumbRow}>
           {update.photos.map(photo => (
-            <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
+            <ProjectPhotoImage key={photo.id} photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.phase3Thumb} />
           ))}
         </View>
       ) : (
@@ -16585,7 +16783,7 @@ function ReadOnlyUpdateDetailScreen({
   update: ProjectUpdate;
   backLabel: string;
   onBack: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onDelete: () => void;
   onArchive: () => void;
@@ -16594,6 +16792,7 @@ function ReadOnlyUpdateDetailScreen({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const lifecycle = lifecycleStatusForUpdate(update);
+  const conflictReview = useFieldUpdateConflictReview(update.id); // Needs Review, and its Retry asks first (A4 pass 15 M1)
   const pieStatus = updatePIEAnalysisStatus(update);
   const documents = update.documents || [];
   const timing = flowTimingForUpdate(update);
@@ -16635,7 +16834,7 @@ function ReadOnlyUpdateDetailScreen({
         onArchive={onArchive}
       />
       <View style={styles.panel}>
-        <Text style={styles.projectName}>{lifecycle}</Text>
+        <Text style={styles.projectName}>{conflictReview ? FIELD_UPDATE_CONFLICT_REVIEW_LABEL : lifecycle}</Text>
         <Text style={styles.rowSub}>
           {formatDisplayDate(update.date)}
           {update.selectedAreaName ? ` · ${update.selectedAreaName}` : ''}
@@ -16645,8 +16844,9 @@ function ReadOnlyUpdateDetailScreen({
         ) : update.photos.length === 0 ? (
           <Text style={styles.bodyText}>No photos attached</Text>
         ) : null}
+        <FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />
         {onRetry ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
+          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview, onRetry)}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry Sync</Text>
           </TouchableOpacity>
@@ -16733,7 +16933,7 @@ function ReadOnlyUpdateDetailScreen({
           <Text style={styles.sectionLabel}>Photos ({update.photos.length})</Text>
           <View style={styles.phase3ThumbRow}>
             {update.photos.map(photo => (
-              <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
+              <ProjectPhotoImage key={photo.id} photo={photo} localUri={resolveProjectPhotoUri(photo)} style={styles.phase3Thumb} />
             ))}
           </View>
         </>
@@ -16760,7 +16960,7 @@ type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
 
 function ProjectTaskControlPanel({
   projectName,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   savedUpdates,
   onUpdate,
   onSave,
@@ -16769,7 +16969,7 @@ function ProjectTaskControlPanel({
   onAddTask,
 }: {
   projectName: string;
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   savedUpdates: ProjectUpdate[];
   onUpdate: (
     itemId: string,
@@ -16806,9 +17006,10 @@ function ProjectTaskControlPanel({
   const reconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
       scheduleItems: operationalScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     }),
-    [operationalScheduleItems, scopedFieldUpdates],
+    [knownScheduleItems, operationalScheduleItems, scopedFieldUpdates],
   );
   const attentionItems = useMemo(
     () => buildPhase2AttentionItems(scopedFieldUpdates, null),
@@ -17014,11 +17215,11 @@ function ProjectWorkspaceScreen({
   usedCaptureMemoryIds,
   projectAreas,
   projectDocuments,
-  scheduleItems,
+  scheduleItems, knownScheduleItems,
   contactBook,
   coverPhoto,
   coverPhotoMode,
-  coverPhotoUri,
+  coverImage,
   onTakeNewCoverPhoto,
   onChooseCoverFromLibrary,
   onUseBestProjectPhoto,
@@ -17057,11 +17258,11 @@ function ProjectWorkspaceScreen({
   usedCaptureMemoryIds: readonly string[];
   projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
-  scheduleItems: ScheduleItem[];
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   contactBook: ContactBook;
   coverPhoto: ProjectCoverPhoto | null;
   coverPhotoMode: 'automatic' | 'manual';
-  coverPhotoUri: string | null;
+  coverImage: ProjectCoverImage | null; // may be cloud-only (A4 pass 7 M2)
   onTakeNewCoverPhoto: () => void;
   onChooseCoverFromLibrary: () => void;
   onUseBestProjectPhoto: () => void;
@@ -17089,7 +17290,7 @@ function ProjectWorkspaceScreen({
   onOpenUpdates: () => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
   onOpenDocuments: () => void;
-  onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onRetryQueuedUpdate: (update: ProjectUpdate, choice?: FieldUpdateSyncChoice) => void;
   onDeleteProject: (projectName: string) => void;
   onCloseProject: (projectName: string) => void;
   isDeletingProject: boolean;
@@ -17172,7 +17373,7 @@ function ProjectWorkspaceScreen({
   const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
   const [projectOptionsOpen, setProjectOptionsOpen] = useState(false);
-  const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const [captureDraft, setCaptureDraft] = useKeptWalkMemoryDraft(projectName); // kept until Save (A11 pass 4 L3)
   const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
   const [areaMappingOpen, setAreaMappingOpen] = useState(false);
   const areaSetupStats = useMemo(
@@ -17280,9 +17481,9 @@ function ProjectWorkspaceScreen({
       />
 
       <View style={styles.projectWorkspaceHero}>
-        {coverPhotoUri ? (
-          <Image
-            source={{ uri: coverPhotoUri }}
+        {coverImage ? (
+          <ProjectPhotoImage
+            {...coverImage}
             style={styles.projectWorkspaceHeroImage}
             accessibilityLabel={`${projectName} project cover photo`}
           />
@@ -17320,7 +17521,7 @@ function ProjectWorkspaceScreen({
 
       <ProjectTaskControlPanel
         projectName={projectName}
-        scheduleItems={scheduleItems}
+        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems}
         savedUpdates={savedUpdates}
         onUpdate={onUpdateScheduleItem}
         onSave={onSaveScheduleItem}
@@ -17566,7 +17767,7 @@ function ProjectWorkspaceScreen({
             onPress={() => onOpenUpdate(item.update)}
             onRetry={
               item.update.status === 'queued' || item.update.status === 'failed'
-                ? () => onRetryQueuedUpdate(item.update)
+                ? choice => onRetryQueuedUpdate(item.update, choice)
                 : undefined
             }
           />
@@ -17639,7 +17840,7 @@ function ProjectWorkspaceScreen({
         ) : null}
         <Text style={styles.sectionLabel}>Project Management</Text>
         <MoreOptionRow
-          label="Archive Project"
+          label="Close Project"
           icon="archive-outline"
           onPress={() => {
             setProjectOptionsOpen(false);
@@ -17647,7 +17848,7 @@ function ProjectWorkspaceScreen({
           }}
         />
         <Text style={styles.locationDetailText}>
-          Archive hides this project from active views. You can reopen it from Archived Projects on Overview.
+          Closing hides this project from active views. You can reopen it from Archived Projects on Overview.
         </Text>
         <HoldToDeleteButton
           label="Hold to Delete Project"
@@ -17657,7 +17858,7 @@ function ProjectWorkspaceScreen({
           onConfirm={() => onDeleteProject(projectName)}
         />
         <Text style={styles.locationDetailText}>
-          Hold for 3 seconds to remove {projectName}. Active cloud records are queued for deletion. Secure cloud audit evidence and uploaded files may remain until separately authorized.
+          Hold for 3 seconds to delete {projectName}. Its updates, tasks, areas and documents are removed on every device. The name {projectName} can't be used for a new project afterwards.
         </Text>
       </ProjectActionSheet>
     </ScrollView>
@@ -17733,6 +17934,7 @@ function ProjectDocumentsScreen({
       <ProjectDocumentCard
         document={item}
         sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(item, referenceDocuments)}
+        scheduleCurrent={phoneScheduleCardIsCurrent(item, projectNames.find(name => projectDocumentMatchesProject(item, name)) || projectName, referenceDocuments)}
         projectAreas={projectAreas}
         updates={updates}
         onOpen={() => onOpen(item)}
@@ -18052,6 +18254,8 @@ function AreaDetailModal({
   onUseCurrentLocation: () => void;
 }) {
   const [radiusText, setRadiusText] = useState(area ? String(area.radiusFeet) : '250');
+  // Committed when the field is left or the sheet closes (audit A3).
+  const areaName = useCommittedText(area?.name, area?.id, name => onUpdate({ name }));
 
   // Deliberately keyed on area?.id only, not area?.radiusFeet: this field is
   // actively edited via onUpdate -> a parent state update -> a new `area`
@@ -18064,6 +18268,11 @@ function AreaDetailModal({
   }, [area?.id]);
 
   if (!area) return null;
+
+  function closeWithName() {
+    areaName.commit();
+    onClose();
+  }
 
   function updateRadius(value: string) {
     setRadiusText(value);
@@ -18080,7 +18289,7 @@ function AreaDetailModal({
       visible={visible}
       animationType="slide"
       transparent
-      onRequestClose={onClose}
+      onRequestClose={closeWithName}
     >
       <View style={styles.detailModalBackdrop}>
         <View style={[styles.detailModalCardFrame, styles.detailModalCardContent]}>
@@ -18092,7 +18301,7 @@ function AreaDetailModal({
 
             <TouchableOpacity
               style={styles.detailCloseButton}
-              onPress={onClose}
+              onPress={closeWithName}
               accessibilityLabel="Close location details"
             >
               <Ionicons name="close" size={22} color={colors.text} />
@@ -18102,8 +18311,9 @@ function AreaDetailModal({
           <Text style={styles.label}>Location name</Text>
           <TextInput
             style={styles.input}
-            value={area.name}
-            onChangeText={name => onUpdate({ name })}
+            value={areaName.text}
+            onChangeText={areaName.setText}
+            onBlur={areaName.commit}
             placeholder="Location name"
             placeholderTextColor={colors.muted}
           />
@@ -18157,13 +18367,19 @@ function AreaDetailModal({
             <PrimaryButton
               label="Update GPS"
               icon="navigate-outline"
-              onPress={onUseCurrentLocation}
+              onPress={() => {
+                areaName.commit();
+                onUseCurrentLocation();
+              }}
               compact
             />
             <SecondaryButton
               label="Delete"
               icon="trash-outline"
-              onPress={onDelete}
+              onPress={() => {
+                areaName.commit(); // kept if the delete is cancelled (audit A3 pass 2)
+                onDelete();
+              }}
               compact
             />
           </View>
@@ -18386,7 +18602,7 @@ function RecipientRow({
 
       {emails.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Email to use</Text>
+          <Text style={styles.label}>Email saved on this contact</Text>
 
           <View style={styles.choiceChipWrap}>
             {emails.map(email => {
@@ -18424,7 +18640,7 @@ function RecipientRow({
 
       {phones.length > 0 ? (
         <View style={styles.deliveryChoiceBlock}>
-          <Text style={styles.label}>Phone to use for text</Text>
+          <Text style={styles.label}>Phone saved on this contact</Text>
 
           <View style={styles.choiceChipWrap}>
             {phones.map(phone => {
@@ -18490,7 +18706,7 @@ function SavedUpdatesScreen({
   onDelete: (updateId: string) => void;
   onArchive: (updateId: string) => void;
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
-  onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onRetryQueuedUpdate: (update: ProjectUpdate, choice?: FieldUpdateSyncChoice) => void;
   onBack: () => void;
   initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
   initialWithinDays?: number | null;
@@ -18568,11 +18784,11 @@ function SavedUpdatesScreen({
         ? 'No drafts.'
         : 'No update history yet.';
 
-  function retryUpdate(update: ProjectUpdate) {
+  function retryUpdate(update: ProjectUpdate, choice?: FieldUpdateSyncChoice) {
     const lifecycle = lifecycleStatusForUpdate(update);
 
     if (lifecycle === 'queued' || lifecycle === 'failed') {
-      onRetryQueuedUpdate(update);
+      onRetryQueuedUpdate(update, choice);
       return;
     }
 
@@ -18601,16 +18817,8 @@ function SavedUpdatesScreen({
   ) {
     const group = updateTimelineGroup(update.date);
     const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
-    const mobileComparison = buildDAVEUpdatePhotoComparison(update, updates);
-    const mobileComparisonViewModel = mobileComparison ? {
-      priorUri: mobileComparison.priorPhotoUri,
-      priorLabel: formatDisplayDate(mobileComparison.priorUpdateDate),
-      currentUri: mobileComparison.currentPhotoUri,
-      currentLabel: formatDisplayDate(mobileComparison.currentUpdateDate),
-      summary: mobileComparison.summary,
-      confidence: mobileComparison.comparisonConfidence,
-      comparability: mobileComparison.comparability,
-    } : null;
+    const mobileComparisonViewModel = updatePhotoComparisonViewModel(
+      buildDAVEUpdatePhotoComparison(update, updates), formatDisplayDate, resolveProjectPhotoUri);
 
     return (
       <>
@@ -18621,7 +18829,7 @@ function SavedUpdatesScreen({
           lifecycle={lifecycleStatusForUpdate(update)}
           pieStatus={updatePIEAnalysisStatus(update)}
           onOpen={onSelect}
-          onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
+          onRetry={updateCanInlineRetry(update) ? choice => retryUpdate(update, choice) : undefined}
           onDelete={() => onDelete(update.id)}
           onArchive={() => onArchive(update.id)}
           selected={selected}
@@ -18688,15 +18896,8 @@ function SavedUpdatesScreen({
       <Text style={styles.updateEmptyText}>{activeTab === 'Needs Action' ? 'No field records require action today.' : activeTab === 'Drafts' ? 'Start from Overview or a project when you are ready to capture field work.' : 'Saved field activity will appear here.'}</Text>
     </View>
   );
-  const comparison = exactComparison ? {
-    priorUri: exactComparison.priorPhotoUri,
-    priorLabel: formatDisplayDate(exactComparison.priorUpdateDate),
-    currentUri: exactComparison.currentPhotoUri,
-    currentLabel: formatDisplayDate(exactComparison.currentUpdateDate),
-    summary: exactComparison.summary,
-    confidence: exactComparison.comparisonConfidence,
-    comparability: exactComparison.comparability,
-  } : null;
+  // Photo objects, not their `uri` (empty for a cloud-only photo): A4 pass 7 M2.
+  const comparison = updatePhotoComparisonViewModel(exactComparison, formatDisplayDate, resolveProjectPhotoUri);
 
   if (sizeClass === 'wide') {
     return <UpdatesWideWorkspace
@@ -18712,8 +18913,8 @@ function SavedUpdatesScreen({
         backLabel="Updates"
         onBack={() => undefined}
         embedded
-        onResume={lifecycleStatusForUpdate(selectedUpdate) === 'sent' ? undefined : () => onOpen(selectedUpdate)}
-        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? () => onRetryQueuedUpdate(selectedUpdate) : undefined}
+        onResume={isResumableFieldUpdateStatus(lifecycleStatusForUpdate(selectedUpdate)) ? () => onOpen(selectedUpdate) : undefined}
+        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? choice => onRetryQueuedUpdate(selectedUpdate, choice) : undefined}
         onRetryPhotoAnalysis={onRetryPhotoAnalysis}
         onDelete={() => onDelete(selectedUpdate.id)}
         onArchive={() => onArchive(selectedUpdate.id)}
@@ -18884,17 +19085,16 @@ function UpdateHistoryCard({
   lifecycle: FieldUpdateStatus;
   pieStatus: string | null;
   onOpen: () => void;
-  onRetry?: () => void;
+  onRetry?: FieldUpdateRetry;
   onDelete: () => void;
   onArchive: () => void;
   selected?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
-  const thumbnail = update.photos[0]
-    ? resolveProjectPhotoDisplayUri(update.photos[0])
-    : '';
-  const statusLine =
+  const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
+  const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
+  const statusLine = conflictReview ? null :
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
       : lifecycle === 'ready_to_send'
@@ -18913,7 +19113,7 @@ function UpdateHistoryCard({
     (documents.length > 0
       ? `${countLabel(documents.length, 'document')} added to this update.`
       : 'Project update recorded.');
-  const statusLabel = fieldUpdateLifecycleLabel(lifecycle);
+  const statusLabel = conflictReview ? FIELD_UPDATE_CONFLICT_REVIEW_LABEL : fieldUpdateLifecycleLabel(lifecycle);
 
   return (
     <TouchableOpacity
@@ -18924,8 +19124,8 @@ function UpdateHistoryCard({
       accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
-        {thumbnail ? (
-          <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
+        {thumbnail.uri ? (
+          <Image source={{ uri: thumbnail.uri }} onError={thumbnail.onError} style={styles.updateCardThumb} />
         ) : (
           <View style={styles.updateCardThumbPlaceholder}>
             <Ionicons name="document-text-outline" size={28} color={colors.primary} />
@@ -18947,8 +19147,9 @@ function UpdateHistoryCard({
           <Text style={styles.updateCardMetaDot}>•</Text>
           <Text style={styles.updateCardTime}>{relativeUpdateTimestamp(update.date)}</Text>
         </View>
+        <FieldUpdateDocumentChangeNotice updateId={update.id} conflictReview={conflictReview} />
         {onRetry ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
+          <TouchableOpacity style={styles.photoControlButton} onPress={retryOverConflictConfirmed(conflictReview && (lifecycle === 'queued' || lifecycle === 'failed'), onRetry)}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry</Text>
           </TouchableOpacity>
@@ -19067,12 +19268,15 @@ function UpdateOverflowMenu({
 function ScheduleScreen({
   contentStyle,
   screenshotImportAvailable,
-  scheduleItems,
+  cloudDownloadPending = false,
+  scheduleItems, knownScheduleItems,
   savedUpdates,
   projectAreas,
   projects,
+  closedProjects,
   projectRecords,
   scheduleDocuments,
+  reviewDocuments,
   onBack,
   onOpenDocument,
   onDeleteDocument,
@@ -19092,24 +19296,28 @@ function ScheduleScreen({
   initialFilter,
   initialAddProjectName,
   initialAddGuided,
-  onInitialAddGuidedConsumed,
+  onInitialAddConsumed,
   projectFilter,
   defaultOwner,
+  getLocationFix,
   currentUserEmail,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   screenshotImportAvailable: boolean;
-  scheduleItems: ScheduleItem[];
+  cloudDownloadPending?: boolean;
+  scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
   projects: string[];
+  closedProjects: readonly string[];
   projectRecords: readonly ProjectRecord[];
   scheduleDocuments: ReferenceDocument[];
+  reviewDocuments: readonly ReferenceDocument[]; // every document, as the pick checks them (whole-app audit A8 pass 7 L2)
   onBack: () => void;
   onOpenDocument: (document: ReferenceDocument) => void;
   onDeleteDocument: (documentId: string) => void;
   onSetActiveDocument: (documentId: string) => void;
-  onAdd: (item: Partial<ScheduleItem>) => void;
+  onAdd: (item: Partial<ScheduleItem>) => false | void;
   onUpdate: (
     itemId: string,
     next: Partial<ScheduleItem>,
@@ -19128,9 +19336,11 @@ function ScheduleScreen({
   initialFilter?: ScheduleTaskFilter;
   initialAddProjectName?: string | null;
   initialAddGuided?: boolean;
-  onInitialAddGuidedConsumed?: () => void;
+  /** Add Task closed: a later one opens on the project in view, unguided (A3 pass 9 L2/L3). */
+  onInitialAddConsumed?: () => void;
   projectFilter?: string | null;
   defaultOwner?: string;
+  getLocationFix?: () => Promise<LocationSnapshot | null>; // Add Task's Location: the area GPS places David in (owner answer Q31)
   currentUserEmail?: string;
 }) {
   const { sizeClass } = useAppShellLayout();
@@ -19178,10 +19388,10 @@ function ScheduleScreen({
 
   const scheduleReconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
-      scheduleItems: workspaceScheduleItems,
+      scheduleItems: workspaceScheduleItems, knownScheduleItems,
       updates: workspaceSavedUpdates,
     }),
-    [workspaceSavedUpdates, workspaceScheduleItems],
+    [knownScheduleItems, workspaceSavedUpdates, workspaceScheduleItems],
   );
   const actionableScheduleWarnings = useMemo(
     () => scheduleReconciliation.warnings.filter(scheduleWarningIsUserActionable),
@@ -19200,11 +19410,12 @@ function ScheduleScreen({
   const actionInbox = useMemo(
     () => buildDAVEActionInbox({
       scheduleItems: workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
+      knownScheduleItems: knownScheduleItems as unknown as import('./types').ScheduleItem[],
       updates: workspaceSavedUpdates as unknown as import('./types').ProjectUpdate[],
       reconciliationWarnings: actionableScheduleWarnings,
       dependencyNodes: dependencyNetwork.nodes,
     }),
-    [actionableScheduleWarnings, dependencyNetwork.nodes, workspaceSavedUpdates, workspaceScheduleItems],
+    [actionableScheduleWarnings, dependencyNetwork.nodes, knownScheduleItems, workspaceSavedUpdates, workspaceScheduleItems],
   );
   const attentionScheduleItemIds = useMemo(
     () => new Set(actionInbox.items.flatMap(item => item.scheduleItemId ? [item.scheduleItemId] : [])),
@@ -19556,6 +19767,7 @@ function ScheduleScreen({
               onCancel={onCancelImport}
               incomingBatch={incomingImportBatch}
               onIncomingBatchConsumed={onIncomingImportConsumed}
+              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
             />
           ) : null}
 
@@ -19609,7 +19821,7 @@ function ScheduleScreen({
                     <Text style={styles.rowSub}>
                       Imported {formatSavedTime(document.importedAt)} • {isScreenshot
                         ? 'Supporting message screenshot'
-                        : document.isCurrent ? 'Active schedule' : 'Inactive'}
+                        : document.isCurrent || scheduleDocumentAddsToMaster(document) ? scheduleDocumentCurrentLabel(document, 'Active schedule', scheduleDocuments) : 'Inactive'}
                     </Text>
                   </View>
 
@@ -19622,7 +19834,7 @@ function ScheduleScreen({
                     >
                       <Text style={styles.compactInlineActionText}>Open</Text>
                     </TouchableOpacity>
-                    {!isScreenshot && !document.isCurrent ? (
+                    {!isScreenshot && !scheduleDocumentIsCurrentEverywhere(document, scheduleDocuments) ? (
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}
@@ -19670,24 +19882,28 @@ function ScheduleScreen({
           />
         )
       : (
+          // Not "import one" while the cloud's tasks have not arrived (audit A2 M5).
           <EmptyState
-            title="No schedule items yet"
-            text="Import a CSV/text schedule or add a schedule item manually."
+            title={cloudDownloadPending ? 'Tasks not downloaded yet' : 'No schedule items yet'}
+            text={cloudDownloadPending
+              ? 'The first download from the cloud did not finish. Vitruvius keeps retrying; Settings › Sync Now retries now.'
+              : 'Import a CSV/text schedule or add a schedule item manually.'}
           />
         );
   const taskEditor = (
     <ScheduleTaskEditorModal
       visible={showAdd}
-      projects={projects}
+      projects={projects} closedProjects={closedProjects}
       projectRecords={projectRecords}
       projectAreas={projectAreas}
-      scheduleItems={scheduleItems}
+      scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems} savedUpdates={savedUpdates} // GPS areas: New Update's scope (Q31 review L3)
       initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
       initiallyGuided={Boolean(initialAddGuided)}
       defaultOwner={defaultOwner}
+      getLocationFix={getLocationFix}
       onClose={() => {
         setShowAdd(false);
-        onInitialAddGuidedConsumed?.();
+        onInitialAddConsumed?.();
       }}
       onSubmit={onAdd}
     />
@@ -19720,7 +19936,7 @@ function ScheduleScreen({
             </View>
             <TouchableOpacity
               style={styles.sheetModalCloseButton}
-              onPress={() => setPlanningTaskId(null)}
+              onPress={() => afterTextInputBlur(() => setPlanningTaskId(null))}
               accessibilityRole="button"
               accessibilityLabel="Close schedule task"
             >
@@ -19788,7 +20004,7 @@ function ScheduleScreen({
       <>
         <ScheduleWideWorkspace
           items={filteredItems}
-          selectedTaskId={selectedTask?.id || null}
+          selectedTaskId={selectedAreaSummary ? null : selectedTask?.id || null}
           selectedAreaKey={selectedAreaKey}
           onSelectTask={taskId => {
             setSelectedTaskId(taskId);
@@ -19807,8 +20023,11 @@ function ScheduleScreen({
               </Text>
             </>
           )}
-          inspector={selectedTask ? (
+          inspector={selectedTask && !selectedAreaSummary ? (
+            // One row per task: a reused row carried a typed Owner onto the
+            // next task picked (audit A2 M3). An area header shows its summary (A2 pass 2 L3).
             <ScheduleItemRow
+              key={selectedTask.id}
               item={selectedTask}
               scheduleItems={scheduleItems}
               projectAreas={projectAreas}
@@ -19934,13 +20153,9 @@ function ScheduleItemRow({
   const [internalExpanded, setInternalExpanded] = useState(false);
   const [areaSheetOpen, setAreaSheetOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'synced' | 'pending'>('idle');
-  const [progressDraft, setProgressDraft] = useState(() =>
-    reconcileScheduleProgress(item.status, item.percentComplete),
-  );
+  // Staged by task id until Save: it survives a task switch, a collapse or a tab switch (audit A5).
+  const [progressDraft, setProgressDraft] = useScheduleProgressDraft(item.id, reconcileScheduleProgress(item.status, item.percentComplete));
   const saveAttemptRef = useRef(0);
-  useEffect(() => {
-    setProgressDraft(reconcileScheduleProgress(item.status, item.percentComplete));
-  }, [item.id, item.status, item.percentComplete]);
   const progressDraftDirty =
     progressDraft.status !== item.status ||
     progressDraft.percentComplete !== item.percentComplete;
@@ -19949,8 +20164,8 @@ function ScheduleItemRow({
     : item;
   const expanded = expandedOverride ?? internalExpanded;
   const toggleExpanded = () => {
-    if (expandedOverride === undefined) {
-      setInternalExpanded(current => !current);
+    if (expandedOverride === undefined) { // Lets a focused field save first (audit A2 pass 3 M1).
+      afterTextInputBlur(() => setInternalExpanded(current => !current));
     }
   };
   const [verificationNote, setVerificationNote] = useState('');
@@ -20100,7 +20315,7 @@ function ScheduleItemRow({
           <View style={[styles.statusPill, { backgroundColor: `${priorityColor}1A` }]}>
             <Text style={[styles.statusPillText, { color: priorityColor }]}>{item.priority}</Text>
           </View>
-          <Text style={styles.percentText}>{displayedItem.percentComplete}%</Text>
+          <Text style={styles.percentText}>{displayedItem.percentComplete}%{progressDraftDirty ? ' · Unsaved' : ''}</Text>
         </View>
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${displayedItem.percentComplete}%` }]} />

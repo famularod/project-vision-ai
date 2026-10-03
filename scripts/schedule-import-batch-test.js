@@ -316,7 +316,9 @@ assert(
     appSource.includes('prepareScheduleImportFromAsset(asset, selectedProjectNames)') &&
     appSource.includes('setIncomingScheduleImportBatch(batch)') &&
     flowSource.includes('incomingBatch?: PIEScheduleImportBatch | null') &&
-    flowSource.includes('setPendingBatch(incomingBatch)'),
+    // Owner answer Q22 (30 Sep 2026): the review opens through openReview, which also suggests the schedule's role.
+    flowSource.includes('openReview(incomingBatch)') &&
+    flowSource.includes('setPendingBatch(batch)'),
   'A document classified as Schedule must run extraction once and open the existing PM review gate.',
 );
 assert(
@@ -344,7 +346,9 @@ assert(
   'Schedule import should remain behind Manage Schedule after daily task metrics.',
 );
 assert(
-  scheduleScreenSource.includes('sections={groupedTaskSections}') &&
+  // 30 Sep 2026 (audit A5): the list renders collapsible sections built from groupedTaskSections.
+  scheduleScreenSource.includes('sections={mobileTaskSections}') &&
+  scheduleScreenSource.includes('groupedTaskSections') &&
     scheduleScreenSource.includes("const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks')") &&
     scheduleScreenSource.includes('if (aComplete !== bComplete)') &&
     scheduleScreenSource.includes('Schedule Sources') &&

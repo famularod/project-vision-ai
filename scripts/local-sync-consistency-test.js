@@ -105,7 +105,9 @@ includes(app, "'rls_denied'", 'sync diagnostics must include rls_denied category
 includes(app, "'storage_upload_failed'", 'sync diagnostics must include storage_upload_failed category');
 includes(app, "'database_insert_failed'", 'sync diagnostics must include database_insert_failed category');
 includes(app, "'malformed_payload'", 'sync diagnostics must include malformed_payload category');
-includes(app, "connectionType: 'wifi' | 'cellular' | 'none' | 'unknown'", 'diagnostics must model connection type safely');
+// The stored diagnostics type moved out of App.tsx unchanged (30 Sep 2026, line budget).
+const syncDiagnosticsRecord = fs.readFileSync(path.join(root, 'services/FieldUpdateSyncDiagnosticsRecord.ts'), 'utf8');
+includes(syncDiagnosticsRecord, "connectionType: 'wifi' | 'cellular' | 'none' | 'unknown'", 'diagnostics must model connection type safely');
 includes(app, 'therefore never blocked client-side', 'cellular must not be treated as offline');
 assert(!app.includes('NetInfo'), 'app must not pretend to use NetInfo without the dependency');
 
@@ -123,7 +125,9 @@ includes(app, "Sync failed · Update save issue", 'database failures must use up
 includes(app, "Sync failed · App data issue", 'malformed payload failures must use app data copy');
 includes(app, "Sync failed · Retry", 'online sync failure must show retryable copy');
 includes(app, "Queued — will sync when you're back online", 'offline queued copy must be specific');
-includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}', 'queued/failed cards must expose retry');
+// Pin changed in A4 pass 15 H1: the card's Retry passes on David's choice to
+// send over a conflict, which only its confirmed "Send" makes.
+includes(app, 'onRetry={updateCanInlineRetry(update) ? choice => retryUpdate(update, choice) : undefined}', 'queued/failed cards must expose retry');
 includes(app, 'startAutomaticSyncBackgroundTask(', 'sync worker must run through the guarded background path');
 includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync work must be keyed and bounded');
 includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
@@ -203,8 +207,10 @@ assert(
 includes(operationalRefresh, "table: 'schedule_items'", 'task changes must trigger open-device refresh');
 includes(operationalRefresh, "table: 'project_areas'", 'area changes must trigger open-device refresh');
 includes(app, 'runFieldUpdateCloudSync', 'send/retry must call the shared structured cloud sync work');
-includes(app, 'onRetryUpdateSync={update => retryQueuedUpdate', 'Settings must retry through the live Field Update sync path');
-includes(admin, 'onRetryUpdateSync(update)', 'Settings must await the live update retry result');
+// Pins changed in A7 pass 12 M-1: Settings' Retry Sync passes { automatic: true }
+// through the same retry, so an update in conflict is left for Review Conflicts.
+includes(app, 'onRetryUpdateSync={(update, sync) => retryQueuedUpdate(update as unknown as ProjectUpdate, sync)}', 'Settings must retry through the live Field Update sync path');
+includes(admin, 'onRetryUpdateSync(update, { automatic: true })', 'Settings must await the live update retry result');
 includes(admin, 'withSyncTimeout', 'Settings sync must not remain indefinitely stuck in its busy state');
 includes(admin, 'Review Conflicts', 'Settings must provide a review path for genuine sync conflicts');
 includes(admin, 'remainingConflicts > 0', 'Settings must not report success while sync conflicts remain');
@@ -232,14 +238,28 @@ includes(admin, 'lastFullSyncIssueCount > 0', 'Settings must not show All caught
 assert(!settingsFullSyncHandler.includes('setLastFullSyncIssueCount(1);'), 'full sync exceptions must not invent a one-item retry count');
 includes(admin, 'no pending retry items were found', 'full sync exceptions with an empty queue must explain that no item is pending');
 includes(sync, 'export async function runFieldUpdateCloudSync', 'shared sync service must own field update orchestration');
-includes(sync, 'photo => uploadLocalPhotoWithDiagnostics(update, photo)', 'shared sync must await photo upload work with diagnostics');
+// Whole-app audit A1 M3 (30 Sep 2026): a photo not yet started when the
+// account changes is held for its account, so the upload call is now the
+// branch taken while the account is unchanged.
+includes(sync, '? uploadLocalPhotoWithDiagnostics(update, photo)', 'shared sync must await photo upload work with diagnostics');
 includes(sync, 'mapWithBoundedConcurrency(', 'shared sync must bound concurrent photo upload work');
-includes(sync, 'await queueProjectUpdateRecord(cloudRecoverableUpdate, false)', 'shared sync must stage cloud-recoverable update metadata in the durable queue');
+// Whole-app audit A7 pass 6 M1 (30 Sep 2026): staging writes the record
+// so a queued document patch is kept (a sync attempt is not an edit); the
+// record is still queued before photo work. Pass 7 M1: through its own
+// writer, which re-sends no copy already in the cloud and whose second write
+// replaces only the first one's record. Pin changed in A4 pass 13 M1: the
+// waiting-update sync writes nothing for an update in conflict.
+const stagedRecordWrite = 'const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(\n    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id)';
+includes(sync, stagedRecordWrite, 'shared sync must stage cloud-recoverable update metadata in the durable queue');
+// The photo work now carries the account the staging began under (audit A1 M3).
 assert(
-  sync.indexOf('await queueProjectUpdateRecord(cloudRecoverableUpdate, false)') <
-    sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate)'),
+  sync.indexOf(stagedRecordWrite) <
+    sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync('),
   'shared sync must persist update metadata before potentially slow photo work',
 );
+// Pin changed in A4 pass 15 H1: the second write also carries a send David
+// chose over a conflict.
+includes(sync, '{ replacing: staged, overConflict: sentOverConflict }', 'the staging pass\'s second write must replace only its own queue record');
 includes(sync, 'let aggregateResult = await uploadPendingChanges()', 'shared sync must attempt database insert/update work');
 includes(sync, 'requestPendingChangesUpload(', 'durable queue uploads must use the guarded background entry point');
 assert(!sync.includes('void uploadPendingChanges();'), 'queue upload must not create a floating rejecting promise');
@@ -268,7 +288,9 @@ includes(sync, 'cloudPhotoLookupConfirmedMissing', 'automatic repair must requir
 includes(sync, 'projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)', 'equivalent remote updates must not create false conflicts');
 includes(sync, "id: `project-update-${localPayload.id}`", 'keeping the phone copy must resolve through the durable queue');
 includes(sync, "resolution: 'keep_local' | 'keep_cloud'", 'genuine conflicts must require an explicit resolution choice');
-includes(sync, 'const staged = await stageProjectUpdateForSync(update)', 'field send and Settings reconciliation must share update staging');
+// Pin changed in A4 pass 13 G2: Settings Sync Now stages as the waiting-update
+// sync does, so an update in conflict is left for Keep Phone or Keep Cloud.
+includes(sync, 'const staged = await stageProjectUpdateForSync(update, { automatic: true })', 'field send and Settings reconciliation must share update staging');
 assert(!app.includes('async function runFieldUpdateCloudSync'), 'App must not own a second field-update sync engine');
 assert(!app.includes('void stageProjectUpdateForSync(saved)'), 'draft saves must not leave newly staged updates waiting without a background flush');
 includes(sync, 'details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0', 'Settings sync must report uploads from the durable queue');
@@ -281,9 +303,11 @@ assert.strictEqual(
   1,
   'project update database writes must have one queue-owned execution path',
 );
+// Pin changed in A4 pass 16 M1: a Save's own sync also reads whether the
+// update was held for conflict review, and then leaves its card as it was.
 assert(
   app.indexOf('const tokenResult = await getCurrentSessionAccessToken();') <
-    app.indexOf('const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);'),
+    app.indexOf('const { syncResult, workAttempt, heldForConflictReview } = await runFieldUpdateCloudSync(queuedUpdate);'),
   'send must fetch fresh session state before invoking sync work',
 );
 const retryStart = app.indexOf('async function retryQueuedUpdate');
@@ -300,9 +324,11 @@ includes(
   'async function syncFieldUpdateWithMissingPhotoRepair(',
   'retry repair must use one bounded missing-photo recovery path',
 );
+// Pins changed in A4 pass 13 M1: both attempts carry the caller's `sync`
+// (the waiting-update sync leaves an update in conflict for review).
 includes(
   app,
-  'await runFieldUpdateCloudSync(update)',
+  'await runFieldUpdateCloudSync(update, sync)',
   'missing-photo recovery must start with the normal durable sync engine',
 );
 const missingPhotoRepairStart = app.indexOf(
@@ -313,7 +339,7 @@ const repairedUpdatePersistence = app.indexOf(
   missingPhotoRepairStart,
 );
 const repairedUpdateCloudAttempt = app.indexOf(
-  'const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate)',
+  'const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate, sync)',
   missingPhotoRepairStart,
 );
 assert(
@@ -426,7 +452,10 @@ includes(app, 'const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS
 includes(projectDeletionTransaction, 'normalizedScope(item.scheduleProjectName) === projectKey', 'deleting a parent project must remove its child schedule rows');
 includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
 includes(app, 'await reconcileProjectUpdateDeletionJournal(tombstones)', 'startup must replay durable permanent-delete intent before cloud load');
-includes(updateService, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup reconciliation must remove stale tombstoned update work');
+// Audit A2 pass 2 M1: the replay is one queue pass (replayProjectUpdateTombstonesInQueue)
+// instead of a remove + re-queue per tombstone; the same protections are pinned there.
+includes(updateService, 'replayProjectUpdateTombstonesInQueue(tombstones.map(', 'startup reconciliation must remove stale tombstoned update work');
+includes(sync, "item.entity === 'project_update' && item.operation !== 'delete'", 'the one-pass replay must drop only record work, never a queued delete');
 includes(updateService, "tombstone.action === 'delete_update_everywhere'", 'only permanent update tombstones may reconstruct a cloud delete');
 includes(updateService, 'queueProjectUpdateDelete({ id: tombstone.updateId })', 'a permanent tombstone must reconstruct a missing cloud-delete queue item');
 includes(sync, "if (item.operation === 'delete') return true", 'startup tombstone cleanup must preserve queued permanent deletes');
@@ -449,7 +478,7 @@ includes(sync, "cloudRecoveryStatus: 'unavailable' as const", 'unrecoverable fil
 includes(sync, "photo.cloudRecoveryStatus === 'unavailable'", 'confirmed unavailable files must not be queued forever');
 includes(app, 'label="Delete Saved Update"', 'resumed saved updates must expose an in-flow delete action');
 includes(app, 'onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}', 'delete action must only appear while editing an existing saved update');
-includes(app, "...(draft.id === updateId ? [] : [draft])", 'deleting a resumed update must not keep its photos alive through the active draft reference');
+includes(app, "...(openDraftDeleted ? [] : [draftRef.current])", 'deleting a resumed update must not keep its photos alive through the active draft reference (read from the ref; audit A4 also clears the draft)');
 includes(sync, 'export async function removeMissingPhotosFromSyncQueue', 'queue-only missing photo cleanup must remain available');
 includes(app, 'orphanedPhotoCountIgnored: update.photos.length', 'failed update tombstones must record ignored orphaned photo metadata');
 includes(app, 'projectRollupKey(update.projectName)', 'project rollups must normalize saved update project names');
@@ -475,7 +504,8 @@ includes(supabase, 'export async function listArchivedProjects', 'archived cloud
 includes(projectService, 'loadCloudArchivedProjectNames', 'project loading must include archived cloud project names');
 includes(app, 'setCloudProjectArchived(projectName, true)', 'archiving a project must persist to cloud sync');
 includes(app, 'setCloudProjectArchived(projectName, false)', 'reopening a project must persist to cloud sync');
-includes(app, 'label="Archive Project"', 'the live project workspace must expose the archive path');
+// Audit A3 pass 4: the button reads "Close Project", as its dialog does.
+includes(app, 'label="Close Project"', 'the live project workspace must expose the archive path');
 includes(app, 'Archived Projects', 'the live Projects screen must expose archived projects for reopening');
 assert(!app.includes('SUPABASE_SERVICE_ROLE_KEY'), 'mobile app must not reference service-role env');
 assert(!app.includes('EXPO_PUBLIC_OPENAI_API_KEY'), 'mobile app must not reference public OpenAI API key');

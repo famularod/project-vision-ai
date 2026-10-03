@@ -1,5 +1,7 @@
 import type { ProjectUpdate, ReferenceDocument, UpdatePhoto } from '../types';
 import { daveProjectUpdateMatchesCloudReceipt } from './DAVEProjectUpdateCloudReceipt';
+import { isCloudRecoveryCopy, withFresherPhotoPreview } from './ProjectPhotoTransport';
+import { referenceDocumentCategory, referenceDocumentName } from './ReferenceDocumentSharedFields';
 
 export type DAVECloudRecoveryRecord = {
   id: string;
@@ -57,9 +59,14 @@ export function mergeDAVECloudRecoveredProjectUpdate<T extends ProjectUpdate>(
     projectId: local.projectId || cloud.projectId || null,
     photos: local.photos.map(localPhoto => {
       const cloudPhoto = cloudPhotos.get(normalizedId(localPhoto.id));
-      return cloudPhoto && cloudPhotoHasFreshRecovery(cloudPhoto, now)
-        ? mergePhotoRecoveryTransport(localPhoto, cloudPhoto)
-        : localPhoto;
+      if (!cloudPhoto) return localPhoto;
+      return withFresherPhotoPreview(
+        cloudPhotoHasFreshRecovery(cloudPhoto, now)
+          ? mergePhotoRecoveryTransport(localPhoto, cloudPhoto)
+          : localPhoto,
+        cloudPhoto,
+        now,
+      );
     }),
   } as T;
 
@@ -73,6 +80,22 @@ export function mergeDAVECloudRecoveredProjectUpdate<T extends ProjectUpdate>(
         status: 'sent',
       }
     : recovered;
+}
+
+/**
+ * A local update against the cloud copy of the same id, if there is one.
+ * With no cloud copy the update stands as it is: merging it with itself made
+ * it its own "receipt" and stamped every locally saved update 'sent' before
+ * any upload, so the list read "Cloud Synced" for an update that had never
+ * left the phone and the app's own retry loop ignored it (whole-app audit
+ * A4, 29 Sep 2026).
+ */
+export function mergeLocalUpdateWithCloudCopy<T extends ProjectUpdate>(
+  local: T,
+  cloud: T | undefined,
+  now = Date.now(),
+): T {
+  return cloud ? mergeDAVECloudRecoveredProjectUpdate(local, cloud, now) : local;
 }
 
 export function countDAVECloudRecoveredRecords<T extends DAVECloudRecoveryRecord>(
@@ -115,7 +138,7 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
     const localDocument = localById.get(id);
     const cloudDocument = cloudById.get(id);
     if (!localDocument) {
-      if (cloudDocument) merged.push(cloudDocument);
+      if (cloudDocument) merged.push({ ...cloudDocument, cloudDetailsSeen: referenceDocumentSharedDetailsFingerprint(cloudDocument) });
       return;
     }
     if (!cloudDocument) {
@@ -123,8 +146,13 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
       return;
     }
 
-    const cloudWins = referenceDocumentRevision(cloudDocument, 'cloud') >
-      referenceDocumentRevision(localDocument, 'local');
+    // Both copies are ranked by their edit time, and a tie goes to the cloud.
+    // The row's updated_at is the upload time: "1", uploaded after "12" was
+    // typed, outranked "12" and the last keystroke never reached the cloud
+    // (whole-app audit A8 pass 1 F1 (30 Sep 2026)). Web edits now write
+    // document_data.updatedAt with updated_at, so a newer web edit still wins.
+    const cloudWins = referenceDocumentRevision(cloudDocument) >=
+      referenceDocumentRevision(localDocument);
     const winner = cloudWins ? cloudDocument : localDocument;
     const other = cloudWins ? localDocument : cloudDocument;
     const metadataMerged = {
@@ -133,11 +161,112 @@ export function mergeDAVEReferenceDocumentRecoveryRecords({
       uri: localDocument.uri || cloudDocument.uri || '',
       storagePath: winner.storagePath || other.storagePath || null,
       cloudUpdatedAt: cloudDocument.cloudUpdatedAt || localDocument.cloudUpdatedAt || null,
+      // What the cloud copy said when this device last merged it (A7 pass 6 L1).
+      cloudDetailsSeen: referenceDocumentSharedDetailsFingerprint(cloudDocument),
     };
     merged.push(mergeCloudReferenceDocumentAuthority(metadataMerged, cloudDocument));
   });
 
   return merged;
+}
+
+/**
+ * A phone edit the cloud copy outranks only because the document was made
+ * current (or another one was) since the phone last saw it. The activation
+ * (ecos_activate_current_reference_document) stamps document_data.updatedAt
+ * with the time it ran, so text typed before Make Current, or a note edited
+ * offline before the document was made current on the iPad or the web, lost
+ * to the cloud copy and was dropped as already uploaded; the card kept it
+ * and the other devices never got it (whole-app audit A8 pass 3 M2).
+ *
+ * The edit is kept when the cloud copy's current flags differ from the ones
+ * the phone's copy carries (only an activation changes them), the phone's
+ * copy was edited after the cloud copy it last saw, and it still differs
+ * from the cloud's. It is returned stamped just after the cloud copy, so it
+ * wins here and on the other devices; the cloud's current flags still win
+ * in every merge. Null when the ordinary ranking stands.
+ *
+ * Only while the cloud copy's shared details are still the ones the phone
+ * last saw (whole-app audit A7 pass 6 L1): a note typed on the web after the
+ * activation is newer than the phone's, and stands, as any newer edit does.
+ * `sentDetails` is what this phone itself last put in the cloud, which it
+ * may not have seen come back yet. A copy saved before this record existed
+ * keeps the earlier rule.
+ */
+export function referenceDocumentEditOutlivingActivation(
+  local: ReferenceDocument,
+  cloud: ReferenceDocument,
+  now = Date.now(),
+  sentDetails: string | null = null,
+): ReferenceDocument | null {
+  const cloudRevision = referenceDocumentRevision(cloud);
+  if (referenceDocumentRevision(local) > cloudRevision) return null;
+  if (currentFlags(local) === currentFlags(cloud)) return null;
+  const seen = new Date(local.cloudUpdatedAt || '').getTime();
+  const edited = new Date(local.updatedAt || '').getTime();
+  if (!Number.isFinite(seen) || !Number.isFinite(edited) || edited <= seen) return null;
+  if (sharedMetadataWithoutRevision(local) === sharedMetadataWithoutRevision(cloud)) return null;
+  const cloudDetails = referenceDocumentSharedDetailsFingerprint(cloud);
+  if (local.cloudDetailsSeen && local.cloudDetailsSeen !== cloudDetails && sentDetails !== cloudDetails) return null;
+  return { ...local, updatedAt: new Date(Math.max(now, cloudRevision + 1)).toISOString() };
+}
+
+const DRAWING_STATUSES = new Set(['Draft', 'For Review', 'For Construction', 'As-Built', 'Superseded']);
+
+/**
+ * The details every device shares and a person edits, as the phone's
+ * normalizer reads them, so the cloud row and the phone's normalized copy of
+ * it give the same answer: a blank or unknown category reads "Other", a
+ * blank name the file name, on both sides (whole-app audit A7 pass 7 L1).
+ * Current flags, the revision stamp, device paths and cloud-owned index
+ * fields are not part of it.
+ */
+export function referenceDocumentSharedDetailsFingerprint(document: ReferenceDocument): string {
+  const record = document as unknown as Record<string, unknown>;
+  const text = (key: string) => typeof record[key] === 'string' && (record[key] as string).trim() ? (record[key] as string).trim() : null;
+  const sha = (key: string) => {
+    const value = typeof record[key] === 'string' ? (record[key] as string).trim().toLowerCase() : '';
+    return /^[a-f0-9]{64}$/.test(value) ? value : null;
+  };
+  const details = {
+    name: referenceDocumentName(record.name, record.originalFileName),
+    category: referenceDocumentCategory(record.category), notes: text('notes'),
+    projectId: text('projectId'), projectName: text('projectName'),
+    projectNames: Array.isArray(record.projectNames)
+      ? (record.projectNames as unknown[]).filter(name => typeof name === 'string' && name.trim()) : [],
+    importBatchId: text('importBatchId'), storagePath: text('storagePath'), mimeType: text('mimeType'),
+    sizeBytes: typeof record.sizeBytes === 'number' && Number.isFinite(record.sizeBytes) ? record.sizeBytes : null,
+    contentSha256: sha('contentSha256') || sha('webFileFingerprint'),
+    webFileFingerprint: text('webFileFingerprint'), webVersionGroupId: text('webVersionGroupId'),
+    drawingNumber: text('drawingNumber'), drawingRevision: text('drawingRevision'),
+    drawingDiscipline: text('drawingDiscipline'), drawingIssuedAt: text('drawingIssuedAt'),
+    drawingStatus: DRAWING_STATUSES.has(String(record.drawingStatus)) ? record.drawingStatus : null,
+    sourceProvider: record.sourceProvider === 'google_drive' || record.sourceProvider === 'supabase_storage' ? record.sourceProvider : null,
+  };
+  const serialized = JSON.stringify(details);
+  // FNV-1a, twice with different offsets: short, and stable across devices.
+  const hash = (offset: number) => {
+    let value = offset;
+    for (let index = 0; index < serialized.length; index += 1) {
+      value ^= serialized.charCodeAt(index);
+      value = Math.imul(value, 0x01000193) >>> 0;
+    }
+    return value.toString(16).padStart(8, '0');
+  };
+  return `v1:${hash(0x811c9dc5)}${hash(0x01000193)}`;
+}
+
+function currentFlags(document: ReferenceDocument): string {
+  const retired = Array.isArray(document.retiredForProjectNames) ? document.retiredForProjectNames : [];
+  return JSON.stringify([
+    Boolean(document.isCurrent),
+    [...new Set(retired.map(name => String(name).trim().toLowerCase()).filter(Boolean))].sort(),
+  ]);
+}
+
+function sharedMetadataWithoutRevision(document: ReferenceDocument): string {
+  const { updatedAt: _updatedAt, ...metadata } = document;
+  return stableReferenceDocumentMetadata(metadata as ReferenceDocument);
 }
 
 /**
@@ -191,8 +320,12 @@ function mergeCloudReferenceDocumentAuthority(
   metadataMerged: ReferenceDocument,
   cloud: ReferenceDocument,
 ): ReferenceDocument {
+  // Part of "which schedule is current", written and cleared only by the
+  // activation call (owner answer Q15): the cloud's list, or none.
+  const { retiredForProjectNames: _deviceRetirement, ...merged } = metadataMerged;
   return {
-    ...metadataMerged,
+    ...merged,
+    ...(cloud.retiredForProjectNames?.length ? { retiredForProjectNames: cloud.retiredForProjectNames } : {}),
     isCurrent: cloud.isCurrent,
     webContentReview: cloud.webContentReview,
     webReport: cloud.webReport,
@@ -223,14 +356,8 @@ function mergeCloudReferenceDocumentAuthority(
   };
 }
 
-function referenceDocumentRevision(
-  document: ReferenceDocument,
-  source: 'local' | 'cloud',
-) {
-  const values = source === 'cloud'
-    ? [document.cloudUpdatedAt, document.updatedAt, document.importedAt]
-    : [document.updatedAt, document.cloudUpdatedAt, document.importedAt];
-  for (const value of values) {
+function referenceDocumentRevision(document: ReferenceDocument) {
+  for (const value of [document.updatedAt, document.cloudUpdatedAt, document.importedAt]) {
     const parsed = new Date(value || '').getTime();
     if (Number.isFinite(parsed)) return parsed;
   }
@@ -244,7 +371,9 @@ function normalizedId(value: string) {
 const REFERENCE_DOCUMENT_DEVICE_OR_CLOUD_AUTHORITY_KEYS = new Set([
   'uri',
   'cloudUpdatedAt',
+  'cloudDetailsSeen',
   'isCurrent',
+  'retiredForProjectNames',
   'webContentReview',
   'webReport',
   'extractedText',
@@ -306,7 +435,11 @@ function cloudPhotoHasFreshRecovery(photo: UpdatePhoto, now: number) {
 function mergePhotoRecoveryTransport(local: UpdatePhoto, cloud: UpdatePhoto): UpdatePhoto {
   return {
     ...local,
-    uri: cloud.uri,
+    // Only a copy this device fetched replaces its own path. A cloud row's
+    // plain path is the uploading device's; taking it over a restored photo's
+    // new name left that copy unreferenced, so the photo cleanup could delete
+    // it 14 days after the restore (audit A7 M3).
+    uri: isCloudRecoveryCopy(cloud) || !local.uri?.trim() ? cloud.uri : local.uri,
     cloudStoragePath: cloud.cloudStoragePath || local.cloudStoragePath || null,
     cloudRecoveredAt: cloud.cloudRecoveredAt || local.cloudRecoveredAt || null,
     cloudRecoveryStatus: cloud.cloudRecoveryStatus || local.cloudRecoveryStatus || null,

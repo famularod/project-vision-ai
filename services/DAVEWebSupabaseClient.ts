@@ -1,5 +1,9 @@
 import {
   createClient,
+  isAuthError,
+  isAuthRefreshDiscardedError,
+  isAuthRetryableFetchError,
+  isAuthSessionMissingError,
   type AuthChangeEvent,
   type Session,
   type SupabaseClient,
@@ -15,9 +19,18 @@ import {
   DAVE_WEB_MAX_DOCUMENT_BYTES,
   type DAVEWebDocumentExtension,
   type DAVEWebReportRecord,
+  type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
-import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
-import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
+import {
+  browserTabSignInUserId,
+  browserTabStoredSignIn,
+  forgetBrowserTabSignIn,
+  supabaseSecureAuthStorage,
+} from './SupabaseAuthStorage.web';
+import {
+  chunkSupabaseFilterValues,
+  paginateSupabaseCollection,
+} from './SupabaseCollectionPagination';
 import {
   attachDAVEOperationalRealtime,
   type DAVEOperationalCollectionName,
@@ -47,7 +60,9 @@ import {
 import {
   activateECOSCurrentReferenceDocument,
   enqueueECOSHostedIndex,
+  carryECOSHostedIndexStatus,
   loadECOSHostedIndexStatuses,
+  type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
 import { askECOSProjectQuestion } from './ECOSProjectQuestion';
 import {
@@ -95,6 +110,27 @@ export class DAVEWebAuthorizationError extends Error {
   }
 }
 
+/**
+ * Owner answer Q21 (30 Sep 2026): sign out of this computer only ('local') or
+ * of every device ('global', which ends the iPhone's and iPad's sign-ins too).
+ */
+export type DAVEWebSignOutScope = 'local' | 'global';
+
+/**
+ * What a tab's sign-out because another tab signed out left in this tab
+ * (whole-app audit A12 pass 10 L1): 'ended', no sign-in; 'kept', a sign-in
+ * of another session or account, left as it is.
+ */
+export type DAVEWebTabSignOutOutcome = 'ended' | 'kept';
+
+/** Sign out of all devices could not reach the cloud; nothing was signed out. */
+export class DAVEWebSignOutNeedsConnectionError extends Error {
+  constructor() {
+    super('Signing out your other devices needs an internet connection, and Vitruvius could not reach the cloud just now. Nothing was signed out.');
+    this.name = 'DAVEWebSignOutNeedsConnectionError';
+  }
+}
+
 export type DAVEWebTaskMutationErrorCode =
   | 'conflict'
   | 'deleted'
@@ -134,7 +170,10 @@ export type DAVEWebDocumentUploadInput = Readonly<{
   document: ReferenceDocument & DAVEWebDocumentExtension;
   bytes: ArrayBuffer;
   file?: Blob;
+  /** New rows this import inserts; never written over a saved task. */
   scheduleItems?: readonly ScheduleItem[];
+  /** Saved tasks this import changes (planDAVEWebScheduleImport), each only while its cloud revision matches. */
+  revisedScheduleItems?: readonly DAVEWebScheduleImportRevision[];
   onProgress?: (fraction: number) => void;
 }>;
 
@@ -207,9 +246,32 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     realtimeSatisfiedCollections.add('schedule_items');
   }
 
+  /**
+   * A write the cloud refused because another device got there first means
+   * this copy of the table is behind. Clearing its up-to-date mark makes the
+   * next refresh of it, even a targeted one, read the cloud again. An earlier
+   * save in the same batch had set the mark, so "Apply all date changes" said
+   * the schedule was refreshed while it still showed the refused task as the
+   * web had opened it (whole-app audit round 2 follow-up, 30 Sep 2026).
+   */
+  function markBehindCloud(...collections: DAVEOperationalCollectionName[]) {
+    collections.forEach(collection => realtimeSatisfiedCollections.delete(collection));
+  }
+
   function invalidateAuthorization() {
     authorizationCache = null;
     authorizationInFlight = null;
+  }
+
+  /** Nothing read for the signed-out account is kept. */
+  function forgetSignedInReads() {
+    invalidateAuthorization();
+    cachedRowsOwnerId = null;
+    cachedAuthorizedRows = null;
+    documentCoverageSummaryCache.clear();
+    artifactPathOwnerId = null;
+    authorizedPhotoPaths = new Set<string>();
+    authorizedDocumentPaths = new Set<string>();
   }
 
   async function requireAuthorizedOwnerCached(): Promise<string> {
@@ -287,15 +349,31 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       question: string;
       conversationId?: string;
       priorTurnId?: string;
+      knownProjectNames?: readonly string[];
+      closedProjectNames?: readonly string[];
     }) {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       await requireAuthorizedOwnerCached();
       return askECOSProjectQuestion({ client, ...input });
     },
+    /**
+     * Whole-app audit A12 pass 3 L1 (30 Sep 2026): with an expired access
+     * token and no network, auth-js answers with an error and no session but
+     * keeps the stored sign-in, so that check throws (it did not finish; the
+     * page says he is still signed in and tries again). When the server
+     * refused the refresh, auth-js has already ended the sign-in (and sent
+     * SIGNED_OUT): no session, as when nobody is signed in.
+     */
     async getSessionStatus(): Promise<DAVEWebSessionStatus> {
       if (!client) return { configured: false, session: null };
       const { data, error } = await client.auth.getSession();
-      if (error) throw new Error('The desktop session could not be checked.');
+      if (error) {
+        const signInKept = !isAuthError(error) ||
+          isAuthRetryableFetchError(error) ||
+          isAuthRefreshDiscardedError(error);
+        if (signInKept) throw new Error('The desktop session could not be checked.');
+        return { configured: true, session: null };
+      }
       return { configured: true, session: data.session ?? null };
     },
 
@@ -385,17 +463,85 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return { ok: true, session: data.session };
     },
 
-    async signOut(): Promise<void> {
+    /** This computer only unless 'global' is asked for (owner answer Q21). */
+    async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
-      const { error } = await client.auth.signOut();
+      const { error } = await client.auth.signOut({ scope });
+      if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
+        throw new DAVEWebSignOutNeedsConnectionError();
+      }
       if (error) throw new Error('The desktop session could not be closed.');
-      invalidateAuthorization();
-      cachedRowsOwnerId = null;
-      cachedAuthorizedRows = null;
-      documentCoverageSummaryCache.clear();
-      artifactPathOwnerId = null;
-      authorizedPhotoPaths = new Set<string>();
-      authorizedDocumentPaths = new Set<string>();
+      forgetSignedInReads();
+    },
+
+    /**
+     * The account this tab's own stored sign-in belongs to, without asking
+     * the cloud; null when this tab holds none (whole-app audit A12 pass 5
+     * L2). auth-js tells every tab of the browser about any tab's
+     * SIGNED_OUT without saying whose it was.
+     */
+    storedSignInUserId(): string | null {
+      if (!client) return null;
+      return browserTabSignInUserId();
+    },
+
+    /**
+     * Another tab of this browser signed this same account out of this
+     * computer (or of all devices): this tab's own sign-in ends too, so
+     * "Sign Out of This Computer" signs out the tabs open and running then,
+     * and a reload does not show his projects again (whole-app audit A12
+     * pass 5 L2, 30 Sep 2026). A tab closed or asleep then is not told and
+     * keeps its sign-in (A12 pass 6 L2).
+     * Ended on the server when it can be reached, and taken out of this
+     * tab's storage either way. Another account's sign-in is left alone,
+     * and a tab holding none sends nothing, so tabs never answer each
+     * other's sign-outs back and forth. Never throws.
+     *
+     * A sign-in David made here meanwhile is not taken out (A12 pass 7
+     * L1). auth-js does not hold a sign-in back while it signs out, and
+     * when it could not finish (it threw its refresh away because storage
+     * changed, or /logout answered 503) this had deleted whatever this tab
+     * held by then: a sign-in David had just made here, with no
+     * SIGNED_OUT, so his workspace stayed with no sign-in behind it.
+     *
+     * It tells them apart by session (A12 pass 9): Supabase's access token
+     * names its sign-in (`session_id`), new for every sign-in and kept by
+     * its refreshes. Once auth-js answers, a stored sign-in of the session
+     * being ended is removed at once; one of another session or account is
+     * kept, since in this tab only a sign-in that succeeded writes a new
+     * session; a token that does not say is removed. It had first waited
+     * for every sign-in still awaiting an answer, and kept only a refresh
+     * token one had succeeded with (A12 pass 8 H1): a sign-in that never
+     * answered kept the ended sign-in here, refreshed by auth-js, and a
+     * reload opened his projects with no password (L1); and his new
+     * sign-in, once auth-js refreshed it, was deleted with no SIGNED_OUT
+     * (L2).
+     *
+     * It says what it left (A12 pass 10 L1), and the tab's page follows
+     * that: a second ending, started while his sign-in here was out, had
+     * shown the sign-in page as it settled, though it had kept his new
+     * sign-in and the workspace was open on it.
+     */
+    async signOutThisTabToo(userId: string): Promise<DAVEWebTabSignOutOutcome> {
+      if (!client) return 'ended';
+      const ending = browserTabStoredSignIn();
+      if (!ending) return 'ended';
+      if (!userId || ending.userId !== userId) return 'kept';
+      try {
+        await client.auth.signOut({ scope: 'local' });
+      } catch {
+        // Whatever auth-js left in storage is looked at below.
+      }
+      const stored = browserTabStoredSignIn();
+      const anotherSignIn = stored !== null &&
+        stored.sessionId !== null &&
+        ending.sessionId !== null &&
+        (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
+      // A sign-in made here meanwhile is kept, with what it has read.
+      if (anotherSignIn) return 'kept';
+      if (stored) forgetBrowserTabSignIn();
+      forgetSignedInReads();
+      return 'ended';
     },
 
     async loadAuthorizedRows(
@@ -607,14 +753,67 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return acknowledgedAt;
     },
 
+    /**
+     * The ids among `ids` that Restore Missing Tasks must leave alone: a task
+     * row that still exists (a task of a schedule that is not current is in
+     * the cloud but not on screen) or a deletion record. Restore had treated
+     * every task the workspace does not show as missing: a deleted task came
+     * back hidden behind its deletion record, and a hidden task's insert
+     * failed and stopped the restore part-way (whole-app audit round 2 F8).
+     */
+    async listAuthorizedUnrestorableScheduleItemIds(
+      ids: readonly string[],
+    ): Promise<ReadonlySet<string>> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      const requested = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
+      const unrestorable = new Set<string>();
+      // 100 ids a request, as everywhere else: 200 made ~7.9 KB request
+      // addresses, near what some proxies refuse (audit round 2 follow-up).
+      for (const chunk of chunkSupabaseFilterValues(requested)) {
+        const [existing, deleted] = await Promise.all([
+          client
+            .from('schedule_items')
+            .select('id')
+            .eq('owner_id', ownerId)
+            .in('id', chunk),
+          client
+            .from('dave_sync_tombstones')
+            .select('record_id')
+            .eq('owner_id', ownerId)
+            .eq('entity_type', 'schedule_item')
+            .in('record_id', chunk),
+        ]);
+        if (existing.error || deleted.error) {
+          throw new DAVEWebTaskMutationError(
+            'write_failed',
+            'The shared record could not be checked, so nothing was restored. Refresh the workspace and try again.',
+          );
+        }
+        (existing.data ?? []).forEach(row => {
+          const id = readRawString(row, 'id');
+          if (id) unrestorable.add(id);
+        });
+        (deleted.data ?? []).forEach(row => {
+          const id = readRawString(row, 'record_id');
+          if (id) unrestorable.add(id);
+        });
+      }
+      return unrestorable;
+    },
+
     async updateAuthorizedScheduleItem(
       item: ScheduleItem,
       expectedCloudUpdatedAt: string | null,
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      if (!expectedCloudUpdatedAt) throw staleTaskError();
+      if (!expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const ownerId = await requireAuthorizedOwnerCached();
       if (await scheduleItemWasDeleted(client, ownerId, item.id)) {
+        markBehindCloud('schedule_items', 'sync_tombstones');
         throw new DAVEWebTaskMutationError(
           'deleted',
           'This task was deleted on another device. The workspace has been refreshed.',
@@ -637,7 +836,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           'The task could not be updated. Refresh the workspace and try again.',
         );
       }
-      if (!data) throw staleTaskError();
+      if (!data) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const acknowledgedAt = readCloudTimestamp(data) ?? cloudUpdatedAt;
       cacheAcknowledgedScheduleItem(item, ownerId, acknowledgedAt);
       return acknowledgedAt;
@@ -646,9 +848,17 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async deleteAuthorizedScheduleItem(
       itemId: string,
       expectedCloudUpdatedAt: string | null,
+      /**
+       * The saved hidden rows of the task's revision chain, recorded deleted
+       * with it as the phone does (scheduleItemIdsDeletedWithTask, A10 pass 8 L3).
+       */
+      hiddenRowIds: readonly string[] = [],
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      if (!expectedCloudUpdatedAt) throw staleTaskError();
+      if (!expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
       const ownerId = await requireAuthorizedOwnerCached();
 
       if (await scheduleItemWasDeleted(client, ownerId, itemId)) {
@@ -668,23 +878,28 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
       if (!current) {
+        markBehindCloud('schedule_items');
         throw new DAVEWebTaskMutationError(
           'not_found',
           'This task no longer exists. The workspace has been refreshed.',
         );
       }
-      if (readCloudTimestamp(current) !== expectedCloudUpdatedAt) throw staleTaskError();
+      if (readCloudTimestamp(current) !== expectedCloudUpdatedAt) {
+        markBehindCloud('schedule_items');
+        throw staleTaskError();
+      }
 
       const deletedAt = new Date().toISOString();
+      const markers = [...new Set([itemId, ...hiddenRowIds.map(id => id.trim()).filter(Boolean)])].map(recordId => ({
+        owner_id: ownerId,
+        entity_type: 'schedule_item',
+        record_id: recordId,
+        deleted_at: deletedAt,
+      }));
       const { error } = await client
         .from('dave_sync_tombstones')
         .upsert(
-          {
-            owner_id: ownerId,
-            entity_type: 'schedule_item',
-            record_id: itemId,
-            deleted_at: deletedAt,
-          },
+          markers.length === 1 ? markers[0] : markers, // one write: the task and its hidden rows together
           { onConflict: 'owner_id,entity_type,record_id' },
         );
       if (error) {
@@ -701,10 +916,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       bytes,
       file,
       scheduleItems = [],
+      revisedScheduleItems = [],
       onProgress,
     }: DAVEWebDocumentUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
+      if (revisedScheduleItems.some(revision => !revision.cloudUpdatedAt)) {
+        markBehindCloud('schedule_items');
+        throw scheduleImportConflictError();
+      }
       if (bytes.byteLength <= 0) {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
@@ -795,12 +1015,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
 
-      if (scheduleItems.length > 0) {
-        const rows = scheduleItems.map(item => scheduleItemRow(item, ownerId, cloudUpdatedAt));
-        const { error: taskError } = await client
-          .from('schedule_items')
-          .upsert(rows, { onConflict: 'id' });
-        if (taskError) {
+      if (scheduleItems.length > 0 || revisedScheduleItems.length > 0) {
+        const saved = await saveScheduleImportRows({
+          client,
+          ownerId,
+          cloudUpdatedAt,
+          additions: scheduleItems,
+          revisions: revisedScheduleItems,
+        });
+        if (!saved.ok) {
           const compensation = await compensateFailedDocumentImport({
             client,
             storage,
@@ -809,7 +1032,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
             cloudUpdatedAt,
             storagePath,
           });
-          if (!compensation.visibilityRecovered) {
+          if (!compensation.visibilityRecovered || !saved.revertConfirmed) {
             throw new DAVEWebDocumentMutationError(
               'write_failed',
               'The schedule tasks could not be saved, and automatic cleanup could not be confirmed. Refresh before retrying and remove the incomplete document if it appears.',
@@ -820,6 +1043,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
               'write_failed',
               'The schedule tasks could not be saved. The incomplete document was blocked, but file cleanup could not be confirmed. Refresh before retrying.',
             );
+          }
+          if (saved.stale) {
+            markBehindCloud('schedule_items');
+            throw scheduleImportConflictError();
           }
           throw new DAVEWebDocumentMutationError(
             'write_failed',
@@ -1075,10 +1302,11 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async setAuthorizedCurrentSchedule(
       selected: ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null },
       scheduleDocuments: readonly (ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null })[],
-    ): Promise<void> {
+    ): Promise<ScheduleRetirementScope> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
-      await setAuthorizedCurrentReferenceDocument({
+      // The activation's response says how the cloud retired other schedules (owner answer Q15).
+      return setAuthorizedCurrentReferenceDocument({
         client,
         ownerId,
         selected,
@@ -1109,9 +1337,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!document.cloudUpdatedAt) throw staleDocumentError();
       const ownerId = await requireAuthorizedOwnerCached();
       const updatedAt = new Date().toISOString();
+      // document_data.updatedAt moves with updated_at: the phone ranks the
+      // cloud copy by it, so an older offline phone edit cannot overwrite
+      // this one (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
       const { data, error } = await client
         .from('reference_documents')
-        .update(referenceDocumentRow(document, ownerId, updatedAt))
+        .update(referenceDocumentRow({ ...document, updatedAt }, ownerId, updatedAt))
         .eq('owner_id', ownerId)
         .eq('id', document.id)
         .eq('updated_at', document.cloudUpdatedAt)
@@ -1191,6 +1422,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       documentId: string,
       expectedCloudUpdatedAt: string | null,
       linkedScheduleItems: readonly Readonly<{ id: string; cloudUpdatedAt: string | null }>[] = [],
+      /**
+       * The saved tasks shown that answer to a removed task from now on
+       * (planDAVEWebScheduleDocumentDelete, A10 pass 8 M1): saved before the
+       * deletion records, each only while its cloud revision matches.
+       */
+      answeringScheduleItems: readonly DAVEWebScheduleImportRevision[] = [],
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) throw staleDocumentError();
@@ -1255,6 +1492,51 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
 
       const deletedAt = new Date().toISOString();
+      if (answeringScheduleItems.length > 0) {
+        // A task a new master moved answers to its removed row before the row is recorded deleted (A10 pass 8 M1).
+        const linksChanged = () => new DAVEWebDocumentMutationError(
+          'conflict',
+          'The document task links changed on another device. Refresh and review them before deleting.',
+        );
+        const answeringIds = answeringScheduleItems.map(revision => revision.item.id);
+        const { data: deletedRows, error: deletedError } = await client
+          .from('dave_sync_tombstones')
+          .select('record_id')
+          .eq('owner_id', ownerId)
+          .eq('entity_type', 'schedule_item')
+          .in('record_id', answeringIds);
+        if (deletedError) {
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            'The document task links could not be checked before deletion. Refresh and try again.',
+          );
+        }
+        if (
+          (deletedRows ?? []).length > 0 ||
+          answeringScheduleItems.some(revision => !revision.cloudUpdatedAt)
+        ) {
+          markBehindCloud('schedule_items', 'sync_tombstones');
+          throw linksChanged();
+        }
+        const saved = await saveScheduleImportRows({
+          client,
+          ownerId,
+          cloudUpdatedAt: deletedAt,
+          additions: [],
+          revisions: answeringScheduleItems,
+        });
+        // The next refresh reads the tasks again, the rows saved here included.
+        markBehindCloud('schedule_items');
+        if (!saved.ok) {
+          if (saved.stale && saved.revertConfirmed) throw linksChanged();
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            saved.revertConfirmed
+              ? 'The document task links could not be saved. Nothing was deleted.'
+              : 'The document task links could not be saved, and their cleanup could not be confirmed. Nothing was deleted; refresh before retrying.',
+          );
+        }
+      }
       const deletionMarkers = [
         {
           owner_id: ownerId,
@@ -1344,7 +1626,9 @@ function applyDAVEWebRealtimeRows(
   // knows the name to keep out.
   const nextCollection = mergeRealtimeRows(
     rows[property],
-    candidate,
+    entity === 'reference_document' && payload.eventType !== 'DELETE'
+      ? withHeldHostedIndexStatus(candidate, rows.referenceDocuments, id)
+      : candidate,
     payload.eventType,
     value => readRawString(value, 'id'),
   );
@@ -1352,6 +1636,26 @@ function applyDAVEWebRealtimeRows(
     rows: Object.freeze({ ...rows, [property]: nextCollection }),
     collections: Object.freeze([collection]),
   });
+}
+
+/**
+ * The live row's stored preparation status is missing or older than the one
+ * the web read from the hosted indexer; the collection is then marked up to
+ * date, so no refresh would correct it (whole-app audit round 2 F3).
+ */
+function withHeldHostedIndexStatus(
+  candidate: Readonly<Record<string, unknown>>,
+  heldRows: readonly unknown[],
+  id: string,
+): Readonly<Record<string, unknown>> {
+  const held = heldRows.find(row => readRawString(row, 'id') === id);
+  const incomingData = candidate.document_data;
+  const heldData = isRecord(held) ? held.document_data : null;
+  if (!isRecord(incomingData) || !isRecord(heldData)) return candidate;
+  const documentData = carryECOSHostedIndexStatus(incomingData, heldData);
+  return documentData === incomingData
+    ? candidate
+    : { ...candidate, document_data: documentData };
 }
 
 function daveWebCollectionForRealtimeEntity(
@@ -1484,6 +1788,81 @@ async function purgeAuthorizedDeletionAudit(
   if (error) throw new Error('Deletion receipt retention is temporarily unavailable.');
 }
 
+/**
+ * Writes a schedule import's tasks (whole-app audit A5 pass 3 F5, 30 Sep
+ * 2026), and the tasks a schedule's delete changes before its deletion
+ * records (A10 pass 8 M1, no new rows). Each saved task the import changes (planDAVEWebScheduleImport) is
+ * updated only while its cloud revision is the one the web read, the guard
+ * updateAuthorizedScheduleItem uses; then the new rows are inserted, never
+ * upserted over a saved task. On any failure the saved tasks already changed
+ * are written back (again only while no one else has changed them), so the
+ * caller can roll the document back and ask for a refresh.
+ */
+async function saveScheduleImportRows({
+  client,
+  ownerId,
+  cloudUpdatedAt,
+  additions,
+  revisions,
+}: {
+  client: SupabaseClient;
+  ownerId: string;
+  cloudUpdatedAt: string;
+  additions: readonly ScheduleItem[];
+  revisions: readonly DAVEWebScheduleImportRevision[];
+}): Promise<Readonly<{ ok: true } | { ok: false; stale: boolean; revertConfirmed: boolean }>> {
+  const applied: { item: ScheduleItem; acknowledgedAt: string }[] = [];
+  let failure: 'stale' | 'write_failed' | null = null;
+  for (const revision of revisions) {
+    try {
+      const { data, error } = await client
+        .from('schedule_items')
+        .update(scheduleItemRow(revision.item, ownerId, cloudUpdatedAt))
+        .eq('owner_id', ownerId)
+        .eq('id', revision.item.id)
+        .eq('updated_at', revision.cloudUpdatedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (error) failure = 'write_failed';
+      else if (!data) failure = 'stale';
+      else applied.push({ item: revision.previous, acknowledgedAt: readCloudTimestamp(data) ?? cloudUpdatedAt });
+    } catch {
+      failure = 'write_failed';
+    }
+    if (failure) break;
+  }
+  if (!failure && additions.length > 0) {
+    try {
+      const { error } = await client
+        .from('schedule_items')
+        .insert(additions.map(item => scheduleItemRow(item, ownerId, cloudUpdatedAt)));
+      if (error) failure = 'write_failed';
+    } catch {
+      failure = 'write_failed';
+    }
+  }
+  if (!failure) return Object.freeze({ ok: true });
+
+  let revertConfirmed = true;
+  const revertedAt = new Date().toISOString();
+  for (const { item, acknowledgedAt } of applied.reverse()) {
+    try {
+      const { data, error } = await client
+        .from('schedule_items')
+        .update(scheduleItemRow(item, ownerId, revertedAt))
+        .eq('owner_id', ownerId)
+        .eq('id', item.id)
+        .eq('updated_at', acknowledgedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (error || !data) revertConfirmed = false;
+    } catch {
+      revertConfirmed = false;
+    }
+  }
+  return Object.freeze({ ok: false, stale: failure === 'stale', revertConfirmed });
+}
+
 async function compensateFailedDocumentImport({
   client,
   storage,
@@ -1607,7 +1986,7 @@ async function setAuthorizedCurrentReferenceDocument({
   selected: DAVEWebRevisionedReferenceDocument;
   documents: readonly DAVEWebRevisionedReferenceDocument[];
   subject: 'schedule' | 'document';
-}): Promise<void> {
+}): Promise<ScheduleRetirementScope> {
   if (
     !selected.cloudUpdatedAt ||
     !documents.some(document => document.id === selected.id && document.cloudUpdatedAt === selected.cloudUpdatedAt)
@@ -1623,7 +2002,7 @@ async function setAuthorizedCurrentReferenceDocument({
     documentId: selected.id,
     expectedUpdatedAt: selected.cloudUpdatedAt,
   });
-  if (result.status === 'activated') return;
+  if (result.status === 'activated') return result.scheduleRetirementScope ?? 'schedule';
   if (result.status === 'not_prepared') {
     throw new DAVEWebDocumentMutationError(
       'write_failed',
@@ -1642,16 +2021,38 @@ async function setAuthorizedCurrentReferenceDocument({
   );
 }
 
+/**
+ * Audit A12 F2 (owner answer Q21, 30 Sep 2026): the web signs itself out only
+ * on a definite answer: the owner check says false or 401/403, or the sign-in
+ * check says the session is missing or 401/403. A check that could not finish
+ * (timeout 57014, a 5xx, no network) used to sign out too; it now throws a
+ * plain Error, so the workspace stays and says automatic refresh is waiting.
+ * Nothing is read until a check returns true.
+ */
 async function requireAuthorizedOwner(client: SupabaseClient): Promise<string> {
   const { data: userResult, error: userError } = await client.auth.getUser();
   const userId = userResult.user?.id ?? null;
+  if (userError && !isAuthSessionMissingError(userError) && !isRefusalStatus(userError.status)) {
+    throw ownerCheckIncomplete();
+  }
   if (userError || !userId) {
     throw new DAVEWebAuthorizationError('Sign in is required for the Vitruvius desktop pilot.');
   }
 
-  const { data: authorized, error: authorizationError } = await client.rpc('dave_is_app_owner');
-  if (authorizationError || authorized !== true) throw new DAVEWebAuthorizationError();
-  return userId;
+  const { data: authorized, error: authorizationError, status } = await client.rpc('dave_is_app_owner');
+  if (!authorizationError && authorized === true) return userId;
+  if ((!authorizationError && authorized === false) || isRefusalStatus(status)) {
+    throw new DAVEWebAuthorizationError();
+  }
+  throw ownerCheckIncomplete();
+}
+
+function isRefusalStatus(status: unknown): boolean {
+  return status === 401 || status === 403;
+}
+
+function ownerCheckIncomplete(): Error {
+  return new Error('The owner check could not be completed. Try again shortly.');
 }
 
 function scheduleItemRow(item: ScheduleItem, ownerId: string, updatedAt: string) {
@@ -1674,7 +2075,13 @@ function referenceDocumentRow(
   const compactDocument = document.sourceProvider === 'google_drive'
     ? compactECOSDocumentMetadataForCloud(document)
     : compactECOSDocumentIndexForCloud(document);
-  const { cloudUpdatedAt: _cloudUpdatedAt, linkedScheduleItems: _linkedScheduleItems, ...documentData } = compactDocument as any;
+  const {
+    cloudUpdatedAt: _cloudUpdatedAt,
+    cloudDetailsSeen: _cloudDetailsSeen,
+    linkedScheduleItems: _linkedScheduleItems,
+    importedScheduleItemCount: _importedScheduleItemCount,
+    ...documentData
+  } = compactDocument as any;
   return {
     id: document.id,
     owner_id: ownerId,
@@ -1795,6 +2202,13 @@ function staleTaskError() {
   return new DAVEWebTaskMutationError(
     'conflict',
     'This task changed on another device. The workspace has been refreshed; review the latest values before saving again.',
+  );
+}
+
+function scheduleImportConflictError() {
+  return new DAVEWebDocumentMutationError(
+    'conflict',
+    'A task in this schedule changed on another device, so the schedule was not imported. Refresh the workspace, then choose the schedule file again.',
   );
 }
 

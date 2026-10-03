@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   activateECOSCurrentReferenceDocument,
+  loadECOSScheduleRetirementScope,
   enqueueECOSHostedIndex,
   loadECOSHostedIndexStatuses,
 } from '../../services/ECOSHostedIndexer';
@@ -244,11 +245,41 @@ describe('ECOS hosted indexer client boundary', () => {
       updatedAt: '2026-08-09T07:30:00.000Z',
       changedCount: 2,
       message: null,
+      // Owner answer Q15: a response without the scope is the database before
+      // that migration, which retires whole schedules.
+      scheduleRetirementScope: 'schedule',
     });
     expect(rpc).toHaveBeenCalledWith('ecos_activate_current_reference_document', {
       p_document_id: 'drawing-2',
       p_expected_updated_at: '2026-08-09T07:00:00.000Z',
     });
+  });
+
+  // Owner answer Q15 (30 Sep 2026): after the migration the activation says a
+  // combined schedule stays current for its other projects, and a device can
+  // ask that before it activates.
+  it('reads how the cloud retires schedules from the response and from the probe', async () => {
+    const rpc = jest.fn().mockResolvedValue({
+      data: { document_id: 'schedule-2', updated_at: 'later', changed_count: 2, schedule_retirement_scope: 'project' },
+      error: null,
+    });
+    await expect(activateECOSCurrentReferenceDocument({
+      client: { rpc } as unknown as SupabaseClient, documentId: 'schedule-2', expectedUpdatedAt: 'earlier',
+    })).resolves.toMatchObject({ status: 'activated', scheduleRetirementScope: 'project' });
+
+    const probe = (answer: unknown) => ({ rpc: jest.fn(async () => answer) }) as unknown as SupabaseClient;
+    await expect(loadECOSScheduleRetirementScope(probe({ data: 'project', error: null }))).resolves.toBe('project');
+    await expect(loadECOSScheduleRetirementScope(probe({ data: null, error: { code: 'PGRST202', message: 'Could not find the function' } })))
+      .resolves.toBe('schedule');
+    await expect(loadECOSScheduleRetirementScope(probe({ data: null, error: { code: '', message: 'Network request failed' } })))
+      .resolves.toBeNull();
+    await expect(loadECOSScheduleRetirementScope({ rpc: jest.fn(async () => { throw new Error('offline'); }) } as unknown as SupabaseClient))
+      .resolves.toBeNull();
+    await expect(loadECOSScheduleRetirementScope(null)).resolves.toBeNull();
+    // No answer in time on poor signal: unknown, and the phone is not held up.
+    await expect(loadECOSScheduleRetirementScope(
+      { rpc: jest.fn(() => new Promise(() => undefined)) } as unknown as SupabaseClient, 10,
+    )).resolves.toBeNull();
   });
 
   it('does not expose provider details when current activation fails closed', async () => {

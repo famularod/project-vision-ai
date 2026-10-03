@@ -28,7 +28,7 @@ jobs:
         run: npm ci
 
       - name: Audit exact dependency lock
-        run: npm audit --audit-level=low
+        run: node scripts/dependency-audit-gate.js --require-registry
 
       - name: Validate release, migration, UI, and device-flow contracts
         run: npm run test:release-contracts

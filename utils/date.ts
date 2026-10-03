@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROJECT_TIME_ZONE,
+  parseMonthNameDateParts,
   projectDateRelativeDays,
   type Instant,
   type ProjectTimeZone,
@@ -73,8 +74,17 @@ export function normalizeDateInput(value: string) {
   return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
 }
 
+/**
+ * A weekday written before a date: "Thu 12/31/26", "Mon 1/4/27", "Monday,
+ * October 5, 2026" (whole-app audit A5 pass 17 L1, 1 Oct 2026). A CSV whose
+ * dates carried one came in with every row's dates blank, and approval saved
+ * them so. Only a weekday's own names, followed by a space: no other form
+ * begins with one, so every other form parses as before.
+ */
+const LEADING_WEEKDAY = /^(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?,?\s+/i;
+
 export function parseFlexibleDate(value: string) {
-  const trimmed = value.trim();
+  const trimmed = value.trim().replace(LEADING_WEEKDAY, '');
   if (!trimmed) return null;
 
   const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -94,7 +104,14 @@ export function parseFlexibleDate(value: string) {
   }
 
   const usMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-  if (!usMatch) return null;
+  if (!usMatch) {
+    // "Jul 24, 2026": how schedule imports stored dates until 30 Sep 2026 (audit A5).
+    const named = parseMonthNameDateParts(trimmed);
+    if (!named) return null;
+    const date = new Date(named.year, named.month - 1, named.day);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
 
   const month = Number(usMatch[1]);
   const day = Number(usMatch[2]);

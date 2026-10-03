@@ -60,6 +60,8 @@ const compactDocument = {
   extractedPages: [],
   cloudUpdatedAt: null,
   linkedScheduleItems: [],
+  // Required since audit A5 pass 3 F5: the tasks a schedule import contains.
+  importedScheduleItemCount: 0,
 } as DAVEWebReferenceDocument;
 
 const proofDocument = {

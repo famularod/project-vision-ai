@@ -57,4 +57,18 @@ describe('resolveScheduleParentActions', () => {
     expect(actions.reopeningNames).toEqual([' beta ']);
     expect(actions.missingNames).toEqual(['new site']);
   });
+
+  it('never counts an archived parent as missing, even before the active list names it (audit A3 pass 2)', () => {
+    // A phone that learns of an archived project from the cloud: it is in the
+    // archived list but not (yet) in the project list.
+    const actions = resolveScheduleParentActions({
+      parentNames: ['Tower B', 'Delta'],
+      existingProjects: ['Alpha'],
+      archivedProjects: ['Tower B'],
+      reopenArchivedParents: false,
+    });
+
+    expect(actions.missingNames).toEqual(['Delta']);
+    expect(actions.reopeningNames).toEqual([]);
+  });
 });

@@ -201,10 +201,33 @@ const orphanedExplicitTaskLink = buildPIEScheduleReconciliation({
   projectName: 'Building 2375',
   now,
 });
+// Pin updated deliberately (whole-app audit A10 pass 5 M1, 30 Sep 2026): a
+// task id that is no current task is, in practice, a task a new master saved
+// under a new id (updates of a deleted task are removed first, by tombstone).
+// A row saved before the earlier ids were kept matches by the update's stored
+// task name within its project and area, only when exactly one current task
+// has that name: Canopy A here, never Canopy B or C, and none without an area.
+assert.deepStrictEqual(
+  orphanedExplicitTaskLink.matches.map(match => [match.scheduleItemId, match.matchBasis]),
+  [['wall-packs-canopy-a', 'stored_task_name']],
+  'An update targeting a missing explicit task ID falls back only to the one same-named task of its project and area.',
+);
+const orphanedExplicitTaskLinkWithoutArea = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks,
+  updates: [update({
+    id: 'wall-packs-update-orphaned-link-no-area',
+    areaName: null,
+    scheduleItemId: 'wall-packs-task-no-longer-present',
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
 assert.strictEqual(
-  orphanedExplicitTaskLink.matches.length,
+  orphanedExplicitTaskLinkWithoutArea.matches.length,
   0,
-  'An update targeting a missing explicit task ID must not fall back to any same-named task.',
+  'An update targeting a missing explicit task ID must never guess between same-named tasks.',
 );
 
 const confirmedCanopyBOnly = buildPIEScheduleReconciliation({
@@ -532,12 +555,16 @@ assert(
   'A PM-entered progress percentage is authoritative and must not require separate field evidence.',
 );
 
+// Pin updated (whole-app audit A10 pass 4, 30 Sep 2026): the legacy fallback trusts only a task entered
+// by hand; a task a schedule file brought in holds the file's percent, which still needs field evidence.
 const legacyPmProgressJudgment = buildPIEScheduleReconciliation({
   scheduleItems: [schedule({
     id: 'legacy-pm-progress',
     finishDate: '2026-07-10',
     status: 'In Progress',
     percentComplete: 10,
+    importedFrom: null,
+    importedAt: null,
   })],
   updates: [],
   projectName: 'Building 2375',
@@ -546,6 +573,16 @@ const legacyPmProgressJudgment = buildPIEScheduleReconciliation({
 assert(
   !legacyPmProgressJudgment.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
   'A legacy saved in-progress percentage must remain trusted even before provenance fields existed.',
+);
+const legacyFileProgress = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({ id: 'legacy-file-progress', finishDate: '2026-07-10', status: 'In Progress', percentComplete: 10 })],
+  updates: [],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  legacyFileProgress.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
+  'A schedule file\'s in-progress percentage is the schedule\'s, not the manager\'s judgment: it still asks for field evidence.',
 );
 
 const unrelated = buildPIEScheduleReconciliation({

@@ -17,6 +17,7 @@ import {
   type FieldNoteVoiceDraft,
 } from './field-notes-workspace';
 import {
+  fieldNoteVoiceUnavailable,
   resolveFieldNoteVoiceContext,
   type FieldNoteVoiceContext,
   type FieldNoteVoiceProjectRecord,
@@ -40,14 +41,16 @@ export function NativeFieldNotesExperience({
   const ownerKey = useNativeWorkspaceOwner() ?? 'local-device';
   const [voiceContext, setVoiceContext] = useState<FieldNoteVoiceContext | null>(null);
   const [voiceDraft, setVoiceDraft] = useState<FieldNoteVoiceDraft | null>(null);
+  const [typeNoteRequest, setTypeNoteRequest] = useState(0);
 
   function beginVoiceCapture(projectName: string | null) {
     const context = resolveFieldNoteVoiceContext(projectName, projectRecords);
     if (!context) {
-      Alert.alert(
-        'Voice is still loading',
-        'Wait for your project access to finish loading, then record the field note again. The note can still remain general.',
-      );
+      const { title, message } = fieldNoteVoiceUnavailable(projectName); // audit A11 pass 3
+      Alert.alert(title, message, [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Type Note', onPress: () => setTypeNoteRequest(request => request + 1) },
+      ]);
       return;
     }
     setVoiceContext(context);
@@ -72,6 +75,7 @@ export function NativeFieldNotesExperience({
           voiceDraft={voiceDraft}
           onVoiceDraftConsumed={id => setVoiceDraft(current => current?.id === id ? null : current)}
           onRecordVoice={beginVoiceCapture}
+          typeNoteRequest={typeNoteRequest}
           dataSource={mobileFieldNoteDataSource}
           presentation="mobile_capture"
         />
@@ -103,7 +107,10 @@ export function NativeFieldNotesExperience({
             locationName: result.understanding.recommendedLocation.value,
           });
         }}
-        onTypeInstead={() => setVoiceContext(null)}
+        onTypeInstead={() => {
+          setVoiceContext(null);
+          setTypeNoteRequest(request => request + 1); // opens the typed editor (audit A11 pass 1 F10)
+        }}
         onCancel={() => setVoiceContext(null)}
       />
     </>

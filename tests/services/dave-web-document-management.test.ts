@@ -49,5 +49,7 @@ function document(overrides: Partial<DAVEWebReferenceDocument>): DAVEWebReferenc
     importBatchId: null,
     cloudUpdatedAt: '2026-07-19T00:00:00.000Z',
     linkedScheduleItems: [],
+    // Required since audit A5 pass 3 F5: the tasks a schedule import contains.
+    importedScheduleItemCount: 0,
   };
 }

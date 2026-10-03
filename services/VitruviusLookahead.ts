@@ -1,5 +1,11 @@
 import type { ScheduleItem } from '../types';
-import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
+import {
+  parseVitruviusScheduleDate,
+  projectScheduleToday,
+  scheduleTimeZone,
+  vitruviusAppProjectName,
+  type VitruviusScheduleGrouping,
+} from './VitruviusGanttModel';
 import {
   analyzeVitruviusCriticalPath,
 } from './VitruviusScheduleAnalytics';
@@ -46,12 +52,19 @@ export function buildVitruviusLookahead({
   items,
   weeks,
   today = new Date(),
+  projectTimeZone,
+  groupBy = 'scheduleRoot',
 }: {
   items: readonly ScheduleItem[];
   weeks: VitruviusLookaheadWeeks;
   today?: Date;
+  /** Sets the window; each task's own project zone decides its overdue and days left. */
+  projectTimeZone?: string | null;
+  /** The schedule's root (the default, the phone) or the app project (the web; A5 pass 13). */
+  groupBy?: VitruviusScheduleGrouping;
 }): VitruviusLookahead {
-  const todayDate = startOfUtcDay(today);
+  const windowTimeZone = scheduleTimeZone(items, projectTimeZone);
+  const todayDate = projectScheduleToday(today, windowTimeZone);
   const rangeFinishDate = addDays(todayDate, weeks * 7 - 1);
   const itemsById = new Map(items.map(item => [item.id, item]));
   const criticalIds = analyzeVitruviusCriticalPath(items).criticalItemIds;
@@ -64,12 +77,15 @@ export function buildVitruviusLookahead({
       const dated = Boolean(start || finish);
       const effectiveStart = start || finish;
       const effectiveFinish = finish || start;
-      const overdue = Boolean(effectiveFinish && effectiveFinish.getTime() < todayDate.getTime());
+      const itemToday = item.projectTimeZone
+        ? projectScheduleToday(today, item.projectTimeZone)
+        : todayDate;
+      const overdue = Boolean(effectiveFinish && effectiveFinish.getTime() < itemToday.getTime());
       const overlapsWindow = Boolean(
         effectiveStart &&
         effectiveFinish &&
         effectiveStart.getTime() <= rangeFinishDate.getTime() &&
-        effectiveFinish.getTime() >= todayDate.getTime(),
+        effectiveFinish.getTime() >= itemToday.getTime(),
       );
       if (dated && !overdue && !overlapsWindow) return [];
       const blockers = normalizeScheduleDependencies(item.dependencies)
@@ -91,8 +107,9 @@ export function buildVitruviusLookahead({
               : 'ready';
       return [Object.freeze({
         item,
-        projectName: item.scheduleProjectName?.trim() || item.projectName?.trim() ||
-          'Unassigned Project',
+        projectName: groupBy === 'appProject'
+          ? vitruviusAppProjectName(item)
+          : item.scheduleProjectName?.trim() || item.projectName?.trim() || 'Unassigned Project',
         areaName: item.locationName?.trim() || 'No area',
         contractor: item.contractor?.trim() || 'Unassigned',
         owner: item.owner?.trim() || 'Unassigned',
@@ -100,7 +117,7 @@ export function buildVitruviusLookahead({
         finishDate: formatDate(finish),
         weekOf: effectiveFinish ? formatDate(startOfWeek(effectiveFinish)) : null,
         daysUntilFinish: effectiveFinish
-          ? calendarDaysBetween(todayDate, effectiveFinish)
+          ? calendarDaysBetween(itemToday, effectiveFinish)
           : null,
         status,
         critical: criticalIds.has(item.id),

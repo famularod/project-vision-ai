@@ -8,6 +8,7 @@ import type {
   PIEScheduleDependencyNode,
 } from './PIEScheduleDependencyNetwork';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleTaskLinks } from './ScheduleTaskRevisions';
 
 export type DAVEActionInboxKind =
   | 'completion_verification'
@@ -47,12 +48,15 @@ export type DAVEActionInbox = Readonly<{
 
 export function buildDAVEActionInbox({
   scheduleItems = [],
+  knownScheduleItems = [],
   updates = [],
   reconciliationWarnings = [],
   dependencyNodes = [],
   now = new Date(),
 }: {
   scheduleItems?: readonly ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates?: readonly ProjectUpdate[];
   reconciliationWarnings?: readonly PIEScheduleReconciliationWarning[];
   dependencyNodes?: readonly PIEScheduleDependencyNode[];
@@ -176,6 +180,8 @@ export function buildDAVEActionInbox({
     }));
   });
 
+  // The task an update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scheduleItems, knownScheduleItems);
   updates.forEach(update => update.photos.forEach(photo => {
     const open = photo.actionStatus !== 'Closed';
     const actionable = Boolean(clean(photo.actionRequired)) ||
@@ -201,7 +207,7 @@ export function buildDAVEActionInbox({
       owner: clean(photo.actionOwner),
       dueDate: clean(photo.actionDueDate),
       dueDays,
-      scheduleItemId: clean(update.scheduleItemId),
+      scheduleItemId: linkOf(update)?.item.id || clean(update.scheduleItemId),
       updateId: update.id,
       photoId: photo.id,
       requiresVerification: false,

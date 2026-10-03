@@ -1,8 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  queueProjectUpdateArchive,
   queueProjectUpdateDelete,
-  removeProjectUpdateFromSyncQueue,
+  replayProjectUpdateTombstonesInQueue,
 } from '../../services/SyncService';
 import {
   persistAndQueueProjectUpdateDeletion,
@@ -26,9 +25,12 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 jest.mock('../../services/SyncService', () => ({
-  queueProjectUpdateArchive: jest.fn(),
   queueProjectUpdateDelete: jest.fn(),
-  removeProjectUpdateFromSyncQueue: jest.fn(),
+  // Audit A2 pass 3 L2: the replay also returns the deletes the cloud confirmed.
+  replayProjectUpdateTombstonesInQueue: jest.fn(async () => ({
+    queuedDeleteIds: new Set<string>(),
+    confirmedDeleteIds: new Set<string>(),
+  })),
 }));
 
 function update(id: string, notes: string): ProjectUpdate {
@@ -85,27 +87,52 @@ describe('project update deletion persistence', () => {
   });
 
   it('replays permanent deletions and account-wide archives after a restart', async () => {
+    // Audit A2 pass 2 M1: one queue pass (removal of stale work and the
+    // archives) instead of a remove + re-queue per tombstone; the real queue
+    // is exercised in project-update-tombstone-replay.test.ts.
     await reconcileProjectUpdateDeletionJournal([
       { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
       { updateId: 'archived', action: 'archive_sent_update', deletedAt: '2026-07-19T08:01:00.000Z', cloudIdPresent: true },
       { updateId: 'device-only-cloud', action: 'remove_from_device', deletedAt: '2026-07-19T08:02:00.000Z', cloudIdPresent: true },
       { updateId: 'device-only-draft', action: 'remove_from_device', deletedAt: '2026-07-19T08:03:00.000Z', cloudIdPresent: false },
+      { updateId: 'archived-in-cloud', action: 'hide_cloud_update', deletedAt: '2026-07-19T08:04:00.000Z', cloudIdPresent: true },
     ]);
 
-    expect(removeProjectUpdateFromSyncQueue).toHaveBeenCalledTimes(4);
+    expect(replayProjectUpdateTombstonesInQueue).toHaveBeenCalledTimes(1);
+    expect(replayProjectUpdateTombstonesInQueue).toHaveBeenCalledWith([
+      { updateId: 'permanent', archive: false },
+      { updateId: 'archived', archive: { archivedAt: '2026-07-19T08:01:00.000Z' } },
+      { updateId: 'device-only-cloud', archive: { archivedAt: '2026-07-19T08:02:00.000Z' } },
+      { updateId: 'device-only-draft', archive: false },
+      // Audit A4 pass 12 L2: only to carry document changes still waiting.
+      { updateId: 'archived-in-cloud', archive: { archivedAt: '2026-07-19T08:04:00.000Z', documentChangesOnly: true } },
+    ]);
     expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
     expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'permanent' });
-    expect(queueProjectUpdateArchive).toHaveBeenCalledTimes(2);
-    expect(queueProjectUpdateArchive).toHaveBeenNthCalledWith(
-      1,
-      'archived',
-      '2026-07-19T08:01:00.000Z',
-    );
-    expect(queueProjectUpdateArchive).toHaveBeenNthCalledWith(
-      2,
-      'device-only-cloud',
-      '2026-07-19T08:02:00.000Z',
-    );
+  });
+
+  it('does not queue a permanent delete twice', async () => {
+    jest.mocked(replayProjectUpdateTombstonesInQueue).mockResolvedValueOnce({
+      queuedDeleteIds: new Set(['permanent']),
+      confirmedDeleteIds: new Set<string>(),
+    });
+    await reconcileProjectUpdateDeletionJournal([
+      { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
+    ]);
+    expect(queueProjectUpdateDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not record again a delete the cloud confirmed (audit A2 pass 3 L2)', async () => {
+    jest.mocked(replayProjectUpdateTombstonesInQueue).mockResolvedValueOnce({
+      queuedDeleteIds: new Set<string>(),
+      confirmedDeleteIds: new Set(['confirmed']),
+    });
+    await reconcileProjectUpdateDeletionJournal([
+      { updateId: 'confirmed', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
+      { updateId: 'unconfirmed', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:01:00.000Z', cloudIdPresent: true },
+    ]);
+    expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
+    expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'unconfirmed' });
   });
 
   it('keeps deletion intent when the cloud queue write is interrupted', async () => {

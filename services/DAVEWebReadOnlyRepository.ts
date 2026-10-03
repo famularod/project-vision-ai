@@ -13,11 +13,13 @@ import {
 } from './DAVEScheduleRecovery';
 import {
   scheduleItemsForExactImportBatch,
+  scheduleItemsOnlyInImportBatch,
   scheduleOverviewProjectNames,
 } from './PIEScheduleImportBatch';
 import {
   reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
+  scheduleDocumentIsScheduleLike,
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
@@ -31,12 +33,31 @@ import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { normalizeProjectControls } from './VitruviusProjectControls';
 import type { DAVEOperationalCollectionName } from './DAVEOperationalRefresh';
 import { isGoogleDriveLinkedSource } from './GoogleDriveWebProvider';
+import { ecosClosedProjectNames } from './ECOSProjectQuestion';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
   scheduleItems: readonly DAVEWebScheduleItem[];
+  /**
+   * Every saved task, hidden ones included (deleted ones out): the name
+   * fallback for a field update's task checks the update's own schedule
+   * (whole-app audit A10 pass 6 L2).
+   */
+  knownScheduleItems?: readonly ScheduleItem[];
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
   referenceDocuments: readonly DAVEWebReferenceDocument[];
+  /**
+   * Closed (archived, not deleted) project names, kept out of `projects` but
+   * checked by Ask ECOS so a question naming one is refused (audit A9 pass 3 L1).
+   */
+  closedProjectNames?: readonly string[];
+  /**
+   * Every open (not closed, not deleted) cloud project row with its id, two
+   * rows with one name included; `projects` shows one entry per name. A new
+   * web task takes its project's id from here, and only when exactly one
+   * open project has its name (whole-app audit A12 pass 5 M1, 30 Sep 2026).
+   */
+  openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
   refreshedAt: string;
 }>;
 
@@ -46,14 +67,27 @@ export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtens
     id: string;
     cloudUpdatedAt: string | null;
   }>[];
+  /**
+   * Every task the schedule's import contains, unchanged tasks it shares
+   * with an earlier revision included; Make Current needs at least one.
+   */
+  importedScheduleItemCount: number;
 }>;
 
 export async function loadDAVEWebReadOnlySnapshot(
   collections?: readonly DAVEOperationalCollectionName[],
 ): Promise<DAVEWebReadOnlySnapshot> {
   const rows = await daveWebSupabaseGateway.loadAuthorizedRows(collections);
-  const rawProjects = rows.projects.map(normalizeProject).filter(isPresent);
   const tombstones = rows.syncTombstones.map(normalizeTombstone).filter(isPresent);
+  // A deleted project's row can come back (a create queued offline landed
+  // after its delete); the phone hides it by its deletion record, and so does
+  // the desktop now (whole-app audit A3 pass 4). The record is keyed by name.
+  const rawProjects = removeTombstonedRecords(
+    rows.projects.map(normalizeProject).filter(isPresent),
+    tombstones,
+    'project',
+    project => project.name,
+  );
   const reconciledDocuments = reconcileCurrentScheduleDocuments(
     removeTombstonedRecords(
       rows.referenceDocuments.map(normalizeDocument).filter(isPresent),
@@ -71,28 +105,47 @@ export async function loadDAVEWebReadOnlySnapshot(
   const referenceDocuments = reconciledDocuments.map(document => ({
     ...document,
     linkedScheduleItems: Object.freeze(
-      scheduleItemsForExactImportBatch(reconciledScheduleItems, document).map(item => ({
+      // The tasks "Delete Document + N Tasks" takes: those no other schedule contains (audit A5 pass 2).
+      scheduleItemsOnlyInImportBatch(reconciledScheduleItems, document, reconciledDocuments.filter(scheduleDocumentIsScheduleLike)).map(item => ({
         id: item.id,
         cloudUpdatedAt: (item as DAVEWebScheduleItem).cloudUpdatedAt,
       })),
     ),
+    // Make Current counts the tasks the import contains: a revision whose
+    // every task is unchanged has no task of its own (audit A5 pass 3 F5).
+    importedScheduleItemCount: scheduleItemsForExactImportBatch(reconciledScheduleItems, document).length,
   }));
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,
     scheduleDocuments: referenceDocuments,
   }) as DAVEWebScheduleItem[];
-  const projects = portfolioProjects(rawProjects, scheduleItems);
+  const projects = portfolioProjects(rawProjects, scheduleItems, tombstones);
+  const closedProjectNames = ecosClosedProjectNames({ // deleted rows are already out of rawProjects
+    archived: rawProjects.filter(project => project.archived).map(project => project.name),
+    open: projects.map(project => project.name),
+  });
   const projectUpdates = partitionProjectUpdatesByDeletedTask(
     rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
     tombstones,
     update => update.updateData,
+    // A task a new master moved still answers to its old id (A10 pass 6 M1), never by name (A10 pass 7 L1).
+    { scheduleItems: reconciledScheduleItems },
   ).active;
+
+  const openCloudProjects = rawProjects.flatMap(project => (
+    !project.archived && project.id
+      ? [Object.freeze({ id: project.id, name: project.name })]
+      : []
+  ));
 
   return Object.freeze({
     projects: Object.freeze(projects),
+    openCloudProjects: Object.freeze(openCloudProjects),
     scheduleItems: Object.freeze(scheduleItems),
+    knownScheduleItems: Object.freeze(reconciledScheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(referenceDocuments),
+    closedProjectNames: Object.freeze(closedProjectNames),
     refreshedAt: new Date().toISOString(),
   });
 }
@@ -100,6 +153,7 @@ export async function loadDAVEWebReadOnlySnapshot(
 function portfolioProjects(
   allProjects: readonly CloudProject[],
   scheduleItems: readonly ScheduleItem[],
+  tombstones: readonly DAVESyncTombstone[],
 ): CloudProject[] {
   // Archived projects are read only so their names stay out: a task that
   // still names an archived parent must not bring it back (native parity,
@@ -111,7 +165,10 @@ function portfolioProjects(
   return scheduleOverviewProjectNames(
     projects.map(project => project.name),
     [...scheduleItems],
-    allProjects.filter(project => project.archived).map(project => project.name),
+    [
+      ...allProjects.filter(project => project.archived).map(project => project.name),
+      ...tombstones.filter(tombstone => tombstone.entityType === 'project').map(tombstone => tombstone.recordId),
+    ],
   ).map(name => projectByName.get(normalized(name)) ?? {
     id: null,
     name,
@@ -206,22 +263,24 @@ function normalizeTombstone(value: unknown): DAVESyncTombstone | null {
   if (
     !recordId ||
     !deletedAt ||
-    (entityType !== 'project_area' && entityType !== 'schedule_item' && entityType !== 'reference_document')
+    (entityType !== 'project' && entityType !== 'project_area' &&
+      entityType !== 'schedule_item' && entityType !== 'reference_document')
   ) return null;
   return { entityType, recordId, deletedAt };
 }
 
-function removeTombstonedRecords<T extends { id: string }>(
+function removeTombstonedRecords<T>(
   records: readonly T[],
   tombstones: readonly DAVESyncTombstone[],
   entityType: DAVESyncTombstone['entityType'],
+  recordIdOf: (record: T) => string = record => (record as { id: string }).id,
 ): T[] {
   const deletedIds = new Set(
     tombstones
       .filter(tombstone => tombstone.entityType === entityType)
       .map(tombstone => normalized(tombstone.recordId)),
   );
-  return records.filter(record => !deletedIds.has(normalized(record.id)));
+  return records.filter(record => !deletedIds.has(normalized(recordIdOf(record))));
 }
 
 function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdate> | null {
@@ -311,9 +370,13 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
   const id = readString(data.id) ?? readString(row.id);
   const name = readString(data.name) ?? readString(row.name);
   if (!id || !name) return null;
+  const { retiredForProjectNames: _retired, ...shared } = data as Partial<ReferenceDocument>;
+  const retiredForProjectNames = readStringArray(data.retiredForProjectNames);
 
   return {
-    ...(data as Partial<ReferenceDocument>),
+    ...shared,
+    // A combined schedule retired for some of its projects (owner answer Q15, 30 Sep 2026).
+    ...(retiredForProjectNames.length ? { retiredForProjectNames } : {}),
     id,
     name,
     originalFileName: readString(data.originalFileName) ?? name,
@@ -344,6 +407,7 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     webReport: normalizeWebReport(data.webReport),
     cloudUpdatedAt: readString(row.updated_at),
     linkedScheduleItems: Object.freeze([]),
+    importedScheduleItemCount: 0,
   };
 }
 

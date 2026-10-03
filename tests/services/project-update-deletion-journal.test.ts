@@ -21,10 +21,12 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   PROJECT_UPDATE_DELETION_JOURNAL_QUARANTINE_PREFIX,
   PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
   confirmProjectUpdateCloudDeletion,
+  confirmedProjectUpdateDeletionIds,
   hasProjectUpdateDeletionIntent,
   recordProjectUpdateDeletionIntent,
 } from '../../services/ProjectUpdateDeletionJournal';
@@ -95,5 +97,37 @@ describe('ProjectUpdateDeletionJournal corruption safety', () => {
     await expect(confirmProjectUpdateCloudDeletion('missing-intent'))
       .rejects.toThrow(/deletion intent is missing/i);
     expect(mockStorage.has(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY)).toBe(false);
+  });
+});
+
+// Whole-app audit A2 pass 3 L2: the startup replay recorded every old delete
+// again, and the writer always rewrote the journal (verified) to do it.
+describe('ProjectUpdateDeletionJournal writes only what changed (audit A2 pass 3 L2)', () => {
+  const journalWrites = () => jest.mocked(AsyncStorage.setItem).mock.calls
+    .filter(([key]) => key === PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY);
+
+  it('leaves an intent already recorded as is, and records a new project name', async () => {
+    await recordProjectUpdateDeletionIntent({ id: 'old-delete', projectName: 'Tower A' });
+    await recordProjectUpdateDeletionIntent({ id: 'other-delete' });
+    await confirmProjectUpdateCloudDeletion('old-delete');
+    jest.mocked(AsyncStorage.setItem).mockClear();
+    const before = mockStorage.get(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY);
+
+    const again = await recordProjectUpdateDeletionIntent({ id: 'old-delete' });
+    await recordProjectUpdateDeletionIntent({ id: 'old-delete', projectName: 'Tower A' });
+    expect(again.cloudDeleteConfirmedAt).not.toBeNull();
+    expect(journalWrites()).toHaveLength(0);
+    expect(mockStorage.get(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY)).toBe(before);
+
+    const renamed = await recordProjectUpdateDeletionIntent({ id: 'other-delete', projectName: 'Tower B' });
+    expect(renamed.projectName).toBe('Tower B');
+    expect(journalWrites()).toHaveLength(1);
+  });
+
+  it('lists the deletes the cloud confirmed from one read', async () => {
+    await recordProjectUpdateDeletionIntent({ id: 'confirmed-delete' });
+    await recordProjectUpdateDeletionIntent({ id: 'pending-delete' });
+    await confirmProjectUpdateCloudDeletion('confirmed-delete');
+    await expect(confirmedProjectUpdateDeletionIds()).resolves.toEqual(new Set(['confirmed-delete']));
   });
 });

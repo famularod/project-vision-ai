@@ -8,14 +8,49 @@ import type {
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import type { DAVEDailyBriefDocument } from './DAVEDailyBrief';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
+import { projectAreasForProject } from './DAVEProjectAreaScope';
 
 export const COMBINED_REPORT_PROJECT_TRUTH_POLICY = 'ephemeral_portfolio' as const;
+
+/**
+ * The project a draft's capture intelligence is for (A10 pass 2 F4, 30 Sep
+ * 2026): its parent project. An update started from a task on an older
+ * schedule names the building ("Building 2321") as its project and the
+ * parent in scheduleProjectName; scoped by the building, capture had no
+ * evidence at all (the Add Photos "same photo as last time" guidance
+ * vanished) and an empty Project Truth was saved under a made-up project.
+ */
+export function captureIntelligenceProjectName(
+  draft: Pick<ProjectUpdate, 'projectName' | 'scheduleProjectName'>,
+): string {
+  return cleanText(draft.scheduleProjectName) || draft.projectName;
+}
+
+/**
+ * Project Truth is saved only for a project the owner has (A10 pass 2 F4):
+ * never under a name that is no project, such as a building name or a
+ * placeholder, where it would be an empty history of a project that does
+ * not exist.
+ */
+export function projectTruthPersistencePolicyFor(
+  projectName: string,
+  knownProjectNames: readonly string[],
+): 'persist_project' | 'no_project_truth' {
+  const key = normalizeKey(projectName);
+  return knownProjectNames.some(name => normalizeKey(name) === key) ? 'persist_project' : 'no_project_truth';
+}
 
 type CombinedReportAuthorityScopeInput = {
   selectedProjectNames: readonly string[];
   projectRecords: readonly ProjectRecord[];
   updates: readonly ProjectUpdate[];
   scheduleItems: readonly ScheduleItem[];
+  /**
+   * Every saved task, hidden ones included (a revision hides the old row of
+   * a task whose dates changed). Only read to see whose task an update's
+   * task id is when it is not in the current schedule (A10 pass 2 F1).
+   */
+  knownScheduleItems?: readonly ScheduleItem[];
   currentUpdate?: ProjectUpdate | null;
   projectAreas?: readonly ProjectArea[];
   referenceDocuments?: readonly ReferenceDocument[];
@@ -101,8 +136,93 @@ export function buildDailyReportAuthorityScope(
   return {
     projectName,
     projectNames: [projectName],
-    ...evidenceScope,
+    updates: evidenceScope.updates,
+    scheduleItems: evidenceScope.scheduleItems,
+    currentUpdate: evidenceScope.currentUpdate,
     ...supportingScope,
+  };
+}
+
+type ProjectIntelligenceScopeCache = {
+  key: readonly unknown[];
+  scope: DailyReportAuthorityScope;
+  belongsToScope: (update: ProjectUpdate) => boolean;
+};
+let lastProjectIntelligenceScope: ProjectIntelligenceScopeCache | null = null;
+
+type ProjectIntelligenceScopeInput =
+  Omit<CombinedReportAuthorityScopeInput, 'selectedProjectNames'> & { selectedProjectName: string };
+
+/**
+ * Home, workspace and capture intelligence for ONE project (audit round 2
+ * L2). They were given every project's updates, tasks and areas, so project
+ * A's brief carried project B's overdue task, area and safety concern, and A's
+ * saved Project Truth stored B's items. This is the daily report's evidence
+ * scope, plus: the open draft when it belongs to the project, the areas the
+ * project owns even before anything references them (capture needs them), and
+ * the whole contact book (contacts belong to no project).
+ *
+ * The scope is kept while the saved collections are the same objects, so a
+ * draft keystroke only re-checks the draft: new arrays on every keystroke
+ * would defeat the authority signature's per-collection cache.
+ */
+export function buildProjectIntelligenceAuthorityScope(
+  input: ProjectIntelligenceScopeInput,
+): DailyReportAuthorityScope {
+  const key = [
+    normalizeKey(input.selectedProjectName),
+    input.projectRecords,
+    input.updates,
+    input.scheduleItems,
+    input.knownScheduleItems,
+    input.projectAreas,
+    input.referenceDocuments,
+    input.projectDocuments,
+    input.captureMemories,
+    input.contacts,
+  ];
+  const cached = lastProjectIntelligenceScope;
+  const base = cached && cached.key.length === key.length && cached.key.every((value, index) => value === key[index])
+    ? cached
+    : buildProjectIntelligenceScopeBase(input, key);
+  lastProjectIntelligenceScope = base;
+  const currentUpdate = input.currentUpdate && base.belongsToScope(input.currentUpdate)
+    ? input.currentUpdate
+    : null;
+  return currentUpdate === base.scope.currentUpdate ? base.scope : { ...base.scope, currentUpdate };
+}
+
+function buildProjectIntelligenceScopeBase(
+  input: ProjectIntelligenceScopeInput,
+  key: readonly unknown[],
+): ProjectIntelligenceScopeCache {
+  const projectName = cleanText(input.selectedProjectName);
+  if (!projectName) throw new Error('Project intelligence requires one selected project.');
+  const withoutDraft = { ...input, selectedProjectNames: [projectName], currentUpdate: null };
+  const evidence = buildEvidenceScope(withoutDraft, [projectName], true);
+  const supporting = buildSupportingEvidenceScope(withoutDraft, [projectName], evidence);
+  const referencedAreas = new Set(supporting.projectAreas);
+  const ownedAreas = new Set(projectAreasForProject({
+    projectAreas: input.projectAreas || [],
+    projectName,
+    scheduleItems: evidence.scheduleItems,
+    updates: evidence.updates,
+  }));
+  return {
+    key,
+    belongsToScope: evidence.belongsToScope,
+    scope: {
+      projectName,
+      projectNames: [projectName],
+      updates: evidence.updates,
+      scheduleItems: evidence.scheduleItems,
+      currentUpdate: null,
+      projectAreas: (input.projectAreas || []).filter(area => referencedAreas.has(area) || ownedAreas.has(area)),
+      referenceDocuments: supporting.referenceDocuments,
+      projectDocuments: supporting.projectDocuments,
+      captureMemories: supporting.captureMemories,
+      contacts: input.contacts || { contacts: [] },
+    },
   };
 }
 
@@ -140,11 +260,39 @@ function buildEvidenceScope(
     scheduleById.set(id, matches);
   });
 
+  // The projects whose task each id is, among every saved task (hidden ones
+  // included); built on the first update whose task is not current.
+  let knownParentsById: Map<string, Set<string>> | null = null;
+  const knownTaskParents = (scheduleItemId: string) => {
+    if (!knownParentsById) {
+      knownParentsById = new Map();
+      for (const item of input.knownScheduleItems || []) {
+        const id = cleanText(item.id);
+        const parent = id ? parentForScheduleItem(item) : null;
+        if (!id || !parent) continue;
+        knownParentsById.set(id, (knownParentsById.get(id) || new Set<string>()).add(parent));
+      }
+    }
+    return [...(knownParentsById.get(scheduleItemId) || [])];
+  };
+
   const updateBelongsToScope = (update: ProjectUpdate) => {
+    // An archived update is out of every report at once (audit round 2 L4).
+    if ((update as ProjectUpdate & { isArchived?: boolean }).isArchived === true) return false;
     const scheduleItemId = cleanText(update.scheduleItemId);
     if (scheduleItemId) {
       const matches = scheduleById.get(scheduleItemId) || [];
-      return matches.length === 1 && scopedScheduleSet.has(matches[0]);
+      if (matches.length > 0) return matches.length === 1 && scopedScheduleSet.has(matches[0]);
+      // Not a current task (A10 pass 2 F1, 30 Sep 2026): a revision that
+      // moved a task's dates saved it as a new row with a new id and hid the
+      // old one, and every update on it vanished from Home, the workspace,
+      // Project Truth and the reports. A hidden task decides as a current
+      // one does: another project's task keeps it out, this project's takes
+      // it in. An id no saved task has (or whose project is unknown) leaves
+      // it to the update's own project. Updates of a deleted task never get
+      // here (the App removes them first, by tombstone).
+      const parents = knownTaskParents(scheduleItemId);
+      if (parents.length > 0) return parents.every(parent => selectedProjectKeys.has(parent));
     }
     const scheduleProjectName = cleanText(update.scheduleProjectName);
     if (scheduleProjectName) {
@@ -165,6 +313,7 @@ function buildEvidenceScope(
     currentUpdate: input.currentUpdate && updateBelongsToScope(input.currentUpdate)
       ? input.currentUpdate
       : null,
+    belongsToScope: updateBelongsToScope,
   };
 }
 

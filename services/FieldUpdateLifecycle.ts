@@ -38,6 +38,16 @@ export function fieldUpdateLifecycleLabel(
   return 'Draft';
 }
 
+/**
+ * Whether an update opens for editing (a draft, a ready or a failed one) or
+ * read-only (synced, or waiting to sync). One rule for the list and the
+ * iPad inspector's "Resume Update" button (whole-app audit A4, 29 Sep 2026:
+ * the button showed for a waiting update and opened the read-only detail).
+ */
+export function isResumableFieldUpdateStatus(status: PersistedFieldUpdateStatus): boolean {
+  return status !== 'sent' && status !== 'queued';
+}
+
 export function persistedStatusForSyncResult(input: {
   result: 'success' | 'failed' | 'skipped' | null;
   failureCategory: string | null;

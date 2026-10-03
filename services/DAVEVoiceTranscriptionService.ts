@@ -1,4 +1,6 @@
 import { getCurrentSessionAccessToken, getSupabaseClient } from './SupabaseService';
+import { fieldUpdateSyncCategoryWithoutSession } from './FieldUpdateSessionWait';
+import { daveVoiceWaitingForSignalError } from './DAVEVoiceSignalWait';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import {
@@ -23,6 +25,7 @@ export async function transcribeDAVECaptureMemoryAudio({
   candidateLocations,
   purpose = 'memory',
   isRequestCurrent = () => true,
+  signInPending = () => false,
 }: {
   uri: string;
   projectId: string | null;
@@ -30,6 +33,8 @@ export async function transcribeDAVECaptureMemoryAudio({
   candidateLocations: readonly string[];
   purpose?: 'memory' | 'question';
   isRequestCurrent?: () => boolean;
+  /** The workspace is open "offline, sign-in pending" (owner answer Q13). */
+  signInPending?: () => boolean;
 }): Promise<DAVEVoiceUnderstandingResponse> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error('The recording is no longer available. Record it again.');
@@ -46,6 +51,10 @@ export async function transcribeDAVECaptureMemoryAudio({
   const tokenResult = await getCurrentSessionAccessToken();
   const token = tokenResult.data;
   if (!tokenResult.ok || token?.status !== 'token_present' || !token.accessToken) {
+    // The sign-in waiting for signal is not a sign-in to redo (A11 pass 4 L1).
+    if (await fieldUpdateSyncCategoryWithoutSession(token, signInPending()) === 'offline') {
+      throw daveVoiceWaitingForSignalError();
+    }
     throw new Error('Sign in before transcribing a recorded memory.');
   }
 
@@ -54,8 +63,11 @@ export async function transcribeDAVECaptureMemoryAudio({
   )).slice(0, DAVE_VOICE_CONTEXT_MAX_LOCATIONS);
   const submittedProjectName = projectName.trim();
   const submittedProjectId = projectId?.trim() || '';
-  if (!submittedProjectName || !DAVE_PROJECT_UUID_PATTERN.test(submittedProjectId)) {
-    throw new Error('This project is still loading. Close and reopen Talk, then try again.');
+  // Whole-app audit A11 pass 3 (30 Sep 2026): a project made on this phone has
+  // no cloud id until it uploads; "still loading" never ended. The recording stays.
+  if (!submittedProjectName) throw new Error('Choose a project, then try again, or type it instead.');
+  if (!DAVE_PROJECT_UUID_PATTERN.test(submittedProjectId)) {
+    throw new Error(`${submittedProjectName} hasn't reached the cloud yet, so voice can't transcribe for it. Connect so it syncs, then try again, or type it instead.`);
   }
 
   if (Platform.OS !== 'web') {

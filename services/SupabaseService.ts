@@ -6,9 +6,14 @@ import {
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
 import { accountDisplayNameForMetadata } from './AccountProfile';
+import { noteSignedInOwner } from './CloudOwnerBinding';
+import { ownerWorkspaceAuthDecision } from './OwnerWorkspaceAuthDecision';
 import { AppState } from 'react-native';
 import {
   createClient,
+  isAuthRefreshDiscardedError,
+  isAuthRetryableFetchError,
+  isAuthSessionMissingError,
   type Session,
   type SupabaseClient,
   type User,
@@ -314,6 +319,7 @@ const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
 const DAVE_SYNC_TOMBSTONES_TABLE = 'dave_sync_tombstones';
+const REPORT_SNAPSHOTS_TABLE = 'report_snapshots';
 const DAVE_STORAGE_CLEANUP_INTENTS_TABLE = 'dave_storage_cleanup_intents';
 const DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE = 'dave_project_truth_snapshots';
 const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
@@ -343,6 +349,78 @@ let authAutoRefreshSubscriptionStarted = false;
 // Audit P0-14/P1-30: tokens live in SecureStore (Keychain/Keystore), never
 // plain AsyncStorage. See services/SupabaseAuthStorage.ts.
 const supabaseAuthStorage = supabaseSecureAuthStorage;
+// supabase-js's own default key, named so this service can read the saved
+// sign-in without the network (owner answer Q13).
+const SUPABASE_AUTH_STORAGE_KEY = supabaseAuthStorageKey(SUPABASE_URL);
+// Used when a saved session lacks expires_in; Supabase issues hourly tokens.
+const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600;
+// auth-js refreshes a token this close to its expiry before using it
+// (EXPIRY_MARGIN_MS), so Sign Out treats it as expired as early.
+const SIGN_IN_EXPIRY_MARGIN_MS = 90_000;
+/** SupabaseServiceResult.code of a Sign Out made on this device only, with no signal. */
+export const SIGNED_OUT_ON_THIS_DEVICE_ONLY = 'signed_out_on_this_device_only';
+/**
+ * Owner answer Q21 (30 Sep 2026): Sign Out ends this device's sign-in only
+ * ('local', the default) or every device's ('global', auth-js's own default).
+ */
+export type SignOutScope = 'local' | 'global';
+/** SupabaseServiceResult.code of a Sign Out of All Devices that could not reach the cloud: nothing signed out. */
+export const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL = 'sign_out_of_all_devices_needs_signal';
+const SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL_MESSAGE =
+  'Signing out your other devices needs signal, and Vitruvius could not reach the cloud just now. Nothing was signed out.';
+/**
+ * Whole-app audit A1 pass 4 L2: the same code when the sign-in server
+ * answered 5xx (an outage): there is signal, so "needs signal" was not why.
+ */
+const SIGN_OUT_OF_ALL_DEVICES_SERVER_NOT_ANSWERING_MESSAGE =
+  'Signing out your other devices needs the sign-in server, and it isn\'t answering right now. ' +
+  'Nothing was signed out. Try again in a few minutes.';
+/**
+ * SupabaseServiceResult.code of a Sign Out of All Devices whose sign-in the
+ * server had already ended (its refresh was refused): this device is signed
+ * out by that refusal; the other devices could not be signed out from here
+ * (whole-app audit A1 pass 3 L1).
+ */
+export const SIGN_IN_ALREADY_ENDED_ON_SERVER = 'sign_in_already_ended_on_server';
+const SIGN_IN_ALREADY_ENDED_ON_SERVER_MESSAGE =
+  'This device\'s sign-in had already ended on the server, so this device is now signed out. ' +
+  'Your other devices were not signed out from here. To sign them out, sign in again, then choose Sign Out of All Devices.';
+/** How long the signal check waits for the project's auth server (A1 pass 3 L1). */
+export const SIGNAL_CHECK_TIMEOUT_MS = 4_000;
+/**
+ * auth-js 2.108.2's REFRESH_FAILURE_COOLDOWN_MS: after a refresh gives up it
+ * answers from that failure, without sending anything, for this long
+ * (pinned in tests/app-offline-sign-in.test.tsx).
+ */
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS = 60_000;
+/**
+ * With signal back, how long the sign-in may take to finish: auth-js's
+ * cooldown, then its own ~30 seconds of retries (A1 pass 3 L1).
+ */
+const SIGNAL_BACK_REFRESH_WAIT_MS = AUTH_REFRESH_FAILURE_COOLDOWN_MS + 30_000;
+const SIGNAL_BACK_POLL_MS = 1_000;
+/**
+ * A refresh request this wait sent may still answer after the wait is over;
+ * it gets this long more (whole-app audit A1 pass 4 L1).
+ */
+const SENT_REFRESH_GRACE_MS = 5_000;
+/**
+ * Whole-app audit A1 pass 4 L1: whether the app is in the foreground. The
+ * wait above counted wall-clock time, so two minutes in another app used it
+ * up: Sign Out of All Devices then said it needed signal, with signal there,
+ * and Retry on the 7-day lockout showed the lockout again before opening. It
+ * now counts only polls made in the foreground, and asks nothing in the
+ * background (iOS suspends the app there; the sign-in refreshes on return).
+ * Unknown at launch counts as the foreground.
+ */
+let appInForeground = !['background', 'inactive'].includes(String(AppState.currentState));
+/**
+ * Whole-app audit A1 pass 5 L2: how many times the app has left the
+ * foreground. A refresh request out while it did can fail on return for that
+ * alone: auth-js does not retry it, its 30 seconds of retries having passed
+ * on the wall clock meanwhile. That failure is no evidence of no signal.
+ */
+let appLeftForegroundCount = 0;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -350,10 +428,441 @@ function createSupabaseClient(): SupabaseClient | null {
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       storage: supabaseAuthStorage,
+      storageKey: SUPABASE_AUTH_STORAGE_KEY,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,
     },
+    global: { fetch: fetchObservingSignInRefresh },
+  });
+}
+
+function supabaseAuthStorageKey(url: string): string | undefined {
+  try {
+    return url ? `sb-${new URL(url).hostname.split('.')[0]}-auth-token` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Owner answer Q13 (30 Sep 2026): whether the last sign-in refresh reached the
+ * server. auth-js reports a refresh whose request failed at the network (or a
+ * 5xx) as AuthRetryableFetchError and keeps the session; any other answer (400
+ * invalid or revoked refresh token) removes the session and emits SIGNED_OUT.
+ * It retries a network failure for about 25 seconds before saying so, and the
+ * first failed request already settles it: no answer is no rejection.
+ */
+let lastSignInRefreshTransport: 'failed' | 'answered' | 'server_error' | null = null;
+/**
+ * Told as each refresh request ends without the sign-in: no answer
+ * (network_unavailable), or, whole-app audit A1 pass 4 L2, a 5xx from the
+ * sign-in server (server_unavailable). An auth-server outage (health
+ * answering, the token endpoint 503) read as "Signal is back — finishing
+ * sign-in…", then "No signal…".
+ */
+const signInRefreshFailureWaiters = new Set<(outcome: SavedSignInRefresh) => void>();
+/**
+ * Whole-app audit A1 pass 3 L1: after its retries auth-js answers "failed" from
+ * its last failure for AUTH_REFRESH_FAILURE_COOLDOWN_MS, sending nothing. That
+ * answer, or the failed attempt above, was taken for no signal even when
+ * signal had returned: Retry on the 7-day lockout said "No signal" again, and
+ * Sign Out of All Devices said it needed signal, with nothing sent. Counted
+ * here: the refresh requests sent, those that got no answer, and when the
+ * last one ended, so a caller can tell a request of its own that got no answer
+ * from an earlier one.
+ */
+let signInRefreshRequestsSent = 0;
+let signInRefreshRequestsUnanswered = 0;
+let lastSignInRefreshEndedAtMs = 0;
+/**
+ * Whole-app audit A1 pass 2 #2: the refresh tokens of sign-ins a Sign Out
+ * with no signal removed from this phone. auth-js's guard against saving a
+ * refresh over a sign-out only notices its own sign-out, so a waiting retry
+ * answered while the Keychain entries were going saved the session back and
+ * reopened the workspace after "Signed out on this device". A refresh with
+ * one of these tokens now ends as if there were no signal, even when the
+ * answer arrives meanwhile: auth-js saves nothing.
+ */
+const refreshTokensSignedOutHere = new Set<string>();
+
+function fetchObservingSignInRefresh(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): Promise<Response> {
+  const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
+  const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
+  const signedOutHere = refresh ? refreshTokenSignedOutHere(init?.body) : () => false;
+  // Each attempt starts unknown: an earlier failure says nothing about a
+  // refresh under way now (auth security review, 30 Sep 2026).
+  if (refresh) {
+    lastSignInRefreshTransport = null;
+    signInRefreshRequestsSent += 1;
+  }
+  const request = signedOutHere()
+    ? Promise.reject(new TypeError('Network request failed'))
+    : fetch(input, init).then(response => {
+      if (signedOutHere()) throw new TypeError('Network request failed');
+      return response;
+    });
+  return request.then(response => {
+    if (refresh) {
+      const serverError = response.status >= 500;
+      lastSignInRefreshTransport = serverError ? 'server_error' : 'answered';
+      lastSignInRefreshEndedAtMs = Date.now();
+      if (serverError) signInRefreshFailureWaiters.forEach(notify => notify(SIGN_IN_SERVER_NOT_ANSWERING));
+    }
+    return response;
+  }, error => {
+    if (refresh) {
+      lastSignInRefreshTransport = 'failed';
+      signInRefreshRequestsUnanswered += 1;
+      lastSignInRefreshEndedAtMs = Date.now();
+      signInRefreshFailureWaiters.forEach(notify => notify(UNANSWERED_REFRESH));
+    }
+    throw error;
+  });
+}
+
+/**
+ * Marks the start of a sign-in lookup: a refresh request that gets no answer
+ * after this is the lookup's own evidence of no signal (A1 pass 3 L1).
+ */
+export function signInRefreshNoAnswerMark(): number {
+  return signInRefreshRequestsUnanswered;
+}
+
+/**
+ * Whether the project's auth server answers now (A1 pass 3 L1): a GET of its
+ * health endpoint through the same fetch as the sign-in, carrying no sign-in
+ * token. The public anon key goes in a header, never in the URL, and nothing
+ * here is logged. Any answer below 500 is signal; a failure, a 5xx, or no
+ * answer within `timeoutMs` is not.
+ */
+export async function authServerReachable(timeoutMs: number = SIGNAL_CHECK_TIMEOUT_MS): Promise<boolean> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return false;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = fetchObservingSignInRefresh(`${withoutTrailingSlash(SUPABASE_URL)}/auth/v1/health`, {
+    method: 'GET',
+    headers: { apikey: SUPABASE_ANON_KEY },
+    ...(controller ? { signal: controller.signal } : {}),
+  }).then(response => response.status < 500, () => false);
+  try {
+    return await Promise.race([
+      answered,
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => {
+          controller?.abort();
+          resolve(false);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function refreshTokenSignedOutHere(body: unknown): () => boolean {
+  let token: unknown = null;
+  try {
+    token = typeof body === 'string' ? (JSON.parse(body) as { refresh_token?: unknown }).refresh_token : null;
+  } catch {
+    token = null;
+  }
+  return () => typeof token === 'string' && refreshTokensSignedOutHere.has(token);
+}
+
+export type SavedSignIn = Readonly<{
+  ownerId: string;
+  /** For Settings while the sign-in is pending (A1 pass 2 #1). */
+  email?: string | null;
+  /** When the server issued the saved token: its expiry minus its lifetime. */
+  lastRefreshedAtMs: number;
+  expiresAtMs: number;
+}>;
+
+/** The sign-in saved on this phone, read from the Keychain without the network. */
+export async function readSavedSignIn(): Promise<SavedSignIn | null> {
+  return (await readSavedSession())?.signIn ?? null;
+}
+
+/** With its refresh token, which stays in this module (A1 pass 2 #2). */
+async function readSavedSession(): Promise<Readonly<{ signIn: SavedSignIn; refreshToken: string }> | null> {
+  if (!getSupabaseClient() || !SUPABASE_AUTH_STORAGE_KEY) return null;
+  const raw = await supabaseAuthStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const session = JSON.parse(raw) as {
+      refresh_token?: unknown;
+      expires_at?: unknown;
+      expires_in?: unknown;
+      user?: { id?: unknown; email?: unknown } | null;
+    };
+    const ownerId = typeof session.user?.id === 'string' ? session.user.id.trim() : '';
+    if (!ownerId || typeof session.refresh_token !== 'string' || !session.refresh_token) return null;
+    if (typeof session.expires_at !== 'number' || !Number.isFinite(session.expires_at)) return null;
+    const lifetime = typeof session.expires_in === 'number' && session.expires_in > 0
+      ? session.expires_in
+      : DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS;
+    return {
+      refreshToken: session.refresh_token,
+      signIn: Object.freeze({
+        ownerId,
+        email: typeof session.user?.email === 'string' && session.user.email ? session.user.email : null,
+        lastRefreshedAtMs: (session.expires_at - lifetime) * 1000,
+        expiresAtMs: session.expires_at * 1000,
+      }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 'server_unavailable' (whole-app audit A1 pass 4 L2): the sign-in server
+ * answered 5xx. Like 'network_unavailable' it is no refusal (owner answer
+ * Q13), but there is signal, so it is never called "no signal".
+ */
+export type SavedSignInRefresh =
+  | Readonly<{ status: 'signed_in'; ownerId: string }>
+  | Readonly<{ status: 'signed_out' | 'rejected' | 'network_unavailable' | 'server_unavailable' | 'unreadable' }>;
+
+export type SavedSignInRefreshOptions = Readonly<{
+  /**
+   * signInRefreshNoAnswerMark() when the lookup began (default: now). Only a
+   * request that got no answer after it is taken for no signal as it stands.
+   */
+  noAnswerMark?: number;
+  /** Signal is back, and the sign-in is being finished (A1 pass 3 L1). */
+  onSignalBack?: () => void;
+  /** False once nobody waits for the answer: the wait for the sign-in ends. */
+  stillWanted?: () => boolean;
+  /**
+   * Whole-app audit A1 pass 4 L3: refresh through the server even a token
+   * valid by the phone's clock, whose clock is not trusted.
+   */
+  askServer?: boolean;
+}>;
+
+const UNANSWERED_REFRESH: SavedSignInRefresh = Object.freeze({ status: 'network_unavailable' });
+const SIGN_IN_SERVER_NOT_ANSWERING: SavedSignInRefresh = Object.freeze({ status: 'server_unavailable' });
+
+/**
+ * auth-js reports a refresh that got no answer and one the server answered
+ * 5xx alike (AuthRetryableFetchError); only the second carries the status
+ * (A1 pass 4 L2).
+ */
+function isSignInServerNotAnswering(error: unknown): boolean {
+  return isAuthRetryableFetchError(error) && typeof error.status === 'number' && error.status >= 500;
+}
+
+/**
+ * How the saved sign-in's refresh ends (owner answer Q13): 'network_unavailable'
+ * only when the server never answered, as described above; a rejection has
+ * already signed out through auth-js by the time this returns 'rejected'.
+ *
+ * Whole-app audit A1 pass 3 L1: when no refresh request of this lookup went
+ * unanswered (auth-js answered from an earlier failure), whether there is
+ * signal is asked instead of assumed. Without signal the answer is as before.
+ * With signal, `onSignalBack` runs and this waits for the sign-in to finish.
+ */
+export async function awaitSavedSignInRefresh(
+  options: SavedSignInRefreshOptions = {},
+): Promise<SavedSignInRefresh> {
+  const client = getSupabaseClient();
+  if (!client) return { status: 'signed_out' };
+  const noAnswerMark = options.noAnswerMark ?? signInRefreshRequestsUnanswered;
+  const stillWanted = options.stillWanted ?? (() => true);
+  let notify: (outcome: SavedSignInRefresh) => void = () => undefined;
+  const refreshFailed = new Promise<SavedSignInRefresh>(resolve => {
+    notify = resolve;
+  });
+  if (lastSignInRefreshTransport === 'failed') notify(UNANSWERED_REFRESH);
+  // A1 pass 4 L2: a 5xx that auth-js is still retrying, or answers from in
+  // its cooldown, is the server not answering, with signal; said at once.
+  else if (
+    lastSignInRefreshTransport === 'server_error' &&
+    Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS
+  ) {
+    notify(SIGN_IN_SERVER_NOT_ANSWERING);
+  }
+  signInRefreshFailureWaiters.add(notify);
+  const ask = options.askServer
+    ? () => savedSignInServerRefreshOutcome(client)
+    : () => savedSignInRefreshOutcome(client);
+  let outcome: SavedSignInRefresh;
+  try {
+    outcome = await Promise.race([ask(), refreshFailed]);
+  } finally {
+    signInRefreshFailureWaiters.delete(notify);
+  }
+  if (outcome.status !== 'network_unavailable' || signInRefreshRequestsUnanswered > noAnswerMark) {
+    return outcome;
+  }
+  if (!stillWanted() || !(await authServerReachable()) || !stillWanted()) return outcome;
+  options.onSignalBack?.();
+  return savedSignInRefreshWithSignal(client, stillWanted, ask);
+}
+
+/** The saved sign-in as auth-js has it: getSession refreshes an expired one. */
+function savedSignInRefreshOutcome(client: SupabaseClient): Promise<SavedSignInRefresh> {
+  return client.auth.getSession().then(({ data, error }): SavedSignInRefresh => {
+    if (isSignInServerNotAnswering(error)) return SIGN_IN_SERVER_NOT_ANSWERING;
+    if (error) return isAuthRetryableFetchError(error) ? UNANSWERED_REFRESH : { status: 'rejected' };
+    const ownerId = data.session?.user?.id;
+    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
+  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+}
+
+/**
+ * Whole-app audit A1 pass 4 L3: the saved sign-in refreshed through the
+ * server even though its token is valid by the phone's clock, which is not
+ * trusted (it is earlier than a time this phone already saw): the server's
+ * answer decides. auth-js keeps a session whose token is valid by that clock
+ * when the server refuses its refresh, so a refusal here ends it on this
+ * phone, as auth-js ends any other refused sign-in (owner answer Q13).
+ */
+function savedSignInServerRefreshOutcome(client: SupabaseClient): Promise<SavedSignInRefresh> {
+  return client.auth.refreshSession().then(async ({ data, error }): Promise<SavedSignInRefresh> => {
+    if (isSignInServerNotAnswering(error)) return SIGN_IN_SERVER_NOT_ANSWERING;
+    if (isAuthRetryableFetchError(error)) return UNANSWERED_REFRESH;
+    // Gone meanwhile (a sign-out): nothing left to end.
+    if (isAuthSessionMissingError(error) || isAuthRefreshDiscardedError(error)) return { status: 'signed_out' };
+    if (error) {
+      const saved = await readSavedSession().catch(() => null);
+      if (saved) await signOutOnThisPhone(saved.refreshToken);
+      return { status: 'rejected' };
+    }
+    const ownerId = data.session?.user?.id;
+    return ownerId ? { status: 'signed_in', ownerId } : { status: 'signed_out' };
+  }, (): SavedSignInRefresh => ({ status: 'unreadable' }));
+}
+
+/**
+ * Signal is back (A1 pass 3 L1): the sign-in's own refresh through auth-js,
+ * which joins one under way and never runs past its cooldown: while auth-js
+ * answers from its last failure this waits, then asks once more. Ends
+ * 'network_unavailable' only when a refresh request sent meanwhile got no
+ * answer, the wait (SIGNAL_BACK_REFRESH_WAIT_MS of foreground time, A1 pass 4
+ * L1) ran out, or nobody waits. In the background it pauses: on return the
+ * sign-in is asked again, and a refresh that finished meanwhile is the answer.
+ * A request sent that got no answer while the app was away is not taken for
+ * no signal: signal is checked again, and with it the sign-in is asked again
+ * (A1 pass 5 L2).
+ */
+async function savedSignInRefreshWithSignal(
+  client: SupabaseClient,
+  stillWanted: () => boolean = () => true,
+  ask: () => Promise<SavedSignInRefresh> = () => savedSignInRefreshOutcome(client),
+): Promise<SavedSignInRefresh> {
+  const wait: ForegroundWait = { foregroundMs: 0, stillWanted };
+  for (;;) {
+    const sentBefore = signInRefreshRequestsSent;
+    const leftForegroundBefore = appLeftForegroundCount;
+    // A 5xx ends the wait at once: no "Signal is back" past it (A1 pass 4 L2).
+    const asked = untilServerNotAnswering(ask());
+    let outcome = await beforeForegroundWaitOver(asked, wait);
+    // A request it sent may be about to answer: a few seconds more.
+    if (!outcome && signInRefreshRequestsSent > sentBefore && wait.stillWanted()) {
+      outcome = await beforeDeadline(asked, Date.now() + SENT_REFRESH_GRACE_MS, null);
+    }
+    if (!outcome) return UNANSWERED_REFRESH;
+    if (outcome.status !== 'network_unavailable') return outcome;
+    if (signInRefreshRequestsSent > sentBefore) {
+      // A1 pass 5 L2: the app left the foreground while the request was out.
+      // With signal, the sign-in is asked again, and the wait starts over:
+      // auth-js's minute after that failure, then its retries, come again.
+      if (appLeftForegroundCount === leftForegroundBefore || !(await signalCheckedInForeground(wait))) {
+        return outcome;
+      }
+      wait.foregroundMs = 0;
+      continue;
+    }
+    // Nothing was sent: auth-js answered from its last failure. Wait out its
+    // cooldown, or until a refresh of its own (its timer) goes out; in the
+    // background, until the app is back.
+    do {
+      if (foregroundWaitOver(wait)) return UNANSWERED_REFRESH;
+      await foregroundPoll(wait);
+    } while (
+      !appInForeground ||
+      (Date.now() < lastSignInRefreshEndedAtMs + AUTH_REFRESH_FAILURE_COOLDOWN_MS &&
+        signInRefreshRequestsSent === sentBefore)
+    );
+  }
+}
+
+/**
+ * Whether there is signal, asked once the app is in the foreground (nothing
+ * is asked in the background); false once nobody waits (A1 pass 5 L2).
+ */
+async function signalCheckedInForeground(wait: ForegroundWait): Promise<boolean> {
+  while (!appInForeground) {
+    if (!wait.stillWanted()) return false;
+    await foregroundPoll(wait);
+  }
+  return wait.stillWanted() && (await authServerReachable()) && wait.stillWanted();
+}
+
+/** `work`'s answer, or 'server_unavailable' at the next 5xx a refresh request gets (A1 pass 4 L2). */
+function untilServerNotAnswering(work: Promise<SavedSignInRefresh>): Promise<SavedSignInRefresh> {
+  let notify: (outcome: SavedSignInRefresh) => void = () => undefined;
+  const serverNotAnswering = new Promise<SavedSignInRefresh>(resolve => {
+    notify = outcome => {
+      if (outcome.status === 'server_unavailable') resolve(outcome);
+    };
+  });
+  signInRefreshFailureWaiters.add(notify);
+  return Promise.race([work, serverNotAnswering]).finally(() => {
+    signInRefreshFailureWaiters.delete(notify);
+  });
+}
+
+/** The wait for the sign-in, in foreground time (A1 pass 4 L1). */
+type ForegroundWait = { foregroundMs: number; readonly stillWanted: () => boolean };
+
+function foregroundWaitOver(wait: ForegroundWait): boolean {
+  return wait.foregroundMs >= SIGNAL_BACK_REFRESH_WAIT_MS || !wait.stillWanted();
+}
+
+/**
+ * One poll: a second, or less if `work` settles first. Only a whole second
+ * in the foreground counts, however long the app was suspended meanwhile.
+ */
+async function foregroundPoll(wait: ForegroundWait, work?: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const polled = await Promise.race([
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(true), SIGNAL_BACK_POLL_MS);
+    }),
+    ...(work ? [work.then(() => false, () => false)] : []),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (polled && appInForeground) wait.foregroundMs += SIGNAL_BACK_POLL_MS;
+}
+
+/** `work`'s answer, or null once the wait is over. */
+async function beforeForegroundWaitOver<T>(work: Promise<T>, wait: ForegroundWait): Promise<T | null> {
+  let settled = false;
+  let answer: T | null = null;
+  const watched = work.then(value => { answer = value; }, () => undefined).then(() => { settled = true; });
+  while (!settled) {
+    if (foregroundWaitOver(wait)) return null;
+    await foregroundPoll(wait, watched);
+  }
+  return answer;
+}
+
+function beforeDeadline<T>(work: Promise<T>, deadlineMs: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<T>(resolve => {
+      timer = setTimeout(() => resolve(fallback), Math.max(0, deadlineMs - Date.now()));
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
   });
 }
 
@@ -570,19 +1079,111 @@ export async function signUp({
   });
 }
 
-export async function signOut(): Promise<SupabaseServiceResult<null>> {
+export async function signOut(
+  scope: SignOutScope = 'local',
+): Promise<SupabaseServiceResult<null>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<null>();
 
-  const { error } = await client.auth.signOut();
+  // Owner answer Q13: an expired saved sign-in whose last refresh got no
+  // answer cannot be ended on the server (that needs a refreshed token), so
+  // it is not tried again here; the library's retries take about 25 seconds.
+  // A token within auth-js's refresh margin counts as expired: auth-js would
+  // refresh it first.
+  const saved = await readSavedSession().catch(() => null);
+  let unreachable = Boolean(
+    saved &&
+    saved.signIn.expiresAtMs - SIGN_IN_EXPIRY_MARGIN_MS <= Date.now() &&
+    lastSignInRefreshTransport === 'failed',
+  );
+  // Whole-app audit A1 pass 3 L1: that failure may be a minute old, with
+  // auth-js still answering from it. All Devices is the lost-device choice,
+  // so whether there is signal is asked, not assumed. With signal the expired
+  // token is refreshed first (the sign-out needs a valid one); a refusal
+  // means the server had already ended this sign-in, and that is what is said.
+  let serverNotAnswering = false;
+  if (unreachable && scope === 'global' && await authServerReachable()) {
+    const refreshed = await savedSignInRefreshWithSignal(client);
+    serverNotAnswering = refreshed.status === 'server_unavailable';
+    if (refreshed.status === 'signed_in') {
+      unreachable = false;
+    } else if (refreshed.status === 'rejected' || refreshed.status === 'signed_out') {
+      lastAuthEvent = 'SIGNED_OUT';
+      authHydrationCompleted = true;
+      return {
+        ...okResult(null, undefined, SIGN_IN_ALREADY_ENDED_ON_SERVER_MESSAGE),
+        code: SIGN_IN_ALREADY_ENDED_ON_SERVER,
+      };
+    }
+  }
+  const error = unreachable ? null : (await client.auth.signOut({ scope })).error;
 
-  if (error) return errorResult(error.message);
+  if (!unreachable && !error) {
+    lastAuthEvent = 'SIGNED_OUT';
+    authHydrationCompleted = true;
+    return okResult(null);
+  }
+  if (error && !isAuthRetryableFetchError(error)) return errorResult(error.message);
+  // Owner answer Q21: only the cloud can sign out the other devices. Without
+  // it nothing is signed out here either; the owner is told and chooses.
+  // A1 pass 4 L2: a sign-in server answering 5xx is not "needs signal".
+  if (scope === 'global') {
+    return errorResult(
+      serverNotAnswering || isSignInServerNotAnswering(error)
+        ? SIGN_OUT_OF_ALL_DEVICES_SERVER_NOT_ANSWERING_MESSAGE
+        : SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL_MESSAGE,
+      undefined,
+      SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL,
+    );
+  }
 
+  // No signal (owner answer Q13): sign out on this phone. The server session
+  // is not ended, then or later; no copy of its token stays on the phone.
+  return signOutOnThisPhone(saved?.refreshToken ?? null);
+}
+
+const localAuthListeners = new Set<(event: string, session: Session | null) => void>();
+
+/**
+ * The local half of a sign-out, the step auth-js runs once the server has
+ * confirmed one: the saved session leaves the Keychain, then every subscriber
+ * hears SIGNED_OUT, which moves this owner's data into its sandbox (entry.ts)
+ * exactly as an online sign-out does. Unsynced work goes with it and uploads
+ * after this account signs in here again.
+ */
+async function signOutOnThisPhone(refreshToken: string | null): Promise<SupabaseServiceResult<null>> {
+  if (!SUPABASE_AUTH_STORAGE_KEY) return errorResult('Sign-in storage is not configured.');
+  // Before anything is removed, and in the same step as the no-signal check
+  // above: no refresh with this token is saved from here on (A1 pass 2 #2).
+  if (refreshToken) refreshTokensSignedOutHere.add(refreshToken);
+  try {
+    // The session itself goes last, so a failure before it leaves the sign-in
+    // whole and "You are still signed in" true (auth security review).
+    for (const suffix of ['-code-verifier', '-user', '']) {
+      await supabaseAuthStorage.removeItem(`${SUPABASE_AUTH_STORAGE_KEY}${suffix}`);
+    }
+  } catch {
+    // Still signed in, so its refresh may save again.
+    if (refreshToken) refreshTokensSignedOutHere.delete(refreshToken);
+    return errorResult(
+      'Vitruvius could not remove the saved sign-in from this phone. You are still signed in.',
+    );
+  }
   lastAuthEvent = 'SIGNED_OUT';
   authHydrationCompleted = true;
-
-  return okResult(null);
+  noteSignedInOwner(null);
+  [...localAuthListeners].forEach(listener => listener('SIGNED_OUT', null));
+  // True as worded: nothing reached the server, so the account's other
+  // devices keep their own sign-ins, now and when this one has signal again.
+  return {
+    ...okResult(
+      null,
+      undefined,
+      'Signed out on this device only. There was no signal, so your other devices stay signed in.',
+    ),
+    code: SIGNED_OUT_ON_THIS_DEVICE_ONLY,
+  };
 }
 
 export async function getCurrentUser(): Promise<SupabaseServiceResult<User | null>> {
@@ -643,8 +1244,14 @@ export function subscribeToAuthStateChange(
   const { data } = client.auth.onAuthStateChange((event, session) => {
     callback(event, session);
   });
+  // Also hears a sign-out made on this phone without signal (owner answer Q13).
+  const local = (event: string, session: Session | null) => callback(event, session);
+  localAuthListeners.add(local);
 
-  return () => data.subscription.unsubscribe();
+  return () => {
+    localAuthListeners.delete(local);
+    data.subscription.unsubscribe();
+  };
 }
 
 export async function subscribeToDAVEOperationalChanges({
@@ -1657,21 +2264,35 @@ export async function upsertScheduleItem(
 
 export async function upsertReferenceDocument(
   document: ReferenceDocument,
+  { existing = false }: Readonly<{ existing?: boolean }> = {},
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
   const compactDocument = compactECOSDocumentIndexForCloud(document);
-  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = compactDocument;
-  const result = await upsertJsonRecord<ReferenceDocument>({
-    table: REFERENCE_DOCUMENTS_TABLE,
-    ownerScoped: true,
-    payload: {
-      id: document.id,
-      name: document.name,
-      category: document.category,
-      document_data: toJsonValue(documentData),
-      updated_at: new Date().toISOString(),
-    },
-    data: document,
-  });
+  const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
+  const payload = {
+    id: document.id,
+    name: document.name,
+    category: document.category,
+    document_data: toJsonValue(documentData),
+    updated_at: new Date().toISOString(),
+  };
+  // A record the cloud already has is updated, not upserted. Postgres runs
+  // the guard trigger's insert branch of an upsert first, and that branch
+  // refuses every Current drawing, so almost every phone edit to one was
+  // refused; the iPad and the web already update (whole-app audit A8 pass 1
+  // F3 (30 Sep 2026)). No row updated means the record was not found.
+  const result = existing
+    ? await updateOwnedJsonRecord<ReferenceDocument>({
+        table: REFERENCE_DOCUMENTS_TABLE,
+        payload,
+        data: document,
+        notFoundMessage: 'The shared document record was not found in the cloud. It will be checked again.',
+      })
+    : await upsertJsonRecord<ReferenceDocument>({
+        table: REFERENCE_DOCUMENTS_TABLE,
+        ownerScoped: true,
+        payload,
+        data: document,
+      });
   const client = getSupabaseClient();
   if (result.ok && client) {
     await replaceECOSDocumentCloudIndex({ client, document });
@@ -1692,6 +2313,39 @@ export async function listScheduleItems(): Promise<SupabaseServiceResult<Schedul
     table: SCHEDULE_ITEMS_TABLE,
     jsonColumn: 'item_data',
   });
+}
+
+/**
+ * One task's cloud row, read by its id, as listScheduleItems gives it; null
+ * when the cloud has none (whole-app audit A7 pass 15 L-2). The list pages by
+ * offset, newest first, so a row edited while it is read moves to page 0 and
+ * can be missed: a conflict choice read "not in the list" as deleted.
+ */
+export async function getScheduleItem(
+  id: string,
+): Promise<SupabaseServiceResult<ScheduleItem | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<ScheduleItem | null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(SCHEDULE_ITEMS_TABLE)
+    .select('id, item_data')
+    .eq('owner_id', owner.data)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) return tableAwareErrorResult<ScheduleItem | null>(error.message, status);
+  if (!data) return okResult<ScheduleItem | null>(null, status);
+
+  const row = toRecord(data);
+  const item = toRecord(row.item_data);
+  // A row with no task in it is left out of the list too.
+  if (Object.keys(item).length === 0) return okResult<ScheduleItem | null>(null, status);
+  return okResult(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, status);
 }
 
 export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
@@ -1864,6 +2518,76 @@ export async function listDAVESyncTombstones(): Promise<
         .filter((value): value is DAVESyncTombstone => Boolean(value));
 
   return okResult(tombstones, result.status);
+}
+
+/**
+ * The owner's shared "since the last report" period for one project set and
+ * report format (owner answer Q16, 30 Sep 2026), with the account it was read
+ * for. Before the report_snapshots migration is applied the result is the
+ * quiet stub of a missing table.
+ */
+export async function loadReportSnapshotCloud(
+  scopeKey: string,
+  format: string,
+): Promise<SupabaseServiceResult<Readonly<{ ownerId: string; snapshot: unknown }>>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(REPORT_SNAPSHOTS_TABLE)
+    .select('snapshot')
+    .eq('owner_id', owner.data)
+    .eq('scope_key', scopeKey)
+    .eq('format', format)
+    .maybeSingle();
+
+  if (error) return tableAwareErrorResult(error.message, status);
+  return okResult({ ownerId: owner.data, snapshot: data ? toRecord(data).snapshot ?? null : null }, status);
+}
+
+/**
+ * Upserts the owner's shared period. `deliveredAt` is when the report the
+ * period runs from was sent; the table keeps the later one. With
+ * `expectedOwnerId`, nothing is written once another account is signed in.
+ */
+export async function saveReportSnapshotCloud(row: Readonly<{
+  scopeKey: string;
+  format: string;
+  snapshot: unknown;
+  approvedAt: string;
+  deliveredAt: string | null;
+  expectedOwnerId?: string;
+}>): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (row.expectedOwnerId && row.expectedOwnerId !== owner.data) {
+    return errorResult('The signed-in account changed before the report period was shared.', 409, 'owner_changed');
+  }
+
+  const { error, status } = await client
+    .from(REPORT_SNAPSHOTS_TABLE)
+    .upsert(
+      {
+        owner_id: owner.data,
+        scope_key: row.scopeKey,
+        format: row.format,
+        snapshot: toJsonValue(row.snapshot),
+        approved_at: row.approvedAt,
+        delivered_at: row.deliveredAt,
+      },
+      { onConflict: 'owner_id,scope_key,format' },
+    );
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
 }
 
 export async function loadLatestDAVEProjectTruthSnapshotCloud(
@@ -2860,9 +3584,12 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
       if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
     });
 
-  client.auth.onAuthStateChange(event => {
+  client.auth.onAuthStateChange((event, session) => {
     authHydrationCompleted = true;
     lastAuthEvent = event;
+    // Uploads bind to the signed-in account (whole-app audit A1 M3).
+    const decision = ownerWorkspaceAuthDecision(event, session?.user?.id);
+    if (decision.action === 'activate') noteSignedInOwner(decision.ownerId);
   });
 
   if (authAutoRefreshSubscriptionStarted) return;
@@ -2873,6 +3600,8 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
   }
 
   AppState.addEventListener('change', state => {
+    if (appInForeground && state !== 'active') appLeftForegroundCount += 1;
+    appInForeground = state === 'active';
     if (state === 'active') {
       client.auth.startAutoRefresh();
     } else {
@@ -3105,6 +3834,40 @@ async function upsertJsonRecord<T>({
   const { error, status } = await client.from(table).upsert(writePayload);
 
   if (error) return tableAwareErrorResult<T>(error.message, status);
+
+  return okResult(data, status);
+}
+
+async function updateOwnedJsonRecord<T>({
+  table,
+  payload: { id, ...values },
+  data,
+  notFoundMessage,
+}: {
+  table: string;
+  payload: Record<string, unknown> & { id: string };
+  data: T;
+  notFoundMessage: string;
+}): Promise<SupabaseServiceResult<T>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<T>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data: rows, error, status } = await client
+    .from(table)
+    .update(values)
+    .eq('id', id)
+    .eq('owner_id', owner.data)
+    .select('id');
+
+  if (error) return tableAwareErrorResult<T>(error.message, status);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return errorResult<T>(notFoundMessage, 404, 'not_found');
+  }
 
   return okResult(data, status);
 }

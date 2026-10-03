@@ -14,9 +14,16 @@ import {
   parseDAVEAssertions,
   type DAVEAssertionParseResult,
 } from './DAVEAssertionParser';
-import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  scheduleProgressIsComplete,
+  scheduleProgressRecordedByManager,
+  scheduleProgressSetByScheduleFile,
+} from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { scheduleTaskEarlierIds, scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -78,10 +85,36 @@ export type PIEScheduleReconciliationResult = {
 };
 
 export function scheduleHasAuthoritativeProgressJudgment(item: ScheduleItem) {
-  if (item.progressSource === 'project_manager') return true;
+  if (scheduleProgressRecordedByManager(item)) return true;
+  // A percent an approved schedule file set is the scheduler's, and the task
+  // says so; it is not the manager's judgment (A10 pass 3 M1).
+  if (scheduleProgressSetByScheduleFile(item)) return false;
+  // A task a schedule file brought in, or marked as the import's, holds the
+  // file's percent until the manager records one (whole-app audit A10 pass
+  // 4, 30 Sep 2026): an untouched master task at 30%, or one a lookahead
+  // raised, read as the manager's judgment.
+  if (item.progressSource === 'schedule_import' || scheduleItemHasImportRecord(item)) return false;
 
   // Older records did not preserve progress provenance. A saved in-progress
-  // percentage is still an explicit professional judgment, not a DAVE guess.
+  // percentage on a task entered by hand is still an explicit professional
+  // judgment, not a DAVE guess.
+  return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
+}
+
+/** Whether a schedule file brought the task in: its import, source document or file. */
+function scheduleItemHasImportRecord(item: ScheduleItem) {
+  return scheduleItemImportBatchIds(item).length > 0 ||
+    Boolean(normalize(item.sourceDocumentId || '') || normalize(item.importedFrom || ''));
+}
+
+/**
+ * Which saved copy of a task shows keeps the rank sync gives it
+ * (DAVEScheduleRecovery): a task the manager tracked stays ranked after an
+ * approved file raises it. Only the summaries read the file's percent as the
+ * schedule's (scheduleHasAuthoritativeProgressJudgment).
+ */
+function scheduleProgressHoldsManagerRank(item: ScheduleItem) {
+  if (item.progressSource === 'project_manager') return true;
   return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
 }
 
@@ -93,15 +126,18 @@ export function scheduleCompletionOverridesFieldMatch(
 
   const verification = item.completionVerification;
   const pmVerified = verification?.status === 'pm_verified';
-  const pmRecorded = item.progressSource === 'project_manager';
-  const scheduleImported = item.progressSource === 'schedule_import';
+  const pmRecorded = scheduleProgressRecordedByManager(item);
+  // A file's completion, from the import or from an approved update (A10 pass 3 M1).
+  const fileSet = scheduleProgressSetByScheduleFile(item);
+  const scheduleImported = item.progressSource === 'schedule_import' || fileSet;
   if (!pmVerified && !pmRecorded && !scheduleImported) return false;
 
   const completionAt = timestamp(
     pmVerified
       ? verification?.verifiedAt || verification?.reportedAt || null
-      : pmRecorded
-        ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
+      : pmRecorded || fileSet
+        // When the manager judged it, for a percent given back later (A10 pass 5 L1).
+        ? scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt || null
         : item.importedAt || item.createdAt || null,
   );
   const fieldAt = timestamp(match?.capturedAt || null);
@@ -117,9 +153,11 @@ export function scheduleProgressOverridesFieldMatch(
   item: ScheduleItem,
   match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
 ) {
-  if (item.progressSource !== 'project_manager') return false;
+  if (!scheduleProgressRecordedByManager(item)) return false;
+  // When the manager judged it: a percent given back by a lookahead's delete,
+  // or over a lower file, is not newer than a field report made since (A10 pass 5 L1).
   const progressAt = timestamp(
-    item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+    scheduleProgressJudgedAt(item) || item.importedAt || item.createdAt || null,
   );
   const fieldAt = timestamp(match?.capturedAt || null);
   if (progressAt === 0 || fieldAt === 0) return true;
@@ -153,10 +191,10 @@ export function selectAuthoritativeScheduleItems({
   scheduleDocuments?: ReferenceDocument[];
 }) {
   const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
-  const activeSchedules = scheduleSources
-    .filter(document => document.isCurrent)
-    .sort(compareScheduleDocumentAuthority)
-    .slice(0, 1);
+  const currentByProject = currentScheduleDocumentsByProject(scheduleSources);
+  // Owner answer Q22 (30 Sep 2026): each lookahead adds to its projects' master.
+  const lookaheads = scheduleSources.filter(scheduleDocumentAddsToMaster);
+  const activeSchedules = [...currentScheduleDocumentWinners(scheduleSources), ...lookaheads];
   const activeScheduleSources = new Set(
     activeSchedules
       .flatMap(document => [document.name, document.originalFileName])
@@ -169,23 +207,36 @@ export function selectAuthoritativeScheduleItems({
       .map(normalize)
       .filter(Boolean),
   );
-  const activeBatchIds = new Set(activeSchedules.map(document => normalize(document.importBatchId || '')).filter(Boolean));
-  const knownBatchIds = new Set(scheduleSources.map(document => normalize(document.importBatchId || '')).filter(Boolean));
   const activeDocumentIds = new Set(activeSchedules.map(document => normalize(document.id)).filter(Boolean));
-  const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
+  // The schedule documents that contain a task: its own source document and
+  // import, and any later import it was found unchanged in (whole-app audit
+  // A5 pass 2: a revision used to take unchanged tasks over).
+  const containingDocuments = (item: ScheduleItem) => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    const batchIds = scheduleItemImportBatchIds(item).map(normalize);
+    return scheduleSources.filter(document =>
+      (Boolean(sourceDocumentId) && normalize(document.id) === sourceDocumentId) ||
+      (Boolean(normalize(document.importBatchId || '')) && batchIds.includes(normalize(document.importBatchId || ''))));
+  };
+  // Shown when the current schedule for the task's own project contains it;
+  // with none current for that project, when any current schedule does. A
+  // lookahead's tasks always show: it adds to the master (Q22). The task's
+  // app project, not its Gantt root (A5 pass 12 M).
+  const containedByCurrentSchedule = (item: ScheduleItem, containing: readonly ReferenceDocument[]) => {
+    if (containing.some(scheduleDocumentAddsToMaster)) return true;
+    const current = currentByProject.get(scheduleTaskAppProject(item));
+    if (current) return containing.includes(current);
+    return containing.some(document => activeDocumentIds.has(normalize(document.id)));
+  };
   const itemHasActiveProvenance = (item: ScheduleItem) => {
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && activeDocumentIds.has(sourceDocumentId)) return true;
-    const importBatchId = normalize(item.importBatchId || '');
-    return Boolean(importBatchId && activeBatchIds.has(importBatchId));
+    const containing = containingDocuments(item);
+    return containing.length > 0 && containedByCurrentSchedule(item, containing);
   };
-  const itemHasOrphanedProvenance = (item: ScheduleItem) => {
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && !knownDocumentIds.has(sourceDocumentId)) return true;
-    const importBatchId = normalize(item.importBatchId || '');
-    return Boolean(importBatchId && !knownBatchIds.has(importBatchId));
-  };
+  const itemHasOrphanedProvenance = (item: ScheduleItem) => (
+    containingDocuments(item).length === 0 &&
+    Boolean(normalize(item.sourceDocumentId || '') || scheduleItemImportBatchIds(item).length > 0)
+  );
   const activeOccurrenceKeys = new Set(
     scheduleItems
       .filter(itemHasActiveProvenance)
@@ -195,7 +246,7 @@ export function selectAuthoritativeScheduleItems({
     scheduleItems
       .filter(item => (
         itemHasOrphanedProvenance(item) &&
-        scheduleHasAuthoritativeProgressJudgment(item)
+        scheduleProgressHoldsManagerRank(item)
       ))
       .map(scheduleOccurrenceKey),
   );
@@ -216,28 +267,112 @@ export function selectAuthoritativeScheduleItems({
     if (
       itemHasOrphanedProvenance(item) &&
       activeOccurrenceKeys.has(occurrenceKey)
-    ) return scheduleHasAuthoritativeProgressJudgment(item);
+    ) return scheduleProgressHoldsManagerRank(item);
 
-    const sourceDocumentId = normalize(item.sourceDocumentId || '');
-    if (sourceDocumentId && knownDocumentIds.has(sourceDocumentId)) {
-      return activeDocumentIds.has(sourceDocumentId);
-    }
-    const importBatchId = normalize(item.importBatchId || '');
-    if (importBatchId && knownBatchIds.has(importBatchId)) {
-      return activeBatchIds.has(importBatchId);
-    }
+    const containing = containingDocuments(item);
+    if (containing.length > 0) return containedByCurrentSchedule(item, containing);
     const importedFrom = normalize(item.importedFrom || '');
     return !importedFrom ||
       !knownScheduleSources.has(importedFrom) ||
       activeScheduleSources.has(importedFrom);
   });
+  // Whole-app audit A5 pass 19 L2 (1 Oct 2026): a task known only by the file
+  // it came from (importedFrom: no import or document id) belongs to that
+  // file (A5 pass 18 L1), so a master that moves it saves a new row answering
+  // to it. When its file is not saved, or the new master has the same file
+  // name, the rule above still showed it: Pour slab twice. A shown row that
+  // answers to it (revisedFromTaskIds) is that task now, and it is hidden.
+  const answeredTo = new Set(selectedItems.flatMap(item => scheduleTaskEarlierIds(item)));
+  const shownItems = selectedItems.filter(item => !(
+    normalize(item.importedFrom || '') && !normalize(item.sourceDocumentId || '') &&
+    scheduleItemImportBatchIds(item).length === 0 && answeredTo.has(item.id.trim())));
 
-  return dedupeScheduleItems(selectedItems);
+  return dedupeScheduleItems(lookaheads.length > 0
+    ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments)
+    : shownItems);
+}
+
+/**
+ * One task where the master and a lookahead each hold a copy (owner answer
+ * Q22). A lookahead import restates the master's task in place, so this is
+ * only the copy a later import left behind: a new master that changed the
+ * task's dates, or an older master made current again. The copy from the
+ * newest file shows. When a file lists the same task name twice in the same
+ * area those may be two tasks, so only a copy and a row that answers to it
+ * fold, to the newer file's (A6 pass 18, A5 pass 19 L5).
+ */
+function withoutLookaheadDuplicates(
+  items: readonly ScheduleItem[],
+  currentByProject: ReadonlyMap<string, ReferenceDocument>,
+  containingDocuments: (item: ScheduleItem) => ReferenceDocument[],
+): ScheduleItem[] {
+  const groups = new Map<string, ScheduleItem[]>();
+  items.forEach(item => {
+    const key = [scheduleTaskAppProject(item), normalize(item.locationName || ''), normalize(item.taskName || '')].join('|');
+    groups.set(key, [...(groups.get(key) || []), item]);
+  });
+  const hidden = new Set<ScheduleItem>();
+  groups.forEach(group => {
+    if (group.length < 2) return;
+    const master = currentByProject.get(scheduleTaskAppProject(group[0]));
+    const sources = new Map(group.map(item => [item, containingDocuments(item)
+      .filter(document => document === master || scheduleDocumentAddsToMaster(document))] as const));
+    if ([...sources.values()].some(documents => documents.length === 0)) return;
+    const perFile = new Map<string, number>();
+    sources.forEach(documents => documents.forEach(document => perFile.set(document.id, (perFile.get(document.id) || 0) + 1)));
+    const statedAt = (item: ScheduleItem) => Math.max(...(sources.get(item) || []).map(document => timestamp(document.importedAt)));
+    if ([...perFile.values()].some(count => count > 1)) {
+      // Whole-app audit A6 pass 18 (1 Oct 2026): twins a mid-week lookahead
+      // restated (so it holds both), which Monday's master then slipped,
+      // stayed shown on stale dates beside the master's new rows: four Pour
+      // slabs, and the next report said "+2 open", "Pour slab was added" and
+      // nothing of either slip. Twins are folded only by the link the import
+      // recorded: a copy whose task a newer file's row answers to
+      // (revisedFromTaskIds) is the copy that file left behind.
+      //
+      // Whole-app audit A5 pass 19 L5 (1 Oct 2026): only the copy the newer
+      // row listed was hidden. A lookahead approved between a web upload and
+      // its Make Current (or between Set Active back and forward) holds the
+      // older rows, so the upload's rows were the older file's and nothing
+      // folded: four Pour slabs. Of each linked pair, the older file's copy
+      // is hidden, as for a task listed once.
+      group.forEach(item => group.forEach(other => {
+        if (other === item || !scheduleTaskEarlierIds(other).includes(item.id.trim())) return;
+        if (statedAt(other) > statedAt(item)) hidden.add(item);
+        else if (statedAt(item) > statedAt(other)) hidden.add(other);
+      }));
+      return;
+    }
+    const inMaster = (item: ScheduleItem) => Boolean(master && sources.get(item)?.includes(master));
+    const shown = [...group].sort((left, right) =>
+      (statedAt(right) - statedAt(left)) || (Number(inMaster(right)) - Number(inMaster(left))))[0];
+    group.forEach(item => { if (item !== shown) hidden.add(item); });
+  });
+  return items.filter(item => !hidden.has(item));
+}
+
+/**
+ * The app project a task belongs to, keyed as currentScheduleDocumentsByProject
+ * keys a schedule's projects: its projectName, the schedule's Gantt root
+ * (scheduleProjectName) only when it names none, as scheduleTaskProjectKey
+ * keys the merge, the delete and the recovery (A8 pass 9 M1, A5 pass 11 M-a).
+ *
+ * Whole-app audit A5 pass 12 M (1 Oct 2026): a combined Microsoft Project
+ * master uploaded on the web keeps its root ("2400 Compliance Project") as
+ * every row's schedule project. The shown schedule keyed a task by that root,
+ * which is none of the schedules' projects, so after Make Current retired the
+ * master for Harbor North only (owner answer Q15), its North rows still
+ * showed, the master being current for Harbor South: North showed its moved
+ * task twice. The lookahead fold and the orphan check keyed by the root too,
+ * so one building's copy could hide the other's twin.
+ */
+function scheduleTaskAppProject(item: Pick<ScheduleItem, 'projectName' | 'scheduleProjectName'>) {
+  return normalize(item.projectName || item.scheduleProjectName || '');
 }
 
 function scheduleOccurrenceKey(item: ScheduleItem) {
   return [
-    normalize(item.scheduleProjectName || item.projectName || ''),
+    scheduleTaskAppProject(item),
     normalize(item.locationName || ''),
     normalize(item.taskName || ''),
     normalize(item.startDate || ''),
@@ -277,20 +412,218 @@ function selectLatestImportedScheduleBatches(
   });
 }
 
+/**
+ * For each project, the newest marked-current schedule that covers it
+ * (schedules with no project form one shared scope, key ''). Until 30 Sep
+ * 2026 a single app-wide winner was kept, so importing a second project's
+ * schedule hid the first project's whole schedule (whole-app audit A5); then
+ * a schedule that shared any project with a newer one lost every project, so
+ * a newer single-project schedule retired a combined master for the other
+ * project too (A5 pass 2). Now each project picks its own. A project a
+ * schedule is retired for (retiredForProjectNames, owner answer Q15) is not
+ * one it competes for, so a rollback to an older single-project schedule wins
+ * there while the combined schedule stays current for its other projects.
+ */
+export function currentScheduleDocumentsByProject<T extends ReferenceDocument>(
+  documents: readonly T[],
+): Map<string, T> {
+  const current = new Map<string, T>();
+  documents
+    // A lookahead adds to the master and never replaces it (owner answer Q22).
+    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent && !scheduleDocumentAddsToMaster(document))
+    .sort(compareScheduleDocumentAuthority)
+    .forEach(document => {
+      const scope = scheduleDocumentScope(document);
+      const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+      (scope.length > 0 ? scope.filter(project => !retired.has(project)) : ['']).forEach(project => {
+        if (!current.has(project)) current.set(project, document);
+      });
+    });
+  return current;
+}
+
+/**
+ * The projects a schedule no longer speaks for (owner answer Q15, 30 Sep
+ * 2026): making one project's schedule current leaves a combined schedule
+ * current for its other projects, and the cloud records the chosen
+ * schedule's projects on it. Only names in its own project list count.
+ */
+export function scheduleDocumentRetiredProjectNames(document: ReferenceDocument): string[] {
+  // A lookahead is in effect for all its projects, whatever the cloud recorded (owner answer Q22).
+  if (scheduleDocumentAddsToMaster(document)) return [];
+  const listed: unknown[] = Array.isArray(document.retiredForProjectNames) ? document.retiredForProjectNames : [];
+  const retired = new Set(listed
+    .filter((name): name is string => typeof name === 'string')
+    .map(normalize)
+    .filter(Boolean));
+  if (retired.size === 0) return [];
+  return scheduleDocumentScopeNames(document).filter(name => retired.has(normalize(name)));
+}
+
+/**
+ * Current, not retired for any of its projects and, given the schedules,
+ * the one each of its projects shows: Make Current has nothing left to do.
+ *
+ * Whole-app audit A5 pass 4 #2 (30 Sep 2026): a newer partial schedule (a
+ * three-week lookahead for Alpha) wins Alpha from the combined master by
+ * date, so Alpha's master tasks outside the lookahead disappeared, while the
+ * master still read "Active schedule" and Set Active and Make Current were
+ * hidden: deleting the lookahead was the only way back. The cloud's
+ * activation of a schedule already current retires the others covering its
+ * projects, so offering it again is all it takes.
+ */
+export function scheduleDocumentIsCurrentEverywhere(
+  document: ReferenceDocument,
+  documents?: readonly ReferenceDocument[],
+): boolean {
+  // A lookahead is in effect by its role: there is nothing to make current (Q22).
+  if (scheduleDocumentAddsToMaster(document)) return true;
+  if (!document.isCurrent || scheduleDocumentRetiredProjectNames(document).length > 0) return false;
+  return !documents || scheduleDocumentProjectsShownElsewhere(document, documents).length === 0;
+}
+
+/**
+ * The projects of a current schedule that show another, newer current
+ * schedule instead (A5 pass 4 #2); '' for a schedule with no project.
+ */
+function scheduleDocumentProjectsShownElsewhere(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): string[] {
+  if (!document.isCurrent || !scheduleDocumentIsScheduleLike(document)) return [];
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  const current = currentScheduleDocumentsByProject(listed);
+  const retired = new Set(scheduleDocumentRetiredProjectNames(document).map(normalize));
+  const names = scheduleDocumentScopeNames(document);
+  return (names.length > 0 ? names : [''])
+    .filter(name => !retired.has(normalize(name)) && current.get(normalize(name))?.id !== document.id);
+}
+
+/** Whether the schedule was retired for this project (Q15). */
+export function scheduleDocumentRetiredForProject(
+  document: ReferenceDocument,
+  projectName: string,
+): boolean {
+  const key = normalize(projectName || '');
+  return Boolean(key) && scheduleDocumentIsScheduleLike(document) &&
+    scheduleDocumentRetiredProjectNames(document).some(name => normalize(name) === key);
+}
+
+/**
+ * "Current", or "Current for Beta" for a combined schedule retired for some
+ * of its projects or, given the schedules, one a newer schedule replaces for
+ * some of them (A5 pass 4 #2).
+ */
+export function scheduleDocumentCurrentLabel(
+  document: ReferenceDocument,
+  label: string,
+  documents?: readonly ReferenceDocument[],
+): string {
+  if (scheduleDocumentAddsToMaster(document)) {
+    const projects = scheduleDocumentScopeNames(document);
+    return `Lookahead: adds to the master schedule${projects.length > 0 ? ` for ${projects.join(', ')}` : ''}`;
+  }
+  const retired = new Set([
+    ...scheduleDocumentRetiredProjectNames(document),
+    ...(documents ? scheduleDocumentProjectsShownElsewhere(document, documents) : []),
+  ].map(normalize));
+  if (retired.size === 0) return label;
+  const remaining = scheduleDocumentScopeNames(document).filter(name => !retired.has(normalize(name)));
+  return remaining.length > 0 ? `${label} for ${remaining.join(', ')}` : label;
+}
+
+/** The current schedule documents that drive intelligence: each is current for at least one project. */
+export function currentScheduleDocumentWinners<T extends ReferenceDocument>(
+  documents: readonly T[],
+): T[] {
+  return [...new Set(currentScheduleDocumentsByProject(documents).values())]
+    .sort(compareScheduleDocumentAuthority);
+}
+
+/** The key currentScheduleDocumentsByProject files a project name under. */
+export function scheduleProjectScopeKey(projectName: string): string {
+  return normalize(projectName);
+}
+
+/**
+ * A saved full schedule some project of which shows no full schedule now
+ * (whole-app audit A8 pass 6 L1, 30 Sep 2026): its master was replaced and
+ * the replacement deleted, so Set Active on it is the way to show it again.
+ * Its file picked again is in use, as when it is the schedule shown, and is
+ * never pushed into a lookahead. A lookahead is never a full schedule.
+ *
+ * Whole-app audit A8 pass 7 L1 (30 Sep 2026): a project shows a schedule
+ * when the task list shows one (selectAuthoritativeScheduleItems): its own
+ * current schedule or, with none, a current schedule that lists it. A
+ * combined master retired for Alpha and current for Beta still shows Alpha's
+ * tasks, and Alpha's old master was refused with the Set Active advice
+ * instead of offered as a lookahead. And Set Active is the advice only when
+ * it replaces nothing: 'set_active' while no project it covers shows a
+ * schedule; 'other_shown' while another project it covers shows a different
+ * one, which Set Active would quietly replace; null when every project it
+ * covers shows a schedule.
+ */
+export function scheduleFullCopyLeftUnshown(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+): 'set_active' | 'other_shown' | null {
+  if (!scheduleDocumentIsScheduleLike(document) || scheduleDocumentAddsToMaster(document)) return null;
+  const current = currentScheduleDocumentsByProject(documents);
+  const winners = currentScheduleDocumentWinners(documents);
+  const scope = scheduleDocumentScope(document);
+  const shown = (scope.length > 0 ? scope : ['']).map(project => current.get(project) ??
+    winners.find(winner => scheduleDocumentScope(winner).includes(project)));
+  if (shown.every(Boolean)) return null;
+  return shown.some(other => other && other.id !== document.id) ? 'other_shown' : 'set_active';
+}
+
+function scheduleDocumentScope(document: ReferenceDocument): string[] {
+  const names = (document.projectNames || []).map(normalize).filter(Boolean);
+  if (names.length > 0) return [...new Set(names)];
+  const single = normalize(document.projectName || '');
+  return single ? [single] : [];
+}
+
+/** scheduleDocumentScope with each project as the document spells it. */
+function scheduleDocumentScopeNames(document: ReferenceDocument): string[] {
+  const listed = (document.projectNames || []).filter(name => typeof name === 'string' && normalize(name));
+  const names = listed.length > 0 ? listed : [document.projectName || ''].filter(name => normalize(name));
+  return names
+    .map(name => name.trim())
+    .filter((name, index, all) => all.findIndex(other => normalize(other) === normalize(name)) === index);
+}
+
 export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
   documents: readonly T[],
 ): T[] {
-  const winner = documents
-    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
-    .sort(compareScheduleDocumentAuthority)[0];
-  if (!winner) return [...documents];
-  return documents.map(document => scheduleDocumentIsScheduleLike(document)
-    ? { ...document, isCurrent: document.id === winner.id }
+  const winners = new Set(currentScheduleDocumentWinners(documents).map(document => document.id));
+  if (winners.size === 0) return [...documents];
+  // A lookahead keeps the flag the cloud gave it (owner answer Q22).
+  return documents.map(document => scheduleDocumentIsScheduleLike(document) && !scheduleDocumentAddsToMaster(document)
+    ? { ...document, isCurrent: winners.has(document.id) }
     : document);
 }
 
+/**
+ * A schedule David marked "Lookahead / partial (adds to the master)" at
+ * import review (owner answer Q22, 30 Sep 2026). It is in effect for its
+ * projects for as long as it is kept, whatever its current flag (the cloud's
+ * activation of a master can clear that flag): it never replaces the master,
+ * a new master does not retire it, and it is never sent to the cloud's
+ * activation. Every schedule imported before has no role: a full schedule.
+ */
+export function scheduleDocumentAddsToMaster(document: ReferenceDocument): boolean {
+  return document.scheduleRole === 'lookahead' && scheduleDocumentIsScheduleLike(document);
+}
+
 export function scheduleDocumentIsScheduleLike(document: ReferenceDocument): boolean {
-  if (document.category === 'Schedules') return true;
+  if (document.category === 'Schedules' || document.category === 'Schedule') return true;
+  // Only an uncategorised document may be a schedule by its name: a drawing
+  // named "E-601 Panel Schedule" retired the master, and a message screenshot
+  // ("Schedule message - ...", never current) hid every task approved from
+  // it (whole-app audit A5 pass 2).
+  if (document.category && document.category !== 'Other') return false;
+  if (/^\[Schedule communication screenshot\]/.test(document.notes || '')) return false;
   return /\b(schedule|look[\s-]?ahead)\b/i.test(
     `${document.name} ${document.originalFileName}`,
   );
@@ -303,11 +636,14 @@ function compareScheduleDocumentAuthority(left: ReferenceDocument, right: Refere
 
 export function buildPIEScheduleReconciliation({
   scheduleItems = [],
+  knownScheduleItems = [],
   updates = [],
   projectName = null,
   now = new Date(),
 }: {
   scheduleItems?: ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates?: ProjectUpdate[];
   projectName?: string | null;
   now?: Date;
@@ -331,10 +667,13 @@ export function buildPIEScheduleReconciliation({
   );
   const matches: PIEScheduleFieldMatch[] = [];
   const warnings: PIEScheduleReconciliationWarning[] = [];
+  // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scopedScheduleItems, knownScheduleItems);
+  const links = new Map(scopedUpdates.map(update => [update, linkOf(update)] as const));
 
   scopedScheduleItems.forEach(item => {
     const itemMatches = scopedUpdates
-      .map(update => matchScheduleItemToUpdate(item, update))
+      .map(update => matchScheduleItemToUpdate(item, update, links.get(update) ?? null))
       .filter((match): match is PIEScheduleFieldMatch => Boolean(match))
       .sort((left, right) =>
         MATCH_BASIS_RANK[left.matchBasis] - MATCH_BASIS_RANK[right.matchBasis] ||
@@ -472,12 +811,18 @@ export function buildPIEScheduleReconciliation({
 function matchScheduleItemToUpdate(
   item: ScheduleItem,
   update: ProjectUpdate,
+  /** The task the update's task id answers to now (A10 pass 5 M1). */
+  link: ScheduleTaskLink | null,
 ): PIEScheduleFieldMatch | null {
   const explicitScheduleItemId = update.scheduleItemId?.trim() || '';
+  // The task itself, or the row a new master saved it as; a row saved before
+  // that matches by the update's stored task name below (A10 pass 5 M1).
+  const linkedHere = link?.item === item;
   const explicitTaskMatched = Boolean(
-    explicitScheduleItemId && explicitScheduleItemId === item.id,
+    explicitScheduleItemId &&
+    (explicitScheduleItemId === item.id || (linkedHere && link?.basis === 'earlier_task_id')),
   );
-  if (explicitScheduleItemId && !explicitTaskMatched) return null;
+  if (explicitScheduleItemId && !explicitTaskMatched && !linkedHere) return null;
 
   const projectMatched =
     Boolean(item.projectName.trim()) &&

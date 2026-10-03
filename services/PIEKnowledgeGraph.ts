@@ -390,13 +390,17 @@ export function findRelatedNodes(
   const allowedNodes = new Set(options.nodeTypes ?? []);
   const visited = new Set<string>([nodeId]);
   const results = new Map<string, PIEGraphNode>();
+  const index = graphSearchIndex(graph);
   let frontier = [nodeId];
 
   for (let depth = 0; depth < maxDepth; depth += 1) {
     const nextFrontier: string[] = [];
 
     frontier.forEach(currentId => {
-      graph.edges.forEach(edge => {
+      // Only edges touching currentId can pass the direction checks below;
+      // the index keeps them in the graph's edge order, so results are
+      // identical to scanning every edge (audit round 2 M1a).
+      (index.edgesByNodeId.get(currentId) || NO_EDGES).forEach(edge => {
         if (allowedEdges.size > 0 && !allowedEdges.has(edge.type)) return;
 
         const outgoing = edge.fromNodeId === currentId;
@@ -408,7 +412,7 @@ export function findRelatedNodes(
         const relatedId = outgoing ? edge.toNodeId : edge.fromNodeId;
         if (visited.has(relatedId)) return;
 
-        const relatedNode = graph.nodes.find(node => node.id === relatedId);
+        const relatedNode = index.nodeById.get(relatedId);
         if (!relatedNode) return;
 
         visited.add(relatedId);
@@ -425,6 +429,61 @@ export function findRelatedNodes(
   }
 
   return Array.from(results.values());
+}
+
+type PIEGraphSearchIndex = {
+  nodes: PIEGraphNode[];
+  edges: PIEGraphEdge[];
+  nodeCount: number;
+  edgeCount: number;
+  nodeById: Map<string, PIEGraphNode>;
+  edgesByNodeId: Map<string, PIEGraphEdge[]>;
+};
+
+const NO_EDGES: PIEGraphEdge[] = [];
+const graphSearchIndexes = new WeakMap<PIEGraph, PIEGraphSearchIndex>();
+
+/**
+ * Node lookup and per-node edge lists, built once per graph instead of once
+ * per search step. findRelatedNodes runs for every open issue; scanning every
+ * edge and every node for each one cost seconds on large projects.
+ */
+function graphSearchIndex(graph: PIEGraph): PIEGraphSearchIndex {
+  const cached = graphSearchIndexes.get(graph);
+  if (
+    cached &&
+    cached.nodes === graph.nodes &&
+    cached.edges === graph.edges &&
+    cached.nodeCount === graph.nodes.length &&
+    cached.edgeCount === graph.edges.length
+  ) {
+    return cached;
+  }
+  const nodeById = new Map<string, PIEGraphNode>();
+  // First node wins, as Array.find did.
+  graph.nodes.forEach(node => {
+    if (!nodeById.has(node.id)) nodeById.set(node.id, node);
+  });
+  const edgesByNodeId = new Map<string, PIEGraphEdge[]>();
+  const addEdge = (id: string, edge: PIEGraphEdge) => {
+    const list = edgesByNodeId.get(id);
+    if (list) list.push(edge);
+    else edgesByNodeId.set(id, [edge]);
+  };
+  graph.edges.forEach(edge => {
+    addEdge(edge.fromNodeId, edge);
+    if (edge.toNodeId !== edge.fromNodeId) addEdge(edge.toNodeId, edge);
+  });
+  const index = {
+    nodes: graph.nodes,
+    edges: graph.edges,
+    nodeCount: graph.nodes.length,
+    edgeCount: graph.edges.length,
+    nodeById,
+    edgesByNodeId,
+  };
+  graphSearchIndexes.set(graph, index);
+  return index;
 }
 
 function normalizeBuildParts(

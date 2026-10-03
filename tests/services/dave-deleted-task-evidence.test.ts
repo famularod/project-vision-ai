@@ -60,7 +60,8 @@ describe('deleted task evidence policy', () => {
 
   test('native current-state surfaces use active evidence while history labels the rest', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
-    expect(app).toContain('const activeSavedUpdates = savedUpdateTaskEvidence.active');
+    // Archived updates also leave the active list at once (audit round 2 L4).
+    expect(app).toContain('const activeSavedUpdates = useMemo(() => savedUpdateTaskEvidence.active.filter(update => !update.isArchived)');
     expect(app).toContain('savedUpdates={activeSavedUpdates}');
     expect(app).toContain('deletedTaskEvidenceIds={deletedTaskEvidenceIds}');
     expect(app).toContain('{DELETED_TASK_EVIDENCE_LABEL}');

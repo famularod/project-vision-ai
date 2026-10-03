@@ -6,6 +6,7 @@ type ScheduleItemQueuePayload = {
   itemData?: unknown;
   changedFields?: unknown;
   forceLocal?: unknown;
+  carriedProgress?: unknown;
 };
 
 /**
@@ -19,6 +20,21 @@ export function hasMatchingQueuedScheduleItemRevision(
   queue: readonly SyncQueueItem[],
 ): boolean {
   return Boolean(matchingQueuedScheduleItemRevision(item, queue));
+}
+
+/**
+ * Whether this copy of a task is a percent the sync merge carried, still
+ * waiting to go up as a change of its progress alone (whole-app audit A7
+ * pass 26 M-1). Full Sync leaves such a copy to that change: uploaded whole,
+ * it outranked the cloud's newer notes, owner, dates and lookahead note.
+ */
+export function scheduleItemCarriedProgressWaiting(
+  item: ScheduleItem,
+  queue: readonly SyncQueueItem[],
+): boolean {
+  const queued = matchingQueuedScheduleItemRevision(item, queue);
+  const payload = queued?.payload as ScheduleItemQueuePayload | undefined;
+  return Boolean(payload && payload.carriedProgress === true && Array.isArray(payload.changedFields));
 }
 
 function matchingQueuedScheduleItemRevision(

@@ -164,8 +164,11 @@ assert(
   'Developer routing, build, auth, and sync terminology must stay out of the main Settings view.',
 );
 assert(
-  settings.includes("? 'Connected'") && settings.includes(": 'Needs Attention'"),
-  'Settings should reduce connection status to Connected or Needs Attention.',
+  settings.includes("? 'Connected'") && settings.includes(": 'Needs Attention'") &&
+    // Whole-app audit A1 pass 2 #1 (30 Sep 2026): open offline on a sign-in
+    // pending its refresh (owner answer Q13), it says so instead.
+    settings.includes("? 'Offline, sign-in pending'"),
+  'Settings should reduce connection status to Connected, Needs Attention, or Offline, sign-in pending.',
 );
 [
   'handleRetrySync',

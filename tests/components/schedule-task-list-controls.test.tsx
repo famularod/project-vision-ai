@@ -1,4 +1,5 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
+import { Keyboard, TextInput } from 'react-native';
 
 import {
   ScheduleTaskListControls,
@@ -217,5 +218,58 @@ describe('ScheduleTaskListControls', () => {
 
     expect(screen.queryByText('Work requiring attention')).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Open Tasks, 2 tasks' })).toBeNull();
+  });
+
+  it('lets a focused Owner or Contractor blur and save before any control switches the inspector (audit A2 pass 2 M2)', async () => {
+    const state = TextInput.State as unknown as { currentlyFocusedInput: () => unknown };
+    const focus = jest.spyOn(state, 'currentlyFocusedInput').mockImplementation(() => ({}));
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      const onViewChange = jest.fn();
+      const onWorkspaceViewChange = jest.fn();
+      const onItemTypeChange = jest.fn();
+      const onNeedsAttentionPress = jest.fn();
+      const screen = await render(
+        <ScheduleTaskListControls
+          taskCount={6}
+          dueSoonCount={1}
+          overdueCount={1}
+          needsActionCount={2}
+          myWorkCount={1}
+          openTaskCount={2}
+          completedTaskCount={4}
+          activeView="Open Tasks"
+          activeFilter="All"
+          activeItemType="All"
+          onViewChange={onViewChange}
+          onFilterChange={jest.fn()}
+          onNeedsAttentionPress={onNeedsAttentionPress}
+          onMyWorkPress={jest.fn()}
+          onAddTask={jest.fn()}
+          onItemTypeChange={onItemTypeChange}
+          onWorkspaceViewChange={onWorkspaceViewChange}
+        />,
+      );
+      const presses: Array<[string, jest.Mock, unknown[]]> = [
+        ['Completed Tasks, 4 tasks', onViewChange, ['Completed Tasks']],
+        ['Timeline schedule view', onWorkspaceViewChange, ['Timeline']],
+        ['Lookahead schedule view', onWorkspaceViewChange, ['Lookahead']],
+        ['Needs Attention: 2. Show tasks that need attention', onNeedsAttentionPress, []],
+      ];
+      for (const [name, handler, args] of presses) {
+        handler.mockClear();
+        dismiss.mockClear();
+        await fireEvent.press(screen.getByLabelText(name));
+        expect(dismiss).toHaveBeenCalledTimes(1);
+        expect(handler).not.toHaveBeenCalled();
+        act(() => { jest.advanceTimersByTime(80); });
+        expect(handler).toHaveBeenCalledWith(...args);
+      }
+    } finally {
+      jest.useRealTimers();
+      focus.mockRestore();
+      dismiss.mockRestore();
+    }
   });
 });

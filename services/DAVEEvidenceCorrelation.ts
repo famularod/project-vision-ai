@@ -10,8 +10,11 @@ import {
   classifyDAVEImplementation,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
+import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
 
@@ -81,17 +84,23 @@ export type DAVEEvidenceCorrelationResult = Readonly<{
 
 export function buildDAVEEvidenceCorrelations({
   scheduleItems,
+  knownScheduleItems = [],
   updates = [],
   now = new Date().toISOString(),
 }: {
   scheduleItems: readonly ScheduleItem[];
+  /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
+  knownScheduleItems?: readonly ScheduleItem[];
   updates?: readonly ProjectUpdate[];
   now?: string;
 }): DAVEEvidenceCorrelationResult {
   const generatedAt = validTimestamp(now) ? new Date(now).toISOString() : new Date().toISOString();
+  // The task each update's task id answers to now: a new master saves a moved task under a new id (A10 pass 5 M1).
+  const linkOf = scheduleTaskLinks(scheduleItems, knownScheduleItems);
+  const links = new Map(updates.map(update => [update, linkOf(update)] as const));
   const tasks = scheduleItems.map(item => correlateTask(
     item,
-    updates.filter(update => updateMatchesTask(update, item, scheduleItems)),
+    updates.filter(update => updateMatchesTask(update, item, scheduleItems, links.get(update) ?? null)),
   ));
 
   return deepFreeze({
@@ -111,7 +120,9 @@ function correlateTask(
 ): DAVETaskEvidenceCorrelation {
   const evidence: DAVETaskEvidenceClaim[] = [scheduleClaim(item)];
   const verification = item.completionVerification;
-  const pmScheduleJudgment = item.progressSource === 'project_manager';
+  // Not a percent a schedule file set on a task the manager tracked (A10 pass 3 M1); the same
+  // judgment test as Project Truth and the other summaries (A10 pass 5 L2).
+  const pmScheduleJudgment = scheduleHasAuthoritativeProgressJudgment(item);
 
   for (const source of verification?.evidence ?? []) {
     const isPMEvidence = source.kind === 'pm_confirmation' || source.kind === 'pm_note';
@@ -180,7 +191,7 @@ function correlateTask(
   const authoritativeCompletionAt = verification?.status === 'pm_verified'
     ? verification.verifiedAt || verification.reportedAt || null
     : scheduleClaimsComplete
-      ? item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null
+      ? scheduleProgressJudgedAt(item) || item.importedAt || item.updatedAt || item.createdAt || null
       : null;
   const newerContradictoryFieldEvidence = Boolean(authoritativeCompletionAt) && uniqueEvidence.some(claim =>
     (claim.kind === 'field_update' || claim.kind === 'photo') &&
@@ -298,7 +309,9 @@ function correlateTask(
 }
 
 function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
-  const pmJudgment = item.progressSource === 'project_manager';
+  // A percent a schedule file set reads as the schedule's (A10 pass 3 M1), by the test every
+  // summary uses (A10 pass 5 L2).
+  const pmJudgment = scheduleHasAuthoritativeProgressJudgment(item);
   return {
     id: `correlation:schedule:${item.id}`,
     kind: pmJudgment ? 'pm_confirmation' : 'schedule',
@@ -312,7 +325,8 @@ function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
     summary: pmJudgment
       ? `${item.progressConfirmedBy || 'Project manager'} recorded ${item.taskName} as ${item.status}, ${item.percentComplete}% complete.`
       : `${item.taskName}: ${item.status}, ${item.percentComplete}% complete.`,
-    recordedAt: item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null,
+    // When the manager judged it, not when a delete gave it back (A10 pass 5 L1).
+    recordedAt: scheduleProgressJudgedAt(item) || item.importedAt || item.updatedAt || item.createdAt || null,
   };
 }
 
@@ -353,8 +367,11 @@ function updateMatchesTask(
   update: ProjectUpdate,
   task: ScheduleItem,
   scheduleItems: readonly ScheduleItem[],
+  link: ScheduleTaskLink | null,
 ) {
-  if (update.scheduleItemId) return update.scheduleItemId === task.id;
+  // The task itself, the row a new master saved it as, or for a row saved before that the one task of the
+  // update's stored name in its project and area (A10 pass 5 M1).
+  if (update.scheduleItemId) return update.scheduleItemId === task.id || link?.item === task;
   const updateTaskKey = normalizedKey(update.scheduleTaskName || '');
   if (!updateTaskKey || updateTaskKey !== normalizedKey(task.taskName)) return false;
 

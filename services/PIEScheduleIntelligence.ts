@@ -13,6 +13,7 @@ import {
   daysUntilDate,
   dueStatusText,
   formatAppDate,
+  formatCalendarDate,
   parseFlexibleDate,
 } from '../utils/date';
 import {
@@ -636,10 +637,16 @@ function cell(
   headers: string[],
   names: string[],
   fallbackIndex: number,
+  positionalWithHeader = false,
 ) {
   const headerIndex = headers.findIndex(header => names.includes(header));
 
   if (headerIndex >= 0) return cells[headerIndex] || '';
+  // A file with a header row names its columns, so a missing one is empty:
+  // its usual position holds another column (whole-app audit A5 pass 2: with
+  // no Area column the Start date became every task's area). Only the task
+  // name and finish date, which a row needs, still try their position.
+  if (headers.length > 0 && !positionalWithHeader) return '';
 
   return cells[fallbackIndex] || '';
 }
@@ -663,13 +670,67 @@ function normalizePriority(value: string, finishDate: string): SchedulePriority 
   return 'Medium';
 }
 
-function normalizePercent(value: string, status: ScheduleStatus) {
-  const match = value.match(/(\d{1,3})\s*%?/);
+/**
+ * Whether a row states its progress (whole-app audit A5 pass 5 H1, 30 Sep
+ * 2026): a number in its percent cell, or a Complete status (100%). A file
+ * with no % Complete column, or a blank cell, states nothing: it read as 0%
+ * Not Started and took a master task's 60% to 0%.
+ */
+function percentStated(value: string, status: ScheduleStatus) {
+  return /\d/.test(value) || status === 'Complete';
+}
 
-  if (match) return clamp(Number(match[1]), 0, 100);
+const PLAIN_NUMBER = /^(\d*\.\d+|\d+\.?)$/;
+
+/** A plain number from 0 to 1 (no % sign), or null. */
+function fractionValue(value: string): number | null {
+  const text = value.trim();
+  if (!PLAIN_NUMBER.test(text)) return null;
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
+}
+
+/**
+ * Whether a percent column is written as fractions of 1 (whole-app audit A5
+ * pass 6 L2, 30 Sep 2026): a spreadsheet's percent cell exports as 0.4, and
+ * read as a stated 0%.
+ *
+ * Whole-app audit A5 pass 7 L1 (30 Sep 2026): the rule decided cell by cell
+ * in a mixed column ("0.5, 75" read 50% and 75%, though 0.5 may be half a
+ * percent; "0.4, 1, 40%" read the 1 as 1%; "0, 1" read a done task as 1%).
+ * The column decides now. Cells with a % sign are percents and say nothing
+ * about the rest; when every other number is a plain one from 0 to 1, the
+ * column is fractions: 0.4 is 40%, 1 and 1.0 are 100%, 0 is 0%. A column
+ * with any number above 1 is percents throughout: 0.5 there is half a
+ * percent, read as the percent column reads it, never as 50%.
+ *
+ * Whole-app audit A5 pass 8 L4 (30 Sep 2026): the percent reading took the
+ * first digits it found, so ".5" read 5% and ".25" read 25% where "0.5" read
+ * 0%, and "99.6" was cut to 99%. A percent cell's number is now read whole
+ * and rounded as the progress rule rounds it (reconcileScheduleProgress):
+ * ".5" and "0.5" are 1%, ".25" is 0%, "99.6" is 100%.
+ *
+ * Whole-app audit A5 pass 9 L5 (30 Sep 2026): a cell with no number read 0,
+ * so a row with Status "In Progress" and a blank or missing % Complete read
+ * Not Started at 0%. Such a cell is no number now (null), and the progress
+ * rule decides by the status: In Progress 1%, Complete 100%. A row with no
+ * number still states no percent (percentStated), so it never changes a
+ * saved task's percent.
+ */
+function percentColumnReadsAsFractions(values: readonly string[]): boolean {
+  const numbers = values.filter(value => /\d/.test(value) && !value.includes('%'));
+  return numbers.length > 0 && numbers.every(value => fractionValue(value) !== null);
+}
+
+function normalizePercent(value: string, status: ScheduleStatus, fractions = false): number | null {
+  const fraction = fractionValue(value);
+  if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
+  const match = value.match(/(\d*\.\d+|\d+)/);
+
+  if (match) return clamp(Math.round(Number(match[1])), 0, 100);
   if (status === 'Complete') return 100;
 
-  return 0;
+  return null;
 }
 
 function normalizeDate(value: string) {
@@ -677,7 +738,12 @@ function normalizeDate(value: string) {
 
   if (!parsed) return '';
 
-  return formatAppDate(value);
+  // Stored as MM/DD/YYYY, the form every date reader parses (due today,
+  // overdue, rollups, the brief), like MS Project rows and manual tasks.
+  // Until 30 Sep 2026 this stored the display form "Jul 24, 2026", which
+  // the readers could not parse, so imported tasks were never overdue
+  // (whole-app audit A5).
+  return formatCalendarDate(parsed);
 }
 
 function parseDuration(value: string) {
@@ -1095,8 +1161,12 @@ export function normalizeMicrosoftProjectPdfRows({
   }
 
   const importedAt = now.toISOString();
-  const rows = lines.slice(1).map((line, index) => {
-    const cells = line.split('\t').map(value => value.trim());
+  const lineCells = lines.slice(1).map(line => line.split('\t').map(value => value.trim()));
+  const percentNames = ['percent complete', '% complete'];
+  // A percent column written as fractions of 1 (A5 pass 6 L2).
+  const percentFractions = percentColumnReadsAsFractions(lineCells.map(cells => cell(cells, header, percentNames, 6)));
+  const rows = lineCells.map((cells, index) => {
+    const percentCell = cell(cells, header, percentNames, 6);
     return {
       activityId: cell(cells, header, ['id', 'activity id'], 0),
       sourceWbsCode: cell(cells, header, ['wbs', 'wbs code', 'outline number'], -1),
@@ -1106,10 +1176,8 @@ export function normalizeMicrosoftProjectPdfRows({
       duration: parseDuration(cell(cells, header, ['duration'], 3)),
       startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
       finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
-      percentComplete: normalizePercent(
-        cell(cells, header, ['percent complete', '% complete'], 6),
-        'Not Started',
-      ),
+      percentComplete: normalizePercent(percentCell, 'Not Started', percentFractions) ?? 0, // no status column here
+      percentStated: percentStated(percentCell, 'Not Started'),
       notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
     };
   }).filter(row => row.taskName && row.finishDate);
@@ -1193,6 +1261,7 @@ export function normalizeMicrosoftProjectPdfRows({
       durationDays: row.duration,
       wbsCode: row.sourceWbsCode || null,
       percentComplete,
+      ...(row.percentStated ? {} : { percentCompleteStated: false }),
       priority: normalizePriority('', row.finishDate),
       status,
       notes: explicitScheduleNote(row.notes),
@@ -1212,8 +1281,10 @@ function scheduleItemFromNormalizedTask(
   task: Omit<PIENormalizedScheduleTask, 'sourceItem'>,
   sourceName: string,
   importedAt: string,
+  percentCompleteStated = true,
 ): ScheduleItem {
   return {
+    ...(percentCompleteStated ? {} : { percentCompleteStated: false }),
     id: task.id,
     projectName: task.project,
     locationName: task.area,
@@ -1359,13 +1430,16 @@ export function normalizeScheduleImport({
     });
   }
 
+  const percentNames = ['percent complete', '% complete', 'progress'];
+  // A percent column written as fractions of 1 (A5 pass 6 L2).
+  const percentFractions = percentColumnReadsAsFractions(dataRecords.map(record => cell(record.cells, headers, percentNames, 11)));
   const normalizedTaskCandidates = dataRecords
     .map(record => {
       const { cells } = record;
       const rowText = cells.join(' ');
-      const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0);
+      const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0, true);
       const finish = normalizeDate(
-        cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4),
+        cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4, true),
       );
       const start = normalizeDate(
         cell(cells, headers, ['start', 'start date'], 3),
@@ -1380,10 +1454,8 @@ export function normalizeScheduleImport({
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
       const milestone = cell(cells, headers, ['milestone'], 5);
-      const parsedPercent = normalizePercent(
-        cell(cells, headers, ['percent complete', '% complete', 'progress'], 11),
-        parsedStatus,
-      );
+      const percentCell = cell(cells, headers, percentNames, 11);
+      const parsedPercent = normalizePercent(percentCell, parsedStatus, percentFractions);
       const progress = reconcileScheduleProgress(parsedStatus, parsedPercent);
       const { status, percentComplete } = progress;
       const floatValue = parseDuration(
@@ -1438,7 +1510,7 @@ export function normalizeScheduleImport({
         confidence: confidenceFromScore(confidenceScore),
       };
 
-      return scheduleItemFromNormalizedTask(baseTask, sourceName, importedAt);
+      return scheduleItemFromNormalizedTask(baseTask, sourceName, importedAt, percentStated(percentCell, parsedStatus));
     })
     .filter((item): item is ScheduleItem => Boolean(item));
   // Unstructured PDF text is often emitted as one visual fragment per line.

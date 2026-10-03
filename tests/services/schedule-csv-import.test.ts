@@ -47,12 +47,13 @@ describe('RFC 4180 schedule CSV parsing', () => {
     const result = importCsv(
       'Install wall packs,2375 Compliance Project,Canopy A,07/18/2026,07/24/2026,,,In Progress,',
     );
+    // Audit A5 (30 Sep 2026): stored as MM/DD/YYYY, the form the due-date readers parse (was the display form 'Jul 24, 2026').
 
     expect(result.parseIssues).toEqual([]);
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toEqual(expect.objectContaining({
-      startDate: 'Jul 18, 2026',
-      finishDate: 'Jul 24, 2026',
+      startDate: '07/18/2026',
+      finishDate: '07/24/2026',
     }));
   });
 
@@ -105,7 +106,7 @@ describe('RFC 4180 schedule CSV parsing', () => {
     expect(result.items[0]).toEqual(expect.objectContaining({
       projectName: '',
       locationName: 'Canopy A',
-      finishDate: 'Jul 24, 2026',
+      finishDate: '07/24/2026',
     }));
   });
 

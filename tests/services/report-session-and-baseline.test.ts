@@ -1,0 +1,157 @@
+import {
+  buildDAVEReportSnapshot,
+  compareDAVEReportSnapshots,
+  markReportSnapshotDelivered,
+  reportBaselineSnapshot,
+  reportSnapshotToSave,
+} from '../../services/DAVEReportSnapshot';
+import {
+  forgetAllReportSessionState,
+  recallReportSessionState,
+  rememberReportAcknowledgement,
+  rememberReportApproval,
+  rememberReportEdits,
+  restoredReportApproval,
+} from '../../services/ReportSessionState';
+
+const fs = jest.requireActual('fs') as typeof import('fs');
+const path = jest.requireActual('path') as typeof import('path');
+const screen = fs.readFileSync(path.resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
+const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+const decision = fs.readFileSync(path.resolve(__dirname, '../../services/OwnerWorkspaceAuthDecision.ts'), 'utf8');
+
+// Whole-app audit, area A6 (29-30 Sep 2026), batches 2 and 3.
+describe('the reporting period runs from the report the owner has', () => {
+  const truth = (percent: number) => ({
+    projectName: 'P',
+    schedule: [{ taskId: 't1', taskName: 'Pour', areaName: 'Lot', owner: '', status: percent === 100 ? 'Complete' : 'In Progress', percentComplete: percent, finishDate: null, urgency: 'not_urgent', approvalStatus: null, estimatedScheduleImpactDays: null }],
+  }) as never;
+  const snap = (fingerprint: string, percent: number, capturedAt: string) =>
+    buildDAVEReportSnapshot({ truths: [truth(percent)], scopeKey: 'p', sourceFingerprint: fingerprint, capturedAt });
+
+  it('re-approving the same content saves nothing and compares against the report before it', () => {
+    const owned = markReportSnapshotDelivered(snap('f1', 40, '2026-09-22T10:00:00.000Z'), '2026-09-22T10:05:00.000Z');
+    const approved = reportSnapshotToSave(snap('f2', 100, '2026-09-29T10:00:00.000Z'), owned);
+    expect(approved?.deliveredAt).toBeNull();
+    expect(approved?.supersedes?.sourceFingerprint).toBe('f1');
+    expect(approved?.supersedes).not.toHaveProperty('supersedes');
+    expect(reportSnapshotToSave(snap('f2', 100, '2026-09-29T10:05:00.000Z'), approved)).toBeNull();
+    const baseline = reportBaselineSnapshot(approved, 'f2');
+    expect(baseline?.sourceFingerprint).toBe('f1');
+    const period = compareDAVEReportSnapshots({ current: snap('f2', 100, '2026-09-29T10:05:00.000Z'), previous: baseline });
+    expect(period.basis).toBe('previous_approved_report');
+    expect(period.completeDelta).toBe(1);
+    expect(reportBaselineSnapshot(null, 'f2')).toBeNull();
+  });
+
+  it('an approval that was never sent is not the baseline; a sent one is (pass 2)', () => {
+    const owned = markReportSnapshotDelivered(snap('f1', 40, '2026-09-22T10:00:00.000Z'), '2026-09-22T10:05:00.000Z');
+    const unsent = reportSnapshotToSave(snap('f2', 100, '2026-09-29T09:00:00.000Z'), owned);
+    // Facts change before anything is sent: the period still runs from f1, the owner's report.
+    expect(reportBaselineSnapshot(unsent, 'f3')?.sourceFingerprint).toBe('f1');
+    // The next approval replaces the unsent one and keeps f1 as what it supersedes.
+    const next = reportSnapshotToSave(snap('f3', 100, '2026-09-29T14:00:00.000Z'), unsent);
+    expect(next?.supersedes?.sourceFingerprint).toBe('f1');
+    // Once f2 is sent it becomes the baseline for new content.
+    const sent = markReportSnapshotDelivered(unsent as never, '2026-09-29T09:30:00.000Z');
+    expect(reportBaselineSnapshot(sent, 'f3')?.sourceFingerprint).toBe('f2');
+    expect(reportSnapshotToSave(snap('f3', 100, '2026-09-29T14:00:00.000Z'), sent)?.supersedes?.sourceFingerprint).toBe('f2');
+    // A first approval has nothing to supersede and is not yet sent.
+    expect(reportSnapshotToSave(snap('f1', 40, '2026-09-22T10:00:00.000Z'), null)).toMatchObject({ sourceFingerprint: 'f1', deliveredAt: null });
+  });
+
+  it('a snapshot from before this change counts as sent, and the same content compares against it with zero change', () => {
+    const old = snap('f1', 40, '2026-09-22T10:00:00.000Z');
+    expect(old).not.toHaveProperty('deliveredAt');
+    expect(reportBaselineSnapshot(old, 'f1')?.sourceFingerprint).toBe('f1');
+    const period = compareDAVEReportSnapshots({ current: snap('f1', 40, '2026-09-29T10:00:00.000Z'), previous: reportBaselineSnapshot(old, 'f1') });
+    expect(period.basis).toBe('previous_approved_report');
+    expect(period.completeDelta).toBe(0);
+    expect(reportBaselineSnapshot(old, 'f2')?.sourceFingerprint).toBe('f1');
+  });
+
+  it('is what the screen uses: the briefing, the approval save, and the delivered mark on a completed send', () => {
+    expect(screen).toContain('? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)');
+    expect(screen).toContain('const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);');
+    // Owner answer Q17 (30 Sep 2026): a save lands only on the period it was made for, which is now the
+    // projects and the report format (was the projects' scope key alone).
+    expect(screen).toContain('if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(snapshotToSave)) {');
+    // Pass 3: the mark no longer waits on what the screen shows now; the started report's own fingerprint scopes it,
+    // and (Q17) its own format's period, since both formats of the same projects share a fingerprint.
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): with the started report's session key, so its approval moves to this send.
+    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);");
+    expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return;");
+    // Approval waits for the baseline to load and never replaces one that could not be read.
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and edits must be of the "since" section on screen.
+    // Whole-app audit A6 pass 9 M2 (30 Sep 2026): and this device must have the other device's latest
+    // changes to the tasks that report covers (pin updated deliberately for the new condition).
+    expect(screen).toMatch(/const reportApprovalAllowed = reportApprovalPolicy\.allowed &&\n\s+reportFactsAreCurrent &&\n\s+reportEditsPeriodIsCurrent &&\n\s+!reportDeviceBehind &&\n\s+snapshotScopeLoaded;/);
+    // A6 pass 5: its own line, which a send does not clear.
+    expect(screen).toMatch(/if \(snapshotLoadFailed\) \{\n(?:\s*\/\/.*\n)*\s+setSnapshotSaveError\(/);
+  });
+});
+
+describe('edits, acknowledgements and approval survive leaving the Reports tab for the session', () => {
+  beforeEach(() => forgetAllReportSessionState());
+
+  it('remembers per scope, restores approval only for the exact approved text, and forgets when discarded', () => {
+    const edits = { title: 'Week 39', body: 'Guardrail missing at stair 2 landing.', sourceFingerprint: 'f2' };
+    rememberReportEdits('daily|pm|p', edits);
+    rememberReportApproval('daily|pm|p', 'text-a');
+    rememberReportAcknowledgement('daily|pm|p', { fingerprint: 'f2', ids: ['r1'] });
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): an approval also keeps the period it was given on (none here).
+    expect(recallReportSessionState('daily|pm|p')).toEqual({ edits, approvedTextKey: 'text-a', approvedFingerprint: null, approvedPeriodSentAt: null, acknowledgement: { fingerprint: 'f2', ids: ['r1'] } });
+    expect(recallReportSessionState('daily|pm|other')).toBeNull();
+    expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-a')).toBe(true);
+    expect(restoredReportApproval(recallReportSessionState('daily|pm|p'), 'text-b')).toBe(false);
+    expect(restoredReportApproval(null, 'text-a')).toBe(false);
+    rememberReportApproval('daily|pm|p', null);
+    expect(recallReportSessionState('daily|pm|p')?.approvedTextKey).toBeNull();
+    expect(recallReportSessionState('daily|pm|p')?.edits).toEqual(edits);
+    rememberReportEdits('daily|pm|p', null);
+    rememberReportAcknowledgement('daily|pm|p', null);
+    expect(recallReportSessionState('daily|pm|p')).toBeNull();
+  });
+
+  it('keeps only recent scopes', () => {
+    for (let index = 0; index < 20; index += 1) rememberReportApproval(`scope-${index}`, `t${index}`);
+    expect(recallReportSessionState('scope-0')).toBeNull();
+    expect(recallReportSessionState('scope-19')).not.toBeNull();
+  });
+
+  it('is written only when the manager acts, and read on mount (pass 2: an effect had wiped it on remount)', () => {
+    expect(screen).not.toContain('rememberReportSessionState(');
+    // Pass 3: approval is decided in one place with the policy, so it is never restored while not allowed.
+    // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and only on the period it was given on.
+    expect(screen).toMatch(/setReportApproved\(reportApprovalAllowed && approvedReportPeriodSentAt\(\n\s+recallReportSessionState\(reportStateIdentityKey\),\n\s+approvalTextKey,\n\s+\) === loadedPeriodSentAt\);\n\s+\}, \[approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt\]\);/);
+    expect(screen).not.toMatch(/if \(reportApprovalAllowed\) return;\n\s+setReportApproved\(false\);/);
+    expect(screen).toMatch(/const remembered = recallReportSessionState\(reportStateIdentityKey\);\n\s+setReportEditing\(false\);\n\s+setReportEdits\(remembered\?\.edits \?\? null\);\n\s+setReviewAcknowledgement\(remembered\?\.acknowledgement \?\? \{ fingerprint: '', ids: \[\] \}\);/);
+    // A6 pass 6: with the facts the approval was given on; A6 pass 8 M1 (30 Sep 2026): and the period.
+    expect(screen).toMatch(/rememberReportApproval\(\n\s+reportStateIdentityKey,\n\s+approvalTextKey,\n\s+reportSourceFingerprint,\n\s+reportPeriodSentAt\(previousReportSnapshotRef\.current\),\n\s+\);/);
+    // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
+    expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
+    expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);
+    expect(screen).toContain('rememberReportEdits(reportStateIdentityKey, null);');
+    expect(screen).toContain('rememberReportAcknowledgement(reportStateIdentityKey, next);');
+    expect(screen).toContain('Narrative edits are kept until you leave the app.');
+    // A1 pass 1: on any change of account, whether or not a sign-out came first.
+    expect(app).toContain('if (accountChanged) forgetAllReportSessionState();');
+    // Owner answer Q13 (30 Sep 2026) moved the account-change rule, unchanged,
+    // into workspaceAccountChange (services/OwnerWorkspaceAuthDecision.ts), so
+    // this pin follows it there; the auth security review found it still
+    // pointed at the old App.tsx line.
+    expect(app).toContain('const { firstEvent, accountChanged } = change;');
+    expect(decision).toContain("accountChanged: event === 'SIGNED_OUT' ||\n      (!firstEvent && decision.ownerId !== previousUserId),");
+  });
+});
+
+describe('the Word review copy before approval', () => {
+  it('is produced without approval, titled as a review copy, still blocked while approval is not allowed, and carries no photos for a body that cites none', () => {
+    expect(screen).toContain("if ((requireApproval && !reportApproved) || !reportApprovalAllowed) {");
+    expect(screen).toContain("reportApproved ? report : { ...report, title: `${report.title} — Review copy (not approved)` },");
+    expect(screen).toContain('), { requireApproval: false });');
+    expect(screen).toMatch(/onCopyReport=\{\(\) => \{\n\s+completeCommunication\(onCopyReport\);/);
+    expect(screen).toMatch(/onOutlookReport=\{\(\) => \{\s+completeCommunication\(report =>\s+onOutlookReport\(report, drawingReferences\)\);/);
+    expect(app).toMatch(/const reportPhotoNumbers = new Map\(\n\s+reportBodyCitesImages\(report\)\n\s+\? report\.locationGroups/);
+  });
+});

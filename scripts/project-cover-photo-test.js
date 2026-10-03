@@ -208,12 +208,15 @@ assert(
   projectActionSheet.includes('accessibilityLabel={`Close ${title}`}'),
   'Project Options must expose an accessible close control tied to the sheet title.',
 );
-assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 2,
+// Whole-app audit A4 pass 7 M2 (30 Sep 2026): the covers resolve through
+// resolveProjectCoverImage, the same manual/automatic rule as
+// resolveProjectCoverPhotoUri for a cover that may be held only in the cloud.
+assert((app.match(/resolveProjectCoverImage\(/g) || []).length >= 2,
   'Overview and Project Workspace must use the canonical project cover resolver.');
 assert(app.includes('projectRecords={projectRecords}'),
   'Projects must receive project cover records instead of selecting an independent thumbnail.');
-assert(app.includes('coverPhotoUri={resolveProjectCoverPhotoUri('),
-  'Project Workspace must receive the canonical resolved project cover URI.');
+assert(app.includes('coverImage={resolveProjectCoverImage('),
+  'Project Workspace must receive the canonical resolved project cover.');
 assert(app.includes("coverPhotoMode: 'manual'") && app.includes("coverPhotoMode: 'automatic'"),
   'Camera/library selection must choose manual mode and best-photo/removal must choose automatic mode.');
 assert(projectService.includes('coverPhotoUpload: coverPhoto?.localUri && coverPhoto.remotePath'),

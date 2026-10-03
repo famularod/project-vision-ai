@@ -1,8 +1,34 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { DAVEAskAnswer, DAVEAskEvidence } from '../services/DAVEAsk';
+import { ecosDocumentProofClaimFromEvidence } from '../services/ECOSDocumentProofAuthority';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+
+export const UNCHECKED_DOCUMENT_SOURCE_LABEL = 'Document match – not checked by Ask ECOS';
+
+/**
+ * Talk answers are local: their document matches carry no project, source hash
+ * or evidence version, so no Ask ECOS proof claim can open them. Only a source
+ * with a full claim is called verified (audit A9 pass 1 #3).
+ */
+export function talkEvidenceTypeLabel(citation: DAVEAskEvidence): string {
+  if (!citation.documentCitation) return citation.sourceType;
+  return ecosDocumentProofClaimFromEvidence(citation) ? 'Verified document source' : UNCHECKED_DOCUMENT_SOURCE_LABEL;
+}
+
+/**
+ * What VoiceOver reads for a supporting record: the words shown on it, so a
+ * Talk document match is heard as not checked, as it reads (audit A9 pass 2 F6).
+ */
+export function talkEvidenceAccessibilityLabel(citation: DAVEAskEvidence): string {
+  if (!citation.documentCitation) return `Open supporting ${citation.sourceType}: ${citation.summary}`;
+  return [
+    `Open ${citation.documentCitation.label || citation.summary}`,
+    citation.excerpt || null,
+    talkEvidenceTypeLabel(citation),
+  ].filter((part): part is string => Boolean(part)).map(part => part.trim().replace(/\.+$/, '')).join('. ');
+}
 
 export function DAVEConversationAnswerSheet({
   visible,
@@ -31,7 +57,7 @@ export function DAVEConversationAnswerSheet({
               <Text style={styles.title}>Answer</Text>
               <Text style={styles.subtitle}>{projectName}</Text>
             </View>
-            <TouchableOpacity style={styles.closeButton} onPress={onClose} accessibilityLabel="Close answer">
+            <TouchableOpacity style={styles.closeButton} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close answer">
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
@@ -62,7 +88,7 @@ export function DAVEConversationAnswerSheet({
                   style={styles.evidenceButton}
                   onPress={() => onOpenEvidence(citation)}
                   accessibilityRole="button"
-                  accessibilityLabel={`Open supporting ${citation.sourceType}: ${citation.summary}`}
+                  accessibilityLabel={talkEvidenceAccessibilityLabel(citation)}
                 >
                   <View style={styles.main}>
                     <Text style={styles.evidenceSummary}>
@@ -71,9 +97,7 @@ export function DAVEConversationAnswerSheet({
                     {citation.documentCitation && citation.excerpt ? (
                       <Text style={styles.evidenceExcerpt} numberOfLines={3}>{citation.excerpt}</Text>
                     ) : null}
-                    <Text style={styles.evidenceType}>
-                      {citation.documentCitation ? 'Verified document source' : citation.sourceType}
-                    </Text>
+                    <Text style={styles.evidenceType}>{talkEvidenceTypeLabel(citation)}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
                 </TouchableOpacity>

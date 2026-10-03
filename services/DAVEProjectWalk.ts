@@ -5,6 +5,7 @@ import type {
   DAVEBriefSourceType,
 } from './DAVEDailyBrief';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
+import { gpsAccuracyFeet } from './GpsPrecision';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   plainDateDueState,
@@ -14,7 +15,6 @@ import {
 export const DAVE_PROJECT_WALK_VERSION = 'dave-project-walk/1.0' as const;
 
 const CLEAR_AREA_DISTANCE_FEET = 75;
-const METERS_TO_FEET = 3.28084;
 
 export type DAVEProjectWalkLocationInput =
   | Readonly<{ status: 'checking' }>
@@ -146,9 +146,8 @@ function resolveLocation(
     );
   }
 
-  const accuracyFeet = finite(location.accuracyMeters)
-    ? Math.max(0, location.accuracyMeters) * METERS_TO_FEET
-    : null;
+  // A negative accuracy is no accuracy, not an exact fix (pass 1 low, G-L1).
+  const accuracyFeet = gpsAccuracyFeet(location.accuracyMeters);
   const confidence = accuracyFeet !== null &&
     accuracyFeet <= CLEAR_AREA_DISTANCE_FEET &&
     first.distanceFeet + accuracyFeet <= first.area.radiusFeet

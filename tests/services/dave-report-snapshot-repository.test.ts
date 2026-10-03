@@ -45,6 +45,9 @@ function approvedSnapshot() {
     scopeKey: daveReportSnapshotScopeKey([truth.projectName]),
     sourceFingerprint: 'approved-source',
     capturedAt: '2026-07-29T15:00:00.000Z',
+    // Owner answer Q17 (30 Sep 2026): a period belongs to one report format,
+    // and the repository reads it for that format.
+    reportFormat: 'project_manager',
   });
 }
 
@@ -54,19 +57,19 @@ describe('DAVE approved-report snapshot repository', () => {
     const snapshot = approvedSnapshot();
 
     await expect(saveDAVEReportSnapshot(snapshot, storage)).resolves.toBeUndefined();
-    await expect(loadDAVEReportSnapshot(snapshot.scopeKey, storage)).resolves.toEqual(snapshot);
+    await expect(loadDAVEReportSnapshot(snapshot.scopeKey, 'project_manager', storage)).resolves.toEqual(snapshot);
   });
 
   it('rejects malformed or mismatched stored snapshots', async () => {
     const storage = memoryStorage();
     storage.getItem.mockResolvedValueOnce('{bad json');
-    await expect(loadDAVEReportSnapshot('2321', storage)).resolves.toBeNull();
+    await expect(loadDAVEReportSnapshot('2321', 'project_manager', storage)).resolves.toBeNull();
 
     storage.getItem.mockResolvedValueOnce(JSON.stringify({
       ...approvedSnapshot(),
       scopeKey: 'different-project',
     }));
-    await expect(loadDAVEReportSnapshot('2321', storage)).resolves.toBeNull();
+    await expect(loadDAVEReportSnapshot('2321', 'project_manager', storage)).resolves.toBeNull();
   });
 
   it('fails approval persistence when the stored value cannot be verified', async () => {

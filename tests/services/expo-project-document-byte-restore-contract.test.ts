@@ -45,7 +45,9 @@ describe('project document cloud byte restore adapter', () => {
     expect(repository).toContain('preflightExpoFileRead({');
     expect(repository).toContain('maxBytes: MAX_PROJECT_DOCUMENT_FILE_BYTES');
     expect(repository).toContain('reportedSizeBytes: preflight.sizeBytes');
-    expect(repository).toContain("'Drawing'");
+    // The category list moved to the rule the shared-details record also uses (A7 pass 7 L1).
+    expect(repository).toContain('referenceDocumentCategory(value.category)');
+    expect(fs.readFileSync(path.resolve(__dirname, '../../services/ReferenceDocumentSharedFields.ts'), 'utf8')).toContain("'Drawing'");
   });
 
   test('new project documents are persisted before their upload begins', () => {

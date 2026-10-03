@@ -83,11 +83,21 @@ export function prepareQueuedFieldUpdateSave<
     cloudUpdates: [],
     tombstones: nextTombstones,
   });
-  return { operations: [
+  // A deletion barrier for this id (the update was deleted while it was open
+  // as the draft, on this device or another) drops the queued update from
+  // the visible list. Nothing is written then: the draft stays persisted and
+  // the caller keeps it instead of reporting a save (whole-app audit A4,
+  // 29 Sep 2026; mirrors prepareFieldUpdateStatusSave).
+  const applied = nextUpdates.some(item => item.id === queuedUpdate.id);
+  // Which barrier dropped it: a cloud archive is told apart from a deletion.
+  const barrier = applied ? undefined : nextTombstones.find(item => item.updateId === queuedUpdate.id);
+  const barrierRecord = barrier as unknown as { action?: unknown } | undefined;
+  const barrierAction = typeof barrierRecord?.action === 'string' ? barrierRecord.action : null;
+  return { operations: applied ? [
     { kind: 'set' as const, key: keys.updates, value: JSON.stringify(nextUpdates) },
     { kind: 'set' as const, key: keys.tombstones, value: JSON.stringify(nextTombstones) },
     { kind: 'remove_if_unchanged' as const, key: keys.draft, expectedValue: snapshot.persistedDraft },
-  ], result: { nextUpdates, nextTombstones } };
+  ] : [], result: { applied, barrierAction, nextUpdates, nextTombstones } };
 }
 
 export function prepareFieldUpdateStatusSave<

@@ -11,7 +11,39 @@ const edge = fs.readFileSync(path.join(root, 'supabase/functions/pie-photo-visio
 const harness = fs.readFileSync(path.join(root, 'scripts/pie-vision-evaluation-harness.js'), 'utf8');
 
 assert(!app.includes('Confidence: High'), 'Production UI must not show decorative static Confidence: High.');
-assert(workflow.includes("comparisonConfidence: String(row.confidence || 'unknown')"), 'PIE confidence display must trace directly to the persisted Edge Function confidence field.');
+// Owner answer Q9 (30 Sep 2026): the displayed and scored confidence traces to
+// the persisted Edge Function confidence field through one comparability cap
+// (weak or not comparable -> low; probable -> at most medium), applied once at
+// the comparison mapping point. The raw provider value is kept, never shown.
+assert(
+  workflow.includes("const providerComparisonConfidence = String(row.confidence || 'unknown')") &&
+    workflow.includes("const comparability = String(row.comparability_classification || 'unknown')") &&
+    workflow.includes('comparisonConfidence: capPhotoComparisonConfidence(providerComparisonConfidence, comparability)') &&
+    workflow.includes('    providerComparisonConfidence,\n'),
+  'PIE confidence display must trace to the persisted Edge Function confidence field through the comparability cap (owner answer Q9, 30 Sep 2026), keeping the raw value.',
+);
+assert.strictEqual(
+  workflow.split('capPhotoComparisonConfidence(').length - 1,
+  1,
+  'The Q9 comparability cap must apply at exactly one mapping point.',
+);
+const rawConfidenceReaders = ['App.tsx', ...['services', 'components', 'screens', 'app'].flatMap(function listSources(dir) {
+  const absolute = path.join(root, dir);
+  if (!fs.existsSync(absolute)) return [];
+  return fs.readdirSync(absolute, { withFileTypes: true }).flatMap(entry => {
+    const relative = path.join(dir, entry.name);
+    if (entry.isDirectory()) return listSources(relative);
+    return /\.(ts|tsx)$/.test(entry.name) ? [relative] : [];
+  });
+})].filter(file =>
+  file !== path.join('services', 'PIEPhotoVisionMobileWorkflow.ts') &&
+    fs.readFileSync(path.join(root, file), 'utf8').includes('providerComparisonConfidence'),
+);
+assert.deepStrictEqual(
+  rawConfidenceReaders,
+  [],
+  'The raw provider confidence must not be shown or scored; displays and the progress score read the capped comparisonConfidence.',
+);
 
 assert(app.includes("const escalated = update.quickContext === 'Safety' || update.quickContext === 'Blocker'"), 'Safety/Blocker analysis failures must escalate in Needs Attention sorting.');
 assert(app.includes('Safety tagged update is still analyzing') || app.includes('${update.quickContext} tagged update is still analyzing'), 'Escalated stuck analysis must remain unresolved, not display a fake resolution.');

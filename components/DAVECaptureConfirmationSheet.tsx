@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import {
@@ -46,19 +46,29 @@ export function DAVECaptureConfirmationSheet({
   transcript,
   draft,
   projects,
-  locations,
+  locations = [],
+  locationsForProject,
   sourceLabel = 'Source transcript',
   onSave,
   onCancel,
+  onWorkingChange,
 }: {
   visible: boolean;
   transcript: string;
   draft: DAVECaptureMemory;
   projects: readonly string[];
-  locations: readonly string[];
+  locations?: readonly string[];
+  /** The chosen project's areas; the list followed Talk's project (audit A9 F5). */
+  locationsForProject?: (projectName: string | null) => readonly string[];
   sourceLabel?: string;
   onSave: (memory: DAVEConfirmedCaptureMemory) => void | Promise<void>;
   onCancel: () => void;
+  /**
+   * The owner's working copy, typed text included, after every change. A
+   * panel failure closes this sheet and its state (audit A11 pass 3); Talk
+   * reopens the memory from this copy.
+   */
+  onWorkingChange?: (memory: DAVECaptureMemory) => void;
 }) {
   const [working, setWorking] = useState(draft);
   const [fieldTexts, setFieldTexts] = useState<Record<EditableField, string>>(() => editableFieldTexts(draft));
@@ -75,6 +85,21 @@ export function DAVECaptureConfirmationSheet({
     setIsSaving(false);
   }, [draft, visible]);
 
+  const onWorkingChangeRef = useRef(onWorkingChange);
+  onWorkingChangeRef.current = onWorkingChange;
+  useEffect(() => {
+    const report = onWorkingChangeRef.current;
+    if (!report) return;
+    try {
+      report(FIELD_LABELS.reduce(
+        (current, [field]) => commitFieldText(current, field, fieldTexts[field]),
+        working,
+      ));
+    } catch {
+      report(working);
+    }
+  }, [working, fieldTexts]);
+
   function editField(field: EditableField, value: string) {
     setFieldTexts(current => ({ ...current, [field]: value }));
     setSaveError(null);
@@ -85,11 +110,19 @@ export function DAVECaptureConfirmationSheet({
   }
 
   function chooseProject(project: string) {
-    setWorking(current => correctCaptureMemory(current, 'project', project, new Date().toISOString()));
+    setWorking(current => {
+      const correctedAt = new Date().toISOString();
+      const moved = correctCaptureMemory(current, 'project', project, correctedAt);
+      const location = moved.recommendedLocation.value;
+      // A location the chosen project does not have is not saved with it.
+      return location && locationsForProject && !locationsForProject(project).includes(location)
+        ? correctCaptureMemory(moved, 'location', null, correctedAt)
+        : moved;
+    });
     setSaveError(null);
   }
 
-  function chooseLocation(location: string) {
+  function chooseLocation(location: string | null) {
     setWorking(current => correctCaptureMemory(current, 'location', location, new Date().toISOString()));
     setSaveError(null);
   }
@@ -141,6 +174,9 @@ export function DAVECaptureConfirmationSheet({
   }
 
   const limitations = memoryLimitations(working);
+  const locationOptions = locationsForProject
+    ? locationsForProject(working.recommendedProject.value)
+    : locations;
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={cancel}>
       <View style={styles.backdrop}>
@@ -178,9 +214,10 @@ export function DAVECaptureConfirmationSheet({
                 value={working.recommendedLocation.value}
                 confidence={working.recommendedLocation.confidence}
                 confirmed={working.recommendedLocation.confirmed}
-                options={locations}
+                options={locationOptions}
                 onConfirm={confirmRecommendedLocation}
                 onChoose={chooseLocation}
+                onChooseNone={() => chooseLocation(null)}
                 optional
               />
               {(!working.recommendedProject.confirmed || (working.recommendedLocation.value && !working.recommendedLocation.confirmed)) ? (
@@ -239,9 +276,9 @@ function commitFieldText(
   return correctCaptureMemory(memory, field, normalized, new Date().toISOString());
 }
 
-function Recommendation({ label, value, confidence, confirmed, options, onConfirm, onChoose, optional = false }: {
+function Recommendation({ label, value, confidence, confirmed, options, onConfirm, onChoose, onChooseNone, optional = false }: {
   label: string; value: string | null; confidence: string; confirmed: boolean;
-  options: readonly string[]; onConfirm: () => void; onChoose: (value: string) => void; optional?: boolean;
+  options: readonly string[]; onConfirm: () => void; onChoose: (value: string) => void; onChooseNone?: () => void; optional?: boolean;
 }) {
   return <View style={styles.recommendation}>
     <Text style={styles.label}>{label}</Text>
@@ -249,7 +286,11 @@ function Recommendation({ label, value, confidence, confirmed, options, onConfir
     <Text style={styles.detail}>Confidence: {friendlyConfidence(confidence)}</Text>
     {value && !confirmed ? <TouchableOpacity style={styles.confirmButton} onPress={onConfirm}><Text style={styles.confirmText}>Confirm {value}</Text></TouchableOpacity> : null}
     {confirmed ? <Text style={styles.confirmedText}>Confirmed</Text> : null}
-    <View style={styles.options}>{options.filter(item => item !== value).map(item => <TouchableOpacity key={item} style={styles.option} onPress={() => onChoose(item)}><Text style={styles.optionText}>{item}</Text></TouchableOpacity>)}</View>
+    <View style={styles.options}>
+      {options.filter(item => item !== value).map(item => <TouchableOpacity key={item} style={styles.option} onPress={() => onChoose(item)}><Text style={styles.optionText}>{item}</Text></TouchableOpacity>)}
+      {/* Whole-app audit A11 pass 1 F6 (30 Sep 2026): a location could be confirmed or swapped but never cleared, so a wrong one blocked Save. */}
+      {onChooseNone && value ? <TouchableOpacity style={styles.option} onPress={onChooseNone} accessibilityRole="button"><Text style={styles.optionText}>No location</Text></TouchableOpacity> : null}
+    </View>
   </View>;
 }
 

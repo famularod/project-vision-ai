@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
+import { afterTextInputBlur } from './after-text-input-blur';
 import { AppBottomTabs } from './app-bottom-tabs';
 import { AppNavigationRail } from './app-navigation-rail';
 import {
@@ -17,6 +18,7 @@ import {
   appShellLayoutForWidth,
   AppShellLayoutProvider,
 } from './app-shell-layout';
+import { ScreenErrorBoundary } from './screen-error-boundary';
 import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
 import type {
   VitruviusAskEcosPilotControl,
@@ -62,6 +64,8 @@ export function AppShellFrame({
 }) {
   const { width } = useWindowDimensions();
   const layout = appShellLayoutForWidth(width);
+  // A field being typed saves before its screen goes (audit A2 M3).
+  const changeScreen = (screen: AppScreen) => afterTextInputBlur(() => onScreenChange(screen));
   const hideSystemStatusBar = appShellHidesSystemStatusBar({
     layout,
     platform: process.env.EXPO_OS,
@@ -99,14 +103,16 @@ export function AppShellFrame({
                 key="primary-navigation"
                 current={currentScreen}
                 expanded={layout.expandedRail}
-                onChange={onScreenChange}
+                onChange={changeScreen}
                 onTalk={onTalk}
                 onAskECOS={onAskECOS}
                 audience={audience}
                 askEcosPilotControl={askEcosPilotControl}
                 taskProjects={taskProjects}
                 selectedTaskProject={selectedTaskProject}
-                onTaskProjectChange={onTaskProjectChange}
+                onTaskProjectChange={onTaskProjectChange && (projectName =>
+                  // It switches the task inspector: an Owner being typed saves first (audit A2 pass 2 M2).
+                  afterTextInputBlur(() => onTaskProjectChange(projectName)))}
                 updateProjects={updateProjects}
                 selectedUpdateProject={selectedUpdateProject}
                 onUpdateProjectChange={onUpdateProjectChange}
@@ -118,14 +124,16 @@ export function AppShellFrame({
             ) : null}
 
             <View key="app-content" style={styles.contentFrame}>
-              {children}
+              <ScreenErrorBoundary screen={currentScreen} onNavigate={onScreenChange}>
+                {children}
+              </ScreenErrorBoundary>
             </View>
 
             {layout.navigationPlacement === 'bottom' ? (
               <AppBottomTabs
                 key="primary-navigation"
                 current={currentScreen}
-                onChange={onScreenChange}
+                onChange={changeScreen}
                 onTalk={onTalk}
                 onAskECOS={onAskECOS}
                 audience={audience}

@@ -37,6 +37,13 @@ export type DAVESyncTombstoneSyncResult = {
    * a non-zero count must surface as a visible partial-sync condition.
    */
   uploadFailures?: number;
+  /**
+   * When the cloud read of this history started (whole-app audit A6 pass 11,
+   * 30 Sep 2026). A refresh handed a read already in flight
+   * (`loadDAVEOperationalTombstones`) gets that read's earlier start, so a
+   * download is never recorded as holding a deletion made after it.
+   */
+  readStartedAt?: string;
 };
 
 // A real owner can accumulate hundreds of durable deletion markers. Physical
@@ -212,6 +219,7 @@ async function uploadDAVESyncTombstoneBatches(
  * not starve current task, area, or document refreshes.
  */
 export async function refreshDAVESyncTombstonesFromCloud(): Promise<DAVESyncTombstoneSyncResult> {
+  const readStartedAt = new Date().toISOString();
   let cloudTombstones: DAVESyncTombstone[] = [];
   let cloudAuthoritative = false;
   let cloudError: string | null = null;
@@ -250,6 +258,7 @@ export async function refreshDAVESyncTombstonesFromCloud(): Promise<DAVESyncTomb
     tombstones: merged,
     cloudAuthoritative,
     cloudError,
+    readStartedAt,
   };
 }
 

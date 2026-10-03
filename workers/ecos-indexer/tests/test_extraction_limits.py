@@ -1,3 +1,4 @@
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +42,12 @@ from ecos_indexer.sheet_mapping import (
     StructuralIdentityEvidence,
     StructuralSheetIdentity,
 )
+
+
+# These two tests run real Tesseract OCR on generated pages. GitHub's runner has
+# no Tesseract, so there they skip, as the private-drawing tests do; the indexer
+# machines and the local release gate have it.
+REQUIRES_TESSERACT = unittest.skipUnless(shutil.which("tesseract"), "Tesseract OCR is not installed on this machine")
 
 
 class ExtractionLimitTests(unittest.TestCase):
@@ -224,6 +231,7 @@ class ExtractionLimitTests(unittest.TestCase):
         finally:
             document.close()
 
+    @REQUIRES_TESSERACT
     def test_worker_style_structural_map_keeps_a16_and_a113_exact(self) -> None:
         document = fitz.open()
         for _index in range(20):
@@ -1573,6 +1581,7 @@ class ExtractionLimitTests(unittest.TestCase):
             (30, 40, 10, 40),
         )
 
+    @REQUIRES_TESSERACT
     def test_structural_identity_skips_redundant_title_block_ocr(self) -> None:
         document = fitz.open()
         page = document.new_page(width=1000, height=600)

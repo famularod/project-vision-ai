@@ -78,4 +78,19 @@ for (const misleading of [
   );
 }
 
+// Whole-app audit round 2 F8 (30 Sep 2026): the web export holds only what
+// the workspace shows, and Restore Missing Tasks leaves hidden and deleted
+// tasks alone. Pinned so the recovery text stays true.
+for (const marker of [
+  'neither are deleted tasks or the tasks of schedules that are not current',
+  'adds back only tasks that are no longer in the shared record',
+  'tasks deleted on purpose stay deleted',
+]) {
+  assert(web.includes(marker), `Web data export and recovery must disclose: ${marker}`);
+}
+assert(
+  !web.includes('restore deleted IDs'),
+  'Web recovery must not retain the obsolete restore claim.',
+);
+
 console.log('Backup language PASS: limited encrypted device backup excludes Field Notes and cloud restore; web export limits remain explicit.');

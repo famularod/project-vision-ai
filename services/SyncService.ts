@@ -1,3 +1,4 @@
+import { classifySyncFailureText, CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE, currentDrawingProjectsKeptMessage, isSyncFailureCategory, type SyncFailureCategory } from './SyncFailureCategory';
 import {
   archiveProjectUpdate,
   countCloudProjects,
@@ -6,9 +7,11 @@ import {
   deleteProjectUpdate,
   deleteProject,
   getProjectUpdateSyncMetadata,
+  getScheduleItem,
   getSupabaseConfigurationStatus,
   listProjectUpdates,
   listProjectAreas,
+  listArchivedProjects,
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
@@ -28,6 +31,12 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { LEGACY_WORK_CONTAINER_PROJECT_NAMES } from './ReservedProjectNames';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  isProjectDocumentBridge,
+  parseStoredProjectDocuments,
+  PROJECT_DOCUMENTS_STORAGE_KEY,
+  projectDocumentBridgeOrphaned,
+} from './ProjectDocumentBridge';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
   deletedDAVERecordIds,
@@ -43,24 +52,60 @@ import {
 import {
   daveScheduleItemsNeedingCloudUpload,
   recoverDAVEScheduleRecords,
+  scheduleProgressCarriedOntoCloudCopy,
 } from './DAVEScheduleRecovery';
+import { SCHEDULE_CARRIED_PROGRESS_FIELDS } from './ScheduleProgressSource';
+import { scheduleItemCarriedProgressWaiting } from './ScheduleItemQueueRevision';
 import {
   daveReferenceDocumentsNeedingCloudUpload,
   mergeDAVEReferenceDocumentRecoveryRecords,
+  referenceDocumentEditOutlivingActivation,
+  referenceDocumentSharedDetailsFingerprint,
 } from './DAVECloudRecovery';
+import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
 import {
   confirmProjectUpdateCloudDeletion,
+  confirmedProjectUpdateDeletionIds,
   hasProjectUpdateDeletionIntent,
   recordProjectUpdateDeletionIntent,
 } from './ProjectUpdateDeletionJournal';
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
+import { withoutDeletedSharedProject } from './ProjectDeletionTransaction';
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import { runDAVECloudMaintenanceIfDue } from './DAVECloudMaintenanceBudget';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
+import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
+import { withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
+import {
+  applyFieldUpdateDocumentPatches,
+  fieldUpdateDocumentPatchFor,
+  fieldUpdatePatchesNotSuperseded,
+  mergeFieldUpdateDocumentPatches,
+  queuedDocumentPatchesForUpdate,
+  queuedFieldUpdateDocumentPatches,
+  removedFieldUpdateDocumentKey,
+  withoutDocumentUploadState,
+  type FieldUpdateDocumentPatch,
+  type RemovedFieldUpdateDocuments,
+} from './FieldUpdateDocumentPatch';
+import {
+  applyFieldUpdatePhotoAnalysisPatch,
+  fieldUpdatePhotoAnalysisPatchFor,
+  isFieldUpdatePhotoAnalysisPatch,
+  photoAnalysisResultStands,
+  withoutPhotoAnalysis,
+  type FieldUpdatePhotoAnalysisPatch,
+} from './FieldUpdatePhotoAnalysisPatch';
+import { loadRemovedFieldUpdateDocuments, recordRemovedFieldUpdateDocument } from './FieldUpdateRemovedDocuments';
+import { resetDocumentsResentThisLaunchForTests, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
+import { sameFieldUpdateSyncGeneration } from './FieldUpdateSyncGeneration';
+
+export { loadRemovedFieldUpdateDocuments } from './FieldUpdateRemovedDocuments';
 import {
   daveProjectUpdateMatchesCloudReceipt,
   daveProjectUpdatesNeedingCloudUpload,
@@ -71,11 +116,18 @@ import {
   resolveOperationalProjectIdentity,
   resolveOperationalReferenceDocumentScope,
   type OperationalProjectIdentityAuthority,
+  type OperationalProjectIdentityResult,
 } from './OperationalProjectIdentity';
 import {
   createBoundedTaskRunner,
   mapWithBoundedConcurrency,
 } from './BoundedConcurrency';
+import {
+  cloudOwnerUnchanged,
+  currentCloudOwner,
+  heldForAnotherOwner,
+  type CloudOwnerBinding,
+} from './CloudOwnerBinding';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -102,6 +154,10 @@ export type SyncQueueItem<TPayload = Record<string, unknown>> = {
   changedAt: string;
   retryCount: number;
   lastError?: string | null;
+  /** Why the last attempt failed, recorded from the raw failure before lastError is sanitised (audit A4). */
+  lastFailureCategory?: SyncFailureCategory | null;
+  /** The account it was queued under; only that account sends it (audit A1 M3). */
+  ownerId?: string;
 };
 
 export type SyncConflict<TPayload = unknown> = {
@@ -116,9 +172,36 @@ export type SyncConflict<TPayload = unknown> = {
   remotePayload?: unknown;
 };
 
+/**
+ * The conflict saved on this phone for a field update, while one is open
+ * (whole-app audit A4 pass 15 H1, L1). The one test for both: while it is
+ * open, the update's card reads "Needs Review", and nothing automatic sends
+ * the update.
+ */
+export function openFieldUpdateConflict(conflicts: readonly SyncConflict[], updateId: string): SyncConflict | null {
+  return conflicts.find(conflict => conflict.entity === 'project_update' && conflict.localId === updateId) ?? null;
+}
+
+/**
+ * How a field update's sync was asked for (whole-app audit A4 pass 15 H1).
+ * While a conflict is open for the update, nothing automatic sends it: only a
+ * choice David made for it does. `overConflict`: a Retry he confirmed ("This
+ * update was also changed on another device. Send your version over it?");
+ * Keep Phone and Keep Cloud mark their own copy. `automatic` changes nothing
+ * now; the callers that pass it are automatic, as is every call without
+ * `overConflict`.
+ */
+export type FieldUpdateSyncChoice = Readonly<{ automatic?: boolean; overConflict?: boolean }>;
+
 export type SyncStatus = {
   configured: boolean;
   queuedChanges: number;
+  /**
+   * Of queuedChanges: whole copies of field updates in conflict, held for
+   * Review Conflicts (A4 pass 15 H1); each update is one of `conflicts`
+   * already (whole-app audit A4 pass 15b F2).
+   */
+  heldForConflictReview: number;
   conflicts: number;
   recoveryAvailable: boolean;
   recoveryCopies: number;
@@ -140,6 +223,25 @@ export type SyncUploadResult = {
   queued: number;
   conflicts: number;
   errors: string[];
+  /** The queue item's recorded failure category, when it is still queued after this pass (audit A4). */
+  failureCategory?: SyncFailureCategory | null;
+  /**
+   * How many of `errors` belong to items held until the owner edits them
+   * again. They are shown but ask for no retry (whole-app audit A8 pass 1 F3).
+   */
+  heldErrorCount?: number;
+  /**
+   * The error of each queue item that failed in this pass, by its id (an
+   * entry of `errors`): Sync Now counts an item failing in both of its passes
+   * once (whole-app audit A7 pass 13 L-2).
+   */
+  itemErrors?: Record<string, string>;
+  /**
+   * A task save only: this phone's own create or reopen of the task's project
+   * is still queued, so a cloud answer that the project is not open clears
+   * once that change uploads (whole-app audit A3 pass 7 L1).
+   */
+  projectStillUploading?: boolean;
 };
 
 export type SyncItemOutcome =
@@ -274,6 +376,8 @@ export function cloudWriteFailureReason(result: {
   stubbed?: boolean;
 }): string {
   const reason = (result.error || result.message || '').trim();
+  // Sync Now named the raw database code; the queue already said it in words (whole-app audit A8 pass 2 #9).
+  if (reason && classifySyncFailureText([reason]) === 'current_drawing_protected') return ` ${CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE}`;
   if (reason) return ` ${reason}`;
   return result.stubbed ? ' The cloud table is not available yet.' : '';
 }
@@ -350,6 +454,8 @@ export type StagedProjectUpdateSync = {
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
   pendingPhotoAssetIds: string[];
+  /** Left for review: in conflict, and this attempt automatic or Sync Now's (whole-app audit A4 pass 13 M1, G2). Nothing was written or sent. */
+  heldForConflictReview?: boolean;
 };
 
 export type OfflineQueueQuarantineExport = {
@@ -399,6 +505,12 @@ const photoPreviewSignedUrlCache = new Map<string, CachedPhotoPreviewSignedUrl>(
 
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
+
+  // A Current drawing the cloud refused to change is named in plain words,
+  // not by its raw database code (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+  if (classifySyncFailureText([message]) === 'current_drawing_protected') {
+    return message.startsWith('This drawing is Current for ECOS') ? message : CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE;
+  }
 
   // Deliberately narrow to signals that only appear in a genuine local
   // file-read failure (native path segments, the file-read API name, the
@@ -533,6 +645,39 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   pendingPhotoAssetIds?: string[];
   archiveOnly?: boolean;
   archivedAt?: string;
+  /**
+   * Only document changes wait: they go onto the cloud's copy, and
+   * updateData (this device's copy) goes up only when the cloud has none
+   * (whole-app audit A7 pass 6 M1).
+   */
+  documentPatches?: FieldUpdateDocumentPatch[];
+  /**
+   * Keep Phone's kept copy: a newer edit saved on this phone since the
+   * conflict, queued again in the same write that takes this copy off once
+   * it lands (whole-app audit A7 pass 11 L-2; see newerEditQueuedAfter).
+   * A late analysis result's patch: the edit held for conflict review it
+   * stands in front of, queued again as it was (A7 pass 14 L-2).
+   */
+  newerEdit?: SyncQueueItem;
+  /**
+   * A copy David chose to send over this open conflict (its id): Keep Phone's,
+   * Keep Cloud's, or a Retry he confirmed (whole-app audit A4 pass 15 H1).
+   * Any other whole copy of an update in conflict waits for his choice.
+   */
+  overConflict?: string;
+  /**
+   * Keep Cloud's chosen copy (whole-app audit A7 pass 17 L-1): landing, or
+   * found already in the cloud, it does not close the conflict. Keep Cloud
+   * closes it once Settings has put the copy on the card (beforeClose).
+   * It is the cloud's copy, never the phone's work (A4 pass 21 F1).
+   */
+  keepCloudChoice?: true;
+  /**
+   * Keep Cloud's copy only: the document changes and analysis results it
+   * took in while Keep Cloud tried (whole-app audit A4 pass 21 F1), which go
+   * onto the phone's work it puts back when Keep Cloud fails.
+   */
+  absorbedPatches?: FieldUpdateDocumentPatch[];
 };
 
 type ProjectUpdateDeletePayload = {
@@ -562,6 +707,22 @@ type ScheduleItemRecordPayload = {
   changedFields?: Array<keyof ScheduleItem>;
   /** Explicit conflict resolution may intentionally replace the cloud copy. */
   forceLocal?: boolean;
+  /**
+   * Its progress fields are a percent the sync merge carried to the task
+   * (whole-app audit A7 pass 26 M-1): they land only while the merge's rule
+   * still holds against the cloud's copy (scheduleProgressCarriedOntoCloudCopy).
+   */
+  carriedProgress?: boolean;
+  /** The task's progress fields as they were when the merge carried the percent (A7 pass 26 M-1). */
+  carriedOver?: Partial<ScheduleItem>;
+  /**
+   * On a task's conflict only (whole-app audit A7 pass 16 L-2): this phone's
+   * edits of the task that a Keep Cloud which could not finish took off the
+   * queue, one of which landed during that choice. They wait here, not on
+   * the queue, where the next automatic pass sent the edit David chose to
+   * discard; a later Keep Cloud undoes the one that landed.
+   */
+  withdrawnEdits?: SyncQueueItem[];
 };
 
 type ReferenceDocumentRecordPayload = {
@@ -718,6 +879,14 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
     typeof value.lastError === 'string'
   );
   if (!lastErrorIsValid) return false;
+  // A category this build does not know (a newer build's, after a downgrade)
+  // must not sideline a pending upload: any string is kept and read as
+  // unknown (audit A4, 30 Sep 2026).
+  if (
+    value.lastFailureCategory !== undefined &&
+    value.lastFailureCategory !== null &&
+    typeof value.lastFailureCategory !== 'string'
+  ) return false;
 
   if (value.entity === 'project_update') {
     if (value.operation === 'create') return false;
@@ -1006,6 +1175,27 @@ async function persistVerifiedOfflineQueue(
   await offlineQueueRecoveryTransaction.commit([
     { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value },
   ]);
+  offlineQueueListeners.forEach(listener => {
+    try {
+      listener(queue);
+    } catch {
+      // A screen's listener never fails a queue write.
+    }
+  });
+}
+
+const offlineQueueListeners = new Set<(queue: readonly SyncQueueItem[]) => void>();
+
+/**
+ * Called with the queue each time this device writes it (whole-app audit A7
+ * pass 8 L2): a field update's card says when its document change is still
+ * waiting to sync. The unsubscribe function.
+ */
+export function subscribeToOfflineQueue(listener: (queue: readonly SyncQueueItem[]) => void): () => void {
+  offlineQueueListeners.add(listener);
+  return () => {
+    offlineQueueListeners.delete(listener);
+  };
 }
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
@@ -1288,7 +1478,7 @@ export async function reconcileSyncConflicts(): Promise<SyncConflict[]> {
     const reconciled = normalizeSyncConflicts(stored);
 
     if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
-      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
+      await writeSyncConflicts(reconciled);
     }
 
     return reconciled;
@@ -1310,6 +1500,7 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   return {
     configured: configuration.configured,
     queuedChanges: queue.length,
+    heldForConflictReview: queue.filter(item => fieldUpdateCopyHeldForReview(item, conflicts)).length,
     conflicts: conflicts.length,
     recoveryAvailable: recovery.recoveryAvailable,
     recoveryCopies: recovery.unresolvedQuarantineKeys.length,
@@ -1329,9 +1520,12 @@ export async function enqueuePendingChange<TPayload>(
     createdAt?: string;
     retryCount?: number;
     autoUpload?: boolean;
+    /** An item already queued under this id that stays, as returned; null to replace it. */
+    keepExisting?: (existing: SyncQueueItem) => SyncQueueItem | null;
   },
 ): Promise<SyncQueueItem<TPayload>> {
   const createdAt = item.createdAt ?? new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
   const queueItem: SyncQueueItem<TPayload> = {
     id: item.id ?? createQueueId(item.entity, createdAt),
     entity: item.entity,
@@ -1341,6 +1535,7 @@ export async function enqueuePendingChange<TPayload>(
     changedAt: item.changedAt,
     retryCount: item.retryCount ?? 0,
     lastError: null,
+    ...(ownerId ? { ownerId } : {}),
   };
 
   await mutateOfflineQueue(queue => {
@@ -1351,6 +1546,14 @@ export async function enqueuePendingChange<TPayload>(
       return { nextQueue: queue, result: undefined, persist: false };
     }
     const existingItem = queue.find(existing => existing.id === queueItem.id);
+    const kept = existingItem && item.keepExisting?.(existingItem);
+    if (kept) {
+      return {
+        nextQueue: queue.map(existing => existing === existingItem ? kept : existing),
+        result: undefined,
+        persist: kept !== existingItem,
+      };
+    }
     const mergedQueueItem = mergeScheduleItemQueueChangeScope(
       existingItem,
       queueItem as unknown as SyncQueueItem,
@@ -1396,6 +1599,8 @@ function mergeScheduleItemQueueChangeScope(
   ) {
     const fullRecordPayload = { ...incomingPayload };
     delete fullRecordPayload.changedFields;
+    delete fullRecordPayload.carriedProgress; // a whole copy is weighed whole (A7 pass 26 M-1)
+    delete fullRecordPayload.carriedOver;
     return {
       ...incoming,
       payload: fullRecordPayload,
@@ -1431,10 +1636,18 @@ function mergeScheduleItemQueueChangeScope(
     incomingPayload.itemData,
   );
 
+  // The progress stays a carried percent while the edits since leave it as the carry gave it (A7 pass 26 M-1).
+  const carriedProgress = incomingPayload.carriedProgress === true || (existingPayload.carriedProgress === true &&
+    SCHEDULE_CARRIED_PROGRESS_FIELDS.every(field =>
+      JSON.stringify(itemData[field] ?? null) === JSON.stringify(existingPayload.itemData[field] ?? null)));
+  const { carriedProgress: _carried, carriedOver: _over, ...mergedPayload } = incomingPayload;
+  // What the progress was before the carry: the first carry's, while this entry still holds a carry.
+  const carriedOver = !carriedProgress ? undefined
+    : existingPayload.carriedProgress === true ? existingPayload.carriedOver : incomingPayload.carriedOver;
   return {
     ...incoming,
     payload: {
-      ...incomingPayload,
+      ...mergedPayload,
       itemData,
       changedFields: [
         ...new Set([
@@ -1442,6 +1655,8 @@ function mergeScheduleItemQueueChangeScope(
           ...incomingPayload.changedFields,
         ]),
       ],
+      ...(carriedProgress ? { carriedProgress: true } : {}),
+      ...(carriedOver ? { carriedOver } : {}),
     },
   };
 }
@@ -1569,6 +1784,31 @@ export async function queueScheduleItemRecord(
 }
 
 /**
+ * Whole-app audit A7 pass 26 M-1 (1 Oct 2026, caused by 3035b7a): the
+ * percent the sync merge carried to a task's newest row stayed on the device
+ * (Full Sync carries after it uploads; a refresh uploads nothing), and as
+ * David's it outranked the cloud's copy whole, so that device's next Full
+ * Sync wrote its old notes, owner, dates and lookahead over the other
+ * device's newer ones. The carried percent now goes up at once, as a change
+ * of the task's progress alone, as Set Active sends its carried rows.
+ */
+export async function queueScheduleItemProgressCarried(item: ScheduleItem, before: ScheduleItem): Promise<void> {
+  await enqueuePendingChange<ScheduleItemRecordPayload>({
+    id: scheduleItemQueueItemId(item.id),
+    entity: 'schedule_item',
+    operation: 'update',
+    payload: {
+      id: item.id,
+      itemData: item,
+      changedFields: [...SCHEDULE_CARRIED_PROGRESS_FIELDS, 'updatedAt'],
+      carriedProgress: true,
+      carriedOver: Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, before[field] ?? null])),
+    },
+    changedAt: item.updatedAt || item.progressConfirmedAt || new Date().toISOString(),
+  });
+}
+
+/**
  * Durably stage one task revision and verify that exact queue item reaches the
  * cloud. A resolved global upload is not sufficient because another upload
  * pass may already have been in flight before this revision was queued.
@@ -1632,7 +1872,33 @@ export async function runScheduleItemCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
+    ...(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName)
+      ? { projectStillUploading: true }
+      : {}),
   };
+}
+
+/**
+ * Whether this phone's own create or reopen of the named project is still
+ * queued. Tasks are sent ahead of project changes, so until it lands the
+ * cloud answers that the task's project is not open (whole-app audit A3
+ * pass 7 L1). The queue keys both by name: a create by its name, a reopen by
+ * the name it had. A close, or another account's change, does not count.
+ */
+function projectOpeningStillQueued(
+  queue: readonly SyncQueueItem[],
+  projectName: string | null | undefined,
+): boolean {
+  const key = normalizedProjectArchiveName(projectName);
+  if (!key) return false;
+  const owner = currentCloudOwner();
+  return queue.some(candidate => {
+    if (candidate.entity !== 'project' || heldForAnotherOwner(candidate.ownerId, owner)) return false;
+    const payload = (candidate.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+    if (candidate.operation === 'create') return normalizedProjectArchiveName(payload.name) === key;
+    return candidate.operation === 'update' && payload.archived === false &&
+      normalizedProjectArchiveName(payload.previousName) === key;
+  });
 }
 
 export async function queueReferenceDocumentRecord(
@@ -1648,6 +1914,39 @@ export async function queueReferenceDocumentRecord(
     changedAt,
     autoUpload,
   });
+}
+
+/**
+ * The shared details this phone last put in the cloud for each document, this
+ * launch: its own upload counts as seen before its echo comes back (whole-app
+ * audit A7 pass 6 L1).
+ */
+const referenceDocumentDetailsSent = new Map<string, string>();
+
+/**
+ * After this phone's Make Current: each phone edit still queued that the
+ * activation's stamp now outranks (text typed just before it, whose upload
+ * starts after the activation call) is queued again, stamped after the
+ * activation and carrying the cloud's current flags, so it reaches the
+ * other devices and a stale copy never undoes the activation. Returns the
+ * documents queued again, for this phone's list (whole-app audit A8 pass 3
+ * M2). Another account's queued work is left alone.
+ */
+export async function requeueReferenceDocumentEditsOutlivingActivation(
+  cloudDocuments: readonly ReferenceDocument[],
+): Promise<ReferenceDocument[]> {
+  const owner = currentCloudOwner();
+  const cloudById = new Map(cloudDocuments.map(document => [document.id, document]));
+  const kept = (await getOfflineQueue()).flatMap(item => {
+    if (item.entity !== 'reference_document' || item.operation === 'delete' || heldForAnotherOwner(item.ownerId, owner)) return [];
+    const local = (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData;
+    const cloud = local ? cloudById.get(local.id) : undefined;
+    const edit = local && cloud
+      ? referenceDocumentEditOutlivingActivation(local, cloud, Date.now(), referenceDocumentDetailsSent.get(local.id)) : null;
+    return edit && cloud ? mergeDAVEReferenceDocumentRecoveryRecords({ local: [edit], cloud: [cloud] }) : [];
+  });
+  await Promise.all(kept.map(document => queueReferenceDocumentRecord(document)));
+  return kept;
 }
 
 /**
@@ -2123,8 +2422,8 @@ function exactScheduleImportSyncErrors(input: {
     if (outcome === 'superseded') {
       errors.push(
         input.scheduleQueueIds.has(id)
-          ? 'An imported task was removed because a protected deletion marker is newer.'
-          : 'An imported schedule document was removed because a protected deletion marker is newer.',
+          ? 'An imported task was not added: it was deleted earlier, and its protected deletion marker keeps it deleted.'
+          : 'An imported schedule document was not added: it was deleted earlier, and its protected deletion marker keeps it deleted.',
       );
     } else if (outcome === 'failed' && !input.exactRemaining.some(item => item.id === id)) {
       const scheduleItem = input.scheduleQueueIds.get(id);
@@ -2181,6 +2480,184 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   );
 }
 
+/**
+ * A change to one document of a sent field update, queued as a patch on the
+ * cloud's copy (whole-app audit A7 pass 6 M1): `update` is this device's copy
+ * with the change made, sent whole only when the cloud has no copy. Added to
+ * this device's own edit when one is waiting. A document taken off is kept in
+ * this device's journal: an older copy sent later by the iPad does not put it
+ * back. The whole copy of an update not yet sent waits for its photos, as its
+ * own sync does (A4 pass 9 L2): it went up listing photos nothing uploaded.
+ *
+ * An update still owing its own sync ("Waiting to Sync" or failed, not in
+ * conflict) with no record of its own queued goes up whole, with the change,
+ * waiting for its photos (A7 pass 8 L1): its edit's queue write was lost, and
+ * the patch, once landed, stood for that edit, which was never sent. An
+ * update in conflict keeps its copy for review: only the patch goes up.
+ *
+ * That status can be stale (A7 pass 9 L1): the update's own record went up in
+ * a background pass whose echo was ignored, or Keep Phone wrote it. When the
+ * copy this device last put in the cloud, or the copy a waiting patch was
+ * made on, with this change is this copy, the update owes nothing more: only
+ * the patch goes up, as for a sent update. Sending the whole copy, stamped
+ * now, put the phone's older note over the iPad's newer one.
+ */
+export async function queueProjectUpdateDocumentChange<TUpdate extends PatchedProjectUpdate>(
+  update: TUpdate,
+  documentId: string,
+): Promise<void> {
+  await queueProjectUpdatePatch(update, fieldUpdateDocumentPatchFor(update, documentId));
+}
+
+/**
+ * A photo analysis result that finished after the update was saved (`before`
+ * is the update without it), queued as a patch on the cloud's copy, under
+ * the same rules as a document change (whole-app audit A4 pass 13 G1;
+ * FieldUpdatePhotoAnalysisPatch). A sent update stays sent and only the
+ * result goes up: its whole copy, queued again stamped now, went over a
+ * newer iPad edit of the note. An edit still waiting on this phone takes the
+ * result in its own queued copy, which keeps the time David saved it.
+ */
+export async function queueProjectUpdatePhotoAnalysis<TUpdate extends PatchedProjectUpdate>(
+  update: TUpdate,
+  photoId: string,
+  before: object,
+): Promise<void> {
+  await queueProjectUpdatePatch(update, fieldUpdatePhotoAnalysisPatchFor(before, update, photoId));
+}
+
+type PatchedProjectUpdate = {
+  id: string;
+  projectId?: string | null;
+  projectName?: string;
+  selectedAreaName?: string | null;
+  status?: string;
+  photos?: ReadonlyArray<{ id: string }>;
+  documents?: ReadonlyArray<{ id: string }> | null;
+};
+
+async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
+  const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
+  projectUpdateLastVersionInCloud.delete(update.id);
+  if (await hasProjectUpdateDeletionIntent(update.id)) return;
+  if (!isFieldUpdatePhotoAnalysisPatch(patch) && patch.remove) {
+    await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
+  }
+  // A photo result the copy last put in the cloud holds and that stands over
+  // the card's is no change of the card's (A4 pass 30 L1), as in
+  // projectUpdateVersionIsInCloud: a photo re-analysing made the card read
+  // as owing its own sync, so another result or a document change sent the
+  // whole card, stamped now, with "analyzing", over an iPad note.
+  const inCloudButForThisChange = fieldUpdateOwesNothingBeyond(lastInCloud, [patch], update) ||
+    fieldUpdateOwesNothingBeyond(lastInCloud, [patch], applyFieldUpdateDocumentPatches(
+      withSentCopysStandingParts(update as unknown as ProjectUpdate, lastInCloud) as object, [patch]));
+  const conflicts = await getSyncConflicts();
+  const inConflict = Boolean(openFieldUpdateConflict(conflicts, update.id));
+  const mayOweOwnSync = fieldUpdateOwesOwnSync(update.status) && !inCloudButForThisChange && !inConflict;
+  // A late analysis result is the phone's copy's too, in a conflict (whole-
+  // app audit A4 pass 14 #4): Keep Phone sends the copy recorded with the
+  // conflict, and undid the result once its patch had gone up. A document
+  // change is already taken in at the choice (withDocumentChangesSinceConflict).
+  if (inConflict && isFieldUpdatePhotoAnalysisPatch(patch)) await addResultToConflictCopy(update.id, patch);
+  const queueId = projectUpdateQueueItemId(update.id);
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueId);
+    const existingPayload = existing?.payload as ProjectUpdateRecordPayload | undefined;
+    if (existing && (existing.operation === 'delete' || existingPayload?.archiveOnly)) {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+    const waitingPatches = queuedFieldUpdateDocumentPatches(existing);
+    const owesOwnSync = mayOweOwnSync &&
+      !(waitingPatches && fieldUpdateOwesNothingBeyond(existingPayload?.updateData, [patch], update));
+    const photoIds = uniquePhotoAssetIds((update.photos || []).map(photo => photo.id));
+    const withChange = (item: SyncQueueItem): SyncQueueItem => ({ ...item, payload: {
+      ...(item.payload as ProjectUpdateRecordPayload),
+      updateData: applyFieldUpdateDocumentPatches((item.payload as ProjectUpdateRecordPayload).updateData as object, [patch]),
+    } });
+    // An edit held for conflict review (whole-app audit A7 pass 14 L-2)
+    // takes a late analysis result too, but the result also goes onto the
+    // cloud's copy now, as it does with nothing held: taken only into the
+    // held edit, it never reached the iPad while the conflict was open, and
+    // Keep Cloud, which withdraws that edit, lost it. The patch carries the
+    // held edit (newerEdit), which is queued again, as it was, once the
+    // patch lands (newerEditQueuedAfter). A later change goes into both.
+    // Keep Cloud's copy takes it in, and keeps it (A4 pass 21 F1): a Keep
+    // Cloud that fails, or the next one after a kill, puts it on the phone's work.
+    const heldForReview = existing && !waitingPatches && existingPayload?.updateData && !existingPayload.keepCloudChoice &&
+      isFieldUpdatePhotoAnalysisPatch(patch) && fieldUpdateCopyHeldForReview(existing, conflicts) ? existing : null;
+    const carried = heldForReview ?? (waitingPatches && isRecord(existingPayload?.newerEdit) ? existingPayload!.newerEdit : null);
+    const absorbed = existingPayload?.keepCloudChoice
+      ? { absorbedPatches: mergeFieldUpdateDocumentPatches(existingPayload.absorbedPatches || [], patch) } : {};
+    const next: SyncQueueItem = existing && !waitingPatches && existingPayload?.updateData && !heldForReview
+      ? withChange({ ...existing, payload: { ...existingPayload, ...absorbed } })
+      : {
+          id: queueId, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          payload: {
+            id: update.id, projectId: update.projectId, projectName: update.projectName, selectedAreaName: update.selectedAreaName,
+            updateData: update,
+            ...(owesOwnSync ? { pendingPhotoAssetIds: photoIds } : {
+              documentPatches: mergeFieldUpdateDocumentPatches(waitingPatches || [], patch),
+              pendingPhotoAssetIds: update.status === 'sent' ? []
+                : waitingPatches ? existingPayload?.pendingPhotoAssetIds || [] : photoIds,
+            }),
+            ...(carried ? { newerEdit: withChange(carried) } : {}),
+          },
+          ...(ownerId ? { ownerId } : {}),
+        };
+    return { nextQueue: [...queue.filter(item => item.id !== queueId), next], result: undefined };
+  });
+}
+
+/** The phone's copy recorded with an update's conflict, with this analysis result (A4 pass 14 #4). */
+async function addResultToConflictCopy(updateId: string, patch: FieldUpdatePhotoAnalysisPatch): Promise<void> {
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    let changed = false;
+    const next = conflicts.map(conflict => {
+      const local = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+      if (conflict.entity !== 'project_update' || conflict.localId !== updateId || !isRecord(local?.updateData)) return conflict;
+      const updateData = applyFieldUpdatePhotoAnalysisPatch(local!.updateData as object, patch);
+      if (updateData === local!.updateData) return conflict;
+      changed = true;
+      return { ...conflict, localPayload: { ...local, updateData } };
+    });
+    if (changed) await writeSyncConflicts(next);
+  });
+}
+
+const removedDocumentsRequeuedThisLaunch = new Set<string>();
+
+/**
+ * Takes off the cloud copy, again, a document this device took off an
+ * update, when a cloud copy lists it once more: the iPad sent its own older
+ * copy (whole-app audit A7 pass 6 M1). Once per document per launch. The
+ * number queued.
+ */
+export async function requeueRemovedFieldUpdateDocuments(
+  cloudUpdates: readonly object[],
+  localUpdates: readonly object[],
+  removed: RemovedFieldUpdateDocuments,
+): Promise<number> {
+  if (removed.size === 0) return 0;
+  const localById = new Map(localUpdates.map(update => [(update as { id: string }).id, update]));
+  const due = cloudUpdates.flatMap(cloudUpdate => {
+    const { id, isArchived, documents } = cloudUpdate as { id: string; isArchived?: boolean; documents?: Array<{ id: string }> };
+    const local = localById.get(id);
+    if (!local || isArchived || !Array.isArray(documents)) return [];
+    return documents
+      .map(document => removedFieldUpdateDocumentKey(id, document.id))
+      .filter(key => removed.has(key) && !removedDocumentsRequeuedThisLaunch.has(key))
+      .map(key => ({ key, local, documentId: key.slice(id.length + 1) }));
+  });
+  for (const { key, local, documentId } of due) {
+    removedDocumentsRequeuedThisLaunch.add(key);
+    await queueProjectUpdateDocumentChange(local as { id: string }, documentId);
+  }
+  return due.length;
+}
+
 export async function queueProjectUpdateDelete(update: {
   id: string;
   projectName?: string;
@@ -2226,6 +2703,7 @@ async function persistProjectUpdateRecord<TUpdate extends {
   autoUpload: boolean,
   pendingPhotoAssetIds: readonly string[],
 ) {
+  projectUpdateLastVersionInCloud.delete(update.id); // a new version to send (A7 pass 7 M1)
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
@@ -2249,8 +2727,140 @@ function projectUpdateQueueItemId(updateId: string) {
   return `project-update-${updateId}`;
 }
 
+/**
+ * A sync attempt's own write of the update's queue record (whole-app audit
+ * A7 pass 7 M1). A sync attempt is not an edit:
+ * - a waiting document patch stays a patch on the cloud's copy; its photos
+ *   are this attempt's, for the whole-copy fallback (A7 pass 6 M1);
+ * - with nothing queued, and this copy (its documents' upload state aside)
+ *   the one this device last put in the cloud (`lastVersionInCloud`),
+ *   nothing is written. Once a document patch had landed, the attempt sent
+ *   this device's whole, older copy again, stamped now, over the iPad's
+ *   newer note;
+ * - the attempt's second write (`replacing`, what its first write left)
+ *   replaces only that record. One uploaded meanwhile is not queued again,
+ *   whole; a newer record written meanwhile (a late photo-analysis result)
+ *   stays.
+ * - a waiting patch stays only while this copy owes nothing beyond it: it
+ *   reads sent, or it is the patch's copy, a Retry's stamps aside (A7 pass
+ *   8 L1; the same test as a document change makes, A7 pass 9 L1). Otherwise
+ *   this copy goes up whole: an edit whose queue write was lost after the
+ *   document change was never sent.
+ * - a whole copy keeps the time David saved it (A4 pass 13 M1; see
+ *   queuedEditSavedAt), unless David chose to send it over a conflict (a
+ *   Retry he confirmed): `overConflict`, that conflict's id, which the copy
+ *   carries so the upload pass sends it (A4 pass 15 H1). Such a copy goes up
+ *   whole, a waiting patch with it: "Send your version over it".
+ * The item left in the queue; null when nothing was written.
+ */
+async function writeStagedProjectUpdateRecord(
+  update: ProjectUpdate,
+  pendingPhotoAssetIds: readonly string[],
+  { lastVersionInCloud = false, replacing, overConflict }: {
+    lastVersionInCloud?: boolean; replacing?: SyncQueueItem | null; overConflict?: string;
+  },
+): Promise<SyncQueueItem | null> {
+  if (await hasProjectUpdateDeletionIntent(update.id)) return null;
+  const id = projectUpdateQueueItemId(update.id);
+  const pending = uniquePhotoAssetIds(pendingPhotoAssetIds);
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  return mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === id);
+    const unchanged = { nextQueue: queue, result: null, persist: false };
+    if (existing?.operation === 'delete') return unchanged;
+    if (replacing !== undefined && !(existing && replacing && sameStagedProjectUpdateRecord(existing, replacing))) return unchanged;
+    // Archived when the copy it goes over is (whole-app audit A4 pass 17
+    // L2): one queued, or the one this phone last put in the cloud. Nothing
+    // un-archives a field update. After Keep Phone kept the iPad's archive,
+    // the card's copy, never archived, went up over it, and the update came
+    // back on the iPad.
+    const queuedCopy = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData;
+    const copy = withQueuedAnalysisResults(withArchiveKept(update, existing ? [existing] : [], [queuedCopy,
+      projectUpdateLastVersionInCloud.get(update.id)].find(item => isRecord(item) && item.isArchived === true)) as ProjectUpdate,
+    queuedCopy);
+    if (!existing && lastVersionInCloud && projectUpdateVersionIsInCloud(copy)) return unchanged;
+    const patch = !overConflict && Boolean(queuedFieldUpdateDocumentPatches(existing)) && (!fieldUpdateOwesOwnSync(copy.status) ||
+      fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], copy));
+    const next: SyncQueueItem = existing && patch
+      ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
+      : {
+          id, entity: 'project_update', operation: 'update', createdAt: now, retryCount: 0, lastError: null,
+          // The second write of a send over a conflict keeps the first's time.
+          changedAt: ((!overConflict || replacing) && existing && queuedEditSavedAt(existing, copy)) || now,
+          payload: {
+            id: copy.id, projectId: copy.projectId, projectName: copy.projectName,
+            selectedAreaName: copy.selectedAreaName, updateData: copy, pendingPhotoAssetIds: pending,
+            ...(overConflict ? { overConflict } : {}),
+          },
+          ...(ownerId ? { ownerId } : {}),
+        };
+    if (!patch) projectUpdateLastVersionInCloud.delete(copy.id);
+    return {
+      nextQueue: patch ? queue.map(item => item === existing ? next : item) : [...queue.filter(item => item.id !== id), next],
+      result: next,
+    };
+  });
+}
+
+/**
+ * The copy a sync attempt stages, with a result the queued copy, or the copy
+ * this device last put in the cloud, holds that stands over the copy's own
+ * (photoAnalysisResultStands; whole-app audit A4 pass 26 L2, pass 28 L1), as
+ * the archive is kept: Keep Phone put the iPad's newer, Confirmed result into
+ * the newer edit it queued, and the waiting-update sync then sent the card's
+ * failed one over it; after a send of that edit failed partway, Sync Now did.
+ * A photo the card is analysing again goes up with the standing result, not
+ * "analyzing": over the iPad's Confirmed result, a failed re-run then went on
+ * too. The card keeps showing "Analyzing" (withAnalysisResultsLastInCloud).
+ */
+function withQueuedAnalysisResults(copy: ProjectUpdate, queuedCopy: unknown): ProjectUpdate {
+  return withPhoneAnalysisResults(copy, [queuedCopy, projectUpdateLastVersionInCloud.get(copy.id)]) as ProjectUpdate;
+}
+
+/**
+ * When David saved this copy of the update: the time its whole queued copy
+ * of the same content carries (its documents' upload state, the project id
+ * an upload pass bound and a Retry's stamps aside); null for any other
+ * record (whole-app audit A4 pass 13 M1). The conflict check compares the
+ * cloud's time with it. Each sync attempt stamped it "now": an edit saved
+ * with no signal, waiting on its photos, always read newer than the iPad's
+ * later edit, and went over it with no conflict shown. Photo analysis aside
+ * too (A4 pass 13 G1): a result that landed in the queued copy after a sync
+ * attempt read the update is not an edit, and re-stamped it now.
+ */
+function queuedEditSavedAt(item: SyncQueueItem, update: ProjectUpdate): string | null {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (item.operation === 'delete' || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return null;
+  return sameProjectUpdateContent(withoutPhotoAnalysis(payload.updateData), withoutPhotoAnalysis(update) as ProjectUpdate,
+    { retryStampsAside: true }) ? item.changedAt : null;
+}
+
+/**
+ * The record a sync attempt wrote, still: retry stamps aside, and whether or
+ * not an upload pass has since bound its project id
+ * (prepareQueueItemProjectIdentity), as one that found it waiting for its
+ * photos does. Otherwise that record kept waiting for photos the attempt had
+ * just checked.
+ */
+function sameStagedProjectUpdateRecord(current: SyncQueueItem, written: SyncQueueItem): boolean {
+  const unbound = (item: SyncQueueItem): SyncQueueItem => {
+    const { projectId: _projectId, projectName: _projectName, updateData, ...rest } = item.payload as ProjectUpdateRecordPayload;
+    return {
+      ...item,
+      payload: { ...rest, updateData: updateData && typeof updateData === 'object' ? { ...updateData, projectId: undefined } : updateData },
+    };
+  };
+  return sameQueueRevision(unbound(current), unbound(written));
+}
+
 export async function removeProjectUpdateFromSyncQueue(updateId: string): Promise<number> {
-  if (!updateId.trim()) return 0;
+  return (await withdrawProjectUpdateFromSyncQueue(updateId)).length;
+}
+
+/** The update's queued record work (its deletes stay), taken off the queue: the items as they were. */
+async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<SyncQueueItem[]> {
+  if (!updateId.trim()) return [];
 
   return mutateOfflineQueue(queue => {
     const nextQueue = queue.filter(item => {
@@ -2260,21 +2870,266 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
       const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
       return payload.id !== updateId;
     });
-    const removed = queue.length - nextQueue.length;
+    const withdrawn = queue.filter(item => !nextQueue.includes(item));
     return {
       nextQueue,
-      result: removed,
-      persist: removed > 0,
+      result: withdrawn,
+      persist: withdrawn.length > 0,
     };
   });
 }
 
+/**
+ * Keep Cloud's save failed (whole-app audit A4 pass 13 L2): the phone's work
+ * it withdrew goes back, in place of the cloud copy it queued, so neither
+ * copy has changed, as Settings says. That work had been lost (a newer
+ * edit, a document change), and the cloud copy went up later and cleared
+ * the conflict. Work queued since is newer, and stays.
+ *
+ * Exactly as it was (A4 pass 22 L2, L3), for each update: the latest whole
+ * copy withdrawn goes back as it was (phoneWorkToPutBack), and every change
+ * taken in after it goes on top, oldest first, as any such change does
+ * (queueProjectUpdatePatch). Only the later withdrawal of an id went back: a
+ * document upload or analysis finishing in Keep Cloud's first upload pass,
+ * after David's newer edit was withdrawn, went back alone, and Keep Phone
+ * then sent his older edit. And a copy a killed app left went after this
+ * one's, so its older analysis result won.
+ */
+async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueItem[], queued: SyncQueueItem | null): Promise<void> {
+  const chosenFor = (queued?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict;
+  const plans = await mutateOfflineQueue(queue => {
+    // Keep Cloud's copy goes by its mark (whole-app audit A4 pass 21 F1),
+    // whatever it took in meanwhile: changed by a document upload or an
+    // analysis result, it stayed, and the phone's work was not put back.
+    const chosen = queued ? queue.find(item => item.id === queued.id && isKeepCloudChoice(item, chosenFor)) : undefined;
+    const kept = queue.filter(item => item !== chosen);
+    const queuedIds = new Set(kept.map(item => item.id));
+    // None of it goes over the conflict now without a new choice (A4 pass
+    // 15 H1). A copy an earlier Keep Cloud left (a kill) is not the phone's
+    // work: only what it took in goes back.
+    const taken = [...withdrawn, ...(chosen ? [chosen] : [])];
+    const plans = [...new Set(taken.map(item => item.id))]
+      .map(id => phoneWorkToPutBack(taken.filter(item => item.id === id)));
+    const restored = plans.flatMap(plan => plan.restore && !queuedIds.has(plan.restore.id)
+      ? [withoutChoiceOverConflict(plan.restore)] : []);
+    return {
+      nextQueue: [...kept, ...restored],
+      result: plans,
+      persist: kept.length !== queue.length || restored.length > 0,
+    };
+  });
+  // The changes go onto the phone's work put back, as any such change does
+  // (queueProjectUpdatePatch): an analysis result in a patch on the cloud's
+  // copy that carries the held edit (A7 pass 14 L-2), a document change into
+  // the held edit. Oldest first: a later result for a photo wins.
+  for (const plan of plans) {
+    if (!isRecord(plan.card)) continue;
+    for (const patch of plan.changes) await queueProjectUpdatePatch(plan.card as unknown as PatchedProjectUpdate, patch);
+  }
+}
+
+/**
+ * What a failed Keep Cloud puts back for one update (whole-app audit A4 pass
+ * 22 L2, L3), from what it took, oldest first, its own copy last:
+ * - `restore`, as it was: the latest whole copy (or archive) of the phone's,
+ *   which holds what came before it. With none, the first item taken when it
+ *   is the phone's: a patch item, which may carry a held edit (newerEdit).
+ * - `changes`, every change taken in after it, oldest first: a patch item's
+ *   patches, and what a Keep Cloud copy took in (one a killed app left
+ *   before this one's).
+ * - `card`: the copy those changes are made on.
+ *
+ * A patch item that carries a whole edit (newerEdit) is a whole copy too
+ * (whole-app audit A4 pass 23 L1): restored as it is, it holds that edit.
+ * David saved again while Keep Cloud ran, and an analysis finishing after
+ * that save turned his edit into such a patch (A7 pass 14 L-2); counted as
+ * changes only, it went back onto his older edit, and the newest was lost.
+ */
+function phoneWorkToPutBack(taken: readonly SyncQueueItem[]): {
+  restore: SyncQueueItem | null; changes: FieldUpdateDocumentPatch[]; card: unknown;
+} {
+  const phoneWork = (item: SyncQueueItem) => !isKeepCloudChoice(item);
+  const carriesWholeEdit = (item: SyncQueueItem) => {
+    const carried = (item.payload as Partial<ProjectUpdateRecordPayload>).newerEdit;
+    return isRecord(carried) && !queuedFieldUpdateDocumentPatches(carried) &&
+      isRecord((carried.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData);
+  };
+  const lastWhole = taken.map(item => phoneWork(item) && (!queuedFieldUpdateDocumentPatches(item) || carriesWholeEdit(item)))
+    .lastIndexOf(true);
+  const at = lastWhole >= 0 ? lastWhole : taken[0] && phoneWork(taken[0]) ? 0 : -1;
+  const restore = at >= 0 ? taken[at] : null;
+  const newestFirst = [...taken].reverse();
+  const card = [restore, ...newestFirst.filter(phoneWork), ...newestFirst]
+    .map(item => (item?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData).find(isRecord);
+  return { restore, changes: changesTakenIn(taken.slice(at + 1)), card };
+}
+
+/**
+ * The changes queued work took in, oldest first (whole-app audit A4 pass
+ * 22): a patch item's patches (a document change, a late analysis result),
+ * and what a Keep Cloud copy took in while it was queued (absorbedPatches).
+ */
+function changesTakenIn(items: readonly SyncQueueItem[]): FieldUpdateDocumentPatch[] {
+  return items.flatMap(item => isKeepCloudChoice(item)
+    ? (item.payload as Partial<ProjectUpdateRecordPayload>).absorbedPatches ?? []
+    : queuedFieldUpdateDocumentPatches(item) ?? []);
+}
+
+/**
+ * Keep Cloud's chosen copy queued (whole-app audit A4 pass 22), in the write
+ * that takes whatever was queued for the update since Keep Cloud's second
+ * withdrawal: a patch item's changes go into the copy (it replaced that
+ * item, and the change was lost), and what it took goes back if Keep Cloud
+ * fails. A delete waiting stays, and the copy is not queued, as before
+ * (enqueuePendingChange). The copy as queued.
+ */
+async function queueKeepCloudChoice(choice: SyncQueueItem): Promise<{ chosen: unknown; taken: SyncQueueItem[] }> {
+  const payload = choice.payload as ProjectUpdateRecordPayload;
+  return mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === choice.id);
+    if (existing?.operation === 'delete') {
+      return { nextQueue: queue, result: { chosen: payload.updateData, taken: [] }, persist: false };
+    }
+    const taken = existing ? [existing] : [];
+    const chosen = withArchiveKept(applyFieldUpdateDocumentPatches(payload.updateData as object, changesTakenIn(taken)), taken);
+    return {
+      nextQueue: [...queue.filter(item => item !== existing), { ...choice, payload: { ...payload, updateData: chosen } }],
+      result: { chosen, taken },
+    };
+  });
+}
+
+/** Keep Cloud's chosen copy (A7 pass 17 L-1), over this conflict when one is named. */
+function isKeepCloudChoice(item: SyncQueueItem, conflictId?: string): boolean {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload> | undefined;
+  return item.entity === 'project_update' && payload?.keepCloudChoice === true &&
+    (conflictId === undefined || payload.overConflict === conflictId);
+}
+
+function withoutChoiceOverConflict(item: SyncQueueItem): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload> | undefined;
+  if (item.entity !== 'project_update' || !payload?.overConflict) return item;
+  const { overConflict: _chosen, ...rest } = payload;
+  return { ...item, payload: rest };
+}
+
+export type ProjectUpdateTombstoneReplay = {
+  updateId: string;
+  /**
+   * Re-queue a cloud archive when none is queued; null for any archive time.
+   * `documentChangesOnly`: the cloud already reads it archived, so an archive
+   * goes only to carry document changes still waiting (A4 pass 12 L2).
+   */
+  archive: false | { archivedAt: string | null; documentChangesOnly?: boolean };
+};
+
+/**
+ * The startup replay of the field-update deletion journal as ONE queue pass
+ * (whole-app audit A2 pass 2 M1). Before, every tombstone ever made removed
+ * and re-added its own queue item: about five queue rewrites per old archive
+ * on every launch. Now record work for a tombstoned update is dropped, an
+ * archive already queued is kept as it is (with its retry state), a missing
+ * archive is added, and the queue is written once, only when something
+ * changed. Queued deletes are never touched; their ids are returned, with
+ * the deletes the cloud confirmed, from one journal read (audit A2 pass 3
+ * L2; an unreadable journal confirms none, so every unqueued delete is
+ * re-queued as before).
+ */
+export async function replayProjectUpdateTombstonesInQueue(
+  replays: readonly ProjectUpdateTombstoneReplay[],
+): Promise<{ queuedDeleteIds: ReadonlySet<string>; confirmedDeleteIds: ReadonlySet<string> }> {
+  const byId = new Map(replays.filter(replay => replay.updateId.trim()).map(replay => [replay.updateId, replay]));
+  const confirmedDeleteIds = byId.size === 0 ? new Set<string>()
+    : await confirmedProjectUpdateDeletionIds().catch(() => new Set<string>());
+  const ownerId = currentCloudOwner().ownerId;
+  const queuedAt = new Date().toISOString();
+  const outcome = await mutateOfflineQueue(queue => {
+    const updateItems = queue.filter(item => item.entity === 'project_update');
+    const payloadId = (item: SyncQueueItem) => (item.payload as Partial<ProjectUpdateRecordPayload>).id;
+    const queuedDeleteIds = new Set(updateItems.flatMap(item => {
+      const id = item.operation === 'delete' ? payloadId(item) : undefined;
+      return id ? [id] : [];
+    }));
+    const archiveKept = new Set<string>();
+    // A document change still waiting for an update being archived goes up
+    // with the archive (whole-app audit A4 pass 11 O2): the archive replaced
+    // it, and the archived cloud copy still listed a document taken off. So
+    // does one for an update the cloud already reads archived (A4 pass 12
+    // L2): a refresh turns this phone's archive record into that one, and
+    // the next replay dropped the change with the rest of the update's work.
+    // The archive save re-reads the cloud's copy, so sending it again is
+    // harmless; with nothing waiting, no archive goes, as before.
+    const waitingDocumentChanges = new Map<string, FieldUpdateDocumentPatch[]>();
+    const kept = queue.filter(item => {
+      const replay = item.entity === 'project_update' && item.operation !== 'delete'
+        ? byId.get(payloadId(item) ?? '')
+        : undefined;
+      if (!replay) return true;
+      const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+      const sameArchive = replay.archive !== false && payload.archiveOnly === true &&
+        item.id === projectUpdateQueueItemId(replay.updateId) &&
+        (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt) &&
+        (!replay.archive.documentChangesOnly || Boolean(queuedFieldUpdateDocumentPatches(item)));
+      if (sameArchive) archiveKept.add(replay.updateId);
+      const patches = replay.archive !== false && !sameArchive ? queuedFieldUpdateDocumentPatches(item) : null;
+      if (patches) waitingDocumentChanges.set(replay.updateId, patches);
+      return sameArchive;
+    });
+    const added: SyncQueueItem[] = [...byId.values()].flatMap(replay => {
+      if (replay.archive === false || archiveKept.has(replay.updateId) || queuedDeleteIds.has(replay.updateId)) return [];
+      const archivedAt = replay.archive.archivedAt || queuedAt;
+      const documentPatches = waitingDocumentChanges.get(replay.updateId);
+      if (replay.archive.documentChangesOnly && !documentPatches) return [];
+      return [{
+        id: projectUpdateQueueItemId(replay.updateId), entity: 'project_update', operation: 'update',
+        payload: { id: replay.updateId, updateData: undefined, archiveOnly: true, archivedAt, ...(documentPatches ? { documentPatches } : {}) },
+        createdAt: queuedAt, changedAt: archivedAt, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
+      }];
+    });
+    const changed = added.length > 0 || kept.length !== queue.length;
+    return {
+      nextQueue: [...kept, ...added],
+      result: { queuedDeleteIds, added: added.length },
+      persist: changed,
+    };
+  });
+  if (outcome.added > 0) requestPendingChangesUpload('queue_item_enqueued');
+  return { queuedDeleteIds: outcome.queuedDeleteIds, confirmedDeleteIds };
+}
+
 export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
+  { overConflict = false }: FieldUpdateSyncChoice = {},
 ): Promise<StagedProjectUpdateSync> {
-  const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
-  await queueProjectUpdateRecord(cloudRecoverableUpdate, false);
-  const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate);
+  const conflict = openFieldUpdateConflict(await getSyncConflicts(), update.id);
+  // Sent over the conflict ("Send your version?"), with the cloud copy's
+  // photo results that stand over its own (A4 pass 27 L3): the phone's
+  // failed result went over the iPad's retried, Confirmed one.
+  const withCloudPaths = projectUpdateWithCloudPhotoPaths(update);
+  const cloudRecoverableUpdate = conflict && overConflict
+    ? withPhoneAnalysisResults(withCloudPaths, [conflict.remotePayload]) as ProjectUpdate : withCloudPaths;
+  const owner = currentCloudOwner();
+  // A sync attempt is not an edit (whole-app audit A7 pass 6 M1, pass 7 M1):
+  // see writeStagedProjectUpdateRecord. While a conflict is open for the
+  // update, nothing automatic sends it, whichever copy this is (A4 pass 15
+  // H1): the waiting-update sync, Sync Now, Retry Sync and a Save's own sync
+  // write nothing, and the card reads "Needs Review". Since 139b0bb any copy
+  // that was not exactly the conflict's own (a document's details edited, an
+  // older copy put back, the iPad's copy a refresh showed) went up whole,
+  // stamped now, over the iPad's edit, and the conflict was gone with
+  // David's offline edit in it. Keep Phone sends a newer edit saved since
+  // (A7 pass 11 L-2), its photos checked here once the conflict is settled.
+  // Only a Retry David confirmed sends this copy over the conflict.
+  const conflicted = Boolean(conflict);
+  const heldForConflictReview = conflicted && !overConflict;
+  const sentOverConflict = conflict && overConflict ? conflict.id : undefined;
+  const staged = heldForConflictReview ? null : await writeStagedProjectUpdateRecord(
+    cloudRecoverableUpdate, cloudRecoverableUpdate.photos.map(photo => photo.id),
+    { lastVersionInCloud: !conflicted, overConflict: sentOverConflict });
+  const nothingToSend = heldForConflictReview ||
+    (!staged && !conflicted && projectUpdateVersionIsInCloud(cloudRecoverableUpdate));
+  const photoAttempt = await uploadUpdatePhotosForSync(
+    nothingToSend ? { ...cloudRecoverableUpdate, photos: [] } : cloudRecoverableUpdate, owner);
   // A photo found under a legacy project path keeps that path, so the cloud
   // record (and the desktop) point at the file that exists.
   const recordToPersist = Object.keys(photoAttempt.relocatedPhotoPaths).length === 0
@@ -2285,11 +3140,10 @@ export async function stageProjectUpdateForSync(
         ? { ...photo, cloudStoragePath: photoAttempt.relocatedPhotoPaths[photo.id], cloudRecoveryStatus: null }
         : photo),
     };
-  await persistProjectUpdateRecord(
-    recordToPersist,
-    false,
-    photoAttempt.failedPhotoIds,
-  );
+  // Not into the next account's storage (whole-app audit A1 H2/M3).
+  if (cloudOwnerUnchanged(owner) && staged) {
+    await writeStagedProjectUpdateRecord(recordToPersist, photoAttempt.failedPhotoIds, { replacing: staged, overConflict: sentOverConflict });
+  }
 
   return {
     workAttempt: {
@@ -2314,18 +3168,31 @@ export async function stageProjectUpdateForSync(
     uploadedPhotoCount: photoAttempt.uploadedPhotoCount,
     missingPhotos: photoAttempt.missingPhotos,
     pendingPhotoAssetIds: photoAttempt.failedPhotoIds,
+    ...(heldForConflictReview ? { heldForConflictReview } : {}),
   };
 }
 
 export async function runFieldUpdateCloudSync(
   update: ProjectUpdate,
+  choice: FieldUpdateSyncChoice = {},
 ): Promise<{
   syncResult: SyncUploadResult;
   workAttempt: FieldUpdateSyncWorkAttempt;
   missingPhotos: MissingSyncPhoto[];
+  /** Left alone, in conflict (A4 pass 13 M1, A4 pass 15 H1): its card stays as it is. */
+  heldForConflictReview?: boolean;
 }> {
-  const staged = await stageProjectUpdateForSync(update);
+  const staged = await stageProjectUpdateForSync(update, choice);
   const workAttempt = staged.workAttempt;
+  if (staged.heldForConflictReview) {
+    return {
+      syncResult: {
+        configured: true, uploaded: 0, uploadedByEntity: {}, itemOutcomes: {}, queued: 0, conflicts: 1, failureCategory: 'unknown',
+        errors: [`Field update for “${update.projectName || 'Unassigned Project'}” has a cloud conflict that needs review.`],
+      },
+      workAttempt, missingPhotos: [], heldForConflictReview: true,
+    };
+  }
   const queueItemId = projectUpdateQueueItemId(update.id);
   let aggregateResult = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
@@ -2349,7 +3216,10 @@ export async function runFieldUpdateCloudSync(
   const currentConflict = conflicts.find(
     conflict => conflict.entity === 'project_update' && conflict.localId === update.id,
   );
-  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId];
+  // Its record sent by another upload pass meanwhile, or nothing to send
+  // again: this device's last version is in the cloud (A7 pass 7 M1).
+  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId] ||
+    (!remainingItem && !currentConflict && projectUpdateVersionIsInCloud(update) ? 'uploaded' : undefined);
   const itemSucceeded =
     itemOutcome === 'uploaded' && !remainingItem && !currentConflict;
   const itemErrors = remainingItem?.lastError
@@ -2369,6 +3239,12 @@ export async function runFieldUpdateCloudSync(
     queued: remainingItem ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
+    // A conflict or an item failure is never read from its sentence: that
+    // sentence carries the project name, so "Fiber Network" read as offline
+    // and was re-sent over the other device's row (whole-app audit A4 pass 5).
+    failureCategory: isSyncFailureCategory(remainingItem?.lastFailureCategory)
+      ? remainingItem.lastFailureCategory
+      : currentConflict || itemOutcome === 'failed' ? 'unknown' : null,
   };
   const metadataBlocked = staged.pendingPhotoAssetIds.length > 0;
 
@@ -2435,6 +3311,10 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
+  // One pass sends one account's work (whole-app audit A1 M3): items queued
+  // under another account are held, and a sign-out or another sign-in stops
+  // the pass before its next item.
+  const owner = currentCloudOwner();
   const initialQueue = await getOfflineQueue();
   // Active user work is always the first recovery authority. Some older
   // devices retain hundreds of forensic quarantine snapshots; scanning every
@@ -2447,11 +3327,19 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const queue = initialQueue.length === 0
     ? await getOfflineQueue()
     : initialQueue;
-  const orderedQueue = pendingUploadOrder(queue);
+  const orderedQueue = pendingUploadOrder(
+    queue.filter(item => !heldForAnotherOwner(item.ownerId, owner)),
+  );
+  // Nothing automatic sends an update in conflict (whole-app audit A4 pass
+  // 15 H1): a whole copy of it waits, as it is, for Keep Phone, Keep Cloud or
+  // a Retry David confirms, which mark their copy. This pass is the automatic
+  // retry, the refresh and realtime triggers, and every sync's upload.
+  const conflictsAtStart = await getSyncConflicts();
+  const heldForReview = orderedQueue.filter(item => fieldUpdateCopyHeldForReview(item, conflictsAtStart));
   const {
     taskPriorityBatch,
     uploadBatch,
-  } = planPendingUploadBatch(orderedQueue);
+  } = planPendingUploadBatch(orderedQueue.filter(item => !heldForReview.includes(item)));
 
   if (!configuration.configured) {
     return {
@@ -2468,9 +3356,17 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const attemptedItemsById = new Map(uploadBatch.map(item => [item.id, item]));
   const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
+  const itemErrors: Record<string, string> = {};
+  const itemFailed = (itemId: string, message: string) => {
+    errors.push(message);
+    itemErrors[itemId] = message;
+  };
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
-  const uploadContext: QueueUploadContext = {};
+  const uploadContext: QueueUploadContext = { settledQueueItemIds: resolvedIds };
+  // Still queued, with no error: no retry is owed until David chooses.
+  heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
   let uploaded = 0;
+  let heldErrorCount = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
     project: 0,
     project_update: 0,
@@ -2519,6 +3415,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   // durably reconcile task rows as one bounded batch; unrelated historical
   // field-update retries must not keep the Save button waiting.
   for (const item of uploadBatch) {
+    if (!cloudOwnerUnchanged(owner)) break;
     if (resolvedIds.has(item.id)) continue;
     let attemptedItem = item;
 
@@ -2537,6 +3434,30 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
+    if (item.entity === 'reference_document' && await queuedBridgeDocumentWasDeleted(item)) {
+      // The phone document behind this shared record was deleted before it
+      // uploaded (audit A7 pass 4); see ProjectDocumentBridge.
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
+    if (await queuedProjectChangeWasDeleted(item, uploadContext)) {
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
+    if (item.lastFailureCategory === 'current_drawing_protected') {
+      // The cloud refused this revision for good. It is held, with its plain
+      // reason and no retry, until the owner edits the document again, which
+      // queues a new revision (whole-app audit A8 pass 1 F3 (30 Sep 2026)).
+      itemOutcomes[item.id] = 'blocked';
+      heldErrorCount += 1;
+      itemFailed(item.id, formatQueueItemFailure(item, item.lastError || CURRENT_DRAWING_PROTECTED_SYNC_MESSAGE));
+      continue;
+    }
+
     if (
       operationalTombstoneGate &&
       queueEntityUsesDAVESyncTombstones(item.entity) &&
@@ -2550,8 +3471,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         ...item,
         retryCount: item.retryCount + 1,
         lastError: sanitizedResult,
+        lastFailureCategory: classifySyncFailureText([reason]),
       });
-      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      itemFailed(item.id, formatQueueItemFailure(item, sanitizedResult));
       continue;
     }
 
@@ -2573,8 +3495,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
         ...item,
         retryCount: item.retryCount + 1,
         lastError: sanitizedResult,
+        lastFailureCategory: classifySyncFailureText([prepared]),
       });
-      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      itemFailed(item.id, formatQueueItemFailure(item, sanitizedResult));
       continue;
     }
     attemptedItem = prepared;
@@ -2608,14 +3531,24 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     }
 
     const sanitizedResult = sanitizeUserFacingSyncMessage(resultCode);
-    itemOutcomes[item.id] = 'failed';
+    const failureCategory = classifySyncFailureText([resultCode]);
+    const heldForOwner = failureCategory === 'current_drawing_protected';
+    itemOutcomes[item.id] = heldForOwner ? 'blocked' : 'failed';
+    if (heldForOwner) heldErrorCount += 1;
 
     retriedItemsById.set(item.id, {
       ...attemptedItem,
       retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
+      lastFailureCategory: failureCategory,
     });
-    errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
+    itemFailed(item.id, formatQueueItemFailure(attemptedItem, sanitizedResult));
+  }
+
+  // The account changed: the queue on this phone is no longer this pass's,
+  // so nothing is written back; its items stay queued for their account.
+  if (!cloudOwnerUnchanged(owner)) {
+    return accountChangedDuringUpload(uploaded, uploadedByEntity, itemOutcomes, queue.length);
   }
 
   // Reconcile against the queue as it stands right now, not the snapshot
@@ -2625,7 +3558,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     const nextQueue = currentQueue.flatMap(item => {
       const attempted = attemptedItemsById.get(item.id);
       if (!attempted || !sameQueueRevision(item, attempted)) return [item];
-      if (resolvedIds.has(item.id)) return [];
+      if (resolvedIds.has(item.id)) {
+        if (itemOutcomes[item.id] !== 'uploaded') return [];
+        noteProjectUpdateVersionInCloud(item);
+        return newerEditQueuedAfter(item);
+      }
       return [retriedItemsById.get(item.id) ?? item];
     });
     return { nextQueue, result: nextQueue };
@@ -2666,6 +3603,100 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     queued: remaining.length + storageCleanupRemaining,
     conflicts: (await getSyncConflicts()).length,
     errors,
+    heldErrorCount,
+    itemErrors,
+  };
+}
+
+/**
+ * The newer edit Keep Phone's kept copy carries, queued in the write that
+ * takes the landed copy off (whole-app audit A7 pass 11 L-2): the queue on
+ * disk always holds it. Stamped now, after the kept copy, so it goes up
+ * next; its photos still wait as they did.
+ */
+function newerEditQueuedAfter(landed: SyncQueueItem): SyncQueueItem[] {
+  const newer = landed.entity === 'project_update' ? (landed.payload as Partial<ProjectUpdateRecordPayload>).newerEdit : undefined;
+  if (!newer || !isRecord(newer)) return [];
+  // An edit held for review that a patch carried (A7 pass 14 L-2) keeps the
+  // time David saved it, as it was.
+  if (queuedFieldUpdateDocumentPatches(landed)) return [newer];
+  const now = new Date().toISOString();
+  return [{ ...newer, createdAt: now, changedAt: now }];
+}
+
+/**
+ * A whole copy of a field update while a conflict is open for it, queued by
+ * anything but a choice David made over that conflict (whole-app audit A4
+ * pass 15 H1): held for review, as it is. A document change or a late
+ * analysis result (a patch on the cloud's copy, which settles no conflict),
+ * an archive and a delete still go.
+ */
+function fieldUpdateCopyHeldForReview(item: SyncQueueItem, conflicts: readonly SyncConflict[]): boolean {
+  if (item.entity !== 'project_update' || item.operation === 'delete') return false;
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (!payload.id || payload.archiveOnly || queuedFieldUpdateDocumentPatches(item)) return false;
+  const conflict = openFieldUpdateConflict(conflicts, payload.id);
+  // Keep Cloud's copy goes up only while Keep Cloud sends it (A4 pass 21
+  // F1): one a killed app left queued waits, and the next choice drops it.
+  return Boolean(conflict) && (payload.overConflict !== conflict!.id ||
+    (payload.keepCloudChoice === true && !keepCloudChoicesSending.has(conflict!.id)));
+}
+
+/** The conflicts whose Keep Cloud is sending its chosen copy now (its uploadExactQueueItem), in this launch (A4 pass 21 F1). */
+const keepCloudChoicesSending = new Set<string>();
+
+/** The conflicts whose Keep Cloud copy met a newer cloud copy while it was sent, which the conflict took (A4 pass 22 L1). */
+const keepCloudChoicesMetNewerCloudCopy = new Set<string>();
+const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Cloud was saving it.';
+
+/**
+ * Keep Cloud's copy found an iPad save newer than it (whole-app audit A4
+ * pass 22 L1): the conflict it was chosen over, while open, takes that cloud
+ * copy, as Review Conflicts' own read does. False when that conflict is gone.
+ */
+async function keepCloudChoiceMetNewerCloudCopy(
+  payload: ProjectUpdateRecordPayload,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+): Promise<boolean> {
+  const conflictId = payload.overConflict;
+  if (!conflictId || !isRecord(cloud.updateData)) return false;
+  return serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflictId)) return false;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflictId
+      ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
+      : item));
+    keepCloudChoicesMetNewerCloudCopy.add(conflictId);
+    return true;
+  });
+}
+
+/**
+ * A queued copy as a conflict's phone side: never marked as Keep Cloud's
+ * (whole-app audit A4 pass 22 L1). Keep Phone's copy built from such a side
+ * was held while its conflict was open, and never went up.
+ */
+function withoutKeepCloudMarks<TPayload extends Partial<ProjectUpdateRecordPayload>>(
+  payload: TPayload,
+): Omit<TPayload, 'keepCloudChoice' | 'absorbedPatches'> {
+  const { keepCloudChoice: _choice, absorbedPatches: _absorbed, ...rest } = payload;
+  return rest;
+}
+
+function accountChangedDuringUpload(
+  uploaded: number,
+  uploadedByEntity: Record<SyncEntity, number>,
+  itemOutcomes: Record<string, SyncItemOutcome>,
+  queued: number,
+): SyncUploadResult {
+  return {
+    configured: true,
+    uploaded,
+    uploadedByEntity,
+    itemOutcomes,
+    queued,
+    conflicts: 0,
+    errors: ['The account changed during sync. Work not yet sent waits for the account that saved it.'],
   };
 }
 
@@ -2722,6 +3753,15 @@ async function loadLegacyDeletedProjectNames(): Promise<ReadonlySet<string>> {
   }
 }
 
+async function queuedBridgeDocumentWasDeleted(item: SyncQueueItem): Promise<boolean> {
+  const document = (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData;
+  if (!document?.id || !isProjectDocumentBridge(document)) return false;
+  const projectDocuments = parseStoredProjectDocuments(
+    await AsyncStorage.getItem(PROJECT_DOCUMENTS_STORAGE_KEY).catch(() => null),
+  );
+  return projectDocuments !== null && projectDocumentBridgeOrphaned(document, projectDocuments);
+}
+
 function queueEntityUsesDAVESyncTombstones(
   entity: SyncEntity,
 ): entity is DAVESyncTombstone['entityType'] {
@@ -2740,9 +3780,14 @@ function queueItemMatchesDAVESyncTombstone(
 ): boolean {
   if (!queueEntityUsesDAVESyncTombstones(item.entity)) return false;
   if (item.operation === 'delete') return false;
-  const payload = item.payload as { id?: unknown; name?: unknown };
+  const payload = item.payload as { id?: unknown; name?: unknown; previousName?: unknown };
+  // A project's cover, archive and reopen items carry only previousName, so a
+  // deleted project's were never retired and retried for good (whole-app
+  // audit A3 pass 2, 30 Sep 2026).
+  const projectName = [payload.name, payload.previousName]
+    .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
   const recordId = String(
-    item.entity === 'project' ? payload.name : payload.id,
+    item.entity === 'project' ? projectName : payload.id,
   )
     .trim()
     .toLowerCase();
@@ -2875,6 +3920,8 @@ export async function synchronizeLocalData(
   onProgress?: (event: SyncProgressEvent) => void,
 ): Promise<FullSyncResult> {
   const configuration = getSupabaseConfigurationStatus();
+  // This phone's records are sent only as the account signed in now (A1 M3).
+  const owner = currentCloudOwner();
   const errors: string[] = [];
   const missingPhotos: MissingSyncPhoto[] = [];
   const details = {
@@ -2997,6 +4044,10 @@ export async function synchronizeLocalData(
     tombstoneSync.tombstones,
     'schedule_item',
   );
+  // A carried percent waiting on the queue goes up as itself, not as the whole task (A7 pass 26 M-1).
+  const queueBeforeUpload = await getOfflineQueue();
+  syncableScheduleItems = syncableScheduleItems.filter(item =>
+    !scheduleItemCarriedProgressWaiting(item, queueBeforeUpload));
   syncableReferenceDocuments = removeDAVETombstonedRecords(
     payload.referenceDocuments,
     tombstoneSync.tombstones,
@@ -3143,6 +4194,7 @@ export async function synchronizeLocalData(
   );
 
   for (const projectName of syncableProjects) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const normalizedName = projectName.trim();
 
     if (!normalizedName) {
@@ -3176,18 +4228,25 @@ export async function synchronizeLocalData(
   }
 
   for (const update of syncableUpdates) {
-    const staged = await stageProjectUpdateForSync(update);
+    // Sync Now is not a choice between two copies either (whole-app audit A4
+    // pass 13 G2): it sent an update in conflict whole, stamped now, over the
+    // iPad's newer edit, a silent Keep Phone. Left for Keep Phone or Keep
+    // Cloud, as the waiting-update sync leaves it; its saved conflict is in
+    // `conflicts`, which Settings reads as needing review.
+    const staged = await stageProjectUpdateForSync(update, { automatic: true });
     details.photosUploaded += staged.uploadedPhotoCount;
     missingPhotos.push(...staged.missingPhotos);
     errors.push(...staged.workAttempt.errors.map(error =>
       `Field update for “${update.projectName || 'Unassigned Project'}”: ${error}`,
     ));
-    progress(`Update staged: ${update.projectName}`);
+    progress(`${staged.heldForConflictReview ? 'Update left for review' : 'Update staged'}: ${update.projectName}`);
 
     const missingPhotoIds = new Set(staged.missingPhotos.map(photo => photo.photoId));
     update.photos.forEach(photo => {
       progress(
-        missingPhotoIds.has(photo.id)
+        staged.heldForConflictReview
+          ? 'Photo left for review'
+          : missingPhotoIds.has(photo.id)
           ? 'Photo skipped: unavailable'
           : 'Photo synced',
       );
@@ -3196,9 +4255,10 @@ export async function synchronizeLocalData(
 
   const stagedUpdateUpload = await uploadPendingChanges();
   details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0;
-  errors.push(...stagedUpdateUpload.errors);
+  errors.push(...withoutRepeatedItemErrors(stagedUpdateUpload, queuedUpload));
 
   for (const area of syncableProjectAreas) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const result = await upsertProjectArea(area);
 
     if (result.ok && !result.stubbed) {
@@ -3217,6 +4277,7 @@ export async function synchronizeLocalData(
   );
 
   for (const item of syncableScheduleItems) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const binding = resolveOperationalProjectIdentity(item, operationalProjectAuthority);
     if (!binding.ok) {
       errors.push(`Schedule task “${item.taskName}” could not sync. ${binding.error}`);
@@ -3240,6 +4301,7 @@ export async function synchronizeLocalData(
   }
 
   for (const document of syncableReferenceDocuments) {
+    if (!cloudOwnerUnchanged(owner)) break;
     const binding = resolveOperationalReferenceDocumentScope(
       document,
       operationalProjectAuthority,
@@ -3275,7 +4337,9 @@ export async function synchronizeLocalData(
         continue;
       }
     }
-    const result = await upsertReferenceDocument(authoritativeDocument);
+    const result = await upsertReferenceDocument(authoritativeDocument, {
+      existing: Boolean(cloudDocumentsBeforeUpload.data?.some(cloud => cloud.id === document.id)),
+    });
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
@@ -3286,6 +4350,26 @@ export async function synchronizeLocalData(
     }
 
     progress(`Document synced: ${document.name}`);
+  }
+
+  // Another account's cloud records must not be handed to this one's screen,
+  // which merges and saves them on this phone (whole-app audit A1 M3).
+  if (!cloudOwnerUnchanged(owner)) {
+    return {
+      configured: true,
+      connected: true,
+      downloadStatus: 'partial',
+      uploaded: 0,
+      downloaded: 0,
+      queued: 0,
+      conflicts: 0,
+      cloudProjectCount: null,
+      lastSyncAt: null,
+      errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
+      missingPhotos,
+      details,
+      recovered: emptyRecovery,
+    };
   }
 
   progress('Downloading cloud changes');
@@ -3367,6 +4451,22 @@ export async function synchronizeLocalData(
       collectionErrors: download.collectionErrors,
     },
   };
+}
+
+/**
+ * A later pass's errors without those of items that failed in the earlier
+ * pass with the same message (whole-app audit A7 pass 13 L-2): Sync Now
+ * counted and listed such an item twice. Two items failing with the same
+ * words still count as two.
+ */
+function withoutRepeatedItemErrors(later: SyncUploadResult, earlier: SyncUploadResult): string[] {
+  const errors = [...later.errors];
+  Object.entries(later.itemErrors ?? {}).forEach(([itemId, message]) => {
+    if (earlier.itemErrors?.[itemId] !== message) return;
+    const index = errors.indexOf(message);
+    if (index >= 0) errors.splice(index, 1);
+  });
+  return errors;
 }
 
 export async function removeMissingPhotosFromSyncQueue(
@@ -3501,8 +4601,7 @@ export async function clearResolvedConflict(conflictId: string): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const conflict = conflicts.find(item => item.id === conflictId);
-    await setStoredJson(
-      SYNC_CONFLICTS_STORAGE_KEY,
+    await writeSyncConflicts(
       conflicts.filter(item =>
         conflict
           ? item.entity !== conflict.entity || item.localId !== conflict.localId
@@ -3518,9 +4617,46 @@ export async function clearScheduleItemSyncConflicts(
   await clearConflictsForLocalRecord('schedule_item', itemId);
 }
 
+/**
+ * David's choice on a field update's conflict. While the conflict is open,
+ * nothing automatic sends the update (whole-app audit A4 pass 15 H1): Keep
+ * Phone sends the conflict's copy, then David's newer edit; Keep Cloud's
+ * chosen copy goes up only inside Keep Cloud's own upload (A4 pass 21 F1).
+ *
+ * Work that arrives while Keep Cloud runs is treated one way (A4 pass 22).
+ * Keep Cloud takes the update's queued work three times: before its upload
+ * pass, after it (the second withdrawal), and in the write that queues its
+ * chosen copy. While that copy is queued, a change goes into it
+ * (absorbedPatches). Then:
+ * 1. Patch items (a document change, an analysis result) are folded into
+ *    the chosen copy when Keep Cloud succeeds, and re-queued onto the
+ *    restored phone work, oldest first, through queueProjectUpdatePatch when
+ *    it fails; so are the changes its own copy took in.
+ * 2. The latest whole phone copy it took is always what the put-back
+ *    restores; a patch item carrying a held edit is one (A4 pass 23 L1).
+ * 3. Keep Cloud's own copy never becomes a conflict's phone side. Meeting a
+ *    newer cloud copy as it goes up, it records that copy in the open
+ *    conflict, nothing is sent, and David reviews again; the phone's work it
+ *    withdrew goes back.
+ */
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
+  /**
+   * The cloud copy Review Conflicts showed when David chose (whole-app audit
+   * A4 pass 17 L1): the check below compares the cloud with it. Without it,
+   * the copy saved with the conflict, as before.
+   */
+  { cloudCopyShown, beforeClose }: {
+    cloudCopyShown?: unknown;
+    /**
+     * Keep Cloud: puts the chosen copy on the card before the conflict is
+     * cleared (whole-app audit A4 pass 19): a document upload finishing in
+     * between found the discarded edit on the card and no conflict, and
+     * queued it whole over the copy David kept.
+     */
+    beforeClose?: (chosen: TUpdate) => void;
+  } = {},
 ): Promise<TUpdate> {
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
@@ -3530,48 +4666,676 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   }
 
   const localPayload = conflict.localPayload as ProjectUpdateRecordPayload<TUpdate>;
+  // As for tasks (whole-app audit A4 pass 5): a deleted update is not written
+  // back, whichever copy David chose. Its conflict is closed and nothing is
+  // sent (sync_conflict_record_deleted, which Settings shows as closed). Keep
+  // Phone failed every time (A4 pass 16 L2): the deletion record superseded
+  // its kept copy, and Settings said neither copy was changed.
+  await closeConflictOfDeletedProjectUpdate(conflict);
+  // The cloud's copy as it is now, before either choice writes anything
+  // (whole-app audit A4 pass 16 L3, A7 pass 14 M-1). Review Conflicts showed
+  // the copy saved when the conflict was found: Keep Phone, stamped now, put
+  // the phone's copy over an iPad edit made since that the screen never
+  // showed, and Keep Cloud ended with it. When it changed, the conflict is
+  // saved again with it, and nothing is sent: David reviews it again. A copy
+  // that cannot be read changes nothing either. Keep Cloud's own first read
+  // (A4 pass 11 O1, pass 12 L1). Compared with the copy the screen showed
+  // (A4 pass 17 L1): on weak signal Review Conflicts' own read could land
+  // while "Keep Phone Copy?" was up and save the iPad's newest copy into the
+  // conflict, which then passed this check unseen.
+  const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
+  if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+  const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
+  const phoneCopies = phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue());
+  if (await recordCloudCopyIfChangedSinceConflict(conflict, current.data, phoneCopies, withDocumentChanges,
+    cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown)) {
+    throw new Error('sync_conflict_cloud_copy_changed');
+  }
 
   if (resolution === 'keep_cloud') {
-    if (!isRecord(conflict.remotePayload)) {
+    const cloudUpdate = conflict.remotePayload;
+    if (!isRecord(cloudUpdate)) {
       throw new Error('sync_conflict_cloud_copy_missing');
     }
-
+    // The phone's queued revisions (the conflict-era edit and any newer one)
+    // are withdrawn around any upload in flight, and the chosen copy goes
+    // back through the queue (the one write path, as Keep Phone does), so
+    // neither a later upload nor a retry that already reached the cloud
+    // undoes the choice. The cloud's copy as it is now (whole-app audit A4
+    // pass 11 O1): not one of this phone's own copies, which a retry in
+    // flight may have put there: that is not the cloud's choice. Read before
+    // this phone's waiting work is withdrawn (A4 pass 12 L1): a failed read
+    // had taken a newer phone edit or a document change off the queue, while
+    // Settings said neither copy was changed.
+    const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
+    let queuedCloudCopy: SyncQueueItem | null = null;
+    let chosenCloudUpdate: TUpdate;
+    try {
+      await uploadPendingChanges();
+      withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId));
+      // And read again now (A4 pass 13 L1): an iPad save that landed while
+      // this phone's work was withdrawn and that upload pass ran went under
+      // the copy read before it. The first read stays the check that the
+      // cloud can be reached, and stands in when this one fails.
+      const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+      const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
+      const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
+        sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
+        ? currentCopy : cloudUpdate;
+      // Archived on this phone while the archive still waits (whole-app
+      // audit A7 pass 14 L-3): withdrawn with the rest, it is kept.
+      // And this phone's analysis results for the photos the cloud's copy
+      // shares (A7 pass 14 L-2): one taken into an edit of the phone's (the
+      // conflict's own, or one held for review) never reached the cloud.
+      // With every change the work withdrawn took in (A4 pass 22, with A4
+      // pass 20 L1 and A7 pass 19): a document upload or analysis finishing
+      // in the upload pass above was queued on its own, and the second
+      // withdrawal took it and dropped it. The cloud and the card read
+      // "Analyzing", or the cloud kept a finished upload "failed". The
+      // conflict's own copy is read again too: such a result went into it.
+      const conflictNow = (await getSyncConflicts()).find(item => item.id === conflict.id) ?? conflict;
+      chosenCloudUpdate = withArchiveKept(withPhoneAnalysisResults(
+        applyFieldUpdateDocumentPatches(withDocumentChanges(cloudNow) as object,
+          fieldUpdatePatchesNotSuperseded(cloudNow as object, changesTakenIn(withdrawn))),
+        phoneCopiesOfFieldUpdateInConflict(conflictNow, withdrawn)), withdrawn) as TUpdate;
+      const queuedAt = new Date().toISOString();
+      const ownerId = currentCloudOwner().ownerId;
+      queuedCloudCopy = {
+        id: projectUpdateQueueItemId(conflict.localId),
+        entity: 'project_update',
+        operation: 'update',
+        payload: {
+          id: conflict.localId,
+          projectId: typeof cloudNow.projectId === 'string' ? cloudNow.projectId : localPayload.projectId,
+          projectName: typeof cloudNow.projectName === 'string' ? cloudNow.projectName : localPayload.projectName,
+          selectedAreaName: typeof cloudNow.selectedAreaName === 'string'
+            ? cloudNow.selectedAreaName
+            : localPayload.selectedAreaName,
+          updateData: chosenCloudUpdate,
+          // The cloud copy's photos are already in cloud storage.
+          pendingPhotoAssetIds: [],
+          overConflict: conflict.id, // David's choice (A4 pass 15 H1)
+          // Closed only after beforeClose (A7 pass 17 L-1): closed as it
+          // landed, the card still held the discarded edit, and a document
+          // upload or analysis result finishing then queued that edit whole.
+          keepCloudChoice: true,
+        } satisfies ProjectUpdateRecordPayload<TUpdate>,
+        createdAt: queuedAt, changedAt: queuedAt, retryCount: 0, lastError: null,
+        ...(ownerId ? { ownerId } : {}),
+      };
+      // Queued in the write that takes what was queued since the second
+      // withdrawal (A4 pass 22): a change finishing while the cloud was read
+      // again goes into the copy; replaced, it was lost.
+      const queuedChoice = await queueKeepCloudChoice(queuedCloudCopy);
+      withdrawn.push(...queuedChoice.taken);
+      chosenCloudUpdate = queuedChoice.chosen as TUpdate;
+      keepCloudChoicesSending.add(conflict.id); // its copy goes in this pass only (A4 pass 21 F1)
+      keepCloudChoicesMetNewerCloudCopy.delete(conflict.id);
+      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId))
+        .finally(() => keepCloudChoicesSending.delete(conflict.id));
+      // An iPad save it met is in the conflict now: David reviews again (A4 pass 22 L1).
+      if (!exact.landed) {
+        throw new Error(keepCloudChoicesMetNewerCloudCopy.delete(conflict.id) ? 'sync_conflict_cloud_copy_changed'
+          : exact.error || 'sync_conflict_save_failed');
+      }
+    } catch (error) {
+      await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
+      throw error;
+    }
+    beforeClose?.(chosenCloudUpdate);
     await clearResolvedConflict(conflict.id);
-    return conflict.remotePayload as TUpdate;
+    return chosenCloudUpdate;
   }
 
-  const localUpdateData = localPayload.updateData;
-  if (localUpdateData === undefined) {
+  if (localPayload.updateData === undefined) {
     throw new Error('sync_conflict_local_copy_missing');
   }
-  await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
-    id: `project-update-${localPayload.id}`,
-    entity: 'project_update',
-    operation: 'update',
-    payload: localPayload,
-    changedAt: new Date().toISOString(),
-    autoUpload: false,
+  // Archived during the conflict, on either device (whole-app audit A7 pass
+  // 14 L-3): an archive settles neither copy, so the conflict stays for
+  // David's choice, and the copy he keeps stays archived. The conflict's own
+  // copy, never archived, un-archived the update in the cloud.
+  const conflictCopy = withDocumentChanges(localPayload.updateData);
+  // With the cloud's analysis results that stand over the phone's (A4 pass
+  // 26 L2): the phone's result, failed offline, went over the iPad's retried
+  // and Confirmed one.
+  const cloudResults = [current.data?.updateData];
+  const localUpdateData = withArchiveKept(withPhoneAnalysisResults(conflictCopy, cloudResults),
+    await getOfflineQueue(), current.data?.updateData) as TUpdate;
+  const queueItemId = projectUpdateQueueItemId(localPayload.id);
+  // A newer edit saved on this phone since the conflict, still waiting to go
+  // up (whole-app audit A7 pass 10 L-4): the copy recorded with the conflict
+  // was put over it, and once that went up a refresh before the waiting-
+  // update sync showed it as Sent; the newer edit was lost. It is put back:
+  // as it was when the choice fails ("Neither copy was changed"), and after
+  // the kept copy when it lands, so it goes up next. It travels in the kept
+  // copy's own record, written in the same queue write (A7 pass 11 L-2):
+  // held in memory, it was lost when the app was killed while the kept copy
+  // uploaded, or before it was queued again. One an earlier kept copy still
+  // carries (queued, or recorded with this conflict) is still one. Review
+  // Conflicts shows the same edit (A4 pass 15b F1). Never marked as Keep
+  // Cloud's copy (A4 pass 22 L1): an earlier build recorded conflicts whose
+  // phone side was that copy, and the kept copy was then held.
+  const { newerEdit: _carried, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
+  const now = new Date().toISOString();
+  const ownerId = currentCloudOwner().ownerId;
+  const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueItemId);
+    const newerFound = newerPhoneEditForFieldUpdateConflict(conflict, queue, conflictCopy);
+    const newer = newerFound && withCloudAnalysisResultsInQueuedCopy(
+      withArchiveKeptInQueuedCopy(newerFound, localUpdateData), cloudResults);
+    const kept: SyncQueueItem = {
+      id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
+      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
+      createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
+    };
+    const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
+    return { nextQueue, result: { written: kept, newerEdit: newer, before: existing ?? null }, persist: nextQueue !== queue };
   });
-  const result = await uploadPendingChanges();
-
-  if (result.queued > 0 || result.errors.length > 0) {
-    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+  const exact = await uploadExactQueueItem(queueItemId, written);
+  if (!exact.landed) {
+    // The queue as it was before the choice (whole-app audit A4 pass 16 L1):
+    // with no newer edit, the kept copy stayed queued, marked as David's
+    // choice, and went up by itself once the signal returned, clearing the
+    // conflict, while Settings said "Neither copy was changed". What waited
+    // for the update (a document change, a newer edit) goes back unmarked; an
+    // earlier kept copy of this choice gives way to the edit it carries.
+    const earlierChoice = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
+    await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written);
+    throw new Error(exact.error || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
   return localUpdateData;
 }
 
+/**
+ * The copy with the update's archive, when it was archived on either device
+ * and this copy is not (whole-app audit A7 pass 14 L-3): the cloud's copy
+ * reads archived, or this phone's archive waits in `queued`. A copy is never
+ * un-archived here.
+ */
+function withArchiveKept(copy: unknown, queued: readonly SyncQueueItem[], cloudCopy?: unknown): unknown {
+  if (!isRecord(copy) || copy.isArchived === true) return copy;
+  if (isRecord(cloudCopy) && cloudCopy.isArchived === true) {
+    return { ...copy, isArchived: true, archivedAt: typeof cloudCopy.archivedAt === 'string' ? cloudCopy.archivedAt : null };
+  }
+  const archive = queued.find(item => item.entity === 'project_update' && item.operation !== 'delete' &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).id === copy.id &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).archiveOnly === true);
+  if (!archive) return copy;
+  return { ...copy, isArchived: true, archivedAt: (archive.payload as Partial<ProjectUpdateRecordPayload>).archivedAt || archive.changedAt };
+}
+
+/**
+ * The cloud's copy with this phone's analysis results for the photos it
+ * shares (whole-app audit A7 pass 14 L-2), as each result's own patch would
+ * have put them there: a result that stands over the copy's
+ * (photoAnalysisResultStands: a finished one over a failed one, else the
+ * later, or the same one reviewed later; any over a photo still analysing),
+ * with the analysis summary of the phone copy it came from. Keep Cloud lost
+ * a result taken into one of the phone's copies. "Send your version?" keeps
+ * the card's this way when it sends the copy David chose (A4 pass 21 F2):
+ * the card read "Analyzing" again. Keep Phone takes the cloud's this way
+ * (A4 pass 26 L2).
+ */
+export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly unknown[]): unknown {
+  if (!isRecord(copy) || !Array.isArray(copy.photos)) return copy;
+  const analysisOf = (update: unknown, photoId: string) => isRecord(update) && Array.isArray(update.photos)
+    ? (update.photos as unknown[]).find(photo => isRecord(photo) && photo.id === photoId) as Record<string, unknown> | undefined
+    : undefined;
+  let next: object = copy;
+  for (const photo of copy.photos as unknown[]) {
+    if (!isRecord(photo) || typeof photo.id !== 'string') continue;
+    const photoId = photo.id;
+    const best = phoneCopies
+      .map(phone => ({ phone, result: analysisOf(phone, photoId)?.photoIntelligence }))
+      .filter(candidate => isRecord(candidate.result) && candidate.result.status !== 'analyzing')
+      .reduce<{ phone: unknown; result: unknown } | null>((kept, candidate) =>
+        kept && photoAnalysisResultStands(kept.result, candidate.result) ? kept : candidate, null);
+    if (!best || photoAnalysisResultStands(photo.photoIntelligence, best.result)) continue;
+    next = applyFieldUpdatePhotoAnalysisPatch(next, fieldUpdatePhotoAnalysisPatchFor(best.phone as object, best.phone as object, photoId));
+  }
+  return next;
+}
+
+/** A newer edit Keep Phone carries, with the cloud's results that stand over its own (A4 pass 26 L2). */
+function withCloudAnalysisResultsInQueuedCopy(item: SyncQueueItem, cloudCopies: readonly unknown[]): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  const updateData = withPhoneAnalysisResults(payload.updateData, cloudCopies);
+  return updateData === payload.updateData ? item : { ...item, payload: { ...payload, updateData } };
+}
+
+/** A newer edit Keep Phone carries, archived as the copy it keeps is (A7 pass 14 L-3). */
+function withArchiveKeptInQueuedCopy(item: SyncQueueItem, kept: unknown): SyncQueueItem {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  const { isArchived, archivedAt } = (isRecord(kept) ? kept : {}) as { isArchived?: unknown; archivedAt?: unknown };
+  if (isArchived !== true || !isRecord(payload.updateData) || payload.updateData.isArchived === true) return item;
+  return { ...item, payload: { ...payload, updateData: { ...payload.updateData, isArchived, archivedAt } } };
+}
+
+/**
+ * This phone's whole copies of an update in conflict: the conflict's own,
+ * those queued, and a newer edit one of them carries (A7 pass 11 L-2). A
+ * cloud copy that is one of them is not the iPad's edit.
+ */
+function phoneCopiesOfFieldUpdateInConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): unknown[] {
+  const localPayload = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+  const queued = queue.filter(item => item.entity === 'project_update' && item.operation !== 'delete' &&
+    (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId);
+  const carried = [...queued.map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).newerEdit), localPayload?.newerEdit]
+    .filter((item): item is SyncQueueItem => isRecord(item));
+  // Keep Cloud's copy left queued is the cloud's (A4 pass 21 F1).
+  return [localPayload?.updateData, ...[...queued, ...carried]
+    .filter(item => !queuedFieldUpdateDocumentPatches(item) && !isKeepCloudChoice(item))
+    .map(item => (item.payload as Partial<ProjectUpdateRecordPayload>).updateData)]
+    .filter(isRecord);
+}
+
+/**
+ * Whether the cloud's copy of an update in conflict changed since the
+ * conflict was saved, and if so, the conflict saved again with it (whole-app
+ * audit A4 pass 16 L3, A7 pass 14 M-1): Review Conflicts then shows it. Not a
+ * change: this phone's own document changes and analysis results, which go
+ * onto the cloud's copy during a conflict, an archive (carried by either
+ * choice), or one of this phone's own copies (a retry that reached the
+ * cloud). `cloud`: the cloud's row as read now; none, no change.
+ * `seen`: the cloud copy the screen showed (A4 pass 17 L1), by default the
+ * one saved with the conflict.
+ */
+async function recordCloudCopyIfChangedSinceConflict(
+  conflict: SyncConflict,
+  cloud: { updatedAt?: string | null; updateData?: unknown } | null | undefined,
+  phoneCopies: readonly unknown[],
+  withDocumentChanges: (copy: unknown) => unknown,
+  seen: unknown = conflict.remotePayload,
+): Promise<boolean> {
+  const cloudCopy = cloud?.updateData;
+  if (!isRecord(cloudCopy)) return false;
+  const shown = (copy: unknown) => {
+    if (!isRecord(copy)) return copy;
+    const { isArchived: _isArchived, archivedAt: _archivedAt, ...rest } = withoutPhotoAnalysis(copy) as Record<string, unknown>;
+    return withDocumentChanges(rest);
+  };
+  if (sameProjectUpdateContent(shown(seen), shown(cloudCopy) as ProjectUpdate, { retryStampsAside: true })) return false;
+  if (phoneCopies.some(copy => sameProjectUpdateContent(copy, cloudCopy as unknown as ProjectUpdate, { retryStampsAside: true }))) {
+    return false;
+  }
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflict.id)) return;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
+      ? { ...item, remotePayload: cloudCopy, remoteChangedAt: cloud?.updatedAt ?? item.remoteChangedAt }
+      : item));
+  });
+  return true;
+}
+
+/**
+ * The cloud's copy of each field update in conflict, read again when Review
+ * Conflicts opens (whole-app audit A4 pass 16 L3, A7 pass 14 M-1): a conflict
+ * whose cloud copy changed since it was saved is saved again with it, so the
+ * "Cloud:" line shows the copy Keep Cloud keeps and Keep Phone replaces. One
+ * that cannot be read stays as it is. The conflicts, as saved now.
+ */
+export async function refreshFieldUpdateConflictCloudCopies(): Promise<SyncConflict[]> {
+  const conflicts = (await getSyncConflicts()).filter(conflict => conflict.entity === 'project_update');
+  for (const conflict of conflicts) {
+    const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    if (!current?.ok || current.stubbed) continue;
+    await recordCloudCopyIfChangedSinceConflict(conflict, current.data,
+      phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue()),
+      await withDocumentChangesSinceConflict(conflict.localId));
+  }
+  return getSyncConflicts();
+}
+
+/**
+ * A field update deleted on any device (this phone's deletion journal, or the
+ * cloud's deletion records): its conflict is cleared and
+ * sync_conflict_record_deleted thrown, before either choice writes anything
+ * (whole-app audit A4 pass 16 L2). The cloud's deletion history must be
+ * readable, as for Keep Cloud before.
+ */
+async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Promise<void> {
+  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  if (!tombstoneSync.cloudAuthoritative) {
+    throw new Error('sync_conflict_deletion_history_unavailable');
+  }
+  const normalizedUpdateId = conflict.localId.trim().toLowerCase();
+  const updateWasDeleted =
+    (await hasProjectUpdateDeletionIntent(conflict.localId)) ||
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
+      .some(recordId => recordId.trim().toLowerCase() === normalizedUpdateId);
+  if (!updateWasDeleted) return;
+  await clearConflictsForLocalRecord('project_update', conflict.localId);
+  throw new Error('sync_conflict_record_deleted');
+}
+
+/**
+ * Why a conflict choice stopped, for Settings to explain in plain words: the
+ * record was deleted on another device, the cloud's copy changed since the
+ * screen showed it, or a task's conflict closed by itself meanwhile (nothing
+ * was sent for any of these); or a task's Keep Cloud wrote and the cloud did
+ * not confirm it. Null for any other failure, which Settings reports without
+ * detail (raw errors are never shown there).
+ */
+export function syncConflictChoiceStopReason(
+  error: unknown,
+): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | 'conflict_closed' | null {
+  if (!(error instanceof Error)) return null;
+  if (error.message === 'sync_conflict_record_deleted') return 'record_deleted';
+  if (error.message === 'sync_conflict_cloud_copy_changed') return 'cloud_copy_changed';
+  // A task's Keep Cloud wrote and the cloud did not answer (A7 pass 16 L-2).
+  if (error.message === 'sync_conflict_save_unconfirmed') return 'save_unconfirmed';
+  // A task's conflict closed while Keep Phone read the cloud (A7 pass 16 L-6).
+  if (error.message === 'sync_conflict_closed') return 'conflict_closed';
+  return null;
+}
+
+/**
+ * The newer edit Keep Phone sends after a field update conflict's own copy:
+ * the update's queued whole copy when it is not the conflict's copy, or one
+ * an earlier kept copy still carries (queued, or recorded with the conflict).
+ * Settings › Review Conflicts shows it as the phone's side, what Keep Phone
+ * ends with (whole-app audit A4 pass 15b F1); `conflictCopy` defaults to the
+ * copy recorded with the conflict, as the screen reads it.
+ */
+export function newerPhoneEditForFieldUpdateConflict(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+  conflictCopy: unknown = (conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined)?.updateData,
+): SyncQueueItem | null {
+  if (conflict.entity !== 'project_update' || !isRecord(conflict.localPayload)) return null;
+  const localPayload = conflict.localPayload as Partial<ProjectUpdateRecordPayload>;
+  const existing = queue.find(item => item.id === projectUpdateQueueItemId(localPayload.id ?? conflict.localId));
+  const queuedCarried = (existing?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.newerEdit;
+  return [existing, queuedCarried, localPayload.newerEdit].find((item): item is SyncQueueItem =>
+    isRecord(item) && isNewerQueuedPhoneEdit(item as SyncQueueItem, conflictCopy)) ?? null;
+}
+
+/**
+ * A whole copy of the update, queued, that is not the conflict's copy: an edit saved since (A7 pass 10 L-4).
+ * Never Keep Cloud's copy (A4 pass 21 F1): Keep Phone sent it after David's edit, over it.
+ */
+function isNewerQueuedPhoneEdit(item: SyncQueueItem, conflictCopy: unknown): boolean {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  return item.entity === 'project_update' && item.operation !== 'delete' && !payload.archiveOnly && !isKeepCloudChoice(item) &&
+    !queuedFieldUpdateDocumentPatches(item) && isRecord(payload.updateData) &&
+    !sameProjectUpdateContent(payload.updateData, conflictCopy as ProjectUpdate, { retryStampsAside: true });
+}
+
+/**
+ * What waited for the update back in place of the kept copy Keep Phone
+ * queued (none: the kept copy is dropped), never marked as a choice over the
+ * conflict, unless something newer was queued meanwhile (A4 pass 16 L1).
+ */
+async function putBackPhoneWorkAfterFailedKeepPhone(before: SyncQueueItem | null, written: SyncQueueItem): Promise<void> {
+  await mutateOfflineQueue(queue => {
+    const current = queue.find(item => item.id === written.id);
+    if (current ? !sameStagedProjectUpdateRecord(current, written) : !before) {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+    const others = queue.filter(item => item.id !== written.id);
+    return { nextQueue: before ? [...others, withoutChoiceOverConflict(before)] : others, result: undefined };
+  });
+}
+
+/**
+ * A copy recorded with a field update's conflict, with the document changes
+ * this device made since (whole-app audit A4 pass 10 R2H-3): a document
+ * change leaves the conflict (A4 pass 9 L1), so both recorded copies predate
+ * it. Keep Phone and Keep Cloud wrote that older copy: the cloud listed a
+ * document taken off again, or read a finished upload as failed. The copy
+ * now loses the documents this device took off, takes this device's upload
+ * state, as a refresh does, and then the document patches still queued, the
+ * newest change. Read before the resolution withdraws the queued patches.
+ */
+async function withDocumentChangesSinceConflict(updateId: string): Promise<(copy: unknown) => unknown> {
+  const [queue, removed, storedDocuments] = await Promise.all([
+    getOfflineQueue(),
+    loadRemovedFieldUpdateDocuments(),
+    AsyncStorage.getItem(PROJECT_DOCUMENTS_STORAGE_KEY).catch(() => null),
+  ]);
+  const deviceDocuments = parseStoredProjectDocuments(storedDocuments) || [];
+  const waiting = queuedDocumentPatchesForUpdate(queue, updateId) || [];
+  // Not an analysis result the copy holds a later one for, or the same one
+  // (A4 pass 25 L1): Keep Cloud put the phone's result, finished offline, over
+  // the iPad's retried, Confirmed one.
+  return copy => {
+    if (!isRecord(copy)) return copy;
+    const shown = withDeviceDocumentUploadState(copy, deviceDocuments, undefined, removed);
+    return applyFieldUpdateDocumentPatches(shown, fieldUpdatePatchesNotSuperseded(shown, waiting));
+  };
+}
+
+/**
+ * Uploads the queue and says whether this one item landed, whatever else is
+ * still queued (whole-app audit A7 pass 3: Keep Phone and Keep Cloud failed,
+ * and said "Neither copy was changed", whenever any other item was waiting,
+ * after they had in fact written the chosen copy). One more pass when an
+ * older in-flight upload missed the item, as for tasks.
+ */
+async function uploadExactQueueItem(
+  queueItemId: string,
+  /** The record written, when what replaces it once it lands is not it (Keep Phone's newer edit, A7 pass 11 L-2). */
+  written?: SyncQueueItem,
+): Promise<{ landed: boolean; error: string | null }> {
+  const stillQueued = async () => (await getOfflineQueue()).find(item =>
+    item.id === queueItemId && (!written || sameStagedProjectUpdateRecord(item, written)));
+  let result = await uploadPendingChanges();
+  let remaining = await stillQueued();
+  let outcome = result.itemOutcomes?.[queueItemId];
+  if (remaining && (!outcome || outcome === 'uploaded')) {
+    result = await uploadPendingChanges();
+    remaining = await stillQueued();
+    outcome = result.itemOutcomes?.[queueItemId];
+  }
+  const landed = outcome === 'uploaded' && !remaining;
+  return { landed, error: landed ? null : remaining?.lastError || result.errors[0] || null };
+}
+
+/**
+ * The cloud's row for a task as it is now (whole-app audit A8 pass 12 L2);
+ * null when the cloud has none. sync_conflict_cloud_copy_unreadable when the
+ * cloud cannot be read. Read by its id (A7 pass 15 L-2): the full list pages
+ * by offset, newest first, so a row edited while it was read could be missed,
+ * and the conflict was closed as "deleted on another device".
+ */
+async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | null> {
+  const cloud = await getScheduleItem(itemId).catch(() => null);
+  if (!cloud?.ok || cloud.stubbed) {
+    throw new Error('sync_conflict_cloud_copy_unreadable');
+  }
+  return cloud.data ?? null;
+}
+
+/**
+ * The fields of a task's cloud row that hold one of this phone's waiting
+ * edits and not the copy the screen showed (whole-app audit A7 pass 15 L-1):
+ * of each edit's own fields (every field of a whole copy), those where the
+ * row has the edit's value. Identity, stamps, earlier task ids and import
+ * memberships aside.
+ */
+function taskFieldsHoldingPhoneEdits(
+  row: ScheduleItem,
+  shown: unknown,
+  edits: readonly SyncQueueItem[],
+): string[] {
+  return [...new Set(edits.flatMap(edit => {
+    const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+    if (edit.entity !== 'schedule_item' || edit.operation === 'delete' || !isRecord(payload.itemData)) return [];
+    const fields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : Object.keys(payload.itemData);
+    return fields.filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) &&
+      taskFieldValue(row, field) === taskFieldValue(payload.itemData, field) &&
+      taskFieldValue(row, field) !== taskFieldValue(shown, field));
+  }))];
+}
+
+/**
+ * Identity, stamps, and the ids Keep Phone keeps from both copies: no edit of
+ * David's (whole-app audit A7 pass 15). With the row a later import gave the
+ * task, which Keep Phone keeps from the copy that knows that import (32a2187):
+ * a re-homing revision on another device made Keep Phone ask David to review
+ * again (A5 pass 20 P3).
+ */
+const TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK: ReadonlySet<string> = new Set([
+  'id', 'projectId', 'updatedAt', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds', 'alsoImportedSourceRow',
+]);
+
+/** One field of a task copy, as compared: key order aside, and a missing field reads as null. */
+function taskFieldValue(item: unknown, field: string): string {
+  const value = isRecord(item) ? item[field] : undefined;
+  return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
+}
+
+/**
+ * The task's cloud row with this phone's landed edits undone (whole-app audit
+ * A7 pass 15 L-1): each such field, and the row's stamp, back to the cloud's
+ * value before the edit landed (`before`, Keep Cloud's first read), or, when
+ * that already held it, to the copy the screen showed.
+ */
+function withPhoneEditsUndone(row: ScheduleItem, fields: readonly string[], before: ScheduleItem, shown: unknown): ScheduleItem {
+  const next: Record<string, unknown> = { ...row };
+  [...fields, 'updatedAt'].forEach(field => {
+    const source: unknown = taskFieldValue(before, field) !== taskFieldValue(row, field) ? before : shown;
+    const value = isRecord(source) ? source[field] : undefined;
+    if (value === undefined) delete next[field];
+    else next[field] = value;
+  });
+  return next as ScheduleItem;
+}
+
+/**
+ * A task copy with this phone's newer edits of it over it, oldest first
+ * (whole-app audit A7 pass 16 L-4): each edit's own fields, or all of a
+ * whole copy. A delete is no edit of the copy.
+ */
+function withNewerPhoneTaskEdits(copy: ScheduleItem, edits: readonly SyncQueueItem[]): ScheduleItem {
+  return edits.reduce<ScheduleItem>((next, edit) => {
+    const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+    if (edit.entity !== 'schedule_item' || edit.operation === 'delete' || !isRecord(payload.itemData)) return next;
+    const itemData = payload.itemData;
+    if (!Array.isArray(payload.changedFields)) return itemData;
+    return payload.changedFields.reduce<ScheduleItem>((merged, field) => ({ ...merged, [field]: itemData[field] }), next);
+  }, copy);
+}
+
+/** Two copies of a task alike in every field but identity, stamps, earlier task ids and import memberships. */
+function sameTaskContent(left: unknown, right: unknown): boolean {
+  if (!isRecord(left) || !isRecord(right)) return false;
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].every(field =>
+    TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) || taskFieldValue(left, field) === taskFieldValue(right, field));
+}
+
+/** This phone's copies of a task in conflict: the conflict's own, and any waiting in the queue. */
+function phoneCopiesOfTaskInConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): unknown[] {
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  return [
+    (conflict.localPayload as Partial<ScheduleItemRecordPayload> | undefined)?.itemData,
+    ...queue.filter(item => item.id === queueItemId && item.operation !== 'delete')
+      .map(item => (item.payload as Partial<ScheduleItemRecordPayload>).itemData),
+  ].filter(isRecord);
+}
+
+/**
+ * A task's conflict saved again with the cloud's row when the row changed
+ * since the copy the screen showed (whole-app audit A7 pass 15 L-3, as for
+ * field updates): in any field but identity, stamps, earlier task ids and
+ * import memberships, which change with no edit of David's or which Keep
+ * Phone keeps from the row; and not when the row is one of this phone's own
+ * copies. `seen` is by default the copy saved with the conflict. True when
+ * it changed and the conflict was saved with it; not when the conflict is
+ * gone (A7 pass 16 L-6: Keep Phone said "review again" over an empty list).
+ */
+async function recordTaskCloudCopyIfChanged(
+  conflict: SyncConflict,
+  row: ScheduleItem,
+  phoneCopies: readonly unknown[],
+  seen: unknown = conflict.remotePayload,
+): Promise<boolean> {
+  if (sameTaskContent(row, seen) || phoneCopies.some(copy => sameTaskContent(row, copy))) return false;
+  return serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflict.id)) return false;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
+      ? { ...item, remotePayload: row, remoteChangedAt: row.updatedAt ?? item.remoteChangedAt }
+      : item));
+    return true;
+  });
+}
+
+/**
+ * The cloud's row of each task in conflict, read again when Review Conflicts
+ * opens (whole-app audit A7 pass 15 L-3, as field updates are): the "Cloud:"
+ * line showed the copy saved when the conflict was found, after the web set
+ * the task to 50%. One that cannot be read, or is gone, stays as it is. The
+ * conflicts, as saved now.
+ */
+export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConflict[]> {
+  const conflicts = (await getSyncConflicts()).filter(conflict => conflict.entity === 'schedule_item');
+  for (const conflict of conflicts) {
+    const row = await currentCloudScheduleItem(conflict.localId).catch(() => null);
+    if (!row) continue;
+    await recordTaskCloudCopyIfChanged(conflict, row, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()));
+  }
+  return getSyncConflicts();
+}
+
+/** Takes a task's waiting edits off the queue; the edits taken. */
+function withdrawScheduleItemFromSyncQueue(itemId: string): Promise<SyncQueueItem[]> {
+  const queueItemId = scheduleItemQueueItemId(itemId);
+  return mutateOfflineQueue(queue => {
+    const withdrawn = queue.filter(item => item.id === queueItemId);
+    return {
+      nextQueue: queue.filter(item => item.id !== queueItemId),
+      result: withdrawn,
+      persist: withdrawn.length > 0,
+    };
+  });
+}
+
+/**
+ * A task's conflict put back as it was before Keep Cloud (whole-app audit A7
+ * pass 15 L-1), when it stops without keeping a copy after an edit of this
+ * phone's landed: the conflict, which that landing closed, is saved again.
+ * The edits it withdrew, or that an upload already under way took off the
+ * queue as it landed, wait on the conflict, oldest first (A7 pass 16 L-2):
+ * put back on the queue, the next automatic pass sent them (tasks have no
+ * hold), undoing the choice. An edit made since stays queued, as any is.
+ */
+async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonly SyncQueueItem[]): Promise<void> {
+  const unique = edits.filter((edit, index) =>
+    edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const open = conflicts.find(item => item.entity === conflict.entity && item.localId === conflict.localId);
+    const base = open ?? conflict;
+    const saved = { ...base, localPayload: { ...(base.localPayload as ScheduleItemRecordPayload), withdrawnEdits: unique } };
+    await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved]);
+  });
+}
+
 export async function resolveScheduleItemSyncConflict(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
+  /**
+   * The cloud copy Review Conflicts showed when David chose (whole-app audit
+   * A7 pass 15, as for field updates, A4 pass 17 L1); without it, the copy
+   * saved with the conflict.
+   */
+  { cloudCopyShown }: { cloudCopyShown?: unknown } = {},
 ): Promise<ScheduleItem> {
+  // This phone's waiting edits of the task, before anything else: an upload
+  // already under way takes one off the queue once it has landed it.
+  const queueAtChoice = await getOfflineQueue();
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
 
   if (!conflict || conflict.entity !== 'schedule_item') {
     throw new Error('sync_conflict_not_found');
   }
+  const shown = cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown;
+  const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
   const tombstoneSync = await synchronizeDAVESyncTombstones();
   if (!tombstoneSync.cloudAuthoritative) {
@@ -3590,49 +5354,156 @@ export async function resolveScheduleItemSyncConflict(
   const localItem = localPayload.itemData;
 
   if (resolution === 'keep_cloud') {
-    if (!isRecord(conflict.remotePayload)) {
-      throw new Error('sync_conflict_cloud_copy_missing');
+    // The cloud's row as it is now, read before this phone's waiting work is
+    // withdrawn (whole-app audit A8 pass 12 L2, as for field updates, A4
+    // pass 12 L1 and pass 16 L3). Keep Cloud wrote back the copy saved when
+    // the conflict was found, over an earlier task id a web delete handed the
+    // task since and the progress David entered on the web. A cloud that
+    // cannot be read changes nothing; a task the cloud no longer has is not
+    // written back, and its conflict is closed.
+    const cloudItem = await currentCloudScheduleItem(conflict.localId);
+    if (!cloudItem) {
+      await clearScheduleItemSyncConflicts(conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
     }
-
-    const cloudItem = conflict.remotePayload as ScheduleItem;
-    // Remove both the conflict-era edit and any newer queued local revision.
-    // Waiting for the active uploader before restoring the selected cloud copy
-    // prevents an older in-flight task snapshot from winning afterward.
-    await removeOperationalRecordFromSyncQueue(
-      'schedule_item',
-      conflict.localId,
-    );
+    // Remove both the conflict-era edit and any newer queued local revision,
+    // around any upload of this phone's already under way.
+    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId);
     await uploadPendingChanges();
-    await removeOperationalRecordFromSyncQueue(
-      'schedule_item',
-      conflict.localId,
-    );
-    const restore = await upsertScheduleItem(cloudItem);
-    if (!restore.ok || restore.stubbed) {
-      throw new Error(
-        restore.error || restore.message || 'sync_conflict_save_failed',
-      );
+    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
+    // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
+    const phoneEdits = [...(localPayload.withdrawnEdits ?? []), ...waitingEdits, ...withdrawn];
+    // An edit of this phone's can be in the cloud only when one landed during
+    // this choice (a landing closes the conflict) or during an earlier Keep
+    // Cloud that could not finish (its edits wait on the conflict) (A7 pass
+    // 16 L-1). Edits found in the row by value alone were undone when none
+    // had landed: a progress edit still waiting and the web's 60% share
+    // status and progressSource, so the 60% went back as "Not Started".
+    const closedDuringChoice =
+      !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) || closedDuringChoice;
+    // Still open: only an edit waiting on the conflict can be in the row (A7
+    // pass 17 L-2). Every edit was undone by value, a progress edit that
+    // never left the phone too, and the web's 60% went back as "Not Started".
+    const editsThatMayHaveLanded = closedDuringChoice ? phoneEdits : localPayload.withdrawnEdits ?? [];
+    // Read again now: an edit from another device that landed meanwhile is
+    // the cloud's too.
+    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    if (reread === null) {
+      await clearScheduleItemSyncConflicts(conflict.localId);
+      throw new Error('sync_conflict_record_deleted');
     }
-    await clearResolvedConflict(conflict.id);
-    return cloudItem;
+    // None landed: the cloud's row is kept as it is, and nothing is written.
+    // The first read stands in when this one fails.
+    if (!phoneEditMayHaveLanded) {
+      await clearResolvedConflict(conflict.id);
+      return reread ?? cloudItem;
+    }
+    try {
+      // One may have landed and the cloud cannot be read again (A7 pass 15
+      // L-1): nothing is decided, and nothing changes.
+      if (reread === undefined) {
+        throw new Error('sync_conflict_cloud_copy_unreadable');
+      }
+      const cloudNow = reread;
+      // The cloud already holds its own copy, so nothing is written back,
+      // unless it holds an edit of this phone's that David discarded: an
+      // upload under way when he chose landed it, before Keep Cloud read the
+      // cloud or after. It is undone, back to the copy the screen showed
+      // (A7 pass 15 L-1: only a landing between the two reads was undone).
+      const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded);
+      if (phoneFields.length === 0) {
+        await clearResolvedConflict(conflict.id);
+        return cloudNow;
+      }
+      const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
+      // A write that fails may still have landed (its answer lost on weak
+      // signal), so Settings does not say "Neither copy was changed" (A7
+      // pass 16 L-2). Chosen again, Keep Cloud finds the restore there, or
+      // writes it.
+      const restore = await upsertScheduleItem(restored).catch(() => null);
+      if (!restore?.ok || restore.stubbed) {
+        throw new Error('sync_conflict_save_unconfirmed');
+      }
+      await clearResolvedConflict(conflict.id);
+      return restored;
+    } catch (error) {
+      await putBackTaskConflictAsItWas(conflict, phoneEdits);
+      throw error;
+    }
   }
 
   if (!localItem || typeof localItem.id !== 'string') {
     throw new Error('sync_conflict_local_copy_missing');
   }
 
+  // The cloud's row as it is now, before anything is sent (whole-app audit
+  // A7 pass 15 L-3, as for field updates, A4 pass 16 L3 and pass 17 L1).
+  // Keep Phone put the phone's copy over a cloud edit the screen never
+  // showed: the web's 50% was lost while Review Conflicts said "0%". When the
+  // row changed since the copy the screen showed, the conflict is saved with
+  // it and nothing is sent: David reviews it again. A cloud that cannot be
+  // read changes nothing; a task the cloud no longer has is not written
+  // back, and its conflict is closed.
+  const cloudNow = await currentCloudScheduleItem(conflict.localId);
+  if (!cloudNow) {
+    await clearScheduleItemSyncConflicts(conflict.localId);
+    throw new Error('sync_conflict_record_deleted');
+  }
+  if (await recordTaskCloudCopyIfChanged(conflict, cloudNow, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shown)) {
+    throw new Error('sync_conflict_cloud_copy_changed');
+  }
+  // The conflict closed meanwhile (whole-app audit A7 pass 16 L-6): an edit
+  // of this phone's already under way landed while the cloud was read. There
+  // is nothing to choose, and the copy saved with the conflict, older than
+  // that edit, is not sent over it. Matched by the task, as Keep Cloud
+  // does (A7 pass 17 L-3): a whole copy of the task that went up meanwhile
+  // and conflicted again replaced it under a new id, and Keep Phone said it
+  // closed by itself. Then the task is still in conflict: review again.
+  const openForTask = (await getSyncConflicts())
+    .find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+  if (!openForTask) throw new Error('sync_conflict_closed');
+  if (openForTask.id !== conflict.id) throw new Error('sync_conflict_cloud_copy_changed');
+
   const queueItemId = scheduleItemQueueItemId(localItem.id);
-  await enqueuePendingChange<ScheduleItemRecordPayload>({
-    id: queueItemId,
-    entity: 'schedule_item',
-    operation: 'update',
-    payload: {
-      id: localItem.id,
-      itemData: localItem,
-      forceLocal: true,
-    },
-    changedAt: new Date().toISOString(),
-    autoUpload: false,
+  const ownerId = currentCloudOwner().ownerId;
+  // The kept copy takes the place of what waited for the task, which is kept
+  // to put back if the choice fails (A7 pass 16 L-3, as for field updates).
+  const { keptItem, before } = await mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueItemId) ?? null;
+    // The phone's copy with this phone's newer edits of the task (A7 pass 16
+    // L-4, as Keep Phone keeps a field update's, A7 pass 10 L-4): any a Keep
+    // Cloud that could not finish left on the conflict, then the one still
+    // waiting. The kept copy replaced a newer offline note, and the phone's
+    // task then took the kept copy: the note was gone everywhere.
+    // Still in every revision the cloud copy was re-homed into (whole-app
+    // audit A5 pass 3 F6) and answering to every earlier task id the cloud
+    // copy names (A8 pass 10 L2: a delete on another device wrote one): the
+    // cloud's row as it is now, not the copy saved with the conflict (A7
+    // pass 15 L-3). The upload adds any newer ones.
+    const keptItem = withScheduleTaskEarlierIdsOf(
+      withScheduleImportMembershipOf(
+        withNewerPhoneTaskEdits(localItem, [...(localPayload.withdrawnEdits ?? []), ...(existing ? [existing] : [])]),
+        cloudNow,
+      ),
+      cloudNow,
+    );
+    if (existing?.operation === 'delete') {
+      return { nextQueue: queue, result: { keptItem, before: existing }, persist: false };
+    }
+    const now = new Date().toISOString();
+    const kept: SyncQueueItem = {
+      id: queueItemId,
+      entity: 'schedule_item',
+      operation: 'update',
+      payload: { id: localItem.id, itemData: keptItem, forceLocal: true },
+      createdAt: now,
+      changedAt: now,
+      retryCount: 0,
+      lastError: null,
+      ...(ownerId ? { ownerId } : {}),
+    };
+    return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: { keptItem, before: existing } };
   });
   let result = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
@@ -3653,11 +5524,25 @@ export async function resolveScheduleItemSyncConflict(
     exactOutcome !== 'uploaded' ||
     exactItemStillQueued
   ) {
+    // The queue as it was before the choice (whole-app audit A7 pass 16 L-3,
+    // as for field updates, A4 pass 16 L1): the kept copy stayed queued, and
+    // with no hold for tasks the next automatic pass wrote it over a later
+    // web edit and closed the conflict, while Settings said "Neither copy
+    // was changed". What waited for the task waits again, as it was; an edit
+    // saved since (which took the kept copy's place) stays.
+    await mutateOfflineQueue(queue => {
+      const current = queue.find(item => item.id === queueItemId);
+      if (current ? (current.payload as Partial<ScheduleItemRecordPayload>).forceLocal !== true : !before) {
+        return { nextQueue: queue, result: undefined, persist: false };
+      }
+      const others = queue.filter(item => item.id !== queueItemId);
+      return { nextQueue: before ? [...others, before] : others, result: undefined };
+    });
     throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
-  return localItem;
+  return keptItem;
 }
 
 type ReferenceDocumentUploadSuccess = {
@@ -3668,6 +5553,8 @@ type ReferenceDocumentUploadSuccess = {
 type QueueUploadContext = {
   projectsAuthorityPromise?: ReturnType<typeof listProjects>;
   projectIdentityAuthority?: OperationalProjectIdentityAuthority;
+  archivedProjectsAuthorityPromise?: ReturnType<typeof listArchivedProjects>;
+  archivedProjectIdentityAuthority?: OperationalProjectIdentityAuthority;
   projectAreasAuthorityPromise?: ReturnType<typeof listProjectAreas>;
   projectAreasById?: Map<string, ProjectArea>;
   scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
@@ -3679,6 +5566,8 @@ type QueueUploadContext = {
     ReturnType<typeof getProjectUpdateSyncMetadata>
   >;
   legacyDeletedProjectNamesPromise?: Promise<ReadonlySet<string>>;
+  /** Items this pass already uploaded or retired (still in the stored queue until it ends). */
+  settledQueueItemIds?: ReadonlySet<string>;
 };
 
 const PROJECT_UPDATE_RECEIPT_PREFETCH_CONCURRENCY = 8;
@@ -3770,13 +5659,14 @@ async function prepareQueueItemProjectIdentity(
   if (item.entity === 'project_update') {
     const payload = item.payload as ProjectUpdateRecordPayload<Record<string, unknown>>;
     if (!payload.updateData) return item;
-    const resolved = resolveOperationalProjectIdentity(
-      {
-        projectId: payload.projectId || payload.updateData.projectId as string | null | undefined,
-        projectName: payload.projectName || payload.updateData.projectName as string | null | undefined,
-      },
-      authority,
-    );
+    const identity = {
+      projectId: payload.projectId || payload.updateData.projectId as string | null | undefined,
+      projectName: payload.projectName || payload.updateData.projectName as string | null | undefined,
+    };
+    const active = resolveOperationalProjectIdentity(identity, authority);
+    const resolved = active.ok
+      ? active
+      : await resolveArchivedProjectUpdateIdentity(identity, active, context);
     if (!resolved.ok) return resolved.error;
     nextPayload = {
       ...payload,
@@ -3830,6 +5720,38 @@ async function prepareQueueItemProjectIdentity(
   return persisted || 'The saved item changed while its cloud project identity was being prepared.';
 }
 
+/**
+ * Audit A7 M2: a field update saved before its project was closed never
+ * uploaded, because identity is checked against active projects only. Close
+ * Project could even reach the cloud first: an update waits in the queue for
+ * its photos, so closing the project right after saving the last update
+ * stranded that update. A field update whose project is not active is
+ * looked up once among closed projects. Tasks and documents still need an
+ * active project.
+ */
+async function resolveArchivedProjectUpdateIdentity(
+  identity: Readonly<{ projectId?: string | null; projectName?: string | null }>,
+  activeFailure: Extract<OperationalProjectIdentityResult, { ok: false }>,
+  context: QueueUploadContext,
+): Promise<OperationalProjectIdentityResult> {
+  if (
+    activeFailure.code !== 'project_identity_required' &&
+    activeFailure.code !== 'project_identity_invalid'
+  ) {
+    return activeFailure;
+  }
+  context.archivedProjectsAuthorityPromise ??= listArchivedProjects();
+  const archived = await context.archivedProjectsAuthorityPromise;
+  if (!archived.ok || archived.stubbed || !Array.isArray(archived.data)) return activeFailure;
+  context.archivedProjectIdentityAuthority ??=
+    buildOperationalProjectIdentityAuthority(archived.data);
+  const resolved = resolveOperationalProjectIdentity(
+    identity,
+    context.archivedProjectIdentityAuthority,
+  );
+  return resolved.ok ? resolved : activeFailure;
+}
+
 async function loadOperationalProjectIdentityAuthority(
   context: QueueUploadContext,
 ): Promise<OperationalProjectIdentityAuthority | string> {
@@ -3843,12 +5765,53 @@ async function loadOperationalProjectIdentityAuthority(
   return context.projectIdentityAuthority;
 }
 
+/**
+ * The cloud's copy with a queued carried percent and any edits queued with it
+ * (A7 pass 26 M-1), or 'unchanged' when nothing would change. The percent's
+ * fields come from the carry weighed against this copy, and only while it
+ * still stands (a percent David entered since, a file's higher percent or a
+ * newer lookahead's stated percent stays); the copy's notes, owner, dates and
+ * lookahead note stay unless an edit queued with it changed them. Stamped the
+ * later of the two copies' times when only the percent changes, so the
+ * device's copy and the cloud's then match.
+ */
+function scheduleItemCarriedOntoCloudCopy(
+  payload: ScheduleItemRecordPayload,
+  changedFields: readonly (keyof ScheduleItem)[],
+  remote: ScheduleItem,
+): ScheduleItem | 'unchanged' {
+  const carried = scheduleProgressCarriedOntoCloudCopy(payload.itemData, remote, payload.carriedOver);
+  const progressFields = new Set<keyof ScheduleItem>(SCHEDULE_CARRIED_PROGRESS_FIELDS);
+  const edited = changedFields.filter(field => field !== 'updatedAt' && !progressFields.has(field));
+  const next = edited.reduce<ScheduleItem>((merged, field) => field === 'projectControls' &&
+    payload.itemData.projectControls && remote.projectControls
+    ? { ...merged, projectControls: mergeProjectControlsRevisions(payload.itemData.projectControls, remote.projectControls) }
+    : { ...merged, [field]: payload.itemData[field] },
+  carried
+    ? SCHEDULE_CARRIED_PROGRESS_FIELDS.reduce<ScheduleItem>((merged, field) => ({ ...merged, [field]: carried[field] }), remote)
+    : remote);
+  if (JSON.stringify(next) === JSON.stringify(remote)) return 'unchanged';
+  const later = timestampOf(payload.itemData.updatedAt) > timestampOf(remote.updatedAt) ? payload.itemData.updatedAt : remote.updatedAt;
+  return { ...next, updatedAt: edited.length > 0 || !later ? new Date().toISOString() : later };
+}
+
+/** A queued carry with nothing of David's queued with it: only the carried progress and its stamp (A7 pass 27 L1). */
+function scheduleItemCarryOnly(changedFields: readonly (keyof ScheduleItem)[]): boolean {
+  const progressFields = new Set<keyof ScheduleItem>(SCHEDULE_CARRIED_PROGRESS_FIELDS);
+  return changedFields.every(field => field === 'updatedAt' || progressFields.has(field));
+}
+
+function timestampOf(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
 ): Promise<string | ReferenceDocumentUploadSuccess> {
   if (item.entity === 'project') {
-    return uploadProjectQueueItem(item);
+    return uploadProjectQueueItem(item, context);
   }
 
   if (item.entity === 'project_update') {
@@ -3893,11 +5856,46 @@ async function uploadQueueItem(
     context.scheduleItemsById ??= new Map(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
-    const remote = context.scheduleItemsById.get(payload.id);
+    let remote = context.scheduleItemsById.get(payload.id);
     const changedFields = Array.isArray(payload.changedFields)
       ? payload.changedFields
       : null;
-    const authoritative = remote && changedFields
+    // A field edit's row the list missed (whole-app audit A7 pass 16 L-5):
+    // the list pages by offset, newest first, so a row edited elsewhere
+    // while it is read can be skipped, as can one past its last page. With
+    // no row the phone's whole copy went up: a notes-only edit put 0% over
+    // the web's 50%. The row is read by its id first; a read that fails
+    // leaves the edit queued, and no row means the task really has none.
+    if (!remote && changedFields) {
+      let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
+      try {
+        row = await getScheduleItem(payload.id);
+      } catch {
+        row = null;
+      }
+      if (!row?.ok || row.stubbed) {
+        return row?.error || row?.message || 'Task authority could not be checked.';
+      }
+      if (row.data) {
+        remote = row.data;
+        context.scheduleItemsById.set(payload.id, row.data);
+      }
+    }
+    // A carried percent lands only while the merge's rule holds against this copy (A7 pass 26 M-1).
+    const carriedOnto = remote && changedFields && payload.carriedProgress === true
+      ? scheduleItemCarriedOntoCloudCopy(payload, changedFields, remote)
+      : null;
+    // Whole-app audit A7 pass 27 L1 (Low, caused by 30170fc): a carried percent sent on its own is the sync's, not an
+    // edit of David's, so it never settles a conflict on the task waiting for Review Conflicts (Keep Phone then said the
+    // conflict had closed by itself). Queued with an edit of his, the edit settles it, as any edit does.
+    const carryOnly = carriedOnto !== null && scheduleItemCarryOnly(changedFields || []);
+    if (carriedOnto === 'unchanged') {
+      if (!carryOnly) await clearConflictsForLocalRecord('schedule_item', payload.id);
+      return 'uploaded';
+    }
+    const authoritative = carriedOnto
+      ? carriedOnto
+      : remote && changedFields
       ? {
           ...changedFields.reduce<ScheduleItem>(
             (merged, field) => field === 'projectControls' &&
@@ -3924,10 +5922,13 @@ async function uploadQueueItem(
             cloud: [remote],
             allowCloudOnly: true,
           }).find(candidate => candidate.id === payload.id) || payload.itemData
-        : payload.itemData;
+        // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
+        // and earlier task ids (A8 pass 10 L2).
+        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(payload.itemData, remote), remote);
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       if (
         changedFields ||
+        payload.forceLocal ||
         JSON.stringify(payload.itemData) === JSON.stringify(remote)
       ) {
         await clearConflictsForLocalRecord('schedule_item', payload.id);
@@ -3950,7 +5951,7 @@ async function uploadQueueItem(
     const result = await upsertScheduleItem(authoritative);
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, authoritative);
-      await clearConflictsForLocalRecord('schedule_item', payload.id);
+      if (!carryOnly) await clearConflictsForLocalRecord('schedule_item', payload.id);
       return 'uploaded';
     }
     return result.error || result.message || 'Task sync is waiting for Supabase.';
@@ -3967,18 +5968,24 @@ async function uploadQueueItem(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
     const remote = context.referenceDocumentsById.get(payload.id);
+    // An edit made before the document was made current, here or on another
+    // device, is not outranked by the activation's stamp (whole-app audit A8
+    // pass 3 M2).
+    const local = (remote && referenceDocumentEditOutlivingActivation(
+      payload.documentData, remote, Date.now(), referenceDocumentDetailsSent.get(payload.id))) ||
+      payload.documentData;
     const merged = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
-          local: [payload.documentData],
+          local: [local],
           cloud: [remote],
-        }).find(candidate => candidate.id === payload.id) || payload.documentData
-      : payload.documentData;
+        }).find(candidate => candidate.id === payload.id) || local
+      : local;
     const pending = remote
       ? daveReferenceDocumentsNeedingCloudUpload({
-          local: [payload.documentData],
+          local: [local],
           cloud: [remote],
         }).find(candidate => candidate.id === payload.id)
-      : payload.documentData;
+      : local;
     if (remote && !pending) {
       return {
         outcome: 'uploaded',
@@ -3997,26 +6004,54 @@ async function uploadQueueItem(
         return 'The document file is still waiting for protected cloud storage.';
       }
     }
-    const result = await upsertReferenceDocument(authoritative);
+    // A record the cloud already has is updated (whole-app audit A8 pass 1 F3).
+    const result = await upsertReferenceDocument(authoritative, { existing: Boolean(remote) });
     if (result.ok && !result.stubbed) {
       context.referenceDocumentsById.set(payload.id, authoritative);
+      referenceDocumentDetailsSent.set(payload.id, referenceDocumentSharedDetailsFingerprint(authoritative));
       return {
         outcome: 'uploaded',
         referenceDocument: authoritative,
       };
     }
-    return result.error || result.message || 'Document sync is waiting for Supabase.';
+    const reason = result.error || result.message || 'Document sync is waiting for Supabase.';
+    // A Current drawing whose projects the cloud kept says so (whole-app audit A8 pass 3 L2).
+    return remote && classifySyncFailureText([reason]) === 'current_drawing_protected' &&
+      projectNamesKey(authoritative) !== projectNamesKey(remote)
+      ? currentDrawingProjectsKeptMessage(projectNamesOf(remote))
+      : reason;
   }
 
   return `Unsupported sync entity: ${item.entity}`;
 }
 
+/** A shared record's projects, as its list or its single project name. */
+function projectNamesOf(document: ReferenceDocument): string[] {
+  const listed = (document.projectNames || []).filter(name => typeof name === 'string' && name.trim());
+  return listed.length > 0 ? listed : [document.projectName || ''].filter(name => name.trim());
+}
+
+function projectNamesKey(document: ReferenceDocument): string {
+  return [...new Set([document.projectName, ...(document.projectNames || [])]
+    .map(name => String(name || '').trim().toLowerCase()).filter(Boolean))].sort().join('|');
+}
+
 async function uploadProjectQueueItem(
   item: SyncQueueItem,
+  context: QueueUploadContext,
 ): Promise<'uploaded' | string> {
   const payload = item.payload as ProjectCreatePayload &
     ProjectUpdatePayload &
     ProjectDeletePayload;
+  // A delete sent while the project's own create is still queued found no
+  // cloud row, and the create then made the deleted project active on the
+  // next pass (whole-app audit A3 pass 4). It waits, as a close does.
+  if (
+    item.operation === 'delete' &&
+    await projectCreateStillQueued(payload.name || payload.previousName || '', context)
+  ) {
+    return 'Project delete is waiting for the project to reach the cloud.';
+  }
   if (item.operation === 'update' && payload.coverPhotoUpload) {
     const upload = await uploadPhoto({
       path: payload.coverPhotoUpload.remotePath,
@@ -4029,6 +6064,11 @@ async function uploadProjectQueueItem(
       return upload.error || upload.message || 'Project cover upload is waiting for cloud sync.';
     }
   }
+  if (item.operation === 'create') {
+    const existing = await cloudProjectNameExists(payload.name || '');
+    if (typeof existing === 'string') return existing;
+    if (existing) return 'uploaded';
+  }
   const result =
     item.operation === 'create'
       ? await createProject({ name: payload.name || 'Untitled Project' })
@@ -4036,9 +6076,110 @@ async function uploadProjectQueueItem(
         ? await deleteProject({ name: payload.name || payload.previousName || '' })
         : await updateProject(payload);
 
-  if (result.ok && !result.stubbed) return 'uploaded';
+  if (result.ok && !result.stubbed) {
+    // A close finds no cloud row while the project's own create, queued ahead
+    // of it offline, has not landed yet (for example its name check could not
+    // read the lists). Dropping the close let the create make the project
+    // active on the next pass (whole-app audit A3 pass 3); it waits instead.
+    if (
+      item.operation === 'update' && payload.archived === true && !result.data &&
+      await projectCreateStillQueued(payload.previousName || payload.name || '', context)
+    ) {
+      return 'Project close is waiting for the project to reach the cloud.';
+    }
+    return 'uploaded';
+  }
 
   return result.error || result.message || 'Project sync is waiting for Supabase.';
+}
+
+async function projectCreateStillQueued(
+  name: string,
+  context: QueueUploadContext,
+): Promise<boolean> {
+  const key = name.trim().toLowerCase();
+  if (!key) return false;
+  const queue = await getOfflineQueue().catch(() => null);
+  if (!queue) return true;
+  return queue.some(candidate =>
+    candidate.entity === 'project' && candidate.operation === 'create' &&
+    !context.settledQueueItemIds?.has(candidate.id) &&
+    String((candidate.payload as Partial<ProjectCreatePayload>)?.name || '').trim().toLowerCase() === key);
+}
+
+/**
+ * A queued create, cover photo or reopen for a project on this phone's
+ * deleted-project list. The deletion record already retires them when it is
+ * on this phone; a project deleted before deletion records existed has only
+ * the list, and its create made the deleted project active again while its
+ * cover and reopen retried for good (whole-app audit A3 pass 4). A close is
+ * still sent: the cloud reads a missing project as already closed, and the
+ * startup migration closes the retired shell projects, which are on the list.
+ */
+async function queuedProjectChangeWasDeleted(
+  item: SyncQueueItem,
+  context: QueueUploadContext,
+): Promise<boolean> {
+  if (item.entity !== 'project' || item.operation === 'delete') return false;
+  const payload = (item.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+  if (item.operation === 'update' && payload.archived === true) return false;
+  const key = normalizedProjectArchiveName(
+    item.operation === 'create' ? payload.name : payload.previousName || payload.name,
+  );
+  if (!key) return false;
+  context.legacyDeletedProjectNamesPromise ??= loadLegacyDeletedProjectNames();
+  return (await context.legacyDeletedProjectNamesPromise).has(key);
+}
+
+/**
+ * Called by the project delete cascade (whole-app audit A3 pass 4). The
+ * project's queued cover photo and reopen are withdrawn: each pass
+ * re-uploaded the cover and then failed "Project could not be found." A
+ * document shared with other projects has its queued copy rewritten as the
+ * saved one was, so it no longer names the deleted project or carries its id.
+ */
+export async function withdrawQueuedChangesOfDeletedProject(
+  projectName: string,
+  projectRecords: readonly Readonly<{ name: string; id?: string | null }>[] = [],
+): Promise<number> {
+  const key = normalizedProjectArchiveName(projectName);
+  if (!key) return 0;
+  return mutateOfflineQueue(queue => {
+    let changed = 0;
+    const nextQueue = queue.flatMap(item => {
+      if (item.entity === 'project' && item.operation === 'update') {
+        const payload = (item.payload || {}) as Partial<ProjectUpdatePayload>;
+        if (payload.archived !== true &&
+          normalizedProjectArchiveName(payload.previousName || payload.name) === key) {
+          changed += 1;
+          return [];
+        }
+      }
+      const document = item.entity === 'reference_document' && item.operation !== 'delete'
+        ? (item.payload as Partial<ReferenceDocumentRecordPayload>)?.documentData
+        : null;
+      const shared = document ? withoutDeletedSharedProject(document, projectName, projectRecords) : null;
+      if (!shared) return [item];
+      changed += 1;
+      return [{ ...item, payload: { ...(item.payload as ReferenceDocumentRecordPayload), documentData: shared } }];
+    });
+    return { nextQueue, result: changed, persist: changed > 0 };
+  });
+}
+
+/**
+ * Whether the cloud already has a project by this name, active or archived
+ * (a string when the lists could not be read, to retry later). A phone that
+ * had not yet heard of an archived project queued its create for a schedule
+ * that named it, which made an active copy of it (whole-app audit A3 pass 2).
+ */
+async function cloudProjectNameExists(name: string): Promise<boolean | string> {
+  const key = name.trim().toLowerCase();
+  if (!key) return false;
+  const lists = await Promise.all([listProjects(), listArchivedProjects()]);
+  const unreadable = lists.find(result => !result.ok || result.stubbed);
+  if (unreadable) return unreadable.error || unreadable.message || 'Project list is waiting for cloud sync.';
+  return lists.some(result => (result.data || []).some(project => project.name.trim().toLowerCase() === key));
 }
 
 async function uploadProjectUpdateQueueItem(
@@ -4093,15 +6234,17 @@ async function uploadProjectUpdateQueueItem(
       archivedAt: payload.archivedAt || item.changedAt,
       projectId: payload.projectId,
     });
-    return result.ok && !result.stubbed
-      ? 'uploaded'
-      : result.error || result.message || 'Field update archive is waiting for cloud sync.';
-  }
-  if (!payload.updateData) return 'Project update database payload is missing.';
+    if (!result.ok || result.stubbed) return result.error || result.message || 'Field update archive is waiting for cloud sync.';
+    if (!queuedFieldUpdateDocumentPatches(item)) return 'uploaded';
+    // Then the document changes that waited when it was archived go onto the
+    // archived copy (whole-app audit A4 pass 11 O2), read again after it.
+    context.projectUpdateMetadataPromises?.delete(payload.id);
+  } else if (!payload.updateData) return 'Project update database payload is missing.';
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);
-  if (uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
+  const documentPatches = queuedFieldUpdateDocumentPatches(item);
+  if (!documentPatches && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
     return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
   }
   const remoteMetadata = await loadProjectUpdateSyncMetadata(payload.id, context);
@@ -4109,15 +6252,60 @@ async function uploadProjectUpdateQueueItem(
   if (!remoteMetadata.ok && remoteMetadata.error) {
     return `Project update database select failed: ${remoteMetadata.error}`;
   }
+  // Document changes go onto the cloud's current copy, whoever edited it last
+  // and whatever it says now (an archive on the iPad stays): this device's
+  // copy goes up whole only when the cloud has none (whole-app audit A7 pass
+  // 6 M1, A4 pass 8 F3).
+  const cloudCopy = documentPatches && remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data : null;
+  // Not an analysis result the cloud's copy holds a later one for, or the
+  // same one (A4 pass 25 L1): the phone's result, finished offline, went over
+  // the iPad's retried result and David's Confirmed mark on it.
+  const patchesToApply = cloudCopy?.updateData
+    ? fieldUpdatePatchesNotSuperseded(cloudCopy.updateData as object, documentPatches || []) : [];
+  const patchedCloudCopy = cloudCopy?.updateData
+    ? applyFieldUpdateDocumentPatches(cloudCopy.updateData as object, patchesToApply)
+    : null;
+  // An archive has no copy of its own to send (A4 pass 11 O2).
+  if (payload.archiveOnly && !patchedCloudCopy) return 'uploaded';
+  // A document change settles no conflict: the phone's own edit waits for
+  // review, with its Keep Phone choice (whole-app audit A4 pass 9 L1).
+  if (cloudCopy && patchedCloudCopy === cloudCopy.updateData) {
+    // Nothing was written. A result left out for the cloud's own is not this
+    // phone's copy in the cloud (A7 pass 22 L-1): recorded, a refresh kept
+    // the card's older result, shown as Sent.
+    if (patchesToApply.length === (documentPatches || []).length) recordProjectUpdateUpload(payload.id);
+    return 'uploaded';
+  }
+  if (!patchedCloudCopy && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
+    return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
+  }
 
+  // Newer in the cloud only by this device's own patches, which went onto a
+  // copy no newer than this edit (whole-app audit A4 pass 14 #3): no conflict.
+  // The edit goes up with them, stamped as the cloud's copy is.
+  const ownPatchesSinceEdit = !patchedCloudCopy && remoteMetadata.ok && remoteMetadata.data?.updatedAt
+    ? ownProjectUpdatePatchesSince(payload.id, remoteMetadata.data, item.changedAt)
+    : null;
   if (
+    !patchedCloudCopy &&
+    !ownPatchesSinceEdit &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
   ) {
     if (projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)) {
       await clearConflictsForLocalRecord('project_update', payload.id);
+      recordProjectUpdateUpload(payload.id);
       return 'uploaded';
+    }
+    // Keep Cloud's own copy meeting a newer cloud copy is no new conflict
+    // (whole-app audit A4 pass 22 L1): its phone side was then that copy,
+    // still marked as Keep Cloud's, which is held, and every Keep Phone said
+    // "Conflict not resolved". The conflict it was chosen over takes the
+    // cloud's copy, and Keep Cloud asks David to review again; the copy stays
+    // queued for Keep Cloud's put-back, which takes it off by its mark.
+    if (payload.keepCloudChoice && await keepCloudChoiceMetNewerCloudCopy(payload, remoteMetadata.data)) {
+      return KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED;
     }
 
     await recordConflict({
@@ -4128,28 +6316,246 @@ async function uploadProjectUpdateQueueItem(
       remoteChangedAt: remoteMetadata.data.updatedAt,
       reason: 'Remote update changed after the local pending change.',
       detectedAt: new Date().toISOString(),
-      localPayload: payload,
+      localPayload: withoutKeepCloudMarks(payload), // the phone's side is never Keep Cloud's copy (A4 pass 22 L1)
       remotePayload: remoteMetadata.data.updateData,
     });
 
     return 'conflict';
   }
 
-  const result = await saveProjectUpdate({
-    id: payload.id,
+  const record = cloudCopy && patchedCloudCopy ? {
+    projectId: cloudCopy.projectId || payload.projectId || '',
+    projectName: cloudCopy.projectName || payload.projectName || 'Unassigned Project',
+    areaName: cloudCopy.areaName ?? payload.selectedAreaName ?? '',
+    idempotencyKey: projectUpdateIdempotencyKey(cloudCopy.updateData, payload.id),
+    updateData: patchedCloudCopy as unknown,
+    updatedAt: new Date().toISOString(),
+  } : {
     projectId: payload.projectId || '',
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
-    updateData: payload.updateData,
-    updatedAt: item.changedAt,
-  });
+    updateData: ownPatchesSinceEdit
+      ? applyFieldUpdateDocumentPatches(payload.updateData as object,
+        fieldUpdatePatchesNotSuperseded(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
+      : payload.updateData,
+    // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
+    // copy and a confirmed Retry's are stamped now, after the patches, and
+    // went up stamped back to the last patch's time; an iPad edit saved
+    // offline in between then read newer, and went over the chosen copy.
+    updatedAt: ownPatchesSinceEdit && isRemoteNewer(ownPatchesSinceEdit.at, item.changedAt)
+      ? ownPatchesSinceEdit.at : item.changedAt,
+  };
+  const result = await saveProjectUpdate({ id: payload.id, ...record });
 
-  if (result.ok && !result.stubbed) return 'uploaded';
+  if (result.ok && !result.stubbed) {
+    // A retry after a conflict put the phone's copy in the cloud: that
+    // conflict is settled, as when the cloud already matched (audit A4 pass 5).
+    // Keep Cloud's copy leaves it to Keep Cloud (A7 pass 17 L-1).
+    if (!documentPatches && !payload.keepCloudChoice) await clearConflictsForLocalRecord('project_update', payload.id);
+    if (cloudCopy && patchedCloudCopy) {
+      noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || []);
+    }
+    else projectUpdatePatchesLanded.delete(payload.id);
+    recordProjectUpdateUpload(payload.id);
+    return 'uploaded';
+  }
 
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/**
+ * This device's own patches (a document change, a late photo analysis
+ * result) that went up onto an update's cloud copy (whole-app audit A4 pass
+ * 14 #3): the cloud's time on the copy they went onto (`onto`), and the
+ * copy the last of them left, with its time (`at`). A patch stamps the
+ * cloud's row with the time it went up, and an edit keeps the time David
+ * saved it (A4 pass 13 M1): an edit saved while a patch went up read older
+ * than the cloud's copy, and a conflict was shown. While the cloud's copy is
+ * still the one they left (its time and content), and the copy they went
+ * onto is no newer than the edit, the edit goes up with them. Held in
+ * memory: after a relaunch such an edit shows the conflict, as before;
+ * nothing is lost.
+ */
+const projectUpdatePatchesLanded = new Map<string, {
+  onto: string; at: string; copy: unknown; patches: FieldUpdateDocumentPatch[];
+}>();
+
+function noteProjectUpdatePatchesLanded(
+  updateId: string,
+  onto: string | null | undefined,
+  left: { updatedAt: string; updateData: unknown },
+  patches: readonly FieldUpdateDocumentPatch[],
+): void {
+  const earlier = projectUpdatePatchesLanded.get(updateId);
+  if (!onto || !Number.isFinite(Date.parse(onto))) {
+    projectUpdatePatchesLanded.delete(updateId);
+    return;
+  }
+  // One after another: the first went onto the copy before them all.
+  const chained = earlier && sameCloudTime(earlier.at, onto);
+  projectUpdatePatchesLanded.set(updateId, {
+    onto: chained ? earlier.onto : onto, at: left.updatedAt, copy: left.updateData,
+    patches: [...(chained ? earlier.patches : []), ...patches],
+  });
+}
+
+/** This device's own patches, when they are all the cloud's copy holds that is newer than an edit saved at `changedAt`. */
+function ownProjectUpdatePatchesSince(
+  updateId: string,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+  changedAt: string,
+) {
+  const landed = projectUpdatePatchesLanded.get(updateId);
+  return landed && cloud.updatedAt && sameCloudTime(landed.at, cloud.updatedAt) &&
+    projectUpdatePayloadsMatch(landed.copy, cloud.updateData) && !isRemoteNewer(landed.onto, changedAt) ? landed : null;
+}
+
+function sameCloudTime(left: string, right: string): boolean {
+  const leftTime = Date.parse(left);
+  return Number.isFinite(leftTime) && leftTime === Date.parse(right);
+}
+
+/**
+ * Audit A7 M5: when this device last put each field update in the cloud. A
+ * refresh lists the cloud's rows first and merges them afterwards; an upload
+ * that lands in between leaves the listed row older than the phone's copy,
+ * which then replaced it (shown as sent, with the older content). The
+ * refresh keeps the phone's copy of an update uploaded since it started
+ * listing. Held in memory: a relaunch starts a fresh refresh.
+ */
+const projectUpdateUploadedAt = new Map<string, number>();
+
+/**
+ * For each field update, the copy this device last put in the cloud, whole
+ * or with a document patch, while nothing newer was queued for it (whole-app
+ * audit A7 pass 7 M1). A sync attempt that finds nothing queued for an update
+ * still this copy, the document upload state aside, has nothing to send
+ * again (writeStagedProjectUpdateRecord). Held in memory: after a relaunch a
+ * sync attempt queues the whole copy, as before.
+ */
+const projectUpdateLastVersionInCloud = new Map<string, ProjectUpdate>();
+
+function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
+  const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+  if (item.entity !== 'project_update' || item.operation === 'delete' || payload.archiveOnly || !payload.id) return;
+  if (payload.updateData && typeof payload.updateData === 'object') {
+    projectUpdateLastVersionInCloud.set(payload.id, payload.updateData as ProjectUpdate);
+  }
+}
+
+/**
+ * Its archive aside when that copy is archived and this one not (A4 pass 17
+ * L2): nothing un-archives an update. So is a photo result that copy holds
+ * and that stands over this one's (A4 pass 29 L1), as staging takes it
+ * (withQueuedAnalysisResults): a card analysing a photo again, its record
+ * already in the cloud, read as owing a send, its photos went up again, and
+ * the card turned "Sync failed · Photo upload issue" with nothing to retry.
+ */
+function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  return Boolean(sent) && sameProjectUpdateContent(sent, withSentCopysStandingParts(update, sent) as ProjectUpdate);
+}
+
+/**
+ * The copy with the archive and the photo results of the copy this device
+ * last put in the cloud, where those stand over its own
+ * (photoAnalysisResultStands; A4 pass 27 L1).
+ */
+function withSentCopysStandingParts(update: ProjectUpdate, sent: ProjectUpdate | undefined): unknown {
+  return withPhoneAnalysisResults(withArchiveKept(update, [], sent), sent ? [sent] : []);
+}
+
+/**
+ * The card as a sync attempt leaves it (whole-app audit A4 pass 27 L2): with
+ * the photo results of the copy this device last put in the cloud where they
+ * stand over its own. A sync attempt keeps a result its queued copy holds
+ * (withQueuedAnalysisResults), and the card read Sent with "Retry needed"
+ * while the cloud held the iPad's Confirmed result.
+ */
+export function withAnalysisResultsLastInCloud<TUpdate extends ProjectUpdate>(update: TUpdate): TUpdate {
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  if (!isRecord(sent) || !Array.isArray(sent.photos)) return update;
+  // A photo the card is analysing again keeps "Analyzing" (A7 pass 24 L-1): its run lands on the card.
+  const analysing = new Set((update.photos || [])
+    .filter(photo => (photo.photoIntelligence as { status?: unknown } | undefined)?.status === 'analyzing')
+    .map(photo => photo.id));
+  const others = { ...sent, photos: (sent.photos as unknown[]).filter(photo => !isRecord(photo) || !analysing.has(photo.id as string)) };
+  return withPhoneAnalysisResults(update, [others]) as TUpdate;
+}
+
+/**
+ * Whether this copy of a field update is, in content, the one this device
+ * last put in the cloud (its documents' upload state and a Retry's stamps
+ * aside): as Keep Phone leaves it (whole-app audit A7 pass 9 L1). An archive
+ * that copy carries and this one does not is aside too (A4 pass 17 L2): the
+ * card is not archived when Keep Phone keeps an archive made on the iPad,
+ * and Settings took it for a newer edit, which left it Waiting to Sync.
+ * So is a photo result it holds that stands over this one's (A4 pass 27
+ * L1): Keep Phone sent the iPad's Confirmed result, Settings took the card's
+ * failed one for a newer edit and sent the card whole over it.
+ */
+export function projectUpdateCopyIsLastInCloud(update: ProjectUpdate): boolean {
+  const sent = projectUpdateLastVersionInCloud.get(update.id);
+  return fieldUpdateOwesNothingBeyond(sent, [], withSentCopysStandingParts(update, sent) as object);
+}
+
+/** A field update still owing its own sync: "Waiting to Sync", or failed (A7 pass 8 L1). */
+function fieldUpdateOwesOwnSync(status: unknown): boolean {
+  return status === 'queued' || status === 'failed';
+}
+
+/**
+ * A field update that owes nothing beyond these document changes (whole-app
+ * audit A7 pass 9 L1): `base` (a copy this device put in the cloud, or the
+ * copy a waiting patch was made on) with them is this copy, a Retry's send
+ * stamps aside. Whatever its status says, its own record has been sent.
+ */
+function fieldUpdateOwesNothingBeyond(
+  base: unknown,
+  patches: readonly FieldUpdateDocumentPatch[],
+  update: object,
+): boolean {
+  return Boolean(base) && typeof base === 'object' && sameProjectUpdateContent(
+    applyFieldUpdateDocumentPatches(base as object, patches), update as ProjectUpdate, { retryStampsAside: true });
+}
+
+/**
+ * Two copies of a field update with the same content: its documents' upload
+ * state aside, and the project id the upload resolved, which is not an edit.
+ * With `retryStampsAside`, a Retry's send stamps aside too (A7 pass 8 L1).
+ */
+function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retryStampsAside = false } = {}): boolean {
+  if (!left || typeof left !== 'object') return false;
+  const content = (copy: object) => {
+    const rest: Record<string, unknown> = { ...withoutDocumentUploadState(copy), projectId: undefined };
+    if (retryStampsAside) ['sendAttempts', 'lastSendAttemptAt', 'stableSendId', 'idempotencyKey'].forEach(field => { delete rest[field]; });
+    return rest as never;
+  };
+  return sameFieldUpdateSyncGeneration(content(left), content(right));
+}
+
+/**
+ * Test support: forget what this launch holds in memory about field updates
+ * (the copies in the cloud, the uploads, the documents re-sent), as a
+ * relaunch does, so no test depends on the one before it.
+ */
+export function resetFieldUpdateSyncMemoryForTests(): void {
+  projectUpdateLastVersionInCloud.clear();
+  projectUpdateUploadedAt.clear();
+  projectUpdatePatchesLanded.clear();
+  removedDocumentsRequeuedThisLaunch.clear();
+  resetDocumentsResentThisLaunchForTests();
+}
+
+function recordProjectUpdateUpload(updateId: string) {
+  projectUpdateUploadedAt.set(updateId, Date.now());
+}
+
+export function projectUpdateUploadedSince(updateId: string, since: number): boolean {
+  return (projectUpdateUploadedAt.get(updateId) ?? Number.NEGATIVE_INFINITY) >= since;
 }
 
 async function projectUpdateAlreadyHasCloudReceipt(
@@ -4169,7 +6575,14 @@ async function projectUpdateAlreadyHasCloudReceipt(
     return false;
   }
 
-  await clearConflictsForLocalRecord('project_update', payload.id);
+  // A patch already in the cloud's copy settles no conflict (A4 pass 9 L1):
+  // its copy may be the iPad's a refresh showed, while David's offline edit
+  // waits in the conflict (whole-app audit A4 pass 15 H1). Nor does Keep
+  // Cloud's own copy: Keep Cloud closes it (A7 pass 17 L-1).
+  if (!queuedFieldUpdateDocumentPatches(item) && !payload.keepCloudChoice) {
+    await clearConflictsForLocalRecord('project_update', payload.id);
+  }
+  recordProjectUpdateUpload(payload.id);
   return true;
 }
 
@@ -4242,7 +6655,7 @@ async function recordConflict(conflict: SyncConflict): Promise<void> {
     const nextConflicts = conflicts.filter(item =>
       item.entity !== conflict.entity || item.localId !== conflict.localId,
     );
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+    await writeSyncConflicts([...nextConflicts, conflict]);
   });
 }
 
@@ -4256,7 +6669,33 @@ async function clearConflictsForLocalRecord(
       item.entity !== entity || item.localId !== localId,
     );
     if (nextConflicts.length !== conflicts.length) {
-      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
+      await writeSyncConflicts(nextConflicts);
+    }
+  });
+}
+
+const syncConflictListeners = new Set<(conflicts: readonly SyncConflict[]) => void>();
+
+/**
+ * Called with the saved conflicts each time this device writes them
+ * (whole-app audit A7 pass 12 M-1): a field update's card says when it waits
+ * for Review Conflicts. The unsubscribe function.
+ */
+export function subscribeToSyncConflicts(listener: (conflicts: readonly SyncConflict[]) => void): () => void {
+  syncConflictListeners.add(listener);
+  return () => {
+    syncConflictListeners.delete(listener);
+  };
+}
+
+async function writeSyncConflicts(conflicts: SyncConflict[]): Promise<void> {
+  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, conflicts);
+  const saved = normalizeSyncConflicts(conflicts);
+  syncConflictListeners.forEach(listener => {
+    try {
+      listener(saved);
+    } catch {
+      // A screen's listener never fails a conflict write.
     }
   });
 }
@@ -4887,44 +7326,93 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
  * Adds a bandwidth-bounded presentation URL without downloading the original
  * evidence file. Reports, backup, and photo analysis continue to call
  * hydrateRecoveredProjectUpdatePhotos() and therefore retain original bytes.
+ * With `sign: false` (the operational refresh) a photo is judged and keeps its
+ * cloud path, but no preview is signed: the refresh signed every photo from
+ * another device and ran past its time limit, and the image signs its own
+ * preview when shown (whole-app audit A4 pass 6 (30 Sep 2026)).
  */
 export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectUpdate>(
   update: TUpdate,
+  { sign = true }: Readonly<{ sign?: boolean }> = {},
 ): Promise<TUpdate> {
-  const photos = await Promise.all(update.photos.map(async photo => {
-    if (await hasUsablePhotoUri(photo)) return photo;
+  const photos = await Promise.all(update.photos.map(async current => {
+    if (await hasUsablePhotoUri(current)) return current;
+    const relocated = await relocateLocalPhotoUri(current);
+    if (relocated) return { ...current, uri: relocated };
+    const photo = await withoutMissingPhotoPath(update, current);
     if (cloudPhotoPreviewIsFresh(photo)) return photo;
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const transform = projectPhotoPreviewTransform(photo);
-    const signedRequest = await createCachedPhotoPreviewSignedUrl(
-      cloudStoragePath,
-      transform,
-    );
-    const signed = signedRequest.result;
-    if (!signed.ok || !signed.data || signed.stubbed) {
-      return { ...photo, cloudStoragePath };
-    }
+    const preview = sign ? await signProjectPhotoPreview({ ...photo, cloudStoragePath }) : null;
+    if (!preview) return { ...photo, cloudStoragePath };
     return {
       ...photo,
       cloudStoragePath,
-      cloudPreviewUri: signed.data,
-      cloudPreviewSignedUrlExpiresAt:
-        new Date(signedRequest.usableUntil).toISOString(),
+      cloudPreviewUri: preview.uri,
+      cloudPreviewSignedUrlExpiresAt: new Date(preview.usableUntil).toISOString(),
     };
   }));
   return { ...update, photos };
 }
 
-export function cloudPhotoPreviewIsFresh(
-  photo: Pick<UpdatePhoto, 'cloudPreviewUri' | 'cloudPreviewSignedUrlExpiresAt'>,
-  now = Date.now(),
-): boolean {
-  if (!photo.cloudPreviewUri?.trim()) return false;
-  const expiresAt = photo.cloudPreviewSignedUrlExpiresAt
-    ? new Date(photo.cloudPreviewSignedUrlExpiresAt).getTime()
-    : Number.NaN;
-  return Number.isFinite(expiresAt) && expiresAt > now;
+/**
+ * A preview URL for a photo shown without its file, and how long it can be
+ * shown. A signed URL lapses about 9 minutes after signing, so the image signs
+ * again when displayed (whole-app audit A4 pass 6 (30 Sep 2026)); it shares
+ * the cache, request dedupe and 3-at-a-time limit with hydration. `force`
+ * drops a cached URL the image could not load. Null when not signed.
+ */
+export async function signProjectPhotoPreview(
+  photo: Pick<UpdatePhoto, 'cloudStoragePath' | 'mimeType' | 'fileName'>,
+  { force = false }: Readonly<{ force?: boolean }> = {},
+): Promise<Readonly<{ uri: string; usableUntil: number }> | null> {
+  const cloudStoragePath = photo.cloudStoragePath;
+  if (!cloudStoragePath?.trim()) return null;
+  const transform = projectPhotoPreviewTransform(photo);
+  if (force) photoPreviewSignedUrlCache.delete(photoPreviewCacheKey(cloudStoragePath, transform));
+  const { result, usableUntil } = await createCachedPhotoPreviewSignedUrl(cloudStoragePath, transform);
+  return result.ok && result.data && !result.stubbed ? { uri: result.data, usableUntil } : null;
+}
+
+export { cloudPhotoPreviewIsFresh };
+
+/**
+ * Audit A7 M3: a path from another device, an older install or a purged cache
+ * is not a photo on this device, yet the display preferred it over the
+ * preview, so photos taken on the iPhone showed blank on the iPad and the
+ * reverse. A path this device cannot relocate is cleared when the device
+ * confirms no file is there (or a signed URL has expired), and kept when that
+ * cannot be told: a cleared path can leave this device's own file
+ * unreferenced for the photo cleanup. A cleared photo keeps a cloud storage
+ * path, without which the saved update would drop the photo.
+ */
+async function withoutMissingPhotoPath<TPhoto extends UpdatePhoto>(
+  update: ProjectUpdate,
+  photo: TPhoto,
+): Promise<TPhoto> {
+  const uri = photo.uri?.trim();
+  if (!uri) return photo;
+  if (!/^https?:\/\//i.test(uri) && !(await photoFileConfirmedMissing(uri))) {
+    return photo;
+  }
+  const recoveryCopy =
+    photo.cloudRecoveryStatus === 'cached' || photo.cloudRecoveryStatus === 'signed_url';
+  return {
+    ...photo,
+    uri: '',
+    cloudStoragePath: photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo),
+    ...(recoveryCopy ? { cloudRecoveryStatus: null, cloudSignedUrlExpiresAt: null } : {}),
+  };
+}
+
+async function photoFileConfirmedMissing(uri: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) return true;
+    return !info.isDirectory && 'size' in info && info.size === 0;
+  } catch {
+    return false;
+  }
 }
 
 export function projectPhotoPreviewTransform(
@@ -4941,11 +7429,18 @@ export function projectPhotoPreviewTransform(
       };
 }
 
+function photoPreviewCacheKey(
+  cloudStoragePath: string,
+  transform: ReturnType<typeof projectPhotoPreviewTransform>,
+): string {
+  return `${cloudStoragePath}|${JSON.stringify(transform || null)}`;
+}
+
 async function createCachedPhotoPreviewSignedUrl(
   cloudStoragePath: string,
   transform: ReturnType<typeof projectPhotoPreviewTransform>,
 ): Promise<CachedPhotoPreviewSignedUrl> {
-  const cacheKey = `${cloudStoragePath}|${JSON.stringify(transform || null)}`;
+  const cacheKey = photoPreviewCacheKey(cloudStoragePath, transform);
   const now = Date.now();
   for (const [key, cached] of photoPreviewSignedUrlCache) {
     if (cached.usableUntil <= now) photoPreviewSignedUrlCache.delete(key);
@@ -4986,8 +7481,32 @@ async function createCachedPhotoPreviewSignedUrl(
   }
 }
 
+/** A photo not sent because the account changed (whole-app audit A1 M3); it retries under its own. */
+function photoHeldForItsAccount(photo: UpdatePhoto): LocalPhotoUploadResult {
+  return {
+    result: 'failed',
+    message: 'The account changed during sync. This photo waits for the account that saved it.',
+    diagnostic: {
+      bucketName: PROJECT_PHOTOS_BUCKET,
+      bucketExists: 'unknown',
+      uploadAttempted: false,
+      uploadResult: 'skipped',
+      failureCategory: null,
+      httpStatus: null,
+      errorCode: null,
+      localFileExists: null,
+      localFileReadable: null,
+      fileByteSizeCategory: 'unknown',
+      uploadPayloadType: 'unknown',
+      contentType: photo.mimeType || 'image/jpeg',
+      objectPathCategory: null,
+    },
+  };
+}
+
 async function uploadUpdatePhotosForSync(
   update: ProjectUpdate,
+  owner: CloudOwnerBinding = currentCloudOwner(),
 ): Promise<Omit<
   FieldUpdateSyncWorkAttempt,
   'cloudUpdateInsertAttempted' | 'databaseUpsertResult'
@@ -5024,7 +7543,9 @@ async function uploadUpdatePhotosForSync(
   const results = await mapWithBoundedConcurrency(
     update.photos,
     PROJECT_PHOTO_NETWORK_CONCURRENCY,
-    photo => uploadLocalPhotoWithDiagnostics(update, photo),
+    photo => cloudOwnerUnchanged(owner)
+      ? uploadLocalPhotoWithDiagnostics(update, photo)
+      : Promise.resolve(photoHeldForItsAccount(photo)),
   );
   const failures = results.flatMap((result, index) =>
     result.result !== 'uploaded' && result.result !== 'skipped'

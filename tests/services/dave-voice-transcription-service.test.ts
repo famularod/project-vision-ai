@@ -16,12 +16,16 @@ jest.mock('react-native', () => ({
   TurboModuleRegistry: { get: jest.fn(() => null) },
 }));
 
+const mockReadSavedSignIn = jest.fn(async (): Promise<unknown> => null);
 jest.mock('../../services/SupabaseService', () => ({
   getSupabaseClient: () => ({ functions: { invoke: mockInvoke } }),
   getCurrentSessionAccessToken: jest.fn(async () => ({
     ok: true,
     data: { status: 'token_present', accessToken: 'session-token' },
   })),
+  // The sign-in saved on this phone (A11 pass 4 L1); auth-js removes it when
+  // the server refuses a refresh.
+  readSavedSignIn: () => mockReadSavedSignIn(),
 }));
 
 jest.mock('../../services/DAVEVoiceUnderstanding', () => ({
@@ -167,12 +171,91 @@ describe('DAVE native voice transcription upload', () => {
   });
 
   it('rejects a fabricated or missing project identifier before upload', async () => {
+    // Audit A11 pass 3: this said "This project is still loading. Close and
+    // reopen Talk", which never ended for a project not yet uploaded.
     await expect(transcribe({
       uri: 'file:///recording.m4a',
       projectId: 'project-2321-compliance-project',
       projectName: '2321 Compliance Project',
       candidateLocations: [],
-    })).rejects.toThrow('project is still loading');
+    })).rejects.toThrow("2321 Compliance Project hasn't reached the cloud yet");
+    await expect(transcribe({
+      uri: 'file:///recording.m4a',
+      projectId: null,
+      projectName: '2321 Compliance Project',
+      candidateLocations: [],
+    })).rejects.toThrow(/^(?!.*loading).*type it instead\.$/);
+    await expect(transcribe({
+      uri: 'file:///recording.m4a',
+      projectId: null,
+      projectName: ' ',
+      candidateLocations: [],
+    })).rejects.toThrow('Choose a project');
     expect(mockUploadAsync).not.toHaveBeenCalled();
   });
 });
+
+// Whole-app audit A11 pass 4 L1 (30 Sep 2026): opened "offline, sign-in
+// pending" (owner answer Q13), the expired token made the token lookup fail
+// and voice said "Sign in before transcribing a recorded memory." The
+// recording is kept and works once signal returns.
+describe('voice while the sign-in waits for signal (A11 pass 4 L1)', () => {
+  const projectId = '607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
+  const session = () => jest.requireMock('../../services/SupabaseService').getCurrentSessionAccessToken as jest.Mock;
+  const savedSignIn = { ownerId: 'owner-a', email: null, lastRefreshedAtMs: 0, expiresAtMs: 0 };
+  const noToken = (missingReason: string) => ({ ok: true, data: { status: 'token_missing', missingReason } });
+  let transcribe: typeof import('../../services/DAVEVoiceTranscriptionService').transcribeDAVECaptureMemoryAudio;
+  const voice = (signInPending: boolean) => transcribe({
+    uri: 'file:///recording.m4a', projectId, projectName: '2321 Compliance Project', candidateLocations: [],
+    signInPending: () => signInPending,
+  });
+  async function failure(work: Promise<unknown>): Promise<Error> {
+    try {
+      await work;
+    } catch (error) {
+      return error as Error;
+    }
+    throw new Error('Expected failure');
+  }
+
+  beforeAll(() => {
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = 'publishable-key';
+    ({ transcribeDAVECaptureMemoryAudio: transcribe } = require('../../services/DAVEVoiceTranscriptionService'));
+  });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetInfoAsync.mockResolvedValue({ exists: true, size: 4_096 });
+    mockReadSavedSignIn.mockResolvedValue(savedSignIn);
+  });
+
+  it.each([
+    ['offline, sign-in pending, lookup unsettled', true, 'unknown'],
+    ['offline, sign-in pending, lookup still loading', true, 'auth_loading'],
+    ['not yet marked pending, lookup still loading', false, 'auth_loading'],
+    ['not yet marked pending, lookup unsettled', false, 'unknown'],
+  ])('%s: says no signal and keeps the recording; nothing is uploaded', async (_label, pending, reason) => {
+    session().mockResolvedValueOnce(noToken(reason));
+    const { daveVoiceFailureMessage } = require('../../services/DAVEVoiceSignalWait');
+    const error = await failure(voice(pending));
+    expect(error.message).not.toMatch(/sign in/i);
+    expect(daveVoiceFailureMessage(error, 'Use Note'))
+      .toBe('No signal. Your recording is kept while Vitruvius stays open — tap Use Note when you have signal.');
+    expect(mockUploadAsync).not.toHaveBeenCalled();
+  });
+
+  it('a sign-in the server refused (no saved sign-in left) still asks to sign in, never "no signal"', async () => {
+    mockReadSavedSignIn.mockResolvedValue(null);
+    session().mockResolvedValueOnce(noToken('unknown'));
+    const refused = await failure(voice(true));
+    expect(refused.message).toBe('Sign in before transcribing a recorded memory.');
+    session().mockResolvedValueOnce(noToken('signed_out'));
+    mockReadSavedSignIn.mockResolvedValue(savedSignIn);
+    const signedOut = await failure(voice(true));
+    expect(signedOut.message).toBe('Sign in before transcribing a recorded memory.');
+    const { daveVoiceFailureMessage } = require('../../services/DAVEVoiceSignalWait');
+    expect(daveVoiceFailureMessage(signedOut, 'Use Note')).toBe('Sign in before transcribing a recorded memory.');
+    expect(mockUploadAsync).not.toHaveBeenCalled();
+  });
+});
+

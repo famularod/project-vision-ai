@@ -6,6 +6,7 @@ import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import {
   photoDisplayResultCanBeReviewed,
+  storedPhotoComparisonConfidence,
 } from './PhotoAssessment';
 
 export type PIEPhotoChangeLabel =
@@ -267,6 +268,17 @@ function photoRef(candidate: PhotoCandidate): PIEPhotoProgressPhotoRef {
   };
 }
 
+/**
+ * The newest comparison still waiting for the owner's review. The review
+ * prompts name this one: photoProgressSummary is the newest comparison, which
+ * may already be confirmed while an older one waits (audit round 2 H1).
+ */
+export function photoComparisonAwaitingReview(
+  progress: Pick<PIEPhotoProgressResult, 'comparisons'> | null | undefined,
+): PIEPhotoProgressComparison | null {
+  return progress?.comparisons.find(comparison => comparison.needsReview) ?? null;
+}
+
 export function buildPhotoProgress({
   projectName,
   updates = [],
@@ -289,7 +301,9 @@ export function buildPhotoProgress({
     );
     if (!previous || !result) return [];
 
-    const confidence = confidenceFromResult(result.comparisonConfidence);
+    // Capped by comparability for results stored before the Q9 build too (audit round 2 L1).
+    const storedConfidence = storedPhotoComparisonConfidence(result);
+    const confidence = confidenceFromResult(storedConfidence);
     const labels = changeLabels(current);
     const estimate = visualEstimate(labels);
     const status = verificationStatus(result.userReview);
@@ -298,7 +312,7 @@ export function buildPhotoProgress({
     const matchReasons = [
       'Provider-selected prior photo',
       `Comparability: ${result.comparability}`,
-      `Visual confidence: ${result.comparisonConfidence}`,
+      `Visual confidence: ${storedConfidence}`,
     ];
 
     return [{

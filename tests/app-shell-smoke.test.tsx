@@ -309,7 +309,9 @@ describe('native app boots', () => {
     const tree = render(<NativeRoot />);
     try {
       await waitFor(() => {
-        expect(tree.queryByText(/could not finish starting/i)).toBeNull();
+        // The root crash screen's title since audit A2 M4 (was "ECOS could
+        // not finish starting").
+        expect(tree.queryByText(/Vitruvius hit a problem/i)).toBeNull();
         expect(tree.queryByText(/Workspace protection needs attention/i)).toBeNull();
         expect(tree.queryByText(/Opening your Vitruvius workspace/i)).toBeNull();
       }, COLD);

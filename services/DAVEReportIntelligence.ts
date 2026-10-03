@@ -4,11 +4,14 @@ import {
   buildScheduleTaskAccounting,
   scheduleTaskDurationWeight,
 } from './dave-project-schedule-rollup';
+import type { ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
   daveReportSnapshotScopeKey,
+  reportPeriodWaitingForOtherDevice,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -120,6 +123,11 @@ export type DAVEReportBriefing = Readonly<{
   dashboard: DAVEReportDashboardMetrics;
   projectConditions: readonly DAVEReportProjectCondition[];
   recentChanges: readonly DAVEReportRecentChange[];
+  /**
+   * How many changes there were in the period; `recentChanges` lists the
+   * first 12, and the written report names six and counts the rest (A6 pass 8 L1).
+   */
+  recentChangeCount?: number;
   milestones: readonly DAVEReportMilestone[];
   completedWork: readonly string[];
   currentWork: readonly string[];
@@ -154,10 +162,26 @@ export function buildDAVEReportBriefing({
   truths,
   selectedProjectNames,
   previousSnapshot,
+  waitingForOtherDevice = false,
+  scheduleItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
   previousSnapshot?: DAVEReportSnapshot | null;
+  /**
+   * The report this one counts from was sent by the other device after this
+   * device last downloaded the tasks: "since the last report" is not counted
+   * until it has them (whole-app audit A6 pass 10 M1, M2).
+   */
+  waitingForOtherDevice?: boolean;
+  /**
+   * The saved tasks the truths were made from, read only for when each
+   * task's progress was confirmed (whole-app audit A6 pass 14 L4): Project
+   * Truth keeps no such time, and a field added there would move the
+   * report's fingerprint. Without them, Completed Work's dates read as
+   * before.
+   */
+  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[];
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -172,10 +196,11 @@ export function buildDAVEReportBriefing({
     sourceFingerprint: buildDAVEReportSourceFingerprint(truths),
     capturedAt: generatedAt,
   });
-  const reportingPeriod = compareDAVEReportSnapshots({
+  const comparison = compareDAVEReportSnapshots({
     current: currentSnapshot,
     previous: previousSnapshot,
   });
+  const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
   const criticalDecisions = truths.flatMap(truth => truth.reasoning.criticalDecisions);
   const actionDecisions = uniqueBy([
@@ -218,17 +243,36 @@ export function buildDAVEReportBriefing({
     .map(decision =>
       `${truthProjectName(truths, decision.taskId)} — ${decision.taskName}: ${decision.recommendation.action}`,
     )).slice(0, 8);
-  const recentChanges = buildRecentChanges({ truths, reportingPeriod });
+  // Nothing is said to have changed in a period not counted yet (A6 pass 10 M1, M2).
+  const allRecentChanges = reportingPeriod.waitingForOtherDevice ? [] : buildRecentChanges({ truths, reportingPeriod });
+  const recentChanges = allRecentChanges.slice(0, 12);
+  // The period's own list stops at 20; the ones it left out still count.
+  // Counted after the de-duplication above, so the report's "And N more
+  // changes." is the lines it did not show (A6 pass 9 M1).
+  const recentChangeCount = allRecentChanges.length +
+    Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
-  const completedWork = unique(truths.flatMap(truth => truth.schedule
+  const lastUpdatedAt = completedTaskLastUpdatedAt(scheduleItems);
+  const completedTasks = truths.flatMap(truth => truth.schedule
     .filter(scheduleProgressIsComplete)
-    .sort((left, right) => reportCompletedTaskRank(left) - reportCompletedTaskRank(right))
-    .map(task => reportCompletedTaskFact(truth.projectName, task, truths.length > 1))),
+    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
+    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
+  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
+  const tasksOnLine = new Map<string, Set<string>>();
+  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
+  const completedWork = unique(completedTasks.map(({ truth, task, line }) =>
+    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
   ).slice(0, 12);
-  const currentWork = unique(truths.flatMap(truth => truth.schedule
+  // Whole-app audit A6 pass 20 L1 (1 Oct 2026): two same-named open tasks in one area with the same status,
+  // percent and due date printed one Current Work line. They say how many, as Completed Work does (A6 pass 19 L4).
+  const currentTasks = truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
     .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
-    .map(task => reportTaskFact(truth.projectName, task, truths.length > 1))),
+    .map(task => ({ truth, task, line: clean(reportTaskFact(truth.projectName, task, truths.length > 1)) })));
+  const tasksOnCurrentLine = new Map<string, Set<string>>();
+  currentTasks.forEach(({ task, line }) => tasksOnCurrentLine.set(line, new Set([...(tasksOnCurrentLine.get(line) || []), task.taskId])));
+  const currentWork = unique(currentTasks.map(({ truth, task, line }) =>
+    reportTaskFact(truth.projectName, task, truths.length > 1, tasksOnCurrentLine.get(line)!.size)),
   ).slice(0, 12);
   const scheduleConcerns = truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
@@ -275,6 +319,7 @@ export function buildDAVEReportBriefing({
     dashboard,
     projectConditions,
     recentChanges,
+    recentChangeCount,
     milestones,
     completedWork,
     currentWork,
@@ -360,6 +405,8 @@ function reportTaskFact(
   projectName: string,
   task: DAVEProjectTruth['schedule'][number],
   includeProject: boolean,
+  /** How many different tasks read this same line (A6 pass 20 L1): "(2 tasks)". */
+  tasks = 1,
 ) {
   const prefix = includeProject ? `${projectName} — ` : '';
   const area = task.areaName ? ` (${task.areaName})` : '';
@@ -368,27 +415,51 @@ function reportTaskFact(
     `${boundedPercent(task.percentComplete)}% complete`,
     task.finishDate ? `due ${task.finishDate}` : '',
   ].filter(Boolean);
-  return `${prefix}${task.taskName}${area}: ${parts.join('; ')}.`;
+  return `${prefix}${task.taskName}${area}: ${parts.join('; ')}${tasks > 1 ? ` (${tasks} tasks)` : ''}.`;
+}
+
+type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) => string | null;
+
+/**
+ * When a completed task was last updated, as Completed Work says it and
+ * orders by it (whole-app audit A6 pass 14 L4, 1 Oct 2026): its latest
+ * activity or its progress confirmation, whichever is later; the row's
+ * update time only when it has neither. "Delete PDF + Items" stamps the
+ * tasks it writes removed ids onto (rows sync by that time), and a completed
+ * one read "Last updated Sep 29, 2026." instead of "Sep 26" with nothing
+ * changed, and moved to the top of the list (the executive report shows the
+ * first 6). The confirmation is when the manager judged the percent
+ * (scheduleProgressJudgedAt), read from the saved tasks; with none given,
+ * the activity or the update time, whichever is later, as before.
+ */
+function completedTaskLastUpdatedAt(
+  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[] | undefined,
+): CompletedTaskLastUpdatedAt {
+  if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, scheduleProgressJudgedAt(item)]));
+  return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
 }
 
 function reportCompletedTaskFact(
   projectName: string,
   task: DAVEProjectTruth['schedule'][number],
   includeProject: boolean,
+  lastUpdatedAt: CompletedTaskLastUpdatedAt,
+  /** How many different tasks read this same line (A6 pass 19 L4): "(2 tasks)". */
+  tasks = 1,
 ) {
   const prefix = includeProject ? `${projectName} — ` : '';
   const area = task.areaName ? ` (${task.areaName})` : '';
-  const latestChange = latestDate([task.latestActivityAt, task.updatedAt]);
+  const latestChange = lastUpdatedAt(task);
   const lastUpdated = latestChange
     ? ` Last updated ${formatReportDate(latestChange)}.`
     : '';
-  return `${prefix}${task.taskName}${area}: Complete; 100% complete.${lastUpdated}`;
+  return `${prefix}${task.taskName}${area}: Complete; 100% complete${tasks > 1 ? ` (${tasks} tasks)` : ''}.${lastUpdated}`;
 }
 
-function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number]) {
+function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number], lastUpdatedAt: CompletedTaskLastUpdatedAt) {
   const timestamp = dateValue(latestDate([
-    task.latestActivityAt,
-    task.updatedAt,
+    lastUpdatedAt(task),
     task.finishDate,
   ]));
   return timestamp === null ? Number.MAX_SAFE_INTEGER : -timestamp;
@@ -586,7 +657,7 @@ function formatReportBody(
 ) {
   const workAreaUpdates = unique(draft.locationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.bullets
-      .map(bullet => toPMReportLanguage(bullet.text))
+      .map(reportBulletText)
       .filter(Boolean)
       .map(bullet => `${area.projectName} — ${area.title}: ${bullet}`)),
   ));
@@ -604,12 +675,15 @@ function formatReportBody(
       `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
   });
   const period = briefing.reportingPeriod;
-  const reportingMovement = period.basis === 'previous_approved_report'
+  const reportingMovement = period.waitingForOtherDevice
+    ? [REPORT_PERIOD_WAITING_LINE]
+    : period.basis === 'previous_approved_report'
     ? [
         `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
           `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
           `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
-        ...briefing.recentChanges.slice(0, 6).map(change => change.summary),
+        ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
+        ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
       ]
     : ['This approval establishes the baseline for the next reporting period.'];
   const actions = (format === 'executive'
@@ -653,6 +727,17 @@ function formatReportBody(
   const lines = format === 'executive' ? executiveLines : projectManagerLines;
   lines.push('', draft.closingLine);
   return lines.filter((value, index, values) => value || values[index - 1]).join('\n').trim();
+}
+
+/** The changes the written report names; the rest are counted (A6 pass 8 L1). */
+const SINCE_LINES = 6;
+
+/** "Since the last report" while this device waits for the other device's changes (A6 pass 10 M1, M2). */
+export const REPORT_PERIOD_WAITING_LINE =
+  "Not counted yet: this device hasn't received your other device's latest changes.";
+
+function moreChangesLine(more: number): string[] {
+  return more > 0 ? [`And ${more} more change${more === 1 ? '' : 's'}.`] : [];
 }
 
 function formatReportAction(action: DAVEReportAction) {
@@ -794,27 +879,71 @@ function buildRecentChanges({
   truths: readonly DAVEProjectTruth[];
   reportingPeriod: DAVEReportPeriodComparison;
 }): DAVEReportRecentChange[] {
-  const comparisonChanges = reportingPeriod.changes.map(change => Object.freeze({
-    id: `report-change:${change.id}`,
-    projectName: change.projectName,
-    taskName: change.taskName,
-    areaName: change.areaName,
-    occurredAt: reportingPeriod.endedAt,
-    summary: `${change.projectName}: ${change.summary}`,
-    source: 'approved_report_comparison' as const,
-  }));
+  // The task each line is about, for lines two tasks share (A6 pass 19 L4).
+  const taskIdOf = new Map<DAVEReportRecentChange, string>();
+  const comparisonChanges = reportingPeriod.changes.map(change => {
+    const line: DAVEReportRecentChange = Object.freeze({
+      id: `report-change:${change.id}`,
+      projectName: change.projectName,
+      taskName: change.taskName,
+      areaName: change.areaName,
+      occurredAt: reportingPeriod.endedAt,
+      summary: `${change.projectName}: ${change.summary}`,
+      source: 'approved_report_comparison' as const,
+    });
+    taskIdOf.set(line, change.taskId);
+    return line;
+  });
   const reportingPeriodStart = dateValue(reportingPeriod.startedAt);
+  // Whole-app audit A6 pass 9 M1 (30 Sep 2026): a task the comparison
+  // already reports gets no "was updated." line as well. A revised task is a
+  // new row made at the import, so each one read "Frame walls was updated."
+  // next to its finish change, and "And N more changes." counted both (8
+  // moved: "And 10 more changes." with 2 left).
+  const comparedTaskIds = new Set(
+    reportingPeriod.changedTaskIds ?? reportingPeriod.changes.map(change => change.taskId),
+  );
+  // Whole-app audit A6 pass 13 M1 (1 Oct 2026): nor a task that says what
+  // it said in the earlier report. "Delete PDF + Items" stamps the tasks it
+  // writes removed ids onto (rows sync by that time), and each one read
+  // "Pour slab was updated." with nothing changed. A report saved before the
+  // content keys lists none here, and counts as before.
+  const unchangedTaskIds = new Set(reportingPeriod.unchangedTaskIds ?? []);
+  // Whole-app audit A6 pass 14 L2 (1 Oct 2026): a task whose latest activity
+  // is not the one the earlier report saved says it, whatever its time (a
+  // note made offline on the iPad before the phone's send, received after);
+  // one whose activity the earlier report saved does not say it again. Only
+  // against a report saved before these keys does the activity's time decide,
+  // and (A6 pass 15 L1) for a task paired with a different row of the earlier
+  // report across a master change that the report before it does not settle
+  // (A6 pass 16 L1): the comparison lists neither. An activity no newer than
+  // the one the row saved counts as the same (A6 pass 15 L2).
+  const newActivityTaskIds = new Set(reportingPeriod.newActivityTaskIds ?? []);
+  const sameActivityTaskIds = new Set(reportingPeriod.sameActivityTaskIds ?? []);
   const taskChanges: DAVEReportRecentChange[] = [];
   for (const truth of truths) {
     for (const task of truth.schedule) {
       const occurredAt = latestDate([task.latestActivityAt, task.updatedAt]);
+      const newActivity = newActivityTaskIds.has(task.taskId) ? clean(task.latestActivitySummary) : '';
       if (
+        !newActivity &&
         reportingPeriodStart !== null &&
         (dateValue(occurredAt) ?? 0) <= reportingPeriodStart
       ) continue;
-      const activity = clean(task.latestActivitySummary);
+      // A6 pass 13: an activity from before the earlier report was said
+      // there; a later stamp (a delete writing ids) does not repeat it. Since
+      // A6 pass 14 L2 the activity keys decide this, and the time only
+      // against a report saved before them.
+      const activity = newActivity || (
+        reportingPeriodStart === null || (
+          !sameActivityTaskIds.has(task.taskId) &&
+          (dateValue(task.latestActivityAt) ?? 0) > reportingPeriodStart
+        )
+          ? clean(task.latestActivitySummary)
+          : ''
+      );
       if (activity) {
-        taskChanges.push(Object.freeze({
+        const line: DAVEReportRecentChange = Object.freeze({
           id: `report-change:${task.taskId}:activity`,
           projectName: truth.projectName,
           taskName: task.taskName,
@@ -822,9 +951,11 @@ function buildRecentChanges({
           occurredAt,
           summary: `${truth.projectName}: ${task.taskName} — ${toPMReportLanguage(activity) || activity}`,
           source: 'task_activity',
-        }));
-      } else if (occurredAt) {
-        taskChanges.push(Object.freeze({
+        });
+        taskIdOf.set(line, task.taskId);
+        taskChanges.push(line);
+      } else if (occurredAt && !comparedTaskIds.has(task.taskId) && !unchangedTaskIds.has(task.taskId)) {
+        const line: DAVEReportRecentChange = Object.freeze({
           id: `report-change:${task.taskId}:revision`,
           projectName: truth.projectName,
           taskName: task.taskName,
@@ -832,16 +963,52 @@ function buildRecentChanges({
           occurredAt,
           summary: `${truth.projectName}: ${task.taskName} was updated.`,
           source: 'task_revision',
-        }));
+        });
+        taskIdOf.set(line, task.taskId);
+        taskChanges.push(line);
       }
     }
   }
 
-  return uniqueBy(
+  return sameLineOfSameNamedTasks(
     [...comparisonChanges, ...taskChanges]
       .sort((left, right) => (dateValue(right.occurredAt) ?? 0) - (dateValue(left.occurredAt) ?? 0)),
-    change => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`,
-  ).slice(0, 12);
+    taskIdOf,
+  );
+}
+
+/**
+ * Lines once each (whole-app audit A6 pass 9 M1), and the same line of two
+ * different same-named tasks told apart (whole-app audit A6 pass 19 L4, 1 Oct
+ * 2026). Lines were kept once by name and text, so Pour slab in Lot and Pour
+ * slab in Deck, both completed, read "+2 completed" with one "Pour slab was
+ * completed." The same task reached twice still says it once. Different tasks
+ * in different areas name the area ("Pour slab (Deck) was completed."); in
+ * one area they say it once with the count ("Pour slab was completed (2
+ * tasks).").
+ */
+function sameLineOfSameNamedTasks(
+  changes: readonly DAVEReportRecentChange[],
+  taskIdOf: ReadonlyMap<DAVEReportRecentChange, string>,
+): DAVEReportRecentChange[] {
+  const lineKey = (change: DAVEReportRecentChange) => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`;
+  const areaKey = (change: DAVEReportRecentChange) => normalized(change.areaName);
+  const perTask = uniqueBy(changes, change => `${lineKey(change)}|${taskIdOf.get(change) ?? change.id}`);
+  const tasksOn = new Map<string, DAVEReportRecentChange[]>();
+  perTask.forEach(change => tasksOn.set(lineKey(change), [...(tasksOn.get(lineKey(change)) || []), change]));
+  const areasNamed = (change: DAVEReportRecentChange) => new Set(tasksOn.get(lineKey(change))!.map(areaKey)).size > 1;
+  return uniqueBy(perTask, change => (areasNamed(change) ? `${lineKey(change)}|${areaKey(change)}` : lineKey(change)))
+    .map(change => {
+      const tasks = tasksOn.get(lineKey(change))!;
+      if (tasks.length === 1) return change;
+      const area = areasNamed(change) && clean(change.areaName) ? ` (${clean(change.areaName)})` : '';
+      const inArea = tasks.filter(other => areaKey(other) === areaKey(change)).length;
+      const prefix = `${change.projectName}: ${change.taskName}`;
+      if (!change.summary.startsWith(prefix)) return change;
+      const rest = change.summary.slice(prefix.length);
+      const counted = inArea < 2 ? rest : rest.endsWith('.') ? `${rest.slice(0, -1)} (${inArea} tasks).` : `${rest} (${inArea} tasks)`;
+      return Object.freeze({ ...change, summary: `${prefix}${area}${counted}` });
+    });
 }
 
 function buildReportMilestones(
@@ -922,7 +1089,26 @@ const NON_REPORTABLE_STATE =
 
 function isReportableCurrentState(value: string) {
   const text = clean(value);
-  return Boolean(text) && !NON_REPORTABLE_STATE.test(text);
+  if (!text) return false;
+  // A safety statement is never dropped for its wording: "An unresolved
+  // safety concern is recorded" was filtered out of SCHEDULE RISKS
+  // (whole-app audit A6, 29 Sep 2026).
+  if (/\bsafety\b/i.test(text)) return true;
+  return !NON_REPORTABLE_STATE.test(text);
+}
+
+/**
+ * A work-area bullet as the report prints it: as written, minus Project
+ * Walk drafting headers. Bullets carry the manager's own captions and
+ * notes and short engine lines that never need the report-language filter
+ * (whole-app audit A6, 29-30 Sep 2026: the filter had deleted the manager's
+ * sentences containing "missing", "cannot", "could not", "unknown",
+ * "unresolved" or "insufficient", "Guardrail missing at stair 2 landing."
+ * left nothing, and rewrote their words; no bullet kind is engine review
+ * text).
+ */
+export function reportBulletText(bullet: Readonly<{ text: string; kind?: string }>): string {
+  return stripProjectWalkBoilerplate(bullet.text).replace(/\s{2,}/g, ' ').trim();
 }
 
 function reportableCurrentState(value: string) {
@@ -1048,12 +1234,21 @@ function stableHash(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * Left out of the report's fingerprint: when the truth was generated, and the
+ * ids a task had before new masters moved it (whole-app audit A6 pass 12 L1,
+ * 30 Sep 2026). Those say which task a revised row is, not what the report
+ * says about it, so an approval given, or a send made on the other device,
+ * before the truth carried them is still the same content.
+ */
+const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds']);
+
 function withoutVolatileReportSourceFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => key !== 'generatedAt')
+        .filter(([key]) => !VOLATILE_REPORT_SOURCE_FIELDS.has(key))
         .map(([key, child]) => [key, withoutVolatileReportSourceFields(child)]),
     );
   }

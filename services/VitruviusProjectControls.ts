@@ -151,6 +151,14 @@ export function normalizeProjectControls(value: unknown): ProjectControls {
   };
 }
 
+/**
+ * The fields each edit made here changed (reviseProjectControls), kept beside
+ * the edit object only: never stored or sent, so a stored copy passed whole
+ * (Verify Complete sends the task as shown) is never taken as a fresh edit
+ * by mergeProjectControlsEdit (whole-app audit A2 pass 5 L3).
+ */
+const fieldsStampedByEdit = new WeakMap<ProjectControls, ReadonlySet<ProjectControlDataField>>();
+
 export function reviseProjectControls({
   current,
   patch,
@@ -168,11 +176,13 @@ export function reviseProjectControls({
   const nextFieldRevisions = {
     ...(normalizedCurrent.fieldRevisions || {}),
   };
+  const stamped = new Set<ProjectControlDataField>();
   PROJECT_CONTROL_DATA_FIELDS.forEach(field => {
     if (
       Object.prototype.hasOwnProperty.call(patch, field) &&
       JSON.stringify(patch[field]) !== JSON.stringify(normalizedCurrent[field])
     ) {
+      stamped.add(field);
       nextFieldRevisions[field] = {
         revision: (normalizedCurrent.fieldRevisions?.[field]?.revision || 0) + 1,
         updatedAt: now,
@@ -191,7 +201,7 @@ export function reviseProjectControls({
   // Mobile editors persist on every keystroke. Preserve the exact text while a
   // person is typing so entering a space does not collapse words together.
   // Hydration still trims persisted values through normalizeProjectControls.
-  return {
+  const revised: ProjectControls = {
     ...next,
     ...(typeof patch.assignee === 'string' ? { assignee: patch.assignee } : {}),
     ...(typeof patch.trade === 'string' ? { trade: patch.trade } : {}),
@@ -203,6 +213,8 @@ export function reviseProjectControls({
       : {}),
     ...(typeof patch.impactNotes === 'string' ? { impactNotes: patch.impactNotes } : {}),
   };
+  fieldsStampedByEdit.set(revised, stamped);
+  return revised;
 }
 
 /**
@@ -264,6 +276,77 @@ export function mergeProjectControlsRevisions(
       ? { fieldRevisions: mergedFieldRevisions }
       : {}),
   };
+}
+
+/**
+ * A local Project controls edit laid over the copy the app holds now. The
+ * editor builds its edit from the copy on screen, and a field removed while
+ * being typed in saves with the copy of its last render: when another
+ * device's change arrives in the render that takes the task out of view, that
+ * copy is older (whole-app audit A2 pass 4 L1, 30 Sep 2026: Approval and
+ * Trade went back, and a closed RFI refused the typed text). A field takes
+ * the edit's value where the edit stamped it itself (an edit made on this
+ * phone just now) or stamped it later than the held copy; every other field
+ * keeps the held copy, including fields neither copy stamped, since an edit
+ * stamps every field it changes. A field the edit stamped itself wins on the
+ * phone even when another device, its clock ahead, stamped it later: the
+ * merge kept that value and the field went on showing the unsaved text
+ * (whole-app audit A2 pass 5 L3). The cloud's later-stamp rule
+ * (mergeProjectControlsRevisions) still decides at upload. With nothing
+ * newer held, the edit is returned as is.
+ */
+export function mergeProjectControlsEdit(
+  heldValue: ProjectControls | null | undefined,
+  edit: ProjectControls,
+): ProjectControls {
+  const held = normalizeProjectControls(heldValue);
+  const incoming = normalizeProjectControls(edit);
+  const stampedHere = fieldsStampedByEdit.get(edit);
+  const keptFields = PROJECT_CONTROL_DATA_FIELDS.filter(field => {
+    const editRevision = incoming.fieldRevisions?.[field];
+    const heldRevision = held.fieldRevisions?.[field];
+    const editChangedField = editRevision !== undefined && (
+      stampedHere?.has(field) === true ||
+      !heldRevision ||
+      compareFieldRevisionAuthority(editRevision, heldRevision) > 0
+    );
+    return !editChangedField &&
+      canonicalValue(held[field]) !== canonicalValue(incoming[field]);
+  });
+  if (keptFields.length === 0) return edit;
+  const fieldRevisions = { ...(edit.fieldRevisions || {}) };
+  const keptValues: Partial<Pick<ProjectControls, ProjectControlDataField>> = {};
+  keptFields.forEach(field => {
+    (keptValues as Record<ProjectControlDataField, unknown>)[field] =
+      cloneJsonValue(held[field]);
+    const heldRevision = held.fieldRevisions?.[field];
+    if (heldRevision) fieldRevisions[field] = { ...heldRevision };
+    else delete fieldRevisions[field];
+  });
+  const merged: ProjectControls = {
+    ...edit,
+    ...keptValues,
+    revision: Math.max(edit.revision, held.revision + 1),
+    fieldRevisions,
+  };
+  if (Object.keys(fieldRevisions).length === 0) delete merged.fieldRevisions;
+  return merged;
+}
+
+/** A task edit with any Project controls laid over the task's held copy. */
+export function withProjectControlsEditMerged(
+  current: ScheduleItem,
+  next: Partial<ScheduleItem>,
+): Partial<ScheduleItem> {
+  return next.projectControls
+    ? {
+        ...next,
+        projectControls: mergeProjectControlsEdit(
+          current.projectControls,
+          next.projectControls,
+        ),
+      }
+    : next;
 }
 
 export function createProjectControlChecklistItem({

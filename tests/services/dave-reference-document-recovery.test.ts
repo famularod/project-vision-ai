@@ -282,6 +282,63 @@ describe('reference document cloud recovery', () => {
     expect(merged.ecosHostedIndexUpdatedAt).toBeUndefined();
   });
 
+  // Whole-app audit A8 pass 1 F1 (30 Sep 2026): the cloud copy is ranked by
+  // its own edit time (document_data.updatedAt), not the row's upload time,
+  // and a tie goes to the cloud. Web edits write document_data.updatedAt with
+  // updated_at, so a newer web edit keeps precedence.
+  it('ranks the cloud copy by its edit time, not by when it was uploaded', () => {
+    const typedWhileUploading = document({
+      notes: '12',
+      updatedAt: '2026-09-30T12:00:02.000Z',
+    });
+    const uploadedEarlierKeystroke = document({
+      notes: '1',
+      updatedAt: '2026-09-30T12:00:01.000Z',
+      cloudUpdatedAt: '2026-09-30T12:00:05.000Z',
+    });
+
+    expect(mergeDAVEReferenceDocumentRecoveryRecords({
+      local: [typedWhileUploading],
+      cloud: [uploadedEarlierKeystroke],
+    })[0].notes).toBe('12');
+    expect(daveReferenceDocumentsNeedingCloudUpload({
+      local: [typedWhileUploading],
+      cloud: [uploadedEarlierKeystroke],
+    })).toEqual([expect.objectContaining({ notes: '12' })]);
+  });
+
+  it('keeps a newer web edit over an older offline phone edit, and gives a tie to the cloud', () => {
+    const offlinePhoneEdit = document({
+      notes: 'Phone edit made offline',
+      storagePath: 'owner/schedules/schedule.pdf',
+      updatedAt: '2026-09-30T09:00:00.000Z',
+    });
+    const newerWebEdit = document({
+      notes: 'Web edit',
+      storagePath: 'owner/schedules/schedule.pdf',
+      updatedAt: '2026-09-30T10:00:00.000Z',
+      cloudUpdatedAt: '2026-09-30T10:00:00.000Z',
+    });
+
+    expect(mergeDAVEReferenceDocumentRecoveryRecords({
+      local: [offlinePhoneEdit],
+      cloud: [newerWebEdit],
+    })[0].notes).toBe('Web edit');
+    expect(daveReferenceDocumentsNeedingCloudUpload({
+      local: [offlinePhoneEdit],
+      cloud: [newerWebEdit],
+    })).toEqual([]);
+
+    const sameEditTime = document({
+      notes: 'Same time on the phone',
+      updatedAt: newerWebEdit.updatedAt,
+    });
+    expect(mergeDAVEReferenceDocumentRecoveryRecords({
+      local: [sameEditTime],
+      cloud: [newerWebEdit],
+    })[0].notes).toBe('Web edit');
+  });
+
   it('never restores a tombstoned schedule document', () => {
     expect(mergeDAVEReferenceDocumentRecoveryRecords({
       local: [document()],

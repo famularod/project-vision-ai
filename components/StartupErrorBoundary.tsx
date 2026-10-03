@@ -54,17 +54,20 @@ export class StartupErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <View style={styles.container}>
-          <Text style={styles.title}>
-            ECOS could not finish starting.
+          {/* Also shown for a crash mid-session, and diagnostics were not
+              reachable from here (whole-app audit A2 M4). */}
+          <Text style={styles.title} accessibilityRole="header">
+            Vitruvius hit a problem.
           </Text>
 
           <Text style={styles.body}>
-            Your saved project data is still on this device. Try again, or open diagnostics after the app starts.
+            Your saved project data is still on this device. Tap Retry. Please do not delete the app: that would remove work not yet synced.
           </Text>
 
           <TouchableOpacity
             style={styles.button}
             onPress={this.retry}
+            accessibilityRole="button"
             activeOpacity={0.85}
           >
             <Text style={styles.buttonText}>

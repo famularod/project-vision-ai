@@ -172,10 +172,8 @@ export function scheduleItemsFromRemoteExtractorPayload(
     if (!taskName) return [];
     const status = scheduleStatus(row.status);
     const reportedPercent = schedulePercent(row.percentComplete);
-    const progress = reconcileScheduleProgress(
-      status,
-      reportedPercent ?? (status === 'Complete' ? 100 : 0),
-    );
+    // No number is no number: the progress rule reads In Progress 1%, Complete 100% (A5 pass 10 L1).
+    const progress = reconcileScheduleProgress(status, reportedPercent);
     const projectName = text(row.projectName) || fallbackProject;
     return [{
       id: `remote-schedule-${Crypto.randomUUID()}`,
@@ -191,6 +189,8 @@ export function scheduleItemsFromRemoteExtractorPayload(
       contractor: '',
       durationDays: null,
       percentComplete: progress.percentComplete,
+      // No percent and no Complete status states no progress (whole-app audit A5 pass 5 H1).
+      ...(reportedPercent === null && status !== 'Complete' ? { percentCompleteStated: false } : {}),
       progressSource: 'schedule_import',
       progressConfirmedAt: null,
       progressConfirmedBy: null,
