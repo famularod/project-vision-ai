@@ -381,3 +381,44 @@ describe('review N1 (by reading): the later-send check comes before the report l
     expect(sharedRow()?.deliveredAt).toBe('2026-10-01T13:00:00.000Z');
   });
 });
+
+describe('review N1 L1: when this browser cannot keep the period, the page says so plainly and never "Try Approve again"', () => {
+  const TAB_ONLY = "This browser's storage for Vitruvius is full or switched off, so this computer remembers its last report only while this tab stays open.";
+
+  it('storage full, reports shared between devices: kept for the tab, said once, and the send still reaches the other devices', async () => {
+    table = PHONE_AT_10();
+    profileFull = true;
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    expect(screen.getByText(`${TAB_ONLY} Reports recorded as sent still reach your other devices, and this computer reads them back from there.`)).toBeTruthy();
+    expect(screen.queryByText(/Try Approve again/)).toBeNull();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent /)).toBeTruthy();
+    expect(typeof sharedSnapshot()?.deliveredAt).toBe('string');
+  });
+
+  it('storage full, reports not shared yet: says what is lost when the tab closes, and how to make room', async () => {
+    table = 'missing';
+    profileFull = true;
+    render(<DesktopReadOnlyShell page="reports" />);
+    fireEvent.press(await screen.findByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    expect(screen.getByText(`${TAB_ONLY} After that, the next report from this computer has no "since the last report" section until one is sent from here again. Clearing other sites' data in this browser makes room.`)).toBeTruthy();
+    expect(screen.queryByText(/Try Approve again/)).toBeNull();
+  });
+
+  it('with room in the browser nothing is said; a period that cannot be saved at all says what that means, and that approving again will not help', async () => {
+    table = PHONE_AT_10();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await waitFor(() => expect(since().getByText('Tower: Frame walls was completed.')).toBeTruthy());
+    expect(screen.queryByText(new RegExp(`^${TAB_ONLY.slice(0, 40)}`))).toBeNull();
+    fireEvent.press(screen.getByText('Review & Prepare Report'));
+    // The browser refuses this account's storage as Approve saves the period.
+    mockAuth.reportOwnerId.mockRejectedValue(new Error('not signed in'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    expect(await screen.findByText('The report is approved, but this browser could not save its reporting period, so this computer cannot record that it was sent: the next report would count from the report before this one. Approving again will not change that. Sign out of this computer and in again, or use another browser, before you send it.')).toBeTruthy();
+    expect(screen.queryByText(/Try Approve again/)).toBeNull();
+  });
+});

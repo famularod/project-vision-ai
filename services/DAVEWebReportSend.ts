@@ -124,6 +124,115 @@ export function forgetDAVEWebReportPeriods(ownerId: string): void {
 }
 
 /**
+ * Review N1 L1 (3 Oct 2026): how a period is written to this browser's
+ * storage. A saved period holds the last report and the two before it, each
+ * with every task, and went in as its JSON: about 1,150 characters a task.
+ * A browser gives a site some 2.6 to 5.2 million characters, so from about
+ * 1,500 tasks the period could not be saved. Most tasks say the same in all
+ * three reports, and every task repeats the same field names: here each
+ * distinct task is written once, as its values in the order of its field
+ * names, and each report lists which tasks it has. Nothing the period needs
+ * is left out: reading it back gives the same text, character for character
+ * (checked as it is written; a period that would not read back the same is
+ * written as it is).
+ */
+const PACKED_PERIOD = '{"vitruviusPeriod":1,';
+
+type PackedPeriod = Readonly<{ vitruviusPeriod: 1; fields: string[][]; tasks: unknown[][]; report: Record<string, unknown> }>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function packReportPeriod(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || !Array.isArray(parsed.tasks)) return raw;
+    const fields: string[][] = [];
+    const fieldsAt = new Map<string, number>();
+    const tasks: unknown[][] = [];
+    const taskAt = new Map<string, number>();
+    const packTask = (task: Record<string, unknown>): number => {
+      const names = Object.keys(task);
+      const namesKey = JSON.stringify(names);
+      let at = fieldsAt.get(namesKey);
+      if (at === undefined) {
+        at = fields.push(names) - 1;
+        fieldsAt.set(namesKey, at);
+      }
+      const row = [at, ...names.map(name => task[name])];
+      const rowKey = JSON.stringify(row);
+      let index = taskAt.get(rowKey);
+      if (index === undefined) {
+        index = tasks.push(row) - 1;
+        taskAt.set(rowKey, index);
+      }
+      return index;
+    };
+    const packReport = (report: Record<string, unknown>): Record<string, unknown> => {
+      const packed: Record<string, unknown> = {};
+      for (const name of Object.keys(report)) {
+        const value = report[name];
+        if (name === 'tasks' && Array.isArray(value) && value.every(isRecord)) packed[name] = { taskIndexes: value.map(packTask) };
+        else if (name === 'supersedes' && isRecord(value) && Array.isArray(value.tasks)) packed[name] = { report: packReport(value) };
+        else packed[name] = value;
+      }
+      return packed;
+    };
+    const period: PackedPeriod = { vitruviusPeriod: 1, fields, tasks, report: packReport(parsed) };
+    const packed = JSON.stringify(period);
+    return packed.length < raw.length && unpackReportPeriod(packed) === raw ? packed : raw;
+  } catch {
+    return raw;
+  }
+}
+
+function unpackReportPeriod(stored: string): string {
+  if (!stored.startsWith(PACKED_PERIOD)) return stored;
+  const period = JSON.parse(stored) as PackedPeriod;
+  const task = (index: number): Record<string, unknown> => {
+    const [at, ...values] = period.tasks[index] as [number, ...unknown[]];
+    const unpacked: Record<string, unknown> = {};
+    period.fields[at].forEach((name, position) => { unpacked[name] = values[position]; });
+    return unpacked;
+  };
+  const report = (packed: Record<string, unknown>): Record<string, unknown> => {
+    const unpacked: Record<string, unknown> = {};
+    for (const name of Object.keys(packed)) {
+      const value = packed[name];
+      if (name === 'tasks' && isRecord(value) && Array.isArray(value.taskIndexes)) unpacked[name] = (value.taskIndexes as number[]).map(task);
+      else if (name === 'supersedes' && isRecord(value) && isRecord(value.report)) unpacked[name] = report(value.report);
+      else unpacked[name] = value;
+    }
+    return unpacked;
+  };
+  return JSON.stringify(report(period.report));
+}
+
+/** A value as this module wrote it to the browser's storage, read back as the period's own JSON (for tools and tests). */
+export function daveWebStoredReportValue(stored: string | null | undefined): string | null {
+  if (typeof stored !== 'string') return null;
+  try {
+    return unpackReportPeriod(stored);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this tab is keeping a report period in its own memory because the
+ * browser's storage would not take it (full, or no site data): it lasts as
+ * long as the tab, and the page says so (review N1 L1).
+ */
+export function daveWebReportPeriodKeptInTabOnly(): boolean {
+  // An account's own keys: the profile's sender id is no period.
+  for (const [key, value] of tabOnly) {
+    if (value !== null && key.startsWith(`${WEB_PREFIX}/`)) return true;
+  }
+  return false;
+}
+
+/**
  * This browser profile's storage for report periods: each account's own
  * copy under its owner id; the sender id once for the profile, whoever signs
  * in (it names this browser, never the account).
@@ -139,7 +248,7 @@ export function daveWebReportStorage(
   // older value or none: Approve said the period could not be saved here, and
   // a send from here was not recorded. This tab's own copy is the later write,
   // so it is read first; it goes once the profile takes a write for that key.
-  const read = (key: string) => {
+  const stored = (key: string) => {
     if (tabOnly.has(key)) return tabOnly.get(key) ?? null;
     try {
       return local ? local.getItem(key) : null;
@@ -147,7 +256,18 @@ export function daveWebReportStorage(
       return null;
     }
   };
-  const write = (key: string, value: string | null) => {
+  const read = (key: string) => {
+    const value = stored(key);
+    if (value === null) return null;
+    try {
+      return unpackReportPeriod(value);
+    } catch {
+      return null; // Written by nothing this build knows: as if nothing were kept.
+    }
+  };
+  const write = (key: string, raw: string | null) => {
+    // A period goes in compactly (review N1 L1); what is read back is its own text again.
+    const value = raw === null ? null : packReportPeriod(raw);
     try {
       if (!local) throw new Error('no profile storage');
       if (value === null) local.removeItem(key);

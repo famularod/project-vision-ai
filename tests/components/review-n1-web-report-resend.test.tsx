@@ -478,7 +478,8 @@ describe('review N1 (Low): after Sign Out of This Computer removed the account\'
 });
 
 describe('review N1 (Low): with the profile\'s storage full, the period this tab kept instead is read back', () => {
-  const NOT_SAVED = "The report's reporting period could not be saved on this computer, so a send from here will not be recorded. Try Approve again.";
+  // Review N1 L1 (3 Oct 2026): the message no longer says "Try Approve again" (it never helped); pin updated deliberately.
+  const NOT_SAVED = /could not save its reporting period/;
 
   it('Approve saves the period for this tab, and Share records the send, here and in the shared period', async () => {
     table = PHONE_AT_10();

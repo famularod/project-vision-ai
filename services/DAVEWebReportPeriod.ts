@@ -143,6 +143,23 @@ export function daveWebReportPeriodNote(read: DAVEWebReportPeriodRead): string {
   return sentAt ? '' : 'No report for these projects has been recorded as sent yet.';
 }
 
+/**
+ * This browser's storage would not take the period (full, or it keeps no
+ * site data), so this tab holds it in its own memory (review N1 L1, 3 Oct
+ * 2026). Said plainly, with what it means, in place of "Try Approve again",
+ * which never helped.
+ */
+export function daveWebReportKeptInTabOnlyNote(shared: DAVEReportSharedCheck | 'loading'): string {
+  const kept = "This browser's storage for Vitruvius is full or switched off, so this computer remembers its last report only while this tab stays open.";
+  return shared === 'unavailable' || shared === 'loading'
+    ? `${kept} After that, the next report from this computer has no "since the last report" section until one is sent from here again. Clearing other sites' data in this browser makes room.`
+    : `${kept} Reports recorded as sent still reach your other devices, and this computer reads them back from there.`;
+}
+
+/** Approve could not save the period on this computer at all (review N1 L1): what that means, and that repeating it does not help. */
+export const DAVE_WEB_REPORT_PERIOD_NOT_SAVED =
+  "The report is approved, but this browser could not save its reporting period, so this computer cannot record that it was sent: the next report would count from the report before this one. Approving again will not change that. Sign out of this computer and in again, or use another browser, before you send it.";
+
 /** Why Approve waits while this tab is behind the other device's send (as the phone says it). */
 export function daveWebReportBehindMessage(send: DAVEReportSnapshot): string {
   return "This computer hasn't received your other device's latest changes yet: it sent the last report " +

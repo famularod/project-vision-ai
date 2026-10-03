@@ -14,7 +14,7 @@ import { loadDAVEReportPeriod, type DAVEReportSnapshotCloud } from '../../servic
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
-import { forgetDAVEWebOwnReportSends } from '../../services/DAVEWebReportSend';
+import { daveWebStoredReportValue, forgetDAVEWebOwnReportSends } from '../../services/DAVEWebReportSend';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 // Owner answer 2 Oct (web sends count): a report sent from the web desktop
@@ -284,6 +284,7 @@ describe('a report sent from the web counts on the iPhone and the iPad (owner an
     const periodKey = (owner: string) => `@vitruvius/web/${owner}/@vitruvius/report-snapshots/v1:tower:project_manager`;
     expect(profile.has(periodKey('owner-1')) && profile.has(periodKey('owner-2'))).toBe(true);
     expect(profile.get('@vitruvius/report-sender-id/v1')).toBe(senderId);
-    expect((JSON.parse(profile.get(periodKey('owner-2')) as string) as DAVEReportSnapshot).sentBy).toBe(senderId);
+    // Review N1 L1 (3 Oct 2026): the period is kept compactly in the browser's storage; read back, it is the same period.
+    expect((JSON.parse(daveWebStoredReportValue(profile.get(periodKey('owner-2'))) as string) as DAVEReportSnapshot).sentBy).toBe(senderId);
   });
 });

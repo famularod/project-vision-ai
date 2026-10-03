@@ -146,6 +146,7 @@ import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAf
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
+  daveWebReportPeriodKeptInTabOnly,
   daveWebReportSentHereAt,
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
@@ -156,10 +157,12 @@ import {
 import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
 import { DesktopReportMarkSent, DesktopReportSentQuestion, sameSharedReport, type DesktopSharedReport } from './desktop-report-send';
 import {
+  DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
   daveWebReportCheckedPressAgain,
+  daveWebReportKeptInTabOnlyNote,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportRecordedMessage,
@@ -5898,7 +5901,8 @@ function ReportWorkspace({
         outcome = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
       } catch {
         outcome = { status: 'saved', snapshot: null };
-        setNotice({ tone: 'danger', text: "The report's reporting period could not be saved on this computer, so a send from here will not be recorded. Try Approve again." });
+        // Said plainly, with what it means; "Try Approve again" never helped (review N1 L1).
+        setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_PERIOD_NOT_SAVED });
       }
       if (outcome.status === 'later_send') {
         setPeriodReload(count => count + 1);
@@ -6201,6 +6205,11 @@ function ReportWorkspace({
         ) : null}
         {daveWebReportPeriodNote(currentPeriodRead) ? (
           <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
+        ) : null}
+        {daveWebReportPeriodKeptInTabOnly() ? (
+          <Text style={styles.reportFactEmpty}>
+            {daveWebReportKeptInTabOnlyNote(currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'loading')}
+          </Text>
         ) : null}
         {approvalToMarkSent ? (
           <DesktopReportMarkSent
