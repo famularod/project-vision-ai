@@ -1,0 +1,234 @@
+/**
+ * Review N1 (pass 1 of the next round, 3 Oct 2026): findings in the schedule
+ * import commits of 2 Oct (owner answers Q25, Q29, Q30), each with the check
+ * that failed before its fix. Real CSV normalizer, the phone's merge, the
+ * shown-schedule pick, the delete helpers and the web's plans. Synthetic data.
+ */
+import fs from 'fs';
+import path from 'path';
+import ts from 'typescript';
+import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
+import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
+import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
+import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
+import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
+import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
+import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async () => null),
+  setItem: jest.fn(async () => undefined),
+  removeItem: jest.fn(async () => undefined),
+  getAllKeys: jest.fn(async () => []),
+  multiGet: jest.fn(async () => []),
+}));
+jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
+
+type State = { items: ScheduleItem[]; documents: ReferenceDocument[] };
+const EMPTY: State = { items: [], documents: [] };
+const shown = (state: State) => selectAuthoritativeScheduleItems({ scheduleItems: state.items, scheduleDocuments: state.documents }) as ScheduleItem[];
+const named = (state: State, name: string) => shown(state).filter(item => item.taskName === name);
+const one = (state: State, name: string) => {
+  const found = named(state, name);
+  expect(found).toHaveLength(1);
+  return found[0];
+};
+const dates = (item: ScheduleItem) => `${item.startDate}-${item.finishDate}`;
+const saved = (state: State, id: string) => state.items.find(item => item.id === id)!;
+
+const schedule = (id: string, importedAt: string, role?: 'lookahead', project = 'Alpha'): ReferenceDocument => ({
+  id, name: id, originalFileName: `${id}.csv`, uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt,
+  projectId: null, projectName: project, projectNames: [project], importBatchId: `batch-${id}`, ...(role ? { scheduleRole: role } : {}),
+}) as ReferenceDocument;
+
+/** A CSV's rows through the real normalizer, with the import's provenance. */
+function rows(source: ReferenceDocument, lines: string[], project = 'Alpha'): ScheduleItem[] {
+  return (normalizeScheduleImport({
+    contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), sourceName: source.originalFileName,
+    mimeType: 'text/csv', projects: [project], projectAreas: [], now: new Date(source.importedAt),
+  }).items as ScheduleItem[]).map((item, index) => ({
+    ...item, id: `${source.id}-${index + 1}`, importBatchId: source.importBatchId, sourceDocumentId: source.id,
+  }));
+}
+
+/** Approving a schedule on the phone (App.tsx): the merge, then a master is made current, a lookahead added. */
+function approve(state: State, source: ReferenceDocument, lines: string[], pairingChoices?: Record<string, string | null>): State {
+  const lookahead = source.scheduleRole === 'lookahead';
+  const merged = mergeApprovedScheduleImportItems({
+    existing: state.items, imported: rows(source, lines), completionMatch: () => null, mergeCompletion: item => item,
+    isCurrent: scheduleItemsVisibleBeforeImport(state.items, [...state.documents, source], source.importBatchId || ''),
+    approvedAt: source.importedAt, overlay: lookahead, ...(pairingChoices ? { pairingChoices } : {}),
+  });
+  return {
+    items: reconcileDAVEScheduleRecords([...merged.additions, ...merged.next]),
+    documents: lookahead ? [...state.documents, source] : scheduleDocumentsAfterActivation(source, [...state.documents, source], 'project'),
+  };
+}
+
+/** What a save made at that time returns (a date changed alone is noted with the time of the save, review N1 M1). */
+function savedAt<T>(at: string, save: () => T): T {
+  jest.useFakeTimers({ now: new Date(at) });
+  try { return save(); } finally { jest.useRealTimers(); }
+}
+
+/** A task edit on the phone: App.tsx's updateScheduleItem patches the saved row with the fields given (its first step included). */
+function patch(state: State, id: string, change: Partial<ScheduleItem>, at: string): State {
+  const merged = savedAt(at, () => withProjectControlsEditMerged(state.items.find(item => item.id === id)!, change));
+  return {
+    ...state,
+    items: state.items.map(item => item.id === id ? {
+      ...item, ...merged,
+      ...(typeof change.percentComplete === 'number' ? {
+        status: change.percentComplete >= 100 ? 'Complete' : 'In Progress', progressSource: 'project_manager',
+        progressConfirmedAt: at, progressConfirmedBy: 'David', progressJudgment: undefined,
+      } : {}),
+      updatedAt: at,
+    } as ScheduleItem : item),
+  };
+}
+
+/** "Delete PDF + Items" as the phone does it (App.tsx), through the shared delete helper. */
+function deleteWithItems(state: State, document: ReferenceDocument, at: string): State {
+  const removed = scheduleItemsOnlyInImportBatch(state.items, document, state.documents.filter(scheduleDocumentIsScheduleLike));
+  const removedIds = new Set(removed.map(item => item.id));
+  const documents = state.documents.filter(other => other.id !== document.id);
+  const kept = state.items.filter(item => !removedIds.has(item.id));
+  const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: kept, removed, document, documents, updatedAt: at }).map(item => [item.id, item]));
+  return { items: kept.map(item => restored.get(item.id) || item), documents };
+}
+
+const APP_SOURCE = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+
+const F = schedule('MASTER F', '2026-09-07T12:00:00.000Z');
+const WK1 = schedule('LOOKAHEAD wk1', '2026-09-14T12:00:00.000Z', 'lookahead');
+const WK2 = schedule('LOOKAHEAD wk2', '2026-09-21T12:00:00.000Z', 'lookahead');
+const WK3 = schedule('LOOKAHEAD wk3', '2026-09-28T12:00:00.000Z', 'lookahead');
+const onF = approve(EMPTY, F, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', 'Roof,Alpha,Lot,11/02/2026,11/06/2026,']);
+// Week 1 moves Framing and adds a detail task; week 2, listing neither, replaces it.
+const onWk1 = approve(onF, WK1, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,', 'Detail 1,Alpha,Lot,10/21/2026,10/22/2026,']);
+const onWk2 = approve(onWk1, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,', 'Detail 2,Alpha,Lot,10/28/2026,10/29/2026,']);
+const framingId = one(onF, 'Framing').id;
+
+/** App.tsx's own updateScheduleItem, compiled from its source: what it puts in the phone's tasks and sends. */
+function phoneUpdate(state: State, id: string, edit: Partial<ScheduleItem>): { saved: ScheduleItem; sent: ScheduleItem[] } {
+  const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
+  const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);
+  expect(from).toBeGreaterThan(0); expect(to).toBeGreaterThan(from);
+  const js = ts.transpileModule(`module.exports = (() => { ${APP_SOURCE.slice(from, to)}\n return updateScheduleItem; })();`,
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const ref = { current: state.items };
+  const sent: ScheduleItem[] = [];
+  const deps: Record<string, unknown> = {
+    scheduleItemsCurrentRef: ref, withProjectControlsEditMerged, reconcileScheduleProgressEdit,
+    normalizeScheduleItem: (value: ScheduleItem) => ({ ...value }), displayName: 'David',
+    resolveProjectItemWorkflowMutation: ({ candidate }: { candidate: ScheduleItem }) => ({ ok: true, item: candidate }),
+    advanceScheduleItemSyncGeneration: () => 1, markScheduleItemsAuthorityReady: () => undefined,
+    setScheduleItems: () => undefined, scheduleItemChangeUsesDebouncedSync: () => false, cancelScheduleItemTextSync: () => undefined,
+    syncScheduleItemRevision: (item: ScheduleItem) => { sent.push(item); }, queueScheduleItemRecord: async () => undefined,
+    Alert: { alert: () => undefined },
+  };
+  const mod = { exports: {} as unknown };
+  new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
+  (mod.exports as (id: string, edit: Partial<ScheduleItem>) => void)(id, edit);
+  return { saved: ref.current.find(item => item.id === id)!, sent };
+}
+
+
+describe('Review N1 M1 (caused by ada8ef6, Q25): a date David changes on the phone starts from the dates he sees', () => {
+  it('Framing is shown on the master\'s dates and saved on the replaced lookahead\'s', () => {
+    expect(dates(one(onWk2, 'Framing'))).toBe('10/15/2026-10/25/2026');
+    expect(dates(saved(onWk2, framingId))).toBe('10/20/2026-10/30/2026');
+  });
+
+  it('only Finish changed: Start stays the day he saw, not the replaced lookahead\'s', () => {
+    const edited = patch(onWk2, framingId, { finishDate: '10/27/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(one(edited, 'Framing'))).toBe('10/15/2026-10/27/2026');
+    // The note says which date he changed and when; nothing else of it changes.
+    const note = saved(edited, framingId).lookaheadOverlay!;
+    expect(note.lookaheads.at(-1)).toMatchObject({ startDate: '10/20/2026', finishDate: '10/30/2026', dateByHand: { field: 'finishDate', at: '2026-09-22T12:00:00.000Z' } });
+    expect([note.masterStartDate, note.masterFinishDate]).toEqual(['10/15/2026', '10/25/2026']);
+    // App.tsx's own save, from its source, gives the same.
+    const { saved: row } = savedAt('2026-09-22T12:00:00.000Z', () => phoneUpdate(onWk2, framingId, { finishDate: '10/27/2026' }));
+    expect(dates(one({ ...onWk2, items: onWk2.items.map(item => item.id === framingId ? row : item) }, 'Framing'))).toBe('10/15/2026-10/27/2026');
+    // His finish again later: still from the dates he sees.
+    const again = patch(edited, framingId, { finishDate: '10/28/2026' }, '2026-09-23T12:00:00.000Z');
+    expect(dates(one(again, 'Framing'))).toBe('10/15/2026-10/28/2026');
+    // Then his start: both dates are his now, shown as saved.
+    const both = patch(again, framingId, { startDate: '10/17/2026' }, '2026-09-24T12:00:00.000Z');
+    expect(dates(one(both, 'Framing'))).toBe('10/17/2026-10/28/2026');
+  });
+
+  it('only Start changed: Finish stays the day he saw', () => {
+    const edited = patch(onWk2, framingId, { startDate: '10/16/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(one(edited, 'Framing'))).toBe('10/16/2026-10/25/2026');
+  });
+
+  it('a Finish he sets before the replaced lookahead\'s start saves the start he saw: never a start after the finish', () => {
+    const edited = patch(onWk2, framingId, { finishDate: '10/18/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(saved(edited, framingId))).toBe('10/15/2026-10/18/2026');
+    expect(dates(one(edited, 'Framing'))).toBe('10/15/2026-10/18/2026');
+    // A start he sets past the master's finish: shown as saved, never a start after the finish.
+    const late = patch(onWk2, framingId, { startDate: '10/28/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(one(late, 'Framing'))).toBe('10/28/2026-10/30/2026');
+  });
+
+  it('a date he changes while the lookahead is in effect is a hand move, as before: both dates stay as he saw them, replaced or not', () => {
+    const edited = patch(onWk1, framingId, { finishDate: '11/02/2026' }, '2026-09-15T12:00:00.000Z');
+    expect(dates(one(edited, 'Framing'))).toBe('10/20/2026-11/02/2026');
+    const replaced = approve(edited, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,']);
+    expect(dates(one(replaced, 'Framing'))).toBe('10/20/2026-11/02/2026');
+    // His finish again after the lookahead was replaced: from the dates he sees, which are those.
+    expect(dates(one(patch(replaced, framingId, { finishDate: '11/03/2026' }, '2026-09-22T12:00:00.000Z'), 'Framing'))).toBe('10/20/2026-11/03/2026');
+    // Deleted with its items: dates he changed stay, as before.
+    expect(dates(one(deleteWithItems(edited, WK1, '2026-09-16T12:00:00.000Z'), 'Framing'))).toBe('10/20/2026-11/02/2026');
+  });
+
+  it('a later lookahead that lists the task takes over, and the one after that leaves it on the master\'s dates: his old date does not come back', () => {
+    const lists = ['Framing,Alpha,Lot,10/22/2026,11/03/2026,'];
+    const drops = ['Roof,Alpha,Lot,11/04/2026,11/08/2026,'];
+    // Changed while week 1 was in effect; week 2 lists Framing, week 3 does not.
+    const inEffect = patch(onWk1, framingId, { finishDate: '11/02/2026' }, '2026-09-15T12:00:00.000Z');
+    const relisted = approve(inEffect, WK2, lists);
+    expect(dates(one(relisted, 'Framing'))).toBe('10/22/2026-11/03/2026');
+    expect(dates(one(approve(relisted, WK3, drops), 'Framing'))).toBe('10/15/2026-10/25/2026');
+    // Changed after week 2 replaced week 1; week 3 lists Framing, week 4 does not.
+    const WK4 = schedule('LOOKAHEAD wk4', '2026-10-05T12:00:00.000Z', 'lookahead');
+    const sinceReplaced = patch(onWk2, framingId, { finishDate: '10/27/2026' }, '2026-09-22T12:00:00.000Z');
+    const relisted3 = approve(sinceReplaced, WK3, lists);
+    expect(dates(one(relisted3, 'Framing'))).toBe('10/22/2026-11/03/2026');
+    expect(dates(one(approve(relisted3, WK4, drops), 'Framing'))).toBe('10/15/2026-10/25/2026');
+  });
+
+  it('both dates changed, one to the replaced lookahead\'s own day: kept as he set them', () => {
+    const edited = patch(onWk2, framingId, { startDate: '10/16/2026', finishDate: '10/30/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(one(edited, 'Framing'))).toBe('10/16/2026-10/30/2026');
+  });
+
+  it('the phone\'s date fields send the other date as shown, so the saved task is what he sees plus his change', () => {
+    expect(APP_SOURCE).toContain('onChange={startDate => onUpdate({ startDate, finishDate: item.finishDate })}');
+    expect(APP_SOURCE).toContain('onChange={finishDate => onUpdate({ finishDate, startDate: item.startDate })}');
+    // What that saves: both dates as shown and changed, nothing noted; deleting the newest lookahead later leaves them.
+    const shownFraming = one(onWk2, 'Framing');
+    const edited = patch(onWk2, framingId, { finishDate: '10/27/2026', startDate: shownFraming.startDate }, '2026-09-22T12:00:00.000Z');
+    expect(dates(saved(edited, framingId))).toBe('10/15/2026-10/27/2026');
+    expect(saved(edited, framingId).lookaheadOverlay).toEqual(saved(onWk2, framingId).lookaheadOverlay);
+    expect(dates(one(deleteWithItems(edited, WK2, '2026-09-23T12:00:00.000Z'), 'Framing'))).toBe('10/15/2026-10/27/2026');
+    // On a task whose lookahead is in effect the other date sent is the saved one: only his date changes, nothing noted.
+    const inEffect = patch(onWk1, framingId, { finishDate: '11/02/2026', startDate: one(onWk1, 'Framing').startDate }, '2026-09-15T12:00:00.000Z');
+    expect(dates(saved(inEffect, framingId))).toBe('10/20/2026-11/02/2026');
+    expect(saved(inEffect, framingId).lookaheadOverlay).toEqual(saved(onWk1, framingId).lookaheadOverlay);
+  });
+
+  it('one date alone set to the very day the replaced lookahead gave: still his change from the dates he sees', () => {
+    // Shown 10/15 - 10/25, saved 10/20 - 10/30. He sets Finish to 10/30: the saved day, a change from what he sees.
+    const edited = patch(onWk2, framingId, { finishDate: '10/30/2026' }, '2026-09-22T12:00:00.000Z');
+    expect(dates(saved(edited, framingId))).toBe('10/20/2026-10/30/2026');
+    expect(dates(one(edited, 'Framing'))).toBe('10/15/2026-10/30/2026');
+    // The same day set while the lookahead was in effect changed nothing: the master's dates once it is replaced.
+    const before = patch(onWk1, framingId, { finishDate: '10/30/2026' }, '2026-09-15T12:00:00.000Z');
+    expect(dates(one(approve(before, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,']), 'Framing'))).toBe('10/15/2026-10/25/2026');
+  });
+});

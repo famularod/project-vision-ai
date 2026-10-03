@@ -20481,13 +20481,13 @@ function ScheduleItemRow({
             <NativeDateField
               label="Start Date"
               value={item.startDate}
-              onChange={startDate => onUpdate({ startDate })}
+              onChange={startDate => onUpdate({ startDate, finishDate: item.finishDate })} // with the other date as shown (review N1 M1)
               testID={`schedule-start-date-${item.id}`}
             />
             <NativeDateField
               label="Finish / Due Date"
               value={item.finishDate}
-              onChange={finishDate => onUpdate({ finishDate })}
+              onChange={finishDate => onUpdate({ finishDate, startDate: item.startDate })} // with the other date as shown (review N1 M1)
               testID={`schedule-finish-date-${item.id}`}
             />
             <ScheduleCommittedTextField

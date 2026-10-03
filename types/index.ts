@@ -776,6 +776,11 @@ export type ScheduleLookaheadOverlay = {
    * none (at or below David's own, Q22), a newer word than an older master's
    * percent (whole-app audit A5 pass 21 R3); missing otherwise, and on an
    * entry noted before.
+   * dateByHand: the one date David changed by hand, alone, while the task was
+   * on this lookahead's dates, and when (review N1 M1, 3 Oct 2026). Changed
+   * after a newer lookahead replaced this one, he was shown the master's
+   * dates: his date stands and the other shows the master's. Changed before,
+   * it is a hand move and the task shows as saved. Missing otherwise.
    */
   lookaheads: {
     batchId: string;
@@ -784,6 +789,7 @@ export type ScheduleLookaheadOverlay = {
     percentComplete?: number | null;
     datesReplacedByMaster?: boolean | string;
     percentStated?: true;
+    dateByHand?: { field: 'startDate' | 'finishDate'; at: string };
   }[];
 };
 

@@ -23,7 +23,7 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
-import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleTaskEarlierIds, scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
@@ -430,12 +430,28 @@ function withReplacedLookaheadDates(
     // On the dates the latest lookahead in its note gave it, that lookahead replaced.
     // (A file deleted and imported again keeps the note's entry: a saved lookahead holding the task speaks for it.)
     const lookahead = lookaheadByBatch.get(normalize(latest.batchId || '')) ?? holding[holding.length - 1];
-    if (!lookahead || !replacedFor(lookahead, project) || !onDays(latest)) return item;
+    if (!lookahead || !replacedFor(lookahead, project)) return item;
+    // Review N1 M1 (3 Oct 2026): one date David changed alone on a task on that lookahead's dates (its note says
+    // which, and when) after the lookahead was replaced. He was shown the master's dates then: his date stands and
+    // the other shows the master's. Changed while the lookahead was in effect it is a hand move: as saved.
+    const hand = latest.dateByHand;
+    const hisField = hand?.field === 'startDate' || hand?.field === 'finishDate' ? hand.field : null;
+    const otherField = hisField === 'startDate' ? 'finishDate' : 'startDate';
+    const hisSinceReplaced = Boolean(hand && hisField && sameScheduleCalendarDay(item[otherField], latest[otherField]) &&
+      timestamp(hand.at) > Math.min(...scheduleSources
+        .filter(document => scheduleDocumentAddsToMaster(document) && timestamp(document.importedAt) > timestamp(lookahead.importedAt) &&
+          (project === null || lookaheadCovers(document, lookaheadScopeKey(project))))
+        .map(document => timestamp(document.importedAt))));
+    if (!onDays(latest) && !hisSinceReplaced) return item;
     const masterRow = masterRowOf(item, lookahead);
-    const master = masterRow
+    const word = masterRow
       ? { startDate: masterRow.startDate, finishDate: masterRow.finishDate }
       : { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+    const master = hisSinceReplaced && hisField ? { ...word, [hisField]: item[hisField] } : word;
     if (onDays(master) || !master.startDate?.trim() || !master.finishDate?.trim()) return item;
+    // Never a start after the finish (his date against the master's other one, review N1 M1): as saved then.
+    const [from, to] = [scheduleCalendarDay(master.startDate), scheduleCalendarDay(master.finishDate)];
+    if (from && to && from > to) return item;
     return {
       ...item,
       startDate: master.startDate,
