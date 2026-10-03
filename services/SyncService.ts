@@ -59,7 +59,7 @@ import { SCHEDULE_CARRIED_PROGRESS_FIELDS } from './ScheduleProgressSource';
 import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from './ScheduleItemQueueRevision';
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
-  isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
+  isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
@@ -88,7 +88,7 @@ import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository'
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
-import { scheduleItemAnsweringToTaskId, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { scheduleItemAnsweringToTaskId, scheduleTaskEarlierIds, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -6272,7 +6272,7 @@ async function uploadQueueItem(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
     let remote = context.scheduleItemsById.get(payload.id);
-    const changedFields = Array.isArray(payload.changedFields)
+    const queuedFields = Array.isArray(payload.changedFields)
       ? payload.changedFields
       : null;
     // A field edit's row the list missed (whole-app audit A7 pass 16 L-5):
@@ -6281,7 +6281,7 @@ async function uploadQueueItem(
     // no row the phone's whole copy went up: a notes-only edit put 0% over
     // the web's 50%. The row is read by its id first; a read that fails
     // leaves the edit queued, and no row means the task really has none.
-    if (!remote && changedFields) {
+    if (!remote && queuedFields) {
       let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
       try {
         row = await getScheduleItem(payload.id);
@@ -6296,6 +6296,14 @@ async function uploadQueueItem(
         context.scheduleItemsById.set(payload.id, row.data);
       }
     }
+    // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
+    // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
+    // On the row the task lives on: a row a newer master has replaced goes as before.
+    const withOwnProgress = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
+    const changedFields = withOwnProgress && queuedFields && withOwnProgress.length > queuedFields.length &&
+      [...context.scheduleItemsById.values()].some(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id))
+      ? queuedFields
+      : withOwnProgress;
     // Owner answer Q28 (2 Oct 2026): an edit that keeps the copy it started from is weighed field by field against the
     // cloud's row. A field only this device changed goes up; a field another device changed and this one left as it was
     // stays the cloud's; one changed on both to different values is asked about in Review Conflicts, while the edit's

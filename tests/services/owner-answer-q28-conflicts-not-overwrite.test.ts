@@ -208,7 +208,7 @@ import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo, scheduleItem
 import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
-import { scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
+import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 
 /* Per-device module sets --------------------------------------------------- */
 type SyncModule = typeof import('../../services/SyncService');
@@ -1927,5 +1927,83 @@ describe('Review N1 finding 6: David\'s later percent stands after Talk and Undo
       progressConfirmedAt: '2026-09-10T08:00:30.001Z', progressJudgment: { judgedAt: '2026-09-09T08:00:00.000Z', givenBackAt: '2026-09-10T08:00:30.001Z' },
     });
     expect(scheduleItemLaterPercentGivenBack(local, row({ progressConfirmedAt: '2026-09-11T08:00:00.000Z' }))).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule review pass 1, M3 (Medium; caused by 79a5ae1 on a cold start, older on a refresh). David's 15% stands under
+ * a lookahead's 20% ("Schedule update", his own 15% noted under it). On a phone that had not heard of that lookahead
+ * he enters 85%. The percent was already his there, so the edit named only the percent and its time: the cloud's row
+ * read 85% by "Schedule update" with his own still noted as 15%. Next week's lookahead listed 20%, above "his" 15%,
+ * and 85% became 20% on every device. A change of the progress now goes up whole, with who stated it.
+ */
+describe('Schedule review N1 M3: his own percent reaches the cloud as his, and a lookahead never sets the task below it', () => {
+  const lookahead = (id: string, when: string) => scheduleDoc(id, when, 'lookahead');
+  const row = (start: string, finish: string, percent: string) => `Framing,Alpha,Lot,${start},${finish},${percent}`;
+  const stated = (items: readonly ScheduleItem[]) => framingOf(items).map(item => [item.percentComplete, item.progressConfirmedBy]);
+
+  it.each(['refresh', 'cold start'] as const)('he enters 85% on the phone before it hears of the lookahead over his 15%; the phone comes back by a %s', async how => {
+    const { phone, ipad } = await start();
+    const all = async () => { await fullSync(phone); await fullSync(ipad); await fullSync(phone); };
+    at('2026-09-14T12:00:00.000Z');
+    await approve(phone, lookahead('LOOKAHEAD wk1', new Date().toISOString()), [row('10/16/2026', '10/26/2026', '20')], true);
+    shareDocuments(phone); await backgroundUpload(phone); await all();
+    const id = theRow(ipad).id;
+    at('2026-09-16T12:00:00.000Z');
+    await edit(ipad, id, { percentComplete: 15 }); // his own 15%
+    await all();
+    at('2026-09-21T12:00:00.000Z');
+    setOnline(phone, false);
+    await approve(ipad, lookahead('LOOKAHEAD wk2', new Date().toISOString()), [row('10/17/2026', '10/27/2026', '20')], true); // the file's 20% over his 15%
+    shareDocuments(ipad); await backgroundUpload(ipad);
+    expect(cloudRow(id)).toMatchObject({ percentComplete: 20, progressConfirmedBy: 'Schedule update', managersPercentUnderFile: 15 });
+    at('2026-09-21T14:00:00.000Z');
+    await typed(phone, id, { percentComplete: 85 }); // offline: the phone has not heard of wk2
+    at('2026-09-21T15:00:00.000Z');
+    setOnline(phone, true);
+    if (how === 'refresh') await refresh(phone); else { relaunchModules(phone); await startup(phone); }
+    await all();
+    expect(cloudRow(id)).toMatchObject({ percentComplete: 85, progressConfirmedBy: 'David' });
+    expect(cloudRow(id)?.managersPercentUnderFile ?? null).toBeNull(); // his own percent is the one shown
+    at('2026-09-28T12:00:00.000Z');
+    await approve(ipad, lookahead('LOOKAHEAD wk3', new Date().toISOString()), [row('10/18/2026', '10/28/2026', '20')], true); // next week's file still says 20%
+    shareDocuments(ipad); await backgroundUpload(ipad); await all();
+    expect([stated(deviceShown(phone)), stated(deviceShown(ipad)), stated(webShown())]).toEqual(Array(3).fill([[85, 'David']])); // was 20% by "Schedule update"
+  });
+
+  it('an edit of a row a newer master has since replaced goes as before: the percent alone', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T12:00:00.000Z');
+    await edit(phone, oldId, { percentComplete: 15 }); // his own 15%
+    await refresh(ipad);
+    setOnline(ipad, false);
+    at('2026-09-09T12:00:00.000Z');
+    await approve(phone, lookahead('LOOKAHEAD wk1', new Date().toISOString()), [row('10/16/2026', '10/26/2026', '20')], true); // the file's 20% over it
+    shareDocuments(phone); await backgroundUpload(phone);
+    at(G.importedAt!);
+    await approve(phone, G, [row('10/20/2026', '10/30/2026', ''), SURVEY]); // next week's master moves the task to a new row
+    shareDocuments(phone); await backgroundUpload(phone);
+    expect(cloudRow(oldId)).toMatchObject({ progressConfirmedBy: 'Schedule update', managersPercentUnderFile: 15 });
+    expect(theRow(phone).id).not.toBe(oldId);
+    at('2026-09-11T12:00:00.000Z');
+    await typed(ipad, oldId, { percentComplete: 85 }); // on the iPad, which has heard of neither
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(oldId)).toMatchObject({ percentComplete: 85, progressConfirmedBy: 'Schedule update' }); // as at 8ad6771
+  });
+
+  it('his own percent names the whole of the progress over a file\'s percent with his earlier one under it; any other edit names its own fields', () => {
+    const task = (patch: Partial<ScheduleItem>) => ({ id: 't', percentComplete: 0, ...patch }) as ScheduleItem;
+    const his = task({ percentComplete: 85, progressSource: 'project_manager', progressConfirmedBy: 'David' });
+    const filesOverHis = task({ percentComplete: 20, progressSource: 'project_manager', progressConfirmedBy: 'Schedule update', managersPercentUnderFile: 15 });
+    const edit = ['percentComplete', 'progressConfirmedAt', 'updatedAt'];
+    expect(scheduleItemFieldsWithOwnProgress(his, edit, filesOverHis)).toEqual(expect.arrayContaining(
+      ['percentComplete', 'status', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'managersPercentUnderFile', 'updatedAt']));
+    expect(scheduleItemFieldsWithOwnProgress(his, ['notes', 'updatedAt'], filesOverHis)).toEqual(['notes', 'updatedAt']);
+    // A file's percent with none of his under it, and a row that shows his own: the edit's own fields, as before.
+    expect(scheduleItemFieldsWithOwnProgress(his, edit, task({ percentComplete: 20, progressSource: 'project_manager', progressConfirmedBy: 'Schedule update' }))).toEqual(edit);
+    expect(scheduleItemFieldsWithOwnProgress(his, edit, task({ percentComplete: 15, progressSource: 'project_manager', progressConfirmedBy: 'David' }))).toEqual(edit);
   });
 });

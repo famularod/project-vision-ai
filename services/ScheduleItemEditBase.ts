@@ -212,6 +212,28 @@ export function scheduleItemEditBase(
   };
 }
 
+/**
+ * The fields an edit changed, with the whole of the task's progress when the
+ * edit is David's own percent and the cloud's row shows a file's percent with
+ * his earlier one noted under it (schedule review N1 M3, Medium; caused by
+ * 79a5ae1 on a cold start, older on a refresh). David's 15% stood under a
+ * lookahead's 20% ("Schedule update", his own 15% noted under it). On a phone
+ * that had not heard of that lookahead he entered 85%: there the percent was
+ * already his, so the edit named only the percent and its time, and the
+ * cloud's row then read 85% by "Schedule update" with his own still noted as
+ * 15%. The next lookahead listed 20%, above "his" 15%, and 85% became 20% on
+ * every device. Who stated the percent, when he judged it and what it stands
+ * over go with it then, so his own entry reaches the cloud as his: owner
+ * answer Q22's floor sees it, and a lookahead never sets the task below it.
+ * Any other edit names its own fields, as before.
+ */
+export function scheduleItemFieldsWithOwnProgress<T extends string>(local: ScheduleItem, changedFields: readonly T[], remote: ScheduleItem): T[] {
+  const progress: readonly string[] = SCHEDULE_CARRIED_PROGRESS_FIELDS;
+  const ownOverFiles = changedFields.some(field => progress.includes(field)) && scheduleProgressIsManagers(local) &&
+    !scheduleProgressIsManagers(remote) && typeof remote.managersPercentUnderFile === 'number';
+  return ownOverFiles ? [...new Set([...changedFields, ...(progress as readonly T[])])] : [...changedFields];
+}
+
 type EditScope = Readonly<{ changedFields?: unknown; base?: unknown; itemData?: unknown }>;
 
 /** How many of an edit's own earlier values a field keeps (the latest ones). */
