@@ -13,6 +13,29 @@ import { desktopSurfaces } from './desktop-surface-palette';
  * sent another way is recorded with Mark as Sent (as on the phone). Nothing
  * is recorded until he says so.
  */
+/**
+ * The approved report a share or an email draft was made from (review N1 M1,
+ * 3 Oct 2026): the saved report and the revision its approval was saved as,
+ * its facts, and the period (projects and format) it belongs to. "Was the
+ * report sent?" is about this report only.
+ */
+export type DesktopSharedReport = Readonly<{
+  reportId: string;
+  revision: string | null;
+  fingerprint: string | null;
+  scopeKey: string;
+  reportFormat: 'project_manager' | 'executive';
+}>;
+
+/** Whether the report on screen is still the approval that was shared. */
+export function sameSharedReport(shared: DesktopSharedReport, onScreen: DesktopSharedReport): boolean {
+  return shared.reportId === onScreen.reportId &&
+    shared.revision === onScreen.revision &&
+    shared.fingerprint === onScreen.fingerprint &&
+    shared.scopeKey === onScreen.scopeKey &&
+    shared.reportFormat === onScreen.reportFormat;
+}
+
 export function DesktopReportSentQuestion({
   pending,
   onAnswer,

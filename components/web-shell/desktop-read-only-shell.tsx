@@ -154,7 +154,7 @@ import {
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
 import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
-import { DesktopReportMarkSent, DesktopReportSentQuestion } from './desktop-report-send';
+import { DesktopReportMarkSent, DesktopReportSentQuestion, sameSharedReport, type DesktopSharedReport } from './desktop-report-send';
 import {
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
@@ -5632,7 +5632,12 @@ function ReportWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period.periodKey]);
   // Owner answer 2 Oct (web sends count): a share or email draft asks whether it went out; Mark as Sent records one sent another way.
-  const [sendQuestion, setSendQuestion] = useState(false);
+  // Review N1 M1 (3 Oct 2026): the question is about the exact report that was shared: its saved approval, its
+  // facts and its period. It was one switch, left up when that report was regenerated or the format changed and
+  // the next one approved, and "Yes" then recorded the new report, never shared, as sent: what changed between
+  // the two was never reported. It is withdrawn when the report on screen is no longer that approval, and "Yes"
+  // records only the report that was shared.
+  const [sendQuestion, setSendQuestion] = useState<DesktopSharedReport | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
   const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
@@ -5666,10 +5671,16 @@ function ReportWorkspace({
    * `sentAt` (Mark as Sent), exactly as the phone records a send; says what
    * happened. Not recorded over a later send from another device.
    */
-  const recordSend = async (sentAt: string, markedSentAt: string | null, approvedFingerprint: string | null) => {
+  const recordSend = async (
+    sentAt: string,
+    markedSentAt: string | null,
+    approvedFingerprint: string | null,
+    /** The period of the report that went out, when it is not the one on screen now (review N1 M1). */
+    sentPeriod: Readonly<{ scopeKey: string; reportFormat: DAVEWebReportAudience }> = { scopeKey: periodScopeKey, reportFormat: reportAudience },
+  ) => {
     let outcome: DAVEWebSendOutcome | null = null;
     try {
-      outcome = await recordDAVEWebReportSend(periodStore, { scopeKey: periodScopeKey, reportFormat: reportAudience }, approvedFingerprint, sentAt, markedSentAt);
+      outcome = await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
     } catch {
       setNotice({ tone: 'danger', text: "The report couldn't be recorded as sent on this computer. Try again." });
       return false;
@@ -5696,13 +5707,28 @@ function ReportWorkspace({
     setNotice({ tone: 'good', text: daveWebReportRecordedMessage(sentAt, currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'unchecked') });
     return true;
   };
+  /** The approved report on screen, as a share or an email draft takes it (review N1 M1). */
+  const reportAsShared = (): DesktopSharedReport => ({
+    reportId,
+    revision: expectedRevision,
+    fingerprint: reportSource.fingerprint.split(':media-')[0] || null,
+    scopeKey: periodScopeKey,
+    reportFormat: reportAudience,
+  });
+  // Asked only while the report on screen is still the approval that was shared.
+  const sharedReportOnScreen = sendQuestion && reportStatus === 'approved' && sameSharedReport(sendQuestion, reportAsShared())
+    ? sendQuestion
+    : null;
   const answerSendQuestion = (sent: boolean) => {
-    setSendQuestion(false);
+    const shared = sharedReportOnScreen;
+    setSendQuestion(null);
+    if (!shared) return;
     if (!sent) {
       setNotice({ tone: 'good', text: 'Nothing was recorded. Once you send it, use Mark as Sent.' });
       return;
     }
-    void recordSend(new Date().toISOString(), null, reportSource.fingerprint.split(':media-')[0] || null);
+    // The report that was shared, by its own facts and period: never whatever is on screen by now.
+    void recordSend(new Date().toISOString(), null, shared.fingerprint, { scopeKey: shared.scopeKey, reportFormat: shared.reportFormat });
   };
   const markReportSentManually = (choice: 'now' | Date) => {
     if (!approvalToMarkSent || markSentRecording) return;
@@ -5796,6 +5822,9 @@ function ReportWorkspace({
   };
 
   const resetFromCurrentTruth = () => {
+    // The report that was shared is replaced: its question goes with it (review N1 M1).
+    const askedOfShared = Boolean(sharedReportOnScreen);
+    setSendQuestion(null);
     generatedDraftRef.current = { title: generatedTitle, body: generatedBody };
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(generatedTitle);
@@ -5805,7 +5834,12 @@ function ReportWorkspace({
     setAudit([]);
     setReportSource(currentReportSource);
     setReportStatus('draft');
-    setNotice({ tone: 'good', text: 'A fresh draft was generated from the latest reconciled project record.' });
+    setNotice({
+      tone: 'good',
+      text: askedOfShared
+        ? 'A fresh draft was generated from the latest reconciled project record. Nothing was recorded for the report you shared: if it was sent, use Mark as Sent before you approve this one.'
+        : 'A fresh draft was generated from the latest reconciled project record.',
+    });
   };
 
   const applyReportAudience = (audience: DAVEWebReportAudience) => {
@@ -5814,6 +5848,7 @@ function ReportWorkspace({
     // The other format's period is read next; its "since" section follows (everyday item 3).
     const nextBody = formatDAVEWebReport(briefing, audience);
     generatedDraftRef.current = { title: nextTitle, body: nextBody };
+    setSendQuestion(null); // the report that was shared is no longer on screen (review N1 M1)
     setReportAudience(audience);
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(nextTitle);
@@ -5834,6 +5869,8 @@ function ReportWorkspace({
 
   const save = async (status: 'draft' | 'approved') => {
     if (pending || !reportTitle.trim() || !reportBody.trim()) return;
+    // Saved or approved again: no longer the approval that was shared (review N1 M1).
+    setSendQuestion(null);
     // Approval waits for the period, and for this tab to have the other device's changes (everyday item 3).
     if (status === 'approved' && currentPeriodRead.status === 'loading') {
       setNotice({ tone: 'danger', text: 'The reporting period is still loading.' });
@@ -5918,6 +5955,7 @@ function ReportWorkspace({
     if (!report) return;
     const savedAudience: DAVEWebReportAudience = report.audience
       || (report.title.toLowerCase().includes('executive') ? 'executive' : 'project_manager');
+    setSendQuestion(null); // another report is opened: the question was about the one shared (review N1 M1)
     setReportAudience(savedAudience);
     setReportId(document.id);
     setReportTitle(report.title);
@@ -5948,6 +5986,8 @@ function ReportWorkspace({
       return;
     }
     setNotice(null);
+    // The report as it is shared now: what "Was the report sent?" and the record are about (review N1 M1).
+    const shared = reportAsShared();
     try {
       const shareData = {
         title: reportTitle.trim(),
@@ -5962,14 +6002,14 @@ function ReportWorkspace({
         }
         setNotice({ tone: 'good', text: 'The approved report was handed to the system share menu.' });
         // The share menu cannot say whether it went out (owner answer 2 Oct, web sends count).
-        setSendQuestion(true);
+        setSendQuestion(shared);
         return;
       }
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(`${shareData.title}\n\n${shareData.text}`);
         setNotice({ tone: 'good', text: 'The approved report was copied for project communication.' });
         // Copied to be pasted and sent, a send as the phone's Copy Report is (owner answer 2 Oct).
-        void recordSend(new Date().toISOString(), null, reportSource.fingerprint.split(':media-')[0] || null);
+        void recordSend(new Date().toISOString(), null, shared.fingerprint, { scopeKey: shared.scopeKey, reportFormat: shared.reportFormat });
         return;
       }
       throw new Error('Sharing is unavailable in this browser.');
@@ -5990,6 +6030,7 @@ function ReportWorkspace({
       setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
       return;
     }
+    const shared = reportAsShared();
     const subject = encodeURIComponent(reportTitle.trim());
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
@@ -6006,7 +6047,7 @@ function ReportWorkspace({
         text: `An email draft was opened. Review the recipients and content before sending.${alreadySent}`,
       });
     // An email draft cannot say whether it was sent (owner answer 2 Oct, web sends count).
-    if (!sentFromHereAt) setSendQuestion(true);
+    if (!sentFromHereAt) setSendQuestion(shared);
   };
 
   // The report this computer sent to start the period now shown stands on
@@ -6332,7 +6373,7 @@ function ReportWorkspace({
                 </View>
               </View>
             </View>
-            {sendQuestion && reportStatus === 'approved' ? (
+            {sharedReportOnScreen ? (
               <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} />
             ) : null}
             {!reportFactsAreCurrent ? (
