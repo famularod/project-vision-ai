@@ -123,6 +123,13 @@ export type DAVEScheduleTruth = {
    * task by these, as field updates do, before any guess by name.
    */
   earlierTaskIds?: string[];
+  /**
+   * The saved tasks David said at import review this task is not (owner
+   * answer Q30: a same-named row he called a new task; notRevisionOfTaskIds).
+   * Absent when there are none. Review N1 M3 (3 Oct 2026): "since the last
+   * report" never pairs it by name with an earlier report's task.
+   */
+  notTaskIds?: string[];
   taskName: string;
   itemType: ScheduleItem['itemType'];
   areaName: string | null;
@@ -732,9 +739,11 @@ function buildScheduleTruth(
         (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
       )[0];
     const earlierTaskIds = scheduleTaskEarlierIds(item);
+    const notTaskIds = uniqueText(Array.isArray(item.notRevisionOfTaskIds) ? item.notRevisionOfTaskIds.map(id => clean(id)) : []);
     return {
       taskId: item.id,
       ...(earlierTaskIds.length > 0 ? { earlierTaskIds } : {}),
+      ...(notTaskIds.length > 0 ? { notTaskIds } : {}),
       taskName: item.taskName,
       itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),

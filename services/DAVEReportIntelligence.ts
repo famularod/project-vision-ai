@@ -1266,9 +1266,11 @@ function stableHash(value: string): string {
  * ids a task had before new masters moved it (whole-app audit A6 pass 12 L1,
  * 30 Sep 2026). Those say which task a revised row is, not what the report
  * says about it, so an approval given, or a send made on the other device,
- * before the truth carried them is still the same content.
+ * before the truth carried them is still the same content. So too the tasks
+ * David said a row is not (review N1 M3, 3 Oct 2026): which earlier task it
+ * is compared with, not what it says.
  */
-const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds']);
+const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds', 'notTaskIds']);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);

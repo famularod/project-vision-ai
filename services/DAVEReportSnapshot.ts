@@ -36,6 +36,14 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   earlierTaskIds?: readonly string[];
   /**
+   * The saved tasks David said at import review this task is not (owner
+   * answer Q30, notRevisionOfTaskIds). Review N1 M3 (3 Oct 2026): a task that
+   * carries any is one he called new, and is never paired by name with an
+   * earlier report's task. Absent when there are none, and on snapshots
+   * saved before then.
+   */
+  notTaskIds?: readonly string[];
+  /**
    * What the task says, as one key (`reportTaskContentKey`): every field
    * David can see or edit on it, never its ids or times. Whole-app audit A6
    * pass 13 M1 (1 Oct 2026): a task whose key is the one the earlier report
@@ -513,6 +521,7 @@ export function buildDAVEReportSnapshot({
   const tasks = truths.flatMap(truth => truth.schedule.map(task => Object.freeze({
     taskId: task.taskId,
     ...withEarlierIds(task),
+    ...withNotTaskIds(task),
     projectName: truth.projectName,
     taskName: task.taskName,
     areaName: clean(task.areaName) || null,
@@ -583,9 +592,14 @@ export function compareDAVEReportSnapshots({
   // previous report had, not listed as added and removed. By the ids the
   // import recorded first (A6 pass 12 L1); by name only for tasks with none.
   const linked = linkTasksById(previous.tasks, current.tasks);
+  // Review N1 M3 (3 Oct 2026): nor a task David called new at import review
+  // (owner answer Q30). He answered "the first Pour slab was dropped and this
+  // row is a new one", the list followed him, and the report still paired the
+  // new row with the dropped task by name: "Pour slab moved from 80% to 0%
+  // complete." Such a task is added, and the dropped one removed.
   const revisions = pairRevisedTasks(
-    previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task)),
-    current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task)),
+    previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task)),
+    current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task)),
   );
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
@@ -763,6 +777,22 @@ function earlierIdsOf(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTask
 function withEarlierIds(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTaskIds'>) {
   const earlierTaskIds = earlierIdsOf(task);
   return earlierTaskIds.length > 0 ? { earlierTaskIds: Object.freeze(earlierTaskIds) } : {};
+}
+
+/** The tasks a snapshot task was said not to be, read as stored (owner answer Q30; none before review N1 M3). */
+function notTaskIdsOf(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>): string[] {
+  const listed: readonly unknown[] = Array.isArray(task.notTaskIds) ? task.notTaskIds : [];
+  return [...new Set(listed.map(clean).filter(Boolean))];
+}
+
+function withNotTaskIds(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>) {
+  const notTaskIds = notTaskIdsOf(task);
+  return notTaskIds.length > 0 ? { notTaskIds: Object.freeze(notTaskIds) } : {};
+}
+
+/** Whether David called this task a new one at import review: it is no earlier task under another name or date. */
+function saidNewTask(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>): boolean {
+  return notTaskIdsOf(task).length > 0;
 }
 
 /** Which fields a content key covers; a key made from another list never equals this one's. */
