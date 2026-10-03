@@ -30,6 +30,36 @@ const ACCEPTED_ADVISORIES = [
     ],
     approval: 'owner answer Q33, 1 Oct 2026',
     reviewBy: '2026-11-01',
+  },  /**
+   * Owner answer Q35 (2 Oct 2026): braces <= 3.0.3 (GHSA-vfj7-8cjw-p6xm, a
+   * stack overflow from deeply nested brace patterns) is a file-pattern
+   * library that Metro, Jest and Expo's command-line tool use while building
+   * and testing. npm traces it through the packages below because they
+   * declare those tools; its code is not in the shipped app (none of its text
+   * is in the Build 229 iOS bundle or web export), and it only ever reads
+   * patterns from this repository's own configuration. When it was published,
+   * 3.0.3 was the newest braces, so no update could remove it. The exception
+   * ends by itself once npm reports a non-breaking fix for braces, or on
+   * reviewBy.
+   */
+  {
+    advisory: 'GHSA-vfj7-8cjw-p6xm',
+    package: 'braces',
+    reachedThrough: [
+      '@expo/cli', '@expo/metro', '@expo/metro-config', '@expo/metro-file-map', '@jest/console',
+      '@jest/core', '@jest/environment', '@jest/expect', '@jest/fake-timers', '@jest/globals',
+      '@jest/reporters', '@jest/test-result', '@jest/test-sequencer', '@jest/transform',
+      '@react-native-community/datetimepicker', '@react-native/community-cli-plugin',
+      '@react-native/jest-preset', '@react-native/metro-config', '@react-native/virtualized-lists',
+      '@types/jest', 'babel-jest', 'create-jest', 'expect', 'expo', 'jest', 'jest-circus', 'jest-cli',
+      'jest-config', 'jest-environment-jsdom', 'jest-environment-node', 'jest-expo', 'jest-haste-map',
+      'jest-message-util', 'jest-resolve', 'jest-resolve-dependencies', 'jest-runner', 'jest-runtime',
+      'jest-snapshot', 'jest-watch-typeahead', 'jest-watcher', 'metro', 'metro-config', 'metro-file-map',
+      'metro-transform-worker', 'micromatch', 'react-native', 'react-native-reanimated',
+      'react-native-worklets',
+    ],
+    approval: 'owner answer Q35, 2 Oct 2026',
+    reviewBy: '2026-11-01',
   },
 ];
 
@@ -78,7 +108,10 @@ function evaluateDependencyAudit(report, now = new Date(), accepted = ACCEPTED_A
     const covered = advisories.length > 0 && advisories.every(found => standing.some(exception =>
       exception.advisory.toLowerCase() === found.id && exception.package === found.package &&
       (name === exception.package || exception.reachedThrough.includes(name))));
-    (covered ? excused : unexcused).push({ name, severity: entry.severity, advisories: advisories.map(found => found.id) });
+    const approvals = [...new Set(advisories.flatMap(found => standing
+      .filter(exception => exception.advisory.toLowerCase() === found.id)
+      .map(exception => exception.approval.replace(/,.*$/, ''))))];
+    (covered ? excused : unexcused).push({ name, severity: entry.severity, advisories: advisories.map(found => found.id), approvals });
   });
   return { excused, unexcused, expired };
 }
@@ -101,7 +134,7 @@ function describe(result) {
   result.expired.forEach(exception => lines.push(
     `Accepted advisory ${exception.advisory} (${exception.package}) no longer applies: a non-breaking fix exists or its review date passed. Update the lock, then remove the exception.`));
   result.excused.forEach(found => lines.push(
-    `VIC_GATE_STATUS=WARN ${found.severity} ${found.name}: accepted (${found.advisories.join(', ')}; owner answer Q33) until a non-breaking fix exists.`));
+    `VIC_GATE_STATUS=WARN ${found.severity} ${found.name}: accepted (${found.advisories.join(', ')}; ${found.approvals.join(', ')}) until a non-breaking fix exists.`));
   result.unexcused.forEach(found => lines.push(
     `BLOCKING ${found.severity} ${found.name} (${found.advisories.join(', ') || 'advisory'}).`));
   return lines;

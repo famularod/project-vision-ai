@@ -76,7 +76,8 @@ if (!audit.reachable) {
   );
   describe(audit).forEach(line => console.log(line));
   // High and critical advisories fail the gate unless the owner accepted that
-  // advisory and no non-breaking fix exists yet (owner answer Q33, 1 Oct 2026).
+  // advisory and no non-breaking fix exists yet (owner answers Q33, 1 Oct 2026,
+  // and Q35, 2 Oct 2026).
   assert.equal(
     audit.unexcused.length,
     0,
