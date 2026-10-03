@@ -443,18 +443,46 @@ function uniquelyNearest<T>(candidates: readonly T[], scoreOf: (candidate: T) =>
  * with none (a new row, never David's progress on another task).
  */
 function pairByNearestDays(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
-  const score = (row: ScheduleItem, twin: ScheduleItem): number | null => {
-    const span = spanOf(row);
-    const spans = [spanOf(twin), twin.lookaheadOverlay ? spanOf(masterDays(twin)) : null]
-      .filter((value): value is readonly [number, number] => value !== null);
-    return span && spans.length > 0 ? Math.min(...spans.map(twinSpan => apart(span, twinSpan))) : null;
-  };
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   rows.forEach(row => {
-    const twin = uniquelyNearest(saved, candidate => score(row, candidate));
-    if (twin && uniquelyNearest(rows, candidate => score(candidate, twin)) === row) pairs.set(row, twin);
+    const twin = uniquelyNearest(saved, candidate => daysApart(row, candidate));
+    if (twin && uniquelyNearest(rows, candidate => daysApart(candidate, twin)) === row) pairs.set(row, twin);
   });
   return pairs;
+}
+
+/** How far a lookahead's row is from a saved twin: from the days it shows, or the master's days its note keeps. */
+function daysApart(row: ScheduleItem, twin: ScheduleItem): number | null {
+  const span = spanOf(row);
+  const spans = [spanOf(twin), twin.lookaheadOverlay ? spanOf(masterDays(twin)) : null]
+    .filter((value): value is readonly [number, number] => value !== null);
+  return span && spans.length > 0 ? Math.min(...spans.map(twinSpan => apart(span, twinSpan))) : null;
+}
+
+/**
+ * Review N1 L5 (3 Oct 2026, older; owner answer Q30 says ask): a lookahead's
+ * row as near to one saved twin as to another pairs with neither
+ * (pairByNearestDays) and came in as a new task, unasked; so did the one row
+ * of a master that lists fewer of the name than are saved. Whether the guess
+ * leaves a row new that two of the saved twins it leaves unpaired are equally
+ * nearest to, or leaves a saved twin unpaired that two such rows are equally
+ * nearest to.
+ */
+function tiedBetweenTwins(
+  rows: readonly ScheduleItem[],
+  saved: readonly ScheduleItem[],
+  guess: ReadonlyMap<ScheduleItem, ScheduleItem>,
+): boolean {
+  const paired = new Set(guess.values());
+  const rowsLeft = rows.filter(row => !guess.has(row));
+  const savedLeft = saved.filter(item => !paired.has(item));
+  const tied = <T,>(candidates: readonly T[], scoreOf: (candidate: T) => number | null) => {
+    const scores = candidates.map(scoreOf).filter((score): score is number => score !== null);
+    const lowest = Math.min(...scores);
+    return scores.filter(score => score === lowest).length > 1;
+  };
+  return rowsLeft.some(row => tied(savedLeft, twin => daysApart(row, twin))) ||
+    savedLeft.some(twin => tied(rowsLeft, row => daysApart(row, twin)));
 }
 
 /**
@@ -800,7 +828,7 @@ export function scheduleImportPairingQuestions({
     const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
     // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
     const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
-    if (!disagrees) return [];
+    if (!disagrees && !tiedBetweenTwins(rows, saved, guess)) return [];
     const first = rows[0];
     const areaName = (saved.find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
     const projectName = (first.projectName || first.scheduleProjectName || '').trim();

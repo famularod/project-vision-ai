@@ -16,6 +16,7 @@ import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence'
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import {
   mergeApprovedScheduleImportItems,
+  scheduleImportPairingQuestions,
   scheduleItemsVisibleBeforeImport,
   scheduleProgressCarriedOnActivation,
   scheduleProgressCarriedToShownTasks,
@@ -435,5 +436,59 @@ describe('Review N1 web M1 (caused by ada8ef6, Q25): the web\'s delete of a repl
     const makeCurrent = provider.slice(provider.indexOf('const setCurrentSchedule = useCallback('));
     expect(makeCurrent.indexOf('if (scheduleDocumentAddsToMaster(document)) {')).toBeGreaterThan(0);
     expect(makeCurrent.indexOf('if (scheduleDocumentAddsToMaster(document)) {')).toBeLessThan(makeCurrent.indexOf('setAuthorizedCurrentSchedule'));
+  });
+});
+
+describe('Review N1 L5 (older, owner answer Q30): a lookahead row as near to one same-named task as to another is asked about', () => {
+  const M = schedule('MASTER M', '2026-09-07T12:00:00.000Z');
+  const LA = schedule('LOOKAHEAD la', '2026-09-14T12:00:00.000Z', 'lookahead');
+  const twins = approve(EMPTY, M, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,', 'Framing,Alpha,Lot,11/02/2026,11/06/2026,']);
+  const [first, second] = shown(twins).filter(item => item.taskName === 'Pour slab').sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const questions = (lines: string[]) => scheduleImportPairingQuestions({
+    existing: twins.items, imported: rows(LA, lines), overlay: true,
+    isCurrent: scheduleItemsVisibleBeforeImport(twins.items, [...twins.documents, LA], LA.importBatchId || ''),
+  });
+
+  it('three days after the first and three before the second: asked, the guess a new task', () => {
+    const asked = questions(['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,']);
+    expect(asked).toHaveLength(1);
+    expect(asked[0].title).toBe('2 tasks named Pour slab in Lot — confirm which is which');
+    expect(asked[0].saved.map(item => item.id)).toEqual([first.id, second.id]);
+    expect(Object.values(asked[0].guess)).toEqual([null]);
+  });
+
+  it('his answer decides: the second pour, moved a week earlier, with its percent', () => {
+    const started = patch(twins, second.id, { percentComplete: 40 }, '2026-09-10T12:00:00.000Z');
+    const row = rows(LA, ['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,'])[0];
+    const chosen = approve(started, LA, ['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,'], { [row.id]: second.id });
+    const pours = shown(chosen).filter(item => item.taskName === 'Pour slab').map(item => `${dates(item)} @${item.percentComplete}`).sort();
+    expect(pours).toEqual(['10/05/2026-10/09/2026 @0', '10/12/2026-10/16/2026 @40']);
+  });
+
+  it('two rows as near to the one saved task of the name: asked too', () => {
+    const single = approve(EMPTY, M, ['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,', 'Framing,Alpha,Lot,11/02/2026,11/06/2026,']);
+    const asked = scheduleImportPairingQuestions({
+      existing: single.items, imported: rows(LA, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,']), overlay: true,
+      isCurrent: scheduleItemsVisibleBeforeImport(single.items, [...single.documents, LA], LA.importBatchId || ''),
+    });
+    expect(asked.map(question => question.title)).toEqual(['2 tasks named Pour slab in Lot — confirm which is which']);
+    expect(Object.values(asked[0].guess)).toEqual([null, null]);
+  });
+
+  it('nearer to one of them: not asked, as before', () => {
+    expect(questions(['Pour slab,Alpha,Lot,10/11/2026,10/15/2026,'])).toEqual([]);
+    expect(questions(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,'])).toEqual([]);
+  });
+
+  it('a master listing as many as are saved pairs them in order, unasked, as before; its one row tied between two is asked about', () => {
+    const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+    const masterQuestions = (lines: string[]) => scheduleImportPairingQuestions({
+      existing: twins.items, imported: rows(G, lines),
+      isCurrent: scheduleItemsVisibleBeforeImport(twins.items, [...twins.documents, G], G.importBatchId || ''),
+    });
+    expect(masterQuestions(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,'])).toEqual([]);
+    const asked = masterQuestions(['Pour slab,Alpha,Lot,10/12/2026,10/16/2026,']);
+    expect(asked.map(question => question.title)).toEqual(['2 tasks named Pour slab in Lot — confirm which is which']);
+    expect(Object.values(asked[0].guess)).toEqual([null]);
   });
 });
