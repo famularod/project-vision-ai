@@ -318,3 +318,49 @@ describe('Review N1 L1 (caused by ada8ef6, Q25): the shown copy\'s marker is nev
     expect(noMarker(removed.map(revision => revision.item))).toEqual([]);
   });
 });
+
+describe('Review N1 M2 (caused by ada8ef6, Q25): a task only lookaheads listed comes back with his note and percent', () => {
+  const FRAMING = 'Framing,Alpha,Lot,10/16/2026,10/26/2026,';
+  const view = (state: State) => shown(state).filter(item => item.taskName === 'Inspection')
+    .map(item => `${dates(item)} @${item.percentComplete} "${item.notes}"`);
+  const wk1 = approve(onF, WK1, [FRAMING, 'Inspection,Alpha,Lot,10/20/2026,10/20/2026,']);
+  const inspectionId = one(wk1, 'Inspection').id;
+  const noted = patch(wk1, inspectionId, { notes: 'Call inspector Monday', percentComplete: 30 }, '2026-09-15T12:00:00.000Z');
+  // Week 2 leaves it out: off the list (owner answer Q25), nothing deleted.
+  const wk2 = approve(noted, WK2, [FRAMING]);
+
+  it('left out of one lookahead, it is off the list', () => {
+    expect(view(wk2)).toEqual([]);
+    expect(saved(wk2, inspectionId).notes).toBe('Call inspector Monday');
+  });
+
+  it('listed again on other dates: the same task, on the new dates, with his note and percent', () => {
+    const wk3 = approve(wk2, WK3, [FRAMING, 'Inspection,Alpha,Lot,10/27/2026,10/27/2026,']);
+    expect(view(wk3)).toEqual(['10/27/2026-10/27/2026 @30 "Call inspector Monday"']);
+    expect(one(wk3, 'Inspection').id).toBe(inspectionId);
+    expect(wk3.items.filter(item => item.taskName === 'Inspection')).toHaveLength(1);
+  });
+
+  it('the returning file\'s percent stands only above his (Q22)', () => {
+    expect(view(approve(wk2, WK3, [FRAMING, 'Inspection,Alpha,Lot,10/27/2026,10/27/2026,10']))).toEqual(['10/27/2026-10/27/2026 @30 "Call inspector Monday"']);
+    expect(view(approve(wk2, WK3, [FRAMING, 'Inspection,Alpha,Lot,10/27/2026,10/27/2026,60']))).toEqual(['10/27/2026-10/27/2026 @60 "Call inspector Monday"']);
+  });
+
+  it('a master that lists it next keeps his note and percent too', () => {
+    const G = schedule('MASTER G', '2026-09-28T12:00:00.000Z');
+    const onG = approve(wk2, G, ['Framing,Alpha,Lot,10/15/2026,10/25/2026,', 'Roof,Alpha,Lot,11/02/2026,11/06/2026,', 'Inspection,Alpha,Lot,10/27/2026,10/27/2026,']);
+    expect(view(onG)).toEqual(['10/27/2026-10/27/2026 @30 "Call inspector Monday"']);
+  });
+
+  it('two such tasks of the name off the list: the one nearest in days', () => {
+    const second = approve(wk2, WK3, [FRAMING, 'Inspection,Alpha,Lot,11/10/2026,11/10/2026,']); // the first one, back
+    const WK4 = schedule('LOOKAHEAD wk4', '2026-10-05T12:00:00.000Z', 'lookahead');
+    const WK5 = schedule('LOOKAHEAD wk5', '2026-10-12T12:00:00.000Z', 'lookahead');
+    // A second Inspection row saved by an older build's return (0%, no note), both off the list after week 4.
+    const twoSaved: State = { ...second, items: [...second.items, { ...saved(second, inspectionId), id: 'older-return', startDate: '10/21/2026', finishDate: '10/21/2026', percentComplete: 0, notes: '', lookaheadOverlay: undefined } as ScheduleItem] };
+    const off = approve(twoSaved, WK4, [FRAMING]);
+    expect(view(off)).toEqual([]);
+    const back = approve(off, WK5, [FRAMING, 'Inspection,Alpha,Lot,11/12/2026,11/12/2026,']);
+    expect(view(back)).toEqual(['11/12/2026-11/12/2026 @30 "Call inspector Monday"']);
+  });
+});

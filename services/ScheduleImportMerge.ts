@@ -607,6 +607,15 @@ function revisionGroups(
     const eligible = existing.filter(item => isCurrent(item) || inImport(item, rows[0].importBatchId));
     const strict = eligible.filter(item => sameTask(item, rows[0]));
     const saved = lookahead ? eligible.filter(item => sameTask(item, rows[0], true)) : strict;
+    // Review N1 M2 (3 Oct 2026, caused by ada8ef6): a task only lookaheads listed leaves the list when a newer
+    // lookahead leaves it out (owner answer Q25). Listed again by a later file, on any dates, it is that task again,
+    // with David's note and percent, as it was while every lookahead stayed in effect; only when no task he sees
+    // has the name, and never for the tasks Set Active and Make Current show.
+    if (inFile && saved.length === 0) {
+      const returning = existing.filter(item => item.importedAsLookahead === true && sameTask(item, rows[0], lookahead));
+      const returningStrict = returning.filter(item => sameTask(item, rows[0]));
+      return { rows, saved: returning, vague: returning.length !== returningStrict.length };
+    }
     // A lookahead row matched only loosely pairs with the one task it can be, never with either of two.
     return { rows, saved, vague: saved.length !== strict.length };
   });
