@@ -1972,8 +1972,9 @@ describe('Schedule review N1 M3: his own percent reaches the cloud as his, and a
     expect([stated(deviceShown(phone)), stated(deviceShown(ipad)), stated(webShown())]).toEqual(Array(3).fill([[85, 'David']])); // was 20% by "Schedule update"
   });
 
-  it('an edit of a row a newer master has since replaced goes as before: the percent alone', async () => {
+  it('on a row a newer master has since replaced too: his 85% follows to the task\'s newest row as his, and the next lookahead leaves it', async () => {
     const { phone, ipad } = await start();
+    const all = async () => { await fullSync(phone); await fullSync(ipad); await fullSync(phone); };
     const oldId = theRow(phone).id;
     at('2026-09-08T12:00:00.000Z');
     await edit(phone, oldId, { percentComplete: 15 }); // his own 15%
@@ -1991,7 +1992,13 @@ describe('Schedule review N1 M3: his own percent reaches the cloud as his, and a
     await typed(ipad, oldId, { percentComplete: 85 }); // on the iPad, which has heard of neither
     setOnline(ipad, true);
     await backgroundUpload(ipad);
-    expect(cloudRow(oldId)).toMatchObject({ percentComplete: 85, progressConfirmedBy: 'Schedule update' }); // as at 8ad6771
+    expect(cloudRow(oldId)).toMatchObject({ percentComplete: 85, progressConfirmedBy: 'David' }); // was 85% by "Schedule update"
+    await all();
+    expect([stated(deviceShown(phone)), stated(deviceShown(ipad)), stated(webShown())]).toEqual(Array(3).fill([[85, 'David']]));
+    at('2026-09-16T12:00:00.000Z');
+    await approve(phone, lookahead('LOOKAHEAD wk2', new Date().toISOString()), [row('10/21/2026', '10/31/2026', '20')], true); // next week's file says 20%
+    shareDocuments(phone); await backgroundUpload(phone); await all();
+    expect([stated(deviceShown(phone)), stated(deviceShown(ipad)), stated(webShown())]).toEqual(Array(3).fill([[85, 'David']])); // was 20% by "Schedule update"
   });
 
   it('his own percent names the whole of the progress over a file\'s percent with his earlier one under it; any other edit names its own fields', () => {

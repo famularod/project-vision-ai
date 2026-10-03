@@ -88,7 +88,7 @@ import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository'
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
-import { scheduleItemAnsweringToTaskId, scheduleTaskEarlierIds, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { scheduleItemAnsweringToTaskId, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -6298,12 +6298,8 @@ async function uploadQueueItem(
     }
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
-    // On the row the task lives on: a row a newer master has replaced goes as before.
-    const withOwnProgress = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
-    const changedFields = withOwnProgress && queuedFields && withOwnProgress.length > queuedFields.length &&
-      [...context.scheduleItemsById.values()].some(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id))
-      ? queuedFields
-      : withOwnProgress;
+    // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
+    const changedFields = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
     // Owner answer Q28 (2 Oct 2026): an edit that keeps the copy it started from is weighed field by field against the
     // cloud's row. A field only this device changed goes up; a field another device changed and this one left as it was
     // stays the cloud's; one changed on both to different values is asked about in Review Conflicts, while the edit's
