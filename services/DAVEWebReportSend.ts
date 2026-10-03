@@ -47,7 +47,7 @@ export const DAVE_WEB_NO_KEYCHAIN: SenderIdKeychain = Object.freeze({
   write: async () => undefined,
 });
 
-type BrowserStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+type BrowserStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'key' | 'length'>>;
 
 function browserLocalStorage(): BrowserStorage | null {
   try {
@@ -60,6 +60,64 @@ function browserLocalStorage(): BrowserStorage | null {
 const WEB_PREFIX = '@vitruvius/web';
 /** When this tab cannot keep site data, its periods last as long as the tab. */
 const tabOnly = new Map<string, string>();
+/** The profile storages this tab keeps periods in, and the keys it wrote to each (for one that cannot list its keys). */
+const profileStorages = new Map<BrowserStorage, Set<string>>();
+
+function accountPrefix(ownerId: string): string {
+  return `${WEB_PREFIX}/${encodeURIComponent(ownerId)}/`;
+}
+
+function storedKeys(local: BrowserStorage, written: ReadonlySet<string>): string[] {
+  try {
+    if (typeof local.key === 'function' && typeof local.length === 'number') {
+      const keys: string[] = [];
+      for (let index = 0; index < local.length; index += 1) {
+        const key = local.key(index);
+        if (typeof key === 'string') keys.push(key);
+      }
+      return keys;
+    }
+  } catch {
+    // Its keys cannot be listed: the ones this tab wrote, below.
+  }
+  return [...written];
+}
+
+/**
+ * Review N1 (2 Oct 2026): "Sign Out of This Computer" left the account's
+ * report periods in this browser profile's storage: the last sent report
+ * and any approval, with project, task and owner names, readable through
+ * the browser's developer tools by whoever uses the computer next. Signing
+ * out now removes that account's periods and own-send list from this
+ * browser (profile storage, and this tab's own copies). Another account's
+ * are not touched, and the profile's sender id stays: it names this browser,
+ * never an account, so this browser's earlier sends are still known as its
+ * own when the period is read from the shared table again (owner answer
+ * Q16). Without that table the account's period on this computer is gone:
+ * its next report has no "since the last report" section until one is sent
+ * from here again, and an approval not yet sent has to be approved again.
+ */
+export function forgetDAVEWebReportPeriods(ownerId: string): void {
+  const prefix = accountPrefix(ownerId);
+  const profile = browserLocalStorage();
+  if (profile && !profileStorages.has(profile)) profileStorages.set(profile, new Set());
+  for (const [local, written] of profileStorages) {
+    for (const key of storedKeys(local, written)) {
+      if (!key.startsWith(prefix)) continue;
+      try {
+        local.removeItem(key);
+      } catch {
+        // A storage that cannot be reached holds nothing this browser can read back either.
+      }
+      written.delete(key);
+    }
+  }
+  for (const key of [...tabOnly.keys()]) {
+    if (key.startsWith(prefix)) tabOnly.delete(key);
+  }
+  // The signed-out account's send times are no other account's own sends.
+  ownSends.clear();
+}
 
 /**
  * This browser profile's storage for report periods: each account's own
@@ -70,7 +128,8 @@ export function daveWebReportStorage(
   ownerId: () => Promise<string>,
   local: BrowserStorage | null = browserLocalStorage(),
 ): SnapshotStorage {
-  const keyFor = async (key: string) => (key === REPORT_SENDER_ID_KEY ? key : `${WEB_PREFIX}/${encodeURIComponent(await ownerId())}/${key}`);
+  const keyFor = async (key: string) => (key === REPORT_SENDER_ID_KEY ? key : `${accountPrefix(await ownerId())}${key}`);
+  if (local && !profileStorages.has(local)) profileStorages.set(local, new Set());
   const read = (key: string) => {
     try {
       return local ? local.getItem(key) : tabOnly.get(key) ?? null;
@@ -83,6 +142,8 @@ export function daveWebReportStorage(
       if (!local) throw new Error('no profile storage');
       if (value === null) local.removeItem(key);
       else local.setItem(key, value);
+      if (value === null) profileStorages.get(local)?.delete(key);
+      else profileStorages.get(local)?.add(key);
     } catch {
       if (value === null) tabOnly.delete(key);
       else tabOnly.set(key, value);
@@ -222,6 +283,13 @@ export async function approveDAVEWebReportPeriod(
   if (later) return { status: 'later_send', later };
   const toSave = reportSnapshotToSave(current, loaded.snapshot);
   if (toSave) await saveDAVEReportSnapshot(toSave, store.storage, store.cloud);
+  else if (loaded.snapshot?.deliveredAt === null && !await reportApprovalSavedHere(loaded.snapshot, store.storage).catch(() => true)) {
+    // The same report is already the approval waiting in the shared period, and this computer holds no
+    // copy of it (it was approved here before Sign Out of This Computer removed this account's copy, or
+    // on another device): approved here now, this computer keeps it, so its send from here is recorded
+    // (review N1).
+    await saveDAVEReportSnapshot(loaded.snapshot, store.storage, store.cloud);
+  }
   return { status: 'saved', snapshot: toSave ?? loaded.snapshot };
 }
 

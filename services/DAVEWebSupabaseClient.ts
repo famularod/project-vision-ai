@@ -40,6 +40,7 @@ import {
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
 import { createFieldNoteCloudGateway } from './FieldNoteCloudGateway';
+import { forgetDAVEWebReportPeriods } from './DAVEWebReportSend';
 
 export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
 export const DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS = 5 * 60_000;
@@ -500,12 +501,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     /** This computer only unless 'global' is asked for (owner answer Q21). */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
+      const userId = browserTabSignInUserId();
       const { error } = await client.auth.signOut({ scope });
       if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
         throw new DAVEWebSignOutNeedsConnectionError();
       }
       if (error) throw new Error('The desktop session could not be closed.');
       forgetSignedInReads();
+      // The account's report periods leave this browser with its sign-in (review N1).
+      if (userId) forgetDAVEWebReportPeriods(userId);
     },
 
     /**
@@ -575,6 +579,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (anotherSignIn) return 'kept';
       if (stored) forgetBrowserTabSignIn();
       forgetSignedInReads();
+      // This tab's own copies of that account's report periods go too (review N1).
+      forgetDAVEWebReportPeriods(userId);
       return 'ended';
     },
 

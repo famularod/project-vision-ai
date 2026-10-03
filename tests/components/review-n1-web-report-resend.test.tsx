@@ -15,6 +15,7 @@ import {
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
   forgetDAVEWebOwnReportSends,
+  forgetDAVEWebReportPeriods,
   recordDAVEWebReportSend,
 } from '../../services/DAVEWebReportSend';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
@@ -119,6 +120,9 @@ beforeEach(() => {
     getItem: (key: string) => profile.get(key) ?? null,
     setItem: (key: string, value: string) => { profile.set(key, value); },
     removeItem: (key: string) => { profile.delete(key); },
+    // A browser's storage lists its keys.
+    key: (index: number) => [...profile.keys()][index] ?? null,
+    get length() { return profile.size; },
   };
   forgetDAVEWebOwnReportSends();
   forgetDAVEWebReportPeriodSession();
@@ -394,5 +398,74 @@ describe('review N1 M2: an approved report this computer sent can be shared agai
     await settle();
     expect(screen.getAllByText(/^Your other device sent a report .*, after this one was approved, so its "since the last report" section is out of date\. Regenerate it from current facts, then approve\.$/).length).toBeGreaterThan(0);
     expect(copied()).not.toHaveBeenCalled();
+  });
+});
+
+describe('review N1 (Low): after Sign Out of This Computer removed the account\'s report periods, the next sign-in rebuilds them', () => {
+  /** Sign Out of This Computer, as the gateway does it for the signed-in account; then a new visit after signing in again. */
+  function signOutThenSignInAgain() {
+    forgetDAVEWebReportPeriods('owner-1');
+    forgetDAVEWebReportPeriodSession();
+    expect([...profile.keys()].filter(key => key.startsWith('@vitruvius/web/owner-1/'))).toEqual([]);
+    expect([...profile.values()].join('\n')).not.toMatch(/Frame walls|Tower|Dana/);
+  }
+  const NONE_SENT_HERE = /^Reports aren't shared between your devices yet, and none was sent from this computer/;
+
+  it('with the shared table: the period is read back from it, and this computer\'s earlier send is still its own', async () => {
+    table = PHONE_AT_10();
+    const visit = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(/^Recorded as sent /);
+    await settle();
+    const sentAt = sharedSnapshot()?.deliveredAt as string;
+    visit.unmount();
+    signOutThenSignInAgain();
+
+    mockAuth.refreshSnapshot.mockClear();
+    render(<DesktopReadOnlyShell page="reports" />);
+    await settle();
+    // The report this computer sent reads as it did before the sign-out, and it never waits for a download of its own send.
+    expect(since().getByText('Tower: Frame walls was completed.')).toBeTruthy();
+    expect(screen.queryByText(/^Not counted yet/)).toBeNull();
+    expect(screen.queryByText(NONE_SENT_HERE)).toBeNull();
+    expect(mockAuth.refreshSnapshot).not.toHaveBeenCalled();
+    // Known as its own by this browser's sender id, and on the account's own-send list again.
+    expect(ownSendTimes()).toEqual([sentAt]);
+  });
+
+  it('with the shared table: an approval that was waiting is approved again here, and then its send is recorded', async () => {
+    table = PHONE_AT_10();
+    const visit = render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    expect(sharedSnapshot()?.deliveredAt).toBeNull();
+    visit.unmount();
+    signOutThenSignInAgain();
+
+    render(<DesktopReadOnlyShell page="reports" />);
+    await approveOnWeb();
+    // This computer keeps the approval again: Mark as Sent is offered, and Share records the send.
+    expect(await screen.findByLabelText('Mark as Sent')).toBeTruthy();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(/^Recorded as sent .*\. The next report on every device runs from this one\.$/)).toBeTruthy();
+    expect(typeof sharedSnapshot()?.deliveredAt).toBe('string');
+  });
+
+  it('without the shared table: the account\'s period on this computer is gone, and the page says none was sent from here', async () => {
+    table = 'missing';
+    const visit = render(<DesktopReadOnlyShell page="reports" />);
+    fireEvent.press(await screen.findByText('Review & Prepare Report'));
+    fireEvent.press(screen.getByText('Approve Report'));
+    await screen.findByText('Share Approved Report');
+    await settle();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    await screen.findByText(/^Recorded as sent /);
+    await settle();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, /)).toBeTruthy();
+    visit.unmount();
+    signOutThenSignInAgain();
+
+    render(<DesktopReadOnlyShell page="reports" />);
+    expect(await screen.findByText(NONE_SENT_HERE)).toBeTruthy();
   });
 });
