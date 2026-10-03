@@ -9,7 +9,7 @@ import { DAVEVoiceCaptureSheet } from '../../components/DAVEVoiceCaptureSheet';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
 import { createCaptureMemory, type DAVECaptureMemory } from '../../services/DAVECaptureMemory';
 import type { DAVEProjectWalkContext } from '../../services/DAVEProjectWalk';
-import { daveVoiceWaitingForSignalError } from '../../services/DAVEVoiceSignalWait';
+import { daveVoiceFailureMessage, daveVoiceWaitingForSignalError } from '../../services/DAVEVoiceSignalWait';
 import {
   keepVoiceRecording,
   keptVoiceRecordingExists,
@@ -336,6 +336,7 @@ describe('review N1 M1: a kept recording is only removed by Use, Discard or Reco
   });
 
   it('a recording kept twice while its first keep is under way is kept once', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
     openSheet({ keepSlot: 'ask' });
     await record();
     let finishCopy: () => void = () => undefined;
@@ -344,15 +345,21 @@ describe('review N1 M1: a kept recording is only removed by Use, Discard or Reco
       mockFiles.add(to);
     });
     transcription.transcribeDAVECaptureMemoryAudio
-      .mockRejectedValueOnce(daveVoiceWaitingForSignalError())
+      .mockImplementationOnce(() => new Promise(() => undefined))
       .mockRejectedValueOnce(daveVoiceWaitingForSignalError());
+    // "Keep Recording for Later" starts the keep; Continue then fails with no signal and keeps again.
     fireEvent.press(screen.getByText('Continue'));
-    expect(await screen.findByText(KEPT_NO_SIGNAL)).toBeTruthy();
+    expect(await screen.findByText('Preparing…')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Cancel memory capture'));
+    const buttons = alert.mock.calls[alert.mock.calls.length - 1][2] ?? [];
+    act(() => { buttons.find(button => button.text === 'Keep Recording for Later')?.onPress?.(); });
     fireEvent.press(screen.getByText('Continue'));
     await waitFor(() => expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenCalledTimes(2));
     await act(async () => { finishCopy(); await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(await screen.findByText(KEPT_NO_SIGNAL)).toBeTruthy();
     expect(keptFiles()).toHaveLength(1);
     expect(entryKeys()).toHaveLength(1);
+    alert.mockRestore();
   });
 });
 
@@ -571,5 +578,71 @@ describe('review N1 L3: a Project Walk memory brought back from the device keeps
     expect(live.evidence.filter(evidence => evidence.kind === 'location_record')).toEqual([
       expect.objectContaining({ sourceRecordId: 'area-roof' }),
     ]);
+  });
+});
+
+describe('review N1 L4: an upload that fails for want of signal says the recording is kept', () => {
+  const OFFLINE = 'This device is offline. Reconnect, then retry this recording or type instead. (VOICE-OFFLINE)';
+
+  it.each([
+    [OFFLINE, 'This device is offline. Reconnect, then retry this recording or type instead. Your recording is kept on this device. (VOICE-OFFLINE)'],
+    ['The voice upload timed out. Retry this recording or type instead. (VOICE-TIMEOUT)', 'The voice upload timed out. Retry this recording or type instead. Your recording is kept on this device. (VOICE-TIMEOUT)'],
+    ['The connection was interrupted while uploading. Retry this recording or type instead. (VOICE-CONNECTION)', 'The connection was interrupted while uploading. Retry this recording or type instead. Your recording is kept on this device. (VOICE-CONNECTION)'],
+    ['Could not reach voice transcription. Check the connection and try again.', 'Could not reach voice transcription. Check the connection and try again. Your recording is kept on this device.'],
+  ])('%s', async (failure, shown) => {
+    openSheet({ keepSlot: 'field-note' });
+    await record();
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(new Error(failure));
+    fireEvent.press(screen.getByText('Continue'));
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(keptFiles()).toHaveLength(1);
+    expect(entryKeys()).toHaveLength(1);
+  });
+
+  it('a recording that could not be kept on the device is not called kept on it', async () => {
+    openSheet({ keepSlot: 'field-note' });
+    await record();
+    fileSystem.copyAsync.mockRejectedValueOnce(new Error('No space left on device.'));
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(new Error(OFFLINE));
+    fireEvent.press(screen.getByText('Continue'));
+    expect(await screen.findByText(OFFLINE)).toBeTruthy();
+    expect(keptFiles()).toHaveLength(0);
+
+    fileSystem.copyAsync.mockRejectedValueOnce(new Error('No space left on device.'));
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
+    fireEvent.press(screen.getByText('Continue'));
+    expect(await screen.findByText('No signal. Your recording is kept while Vitruvius stays open — tap Continue when you have signal.')).toBeTruthy();
+    expect(keptFiles()).toHaveLength(0);
+    expect(entryKeys()).toHaveLength(0);
+  });
+
+  it('a sheet that keeps nothing on the device says what it said', async () => {
+    closeApp();
+    view = render(
+      <DAVEVoiceCaptureSheet
+        visible
+        projectId={PROJECT_ID}
+        projectName="Canopy Project"
+        candidateLocations={[]}
+        continueLabel="Continue"
+        onMemoryReady={jest.fn()}
+        onTypeInstead={jest.fn()}
+        onCancel={jest.fn()}
+      />,
+    );
+    await record();
+    transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(new Error(OFFLINE));
+    fireEvent.press(screen.getByText('Continue'));
+    expect(await screen.findByText(OFFLINE)).toBeTruthy();
+    expect(keptFiles()).toHaveLength(0);
+  });
+
+  it('the message keeps its code last, and one with no code has the sentence added', () => {
+    expect(daveVoiceFailureMessage(new Error(OFFLINE), 'Use Note', true))
+      .toBe('This device is offline. Reconnect, then retry this recording or type instead. Your recording is kept on this device. (VOICE-OFFLINE)');
+    expect(daveVoiceFailureMessage(new Error(OFFLINE), 'Use Note')).toBe(OFFLINE);
+    expect(daveVoiceFailureMessage(new Error('Something else.'), 'Use Note', true)).toBe('Something else. Your recording is kept on this device.');
+    expect(daveVoiceFailureMessage(daveVoiceWaitingForSignalError(), 'Use Note', true))
+      .toBe('No signal. Your recording is kept on this device — tap Use Note when you have signal. If Vitruvius closes, it is tried again the next time you open this.');
   });
 });

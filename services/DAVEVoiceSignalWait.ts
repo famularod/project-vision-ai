@@ -16,10 +16,13 @@ export function daveVoiceWaitingForSignalError(): Error {
   return error;
 }
 
+export const DAVE_VOICE_KEPT_ON_DEVICE = 'Your recording is kept on this device.';
+
 /**
  * What the voice sheet shows for a failure, naming its own retry button.
- * `keptOnDevice`: the sheet keeps the recording on this device past a
- * closed app (everyday item 4); otherwise it is kept in the sheet only.
+ * `keptOnDevice`: the sheet has kept the recording on this device past a
+ * closed app (everyday item 4), and the message says so; otherwise it is
+ * kept in the sheet only.
  */
 export function daveVoiceFailureMessage(reason: unknown, retryLabel: string, keptOnDevice = false): string {
   if (reason instanceof Error && reason.name === WAITING_FOR_SIGNAL) {
@@ -30,7 +33,15 @@ export function daveVoiceFailureMessage(reason: unknown, retryLabel: string, kep
     // Kept in this sheet only: iOS closing the app loses it (A11 pass 6 L2).
     return `No signal. Your recording is kept while Vitruvius stays open — tap ${retryLabel} when you have signal.`;
   }
-  return reason instanceof Error ? reason.message : 'The recording could not be transcribed.';
+  const message = reason instanceof Error ? reason.message : 'The recording could not be transcribed.';
+  if (!keptOnDevice) return message;
+  // Review N1 L4: the upload's own offline, connection and time-out messages
+  // kept the recording on the device too and did not say so. Said before the
+  // message's code, which stays last.
+  const code = /\s*(\(VOICE-[A-Z]+\))$/.exec(message);
+  return code
+    ? `${message.slice(0, code.index)} ${DAVE_VOICE_KEPT_ON_DEVICE} ${code[1]}`
+    : `${message} ${DAVE_VOICE_KEPT_ON_DEVICE}`;
 }
 
 /**

@@ -170,7 +170,7 @@ export function DAVEVoiceCaptureSheet({
   // Review N1 M1: which recording a keep under way is for. Use, Discard and
   // Record Again move it on, so that keep is undone when it lands.
   const keepEpochRef = useRef(0);
-  const keepUnderWayRef = useRef<Promise<void> | null>(null);
+  const keepUnderWayRef = useRef<Promise<boolean> | null>(null);
   const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
   // Review N1 L3: when this recording was dictated and the walk's area then;
   // `restored` when it was brought back from the device.
@@ -383,16 +383,20 @@ export function DAVEVoiceCaptureSheet({
     else onMemoryReady(result);
   }
 
-  /** Keeps this recording on the device past a closed app (everyday item 4); the sheet keeps using its own copy. */
-  function keepRecordingOnDevice(uri: string, duration: number): Promise<void> {
-    if (!keptOwner || !keepSlot) return Promise.resolve();
-    if (keptCopyRef.current) return Promise.resolve();
+  /**
+   * Keeps this recording on the device past a closed app (everyday item 4);
+   * the sheet keeps using its own copy. Answers whether it is kept: what the
+   * sheet then says is only what happened (review N1 L4).
+   */
+  function keepRecordingOnDevice(uri: string, duration: number): Promise<boolean> {
+    if (!keptOwner || !keepSlot) return Promise.resolve(false);
+    if (keptCopyRef.current) return Promise.resolve(true);
     // One keep for one recording: a second copy would stay kept after the first was used.
     if (keepUnderWayRef.current) return keepUnderWayRef.current;
     const owner = keptOwner;
     const slot = keepSlot;
     const epoch = keepEpochRef.current;
-    const keep: Promise<void> = (async () => {
+    const keep: Promise<boolean> = (async () => {
       try {
         const { forgetKeptVoiceRecording, keepVoiceRecording } = keptVoiceRecordings();
         // Where the walk had him when he finished speaking; when that was not known yet, where it has him now.
@@ -406,10 +410,15 @@ export function DAVEVoiceCaptureSheet({
           walkArea: capture?.restored ? capture.walkArea : capture?.walkArea ?? walkContext?.recommendedArea ?? null,
         });
         // Discarded, used or recorded again meanwhile: this copy does not stay kept.
-        if (epoch !== keepEpochRef.current) await forgetKeptVoiceRecording(owner, slot, kept);
-        else keptCopyRef.current = kept;
+        if (epoch !== keepEpochRef.current) {
+          await forgetKeptVoiceRecording(owner, slot, kept);
+          return false;
+        }
+        keptCopyRef.current = kept;
+        return true;
       } catch {
         // Kept in this sheet only, as before.
+        return false;
       }
     })().finally(() => {
       if (keepUnderWayRef.current === keep) keepUnderWayRef.current = null;
@@ -508,9 +517,12 @@ export function DAVEVoiceCaptureSheet({
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
       // Waiting for signal: kept on this device past a closed app when this sheet keeps it (everyday item 4).
+      // The message says so once it is, for the upload's own offline, connection and time-out
+      // failures too (review N1 L4); a recording that could not be kept is not called kept.
       const waiting = keepsOnDevice && daveVoiceFailureIsWaitingForSignal(reason);
-      if (waiting) void keepRecordingOnDevice(uri, duration);
-      setError(daveVoiceFailureMessage(reason, continueLabel, waiting));
+      const kept = waiting && await keepRecordingOnDevice(uri, duration);
+      if (operation !== transcriptionOperationRef.current) return;
+      setError(daveVoiceFailureMessage(reason, continueLabel, kept));
     } finally {
       if (operation === transcriptionOperationRef.current) {
         preparingOperationRef.current = null;
