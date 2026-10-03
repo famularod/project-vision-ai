@@ -364,6 +364,15 @@ function scheduleTaskNow(items: readonly ScheduleItem[], taskId: string, shown?:
  * still holds what Talk wrote; otherwise nothing changes, and David is told
  * why. The lookahead note is given back only to the row Talk changed: a moved
  * row keeps the note the master gave it.
+ *
+ * Review N1 (2 Oct 2026): the note is no longer given back at all. Talk's
+ * change never alters it, so the note before Talk differs from the task's
+ * only when the device heard of a lookahead in between: its copy held no
+ * note when Talk ran, the upload of Talk's percent brought the cloud's row
+ * back with the lookahead's dates and note, and the Undo then sent "no note"
+ * over the cloud's. The task stayed on the lookahead's dates on every device
+ * with nothing left saying which master dates it had, so a newer lookahead
+ * or its delete could not give them back. The task keeps the note it has.
  */
 export function scheduleTalkUndo(
   items: readonly ScheduleItem[],
@@ -377,8 +386,8 @@ export function scheduleTalkUndo(
   const now = scheduleTaskNow(items, task.id, shown);
   const holds = now && WRITTEN_FIELDS.every(field => (now[field] ?? null) === (written[field] ?? null));
   if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
-  const { lookaheadOverlay, ...restored } = scheduleProgressRestored(before, at);
+  const { lookaheadOverlay: _noteBeforeTalk, ...restored } = scheduleProgressRestored(before, at);
   // The entry the Undo takes back, so a copy or a floor still holding it is not his word (A5 pass 26 L1).
   const edit = { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } };
-  return { ok: true, taskId: now.id, edit: now.id === task.id ? { ...edit, lookaheadOverlay } : edit };
+  return { ok: true, taskId: now.id, edit };
 }

@@ -25,6 +25,7 @@ import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressIn
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleDatesShownUnderReplacedLookahead, scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
+import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -588,5 +589,43 @@ describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF O
     const saves = handler.indexOf('fileOnly: true }).forEach(item => updateScheduleItem(item.id, { startDate: item.startDate, finishDate: item.finishDate }))');
     expect(saves).toBeGreaterThan(0);
     expect(saves).toBeLessThan(handler.indexOf('removeReferenceDocumentEverywhere('));
+  });
+});
+
+describe('Review N1 (older; shown by ada8ef6, Q25): Talk\'s Undo keeps the lookahead note the task has', () => {
+  // The phone had not heard of week 1 when David used Talk: its copy of Framing had no lookahead note.
+  const stale = saved(onF, framingId);
+  const before = scheduleProgressUndoPoint(stale);
+  // Talk's 30% uploaded: the phone's row came back as the cloud's, on week 1's dates with its note.
+  const talked = patch(onWk1, framingId, { percentComplete: 30 }, '2026-09-15T12:00:00.000Z');
+  const written = scheduleProgressUndoPoint(saved(talked, framingId));
+  const note = saved(onWk1, framingId).lookaheadOverlay;
+
+  it('the task holds week 1\'s note when he taps Undo; the phone\'s copy before Talk had none', () => {
+    expect(before.lookaheadOverlay).toBeUndefined();
+    expect(note?.lookaheads.map(entry => entry.batchId)).toEqual([WK1.importBatchId]);
+    expect(saved(talked, framingId).lookaheadOverlay).toEqual(note);
+  });
+
+  it('Undo gives the percent back and leaves the note: saved and sent with it', () => {
+    const undo = scheduleTalkUndo(talked.items, { id: framingId, taskName: 'Framing' }, before, written, '2026-09-15T12:00:30.000Z');
+    expect(undo.ok).toBe(true);
+    if (!undo.ok) return;
+    expect('lookaheadOverlay' in undo.edit).toBe(false);
+    const { saved: row, sent } = phoneUpdate(talked, undo.taskId, undo.edit, true);
+    expect(row.percentComplete).toBe(0);
+    expect(row.lookaheadOverlay).toEqual(note);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].lookaheadOverlay).toEqual(note);
+    // Week 2 replaces week 1: the task goes back to the master's dates, which only the note keeps.
+    const undone: State = { ...talked, items: talked.items.map(item => item.id === framingId ? row : item) };
+    const next = approve(undone, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,']);
+    expect(dates(one(next, 'Framing'))).toBe('10/15/2026-10/25/2026');
+  });
+
+  it('the row Talk changed with its note unchanged keeps it too, as before', () => {
+    const point = scheduleProgressUndoPoint(saved(onWk1, framingId));
+    const undo = scheduleTalkUndo(talked.items, { id: framingId, taskName: 'Framing' }, point, written, '2026-09-15T12:00:30.000Z');
+    expect(undo.ok && phoneUpdate(talked, framingId, undo.edit, true).saved.lookaheadOverlay).toEqual(note);
   });
 });
