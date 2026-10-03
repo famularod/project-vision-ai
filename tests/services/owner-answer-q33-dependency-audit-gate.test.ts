@@ -65,7 +65,8 @@ describe('owner answer Q33: the node-forge advisory in Expo\'s build tool', () =
 
   it('ends after its review date', () => {
     const result = evaluateDependencyAudit(todaysReport(), new Date('2026-11-02T12:00:00Z'));
-    expect(result.expired).toHaveLength(1);
+    // Q35's braces exception shares the review date (owner answer Q35, 2 Oct 2026).
+    expect(result.expired.map(exception => exception.advisory)).toContain('GHSA-86w9-cpqp-85rv');
     expect(result.unexcused).toHaveLength(5);
   });
 
