@@ -57,7 +57,7 @@ import {
 } from './DAVEScheduleRecovery';
 import { SCHEDULE_CARRIED_PROGRESS_FIELDS } from './ScheduleProgressSource';
 import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from './ScheduleItemQueueRevision';
-import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
+import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
   isEditBase, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemEditBasesMerged, scheduleItemLaterPercentInCloud, scheduleItemWholeCopyAgainstCloud,
@@ -2866,11 +2866,12 @@ async function settledFieldUpdateBaseFor(copy: ProjectUpdate): Promise<FieldUpda
  * answer Q28): the one its queued whole copy has (none for a copy queued by
  * Build 229 or earlier), else the copy David opened, for an edit.
  */
-function fieldUpdateBaseKept(existing: SyncQueueItem | undefined, opened?: FieldUpdateEditBase): FieldUpdateEditBase | undefined {
+function fieldUpdateBaseKept(existing: SyncQueueItem | undefined, opened: FieldUpdateEditBase | undefined, newer: unknown): FieldUpdateEditBase | undefined {
   const payload = existing && existing.entity === 'project_update' && existing.operation !== 'delete'
     ? existing.payload as Partial<ProjectUpdateRecordPayload> : undefined;
   const wholeCopy = Boolean(payload && !payload.archiveOnly && payload.updateData && !queuedFieldUpdateDocumentPatches(existing));
-  if (wholeCopy) return isFieldUpdateEditBase(payload!.base) ? payload!.base : undefined;
+  // With what the queued copy held, where the newer one changes it again: an upload of it may have landed (review N1 finding 4).
+  if (wholeCopy) return isFieldUpdateEditBase(payload!.base) ? fieldUpdateEditBaseKeepingOwn(payload!.base, payload!.updateData, newer) : undefined;
   return opened;
 }
 
@@ -2903,7 +2904,7 @@ async function persistProjectUpdateRecord<TUpdate extends {
     changedAt: new Date().toISOString(),
     autoUpload,
     withExisting: (existing, queued) => {
-      const base = fieldUpdateBaseKept(existing, opened);
+      const base = fieldUpdateBaseKept(existing, opened, update);
       return base ? { ...queued, payload: { ...(queued.payload as ProjectUpdateRecordPayload<TUpdate>), base } } : queued;
     },
   });
@@ -2973,7 +2974,7 @@ async function writeStagedProjectUpdateRecord(
     // the cloud's copy as this device last had it, and starts from that: Sync Now on a device that had not heard the
     // iPad's newer copy sent the card whole over it, the iPad's photo and note gone. Any other card starts none.
     const base = overConflict ? undefined
-      : existing ? fieldUpdateBaseKept(existing)
+      : existing ? fieldUpdateBaseKept(existing, undefined, copy)
         : settled ?? (copy.status === 'sent' ? fieldUpdateEditBaseOf(copy, now) : undefined);
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }

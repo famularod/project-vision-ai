@@ -79,6 +79,8 @@ const mockCloud = {
   writes: [] as string[],
   events: [] as Array<{ id: string; row: unknown }>,
   offline: new Set<string>(),
+  /** Writes that reach the cloud while their answer does not come back (weak signal): how many more. */
+  lostAnswers: 0,
 };
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
@@ -124,6 +126,7 @@ jest.mock('../../services/SupabaseService', () => {
       if (!mockOnline()) return mockDown();
       mockCloud.updates.set(params.id, { updatedAt: params.updatedAt, updateData: mockCopy({ ...params.updateData, projectId: params.projectId }) });
       mockCloud.writes.push(`${mockDevice}:update:${params.id}`);
+      if (mockCloud.lostAnswers > 0) { mockCloud.lostAnswers -= 1; return mockDown(); }
       return mockOk({ id: params.id, updateData: params.updateData });
     },
     archiveProjectUpdate: async () => (mockOnline() ? mockOk(null) : mockDown()),
@@ -147,6 +150,7 @@ jest.mock('../../services/SupabaseService', () => {
       mockCloud.rows.set(item.id, mockCopy(item));
       mockCloud.writes.push(`${mockDevice}:${item.id}`);
       mockCloud.events.push({ id: item.id, row: mockCopy(item) });
+      if (mockCloud.lostAnswers > 0) { mockCloud.lostAnswers -= 1; return mockDown(); }
       return mockOk(mockCopy(item));
     },
     listDAVESyncTombstones: read(() => mockCopy(mockCloud.tombstones)),
@@ -493,6 +497,15 @@ async function ownEcho(device: Device, from: number) {
  * hears its own write (`hears`: 'own', or 'nothing' yet); then the follow-up send fires. Its answer is returned.
  */
 async function typed(device: Device, itemId: string, change: Partial<ScheduleItem>, hears: 'own' | 'nothing' = 'own'): Promise<FollowUpResult | null> {
+  await keyed(device, itemId, change);
+  const eventsBefore = mockCloud.events.length;
+  await backgroundUpload(device);
+  if (hears === 'own') await ownEcho(device, eventsBefore);
+  jest.setSystemTime(Date.now() + 700);
+  return editorFollowUp(device, itemId);
+}
+/** One change typed in the task editor, as far as the device itself: shown, and queued with its fields and base. */
+async function keyed(device: Device, itemId: string, change: Partial<ScheduleItem>): Promise<void> {
   on(device);
   const queued: Array<Promise<unknown>> = [];
   let debounced = false;
@@ -513,11 +526,6 @@ async function typed(device: Device, itemId: string, change: Partial<ScheduleIte
   await Promise.all(queued);
   await render(device);
   expect(debounced).toBe(true);
-  const eventsBefore = mockCloud.events.length;
-  await backgroundUpload(device);
-  if (hears === 'own') await ownEcho(device, eventsBefore);
-  jest.setSystemTime(Date.now() + 700);
-  return editorFollowUp(device, itemId);
 }
 
 const rebaseDep = (device: Device) => {
@@ -836,6 +844,7 @@ function resetRig() {
   mockCloud.writes.length = 0;
   mockCloud.events.length = 0;
   mockCloud.offline.clear();
+  mockCloud.lostAnswers = 0;
   heard.clear();
   heardTombstones.clear();
   cloudDocuments = [];
@@ -1578,5 +1587,95 @@ describe('Review N1 finding 1: a card in Review Conflicts stays until David choo
       expect(scheduleItemConflictCopyKeeping(fieldCard, again, [])).toBe(again);
       expect(scheduleItemConflictCopyKeeping(null, again, null)).toBe(again);
     });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1, finding 4 (Low, caused by 79a5ae1). One device, nobody else touching the record: an upload reached
+ * the cloud but its answer did not come back (weak signal), or the app was closed before the queue recorded it, and
+ * David typed more. The retry weighed his text against the copy the edit started from, found the cloud changed since
+ * (by his own first upload) and sent it to Review Conflicts: his text against his own earlier text. A waiting edit now
+ * keeps what it held before its latest value, and the cloud holding that is this device's own.
+ */
+describe('Review N1 finding 4: no card against this device\'s own earlier upload', () => {
+  it('weak signal: the first keystrokes land, the answer is lost, David keeps typing: the retry goes up, no card', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T09:00:00.000Z');
+    mockCloud.lostAnswers = 1;
+    await keyed(phone, id, { notes: 'Crew' });
+    await backgroundUpload(phone);
+    expect([cloudRow(id)?.notes, (await queueOf(phone)).length]).toEqual(['Crew', 1]); // it landed; the phone was not told
+    jest.setSystemTime(Date.now() + 2000);
+    await keyed(phone, id, { notes: 'Crew short Tuesday' });
+    await backgroundUpload(phone);
+    expect(await conflictsOf(phone)).toEqual([]); // was: Phone "Crew short Tuesday" against Cloud "Crew"
+    expect([cloudRow(id)?.notes, (await queueOf(phone)).length]).toEqual(['Crew short Tuesday', 0]);
+    await refresh(ipad);
+    expect(onDevice(ipad)).toEqual(onWeb());
+  });
+
+  it('the app closed after the write landed, before the queue recorded it: more typing after the relaunch goes up, no card', async () => {
+    const { phone } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T09:00:00.000Z');
+    setOnline(phone, false);
+    await keyed(phone, id, { owner: 'Mike' });
+    // The upload's write, landed as the app was closed.
+    mockCloud.rows.set(id, { ...mockCopy(cloudRow(id)), owner: 'Mike', updatedAt: new Date().toISOString() });
+    setOnline(phone, true);
+    relaunchModules(phone);
+    at('2026-09-08T10:00:00.000Z');
+    await keyed(phone, id, { owner: 'Mike R.' });
+    await backgroundUpload(phone);
+    expect(await conflictsOf(phone)).toEqual([]);
+    expect([cloudRow(id)?.owner, (await queueOf(phone)).length]).toEqual(['Mike R.', 0]);
+  });
+
+  it('another device\'s change of the field since is still asked about', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(phone).id;
+    at('2026-09-08T09:00:00.000Z');
+    mockCloud.lostAnswers = 1;
+    await keyed(phone, id, { notes: 'Crew' });
+    await backgroundUpload(phone);
+    await refresh(ipad);
+    at('2026-09-08T09:30:00.000Z');
+    await edit(ipad, id, { notes: IPAD_NOTE });
+    at('2026-09-08T10:00:00.000Z');
+    await keyed(phone, id, { notes: 'Crew short Tuesday' });
+    await backgroundUpload(phone);
+    expect((await conflictsOf(phone)).map(conflict => scheduleItemConflictFields(conflict.localPayload))).toEqual([['notes']]);
+    expect(cloudRow(id)?.notes).toBe(IPAD_NOTE);
+  });
+
+  it('a field update: its first save lands with the answer lost; opened again and changed, the retry goes up, no card', async () => {
+    const { phone } = await start();
+    at('2026-09-08T09:00:00.000Z');
+    cardFails(phone);
+    mockCloud.lostAnswers = 1;
+    await openAndSave(phone, () => ({ notes: 'Pour moved' }));
+    expect(inCloud()).toMatchObject({ notes: 'Pour moved' }); // it landed
+    mockCloud.lostAnswers = 0;
+    at('2026-09-08T09:10:00.000Z');
+    cardFails(phone);
+    await openAndSave(phone, () => ({ notes: 'Pour moved to Tuesday' }));
+    await waitingUpdateSync(phone);
+    expect(await conflictsOf(phone)).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: 'Pour moved to Tuesday', area: 'Area 0' });
+    expect(card(phone)).toMatchObject({ notes: 'Pour moved to Tuesday', status: 'sent' });
+  });
+
+  it('the base keeps a waiting edit\'s own earlier values, and drops them once that part landed', () => {
+    const row = (notes: string) => ({ id: 't', notes }) as unknown as ScheduleItem;
+    const first = { changedFields: ['notes', 'updatedAt'], base: { updatedAt: 'b', fields: { notes: '' } }, itemData: row('Crew') };
+    const second = { changedFields: ['notes', 'updatedAt'], base: { updatedAt: 'c', fields: { notes: 'Crew' } }, itemData: row('Crew short Tuesday') };
+    const merged = scheduleItemEditBasesMerged(first, second)!;
+    expect(merged).toEqual({ updatedAt: 'b', fields: { notes: '' }, own: { notes: ['"Crew"'] } });
+    const cloudOf = (notes: string) => scheduleItemEditAgainstCloud(row('Crew short Tuesday'), ['notes', 'updatedAt'], merged, row(notes));
+    expect([cloudOf('Crew').asked, cloudOf('').asked, cloudOf('typed on the iPad').asked]).toEqual([[], [], ['notes']]);
+    expect(scheduleItemEditBaseAfterLanding({ ...second, base: merged }, { changedFields: ['notes', 'updatedAt'], itemData: row('Crew') }))
+      .toEqual({ updatedAt: 'b', fields: { notes: 'Crew' } });
   });
 });

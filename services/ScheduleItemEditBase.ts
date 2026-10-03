@@ -21,6 +21,14 @@ export type ScheduleItemEditBase = Readonly<{
   updatedAt: string | null;
   /** Each field the edit changed, as that copy had it (null for none). */
   fields: Readonly<Record<string, unknown>>;
+  /**
+   * The values this edit itself held for a field before its latest one, while
+   * it waited (review N1 finding 4): a short mark of each. An upload may have
+   * put one in the cloud without the device hearing back (the answer lost on
+   * weak signal, the app closed), so the cloud holding one is this device's
+   * own earlier text, not another device's change.
+   */
+  own?: Readonly<Record<string, readonly string[]>>;
 }>;
 
 /**
@@ -148,7 +156,27 @@ export function scheduleItemEditBase(
   };
 }
 
-type EditScope = Readonly<{ changedFields?: unknown; base?: unknown }>;
+type EditScope = Readonly<{ changedFields?: unknown; base?: unknown; itemData?: unknown }>;
+
+/** How many of an edit's own earlier values a field keeps (the latest ones). */
+const OWN_VALUES_KEPT = 40;
+
+/** A short mark of a field's value as compared (fieldValue): itself when short, else its length and a hash. */
+function valueMark(value: string): string {
+  if (value.length <= 48) return value;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `#${value.length}:${(hash >>> 0).toString(36)}`;
+}
+
+/** Whether the cloud's value of a field is one this edit itself held earlier (ScheduleItemEditBase.own). */
+function isOwnEarlierValue(base: ScheduleItemEditBase, field: string, cloud: string): boolean {
+  const own = base.own?.[field];
+  return Array.isArray(own) && own.includes(valueMark(cloud));
+}
 
 /**
  * Two queued edits of a task made one: each field keeps the copy its first
@@ -166,7 +194,17 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
     if (!earlierFields.has(field)) fields[field] = value;
   });
   if (Object.keys(fields).length === 0) return undefined;
-  return { updatedAt: earlier?.updatedAt ?? later?.updatedAt ?? null, fields };
+  // What the waiting edit held for a field the newer edit changes again is its own earlier value (review N1 finding
+  // 4): an upload may have landed it with its answer lost, and the retry then set David's text against his own.
+  const own: Record<string, readonly string[]> = { ...(earlier?.own ?? {}) };
+  (Array.isArray(incoming.changedFields) ? incoming.changedFields.map(String) : []).forEach(field => {
+    if (field === 'updatedAt' || !earlierFields.has(field) || !Object.prototype.hasOwnProperty.call(earlier?.fields ?? {}, field)) return;
+    const before = fieldValue(existing.itemData, field);
+    if (before === fieldValue(incoming.itemData, field)) return;
+    const mark = valueMark(before);
+    own[field] = [...(own[field] ?? []).filter(known => known !== mark), mark].slice(-OWN_VALUES_KEPT);
+  });
+  return { updatedAt: earlier?.updatedAt ?? later?.updatedAt ?? null, fields, ...(Object.keys(own).length > 0 ? { own } : {}) };
 }
 
 export function isEditBase(value: unknown): value is ScheduleItemEditBase {
@@ -213,7 +251,9 @@ export function scheduleItemEditAgainstCloud(
     const was = fieldValue(base.fields, field);
     const here = fieldValue(itemData, field);
     const cloud = fieldValue(remote, field);
-    if (cloud === was || cloud === here) return;
+    // The cloud holds what this edit started from, what it has now, or what it held earlier and may have sent itself
+    // (review N1 finding 4): nobody else changed the field, and this device's value goes up.
+    if (cloud === was || cloud === here || isOwnEarlierValue(base, field, cloud)) return;
     if (field === 'activity') {
       next = { ...next, activity: scheduleItemActivityOfBoth(itemData.activity, remote.activity) };
       return;
@@ -290,10 +330,16 @@ export function scheduleItemEditBaseAfterLanding(
   if (!isEditBase(current.base) || !Array.isArray(landed.changedFields)) return isEditBase(current.base) ? current.base : undefined;
   const fields: Record<string, unknown> = { ...current.base.fields };
   const landedData = landed.itemData && typeof landed.itemData === 'object' ? landed.itemData as Record<string, unknown> : {};
+  const own: Record<string, readonly string[]> = { ...(current.base.own ?? {}) };
   landed.changedFields.map(String).forEach(field => {
-    if (field !== 'updatedAt' && Object.prototype.hasOwnProperty.call(fields, field)) fields[field] = landedData[field] ?? null;
+    if (field === 'updatedAt' || !Object.prototype.hasOwnProperty.call(fields, field)) return;
+    fields[field] = landedData[field] ?? null;
+    delete own[field]; // what landed is the copy the field starts from now
   });
-  return { updatedAt: typeof landedData.updatedAt === 'string' ? landedData.updatedAt : current.base.updatedAt, fields };
+  return {
+    updatedAt: typeof landedData.updatedAt === 'string' ? landedData.updatedAt : current.base.updatedAt, fields,
+    ...(Object.keys(own).length > 0 ? { own } : {}),
+  };
 }
 
 /** A task conflict's copy of this device's, as far as these rules read it. */

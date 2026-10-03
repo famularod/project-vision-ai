@@ -27,7 +27,39 @@ export type FieldUpdateEditBase = Readonly<{
    * and is settled again, not sent whole over the cloud's copy.
    */
   settledParts?: Readonly<Record<string, string>>;
+  /**
+   * What the queued copy itself held of a part before its latest one, while
+   * it waited (review N1 finding 4): an upload may have put one in the cloud
+   * without the device hearing back, so the cloud holding one is this
+   * device's own earlier copy, not another device's change.
+   */
+  own?: Readonly<Record<string, readonly string[]>>;
 }>;
+
+/** How many of a queued copy's own earlier fingerprints a part keeps (the latest ones). */
+const OWN_PARTS_KEPT = 20;
+
+/**
+ * The base of a queued copy that a newer copy of the same update replaces
+ * on the queue, with what the queued one held: each part the newer copy
+ * changes again (review N1 finding 4). The first save's upload landed with
+ * its answer lost; David opened the card again and typed more; the retry
+ * then found the cloud's copy changed since the base, by his own first save,
+ * and sent his update to Review Conflicts against itself.
+ */
+export function fieldUpdateEditBaseKeepingOwn(base: FieldUpdateEditBase, queued: unknown, newer: unknown): FieldUpdateEditBase {
+  const before = fieldUpdateMeaningParts(queued);
+  const now = fieldUpdateMeaningParts(newer);
+  const own: Record<string, readonly string[]> = { ...(base.own ?? {}) };
+  let added = false;
+  [...new Set([...Object.keys(before), ...Object.keys(now)])].forEach(part => {
+    const mark = before[part] ?? '';
+    if (mark === (now[part] ?? '') || mark === (base.fields[part] ?? '')) return;
+    own[part] = [...(own[part] ?? []).filter(known => known !== mark), mark].slice(-OWN_PARTS_KEPT);
+    added = true;
+  });
+  return added ? { ...base, own } : base;
+}
 
 const PARTS_ASIDE: ReadonlySet<string> = new Set([
   'id', 'status', 'syncDiagnostics', 'deleteDiagnostics', 'sendAttempts', 'lastSendAttemptAt', 'stableSendId',
@@ -113,7 +145,9 @@ export function fieldUpdatePartsDiffering(base: FieldUpdateEditBase, local: unkn
     .filter(part => (mine[part] ?? null) !== (theirs[part] ?? null)).sort();
   return {
     here: differing.filter(part => (mine[part] ?? null) !== (base.fields[part] ?? null)),
-    there: differing.filter(part => (theirs[part] ?? null) !== (base.fields[part] ?? null)),
+    // Not a part the cloud holds as this queued copy itself held it earlier (its own upload, the answer lost).
+    there: differing.filter(part => (theirs[part] ?? null) !== (base.fields[part] ?? null) &&
+      !(base.own?.[part] ?? []).includes(theirs[part] ?? '')),
   };
 }
 
