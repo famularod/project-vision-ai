@@ -502,7 +502,8 @@ describe('A6 p18: twins a lookahead restated, then moved by the next master, sho
       decisionsNeeded: [], confidence: 'high', reportReadiness: 'high', needsReview: false, reviewFlags: [], sourceEvidence: [],
       constructionUnderstanding: {}, generatedAt: NOW,
     } as unknown as PIEReportDraft, briefing, 'project_manager').body;
-    const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+    // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+    const start = body.indexOf('SINCE THE LAST REPORT');
     return body.slice(start, body.indexOf('COMPLETED WORK', start));
   };
   const expectOnceEach = (state: State) => {

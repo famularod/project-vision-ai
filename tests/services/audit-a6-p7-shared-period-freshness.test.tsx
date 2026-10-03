@@ -300,11 +300,12 @@ const approveAndSend = async () => {
 };
 /** The written report's period section. */
 const period = async () => {
-  if (!screen.queryByText(/SINCE THE LAST APPROVED REPORT/)) {
+  // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+  if (!screen.queryByText(/SINCE THE LAST REPORT/)) {
     fireEvent.press(await screen.findByRole('button', { name: 'Full written report' }, SLOW));
   }
-  const body = (await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW)).props.children as string;
-  const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+  const body = (await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW)).props.children as string;
+  const start = body.indexOf('SINCE THE LAST REPORT');
   return body.slice(start, body.indexOf('COMPLETED WORK', start));
 };
 /** Brings the app back to the front, as after the phone was locked or another app was used. */

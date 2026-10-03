@@ -693,7 +693,7 @@ function formatReportBody(
     'EXECUTIVE STATUS',
     briefing.executiveSnapshot,
     '',
-    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection(REPORT_PERIOD_HEADING, reportingMovement),
     ...textSection('COMPLETED WORK', briefing.completedWork.slice(0, 6), 'No completed work is recorded in the current project scope.'),
     ...textSection('PROJECT POSITION', projectPosition),
     ...textSection('MANAGEMENT ACTIONS', actions),
@@ -706,7 +706,7 @@ function formatReportBody(
     'CURRENT STATUS',
     briefing.executiveSnapshot,
     '',
-    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection(REPORT_PERIOD_HEADING, reportingMovement),
     ...textSection('COMPLETED WORK', briefing.completedWork, 'No completed work is recorded in the current project scope.'),
     ...textSection('CURRENT WORK', briefing.currentWork),
     ...textSection('ACTION PLAN', actions),
@@ -718,6 +718,14 @@ function formatReportBody(
   lines.push('', draft.closingLine);
   return lines.filter((value, index, values) => value || values[index - 1]).join('\n').trim();
 }
+
+/**
+ * The written report's "since the last report" heading, in every report the
+ * phone writes (the body copied, emailed, texted, shared in Outlook and put in
+ * the Word file). Owner answer 2 Oct (report heading): it said "SINCE THE LAST
+ * APPROVED REPORT", where the period runs from the last report sent.
+ */
+export const REPORT_PERIOD_HEADING = 'SINCE THE LAST REPORT';
 
 /** The changes the written report names; the rest are counted (A6 pass 8 L1). */
 const SINCE_LINES = 6;

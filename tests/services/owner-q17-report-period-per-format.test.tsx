@@ -214,7 +214,8 @@ const approveAndSend = async () => {
 const period = async () => {
   await approvable();
   fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
-  const body = await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW);
+  // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+  const body = await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW);
   return body.props.children as string;
 };
 const stored = (key: string) => {

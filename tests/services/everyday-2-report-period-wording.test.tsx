@@ -1,9 +1,7 @@
 // Everyday item 2 (2 Oct 2026): the Reporting Period said "Since the report
 // approved <date>", with the day that report's facts were captured, where
-// the period runs from when it was sent. It names the send now. The written
-// report's own heading ("SINCE THE LAST APPROVED REPORT") is report text
-// David's client reads and is left as it was (see the report for the owner
-// decision); this test pins that it did not move.
+// the period runs from when it was sent. It names the send now.
+// Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
 
 const mockDevices = new Map<string, Map<string, string>>();
 let mockDevice = 'phone';
@@ -172,7 +170,7 @@ describe('on the Reports screen (everyday item 2)', () => {
     jest.useRealTimers();
   });
 
-  it('a report copied on Sep 30 reads "Since the report sent Sep 30, 2026" the next day; the written heading is unchanged', async () => {
+  it('a report copied on Sep 30 reads "Since the report sent Sep 30, 2026" the next day, under the heading "SINCE THE LAST REPORT"', async () => {
     setClock('2026-09-30T15:00:00.000Z');
     visit(tower(0));
     await approve();
@@ -183,7 +181,7 @@ describe('on the Reports screen (everyday item 2)', () => {
     expect(screen.queryByText(/^Since the report approved/)).toBeNull();
     await approvable();
     fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
-    const body = (await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW)).props.children as string;
+    const body = (await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW)).props.children as string;
     expect(body).toContain('+1 completed; ');
   });
 

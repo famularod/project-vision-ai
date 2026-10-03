@@ -218,7 +218,8 @@ describe('L2 through the real import merge, in both report formats', () => {
     });
     for (const format of ['project_manager', 'executive'] as const) {
       const body = enhanceDAVEReportDraft(draft, briefing, format).body;
-      const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+      // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+      const start = body.indexOf('SINCE THE LAST REPORT');
       const since = body.slice(start, body.indexOf('COMPLETED WORK', start));
       expect(since).toContain('+1 completed; -1 open;');
       expect(since).toContain('Tower: Inspection was completed.');

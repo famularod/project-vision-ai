@@ -130,7 +130,8 @@ describe('L1 through the real import merge: a revised task is the task the impor
       previousSnapshot: snapshotOf(truthOf(v1, REPORT_SENT), REPORT_SENT),
     });
     const body = enhanceDAVEReportDraft(draft, briefing, format).body;
-    const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+    // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+    const start = body.indexOf('SINCE THE LAST REPORT');
     return { briefing, text: body.slice(start, body.indexOf('COMPLETED WORK', start)) };
   };
 

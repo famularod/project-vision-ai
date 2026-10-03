@@ -206,7 +206,8 @@ const share = async (label: 'Copy Report' | 'Email Report' | 'Email from Outlook
 const period = async () => {
   await approvable();
   fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
-  return (await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW)).props.children as string;
+  // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+  return (await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW)).props.children as string;
 };
 const local = (device: string, key = KEY) => {
   const raw = mockDevices.get(device)?.get(key);

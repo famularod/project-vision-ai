@@ -127,7 +127,9 @@ const baseDraft = {
 const pm = enhanceDAVEReportDraft(baseDraft, briefing, 'project_manager');
 const executive = enhanceDAVEReportDraft(baseDraft, briefing, 'executive');
 assert.match(pm.body, /CURRENT STATUS/);
-assert.match(pm.body, /SINCE THE LAST APPROVED REPORT/);
+// Owner answer 2 Oct (report heading): the heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+assert.match(pm.body, /SINCE THE LAST REPORT\n/);
+assert(!/APPROVED REPORT/.test(pm.body) && !/APPROVED REPORT/.test(executive.body));
 assert.match(pm.body, /CURRENT WORK/);
 assert.match(pm.body, /ACTION PLAN/);
 assert.match(pm.body, /SCHEDULE RISKS/);
