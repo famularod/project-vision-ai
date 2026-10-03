@@ -219,9 +219,8 @@ import {
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
-import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
-import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
-import { forgetKeptVoiceRecordings } from './services/KeptVoiceRecording';
+import { useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { settleUnsavedDraftsOnAccountChange } from './hooks/unsaved-drafts-on-account-change';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -13039,6 +13038,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // A sign-out or another account drops photo analyses in progress; the
       // hourly token refresh and a name save do not (whole-app audit A1 pass 1).
       // A transient null (an offline start, owner answer Q13) is not an account.
+      const previousUserId = lastUserId; // whose unsaved work a sign-out not asked for sets aside (everyday item 7)
       const change = workspaceAccountChange(lastUserId, event, session?.user?.id);
       if (!change) return;
       const { firstEvent, accountChanged } = change;
@@ -13059,7 +13059,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Another account must not inherit this one's report narrative or
       // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
       if (accountChanged) forgetAllReportSessionState();
-      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); forgetKeptVoiceRecordings(); } // nobody's unsaved note, walk memory or kept recording carries over (A2 M3, A11 pass 4 L3, everyday item 4)
+      // Nobody's unsaved note, walk memory or kept recording carries over (A2 M3, A11 pass 4 L3, everyday item 4);
+      // a sign-out not asked for here sets them aside for that account instead (everyday item 7).
+      if (accountChanged) settleUnsavedDraftsOnAccountChange(event, previousUserId, change.userId);
     });
 
     return () => {

@@ -180,6 +180,17 @@ export async function unsavedFieldNoteExists(ownerKey: string): Promise<boolean>
   return Boolean(keptFieldNoteDraft((await readKeptDraft('field-note', ownerKey))?.value));
 }
 
+/**
+ * A sign-out this device did not ask for (everyday item 7): the note leaves
+ * the screen but stays kept on the phone for its account, and comes back the
+ * next time Field Notes opens for that account.
+ */
+export function setAsideFieldNoteDraft() {
+  if (!slot) return;
+  slot = null;
+  notify();
+}
+
 /** Account change or sign-out: nobody's unsaved note carries over, on the phone either. */
 export function forgetFieldNoteDraft() {
   void forgetKeptDrafts('field-note');

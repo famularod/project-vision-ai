@@ -72,6 +72,17 @@ export async function unsavedWalkMemoryExists(ownerKey: string): Promise<boolean
   return false;
 }
 
+/**
+ * A sign-out this device did not ask for (everyday item 7): the memories
+ * leave the screen but stay kept on the phone for their account, and Confirm
+ * Memory opens with them again when that account opens their project.
+ */
+export function setAsideKeptWalkMemoryDrafts() {
+  if (drafts.size === 0) return;
+  drafts.clear();
+  notify();
+}
+
 /** Account change or sign-out: no unconfirmed memory carries over. */
 export function forgetKeptWalkMemoryDrafts() {
   void forgetKeptDrafts('walk-memory');

@@ -225,6 +225,9 @@ describe('Project Walk memory kept until Save (A11 pass 4 L3)', () => {
     expect(app).not.toContain('const [captureDraft, setCaptureDraft] = useState');
     // Everyday item 4 (2 Oct 2026): a recording kept on the device for signal is forgotten with them;
     // pin updated deliberately (behaviour in everyday-4-voice-kept-recording).
-    expect(app).toMatch(/if \(accountChanged\) \{ forgetFieldNoteDraft\(\); forgetKeptWalkMemoryDrafts\(\); forgetKeptVoiceRecordings\(\); \}/);
+    // Everyday item 7 (2 Oct 2026): one call now decides it: Settings' Sign Out and another account forget them all
+    // as before; a sign-out this phone did not ask for sets them aside for the account. Pin updated deliberately
+    // (behaviour in tests/everyday-7-unasked-sign-out-keeps-dictation).
+    expect(app).toContain('if (accountChanged) settleUnsavedDraftsOnAccountChange(event, previousUserId, change.userId);');
   });
 });
