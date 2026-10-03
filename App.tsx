@@ -11648,6 +11648,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         {
           text: 'Delete PDF Only',
           onPress: () => {
+            scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true }).forEach(item => updateScheduleItem(item.id, { startDate: item.startDate, finishDate: item.finishDate })); // the dates shown under a replaced lookahead stay (review N1)
             void removeReferenceDocumentEverywhere(documentId)
               .then(() => {
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);

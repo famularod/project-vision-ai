@@ -24,7 +24,7 @@ import {
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
+import { scheduleDatesShownUnderReplacedLookahead, scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -122,7 +122,7 @@ const onWk2 = approve(onWk1, WK2, ['Roof,Alpha,Lot,11/03/2026,11/07/2026,', 'Det
 const framingId = one(onF, 'Framing').id;
 
 /** App.tsx's own updateScheduleItem, compiled from its source: what it puts in the phone's tasks and sends. */
-function phoneUpdate(state: State, id: string, edit: Partial<ScheduleItem>): { saved: ScheduleItem; sent: ScheduleItem[] } {
+function phoneUpdate(state: State, id: string, edit: Partial<ScheduleItem>, restoresProgress = false): { saved: ScheduleItem; sent: ScheduleItem[] } {
   const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
   const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);
   expect(from).toBeGreaterThan(0); expect(to).toBeGreaterThan(from);
@@ -141,7 +141,7 @@ function phoneUpdate(state: State, id: string, edit: Partial<ScheduleItem>): { s
   };
   const mod = { exports: {} as unknown };
   new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
-  (mod.exports as (id: string, edit: Partial<ScheduleItem>) => void)(id, edit);
+  (mod.exports as (id: string, edit: Partial<ScheduleItem>, workflow?: unknown, restores?: boolean) => void)(id, edit, undefined, restoresProgress);
   return { saved: ref.current.find(item => item.id === id)!, sent };
 }
 
@@ -546,5 +546,47 @@ describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review as
     expect(upload).toContain('let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);');
     const provider = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
     expect(provider).toContain('importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices');
+  });
+});
+
+describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF Only" on a replaced lookahead leaves the dates shown', () => {
+  /** App.tsx's "Delete PDF Only": the dates shown are saved first (the helper, through updateScheduleItem), then the file goes. */
+  function deletePdfOnly(state: State, document: ReferenceDocument): State {
+    let items = state.items;
+    scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true }).forEach(shownTask => {
+      const { saved: row } = phoneUpdate({ ...state, items }, shownTask.id, { startDate: shownTask.startDate, finishDate: shownTask.finishDate });
+      items = items.map(item => item.id === shownTask.id ? row : item);
+    });
+    return { items, documents: state.documents.filter(other => other.id !== document.id) };
+  }
+
+  it('week 1, replaced, moved Framing: shown on the master\'s dates before and after its file is deleted alone', () => {
+    expect(dates(one(onWk2, 'Framing'))).toBe('10/15/2026-10/25/2026');
+    const after = deletePdfOnly(onWk2, WK1);
+    expect(after.documents.map(document => document.id)).toEqual(['MASTER F', 'LOOKAHEAD wk2']);
+    expect(dates(one(after, 'Framing'))).toBe('10/15/2026-10/25/2026');
+    expect(one(after, 'Framing').savedLookaheadDates).toBeUndefined();
+    // Saved, so the iPad and the web show the same once they hold the row.
+    expect(dates(saved(after, framingId))).toBe('10/15/2026-10/25/2026');
+    // Its detail task stays off the list, and week 2's tasks are untouched.
+    expect(named(after, 'Detail 1')).toHaveLength(0);
+    expect(dates(one(after, 'Roof'))).toBe('11/03/2026-11/07/2026');
+  });
+
+  it('a lookahead still in effect deleted alone keeps its tasks on its dates, as before; a master writes none', () => {
+    expect(scheduleDatesShownUnderReplacedLookahead(onWk2.items, onWk2.documents, WK2)).toEqual([]);
+    expect(scheduleDatesShownUnderReplacedLookahead(onWk2.items, onWk2.documents, F)).toEqual([]);
+    expect(scheduleItemsAfterScheduleDeleted({ items: onWk2.items, removed: [], document: WK2, documents: onWk2.documents, fileOnly: true })).toEqual([]);
+    expect(scheduleDatesShownUnderReplacedLookahead(onWk2.items, onWk2.documents, WK1)).toEqual([{ id: framingId, startDate: '10/15/2026', finishDate: '10/25/2026' }]);
+    const after = deletePdfOnly(onWk2, WK2);
+    expect(dates(one(after, 'Roof'))).toBe('11/03/2026-11/07/2026');
+  });
+
+  it('the phone\'s Delete PDF Only saves them before it removes the file', () => {
+    const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
+    const handler = APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
+    const saves = handler.indexOf('fileOnly: true }).forEach(item => updateScheduleItem(item.id, { startDate: item.startDate, finishDate: item.finishDate }))');
+    expect(saves).toBeGreaterThan(0);
+    expect(saves).toBeLessThan(handler.indexOf('removeReferenceDocumentEverywhere('));
   });
 });

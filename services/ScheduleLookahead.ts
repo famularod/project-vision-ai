@@ -774,6 +774,7 @@ export function scheduleItemsAfterScheduleDeleted({
   document,
   documents,
   updatedAt = new Date().toISOString(),
+  fileOnly = false,
 }: Readonly<{
   /** The saved tasks the delete keeps. */
   items: readonly ScheduleItem[];
@@ -783,7 +784,18 @@ export function scheduleItemsAfterScheduleDeleted({
   /** The schedules saved after the delete. */
   documents: readonly ReferenceDocument[];
   updatedAt?: string;
+  /**
+   * "Delete PDF Only" (review N1): the schedules saved before the delete are given, no task is removed or given
+   * back, and only the tasks shown on the master's dates because of this replaced lookahead are returned, on the
+   * dates shown (scheduleDatesShownUnderReplacedLookahead).
+   */
+  fileOnly?: boolean;
 }>): ScheduleItem[] {
+  if (fileOnly) {
+    const savedById = new Map(items.map(item => [item.id, item]));
+    return scheduleDatesShownUnderReplacedLookahead(items, documents, document)
+      .flatMap(({ id, startDate, finishDate }) => (savedById.has(id) ? [{ ...savedById.get(id)!, startDate, finishDate, updatedAt }] : []));
+  }
   const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
   const kept = items.map(item => changed.get(item.id) || item);
   const shown = selectAuthoritativeScheduleItems({
@@ -908,6 +920,32 @@ export function scheduleDependenciesAfterScheduleDeleted(
     });
     return { id: item.id, dependencies };
   });
+}
+
+/**
+ * Review N1 (3 Oct 2026, caused by ada8ef6, as web M1 on the phone): "Delete
+ * PDF Only" on a lookahead a newer one replaced (owner answer Q25) removed
+ * the file and wrote no task. A master task it had moved, shown on the
+ * master's dates, jumped to the deleted lookahead's dates on the phone, the
+ * iPad and the web: its saved dates were still that lookahead's, and nothing
+ * replaces a file that is gone. The tasks shown on the master's dates
+ * because of this lookahead, with the dates shown: the delete saves them
+ * first, as a date David set, so the dates he sees do not move. None for a
+ * lookahead still in effect (its tasks keep its dates, as before) or a master.
+ * The phone asks through scheduleItemsAfterScheduleDeleted (fileOnly), which
+ * its delete already calls.
+ */
+export function scheduleDatesShownUnderReplacedLookahead(
+  items: readonly ScheduleItem[],
+  documents: readonly ReferenceDocument[],
+  document: ReferenceDocument,
+): Array<Pick<ScheduleItem, 'id' | 'startDate' | 'finishDate'>> {
+  const batch = (document.importBatchId || '').trim().toLowerCase();
+  if (!batch || !scheduleDocumentAddsToMaster(document)) return [];
+  return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
+    .filter(item => item.savedLookaheadDates &&
+      (item.lookaheadOverlay?.lookaheads?.at(-1)?.batchId || '').trim().toLowerCase() === batch)
+    .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
 }
 
 /**
