@@ -174,6 +174,11 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
   return `Recorded as sent ${when}. The next report on every device runs from this one.`;
 }
 
+/** Shared again after this computer had recorded it as sent (review N1): said plainly, never as an error. */
+export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
+  return `Shared again. This report was already recorded as sent ${describeReportSendTime(sentAt)}, so this is not counted as another send.`;
+}
+
 /** Why an approved report is no longer shared: a later report was sent after it was approved. */
 export function daveWebReportPeriodMovedMessage(currentKey: string): string {
   const sentAt = currentKey.startsWith('sent:') ? currentKey.slice('sent:'.length) : '';

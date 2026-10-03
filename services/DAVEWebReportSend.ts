@@ -140,6 +140,35 @@ export function forgetDAVEWebOwnReportSends(): void {
   ownSends.clear();
 }
 
+/**
+ * The sent reports a period remembers, newest first: the one it runs from
+ * and the two before it (each saved report keeps the one it replaced, and
+ * that one's own: A6 pass 16 L1).
+ */
+function periodSends(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportSnapshot[] {
+  const sends: DAVEReportSnapshot[] = [];
+  for (let send = reportPeriodSend(snapshot); send && sends.length < 3; send = reportPeriodSend(send.supersedes)) {
+    sends.push(send);
+  }
+  return sends;
+}
+
+/**
+ * When this computer sent the report with these facts, if it is one of the
+ * sent reports `period` remembers; else null (review N1, 2 Oct 2026). A
+ * report it already sent is shared again without being recorded again, and
+ * its own send is never read as another device's.
+ */
+export function daveWebReportSentHereAt(
+  period: DAVEReportSnapshot | null | undefined,
+  fingerprint: string | null | undefined,
+): string | null {
+  if (!fingerprint) return null;
+  const sent = periodSends(period).find(send =>
+    send.sourceFingerprint === fingerprint && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
+  return sent?.deliveredAt ?? null;
+}
+
 export type DAVEWebReportPeriodLoad = Readonly<{
   snapshot: DAVEReportSnapshot | null;
   shared: DAVEReportSharedCheck;
@@ -158,7 +187,8 @@ export async function loadDAVEWebReportPeriod(
   format: DAVEReportFormat,
 ): Promise<DAVEWebReportPeriodLoad> {
   const loaded = await loadDAVEReportPeriod(scopeKey, format, store.storage, store.cloud);
-  for (const sent of new Set([loaded.snapshot, reportPeriodSend(loaded.snapshot)])) {
+  // The sends before the one the period runs from too: one of them may be the report now on screen (review N1).
+  for (const sent of new Set([loaded.snapshot, ...periodSends(loaded.snapshot)])) {
     if (sent && await reportSnapshotSentHere(sent, store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false)) {
       ownSends.add(sent.deliveredAt as string);
       await rememberReportSentHere(sent.deliveredAt as string, store.storage);
@@ -195,6 +225,11 @@ export async function approveDAVEWebReportPeriod(
   return { status: 'saved', snapshot: toSave ?? loaded.snapshot };
 }
 
+export type DAVEWebSendOutcome =
+  | DAVEWebPeriodOutcome
+  /** This computer already recorded this report as sent, at `sentAt`: sharing it again records nothing more. */
+  | Readonly<{ status: 'already_sent'; sentAt: string }>;
+
 /**
  * The approved report went out from here, or the owner recorded that it did
  * (Mark as Sent, with `markedSentAt`): recorded exactly as the phone records
@@ -202,6 +237,11 @@ export async function approveDAVEWebReportPeriod(
  * report after this approval's period began, this one is not recorded and the
  * next report counts from that one. Resolves with what was recorded, or null
  * when there is no approval of these facts waiting here.
+ *
+ * Review N1 (2 Oct 2026): a second Share of a report this computer had
+ * already recorded as sent found no approval waiting, and the page said so
+ * in red though nothing was wrong. It now answers 'already_sent' with when:
+ * the share is not a second send.
  */
 export async function recordDAVEWebReportSend(
   store: DAVEWebReportStore,
@@ -209,11 +249,15 @@ export async function recordDAVEWebReportSend(
   approvedFingerprint: string | null,
   deliveredAt: string,
   markedSentAt: string | null = null,
-): Promise<DAVEWebPeriodOutcome | null> {
+): Promise<DAVEWebSendOutcome | null> {
   // This computer's own copy holds its approval; the shared copy may already hold a later send.
   const approval = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, LOCAL_ONLY)).snapshot;
-  if (!approval || approval.deliveredAt !== null) return null;
-  if (approvedFingerprint !== null && approval.sourceFingerprint !== approvedFingerprint) return null;
+  if (!approval || approval.deliveredAt !== null || (approvedFingerprint !== null && approval.sourceFingerprint !== approvedFingerprint)) {
+    // No approval of these facts is waiting. Already sent from here? Its own copy, then the shared period, says.
+    const merged = await loadDAVEWebReportPeriod(store, period.scopeKey, period.reportFormat).catch(() => null);
+    const sentAt = daveWebReportSentHereAt(approval, approvedFingerprint) ?? daveWebReportSentHereAt(merged?.snapshot, approvedFingerprint);
+    return sentAt ? { status: 'already_sent', sentAt } : null;
+  }
   const loaded = await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, store.cloud);
   const later = reportPeriodSentAfter(loaded.snapshot, reportPeriodSentAt(approval), ownSends);
   if (later) return { status: 'later_send', later };

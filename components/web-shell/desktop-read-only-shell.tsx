@@ -141,10 +141,12 @@ import {
   daveWebReportStorage,
   recordDAVEWebReportSend,
   type DAVEWebPeriodOutcome,
+  type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
 import { manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
 import { DesktopReportMarkSent, DesktopReportSentQuestion } from './desktop-report-send';
 import {
+  daveWebReportAlreadyRecordedMessage,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportRecordedMessage,
@@ -5616,7 +5618,7 @@ function ReportWorkspace({
    * happened. Not recorded over a later send from another device.
    */
   const recordSend = async (sentAt: string, markedSentAt: string | null, approvedFingerprint: string | null) => {
-    let outcome: DAVEWebPeriodOutcome | null = null;
+    let outcome: DAVEWebSendOutcome | null = null;
     try {
       outcome = await recordDAVEWebReportSend(periodStore, { scopeKey: periodScopeKey, reportFormat: reportAudience }, approvedFingerprint, sentAt, markedSentAt);
     } catch {
@@ -5624,6 +5626,11 @@ function ReportWorkspace({
       return false;
     }
     setPeriodReload(count => count + 1);
+    if (outcome?.status === 'already_sent') {
+      // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
+      setNotice({ tone: 'good', text: daveWebReportAlreadyRecordedMessage(outcome.sentAt) });
+      return true;
+    }
     if (!outcome) {
       setNotice({ tone: 'danger', text: 'There is no approval of this report waiting to be recorded as sent on this computer.' });
       return false;
