@@ -188,6 +188,11 @@ export type BackupRestoreRuntime = Readonly<{
   ): Promise<TResult>;
 }>;
 
+/**
+ * The restore's records may be on the device, or may still be written when its
+ * journal is recovered: nothing the restore placed may be removed. Any other
+ * failure of `commit` means nothing was written (independent review R01).
+ */
 export class BackupRestoreRecoveryRequiredError extends Error {
   readonly commitCause: unknown;
   readonly recoveryCause: unknown;
@@ -339,6 +344,7 @@ export function createBackupRestoreRuntime({
   recoverProjectDeletion,
   recoverFieldUpdate,
   loadQueuedProjectDeletionNames,
+  settleRestoredMedia,
 }: Readonly<{
   storage: Storage;
   targetKeys: BackupRestoreTargetKeys;
@@ -348,6 +354,11 @@ export function createBackupRestoreRuntime({
   recoverProjectDeletion: () => Promise<void>;
   recoverFieldUpdate: () => Promise<void>;
   loadQueuedProjectDeletionNames: () => Promise<readonly string[]>;
+  /**
+   * Run once no restore journal is waiting: settles the files of a restore
+   * that did not say how it ended (independent review R01).
+   */
+  settleRestoredMedia?: () => Promise<unknown>;
 }>): BackupRestoreRuntime {
   const transaction = createDurableLocalTransactionRepository({
     storage,
@@ -378,6 +389,8 @@ export function createBackupRestoreRuntime({
       await runExclusiveLocalStorageMutation(mutationKeys, async () => {
         await assertNoForeignPendingJournal(storage, barrierKeys);
         await transaction.recover();
+        // The journal is finished or was never written: what the saved records name now is final.
+        await settleRestoredMedia?.().catch(() => undefined);
       });
     })();
     recoveryPromise = recovery.finally(() => {
@@ -402,24 +415,40 @@ export function createBackupRestoreRuntime({
       const barriers = readBarrierState(barrierRaw, barrierKeys, queuedProjectDeletionNames);
       const prepared = await prepare(barriers);
       const operations = await restoreOperations(storage, targetKeys, prepared.values);
+      let committed = true;
+      let commitCause: unknown = null;
       try {
         await transaction.commit(operations);
-      } catch (commitCause) {
-        let recovered;
-        try {
-          recovered = await transaction.recover();
-        } catch (recoveryCause) {
-          throw new BackupRestoreRecoveryRequiredError(commitCause, recoveryCause);
-        }
-        if (!recovered) throw commitCause;
+      } catch (cause) {
+        committed = false;
+        commitCause = cause;
       }
-      await verifyRestore(storage, targetKeys, prepared.values);
-      for (const [key, before] of barrierRaw) {
-        if (await storage.getItem(key) !== before) {
-          throw new Error(`Data import changed protected deletion state at ${key}.`);
+      // Independent review R01: from here the records may be on the device. A
+      // failure that cannot rule that out is recovery-required, never a plain
+      // failure, so the files the restore placed are kept until it is known.
+      let unrestoredKey: string | null;
+      try {
+        if (!committed) committed = Boolean(await transaction.recover());
+        unrestoredKey = await firstUnrestoredKey(storage, targetKeys, prepared.values);
+        // With no journal left, records that are all in place were committed:
+        // only the journal's own removal reported the failure.
+        if (committed || unrestoredKey === null) {
+          if (unrestoredKey !== null) {
+            throw new Error(`Data import verification failed for ${unrestoredKey}.`);
+          }
+          for (const [key, before] of barrierRaw) {
+            if (await storage.getItem(key) !== before) {
+              throw new Error(`Data import changed protected deletion state at ${key}.`);
+            }
+          }
+          return prepared.result;
         }
+      } catch (recoveryCause) {
+        throw new BackupRestoreRecoveryRequiredError(commitCause, recoveryCause);
       }
-      return prepared.result;
+      // No journal is left and the records are not in place: the journal was
+      // never written, so nothing was.
+      throw commitCause;
     });
   };
 
@@ -472,19 +501,19 @@ async function restoreOperations(
   return operations;
 }
 
-async function verifyRestore(
+/** The first storage key that does not hold the restore's value; null when every one does. */
+async function firstUnrestoredKey(
   storage: Storage,
   keys: BackupRestoreTargetKeys,
   values: BackupRestoreValues,
-) {
+): Promise<string | null> {
   for (const keyName of Object.keys(keys) as (keyof BackupRestoreTargetKeys)[]) {
     const expected = keyName === 'activeDraft' && values.activeDraft === null
       ? null
       : requireJson(values[keyName], keyName);
-    if (await storage.getItem(keys[keyName]) !== expected) {
-      throw new Error(`Data import verification failed for ${keys[keyName]}.`);
-    }
+    if (await storage.getItem(keys[keyName]) !== expected) return keys[keyName];
   }
+  return null;
 }
 
 function readBarrierState(

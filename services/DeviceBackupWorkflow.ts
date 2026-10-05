@@ -32,6 +32,7 @@ import {
   type CompleteBackupAssetSource,
 } from './CompleteBackupArchiveParts';
 import { assertBackupSerializedFits } from './BackupExportPolicy';
+import type { RestoredMediaLedger, RestoredMediaOutcome } from './RestoredMediaLedger';
 
 export type BackupFileIO = Readonly<{
   /** Size in bytes, or null when there is no file at the address. */
@@ -526,7 +527,25 @@ export type MaterializeBackupDependencies = Readonly<{
   ownedProjectDocumentsRoot: string | null;
   cacheDirectory: string | null;
   importProjectDocument: OwnedProjectDocumentImport;
+  /**
+   * Where the placed files are written down before the records are committed,
+   * so a restore that finishes after a restart still has them and one that
+   * never happened does not leave them behind (independent review R01).
+   */
+  mediaLedger?: RestoredMediaLedger;
 }>;
+
+export type MaterializedBackupState = {
+  state: Record<string, unknown>;
+  /** Remove the placed files: the records were refused before any commit began. */
+  cleanup: () => Promise<void>;
+  /**
+   * Say how the commit ended. The files are removed only when nothing was
+   * written ('aborted'). 'recovery_required' keeps them: the restore may
+   * still finish, and they are settled once its journal has been recovered.
+   */
+  settle: (outcome: RestoredMediaOutcome) => Promise<void>;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -534,15 +553,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Put every restored file in its final place and point the records at it.
- * Returns the state to commit plus a cleanup that removes the files this
- * wrote, for when the commit does not happen. On any failure, everything
- * written so far is removed before the error is rethrown.
+ * Returns the state to commit, a cleanup that removes the files this wrote
+ * for when no commit begins, and a settle for how a commit ended. On any
+ * failure, everything written so far is removed before the error is rethrown.
  */
 export async function materializeCompleteBackupState(
   stateInput: unknown,
   provider: BackupAssetProvider,
   dependencies: MaterializeBackupDependencies,
-): Promise<{ state: Record<string, unknown>; cleanup: () => Promise<void> }> {
+): Promise<MaterializedBackupState> {
   const { io } = dependencies;
   const state = JSON.parse(JSON.stringify(stateInput)) as Record<string, unknown>;
   const createdUris: string[] = [];
@@ -637,7 +656,17 @@ export async function materializeCompleteBackupState(
       delete document._backupAssetId;
     }
     provider.assertAllTaken();
-    return { state, cleanup: removeCreated };
+    // Written down before any record is committed (independent review R01).
+    // Without a ledger the files are still never removed while the restore
+    // may finish; they are only not swept if it never does.
+    const claim = dependencies.mediaLedger
+      ? await dependencies.mediaLedger.track(createdUris)
+      : null;
+    const settle = async (outcome: RestoredMediaOutcome) => {
+      if (claim) return claim.settle(outcome);
+      if (outcome === 'aborted') await removeCreated();
+    };
+    return { state, cleanup: () => settle('aborted'), settle };
   } catch (error) {
     await removeCreated();
     throw error;

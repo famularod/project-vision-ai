@@ -447,6 +447,7 @@ import {
   unavailablePhotosNotice,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import { createRestoredMediaLedger, type RestoredMediaOutcome } from './services/RestoredMediaLedger';
 import {
   isAttachmentReadError, REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_MESSAGE_IMAGE_BYTES,
   REPORT_TEXT_IMAGE_LIMIT,
@@ -981,8 +982,11 @@ const projectDeletionRuntime = createProjectDeletionRuntime({
     ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR, deleteOwnedReferenceDocument: deleteStoredReferenceDocument,
   }),
 });
+// The files a restore placed, kept while it can still finish (independent review R01).
+const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId,
+  priorityKeys: [UPDATES_STORAGE_KEY, DRAFT_STORAGE_KEY, REFERENCE_DOCUMENTS_STORAGE_KEY, PROJECT_DOCUMENTS_STORAGE_KEY] });
 const backupRestoreRuntime = createBackupRestoreRuntime({
-  storage: AsyncStorage,
+  storage: AsyncStorage, settleRestoredMedia: restoredMediaLedger.settlePending,
   targetKeys: {
     updates: UPDATES_STORAGE_KEY, projects: PROJECTS_STORAGE_KEY, archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY,
     contacts: CONTACTS_STORAGE_KEY,
@@ -10724,8 +10728,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function applyRestoredData(data: RestoredAppData): Promise<boolean> {
-    if (backupRestoreInFlightRef.current) return false;
+  async function applyRestoredData(data: RestoredAppData): Promise<RestoredMediaOutcome> {
+    if (backupRestoreInFlightRef.current) return 'aborted';
     backupRestoreInFlightRef.current = true;
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current); savedUpdatesSaveTimer.current = null;
@@ -10765,7 +10769,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Device backup restored',
         `${DEVICE_BACKUP_RESTORE_NOTICE} Included project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.`,
       );
-      return true;
+      return 'committed';
     } catch (error) {
       const recoveryBlocked = error instanceof BackupRestoreRecoveryRequiredError;
       if (recoveryBlocked) {
@@ -10777,7 +10781,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? 'The restore was partially written and editing is locked until Retry Recovery succeeds or the app restarts.'
           : 'The backup could not be safely restored. Existing app data and deletion records were not intentionally replaced.',
       );
-      return false;
+      // Recovery-required may still finish at the next start: its files are kept (independent review R01).
+      return recoveryBlocked ? 'recovery_required' : 'aborted';
     } finally {
       backupRestoreInFlightRef.current = false;
     }
@@ -10881,7 +10886,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       referenceDocumentsDirectory: ensureReferenceDocumentsDirectory,
                       ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR,
                       cacheDirectory: FileSystem.cacheDirectory,
-                      importProjectDocument: importProjectDocumentIntoOwnedStorage,
+                      importProjectDocument: importProjectDocumentIntoOwnedStorage, mediaLedger: restoredMediaLedger,
                     },
                   );
                   // Carried photos have their files now; photos declared
@@ -10893,9 +10898,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     Alert.alert('Restore failed', normalized.message);
                     return;
                   }
-                  const committed = await applyRestoredData(normalized.data);
-                  if (!committed) await materialized.cleanup();
-                  onProgress?.(committed ? 'Restore finished.' : 'Restore did not finish.');
+                  const outcome = await applyRestoredData(normalized.data);
+                  await materialized.settle(outcome);
+                  onProgress?.(outcome === 'committed' ? 'Restore finished.' : 'Restore did not finish.');
                 } finally {
                   await staged?.cleanup();
                 }

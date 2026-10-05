@@ -468,6 +468,8 @@ describe('a restore that commits while photos are judged (whole-app audit A4 pas
   });
 
   /** App.tsx's applyRestoredData, compiled, committing `restoredUpdates`. */
+  // Independent review R01: applyRestoredData answers how the restore ended ('committed', 'aborted' or
+  // 'recovery_required') where it answered true or false, so the files it placed are kept while it can still finish.
   function restoreFrom(restoredUpdates: unknown[], deps: Record<string, unknown>) {
     const js = ts.transpileModule(`module.exports = ${componentFunction('applyRestoredData')}`, {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -488,9 +490,9 @@ describe('a restore that commits while photos are judged (whole-app audit A4 pas
       BackupRestoreRecoveryRequiredError: class extends Error {}, startupHydration: { fail: noop }, PROJECTS_STORAGE_KEY: 'k',
       ...deps,
     };
-    const mod = { exports: {} as unknown as (data: unknown) => Promise<boolean> };
+    const mod = { exports: {} as unknown as (data: unknown) => Promise<string> };
     new Function('module', 'exports', ...Object.keys(all), js)(mod, mod.exports, ...Object.values(all));
-    return mod.exports as unknown as (data: unknown) => Promise<boolean>;
+    return mod.exports as unknown as (data: unknown) => Promise<string>;
   }
 
   it('the refresh takes photo paths from the copy read after the photo check', async () => {
@@ -510,10 +512,10 @@ describe('a restore that commits while photos are judged (whole-app audit A4 pas
       { refreshCommit: guard.begin(), setSavedUpdates },
     );
     const applyRestoredData = restoreFrom(restored, { operationalRefreshCommitGuard: guard, savedUpdatesRef });
-    let restoredOk: boolean | null = null;
+    let restoredOk: string | null = null;
     mockDuringFileCheck.push(async () => { restoredOk = await applyRestoredData({}); });
     await run();
-    expect(restoredOk).toBe(true);
+    expect(restoredOk).toBe('committed');
     expect(savedUpdatesRef.current).toBe(restored);
     expect(setSavedUpdates).not.toHaveBeenCalled();
   });
