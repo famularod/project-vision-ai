@@ -66,7 +66,7 @@ import {
   loadECOSHostedIndexStatuses,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
-import { askECOSProjectQuestion } from './ECOSProjectQuestion';
+import { askECOSProjectQuestion, type ECOSProjectQuestionControl } from './ECOSProjectQuestion';
 import {
   analyzeECOSDrawingPage,
   type ECOSDrawingPageAnalysisInput,
@@ -378,7 +378,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       await requireAuthorizedOwnerCached();
       return analyzeECOSDrawingPage({ client, input });
     },
-    async askAuthorizedProjectQuestion(input: {
+    async askAuthorizedProjectQuestion(input: ECOSProjectQuestionControl & {
       projectId: string;
       projectName: string;
       question: string;

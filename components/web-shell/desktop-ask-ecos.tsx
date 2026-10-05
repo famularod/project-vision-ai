@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useECOSConversation } from '../../hooks/use-ecos-conversation';
+import { createECOSAskWait, isECOSAskStopped, type ECOSAskControl } from '../../services/ECOSAskWait';
 import type { ECOSConversationRequest } from '../../services/ECOSConversation';
 import {
   ActivityIndicator,
@@ -33,7 +34,11 @@ export function DesktopAskECOSWorkspace({
   projectId: string | null;
   projectName: string | null;
   ownerKey: string;
-  onAsk: (input: ECOSConversationRequest & { projectId: string; projectName: string; question: string }) => Promise<ECOSProjectQuestionAnswer>;
+  /** `control` stops the request and names it for a retry (independent review R10). */
+  onAsk: (
+    input: ECOSConversationRequest & { projectId: string; projectName: string; question: string },
+    control?: ECOSAskControl,
+  ) => Promise<ECOSProjectQuestionAnswer>;
 }) {
   const { width } = useWindowDimensions();
   const compact = width < 820;
@@ -43,12 +48,17 @@ export function DesktopAskECOSWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const progress = useECOSAskProgress(loading);
+  // Bounds the wait, stops it, and keeps a stopped question's request id (independent review R10).
+  const [askWait] = useState(createECOSAskWait);
   useEffect(() => {
+    // Another project or account: a retry there is not this request again.
+    askWait.reset();
     setQuestion('');
     setAnswer(null);
     setError(null);
     setLoading(false);
-  }, [conversation]);
+  }, [askWait, conversation]);
+  useEffect(() => () => askWait.reset(), [askWait]);
   const ready = Boolean(projectId && projectName && question.trim().length >= 3 && !loading);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
@@ -66,13 +76,18 @@ export function DesktopAskECOSWorkspace({
     setLoading(true);
     const turn = conversation.begin();
     try {
-      const nextAnswer = await onAsk({ projectId, projectName, question: cleanQuestion, ...turn.request });
+      const nextAnswer = await askWait.run(
+        [projectId, cleanQuestion, turn.request.conversationId, turn.request.priorTurnId],
+        control => onAsk({ projectId, projectName, question: cleanQuestion, ...turn.request }, control),
+      );
       if (!turn.isCurrent()) return;
       turn.accept(nextAnswer.conversation);
       setAnswer(nextAnswer);
     } catch (reason) {
       if (!turn.isCurrent()) return;
-      turn.accept(null);
+      // Stopped or timed out: nothing came back, so the conversation stands
+      // and asking again repeats this same request.
+      if (!isECOSAskStopped(reason)) turn.accept(null);
       setError(reason instanceof Error ? reason.message : 'Ask ECOS could not complete the question.');
     } finally {
       if (turn.isCurrent()) setLoading(false);
@@ -153,6 +168,14 @@ export function DesktopAskECOSWorkspace({
           <Text style={styles.loadingTitle}>{progress.stage.title}</Text>
           <Text style={styles.loadingText}>{progress.stage.detail}</Text>
           <Text style={styles.loadingElapsed}>{progress.elapsedLabel}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.stopButton, pressed && styles.pressed]}
+            onPress={() => askWait.cancel()}
+            accessibilityRole="button"
+            accessibilityLabel="Stop waiting for this answer"
+          >
+            <Text style={styles.stopButtonText}>Stop</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -314,6 +337,8 @@ const styles = StyleSheet.create({
   loadingTitle: { color: desktopSurfaces.text, fontSize: 19, fontWeight: '900', marginTop: 14 },
   loadingText: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, marginTop: 6, textAlign: 'center' },
   loadingElapsed: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 16, marginTop: 8, fontVariant: ['tabular-nums'] },
+  stopButton: { minWidth: 140, minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.accent, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18, marginTop: 14 },
+  stopButtonText: { color: desktopSurfaces.accent, fontSize: 14, fontWeight: '900' },
   errorCard: { flexDirection: 'row', gap: 10, borderRadius: 14, borderWidth: 1, borderColor: '#F0A7A0', backgroundColor: '#FFF0EF', padding: 16 },
   errorText: { flex: 1, color: '#B42318', fontSize: 14, lineHeight: 20, fontWeight: '700' },
   answerLayout: { flexDirection: 'row', alignItems: 'flex-start', gap: 18 },

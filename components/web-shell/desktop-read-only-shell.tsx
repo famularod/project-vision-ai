@@ -706,8 +706,9 @@ function DesktopPageData({
         // Unarchived projects, so Ask ECOS refuses a number only when it names
         // one of them (owner answer Q20; audit A9 pass 1 #2), and closed ones,
         // whose numbers are refused as closed (audit A9 pass 3 L1).
-        onAsk={input => auth.askProjectQuestion({
+        onAsk={(input, control) => auth.askProjectQuestion({
           ...input,
+          ...control,
           knownProjectNames: snapshot.projects.map(project => project.name),
           closedProjectNames: snapshot.closedProjectNames ?? [],
         })}

@@ -34,7 +34,7 @@ import {
   type DAVEWebPreparedUpload,
   type DAVEWebReportRecord,
 } from '../../services/DAVEWebOperations';
-import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
+import type { ECOSProjectQuestionAnswer, ECOSProjectQuestionControl } from '../../services/ECOSProjectQuestion';
 import type { ECOSDrawingPageAnalysisInput } from '../../services/ECOSDrawingPageAnalysis';
 import type { ECOSDrawingPageAnalysisResult } from '../../services/ECOSDrawingPageAnalysis';
 import type { ECOSDocumentIndexJob } from '../../services/ECOSDocumentIndexJobs';
@@ -137,7 +137,7 @@ type DesktopAuthContextValue = Readonly<{
   /** The signed-in owner, for this computer's own copy of the report periods. */
   reportOwnerId: () => Promise<string>;
   restoreMissingTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
-  askProjectQuestion: (input: {
+  askProjectQuestion: (input: ECOSProjectQuestionControl & {
     projectId: string;
     projectName: string;
     question: string;
@@ -1238,7 +1238,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return restored;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);
 
-  const askProjectQuestion = useCallback((input: {
+  const askProjectQuestion = useCallback((input: ECOSProjectQuestionControl & {
     projectId: string;
     projectName: string;
     question: string;
