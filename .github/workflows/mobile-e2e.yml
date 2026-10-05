@@ -20,10 +20,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Use Node.js 20
+      - name: Use SDK-compatible Node.js 24
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24.17.0
           cache: npm
 
       - name: Install exact dependencies
@@ -36,7 +36,8 @@ jobs:
 
       - name: Boot an available iPhone simulator
         run: |
-          IOS_UDID="$(xcrun simctl list devices available -j | node -e 'let input=\"\"; process.stdin.on(\"data\", chunk => input += chunk); process.stdin.on(\"end\", () => { const devices = Object.values(JSON.parse(input).devices).flat(); const match = devices.find(device => device.isAvailable && /^iPhone/.test(device.name)); if (!match) process.exit(1); process.stdout.write(match.udid); });')"
+          IOS_UDID="$(xcrun simctl list devices available -j | node scripts/select-ios-simulator.js)"
+          [ -n "$IOS_UDID" ] || { echo "No available iPhone simulator."; exit 1; }
           echo "IOS_UDID=$IOS_UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$IOS_UDID" || true
           xcrun simctl bootstatus "$IOS_UDID" -b
@@ -57,10 +58,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Use Node.js 20
+      - name: Use SDK-compatible Node.js 24
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24.17.0
           cache: npm
 
       - name: Use Java 17
