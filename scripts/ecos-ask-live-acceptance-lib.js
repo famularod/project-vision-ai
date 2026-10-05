@@ -40,7 +40,7 @@ const REQUIRED_VISUAL_TILE_KEYS = Object.freeze(Object.keys(REQUIRED_VISUAL_TILE
 const CONTRACT_FILES = Object.freeze([
   'validation/ecos/ask-ecos-real-world-cases.json',
   'services/ECOSProjectQuestion.ts',
-  'supabase/functions/ecos-ask-project/index.ts',
+  'supabase/functions/_archived-ecos-ask-project-not-live/index.ts',
   'supabase/functions/_shared/ecos-project-answer-policy.ts',
   'supabase/functions/_shared/ecos-drawing-evidence.ts',
   'supabase/migrations/20260804000000_ecos_document_search_index.sql',

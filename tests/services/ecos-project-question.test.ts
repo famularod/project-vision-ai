@@ -480,8 +480,8 @@ describe('Ask ECOS wrong-project guard (owner answer Q20)', () => {
     });
   });
 
-  it('the edge function applies the same shared rule to its own unarchived project list', () => {
-    const edge = readFileSync(join(__dirname, '../../supabase/functions/ecos-ask-project/index.ts'), 'utf8');
+  it("the app repository's archived copy of the function (not live) applies the same shared rule to its own unarchived project list", () => {
+    const edge = readFileSync(join(__dirname, '../../supabase/functions/_archived-ecos-ask-project-not-live/index.ts'), 'utf8');
     expect(edge).toMatch(/from "\.\.\/_shared\/ecos-project-reference\.ts"/);
     expect(edge).not.toMatch(/function findProjectReferenceMismatch/);
     expect(edge).not.toMatch(/\\d\{4,6\}/);

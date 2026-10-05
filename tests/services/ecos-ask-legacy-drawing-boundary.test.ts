@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-describe("Ask ECOS legacy drawing evidence boundary", () => {
+describe("Ask ECOS legacy drawing evidence boundary (archived app-repo copy, not live)", () => {
   const edge = fs.readFileSync(
     path.join(
       process.cwd(),
-      "supabase/functions/ecos-ask-project/index.ts",
+      "supabase/functions/_archived-ecos-ask-project-not-live/index.ts",
     ),
     "utf8",
   );

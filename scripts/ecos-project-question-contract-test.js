@@ -3,7 +3,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
-const edge = read('supabase/functions/ecos-ask-project/index.ts');
+const edge = read('supabase/functions/_archived-ecos-ask-project-not-live/index.ts');
 const migration = read('supabase/migrations/20260804010000_ecos_project_question_controls.sql');
 const app = read('App.tsx');
 const mobileQuestionExperience = read('hooks/use-ecos-project-question-experience.tsx');
