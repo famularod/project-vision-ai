@@ -4,6 +4,7 @@ import { Image } from 'react-native';
 import { renderPdfExcerpt } from '../modules/dave-text-recognition';
 import type {
   ProjectUpdate,
+  ReferenceDocument,
   ReferenceDocumentRegion,
   UpdatePhoto,
 } from '../types';
@@ -11,6 +12,14 @@ import {
   planReportDrawingCrop,
   reportDrawingCropBounds,
 } from './ReportDrawingCrop';
+import {
+  convertedReportImageMimeType,
+  detectReportImageSignature,
+  REPORT_IMAGE_SIGNATURE_BYTES,
+  reportImageNotPreparedMessage,
+  reportWordEmbedMimeType,
+  type ReportImageFormat,
+} from './ReportWordImageFormat';
 import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
@@ -60,12 +69,8 @@ export async function resolveNativeReportWordMedia(args: {
   for (const reference of args.drawingReferences) {
     const document = reference.excerpt.document;
     const label = `${reference.projectName} · ${reference.areaName} · ${reference.citation.label}`;
-    const mimeType = normalizedMimeType(
-      document.mimeType,
-      document.originalFileName || document.name,
-    );
     try {
-      const raster = mimeType.includes('pdf')
+      const raster = drawingIsPdf(document)
         ? await localPdfExcerpt(reference)
         : await localDrawingImageExcerpt(document.uri, reference.excerpt.region);
       media.push({
@@ -105,10 +110,7 @@ async function resolvePhoto(
     || `Project photo from ${photo.selectedAreaName || update.selectedAreaName || update.projectName}`;
   const numberedLabel = `Photo ${displayNumber} — ${label}`;
   try {
-    const raster = await localRaster(
-      photo.uri,
-      normalizedMimeType(photo.mimeType, photo.fileName || photo.uri),
-    );
+    const raster = await localRaster(photo.uri);
     return {
       media: {
         id: photo.id,
@@ -152,14 +154,42 @@ function photoReasonForInclusion(
     'and supports the recorded project condition.';
 }
 
-async function localRaster(uri: string, mimeType: string) {
+/**
+ * What a local file is, from its own first bytes (independent review R07: a
+ * WebP or HEIC was embedded as it was under the label image/jpeg, because the
+ * label came from the file name and stored type). A file that is missing
+ * reads as unknown.
+ */
+function localFileFormat(uri: string): ReportImageFormat {
+  const file = new File(uri.trim());
+  if (!uri.trim() || !file.exists) return 'unknown';
+  const handle = file.open();
+  try {
+    return detectReportImageSignature(handle.readBytes(REPORT_IMAGE_SIGNATURE_BYTES));
+  } finally {
+    handle.close();
+  }
+}
+
+/**
+ * Whether a drawing file is a PDF. Its stored type and name are asked only
+ * when its bytes are none this app recognises.
+ */
+function drawingIsPdf(document: ReferenceDocument) {
+  const format = localFileFormat(document.uri);
+  if (format !== 'unknown') return format === 'pdf';
+  return (document.mimeType || '').toLowerCase().includes('pdf') ||
+    (document.originalFileName || document.name || '').toLowerCase().endsWith('.pdf');
+}
+
+async function localRaster(uri: string) {
   const normalizedUri = uri.trim();
   if (!normalizedUri) throw new Error('The local image path is missing.');
   const file = new File(normalizedUri);
   if (!file.exists) throw new Error('The local image file is missing.');
-  if (isHeicImage(normalizedUri, mimeType)) {
-    return convertHeicRaster(normalizedUri);
-  }
+  const format = localFileFormat(normalizedUri);
+  const mimeType = reportWordEmbedMimeType(format);
+  if (!mimeType) return convertedRaster(normalizedUri, format);
   const [data, dimensions] = await Promise.all([
     file.bytes(),
     imageDimensions(normalizedUri),
@@ -172,7 +202,11 @@ async function localRaster(uri: string, mimeType: string) {
   };
 }
 
-async function convertHeicRaster(uri: string) {
+/**
+ * Converts a picture Word cannot take as it is (HEIC, WebP, TIFF and the
+ * rest) to JPEG, and labels the result by reading it back.
+ */
+async function convertedRaster(uri: string, format: ReportImageFormat) {
   let renderedFile: File | null = null;
   try {
     const context = ImageManipulator.manipulate(uri);
@@ -183,18 +217,19 @@ async function convertHeicRaster(uri: string) {
     });
     renderedFile = new File(rendered.uri);
     if (!renderedFile.exists) {
-      throw new Error('The converted iPhone photo is missing.');
+      throw new Error('The converted image is missing.');
     }
+    const data = await renderedFile.bytes();
     return {
-      data: await renderedFile.bytes(),
-      mimeType: 'image/jpeg',
+      data,
+      mimeType: convertedReportImageMimeType(data),
       width: rendered.width,
       height: rendered.height,
     };
   } catch (error) {
-    throw new Error(
-      `The iPhone photo could not be prepared for the Word report. ${errorMessage(error, 'Image conversion failed.')}`,
-    );
+    throw new Error(format === 'heic'
+      ? `${reportImageNotPreparedMessage(format)} ${errorMessage(error, 'Image conversion failed.')}`
+      : reportImageNotPreparedMessage(format));
   } finally {
     if (renderedFile?.exists) renderedFile.delete();
   }
@@ -211,7 +246,9 @@ async function renderDrawingImageExcerpt(
   region: ReferenceDocumentRegion,
 ) {
   const context = ImageManipulator.manipulate(uri);
-  const upright = await context.renderAsync();
+  const upright = await context.renderAsync().catch(() => {
+    throw new Error(reportImageNotPreparedMessage(localFileFormat(uri)));
+  });
   const crop = planReportDrawingCrop(region, upright);
   context.crop({
     originX: crop.originX,
@@ -239,9 +276,10 @@ async function localDrawingImageExcerpt(
     if (!renderedFile.exists) {
       throw new Error('The cited drawing excerpt could not be prepared.');
     }
+    const data = await renderedFile.bytes();
     return {
-      data: await renderedFile.bytes(),
-      mimeType: 'image/jpeg',
+      data,
+      mimeType: convertedReportImageMimeType(data),
       width: rendered.width,
       height: rendered.height,
     };
@@ -268,9 +306,10 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
     if (!renderedFile.exists) {
       throw new Error('The cited drawing excerpt could not be prepared.');
     }
+    const data = await renderedFile.bytes();
     return {
-      data: await renderedFile.bytes(),
-      mimeType: 'image/jpeg',
+      data,
+      mimeType: convertedReportImageMimeType(data),
       width: rendered.width,
       height: rendered.height,
     };
@@ -283,11 +322,7 @@ export async function renderNativeReportDrawingPreview(
   reference: ReportDrawingReference,
 ) {
   const document = reference.excerpt.document;
-  const mimeType = normalizedMimeType(
-    document.mimeType,
-    document.originalFileName || document.name,
-  );
-  if (!mimeType.includes('pdf')) {
+  if (!drawingIsPdf(document)) {
     const file = new File(document.uri);
     if (!file.exists) throw new Error('The current drawing image is missing on this device.');
     return (await renderDrawingImageExcerpt(document.uri, reference.excerpt.region)).uri;
@@ -311,34 +346,6 @@ function imageDimensions(uri: string): Promise<{ width: number; height: number }
       error => reject(error),
     );
   });
-}
-
-function normalizedMimeType(
-  mimeType: string | null | undefined,
-  fileName: string | null | undefined,
-) {
-  const normalized = (mimeType || '').trim().toLowerCase();
-  if (normalized.includes('heic') || normalized.includes('heif')) return 'image/heic';
-  if (normalized.includes('png')) return 'image/png';
-  if (normalized.includes('gif')) return 'image/gif';
-  if (normalized.includes('bmp')) return 'image/bmp';
-  if (normalized.includes('pdf')) return 'application/pdf';
-  const lowerName = (fileName || '').toLowerCase();
-  if (lowerName.endsWith('.heic') || lowerName.endsWith('.heif')) return 'image/heic';
-  if (lowerName.endsWith('.png')) return 'image/png';
-  if (lowerName.endsWith('.gif')) return 'image/gif';
-  if (lowerName.endsWith('.bmp')) return 'image/bmp';
-  if (lowerName.endsWith('.pdf')) return 'application/pdf';
-  return 'image/jpeg';
-}
-
-function isHeicImage(uri: string, mimeType: string) {
-  const normalizedUri = uri.toLowerCase().split(/[?#]/, 1)[0];
-  const normalizedMimeType = mimeType.toLowerCase();
-  return normalizedMimeType.includes('heic') ||
-    normalizedMimeType.includes('heif') ||
-    normalizedUri.endsWith('.heic') ||
-    normalizedUri.endsWith('.heif');
 }
 
 function errorMessage(error: unknown, fallback: string) {

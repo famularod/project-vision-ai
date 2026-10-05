@@ -5,6 +5,12 @@ import type {
   UpdatePhoto,
 } from '../types';
 import { planReportDrawingCrop } from './ReportDrawingCrop';
+import {
+  convertedReportImageMimeType,
+  detectReportImageSignature,
+  reportImageNotPreparedMessage,
+  type ReportImageFormat,
+} from './ReportWordImageFormat';
 import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
@@ -16,13 +22,7 @@ type ArtifactUrlResolver = (
   path: string,
 ) => Promise<string>;
 
-export type ReportImageFormat =
-  | 'jpeg'
-  | 'png'
-  | 'gif'
-  | 'webp'
-  | 'heic'
-  | 'unknown';
+export type { ReportImageFormat } from './ReportWordImageFormat';
 
 export type ResolvedReportWordMedia = Readonly<{
   media: readonly ReportWordMedia[];
@@ -280,7 +280,11 @@ async function rasterizeImageUrl(
   const blob = format === 'heic'
     ? await convertHeicForWordReport(sourceBlob)
     : sourceBlob;
-  const image = await loadImage(blob);
+  // A picture this browser cannot open is listed as unavailable in the same
+  // words the phone uses (independent review R07).
+  const image = await loadImage(blob).catch(() => {
+    throw new Error(reportImageNotPreparedMessage(detectReportImageSignature(bytes)));
+  });
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = image.naturalWidth;
   sourceCanvas.height = image.naturalHeight;
@@ -293,42 +297,17 @@ async function rasterizeImageUrl(
     : resizeCanvas(sourceCanvas);
 }
 
+/**
+ * What a downloaded picture is. Its own bytes decide; the type the cloud
+ * declared is only a hint for how to try opening bytes nothing recognises.
+ * Whatever is embedded is drawn again here and labelled from the result.
+ */
 export function detectReportImageFormat(
   bytes: Uint8Array,
   declaredMimeType?: string | null,
 ): ReportImageFormat {
-  if (bytes.length >= 3
-    && bytes[0] === 0xff
-    && bytes[1] === 0xd8
-    && bytes[2] === 0xff) {
-    return 'jpeg';
-  }
-  if (bytes.length >= 8
-    && bytes[0] === 0x89
-    && bytes[1] === 0x50
-    && bytes[2] === 0x4e
-    && bytes[3] === 0x47
-    && bytes[4] === 0x0d
-    && bytes[5] === 0x0a
-    && bytes[6] === 0x1a
-    && bytes[7] === 0x0a) {
-    return 'png';
-  }
-  if (bytes.length >= 6) {
-    const signature = ascii(bytes, 0, 6);
-    if (signature === 'GIF87a' || signature === 'GIF89a') return 'gif';
-  }
-  if (bytes.length >= 12
-    && ascii(bytes, 0, 4) === 'RIFF'
-    && ascii(bytes, 8, 4) === 'WEBP') {
-    return 'webp';
-  }
-  if (bytes.length >= 12 && ascii(bytes, 4, 4) === 'ftyp') {
-    const brands = ascii(bytes, 8, Math.min(40, bytes.length - 8));
-    if (/(heic|heix|hevc|hevx|heif|heim|heis|mif1|msf1)/.test(brands)) {
-      return 'heic';
-    }
-  }
+  const format = detectReportImageSignature(bytes);
+  if (format !== 'unknown') return format;
 
   const normalizedMimeType = (declaredMimeType || '').toLowerCase();
   if (normalizedMimeType.includes('heic') || normalizedMimeType.includes('heif')) {
@@ -343,10 +322,6 @@ export function detectReportImageFormat(
   return 'unknown';
 }
 
-function ascii(bytes: Uint8Array, offset: number, length: number) {
-  return String.fromCharCode(...bytes.slice(offset, offset + length));
-}
-
 function mimeTypeForReportImageFormat(
   format: ReportImageFormat,
   declaredMimeType?: string | null,
@@ -354,8 +329,10 @@ function mimeTypeForReportImageFormat(
   if (format === 'jpeg') return 'image/jpeg';
   if (format === 'png') return 'image/png';
   if (format === 'gif') return 'image/gif';
+  if (format === 'bmp') return 'image/bmp';
   if (format === 'webp') return 'image/webp';
   if (format === 'heic') return 'image/heic';
+  if (format === 'tiff') return 'image/tiff';
   return declaredMimeType?.trim() || 'application/octet-stream';
 }
 
@@ -421,9 +398,11 @@ async function canvasResult(canvas: HTMLCanvasElement) {
       0.84,
     );
   });
+  // The label is read from what the browser wrote, not assumed (independent review R07).
+  const data = new Uint8Array(await blob.arrayBuffer());
   return {
-    data: new Uint8Array(await blob.arrayBuffer()),
-    mimeType: 'image/jpeg',
+    data,
+    mimeType: convertedReportImageMimeType(data),
     width: canvas.width,
     height: canvas.height,
   };

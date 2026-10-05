@@ -24,7 +24,7 @@ export type FakeCrop = Readonly<{
 }>;
 
 export type FakeImageFormat =
-  | 'jpeg' | 'png' | 'gif' | 'bmp' | 'webp' | 'heic' | 'tiff' | 'pdf' | 'unknown';
+  | 'jpeg' | 'png' | 'gif' | 'bmp' | 'webp' | 'heic' | 'tiff' | 'avif' | 'pdf' | 'unknown';
 
 const text = (value: string) => Array.from(value, character => character.charCodeAt(0));
 
@@ -32,17 +32,19 @@ export const FAKE_SIGNATURES: Readonly<Record<FakeImageFormat, readonly number[]
   jpeg: [0xff, 0xd8, 0xff, 0xe0],
   png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   gif: text('GIF89a'),
-  bmp: [...text('BM'), 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00],
+  bmp: [...text('BM'), 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00],
   webp: [...text('RIFF'), 0x24, 0x00, 0x00, 0x00, ...text('WEBPVP8 ')],
   heic: [0x00, 0x00, 0x00, 0x18, ...text('ftypheic'), 0x00, 0x00, 0x00, 0x00, ...text('mif1heic')],
   tiff: [0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00],
+  // A picture type the report's policy does not name, which devices can still open.
+  avif: [0x00, 0x00, 0x00, 0x1c, ...text('ftypavif'), 0x00, 0x00, 0x00, 0x00, ...text('avifmiaf')],
   pdf: text('%PDF-1.7\n'),
   unknown: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b],
 };
 
 /** What an iPhone or iPad decodes, and what a desktop browser (Chrome) decodes. */
-const DEVICE_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'tiff'];
-const BROWSER_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp'];
+const DEVICE_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'tiff', 'avif'];
+const BROWSER_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp', 'avif'];
 
 export const fakeMedia = {
   /** Local files on the phone, by path. */
