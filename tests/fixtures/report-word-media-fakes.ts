@@ -1,0 +1,368 @@
+/**
+ * Stand-ins for the picture handling behind the Word report (independent
+ * review R06 and R07), so the real phone/iPad resolver and the real desktop
+ * resolver both run under jest with only the platform I/O replaced.
+ *
+ * A picture here is a grid of labels. Cropping and resizing really move
+ * through that grid, so a test can read which part of a sheet ended up in the
+ * report. A file is a real format signature followed by the id of the picture
+ * a device would decode from it.
+ */
+export type FakePicture = Readonly<{
+  width: number;
+  height: number;
+  labelAt(x: number, y: number): string;
+}>;
+
+export type FakeCrop = Readonly<{
+  originX: number;
+  originY: number;
+  width: number;
+  height: number;
+  outputWidth: number;
+  outputHeight: number;
+}>;
+
+export type FakeImageFormat =
+  | 'jpeg' | 'png' | 'gif' | 'bmp' | 'webp' | 'heic' | 'tiff' | 'pdf' | 'unknown';
+
+const text = (value: string) => Array.from(value, character => character.charCodeAt(0));
+
+export const FAKE_SIGNATURES: Readonly<Record<FakeImageFormat, readonly number[]>> = {
+  jpeg: [0xff, 0xd8, 0xff, 0xe0],
+  png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  gif: text('GIF89a'),
+  bmp: [...text('BM'), 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00],
+  webp: [...text('RIFF'), 0x24, 0x00, 0x00, 0x00, ...text('WEBPVP8 ')],
+  heic: [0x00, 0x00, 0x00, 0x18, ...text('ftypheic'), 0x00, 0x00, 0x00, 0x00, ...text('mif1heic')],
+  tiff: [0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00],
+  pdf: text('%PDF-1.7\n'),
+  unknown: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b],
+};
+
+/** What an iPhone or iPad decodes, and what a desktop browser (Chrome) decodes. */
+const DEVICE_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'tiff'];
+const BROWSER_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp', 'webp'];
+
+export const fakeMedia = {
+  /** Local files on the phone, by path. */
+  files: new Map<string, Uint8Array>(),
+  /** Protected cloud files the desktop downloads, by URL. */
+  remote: new Map<string, { bytes: Uint8Array; contentType: string | null }>(),
+  pictures: new Map<string, FakePicture>(),
+  /** Every crop the phone's image tool was asked for. */
+  deviceCrops: [] as FakeCrop[],
+  /** Every crop the desktop canvas was asked for. */
+  browserCrops: [] as FakeCrop[],
+  /** Every local file the phone's image tool opened. */
+  deviceOpened: [] as string[],
+  /** The format the phone's image tool really writes, whatever it was asked for. */
+  deviceWrites: null as FakeImageFormat | null,
+  /** The format the desktop canvas really writes, whatever it was asked for. */
+  browserWrites: null as FakeImageFormat | null,
+  nextId: 0,
+  reset() {
+    this.files.clear();
+    this.remote.clear();
+    this.pictures.clear();
+    this.deviceCrops.length = 0;
+    this.browserCrops.length = 0;
+    this.deviceOpened.length = 0;
+    this.deviceWrites = null;
+    this.browserWrites = null;
+    this.nextId = 0;
+  },
+};
+
+/** A sheet whose four quarters are labelled A (top left), B, C, D (bottom right). */
+export function quadrantSheet(width: number, height: number): FakePicture {
+  return {
+    width,
+    height,
+    labelAt: (x, y) => (y < height / 2
+      ? (x < width / 2 ? 'A' : 'B')
+      : (x < width / 2 ? 'C' : 'D')),
+  };
+}
+
+function cropped(picture: FakePicture, crop: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>): FakePicture {
+  return {
+    width: crop.width,
+    height: crop.height,
+    labelAt: (x, y) => picture.labelAt(crop.originX + x, crop.originY + y),
+  };
+}
+
+function resized(picture: FakePicture, width: number, height: number): FakePicture {
+  return {
+    width,
+    height,
+    labelAt: (x, y) => picture.labelAt(
+      Math.min(picture.width - 1, Math.floor((x + 0.5) * picture.width / width)),
+      Math.min(picture.height - 1, Math.floor((y + 0.5) * picture.height / height)),
+    ),
+  };
+}
+
+/** The labels found across a picture, corners and edges included, e.g. "B" or "ABCD". */
+export function labelsIn(picture: FakePicture): string {
+  const found = new Set<string>();
+  const columns = sampled(picture.width);
+  for (const y of sampled(picture.height)) {
+    for (const x of columns) found.add(picture.labelAt(x, y));
+  }
+  return [...found].sort().join('');
+}
+
+function sampled(length: number) {
+  const step = Math.max(1, Math.floor(length / 48));
+  const points: number[] = [];
+  for (let value = 0; value < length; value += step) points.push(value);
+  points.push(length - 1);
+  return points;
+}
+
+/** A file in the given format that decodes to the given picture. */
+export function fakeImageBytes(format: FakeImageFormat, picture?: FakePicture): Uint8Array {
+  fakeMedia.nextId += 1;
+  const id = `picture-${fakeMedia.nextId}`;
+  if (picture) fakeMedia.pictures.set(id, picture);
+  return Uint8Array.from([...FAKE_SIGNATURES[format], ...text(`|${id}|`)]);
+}
+
+export function fakeFormatOf(bytes: Uint8Array): FakeImageFormat {
+  const formats = Object.keys(FAKE_SIGNATURES) as FakeImageFormat[];
+  return formats.find(format => format !== 'unknown' &&
+    FAKE_SIGNATURES[format].every((value, index) => bytes[index] === value)) || 'unknown';
+}
+
+/** The picture a file or an embedded report image decodes to. */
+export function fakePictureIn(bytes: Uint8Array): FakePicture | null {
+  const id = /\|(picture-\d+)\|/.exec(String.fromCharCode(...bytes))?.[1];
+  return (id && fakeMedia.pictures.get(id)) || null;
+}
+
+function decoded(bytes: Uint8Array, decodes: readonly FakeImageFormat[]): FakePicture | null {
+  return decodes.includes(fakeFormatOf(bytes)) ? fakePictureIn(bytes) : null;
+}
+
+/** expo-file-system: local files held in memory. */
+export function fakeFileSystem() {
+  class File {
+    uri: string;
+    constructor(uri: string) {
+      this.uri = uri;
+    }
+    get exists() {
+      return fakeMedia.files.has(this.uri);
+    }
+    get size() {
+      return fakeMedia.files.get(this.uri)?.byteLength ?? 0;
+    }
+    async bytes() {
+      const bytes = fakeMedia.files.get(this.uri);
+      if (!bytes) throw new Error('No such file.');
+      return bytes;
+    }
+    open() {
+      const bytes = fakeMedia.files.get(this.uri);
+      if (!bytes) throw new Error('No such file.');
+      let offset = 0;
+      return {
+        size: bytes.byteLength,
+        readBytes(length: number) {
+          const chunk = bytes.slice(offset, offset + length);
+          offset += chunk.byteLength;
+          return chunk;
+        },
+        close() {},
+      };
+    }
+    delete() {
+      fakeMedia.files.delete(this.uri);
+    }
+  }
+  return { File };
+}
+
+/** react-native Image.getSize: the size of a local picture the device can decode. */
+export function fakeImageGetSize(
+  uri: string,
+  success: (width: number, height: number) => void,
+  failure?: (error: unknown) => void,
+) {
+  const source = fakeMedia.files.get(uri);
+  const picture = source ? decoded(source, DEVICE_DECODES) : null;
+  if (picture) success(picture.width, picture.height);
+  else failure?.(new Error('The image size could not be read.'));
+}
+
+/** expo-image-manipulator: loads a local picture upright, crops, resizes and saves it. */
+export function fakeImageManipulator() {
+  const SaveFormat = { JPEG: 'jpeg', PNG: 'png', WEBP: 'webp' } as const;
+  const ImageManipulator = {
+    manipulate(uri: string) {
+      fakeMedia.deviceOpened.push(uri);
+      const source = fakeMedia.files.get(uri);
+      let picture = source ? decoded(source, DEVICE_DECODES) : null;
+      let pendingCrop: FakeCrop | null = null;
+      const context = {
+        crop(rect: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>) {
+          pendingCrop = { ...rect, outputWidth: rect.width, outputHeight: rect.height };
+          fakeMedia.deviceCrops.push(pendingCrop);
+          if (picture) picture = cropped(picture, rect);
+          return context;
+        },
+        resize(size: { width: number; height: number }) {
+          if (pendingCrop) {
+            // The record of this crop also carries the size it was saved at.
+            fakeMedia.deviceCrops[fakeMedia.deviceCrops.length - 1] = {
+              ...pendingCrop,
+              outputWidth: size.width,
+              outputHeight: size.height,
+            };
+          }
+          if (picture) picture = resized(picture, size.width, size.height);
+          return context;
+        },
+        async renderAsync() {
+          if (!picture) throw new Error('The image data could not be read.');
+          const rendered = picture;
+          return {
+            width: rendered.width,
+            height: rendered.height,
+            async saveAsync(options?: { format?: FakeImageFormat }) {
+              const format = fakeMedia.deviceWrites || options?.format || 'jpeg';
+              const bytes = fakeImageBytes(format, rendered);
+              const savedUri = `file:///cache/ImageManipulator/${fakeMedia.nextId}.${format}`;
+              fakeMedia.files.set(savedUri, bytes);
+              return { uri: savedUri, width: rendered.width, height: rendered.height };
+            },
+          };
+        },
+      };
+      return context;
+    },
+  };
+  return { ImageManipulator, SaveFormat };
+}
+
+type FakeCanvas = {
+  width: number;
+  height: number;
+  picture: FakePicture | null;
+  getContext(kind: string): { drawImage(source: { picture: FakePicture | null }, ...values: number[]): void };
+  toBlob(callback: (blob: Blob | null) => void, type?: string): void;
+};
+
+function fakeCanvas(): FakeCanvas {
+  const canvas: FakeCanvas = {
+    width: 0,
+    height: 0,
+    picture: null,
+    getContext: () => ({
+      drawImage(source, ...values) {
+        if (!source.picture) throw new Error('Nothing was drawn on the source.');
+        if (values.length === 2) {
+          canvas.picture = source.picture;
+        } else if (values.length === 4) {
+          canvas.picture = resized(source.picture, values[2], values[3]);
+        } else {
+          const crop = {
+            originX: values[0],
+            originY: values[1],
+            width: values[2],
+            height: values[3],
+            outputWidth: values[6],
+            outputHeight: values[7],
+          };
+          fakeMedia.browserCrops.push(crop);
+          canvas.picture = resized(cropped(source.picture, crop), crop.outputWidth, crop.outputHeight);
+        }
+      },
+    }),
+    toBlob(callback, type) {
+      if (!canvas.picture) {
+        callback(null);
+        return;
+      }
+      const format = fakeMedia.browserWrites || (type === 'image/png' ? 'png' : 'jpeg');
+      const bytes = fakeImageBytes(format, canvas.picture);
+      callback(new Blob([bytes.slice().buffer], { type }));
+    },
+  };
+  return canvas;
+}
+
+/**
+ * The parts of a browser the desktop resolver uses: fetch, an <img> that
+ * decodes a blob, a canvas, and object URLs. Returns a function that puts the
+ * real ones back.
+ */
+export function installFakeBrowser(): () => void {
+  const scope = globalThis as unknown as Record<string, unknown>;
+  const previous = {
+    document: scope.document,
+    fetch: scope.fetch,
+    createObjectURL: URL.createObjectURL,
+    revokeObjectURL: URL.revokeObjectURL,
+  };
+  const blobs = new Map<string, Blob>();
+  URL.createObjectURL = (blob: Blob) => {
+    const url = `blob:fake/${blobs.size + 1}`;
+    blobs.set(url, blob);
+    return url;
+  };
+  URL.revokeObjectURL = (url: string) => {
+    blobs.delete(url);
+  };
+  scope.fetch = async (url: string) => {
+    const entry = fakeMedia.remote.get(url);
+    return {
+      ok: Boolean(entry),
+      status: entry ? 200 : 404,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? entry?.contentType ?? null : null) },
+      arrayBuffer: async () => (entry?.bytes ?? new Uint8Array()).slice().buffer,
+    };
+  };
+  scope.document = {
+    createElement(tag: string) {
+      if (tag === 'canvas') return fakeCanvas();
+      if (tag !== 'img') throw new Error(`Unexpected element ${tag}.`);
+      const image = {
+        naturalWidth: 0,
+        naturalHeight: 0,
+        picture: null as FakePicture | null,
+        onload: null as (() => void) | null,
+        onerror: null as (() => void) | null,
+        address: '',
+        get src() {
+          return this.address;
+        },
+        set src(value: string) {
+          this.address = value;
+          const blob = blobs.get(value);
+          void (async () => {
+            const bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array();
+            const picture = decoded(bytes, BROWSER_DECODES);
+            if (!picture) {
+              this.onerror?.();
+              return;
+            }
+            this.picture = picture;
+            this.naturalWidth = picture.width;
+            this.naturalHeight = picture.height;
+            this.onload?.();
+          })();
+        },
+      };
+      return image;
+    },
+  };
+  return () => {
+    scope.document = previous.document;
+    scope.fetch = previous.fetch;
+    URL.createObjectURL = previous.createObjectURL;
+    URL.revokeObjectURL = previous.revokeObjectURL;
+  };
+}

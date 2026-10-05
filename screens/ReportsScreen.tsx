@@ -2728,7 +2728,7 @@ function drawingPreviewUri(reference: ReportDrawingReference) {
   return document.uri?.trim() || null;
 }
 
-function ReportDrawingReferencePreview({
+export function ReportDrawingReferencePreview({
   reference,
   onResolveDrawingPreview,
 }: {
@@ -2737,7 +2737,9 @@ function ReportDrawingReferencePreview({
     reference: ReportDrawingReference,
   ) => Promise<string | null>;
 }) {
-  const directUri = drawingPreviewUri(reference);
+  // A picture drawing is cropped to its cited area by the resolver, as a PDF
+  // is (independent review R06: the whole sheet was shown as the excerpt).
+  const directUri = onResolveDrawingPreview ? null : drawingPreviewUri(reference);
   const resolverRef = useRef(onResolveDrawingPreview);
   resolverRef.current = onResolveDrawingPreview;
   const referenceKey =

@@ -4,6 +4,7 @@ import type {
   ReferenceDocumentRegion,
   UpdatePhoto,
 } from '../types';
+import { planReportDrawingCrop } from './ReportDrawingCrop';
 import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
@@ -380,27 +381,19 @@ function cropCanvas(
   sourceCanvas: HTMLCanvasElement,
   region: ReferenceDocumentRegion,
 ) {
-  const padding = 0.045;
-  const x = clamp(region.x - padding, 0, 1);
-  const y = clamp(region.y - padding, 0, 1);
-  const right = clamp(region.x + region.width + padding, 0, 1);
-  const bottom = clamp(region.y + region.height + padding, 0, 1);
-  const sourceX = Math.floor(x * sourceCanvas.width);
-  const sourceY = Math.floor(y * sourceCanvas.height);
-  const sourceWidth = Math.max(1, Math.ceil((right - x) * sourceCanvas.width));
-  const sourceHeight = Math.max(1, Math.ceil((bottom - y) * sourceCanvas.height));
-  const scale = Math.min(1, 1600 / sourceWidth, 1200 / sourceHeight);
+  // The phone and iPad report crops by the same rule (independent review R06).
+  const crop = planReportDrawingCrop(region, sourceCanvas);
   const output = document.createElement('canvas');
-  output.width = Math.max(1, Math.round(sourceWidth * scale));
-  output.height = Math.max(1, Math.round(sourceHeight * scale));
+  output.width = crop.outputWidth;
+  output.height = crop.outputHeight;
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Drawing crop renderer is unavailable.');
   outputContext.drawImage(
     sourceCanvas,
-    sourceX,
-    sourceY,
-    sourceWidth,
-    sourceHeight,
+    crop.originX,
+    crop.originY,
+    crop.width,
+    crop.height,
     0,
     0,
     output.width,
@@ -454,10 +447,6 @@ function normalizedDrawingMimeType(documentRecord: ReferenceDocument) {
   return documentRecord.originalFileName.toLowerCase().endsWith('.pdf')
     ? 'application/pdf'
     : 'image/jpeg';
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function errorMessage(error: unknown, fallback: string) {

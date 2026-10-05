@@ -4,8 +4,13 @@ import { Image } from 'react-native';
 import { renderPdfExcerpt } from '../modules/dave-text-recognition';
 import type {
   ProjectUpdate,
+  ReferenceDocumentRegion,
   UpdatePhoto,
 } from '../types';
+import {
+  planReportDrawingCrop,
+  reportDrawingCropBounds,
+} from './ReportDrawingCrop';
 import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
@@ -62,7 +67,7 @@ export async function resolveNativeReportWordMedia(args: {
     try {
       const raster = mimeType.includes('pdf')
         ? await localPdfExcerpt(reference)
-        : await localRaster(document.uri, mimeType);
+        : await localDrawingImageExcerpt(document.uri, reference.excerpt.region);
       media.push({
         id: reference.id,
         kind: 'drawing',
@@ -195,11 +200,63 @@ async function convertHeicRaster(uri: string) {
   }
 }
 
+/**
+ * Crops a drawing kept as a picture to its cited area. The manipulator turns
+ * the picture upright as it loads it, so the size read here is the size the
+ * area was measured on (independent review R06: the whole sheet was embedded
+ * and described as an excerpt).
+ */
+async function renderDrawingImageExcerpt(
+  uri: string,
+  region: ReferenceDocumentRegion,
+) {
+  const context = ImageManipulator.manipulate(uri);
+  const upright = await context.renderAsync();
+  const crop = planReportDrawingCrop(region, upright);
+  context.crop({
+    originX: crop.originX,
+    originY: crop.originY,
+    width: crop.width,
+    height: crop.height,
+  });
+  if (crop.outputWidth !== crop.width || crop.outputHeight !== crop.height) {
+    context.resize({ width: crop.outputWidth, height: crop.outputHeight });
+  }
+  const excerpt = await context.renderAsync();
+  return excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+}
+
+async function localDrawingImageExcerpt(
+  uri: string,
+  region: ReferenceDocumentRegion,
+) {
+  const normalizedUri = uri.trim();
+  if (!normalizedUri) throw new Error('The local image path is missing.');
+  if (!new File(normalizedUri).exists) throw new Error('The local image file is missing.');
+  const rendered = await renderDrawingImageExcerpt(normalizedUri, region);
+  const renderedFile = new File(rendered.uri);
+  try {
+    if (!renderedFile.exists) {
+      throw new Error('The cited drawing excerpt could not be prepared.');
+    }
+    return {
+      data: await renderedFile.bytes(),
+      mimeType: 'image/jpeg',
+      width: rendered.width,
+      height: rendered.height,
+    };
+  } finally {
+    if (renderedFile.exists) renderedFile.delete();
+  }
+}
+
 async function localPdfExcerpt(reference: ReportDrawingReference) {
   const documentUri = reference.excerpt.document.uri.trim();
   if (!documentUri) throw new Error('The current drawing file path is missing.');
   const source = new File(documentUri);
   if (!source.exists) throw new Error('The current drawing PDF is missing on this device.');
+  // One rule decides whether the cited area is usable, for a PDF as for a picture.
+  reportDrawingCropBounds(reference.excerpt.region);
 
   const rendered = await renderPdfExcerpt(
     documentUri,
@@ -233,10 +290,11 @@ export async function renderNativeReportDrawingPreview(
   if (!mimeType.includes('pdf')) {
     const file = new File(document.uri);
     if (!file.exists) throw new Error('The current drawing image is missing on this device.');
-    return document.uri;
+    return (await renderDrawingImageExcerpt(document.uri, reference.excerpt.region)).uri;
   }
   const source = new File(document.uri);
   if (!source.exists) throw new Error('The current drawing PDF is missing on this device.');
+  reportDrawingCropBounds(reference.excerpt.region);
   const rendered = await renderPdfExcerpt(
     document.uri,
     reference.excerpt.pageNumber,
