@@ -63,7 +63,7 @@ if (!audit.reachable) {
   // No registry access (offline, or a sandboxed build). Do not invent a pass and
   // do not fail a network problem as if it were a vulnerability.
   console.warn(
-    'VIC_GATE_STATUS=WARN Dependency audit could not reach the registry; lock contents were not audited.',
+    `VIC_GATE_STATUS=WARN Dependency audit could not reach the registry; lock contents were not audited${audit.reason ? ` (${audit.reason})` : ''}.`,
   );
 } else {
   const counts = audit.counts;
