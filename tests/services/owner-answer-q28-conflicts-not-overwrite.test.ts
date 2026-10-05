@@ -147,6 +147,10 @@ jest.mock('../../services/SupabaseService', () => {
     listScheduleItems: read(() => [...mockCloud.rows.values()].map(mockCopy)),
     listReferenceDocuments: read(() => mockCopy(mockCloud.documents)),
     getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockCopy(mockCloud.rows.get(id)) : null) : mockDown(); },
+    // Independent review R02: several tasks' rows are read by their ids in one request, and a GPS area's row by its id.
+    getScheduleItemsByIds: async (ids: string[]) => (mockOnline()
+      ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockCopy(mockCloud.rows.get(id))] : []))) : mockDown()),
+    getProjectAreasByIds: async () => (mockOnline() ? mockOk([]) : mockDown()),
     upsertScheduleItem: async (item: { id: string }) => {
       mockTick();
       if (!mockOnline()) return mockDown();
@@ -1198,9 +1202,15 @@ describe('Q28 schedule tasks: both devices\' changes kept field by field, asked 
     expect([onDevice(phone), onDevice(ipad)].map(rows => rows.map(row => row[3]))).toEqual([[PHONE_NOTE], [PHONE_NOTE]]);
   });
 
-  it('an edit queued by Build 229 (no base) goes up as before: the iPad\'s whole copy wins', async () => {
+  // Independent review R02 changed what this pins. An edit queued by Build 229 has no copy it started from, so its
+  // field still goes up as before (the owner, onto the cloud's row). What followed was not the edit's doing: Sync Now
+  // had weighed the iPad's whole copy against the cloud's row before that upload, and then sent it over what the
+  // upload had just written, so the phone's note and the lookahead dates were gone everywhere (as at b03af1c:
+  // ['10/15/2026', '10/25/2026', 0, '', 'Mike']). Sync Now now reads the row again just before it sends, finds it
+  // changed, and weighs the iPad's copy against the row as it is: nothing of the iPad's is sent over it.
+  it('an edit queued by Build 229 (no base): its field goes up as before, and Sync Now no longer sends the iPad\'s whole copy over it', async () => {
     const { phone } = await staleIPad({ build229: true });
-    expect(onWeb()).toEqual([['10/15/2026', '10/25/2026', 0, '', 'Mike']]); // as at b03af1c
+    expect(onWeb()).toEqual([['10/18/2026', '10/28/2026', 0, PHONE_NOTE, 'Mike']]);
     expect(onDevice(phone)).toEqual(onWeb());
   });
 

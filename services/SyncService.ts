@@ -7,8 +7,11 @@ import {
   createPhotoSignedUrl,
   deleteProjectUpdate,
   deleteProject,
+  getProjectAreasByIds,
+  getProjectsByIds,
   getProjectUpdateSyncMetadata,
   getScheduleItem,
+  getScheduleItemsByIds,
   getSupabaseConfigurationStatus,
   listProjectUpdates,
   listProjectAreas,
@@ -56,6 +59,11 @@ import {
   scheduleProgressCarriedOntoCloudCopy,
 } from './DAVEScheduleRecovery';
 import { SCHEDULE_CARRIED_PROGRESS_FIELDS } from './ScheduleProgressSource';
+import {
+  cloudRecordKey, cloudRecordOf, cloudRecordsById, confirmRecordsMissingFromCloudList, sameCloudRecord, SCHEDULE_ITEM_ALREADY_IN_CLOUD,
+  type CloudRecordsByIdReader,
+} from './CloudListAbsenceCheck';
+import { chunkSupabaseFilterValues } from './SupabaseCollectionPagination';
 import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from './ScheduleItemQueueRevision';
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
@@ -3561,7 +3569,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     itemErrors[itemId] = message;
   };
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
-  const uploadContext: QueueUploadContext = { settledQueueItemIds: resolvedIds };
+  const uploadContext: QueueUploadContext = {
+    settledQueueItemIds: resolvedIds,
+    queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
+      typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
+  };
   // Still queued, with no error: no retry is owed until David chooses.
   heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
   let uploaded = 0;
@@ -4183,6 +4195,74 @@ export async function synchronize<TUpdate>(): Promise<{
   };
 }
 
+/**
+ * Independent review R02: the routine refresh takes a project this device holds as a cloud project, and that neither
+ * cloud list returned, as deleted or renamed on another device, and removes it here. The lists are read a page at a
+ * time, and the open and the closed list are two separate reads: a project closed or reopened between them is in
+ * neither. Such a project is read by its id first. The answer is the projects the cloud still has, by the list each
+ * belongs in; null when they could not be read, and then nothing may be removed.
+ */
+export async function cloudProjectsMissedByLists(
+  localRecords: readonly Readonly<{ id?: string | null; name: string }>[],
+  active: readonly CloudProject[],
+  archived: readonly CloudProject[],
+): Promise<{ active: CloudProject[]; archived: CloudProject[] } | null> {
+  const listed = [...active, ...archived];
+  const listedIds = new Set(listed.flatMap(project => (project.id ? [project.id] : [])));
+  const listedNames = new Set(listed.map(project => project.name.trim().toLocaleLowerCase()));
+  const missing = [...new Set(localRecords.flatMap(record =>
+    record.id && record.id.trim() && !listedIds.has(record.id) && !listedNames.has(record.name.trim().toLocaleLowerCase())
+      ? [record.id]
+      : []))];
+  if (missing.length === 0) return { active: [], archived: [] };
+  try {
+    const read = await getProjectsByIds(missing);
+    if (!read.ok || read.stubbed || !Array.isArray(read.data)) return null;
+    const found = read.data.filter(project => project.id && missing.includes(project.id));
+    return {
+      active: found.filter(project => project.archived !== true),
+      archived: found.filter(project => project.archived === true),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The cloud's rows of these tasks, read by their ids (independent review R02). One task is read as a queued edit
+ * already reads it; several are read together, a hundred to a request, so a large account is not read task by task.
+ */
+const cloudScheduleItemsByIds: CloudRecordsByIdReader<ScheduleItem> = async ids => {
+  if (ids.length !== 1) return getScheduleItemsByIds(ids);
+  const row = await getScheduleItem(ids[0]);
+  return { ...row, data: row.ok && !row.stubbed ? (row.data ? [row.data] : []) : null };
+};
+
+const cloudProjectAreasByIds: CloudRecordsByIdReader<ProjectArea> = ids => getProjectAreasByIds(ids);
+
+const RECORD_NOT_CHECKED_BEFORE_SENDING =
+  'The cloud\'s copy could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
+
+function recordsNotCheckedByIdMessage(kind: 'task' | 'GPS area', count: number, reason: string | null): string {
+  return `${count} ${kind}${count === 1 ? '' : 's'} that the cloud's list did not show could not be checked one by one. ` +
+    `${count === 1 ? 'It was' : 'They were'} kept on this device and not sent, and will be checked again at the next sync.` +
+    cloudWriteFailureReason({ error: reason || undefined });
+}
+
+/** The cloud's rows of these records right now, by id; the reason when they could not be read. */
+async function cloudRecordsNow<T extends { id: string }>(
+  records: readonly T[],
+  readByIds: CloudRecordsByIdReader<T>,
+): Promise<Map<string, T> | string> {
+  try {
+    const read = await readByIds(records.map(record => record.id));
+    if (read.ok && !read.stubbed && Array.isArray(read.data)) return cloudRecordsById(read.data);
+    return read.error || read.message || 'The cloud did not answer.';
+  } catch {
+    return 'The cloud did not answer.';
+  }
+}
+
 export async function synchronizeLocalData(
   payload: LocalSyncPayload,
   onProgress?: (event: SyncProgressEvent) => void,
@@ -4362,6 +4442,13 @@ export async function synchronizeLocalData(
   const deletedAreaIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'project_area');
   const deletedScheduleIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'schedule_item');
   const deletedDocumentIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'reference_document');
+  // This device's records and the cloud's rows as what is sent below was decided from them (independent review R02).
+  let localAreasAtReconciliation: readonly ProjectArea[] = [];
+  let cloudAreasAtReconciliation = new Map<string, ProjectArea>();
+  let localSchedulesAtReconciliation: readonly ScheduleItem[] = [];
+  let cloudSchedulesAtReconciliation = new Map<string, ScheduleItem>();
+  /** Tasks the cloud gained a row for in the moment before this device's copy was to be written as new. */
+  let addedInCloudDuringSync = 0;
 
   if (
     cloudUpdatesBeforeUpload.ok &&
@@ -4380,16 +4467,27 @@ export async function synchronizeLocalData(
     errors.push('Cloud field updates could not be checked before upload. Local updates were preserved and will retry.');
   }
 
+  // Also when the list could not be read: a captured point sent then is still weighed against the cloud's row first.
+  localAreasAtReconciliation = syncableProjectAreas;
   if (
     cloudAreasBeforeUpload.ok &&
     !cloudAreasBeforeUpload.stubbed &&
     Array.isArray(cloudAreasBeforeUpload.data)
   ) {
+    // An area the list did not hold is asked for by its id before it is taken as new (independent review R02).
+    const areaCheck = await confirmRecordsMissingFromCloudList({
+      local: syncableProjectAreas,
+      listed: cloudAreasBeforeUpload.data,
+      deletedIds: deletedAreaIds,
+      readByIds: cloudProjectAreasByIds,
+    });
+    cloudAreasAtReconciliation = cloudRecordsById(areaCheck.cloud);
     syncableProjectAreas = daveProjectAreasNeedingCloudUpload({
       local: syncableProjectAreas,
-      cloud: cloudAreasBeforeUpload.data,
+      cloud: areaCheck.cloud,
       deletedIds: deletedAreaIds,
-    });
+    }).filter(area => !areaCheck.unreadIds.has(area.id));
+    if (areaCheck.unreadIds.size > 0) errors.push(recordsNotCheckedByIdMessage('GPS area', areaCheck.unreadIds.size, areaCheck.error));
   } else {
     // A placeholder must never be uploaded blindly when the device cannot
     // first verify whether another device already captured real GPS.
@@ -4402,11 +4500,24 @@ export async function synchronizeLocalData(
     !cloudSchedulesBeforeUpload.stubbed &&
     Array.isArray(cloudSchedulesBeforeUpload.data)
   ) {
+    // Independent review R02: a task the list did not hold is asked for by its id before it is taken as new to the
+    // cloud. The list pages by offset, newest first; a task edited on another device while it is read is left out, and
+    // this device's whole copy (0%, no note) went up over that device's row (80% and a note). A row the cloud has joins
+    // the list and is weighed like any listed row; one the read could not answer for is not sent.
+    const scheduleCheck = await confirmRecordsMissingFromCloudList({
+      local: syncableScheduleItems,
+      listed: cloudSchedulesBeforeUpload.data,
+      deletedIds: deletedScheduleIds,
+      readByIds: cloudScheduleItemsByIds,
+    });
+    localSchedulesAtReconciliation = syncableScheduleItems;
+    cloudSchedulesAtReconciliation = cloudRecordsById(scheduleCheck.cloud);
     syncableScheduleItems = daveScheduleItemsNeedingCloudUpload({
       local: syncableScheduleItems,
-      cloud: cloudSchedulesBeforeUpload.data,
+      cloud: scheduleCheck.cloud,
       deletedIds: deletedScheduleIds,
-    });
+    }).filter(item => !scheduleCheck.unreadIds.has(item.id));
+    if (scheduleCheck.unreadIds.size > 0) errors.push(recordsNotCheckedByIdMessage('task', scheduleCheck.unreadIds.size, scheduleCheck.error));
   } else {
     // Uploading a stale local snapshot before a successful read can erase a
     // newer edit from another device. Preserve the phone and retry later.
@@ -4530,47 +4641,136 @@ export async function synchronizeLocalData(
   details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0;
   errors.push(...withoutRepeatedItemErrors(stagedUpdateUpload, queuedUpload));
 
-  for (const area of syncableProjectAreas) {
+  // Independent review R02: what is sent was weighed against the cloud's rows as they were read above, and the photos
+  // and queued changes since can take minutes. Another device's edit in that time was written over whole. The rows
+  // are read again by id just before they are sent, a hundred to a read, and a record whose row changed is weighed
+  // again against the row as it is now: what the cloud's newer row holds stays, as when the list first showed it.
+  for (const areas of chunkSupabaseFilterValues(syncableProjectAreas)) {
     if (!cloudOwnerUnchanged(owner)) break;
-    const result = await upsertProjectArea(area);
+    const cloudNow = await cloudRecordsNow(areas, cloudProjectAreasByIds);
+    for (const weighed of areas) {
+      if (!cloudOwnerUnchanged(owner)) break;
+      if (typeof cloudNow === 'string') {
+        errors.push(`GPS area “${weighed.name}” was not sent. ${RECORD_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: cloudNow })}`);
+        progress(`GPS area preserved: ${weighed.name}`);
+        continue;
+      }
+      const rowNow = cloudRecordOf(cloudNow, weighed.id);
+      const rowWeighed = cloudRecordOf(cloudAreasAtReconciliation, weighed.id);
+      // Deleted on another device meanwhile: not sent back as new before its deletion record arrives.
+      if (rowWeighed && !rowNow) {
+        progress(`GPS area left for the next sync: ${weighed.name}`);
+        continue;
+      }
+      const area = sameCloudRecord(rowWeighed, rowNow)
+        ? weighed
+        : daveProjectAreasNeedingCloudUpload({
+          local: localAreasAtReconciliation.filter(local => local.id === weighed.id),
+          cloud: rowNow ? [rowNow] : [],
+          deletedIds: deletedAreaIds,
+        })[0];
+      if (!area) {
+        progress(`GPS area already current: ${weighed.name}`);
+        continue;
+      }
+      const result = await upsertProjectArea(area);
 
-    if (result.ok && !result.stubbed) {
-      details.areasUploaded += 1;
-    } else {
-      errors.push(
-        `GPS area “${area.name}” could not sync.${cloudWriteFailureReason(result)}`,
-      );
+      if (result.ok && !result.stubbed) {
+        details.areasUploaded += 1;
+      } else {
+        errors.push(
+          `GPS area “${area.name}” could not sync.${cloudWriteFailureReason(result)}`,
+        );
+      }
+
+      progress(`GPS area synced: ${area.name}`);
     }
-
-    progress(`GPS area synced: ${area.name}`);
   }
 
   const operationalProjectAuthority = buildOperationalProjectIdentityAuthority(
     cloudProjectRecords,
   );
 
-  for (const item of syncableScheduleItems) {
+  for (const items of chunkSupabaseFilterValues(syncableScheduleItems)) {
     if (!cloudOwnerUnchanged(owner)) break;
-    const binding = resolveOperationalProjectIdentity(item, operationalProjectAuthority);
-    if (!binding.ok) {
-      errors.push(`Schedule task “${item.taskName}” could not sync. ${binding.error}`);
-      progress(`Schedule preserved: ${item.taskName}`);
-      continue;
+    // One read for up to a hundred tasks, just before they are sent (independent review R02).
+    const cloudNow = await cloudRecordsNow(items, cloudScheduleItemsByIds);
+    // Tasks whose row changed since they were weighed are weighed again, with every task, against the rows as they are.
+    const changedKeys = new Set<string>();
+    // A row the cloud had when the task was weighed and has no longer was deleted on another device meanwhile; its
+    // deletion record reaches this device with the next sync, and the task is not sent back as new before it does.
+    const deletedKeys = new Set<string>();
+    let weighedAgain = new Map<string, ScheduleItem>();
+    if (typeof cloudNow !== 'string') {
+      const cloudRows = new Map(cloudSchedulesAtReconciliation);
+      items.forEach(item => {
+        const key = cloudRecordKey(item.id);
+        const rowNow = cloudNow.get(key);
+        if (sameCloudRecord(cloudRows.get(key), rowNow)) return;
+        if (rowNow) {
+          changedKeys.add(key);
+          cloudRows.set(key, rowNow);
+        } else deletedKeys.add(key);
+      });
+      if (changedKeys.size > 0) {
+        cloudSchedulesAtReconciliation = cloudRows;
+        weighedAgain = cloudRecordsById(daveScheduleItemsNeedingCloudUpload({
+          local: localSchedulesAtReconciliation,
+          cloud: [...cloudRows.values()],
+          deletedIds: deletedScheduleIds,
+        }));
+      }
     }
-    const result = await upsertScheduleItem({
-      ...item,
-      projectId: binding.identity.id,
-    });
+    for (const weighed of items) {
+      if (!cloudOwnerUnchanged(owner)) break;
+      if (typeof cloudNow === 'string') {
+        errors.push(`Schedule task “${weighed.taskName}” was not sent. ${RECORD_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: cloudNow })}`);
+        progress(`Schedule preserved: ${weighed.taskName}`);
+        continue;
+      }
+      const key = cloudRecordKey(weighed.id);
+      if (deletedKeys.has(key)) {
+        progress(`Schedule left for the next sync: ${weighed.taskName}`);
+        continue;
+      }
+      const rowNow = cloudNow.get(key);
+      const item = changedKeys.has(key) ? weighedAgain.get(key) : weighed;
+      if (!item) {
+        // The cloud's row as it is now already holds everything this device's copy would add.
+        progress(`Schedule already current: ${weighed.taskName}`);
+        continue;
+      }
+      const binding = resolveOperationalProjectIdentity(item, operationalProjectAuthority);
+      if (!binding.ok) {
+        errors.push(`Schedule task “${item.taskName}” could not sync. ${binding.error}`);
+        progress(`Schedule preserved: ${item.taskName}`);
+        continue;
+      }
+      // A task the cloud has no row for is written only if it still has none: a row another device adds in this
+      // moment is never replaced by a copy sent as new.
+      const bound = { ...item, projectId: binding.identity.id };
+      const result = rowNow ? await upsertScheduleItem(bound) : await upsertScheduleItem(bound, { onlyIfAbsent: true });
 
-    if (result.ok && !result.stubbed) {
-      details.schedulesUploaded += 1;
-    } else {
-      errors.push(
-        `Schedule task “${item.taskName}” could not sync.${cloudWriteFailureReason(result)}`,
-      );
+      if (result.ok && !result.stubbed) {
+        details.schedulesUploaded += 1;
+      } else if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD) {
+        addedInCloudDuringSync += 1;
+        progress(`Schedule left for the next sync: ${item.taskName}`);
+        continue;
+      } else {
+        errors.push(
+          `Schedule task “${item.taskName}” could not sync.${cloudWriteFailureReason(result)}`,
+        );
+      }
+
+      progress(`Schedule synced: ${item.taskName}`);
     }
-
-    progress(`Schedule synced: ${item.taskName}`);
+  }
+  if (addedInCloudDuringSync > 0) {
+    errors.push(
+      `${addedInCloudDuringSync} ${addedInCloudDuringSync === 1 ? 'task' : 'tasks'} changed in the cloud while this sync was running. ` +
+      `This device's copy was not sent over ${addedInCloudDuringSync === 1 ? 'it' : 'them'}. Sync again to compare the two.`,
+    );
   }
 
   for (const document of syncableReferenceDocuments) {
@@ -5974,6 +6174,12 @@ type QueueUploadContext = {
   projectAreasById?: Map<string, ProjectArea>;
   scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
   scheduleItemsById?: Map<string, ScheduleItem>;
+  /** The ids of the tasks this pass has queued (independent review R02): the ones the list did not hold are read together. */
+  queuedScheduleItemIds?: readonly string[];
+  /** Those tasks' rows as read by id: the row, or null when the cloud has none. */
+  scheduleItemsReadById?: Map<string, ScheduleItem | null>;
+  /** Why that read failed; the tasks it was for stay queued. */
+  scheduleItemsReadByIdError?: string;
   referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
   referenceDocumentsById?: Map<string, ReferenceDocument>;
   projectUpdateMetadataPromises?: Map<
@@ -6221,6 +6427,37 @@ function timestampOf(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * A queued task's cloud row when the list did not hold it: the row, null when the cloud has none, or why it could not
+ * be read (the task then stays queued). A7 pass 16 L-5 read a field edit's row so; independent review R02 reads every
+ * queued task's. The queued tasks the list did not hold are read together, a hundred to a request, the first time one
+ * is needed (an approved schedule queues hundreds of new rows); a single one is read alone, as before.
+ */
+async function cloudScheduleItemMissedByList(
+  id: string,
+  context: QueueUploadContext,
+): Promise<ScheduleItem | null | string> {
+  if (!context.scheduleItemsReadById) {
+    context.scheduleItemsReadById = new Map();
+    const unlisted = [...new Set(context.queuedScheduleItemIds ?? [])].filter(queuedId => !context.scheduleItemsById?.has(queuedId));
+    if (unlisted.length > 1) {
+      const read = await cloudRecordsNow<Pick<ScheduleItem, 'id'>>(unlisted.map(queuedId => ({ id: queuedId })), getScheduleItemsByIds);
+      if (typeof read === 'string') context.scheduleItemsReadByIdError = read || 'Task authority could not be checked.';
+      else unlisted.forEach(queuedId => context.scheduleItemsReadById!.set(queuedId, (cloudRecordOf(read, queuedId) as ScheduleItem | undefined) ?? null));
+    }
+  }
+  if (context.scheduleItemsReadById.has(id)) return context.scheduleItemsReadById.get(id) ?? null;
+  if (context.scheduleItemsReadByIdError && context.queuedScheduleItemIds?.includes(id)) return context.scheduleItemsReadByIdError;
+  let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
+  try {
+    row = await getScheduleItem(id);
+  } catch {
+    row = null;
+  }
+  if (!row?.ok || row.stubbed) return row?.error || row?.message || 'Task authority could not be checked.';
+  return row.data ?? null;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
@@ -6243,7 +6480,15 @@ async function uploadQueueItem(
     context.projectAreasById ??= new Map(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
-    const remote = context.projectAreasById.get(payload.id);
+    let remote = context.projectAreasById.get(payload.id);
+    // An area the list did not hold is asked for by its id before this device's copy goes up as new (independent
+    // review R02): the list pages by offset, and a row another device changed while it was read can be left out.
+    if (!remote) {
+      const row = await cloudRecordsNow<Pick<ProjectArea, 'id'>>([{ id: payload.id }], getProjectAreasByIds);
+      if (typeof row === 'string') return row || 'GPS area authority could not be checked.';
+      remote = cloudRecordOf(row, payload.id) as ProjectArea | undefined;
+      if (remote) context.projectAreasById.set(payload.id, remote);
+    }
     const authoritative = remote
       ? mergeDAVEProjectAreaRecoveryRecords({
           local: [payload.areaData],
@@ -6281,21 +6526,18 @@ async function uploadQueueItem(
     // no row the phone's whole copy went up: a notes-only edit put 0% over
     // the web's 50%. The row is read by its id first; a read that fails
     // leaves the edit queued, and no row means the task really has none.
-    if (!remote && queuedFields) {
-      let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
-      try {
-        row = await getScheduleItem(payload.id);
-      } catch {
-        row = null;
-      }
-      if (!row?.ok || row.stubbed) {
-        return row?.error || row?.message || 'Task authority could not be checked.';
-      }
-      if (row.data) {
-        remote = row.data;
-        context.scheduleItemsById.set(payload.id, row.data);
+    // Independent review R02: a whole copy too (an approved schedule's row, a deleted lookahead's, Keep Phone's). It
+    // went up over the row the list had missed, as the field edit did.
+    if (!remote) {
+      const row = await cloudScheduleItemMissedByList(payload.id, context);
+      if (typeof row === 'string') return row;
+      if (row) {
+        remote = row;
+        context.scheduleItemsById.set(payload.id, row);
       }
     }
+    // The cloud had no row for this task when it was read by its id.
+    const newToCloud = !remote;
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
     // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
@@ -6443,13 +6685,16 @@ async function uploadQueueItem(
       });
       return 'conflict';
     }
-    const result = await upsertScheduleItem(authoritative);
+    // A task the cloud has no row for is written only if it still has none (independent review R02): a row another
+    // device adds meanwhile is left as it is, and the edit stays queued to be weighed against it.
+    const result = newToCloud ? await upsertScheduleItem(authoritative, { onlyIfAbsent: true }) : await upsertScheduleItem(authoritative);
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, authoritative);
       if (asked.length > 0) return askAbout(authoritative);
       if (!carryOnly) await settleScheduleItemConflicts(payload.id, settles, authoritative);
       return 'uploaded';
     }
+    if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD) context.scheduleItemsReadById?.delete(payload.id);
     return result.error || result.message || 'Task sync is waiting for Supabase.';
   }
 

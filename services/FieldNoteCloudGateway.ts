@@ -79,6 +79,10 @@ export function createFieldNoteCloudGateway(
             .select('*')
             .eq('owner_id', context.ownerId)
             .order('created_at', { ascending: false })
+            // Two notes saved at the same instant keep one order from page to
+            // page (independent review R02): the read now refuses a list in
+            // which a note is seen twice.
+            .order('id', { ascending: true })
             .range(from, to);
           return response;
         },

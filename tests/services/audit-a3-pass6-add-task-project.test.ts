@@ -31,6 +31,8 @@ jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: () => mockOk([]),
   upsertDAVESyncTombstones: (tombstones: unknown[]) => mockOk(tombstones),
   listScheduleItems: () => mockOk([]),
+  // Independent review R02: a queued task the list does not hold is read by its id before it is sent as new.
+  getScheduleItem: () => mockOk(null),
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: () => mockOk([]),
   listDAVEStorageCleanupIntents: () => mockOk([]),
@@ -174,7 +176,8 @@ describe('App.tsx addScheduleItem and syncScheduleItemRevision, compiled with th
     expect(app.addScheduleItem({ taskName: 'Stripe lot', projectName: '  lot 5 ' })).not.toBe(false);
     await app.settled();
     expect(app.scheduleItemsCurrentRef.current.map(item => item.projectName)).toEqual(['Lot 5']);
-    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({ projectName: 'Lot 5', projectId: mockLot5Id }));
+    // Written only if the cloud still has no row for it (independent review R02).
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({ projectName: 'Lot 5', projectId: mockLot5Id }), { onlyIfAbsent: true });
     await expect(getOfflineQueue()).resolves.toEqual([]);
     expect(app.alert).not.toHaveBeenCalled();
   });

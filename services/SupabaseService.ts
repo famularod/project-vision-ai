@@ -46,6 +46,7 @@ import {
   chunkSupabaseFilterValues,
   paginateSupabaseCollection,
 } from './SupabaseCollectionPagination';
+import { SCHEDULE_ITEM_ALREADY_IN_CLOUD } from './CloudListAbsenceCheck';
 import {
   verifyPIERealityHistoryRows,
   type PIERealityHistoryCloudRow,
@@ -1876,6 +1877,8 @@ export async function listProjects(): Promise<SupabaseServiceResult<CloudProject
       .order('created_at', { ascending: false })
       .order('id', { ascending: true })
       .range(from, to),
+    undefined,
+    WHOLE_LIST_OR_NOT_OK,
   );
 
   if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
@@ -1900,10 +1903,25 @@ export async function listArchivedProjects(): Promise<SupabaseServiceResult<Clou
       .order('created_at', { ascending: false })
       .order('id', { ascending: true })
       .range(from, to),
+    undefined,
+    WHOLE_LIST_OR_NOT_OK,
   );
 
   if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
   return okResult(result.rows.map(normalizeProject), result.status);
+}
+
+/**
+ * This account's projects with these exact ids, open or closed (independent
+ * review R02): a project neither list returned is read by its id before it is
+ * taken as deleted on another device.
+ */
+export async function getProjectsByIds(
+  ids: readonly string[],
+): Promise<SupabaseServiceResult<CloudProject[]>> {
+  const result = await readOwnedRowsByIds(PROJECTS_TABLE, '*', ids);
+  if (!result.ok || !result.data) return { ...result, data: null };
+  return okResult(result.data.map(normalizeProject), result.status);
 }
 
 export async function countCloudProjects(): Promise<SupabaseServiceResult<number>> {
@@ -2102,6 +2120,8 @@ export async function listProjectUpdates<TUpdate>(): Promise<
       .order('created_at', { ascending: false })
       .order('id', { ascending: true })
       .range(from, to),
+    undefined,
+    WHOLE_LIST_OR_NOT_OK,
   );
 
   if (!result.ok) {
@@ -2177,8 +2197,16 @@ export async function upsertProjectArea(
   });
 }
 
+/**
+ * `onlyIfAbsent` (independent review R02): for a task this device believes the
+ * cloud does not have. The row is written only if there is none; one that
+ * appeared since it was checked is left exactly as it is, and the answer says
+ * so (SCHEDULE_ITEM_ALREADY_IN_CLOUD). A row another device wrote can then
+ * never be replaced by a copy sent as new.
+ */
 export async function upsertScheduleItem(
   item: ScheduleItem,
+  { onlyIfAbsent = false }: Readonly<{ onlyIfAbsent?: boolean }> = {},
 ): Promise<SupabaseServiceResult<ScheduleItem>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<ScheduleItem>();
@@ -2201,19 +2229,39 @@ export async function upsertScheduleItem(
     projectId: canonicalProjectId,
   };
 
-  const { data, error, status } = await client
-    .from(SCHEDULE_ITEMS_TABLE)
-    .upsert({
-      id: item.id,
-      owner_id: owner.data,
-      project_id: canonicalProjectId,
-      project_name: item.projectName,
-      task_name: item.taskName,
-      item_data: toJsonValue(boundItem),
-      updated_at: new Date().toISOString(),
-    })
-    .select('id, item_data')
-    .single();
+  const row = {
+    id: item.id,
+    owner_id: owner.data,
+    project_id: canonicalProjectId,
+    project_name: item.projectName,
+    task_name: item.taskName,
+    item_data: toJsonValue(boundItem),
+    updated_at: new Date().toISOString(),
+  };
+  let written: { data: unknown; error: { message: string } | null; status: number };
+  if (onlyIfAbsent) {
+    // On a row that exists the cloud does nothing and returns no row. The
+    // conflict is on the table's own key, as the plain upsert below has it.
+    const inserted = await client
+      .from(SCHEDULE_ITEMS_TABLE)
+      .upsert(row, { ignoreDuplicates: true })
+      .select('id, item_data');
+    if (!inserted.error && (!Array.isArray(inserted.data) || inserted.data.length === 0)) {
+      return errorResult<ScheduleItem>(
+        'This task changed in the cloud while the sync was running. This copy was not sent over it.',
+        409,
+        SCHEDULE_ITEM_ALREADY_IN_CLOUD,
+      );
+    }
+    written = { data: inserted.data?.[0] ?? null, error: inserted.error, status: inserted.status };
+  } else {
+    written = await client
+      .from(SCHEDULE_ITEMS_TABLE)
+      .upsert(row)
+      .select('id, item_data')
+      .single();
+  }
+  const { data, error, status } = written;
 
   if (error) return tableAwareErrorResult<ScheduleItem>(error.message, status);
 
@@ -2346,6 +2394,34 @@ export async function getScheduleItem(
   // A row with no task in it is left out of the list too.
   if (Object.keys(item).length === 0) return okResult<ScheduleItem | null>(null, status);
   return okResult(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, status);
+}
+
+/**
+ * The cloud rows of these tasks, read by their ids, each as listScheduleItems
+ * gives it (independent review R02). A task the cloud has no row for is not in
+ * the answer. One request for every hundred ids.
+ */
+export async function getScheduleItemsByIds(
+  ids: readonly string[],
+): Promise<SupabaseServiceResult<ScheduleItem[]>> {
+  const result = await readOwnedRowsByIds(SCHEDULE_ITEMS_TABLE, 'id, item_data', ids);
+  if (!result.ok || !result.data) return { ...result, data: null };
+  return okResult(result.data.flatMap(row => {
+    const item = toRecord(row.item_data);
+    return Object.keys(item).length === 0 ? [] : [bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem];
+  }), result.status);
+}
+
+/** The cloud rows of these GPS areas, read by their ids, each as listProjectAreas gives it (independent review R02). */
+export async function getProjectAreasByIds(
+  ids: readonly string[],
+): Promise<SupabaseServiceResult<ProjectArea[]>> {
+  const result = await readOwnedRowsByIds(PROJECT_AREAS_TABLE, 'id, area_data', ids);
+  if (!result.ok || !result.data) return { ...result, data: null };
+  return okResult(result.data.flatMap(row => {
+    const area = toRecord(row.area_data);
+    return Object.keys(area).length === 0 ? [] : [bindDAVECloudDatabaseIdentity(area, row.id) as ProjectArea];
+  }), result.status);
 }
 
 export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
@@ -2488,6 +2564,10 @@ export async function listDAVESyncTombstones(): Promise<
       .order('entity_type', { ascending: true })
       .order('record_id', { ascending: true })
       .range(from, to),
+    undefined,
+    // A deletion record has no id of its own: what it deletes is what makes it
+    // the same record on another page (independent review R02).
+    { ...WHOLE_LIST_OR_NOT_OK, rowKey: row => deletionRecordKey(row) },
   );
 
   if (!result.ok) return tableAwareListResult<DAVESyncTombstone>(result.error, result.status);
@@ -3872,6 +3952,62 @@ async function updateOwnedJsonRecord<T>({
   return okResult(data, status);
 }
 
+/**
+ * Independent review R02 (Build 229): this account's lists are read whole, one
+ * page after another, and what is done next treats a record that is not in
+ * the list as one the cloud does not have. An exact count on the first page
+ * shows a row that slid out of the pages when another device deleted one
+ * (a repeated row shows one that slid the other way); the list is then read
+ * again, and is not ok if it keeps changing. The count is over the same
+ * account's rows the read returns anyway.
+ */
+const WHOLE_LIST_OR_NOT_OK = Object.freeze({ requestExactCount: true });
+
+function deletionRecordKey(row: unknown): string | null {
+  const record = toRecord(row);
+  const entityType = typeof record.entity_type === 'string' ? record.entity_type : '';
+  const recordId = typeof record.record_id === 'string' ? record.record_id : '';
+  return entityType && recordId ? `${entityType}\u0000${recordId}` : null;
+}
+
+/**
+ * This account's rows with these exact ids, in as few requests as the ids
+ * allow (independent review R02): what a list did not hold is confirmed by id
+ * before it is taken as absent. A row that is not returned is not there.
+ */
+async function readOwnedRowsByIds(
+  table: string,
+  columns: string,
+  ids: readonly string[],
+): Promise<SupabaseServiceResult<Record<string, unknown>[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<Record<string, unknown>[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const wanted = [...new Set(ids.filter(id => typeof id === 'string' && id.trim()))];
+  const rows: Record<string, unknown>[] = [];
+  let lastStatus: number | undefined;
+  for (const chunk of chunkSupabaseFilterValues(wanted)) {
+    const { data, error, status } = await client
+      .from(table)
+      .select(columns)
+      .eq('owner_id', owner.data)
+      .in('id', [...chunk]);
+    if (error || !Array.isArray(data)) {
+      return tableAwareErrorResult<Record<string, unknown>[]>(
+        error?.message || 'The cloud did not answer for these records.',
+        status,
+      );
+    }
+    lastStatus = status;
+    rows.push(...data.map(toRecord));
+  }
+  return okResult(rows, lastStatus);
+}
+
 async function listOwnedJsonRecords<T>({
   table,
   jsonColumn,
@@ -3901,6 +4037,7 @@ async function listOwnedJsonRecords<T>({
         .order('id', { ascending: true })
         .range(from, to),
     pageSize,
+    WHOLE_LIST_OR_NOT_OK,
   );
 
   if (!result.ok) return tableAwareListResult<T>(result.error, result.status);

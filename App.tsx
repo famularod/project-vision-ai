@@ -33,7 +33,7 @@ import {
   queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
   queueProjectUpdateRecord, queueProjectUpdateDocumentChange, queueProjectUpdatePhotoAnalysis, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
   queueScheduleItemRecord, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad, noteFieldUpdateEditOpened, // each edit's base (owner answer Q28)
-  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
+  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject, cloudProjectsMissedByLists,
   synchronizeLocalData,
   uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
   type FieldUpdateSyncWorkAttempt,
@@ -6234,12 +6234,15 @@ useEffect(() => {
         ) {
           throw new Error('project_refresh_incomplete');
         }
+        // A project neither list returned is read by its id before it is taken as deleted elsewhere (independent review R02).
+        const missed = await cloudProjectsMissedByLists(projectRecordsCurrentRef.current, activeProjectsResult.data, archivedProjectsResult.data);
+        if (!missed) throw new Error('project_refresh_incomplete');
         if (!active || !refreshCommit.isCurrent()) return;
 
-        const cloudActiveRecords = activeProjectsResult.data
+        const cloudActiveRecords = [...activeProjectsResult.data, ...missed.active]
           .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
           .map(projectRecordFromCloud);
-        const cloudArchivedRecords = archivedProjectsResult.data
+        const cloudArchivedRecords = [...archivedProjectsResult.data, ...missed.archived]
           .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
           .map(projectRecordFromCloud);
         const reconciled = reconcileDAVEOperationalProjects({

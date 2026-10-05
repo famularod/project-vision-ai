@@ -142,6 +142,10 @@ jest.mock('../../services/SupabaseService', () => {
     listReferenceDocuments: read(() => []),
     listScheduleItems: read(() => [...mockCloud.rows.values()].map(mockCopy)),
     getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockCopy(mockCloud.rows.get(id)) : null) : mockDown(); },
+    // Independent review R02: several tasks' rows are read by their ids in one request, and a GPS area's row by its id.
+    getScheduleItemsByIds: async (ids: string[]) => (mockOnline()
+      ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockCopy(mockCloud.rows.get(id))] : []))) : mockDown()),
+    getProjectAreasByIds: async () => (mockOnline() ? mockOk([]) : mockDown()),
     upsertScheduleItem: async (item: { id: string }) => {
       mockTick();
       if (!mockOnline()) return mockDown();
