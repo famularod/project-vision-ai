@@ -645,6 +645,23 @@ export function scheduleItemAgainstItsTask(
 }
 
 /**
+ * Review P5-1 / S-P5-2 (6 Oct 2026, Low; from the first-upload weighing,
+ * reached more often since the one-rule commit): whether the cloud's row is
+ * the row this device's own first upload of it wrote. That upload may go up
+ * corrected (scheduleItemAgainstItsTask). When its write reached the cloud
+ * and the answer was lost on weak signal, the next pass met a row that
+ * differed from the copy still waiting here and, with no copy it started
+ * from, recorded a card for the whole task between this device's own two
+ * copies, with nothing to choose; in the place of a real question about a
+ * field, when there was one. `sent`: the waiting copy weighed again as at a
+ * first upload. The same in everything but its stamps.
+ */
+export function scheduleItemIsOwnFirstWrite(sent: ScheduleItem, remote: ScheduleItem): boolean {
+  return restMark(sent) === restMark(remote) && WHOLE_COPY_FIELDS_WEIGHED.every(field => fieldValue(sent, field) === fieldValue(remote, field)) &&
+    canonicalScheduleItemJson(sent.textFromTask ?? null) === canonicalScheduleItemJson(remote.textFromTask ?? null);
+}
+
+/**
  * Review P4 L1 (6 Oct 2026, Low; older, the same on Build 229; the reports
  * reviewer's seed "plain 46"): the same weighing the other way round. An
  * older row of a task, shown again (Set Active to an older master), with

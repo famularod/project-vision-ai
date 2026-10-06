@@ -232,7 +232,7 @@ import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, sche
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
-import { scheduleItemAgainstItsTask, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask, scheduleItemIsOwnFirstWrite, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -3206,6 +3206,101 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
     importBatchId: 'batch-MASTER G', sourceDocumentId: 'MASTER G', revisedFromTaskIds: ['MASTER F-1'],
     textFromTask: { taskId: 'MASTER F-1', owner: '', contractor: '', notes: '', nextAction: '', milestone: '' },
   } as ScheduleItem);
+
+  describe('Review P5-1 / S-P5-2: the new row\'s first write reaches the cloud and its answer is lost on weak signal', () => {
+    const queuedIds = async (device: Device) => (await queueOf(device)).map(item => (item.payload as { id?: string }).id);
+
+    it('A: the next pass knows its own write: no card for the whole task, and the approval and note set elsewhere are on the task', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-09T09:00:00.000Z');
+      await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending', estimatedScheduleImpactDays: 5 });
+      await edit(ipad, theRow(ipad).id, { notes: NOTE });
+      await backgroundUpload(ipad);
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      mockCloud.lostAnswers = 1; // the first task write of this pass (the new row's) reaches the cloud; its answer does not come back
+      await backgroundUpload(phone);
+      expect(cloudRow(newId)).toMatchObject({ notes: NOTE });
+      expect(await queuedIds(phone)).toContain(newId);
+      const writesBefore = mockCloud.writes.length;
+      await backgroundUpload(phone);
+      // (It was: a card "This task changed on another device before the local edit finished syncing", this device's
+      // own waiting copy against its own first write, with nothing to choose.)
+      expect(await cards(phone)).toEqual([]);
+      expect(await queuedIds(phone)).not.toContain(newId);
+      // Nothing more is written for that row: the cloud holds it already.
+      expect(mockCloud.writes.slice(writesBefore).filter(write => write.endsWith(`:${newId}`))).toEqual([]);
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, ''));
+      expect(controlsEverywhere(phone, ipad)).toEqual(Array(3).fill(['Pending', 5]));
+      await noCards(phone, ipad);
+    });
+
+    it('X2: and the real question is still asked (owner Mike typed on the new row, Ana on the row the iPad still sees); Keep Phone puts Mike everywhere', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, newId, { owner: 'Mike' });
+      at('2026-09-11T15:00:00.000Z');
+      await edit(ipad, 'MASTER F-1', { owner: 'Ana' });
+      await backgroundUpload(ipad);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      mockCloud.lostAnswers = 1;
+      await backgroundUpload(phone);
+      expect([cloudRow(newId)!.owner, await cards(phone)]).toEqual(['Ana', []]);
+      await backgroundUpload(phone);
+      // (It was: the whole-task card in its place, and "Mike or Ana" never asked.)
+      expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Mike'], cloud: ['Ana'] }]);
+      const [card] = await conflictsOf(phone);
+      await chooseInSettings(phone, card.id, 'keep_local');
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Mike'));
+      await noCards(phone, ipad);
+    });
+
+    it('the sync reviewer\'s seed 74: the iPad\'s new row went up with the owner the phone set meanwhile; the retry raises nothing, and the iPad shows that owner', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(ipad, G, [G_ROW, SURVEY]);
+      const newId = theRow(ipad).id;
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, 'MASTER F-1', { owner: 'Bob', notes: NOTE });
+      await backgroundUpload(phone);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      shareDocuments(ipad);
+      mockCloud.lostAnswers = 1;
+      await backgroundUpload(ipad);
+      await backgroundUpload(ipad);
+      expect([await cards(ipad), await queuedIds(ipad)]).toEqual([[], []]);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Bob', notes: NOTE });
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Bob'));
+      await noCards(phone, ipad);
+    });
+
+    it('the rule on the records alone: the cloud\'s row is this device\'s own first write when it is the waiting copy weighed again, stamps aside; not when anything else differs', () => {
+      const waiting = { ...theRowAsApproved(), owner: '', notes: '' } as ScheduleItem;
+      const task = { ...waiting, id: 'MASTER F-1', owner: 'Bob', notes: NOTE, textFromTask: undefined, updatedAt: '2026-09-11T09:00:00.000Z' } as ScheduleItem;
+      const sent = scheduleItemAgainstItsTask(waiting, task, 'ask').row;
+      expect(sent).toMatchObject({ owner: 'Bob', notes: NOTE });
+      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, updatedAt: '2026-09-12T08:00:01.000Z' })).toBe(true);
+      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, owner: 'Ana' })).toBe(false);
+      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, percentComplete: 40 })).toBe(false);
+      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, textFromTask: { ...sent.textFromTask!, owner: '' } })).toBe(false);
+      expect(scheduleItemIsOwnFirstWrite(waiting, sent)).toBe(false);
+    });
+  });
 
   describe('Review P5 S-P5-3: one task never has two cards, and the one card holds what he typed last', () => {
     /** The iPad types a note. The phone, with no signal, types its own, approves the master, and types the note again on the task's new row. */
