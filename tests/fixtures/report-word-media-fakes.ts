@@ -188,6 +188,8 @@ export function fakeFileSystem() {
     uri: string;
     constructor(parent: string | { uri: string }, name?: string) {
       this.uri = join(parent, name);
+      // A picture handed over as data is not a file; treating it as one is a mistake to catch.
+      if (this.uri.startsWith('data:')) throw new Error('Not a file address.');
     }
     get exists() {
       return fakeMedia.files.has(this.uri);

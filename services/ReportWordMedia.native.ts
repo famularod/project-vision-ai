@@ -1,3 +1,4 @@
+import { fromByteArray } from 'base64-js';
 import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Image } from 'react-native';
@@ -346,7 +347,7 @@ export async function renderNativeReportDrawingPreview(
 ) {
   const madeFrom = drawingPreviewSource(reference);
   const kept = drawingPreviews.get(reference.id);
-  if (kept?.madeFrom === madeFrom && new File(kept.uri).exists) return kept.uri;
+  if (kept?.madeFrom === madeFrom && (!isKeptFile(kept.uri) || new File(kept.uri).exists)) return kept.uri;
   // Asked for twice at once: one picture is made, and both get it.
   const beingMade = drawingPreviewsBeingMade.get(reference.id);
   if (beingMade?.madeFrom === madeFrom) return beingMade.uri;
@@ -380,19 +381,26 @@ async function makeDrawingPreview(reference: ReportDrawingReference, madeFrom: s
   const uri = await keepDrawingPreview(await renderDrawingPreviewFile(reference));
   const replaced = drawingPreviews.get(reference.id);
   drawingPreviews.set(reference.id, { madeFrom, uri });
-  if (replaced && replaced.uri !== uri) {
+  if (replaced && replaced.uri !== uri && isKeptFile(replaced.uri)) {
     const earlier = new File(replaced.uri);
     if (earlier.exists) earlier.delete();
   }
   return uri;
 }
 
+/** Whether a preview is a file in the preview folder, not a picture handed to the screen as data. */
+function isKeptFile(uri: string) {
+  return !uri.startsWith('data:');
+}
+
 /**
  * Moves a new preview out of the image tool's cache into the app's own
- * preview folder. If that cannot be done, the preview is still shown from
- * where it was made.
+ * preview folder. If that cannot be done, the screen is given the picture
+ * itself and no file is kept: left where it was made, it would be a file no
+ * later run of the app knows to clear (review pass 3 W2r).
  */
 async function keepDrawingPreview(madeUri: string) {
+  const made = new File(madeUri);
   try {
     const folder = new Directory(Paths.cache, DRAWING_PREVIEW_FOLDER);
     folder.create({ intermediates: true, idempotent: true });
@@ -405,10 +413,15 @@ async function keepDrawingPreview(madeUri: string) {
     }
     drawingPreviewsMade += 1;
     const kept = new File(folder, `preview-${Date.now()}-${drawingPreviewsMade}.jpg`);
-    await new File(madeUri).move(kept);
+    await made.move(kept);
     return kept.uri;
   } catch {
-    return madeUri;
+    try {
+      const picture = await made.bytes();
+      return `data:${convertedReportImageMimeType(picture)};base64,${fromByteArray(picture)}`;
+    } finally {
+      if (made.exists) made.delete();
+    }
   }
 }
 
