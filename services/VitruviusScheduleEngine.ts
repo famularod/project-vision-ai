@@ -7,13 +7,20 @@ import {
   type PIEScheduleDependencyNetwork,
 } from './PIEScheduleDependencyNetwork';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
+import {
+  SCHEDULE_FIRST_YEAR,
+  SCHEDULE_LAST_YEAR,
+  SCHEDULE_MAX_DURATION_WORKING_DAYS,
+  scheduleDayIsSupported,
+} from './ScheduleInputLimits';
 
 export type VitruviusScheduleIssueCode =
   | 'dependency_cycle'
   | 'invalid_task_date'
   | 'missing_predecessor'
   | 'missing_predecessor_finish'
-  | 'completed_task_locked';
+  | 'completed_task_locked'
+  | 'unsupported_task_duration';
 
 export type VitruviusScheduleIssue = Readonly<{
   code: VitruviusScheduleIssueCode;
@@ -145,9 +152,29 @@ export function previewVitruviusFinishToStartSchedule(
       }
 
       const durationDays = scheduleDurationDays(item, currentStart);
+      // Checked before the duration is walked day by day (independent review
+      // R08: a stored or imported duration of a billion days did not finish).
+      if (durationDays > SCHEDULE_MAX_DURATION_WORKING_DAYS) {
+        issues.push(Object.freeze({
+          code: 'unsupported_task_duration',
+          severity: 'error',
+          itemId,
+          message: `${item.taskName} is longer than the ${SCHEDULE_MAX_DURATION_WORKING_DAYS.toLocaleString('en-US')} working days the schedule supports. Correct its duration or dates before its dates can be calculated.`,
+        }));
+        return;
+      }
       const nextFinish = item.isMilestone
         ? requiredStart
         : addWorkingDays(requiredStart, Math.max(0, durationDays - 1));
+      if (!scheduleDayIsSupported(requiredStart) || !scheduleDayIsSupported(nextFinish)) {
+        issues.push(Object.freeze({
+          code: 'invalid_task_date',
+          severity: 'error',
+          itemId,
+          message: `${item.taskName} would be moved outside ${SCHEDULE_FIRST_YEAR} through ${SCHEDULE_LAST_YEAR}. Correct its predecessors' dates before it can be calculated.`,
+        }));
+        return;
+      }
       const nextItem: ScheduleItem = {
         ...item,
         startDate: formatScheduleDate(requiredStart),
@@ -297,10 +324,18 @@ function scheduleDurationDays(item: ScheduleItem, parsedStart: Date | null) {
   }
   const finish = parseScheduleDate(item.finishDate);
   if (parsedStart && finish && finish.getTime() >= parsedStart.getTime()) {
+    // More calendar days than the longest supported duration covers are not
+    // counted out one by one; the caller refuses the task (review R08).
+    if (finish.getTime() - parsedStart.getTime() > LONGEST_SUPPORTED_SPAN_MS) {
+      return SCHEDULE_MAX_DURATION_WORKING_DAYS + 1;
+    }
     return Math.max(1, workingDaySpan(parsedStart, finish));
   }
   return 1;
 }
+
+/** The calendar time the longest supported duration can cover: seven days for every five worked, and a week over. */
+const LONGEST_SUPPORTED_SPAN_MS = (Math.ceil(SCHEDULE_MAX_DURATION_WORKING_DAYS / 5) * 7 + 7) * 86_400_000;
 
 function workingDaySpan(start: Date, finish: Date) {
   let count = 0;

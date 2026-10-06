@@ -49,6 +49,12 @@ import {
   schedulePredecessorOptions,
 } from '../../services/VitruviusScheduleWorkspace';
 import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
+import {
+  scheduleDateRangeText,
+  scheduleDayIsSupported,
+  scheduleDurationBoxProblem,
+  scheduleLagBoxProblem,
+} from '../../services/ScheduleInputLimits';
 import { scheduleTaskLinkTargets } from '../../services/ScheduleTaskRevisions';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
@@ -246,6 +252,13 @@ export function DesktopSchedulePage({
       parsedFinish.getTime() < parsedStart.getTime()
     ) {
       return { ok: false, message: 'Finish date cannot be before the start date.' };
+    }
+    // Independent review R08: the limits are checked here, before the save
+    // builds or calculates anything. A phase's duration, lag and dates are
+    // not in its form.
+    if (form.kind !== 'phase') {
+      const limitProblem = scheduleEditorLimitProblem(form, opened);
+      if (limitProblem) return { ok: false, message: limitProblem };
     }
     const projectTasks = tasks.filter(task => inProject(task, form.projectName));
     // A new item's cloud project is looked up by its project's name among
@@ -2123,6 +2136,31 @@ function calculatedDatesAsStored(
  */
 function dateInputValue(value: string | null | undefined) {
   return scheduleCalendarDay(value) ?? '';
+}
+
+/**
+ * Why the editor's duration, lag or dates cannot be saved, in a plain
+ * sentence, or null (independent review R08). A date box left showing the
+ * stored day is not judged; a milestone has no duration box.
+ */
+function scheduleEditorLimitProblem(
+  form: ScheduleEditorState,
+  opened: DAVEWebScheduleItem | null,
+): string | null {
+  const dateBoxes: ReadonlyArray<readonly [string, string, string | null | undefined]> = [
+    [form.kind === 'milestone' ? 'Milestone date' : 'Start date', form.startDate, opened?.startDate],
+    ...(form.kind === 'milestone' ? [] : [['Finish date', form.finishDate, opened?.finishDate] as const]),
+    ['Baseline start', form.baselineStartDate, opened?.baselineStartDate],
+    ...(form.kind === 'milestone' ? [] : [['Baseline finish', form.baselineFinishDate, opened?.baselineFinishDate] as const]),
+  ];
+  for (const [label, value, stored] of dateBoxes) {
+    const text = value.trim();
+    if (!text || (opened && text === dateInputValue(stored))) continue;
+    const day = scheduleCalendarDay(text);
+    if (!day || !scheduleDayIsSupported(day)) return scheduleDateRangeText(label);
+  }
+  return (form.kind === 'milestone' ? null : scheduleDurationBoxProblem(form.durationDays)) ||
+    scheduleLagBoxProblem(form.lagDays);
 }
 
 function shortDate(value: string) {

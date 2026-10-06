@@ -21,6 +21,12 @@ import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import {
+  SCHEDULE_DURATION_RANGE_TEXT,
+  scheduleDateRangeText,
+  scheduleDayIsSupported,
+  scheduleDurationIsSupported,
+} from './ScheduleInputLimits';
+import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
 } from './VitruviusProjectControls';
@@ -191,6 +197,13 @@ export function buildDAVEWebScheduleItem({
 }): DAVEWebScheduleItem {
   const taskName = requiredText(draft.taskName, 'Task name');
   const projectName = requiredText(draft.projectName, 'Project');
+  // Independent review R08: a duration or a date beyond what the schedule
+  // supports is refused here, before a task is built or anything calculated.
+  refuseUnsupportedDuration(draft.durationDays);
+  refuseUnsupportedDay('Start date', draft.startDate, current?.startDate);
+  refuseUnsupportedDay('Finish date', draft.finishDate, current?.finishDate);
+  refuseUnsupportedDay('Baseline start', draft.baselineStartDate, current?.baselineStartDate);
+  refuseUnsupportedDay('Baseline finish', draft.baselineFinishDate, current?.baselineFinishDate);
   const normalizedDraftProgress = reconcileScheduleProgress(
     draft.status,
     draft.percentComplete,
@@ -648,6 +661,27 @@ export function scheduleItemForCloud(
   // Every web write of a task passes here: the shown copy's marker (savedLookaheadDates) is never saved, and dates
   // only shown go back to the saved ones (review N1 L1).
   return scheduleItemAsSaved(scheduleItem);
+}
+
+function refuseUnsupportedDuration(value: number | string | null | undefined) {
+  if (value === undefined || value === null || value === '') return;
+  const days = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(days) || !scheduleDurationIsSupported(days)) {
+    throw new DAVEWebTaskValidationError(SCHEDULE_DURATION_RANGE_TEXT);
+  }
+}
+
+/**
+ * A date this save changes must be a day the schedule supports. A date left
+ * as stored is not judged here, and text that names no day ("TBD") is kept
+ * as the forms already keep it.
+ */
+function refuseUnsupportedDay(label: string, value: string | undefined, stored: string | null | undefined) {
+  if (value === undefined || daveWebScheduleDatesMatch(value, stored)) return;
+  const day = scheduleCalendarDay(value);
+  if (day && !scheduleDayIsSupported(day)) {
+    throw new DAVEWebTaskValidationError(scheduleDateRangeText(label));
+  }
 }
 
 function requiredText(value: string, label: string): string {

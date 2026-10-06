@@ -8,6 +8,12 @@ import {
   type VitruviusScheduleIssueCode,
 } from './VitruviusScheduleEngine';
 import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
+import {
+  SCHEDULE_DURATION_RANGE_TEXT,
+  scheduleDateRangeText,
+  scheduleDayIsSupported,
+  scheduleDurationIsSupported,
+} from './ScheduleInputLimits';
 
 export type VitruviusScheduleChangeDraft = Readonly<
   Partial<
@@ -30,6 +36,8 @@ export type VitruviusScheduleScenarioIssueCode =
   | 'invalid_start_date'
   | 'invalid_finish_date'
   | 'finish_before_start'
+  | 'unsupported_duration'
+  | 'date_out_of_range'
   | 'critical_path_unavailable';
 
 export type VitruviusScheduleScenarioIssue = Readonly<{
@@ -126,6 +134,29 @@ export function buildVitruviusScheduleChangeScenario({
       ? editedItem.dependencies
       : normalizeScheduleDependencies(draft.dependencies),
   });
+  // The draft's limits are checked before anything is calculated
+  // (independent review R08: validation came after the analytics, so a
+  // duration of a billion days was walked day by day first).
+  const limitIssues = draftLimitIssues(draftedItem);
+  if (limitIssues.length > 0) {
+    return Object.freeze({
+      editedItemId: itemId,
+      projectName,
+      draftedItem,
+      proposedProjectItems: Object.freeze([]),
+      downstreamChanges: Object.freeze([]),
+      projectFinish: Object.freeze({
+        before: null,
+        after: null,
+        deltaCalendarDays: null,
+      }),
+      criticalPath: emptyCriticalPathSummary(),
+      safety: Object.freeze({
+        safeToApply: false,
+        issues: Object.freeze(limitIssues),
+      }),
+    });
+  }
   const candidateProjectItems = currentProjectItems.map(item =>
     item.id === itemId ? draftedItem : item,
   );
@@ -183,6 +214,31 @@ export function buildVitruviusScheduleChangeScenario({
       issues: Object.freeze(issues),
     }),
   });
+}
+
+/** What the draft asks for beyond what the schedule supports: nothing is calculated for it. */
+function draftLimitIssues(
+  item: ScheduleItem,
+): VitruviusScheduleScenarioIssue[] {
+  const issues: VitruviusScheduleScenarioIssue[] = [];
+  if (!item.isMilestone && !scheduleDurationIsSupported(item.durationDays)) {
+    issues.push(Object.freeze({
+      code: 'unsupported_duration',
+      itemId: item.id,
+      message: SCHEDULE_DURATION_RANGE_TEXT,
+    }));
+  }
+  ([['Start date', item.startDate], ['Finish date', item.finishDate]] as const).forEach(([label, value]) => {
+    const day = parseVitruviusScheduleDate(value);
+    if (day && !scheduleDayIsSupported(day)) {
+      issues.push(Object.freeze({
+        code: 'date_out_of_range',
+        itemId: item.id,
+        message: scheduleDateRangeText(label),
+      }));
+    }
+  });
+  return issues;
 }
 
 function scenarioValidationIssues(
