@@ -370,6 +370,12 @@ export function createDAVEWebSupabaseGateway(
    * sign-in in this tab only. The server ended nothing and the account is
    * still signed in in the working tab, which uses these same report
    * periods: they stay.
+   *
+   * Open item W1-2 (6 Oct 2026): either way this tab then showed the
+   * sign-in page but went on holding, in memory, the rows it had loaded
+   * (and the photo and document addresses it had checked) until the page
+   * was reloaded. Nothing showed them. They are dropped with the sign-in,
+   * as the two sign-outs made here already drop them.
    */
   let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
   /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
@@ -377,6 +383,7 @@ export function createDAVEWebSupabaseGateway(
     const held = tabSignInSeenFor;
     tabSignInSeenFor = browserTabSignInUserId();
     if (!mayHaveEnded || !held || tabSignInSeenFor) return;
+    forgetSignedInReads();
     if (!signInGuard?.gaveWay()) forgetDAVEWebReportPeriods(held);
   }
 

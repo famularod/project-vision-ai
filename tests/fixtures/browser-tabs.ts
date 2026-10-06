@@ -362,6 +362,11 @@ export function withRefreshTokenRule(cloud: TabCloud) {
       }
       // The newest token (or the first this cloud sees of a stored sign-in): replaced.
       const sessionId = known ?? sessionIdOf(issued.access_token);
+      if (families.get(sessionId)?.ended) {
+        // A stored sign-in whose session was ended before this cloud saw any of its tokens.
+        refreshes.push({ userId: userOf(presented), outcome: 'refused' });
+        return alreadyUsed();
+      }
       families.set(sessionId, { active: issued.refresh_token, parent: presented, ended: false });
       sessionOfToken.set(presented, sessionId);
       sessionOfToken.set(issued.refresh_token, sessionId);
@@ -383,8 +388,8 @@ export function withRefreshTokenRule(cloud: TabCloud) {
     }
     const answer = await cloud.fetch(input, init);
     if (url.pathname === '/auth/v1/logout' && answer.ok) {
-      const family = families.get(sessionIdOf(bearer));
-      if (family) family.ended = true;
+      const sessionId = sessionIdOf(bearer);
+      families.set(sessionId, { active: '', parent: null, ...families.get(sessionId), ended: true });
     }
     return answer;
   };
