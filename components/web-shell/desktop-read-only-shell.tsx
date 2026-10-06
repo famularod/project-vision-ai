@@ -143,13 +143,21 @@ import {
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import { buildDAVEReportSourceFingerprint, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
-import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAfter, reportPeriodSentAt } from '../../services/DAVEReportSnapshot';
+import {
+  buildDAVEReportSnapshot,
+  daveReportSnapshotScopeKey,
+  reportPeriodSend,
+  reportPeriodSentAfter,
+  reportPeriodSentAt,
+  type DAVEReportSnapshot,
+} from '../../services/DAVEReportSnapshot';
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
   daveWebReportSentHereAt,
+  daveWebReportSentInThisTab,
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
   recordDAVEWebReportSend,
@@ -5534,6 +5542,9 @@ function ReportFactCard({
   );
 }
 
+/** A later send that stops an approved report before it leaves the page: the period it started, and whether another tab of this browser sent it. */
+type SendCheckStop = Readonly<{ periodKey: string; fromThisBrowser: boolean }>;
+
 function ReportWorkspace({
   snapshot,
   selectedProject,
@@ -5697,8 +5708,34 @@ function ReportWorkspace({
     : null;
   const periodSentAt = reportPeriodSentAt(periodSnapshot);
   const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
-  const approvedPeriodMoved = reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
-    daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey);
+  // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
+  // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
+  // the other tab's send is this browser's own, and own sends never stopped a share (review N1 M2). Only
+  // afterwards did the page say it could not be recorded. A later report this browser sent from another tab now
+  // stops a report approved in this tab as another device's does, in the same words but for "Another tab of
+  // this browser". This tab's own sends never stop it, and an older report opened from Report history is still
+  // copied after this browser's later sends, as pass 1 pinned it (review-n1-web-report-resend).
+  const [approvedInThisTab, setApprovedInThisTab] = useState(false);
+  /** When another tab sent the report `periodNow` runs from, if that stops the approved report on screen; else null. */
+  const anotherTabSentLater = (
+    periodNow: DAVEReportSnapshot | null,
+    preparedKey: string | undefined,
+    reportFacts: string,
+  ): string | null => {
+    const send = reportPeriodSend(periodNow);
+    const sentAt = typeof send?.deliveredAt === 'string' ? send.deliveredAt : null;
+    if (!sentAt || !approvedInThisTab) return null;
+    // This browser's, but not this tab's own.
+    if (!daveWebOwnReportSends().has(sentAt) || daveWebReportSentInThisTab(sentAt)) return null;
+    // Later than the report this one counts from ('none': it counted from no report), and not this very report.
+    const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+    if (countedFrom === undefined || !reportPeriodSentAfter(periodNow, countedFrom)) return null;
+    return daveWebReportSentHereAt(periodNow, reportFacts) ? null : sentAt;
+  };
+  const approvedMovedByAnotherTab = reportStatus === 'approved' && !sentFromHereAt &&
+    Boolean(anotherTabSentLater(periodSnapshot, reportSource.periodKey, reportSource.fingerprint.split(':media-')[0]));
+  const approvedPeriodMoved = approvedMovedByAnotherTab || (reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
+    daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
   const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
     periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
   /** The report on screen as the period records it: its facts, these projects, this format. */
@@ -6025,6 +6062,7 @@ function ReportWorkspace({
       setAudit(nextAudit);
       setExpectedRevision(savedRevision);
       setReportStatus(status);
+      if (status === 'approved') setApprovedInThisTab(true);
       setNotice(current => current?.tone === 'danger' ? current : { tone: 'good', text: status === 'approved' ? 'Report approved and saved with its source snapshot and audit history.' : 'Report draft saved to the shared project record.' });
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
@@ -6058,6 +6096,7 @@ function ReportWorkspace({
       documentIds: Object.freeze([...(report.sourceDocumentIds || [])]),
       ...(report.sourcePeriodKey ? { periodKey: report.sourcePeriodKey } : {}),
     });
+    setApprovedInThisTab(false); // opened from Report history: copied after this browser's later sends, as before (review N2)
     setNotice(null);
     setComposerOpen(true);
   };
@@ -6073,12 +6112,12 @@ function ReportWorkspace({
   // minute: the click then goes straight through. When the click itself had to wait and the browser refuses, he
   // is told the check passed and to press again.
   const sendCheckRef = useRef<{ key: string; at: number } | null>(null);
-  const sendCheckUnderWayRef = useRef<{ key: string; check: Promise<string | null> } | null>(null);
+  const sendCheckUnderWayRef = useRef<{ key: string; check: Promise<SendCheckStop | null> } | null>(null);
   const sendCheckKey = [reportId, expectedRevision ?? '', reportSource.fingerprint, periodReadKey].join('|');
   const sendCheckStands = () => Boolean(sentFromHereAt) ||
     (sendCheckRef.current?.key === sendCheckKey && Date.now() - sendCheckRef.current.at < DESKTOP_REPORT_SEND_CHECK_STANDS_MS);
-  /** Reads the period again. The period another device's later send started, or null when this report still stands. */
-  const checkPeriodBeforeSend = (): Promise<string | null> => {
+  /** Reads the period again. The period a later send started (another device's, or another tab's), or null when this report still stands. */
+  const checkPeriodBeforeSend = (): Promise<SendCheckStop | null> => {
     const underWay = sendCheckUnderWayRef.current;
     if (underWay?.key === sendCheckKey) return underWay.check;
     const key = sendCheckKey;
@@ -6094,7 +6133,10 @@ function ReportWorkspace({
       // reports kept their period, or one whose period could not be read at all.
       const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
       const later = countedFrom === undefined ? null : reportPeriodSentAfter(periodNow, countedFrom, daveWebOwnReportSends());
-      if (later && !daveWebReportSentHereAt(periodNow, reportFacts)) return `sent:${reportPeriodSentAt(later)}`;
+      if (later && !daveWebReportSentHereAt(periodNow, reportFacts)) return { periodKey: `sent:${reportPeriodSentAt(later)}`, fromThisBrowser: false };
+      // Nor one another tab of this browser has overtaken since it was approved here (review N2).
+      const byAnotherTab = anotherTabSentLater(periodNow, preparedKey, reportFacts);
+      if (byAnotherTab) return { periodKey: `sent:${byAnotherTab}`, fromThisBrowser: true };
       sendCheckRef.current = { key, at: Date.now() };
       return null;
     }).finally(() => {
@@ -6118,14 +6160,14 @@ function ReportWorkspace({
     }
     // An approval stands only on the period it was given on (A6 pass 8 M1, on the web since everyday item 3).
     if (approvedPeriodMoved) {
-      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab) });
       return;
     }
     const checkedAhead = sendCheckStands();
     if (!checkedAhead) {
       const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
       if (overtakenBy) {
-        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy) });
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy.periodKey, overtakenBy.fromThisBrowser) });
         return;
       }
     }
@@ -6180,13 +6222,13 @@ function ReportWorkspace({
       return;
     }
     if (approvedPeriodMoved) {
-      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab) });
       return;
     }
     if (!sendCheckStands()) {
       const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
       if (overtakenBy) {
-        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy) });
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy.periodKey, overtakenBy.fromThisBrowser) });
         return;
       }
       // A browser opens a window only within a click; where it says this one was used up by the wait, the next press opens the draft.
@@ -6499,7 +6541,7 @@ function ReportWorkspace({
                     : draftNotCountedProblem
                       ? draftNotCountedProblem
                       : approvedPeriodMoved
-                        ? daveWebReportPeriodMovedMessage(period.periodKey)
+                        ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
                         : sentFromHereAt
                           ? daveWebReportSentFromHereNote(sentFromHereAt)
                           : reportFactsAreCurrent

@@ -304,7 +304,12 @@ export function daveWebReportCheckedPressAgain(button: string): string {
 }
 
 /** Why an approved report is no longer shared: a later report was sent after it was approved. */
-export function daveWebReportPeriodMovedMessage(currentKey: string): string {
+export function daveWebReportPeriodMovedMessage(
+  currentKey: string,
+  /** Sent from this browser by another tab or window: never called "your other device" (review N1 and N2). */
+  fromThisBrowser = false,
+): string {
   const sentAt = currentKey.startsWith('sent:') ? currentKey.slice('sent:'.length) : '';
-  return `Your other device sent a report ${sentAt ? describeReportSendTime(sentAt) : 'since'}, after this one was approved, so its "since the last report" section is out of date. Regenerate it from current facts, then approve.`;
+  const who = fromThisBrowser ? 'Another tab of this browser' : 'Your other device';
+  return `${who} sent a report ${sentAt ? describeReportSendTime(sentAt) : 'since'}, after this one was approved, so its "since the last report" section is out of date. Regenerate it from current facts, then approve.`;
 }

@@ -123,6 +123,7 @@ export function forgetDAVEWebReportPeriods(ownerId: string): void {
   }
   // The signed-out account's send times are no other account's own sends.
   ownSends.clear();
+  sentInThisTab.clear();
 }
 
 /**
@@ -334,9 +335,24 @@ export function daveWebOwnReportSends(): ReadonlySet<string> {
   return ownSends;
 }
 
+/**
+ * The sends this tab itself recorded (review N2, 5 Oct 2026). Another tab's
+ * are this browser's own too (the same sender id) and are read back into
+ * `ownSends`, so they are never called another device's; but a report
+ * another tab sent after this tab approved its own is still a later report
+ * this tab's does not count from, and only this set tells the two apart.
+ */
+const sentInThisTab = new Set<string>();
+
+/** Whether this tab recorded the send at `sentAt` itself (not another tab or an earlier visit of this browser). */
+export function daveWebReportSentInThisTab(sentAt: string | null | undefined): boolean {
+  return typeof sentAt === 'string' && sentInThisTab.has(sentAt);
+}
+
 /** Test seam: a new tab knows no sends of its own until it reads them back. */
 export function forgetDAVEWebOwnReportSends(): void {
   ownSends.clear();
+  sentInThisTab.clear();
 }
 
 /**
@@ -492,6 +508,7 @@ export async function recordDAVEWebReportSend(
   const later = reportPeriodSentAfter(loaded.snapshot, reportPeriodSentAt(approval), ownSends);
   if (later) return laterSendOutcome(store, later);
   ownSends.add(deliveredAt);
+  sentInThisTab.add(deliveredAt);
   await rememberReportSentHere(deliveredAt, store.storage);
   const sentBy = await reportSenderId(store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => null);
   const delivered = markReportSnapshotDelivered(approval, deliveredAt, sentBy, markedSentAt);
