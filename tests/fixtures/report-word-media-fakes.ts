@@ -61,6 +61,17 @@ export const fakeMedia = {
    * bitmap for them).
    */
   deviceCannotOpen: new Set<string>(),
+  /**
+   * Local pictures saved for print (CMYK) or as 16-bit grey that the phone's
+   * image tool does open (expo-image-manipulator 57.0.21, Build 231). A crop
+   * keeps that form; only a redraw (resize) makes it an ordinary 8-bit
+   * colour picture. Saved as a JPEG without one, a CMYK picture is a CMYK
+   * JPEG, and a 16-bit grey one an ordinary 8-bit grey JPEG (run on macOS
+   * ImageIO, notes/impl-r06r07r10/NOTES-e1.txt).
+   */
+  devicePrintForm: new Map<string, 'CMYK' | '16-bit grey'>(),
+  /** Pictures the phone's image tool wrote that are still CMYK, by picture id. */
+  savedAsCmyk: new Set<string>(),
   /** Protected cloud files the desktop downloads, by URL. */
   remote: new Map<string, { bytes: Uint8Array; contentType: string | null }>(),
   pictures: new Map<string, FakePicture>(),
@@ -80,6 +91,8 @@ export const fakeMedia = {
     this.modified.clear();
     this.moveFails = false;
     this.deviceCannotOpen.clear();
+    this.devicePrintForm.clear();
+    this.savedAsCmyk.clear();
     this.remote.clear();
     this.pictures.clear();
     this.deviceCrops.length = 0;
@@ -205,6 +218,12 @@ export function fakePictureIn(bytes: Uint8Array): FakePicture | null {
   return (id && fakeMedia.pictures.get(id)) || null;
 }
 
+/** Whether a picture the phone's image tool wrote is still CMYK (it was saved with no redraw). */
+export function fakeSavedAsCmyk(bytes: Uint8Array): boolean {
+  const id = /\|(picture-\d+)\|/.exec(String.fromCharCode(...bytes))?.[1];
+  return Boolean(id && fakeMedia.savedAsCmyk.has(id));
+}
+
 function decoded(bytes: Uint8Array, decodes: readonly FakeImageFormat[]): FakePicture | null {
   return decodes.includes(fakeFormatOf(bytes)) ? fakePictureIn(bytes) : null;
 }
@@ -301,6 +320,7 @@ export function fakeImageManipulator() {
       fakeMedia.deviceOpened.push(uri);
       const source = fakeMedia.files.get(uri);
       let picture = source && !fakeMedia.deviceCannotOpen.has(uri) ? decoded(source, DEVICE_DECODES) : null;
+      let printForm = fakeMedia.devicePrintForm.get(uri) ?? null;
       let pendingCrop: FakeCrop | null = null;
       const context = {
         crop(rect: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>) {
@@ -319,6 +339,8 @@ export function fakeImageManipulator() {
             };
           }
           if (picture) picture = resized(picture, size.width, size.height);
+          // A resize redraws the picture into an ordinary 8-bit colour bitmap.
+          printForm = null;
           return context;
         },
         async renderAsync() {
@@ -332,6 +354,7 @@ export function fakeImageManipulator() {
               // A JPEG has no transparency. Apple's encoder puts the picture on white
               // (run on macOS ImageIO by the pass-4 reviewer, notes/p4-ecos/probe.swift).
               const bytes = fakeImageBytes(format, format === 'jpeg' ? flattened(rendered, 'white') : rendered);
+              if (printForm === 'CMYK' && format === 'jpeg') fakeMedia.savedAsCmyk.add(`picture-${fakeMedia.nextId}`);
               const savedUri = `file:///cache/ImageManipulator/${fakeMedia.nextId}.${format}`;
               fakeMedia.files.set(savedUri, bytes);
               return { uri: savedUri, width: rendered.width, height: rendered.height };

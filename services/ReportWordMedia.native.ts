@@ -249,6 +249,14 @@ async function convertedRaster(uri: string, format: ReportImageFormat) {
  * the picture upright as it loads it, so the size read here is the size the
  * area was measured on (independent review R06: the whole sheet was embedded
  * and described as an excerpt).
+ *
+ * The excerpt is always redrawn at its own size before it is saved (Build
+ * 231 E1 item 4). The image tool Build 231 has (expo-image-manipulator
+ * 57.0.21) opens a picture saved for print (CMYK) or as 16-bit grey, which
+ * 57.0.20 could not, and a crop keeps the picture's form: a CMYK crop saved
+ * as it was is a CMYK JPEG, which Word does not show reliably. The redraw
+ * makes it an ordinary 8-bit colour picture. When the tool cannot open the
+ * picture at all, it is left out and the reason says why.
  */
 async function renderDrawingImageExcerpt(
   uri: string,
@@ -265,9 +273,7 @@ async function renderDrawingImageExcerpt(
     width: crop.width,
     height: crop.height,
   });
-  if (crop.outputWidth !== crop.width || crop.outputHeight !== crop.height) {
-    context.resize({ width: crop.outputWidth, height: crop.outputHeight });
-  }
+  context.resize({ width: crop.outputWidth, height: crop.outputHeight });
   const excerpt = await context.renderAsync();
   return excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
 }
