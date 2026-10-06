@@ -78,12 +78,20 @@ type RecorderRun = { letGo: 'cancelled' | 'closed' | null };
 
 /** What a recording is kept on the device under: its account, the sheet that keeps it, and its project. */
 type KeepsUnder = Readonly<{
+  /** The signed-in account, also on a sheet that keeps nothing on the device (`owner` is null there). */
+  account: string | null;
   owner: string | null;
   slot: string | undefined;
   projectId: string | null;
   projectName: string;
   walkArea: DAVEProjectWalkContext['recommendedArea'];
 }>;
+
+/** Whether a sheet is open for the account and the project a recording in it was made for (review P4 L4). */
+function sameAccountAndProject(left: KeepsUnder, right: KeepsUnder): boolean {
+  return left.account === right.account &&
+    left.projectName.trim().toLowerCase() === right.projectName.trim().toLowerCase();
+}
 
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
@@ -198,9 +206,18 @@ export function DAVEVoiceCaptureSheet({
   const keepsOnDevice = Boolean(keptOwner && keepSlot);
   // Review N2 follow-up: the account, sheet and project a recording made now is kept under, and as the
   // sheet last showed them while it was open (its screen may clear the project as it hides the sheet).
-  const keepsUnder: KeepsUnder = { owner: keptOwner, slot: keepSlot, projectId, projectName, walkArea: walkContext?.recommendedArea ?? null };
+  const keepsUnder: KeepsUnder = {
+    account: ownerBoundary ?? null,
+    owner: keptOwner,
+    slot: keepSlot,
+    projectId,
+    projectName,
+    walkArea: walkContext?.recommendedArea ?? null,
+  };
   const openSheetKeepsUnderRef = useRef(keepsUnder);
   if (visible) openSheetKeepsUnderRef.current = keepsUnder;
+  // Review P4 L4: what the sheet was open for when it was last hidden.
+  const hiddenWhileOpenForRef = useRef<KeepsUnder | null>(null);
   const keptCopyRef = useRef<string | null>(null);
   // Review N1 M1: which recording a keep under way is for. Use, Discard and
   // Record Again move it on, so that keep is undone when it lands.
@@ -269,6 +286,25 @@ export function DAVEVoiceCaptureSheet({
     if (!visible) return undefined;
     return () => { void standRecorderDownBehindClosedSheet(); };
     // Only the sheet closing or going does this; it reads refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Review P4 L4 (5 Oct 2026): a recording ready in the sheet belongs to the
+  // project and account it was recorded for. A sheet that was hidden without
+  // his Cancel (a panel that failed to draw closes every sheet) still holds
+  // its recording, and shown next for ANOTHER project it said "Recording
+  // ready" there, and Continue sent it with that project's name and id. The
+  // sheet now lets go of it as it is shown, in the same step (a layout
+  // effect), so it is never on screen there and cannot be sent from there.
+  // Shown again for its own project it is still in the sheet, as before.
+  useLayoutEffect(() => {
+    if (!visible) return undefined;
+    const before = hiddenWhileOpenForRef.current;
+    if (before && recordingUriRef.current && !sameAccountAndProject(before, openSheetKeepsUnderRef.current)) {
+      letGoOfRecordingMadeFor(before);
+    }
+    return () => { hiddenWhileOpenForRef.current = openSheetKeepsUnderRef.current; };
+    // Only the sheet being shown or hidden does this; it reads refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
@@ -687,6 +723,29 @@ export function DAVEVoiceCaptureSheet({
     await removeRecording(uri ?? null);
   }
 
+  /**
+   * The sheet is shown for another project or account than the recording in
+   * it was made for (review P4 L4): the sheet lets go of it, at once. It is
+   * not lost. A sheet that keeps recordings has it on the device already,
+   * under its own account and project (review N1 L2), and that copy and its
+   * entry stay, for the next time the sheet opens for that project; only
+   * the recorder's own file in the cache goes. One not kept yet (the keep
+   * was still under way, or had failed) is kept now, by the service itself
+   * and under what it was made for, as a recording stopped behind a closed
+   * sheet is. A sheet that keeps nothing on the device has nowhere to keep
+   * it, and it goes; so does one too short to use.
+   */
+  function letGoOfRecordingMadeFor(madeFor: KeepsUnder) {
+    const uri = recordingUriRef.current;
+    const duration = recordingDuration;
+    // A keep still under way undoes itself when it lands: the sheet has let go.
+    const copy = letGoOfKeptCopy();
+    setRecordingUri(null);
+    setRecordingDuration(0);
+    if (!copy) void keepStoppedRecordingForNextTime(uri, duration, madeFor);
+    else if (uri !== copy) void removeRecording(uri);
+  }
+
   async function stopRecording() {
     // A lock or call may already have claimed and be finishing this recording.
     if (!recorderState.isRecording || !recordingActiveRef.current) return;
@@ -877,6 +936,17 @@ export function DAVEVoiceCaptureSheet({
     );
   }
 
+  /** The sheet lets go of its recording's kept copy without forgetting it: no keep still to come for it, and the copy stays. */
+  function letGoOfKeptCopy(): string | null {
+    keepEpochRef.current += 1;
+    const copy = keptCopyRef.current;
+    keptCopyRef.current = null;
+    keptStateRef.current = null;
+    sentForWordsRef.current = false;
+    captureRef.current = null;
+    return copy;
+  }
+
   /** "Close and Keep on This Device": the sheet closes and lets go of the recording; its kept copy and entry stay. */
   async function closeKeepingRecording(exit: () => void) {
     const uri = recordingUri;
@@ -893,13 +963,8 @@ export function DAVEVoiceCaptureSheet({
     stoppedWaitingRef.current = null;
     heldTranscriptRef.current = null;
     setIsTranscribing(false);
-    // Let go of, not forgotten: no keep still to come for it, and its kept copy stays.
-    keepEpochRef.current += 1;
-    const copy = keptCopyRef.current;
-    keptCopyRef.current = null;
-    keptStateRef.current = null;
-    sentForWordsRef.current = false;
-    captureRef.current = null;
+    // Let go of, not forgotten.
+    const copy = letGoOfKeptCopy();
     // The recorder's own file in the cache goes; the kept copy is the one that stays.
     if (uri !== copy) await removeRecording(uri);
     setRecordingUri(null);
