@@ -145,9 +145,12 @@ export function daveWebReportPeriodNote(read: DAVEWebReportPeriodRead): string {
   const sentAt = reportPeriodSentAt(read.snapshot);
   if (read.shared === 'unavailable') {
     // Before the shared table (owner answer Q16): each device, this computer too, keeps its own period.
+    // Review N4 L2 (6 Oct 2026): worded from what this computer has on record, which is all it can know. A report
+    // sent from here that the browser could not keep (storage full, the tab since closed) was sent all the same:
+    // "none was sent from this computer" and "the last report sent from this computer" were then not true.
     return sentAt
-      ? `Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, ${describeReportSendTime(sentAt)}.`
-      : "Reports aren't shared between your devices yet, and none was sent from this computer, so this report has no \"since the last report\" section.";
+      ? `Reports aren't shared between your devices yet, so this counts from the last report this computer knows it sent, ${describeReportSendTime(sentAt)}.`
+      : "Reports aren't shared between your devices yet, and this computer has no record of one sent from here, so this report has no \"since the last report\" section.";
   }
   if (read.shared === 'unchecked') {
     return sentAt
@@ -163,10 +166,25 @@ export function daveWebReportPeriodNote(read: DAVEWebReportPeriodRead): string {
  * 2026). Said plainly, with what it means, in place of "Try Approve again",
  * which never helped.
  */
-export function daveWebReportKeptInTabOnlyNote(shared: DAVEReportSharedCheck | 'loading'): string {
+export function daveWebReportKeptInTabOnlyNote(
+  shared: DAVEReportSharedCheck | 'loading',
+  /**
+   * The browser still holds an EARLIER report's period, which it would neither replace nor remove (review N4 L2,
+   * 6 Oct 2026). The note promised "no 'since the last report' section" after the tab closes; with an earlier
+   * period left behind the next report counts from that one instead.
+   */
+  olderPeriodLeft = false,
+): string {
   const kept = "This browser's storage for Vitruvius is full or switched off, so this computer remembers its last report only while this tab stays open.";
-  return shared === 'unavailable' || shared === 'loading'
-    ? `${kept} After that, the next report from this computer has no "since the last report" section until one is sent from here again. Clearing other sites' data in this browser makes room.`
+  if (shared === 'unavailable' || shared === 'loading') {
+    return olderPeriodLeft
+      ? `${kept} After that, the next report from this computer may count from an earlier report and repeat what the last one covered: this browser would not clear the earlier one.`
+      : `${kept} After that, the next report from this computer has no "since the last report" section until one is sent from here again. Clearing other sites' data in this browser makes room.`;
+  }
+  // Review N4 L2: with the shared record out of reach, a report sent now has not reached his other devices yet,
+  // and this tab is the only place that has it.
+  return shared === 'unchecked'
+    ? `${kept} The shared record can't be reached right now, so a report sent now reaches your other devices only once it can be reached again: keep this tab open until then.`
     : `${kept} Reports recorded as sent still reach your other devices, and this computer reads them back from there.`;
 }
 

@@ -212,7 +212,7 @@ describe('the web Reports page counts "since the last report" as the phone does 
 
     shared = 'unavailable';
     const second = render(<DesktopReadOnlyShell page="reports" />);
-    expect(await screen.findByText(/^Reports aren't shared between your devices yet, and none was sent from this computer/)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, and this computer has no record of one sent from here/)).toBeTruthy();
     openComposer();
     expect(reportBody()).not.toContain('Since the Last Report');
     second.unmount();

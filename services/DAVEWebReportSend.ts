@@ -66,6 +66,12 @@ const WEB_PREFIX = '@vitruvius/web';
  * here (null: a removal it could not make), and read back from here.
  */
 const tabOnly = new Map<string, string | null>();
+/**
+ * Review N4 L2 (6 Oct 2026): keys whose value in the profile is an OLDER period than the one this tab holds, which
+ * the profile would neither replace nor remove (a storage that fails altogether). The removal is tried again each
+ * time this tab uses the storage, and until it goes the page does not promise that nothing is left.
+ */
+const olderLeftInProfile = new Map<string, BrowserStorage>();
 /** The profile storages this tab keeps periods in, and the keys it wrote to each (for one that cannot list its keys). */
 const profileStorages = new Map<BrowserStorage, Set<string>>();
 
@@ -243,7 +249,77 @@ export function daveWebReportPeriodKeptInTabOnly(): boolean {
 /** Test seam: a new tab holds nothing in its own memory (neither a period nor the sender id a full profile refused). */
 export function forgetDAVEWebReportTabMemory(): void {
   tabOnly.clear();
+  olderLeftInProfile.clear();
   sharedAcceptedAt.clear();
+}
+
+/** When the report a stored period runs from was sent, as a time; null for no period, or one that runs from no send. */
+function storedPeriodSendTime(raw: string | null): number | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || typeof parsed.scopeKey !== 'string') return null;
+    const reportFormat = parsed.reportFormat === 'project_manager' || parsed.reportFormat === 'executive' ? parsed.reportFormat : undefined;
+    const time = sendTime(reportPeriodSentAt(validReportPeriodSnapshot(parsed, parsed.scopeKey, reportFormat)));
+    return time === -Infinity ? null : time;
+  } catch {
+    return null; // The account's own-send list, or nothing this build wrote: no period.
+  }
+}
+
+/**
+ * Review N4 L2 (6 Oct 2026, Low, caused by 46e3332 and de5f6f5). The profile's storage refused a period (`raw`) and
+ * this tab keeps it instead. What the profile still held for that key stayed: with a newer report just sent, that
+ * was the period of an EARLIER report, and once the tab closed the next report counted from it again, repeated what
+ * the newer report had covered, and the page called the earlier one "the last report sent from this computer".
+ * A period that runs from an earlier send than the refused one is now removed from the profile: the period can go
+ * to "none kept", never back. One that runs from the same send (an approval was refused, the last report sent is
+ * still the one kept) stays, as does an approval never sent. A removal the storage also refuses is remembered and
+ * tried again.
+ */
+function clearOlderPeriod(local: BrowserStorage, key: string, raw: string): void {
+  const refused = storedPeriodSendTime(raw);
+  if (refused === null) return;
+  let kept: number | null;
+  try {
+    kept = storedPeriodSendTime(daveWebStoredReportValue(local.getItem(key)));
+  } catch {
+    return; // What cannot be read is not read back later either.
+  }
+  if (kept === null || kept >= refused) {
+    // Nothing older is there (any more: another tab of this browser may have stored a later one since).
+    olderLeftInProfile.delete(key);
+    return;
+  }
+  try {
+    local.removeItem(key);
+    // A storage that says nothing and removes nothing is no better than one that refuses.
+    if (local.getItem(key) !== null) throw new Error('not removed');
+    profileStorages.get(local)?.delete(key);
+    olderLeftInProfile.delete(key);
+  } catch {
+    olderLeftInProfile.set(key, local);
+  }
+}
+
+/**
+ * Tries again to remove each older period the profile would not let go of, only while it is still the older one.
+ * One this tab no longer holds a newer period for (the profile has since taken it, or he signed out) is settled.
+ */
+function clearOlderPeriodsLeft(): void {
+  for (const [key, local] of [...olderLeftInProfile]) {
+    const mine = daveWebStoredReportValue(tabOnly.get(key));
+    if (mine === null) olderLeftInProfile.delete(key);
+    else clearOlderPeriod(local, key, mine);
+  }
+}
+
+/**
+ * Whether this browser still holds an earlier report's period that it would neither replace with this tab's newer
+ * one nor remove (review N4 L2): once this tab closes, the next report may count from that earlier report.
+ */
+export function daveWebReportOlderPeriodLeftInBrowser(): boolean {
+  return olderLeftInProfile.size > 0;
 }
 
 /**
@@ -263,6 +339,7 @@ export function daveWebReportStorage(
   // a send from here was not recorded. This tab's own copy is the later write,
   // so it is read first; it goes once the profile takes a write for that key.
   const stored = (key: string) => {
+    clearOlderPeriodsLeft();
     if (tabOnly.has(key)) return tabOnly.get(key) ?? null;
     try {
       return local ? local.getItem(key) : null;
@@ -292,6 +369,7 @@ export function daveWebReportStorage(
     } catch {
       if (value === null && !local) tabOnly.delete(key);
       else tabOnly.set(key, value);
+      if (local && raw !== null) clearOlderPeriod(local, key, raw);
     }
   };
   return Object.freeze({

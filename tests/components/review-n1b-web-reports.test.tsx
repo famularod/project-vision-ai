@@ -535,7 +535,7 @@ describe('review N1 (Low): the page\'s fixed lines are true with and without the
     const share = jest.fn(async () => undefined);
     setNavigator({ share });
     render(<DesktopReadOnlyShell page="reports" />);
-    await screen.findByText(/^Reports aren't shared between your devices yet, and none was sent from this computer/);
+    await screen.findByText(/^Reports aren't shared between your devices yet, and this computer has no record of one sent from here/);
     expect(screen.getByText('Counted from the last report sent from this computer.')).toBeTruthy();
     fireEvent.press(screen.getByText('Review & Prepare Report'));
     fireEvent.press(screen.getByText('Approve Report'));

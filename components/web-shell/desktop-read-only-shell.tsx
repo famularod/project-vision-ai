@@ -155,6 +155,7 @@ import {
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
+  daveWebReportOlderPeriodLeftInBrowser,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
   daveWebReportSendReachedShared,
@@ -6409,7 +6410,7 @@ function ReportWorkspace({
         ) : null}
         {daveWebReportPeriodKeptInTabOnly() ? (
           <Text style={styles.reportFactEmpty}>
-            {daveWebReportKeptInTabOnlyNote(currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'loading')}
+            {daveWebReportKeptInTabOnlyNote(currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'loading', daveWebReportOlderPeriodLeftInBrowser())}
           </Text>
         ) : null}
         {approvalToMarkSent ? (

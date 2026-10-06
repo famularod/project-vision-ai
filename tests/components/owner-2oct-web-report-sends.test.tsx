@@ -249,7 +249,7 @@ describe('a report sent from the web counts on the iPhone and the iPad (owner an
   it('without the shared table: the web\'s send is this browser profile\'s own period only; the phone cannot see it', async () => {
     table = 'missing';
     render(<DesktopReadOnlyShell page="reports" />);
-    expect(await screen.findByText(/^Reports aren't shared between your devices yet, and none was sent from this computer/)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, and this computer has no record of one sent from here/)).toBeTruthy();
     fireEvent.press(screen.getByText('Review & Prepare Report'));
     fireEvent.press(screen.getByText('Approve Report'));
     await screen.findByText('Share Approved Report');
@@ -258,7 +258,7 @@ describe('a report sent from the web counts on the iPhone and the iPad (owner an
     expect(await screen.findByText(/^Recorded as sent .*\. Reports aren't shared between your devices yet, so the next report counts from it on this computer only\.$/)).toBeTruthy();
     await settle();
     // The web counts from its own send now; the phone has nothing.
-    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, /)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report this computer knows it sent, /)).toBeTruthy();
     expect(Array.from(profile.keys()).some(key => key.startsWith('@vitruvius/web/owner-1/@vitruvius/report-snapshots/v1:tower'))).toBe(true);
     expect((await loadDAVEReportPeriod('tower', 'project_manager', phoneStorage(), phoneCloud)).snapshot).toBeNull();
   });

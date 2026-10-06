@@ -429,7 +429,7 @@ describe('review N1 (Low): after Sign Out of This Computer removed the account\'
     expect([...profile.keys()].filter(key => key.startsWith('@vitruvius/web/owner-1/'))).toEqual([]);
     expect([...profile.values()].join('\n')).not.toMatch(/Frame walls|Tower|Dana/);
   }
-  const NONE_SENT_HERE = /^Reports aren't shared between your devices yet, and none was sent from this computer/;
+  const NONE_SENT_HERE = /^Reports aren't shared between your devices yet, and this computer has no record of one sent from here/;
 
   it('with the shared table: the period is read back from it, and this computer\'s earlier send is still its own', async () => {
     table = PHONE_AT_10();
@@ -481,7 +481,7 @@ describe('review N1 (Low): after Sign Out of This Computer removed the account\'
     fireEvent.press(screen.getByText('Share Approved Report'));
     await screen.findByText(/^Recorded as sent /);
     await settle();
-    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, /)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report this computer knows it sent, /)).toBeTruthy();
     visit.unmount();
     signOutThenSignInAgain();
 
@@ -525,7 +525,7 @@ describe('review N1 (Low): with the profile\'s storage full, the period this tab
     fireEvent.press(screen.getByText('Share Approved Report'));
     expect(await screen.findByText(/^Recorded as sent .*\. Reports aren't shared between your devices yet, so the next report counts from it on this computer only\.$/)).toBeTruthy();
     await settle();
-    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report sent from this computer, /)).toBeTruthy();
+    expect(await screen.findByText(/^Reports aren't shared between your devices yet, so this counts from the last report this computer knows it sent, /)).toBeTruthy();
     expect(profile.size).toBe(0);
   });
 });
