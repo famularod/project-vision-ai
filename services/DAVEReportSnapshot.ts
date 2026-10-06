@@ -670,8 +670,18 @@ export function compareDAVEReportSnapshots({
   // new detail task, and the report still paired the two by name: "Pour slab finish changed from 10/16/2026 to
   // 11/08/2026.", which no task did, and the dropped task was never said removed. Detail rows pair by name only
   // with detail rows, and the others only with each other.
+  // Review N5 B (6 Oct 2026, Low, older): nor a task whose earlier ids are known and none of them is in the earlier
+  // report. A lookahead added a third Pour slab after the last report; the next master listed two, and David
+  // answered "this row is the one the lookahead added". The list followed him. The row's earlier ids (the
+  // lookahead's row) matched nothing in the earlier report, so it was still offered to the pairing by name, and was
+  // paired with the Pour slab the master had dropped: "Pour slab moved from 60% to 0% complete.", "schedule impact
+  // changed from 1 day to not set.", and the dropped task never said removed. A task answers by its ids when it
+  // has any: with none of them in the earlier report it was not in that report, and is added. By name only for
+  // tasks with no earlier ids at all, as the note above says.
+  const knownByEarlierIds = (task: DAVEReportSnapshotTask) => earlierIdsOf(task).length > 0;
   const unpairedBefore = previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task));
-  const unpairedNow = current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task));
+  const unpairedNow = current.tasks.filter(task =>
+    !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task) && !knownByEarlierIds(task));
   const isLookaheadDetail = (task: DAVEReportSnapshotTask) => task.lookaheadDetail === true;
   const revisions = new Map([
     ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
