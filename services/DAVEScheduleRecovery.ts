@@ -503,7 +503,8 @@ export function scheduleItemsTakingCarriedText(
  * row (a percent on it, a lookahead that restated it) keeps its blank; and a
  * hidden old row changed by something other than David after he cleared a
  * note on the new row (a lookahead's delete gives dates back on hidden rows
- * too) gives the note back once.
+ * too) gives the note back once. (Not since review N3 R3 when the new row
+ * says it took a note from the old row: see below.)
  */
 function typedTextCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
   const answering = new Map<string, ScheduleItem[]>();
@@ -530,7 +531,16 @@ function typedTextCarriedToRevisedTasks(records: ScheduleItem[], deleted: readon
     // As the row was before a percent carried in this same merge stamped it (withOwnStamp).
     const own = rowsTakingCarriedProgress.get(record) ?? record;
     if (!(timestamp(earlier.updatedAt) > timestamp(own.updatedAt))) return record;
-    const fields = TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])));
+    // Review N3 R3: not a field this row took a value for from that earlier row and has lost since (the row says what
+    // it took, textFromTask). That blank is his clear, and a clear is a change like any other. The earlier row was
+    // changed later by something else (an owner set there by a device that had not heard of the master, a lookahead's
+    // delete giving its dates back), and the note he had cleared came back on every device: the second limit above,
+    // gone for a row that says what it took. Nor is other text typed on the earlier row since carried into it: that
+    // edit goes on to this row with its own upload and is weighed there against his clear (Review Conflicts asks,
+    // SyncService); filled here as well, the card it raised was left asking about a value the row already held.
+    // (A row never changed since its import holds no clear of his: its blank is filled as before.)
+    const took = timestamp(own.updatedAt) > 0 ? record.textFromTask : null;
+    const fields = TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !(took && text(took[field])));
     if (fields.length === 0) return record;
     const filled = { ...record, ...Object.fromEntries(fields.map(field => [field, earlier[field]])) } as ScheduleItem;
     const percentBefore = rowsTakingCarriedProgress.get(record);

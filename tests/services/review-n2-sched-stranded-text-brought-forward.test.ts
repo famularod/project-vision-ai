@@ -25,6 +25,7 @@ import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence'
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
+import { scheduleItemTextAsItsTaskHasIt } from '../../services/ScheduleItemEditBase';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
@@ -137,6 +138,16 @@ describe('Review N2 P1, second part: an owner and a note stranded on a hidden ro
     // Roof, with nothing ever typed on it, gains nothing; and no other saved row is written.
     expect(typed(one(onH, 'Roof'))).toEqual(NONE);
     expect(onH.items.filter(item => item.id === framingG || item.id === framingF)).toEqual(stranded.items.filter(item => item.id === framingG || item.id === framingF));
+  });
+
+  it('review N3 R3: what was read back through the task\'s blank row is not noted as taken from that row, so first sent it is not weighed against its blank', () => {
+    const onH = approve(stranded, H, [FRAMING_H, ROOF]);
+    const framing = one(onH, 'Framing');
+    expect(typed(framing)).toEqual(MIKE);
+    // (A row says which fields it took from the task's own row, and those are weighed against the cloud's copy of
+    // that row when it first goes up. G's row is blank in the cloud too: noted as taken from it, they were cleared.)
+    expect(Object.keys(framing.textFromTask ?? {}).filter(field => field !== 'taskId')).toEqual([]);
+    expect(typed(scheduleItemTextAsItsTaskHasIt({ ...framing, textFromTask: framing.textFromTask ?? { taskId: framingG } }, saved(onH, framingG)))).toEqual(MIKE);
   });
 
   it('two masters since he typed them, both on Build 229: the third master\'s row reads back through the row between', () => {

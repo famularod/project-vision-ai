@@ -495,11 +495,31 @@ const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectCo
  * stays on the new row until he chooses. The same row when nothing differs,
  * when nothing was taken, or when the cloud has no such row.
  */
-export function scheduleItemTextAsItsTaskHasIt(row: ScheduleItem, task: ScheduleItem | null | undefined): ScheduleItem {
+export function scheduleItemTextAsItsTaskHasIt(
+  row: ScheduleItem,
+  task: ScheduleItem | null | undefined,
+  /**
+   * The copy this device's own edit of the task's row started from, while that edit still waits in the queue: the
+   * cloud's row reading as that copy has not been changed by anyone else, it is only behind this device, and the
+   * value taken stands (the reviewer's generator, seeds 1126, 1190, 1281: the new row went up before the edit did,
+   * and took the blank the cloud's row still had).
+   */
+  ownEditWaiting?: ScheduleItemEditBase | null,
+  /** The row's first upload: a blank it had nothing to take for takes the cloud's value too (not at Set Active, where a blank on a row already shown may be one he left). */
+  firstUpload = false,
+): ScheduleItem {
   const taken = row.textFromTask;
   if (!taken || !task || task.id !== taken.taskId) return row;
-  const behind = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field) &&
-    fieldValue(row, field) === fieldValue(taken, field) && fieldValue(task, field) !== fieldValue(taken, field));
+  const blank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
+  const same = (left: string, right: string) => left === right || (blank(left) && blank(right));
+  const agreed = (field: string) => (ownEditWaiting && Object.prototype.hasOwnProperty.call(ownEditWaiting.fields, field)
+    ? fieldValue(ownEditWaiting.fields, field) : fieldValue(taken, field));
+  // Still as taken; or a blank where the copy this device held had nothing to take (the cloud's row may have been given
+  // an owner on another device since: seed 20251, where the row's new stamp then kept the sync's carry from filling it).
+  const asTaken = (field: string) => (Object.prototype.hasOwnProperty.call(taken, field)
+    ? fieldValue(row, field) === fieldValue(taken, field) : firstUpload && blank(fieldValue(row, field)));
+  const behind = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => asTaken(field) &&
+    !same(fieldValue(task, field), fieldValue(row, field)) && !same(fieldValue(task, field), agreed(field)));
   const now: Partial<ScheduleItem> = Object.fromEntries(behind.map(field => [field, task[field] ?? '']));
   // Review N3 C: his project controls came the same way. The cloud's row of the task may hold an approval or a
   // schedule impact set on another device since: of the two, the later entry of each field (as two copies of one
@@ -520,23 +540,39 @@ export function scheduleItemTextAsItsTaskHasIt(row: ScheduleItem, task: Schedule
  * master), as an edit of the row the task lives on now: that row with his
  * values, weighed from the copy his edit started from, by the same rules as
  * any edit (owner answer Q28). Null when the edit holds no such field with
- * its copy, or changes nothing on that row.
+ * its copy, or changes nothing on that row. A field that row still holds
+ * exactly as it took it from the task (textFromTask: the web's upload saved
+ * the row days ago, and the task's note has been typed over since) was not
+ * typed on that row: it counts as the copy his edit started from, so his
+ * goes over it with nothing asked (the reviewer's always-online run with
+ * clears, seed 65096: a card "his note / the note the upload copied").
+ * `between`: the rows of the task between the one he typed on and this one
+ * (he missed two masters). Only a value every one of them also still holds
+ * as it took it came down untouched: one typed on a row in between, and
+ * copied on by the second master, is another device's edit of the task, and
+ * his is asked about over it.
  */
 export function scheduleItemTextEditOnRow(
   edit: Readonly<{ itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }>,
   fields: readonly string[],
   row: ScheduleItem,
+  between: readonly ScheduleItem[] = [],
 ): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase } | null {
   const base = edit.base;
   if (!isEditBase(base)) return null;
   const typed = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
     fieldValue(edit.itemData, field) !== fieldValue(row, field));
   if (typed.length === 0) return null;
+  // (Or holds nothing there and took nothing for it: a blank nobody typed. Seed 5052 of the always-online run: an owner
+  // set on the web, which sends no edit on, then changed on the phone, asked "Ana / blank" about an uploaded row.)
+  const asTaken = (held: ScheduleItem, field: string) => (held.textFromTask && Object.prototype.hasOwnProperty.call(held.textFromTask, field)
+    ? fieldValue(held, field) === fieldValue(held.textFromTask, field) : /^(null|"\s*")$/.test(fieldValue(held, field)));
+  const stillAsTaken = (field: string) => [row, ...between].every(held => asTaken(held, field));
   return {
     id: row.id,
     itemData: { ...row, ...Object.fromEntries(typed.map(field => [field, edit.itemData[field]])) },
     changedFields: [...typed, 'updatedAt'],
-    base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, base.fields[field]])) },
+    base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])) },
   };
 }
 

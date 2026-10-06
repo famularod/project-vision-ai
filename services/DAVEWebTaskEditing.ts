@@ -359,6 +359,9 @@ export function buildDAVEWebScheduleItem({
     } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
     ...(current?.notRevisionOfTaskIds?.length ? { notRevisionOfTaskIds: current.notRevisionOfTaskIds } : {}), // tasks David said it is not (owner answer Q30)
+    // What a master's new row took from the task's earlier row (review N3 R3). Dropped by a save here, an owner cleared
+    // on this page read as a blank nobody had typed, and an edit from a device that had not heard went over it unasked.
+    ...(current?.textFromTask ? { textFromTask: current.textFromTask } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,

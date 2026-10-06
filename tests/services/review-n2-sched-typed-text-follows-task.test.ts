@@ -363,11 +363,61 @@ describe('Review N2 P1: the web\'s upload and Make Current, and the phone\'s Set
     expect(typed(one(onGAgain, 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
   });
 
-  it('a value on the row now shown stands over the hidden row\'s', () => {
+  it('review N3 R3: nor when the older row is changed in between (a percent he records there): the newer row took that very note, and its blank is his clear', () => {
+    const onG = approve(withNote, G, [FRAMING_G, ROOF]);
+    const framingG = one(onG, 'Framing').id;
+    const cleared = patch(onG, framingG, { notes: '' }, '2026-09-16T09:00:00.000Z');
+    const backOnF = setActive(cleared, F, '2026-09-17T12:00:00.000Z');
+    // F's row, with the old note, is now the row changed last.
+    const percentOnF = patch(backOnF, framingF, { percentComplete: 20, status: 'In Progress' }, '2026-09-17T15:00:00.000Z');
+    const onGAgain = setActive(percentOnF, G, '2026-09-18T12:00:00.000Z');
+    expect(one(onGAgain, 'Framing').id).toBe(framingG);
+    // (It was: the old note again, filled from the row changed later.)
+    expect(typed(one(onGAgain, 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
+    // A note typed on the older row in between is another matter: it is new text, and fills the blank as before.
+    const noteOnF = patch(backOnF, framingF, { notes: 'Crew back Wednesday' }, '2026-09-17T15:00:00.000Z');
+    expect(typed(one(setActive(noteOnF, G, '2026-09-18T12:00:00.000Z'), 'Framing'))).toEqual(['Mike', 'Acme Framing', 'Crew back Wednesday']);
+  });
+
+  it('and a note the newer row never took (typed on the older row while that was shown, carried at Set Active, then cleared on the newer row): the row changed later keeps its blank', () => {
+    // G's row is saved before any note exists, so it says nothing of having taken one.
+    const onG = approve(onF, G, [FRAMING_G, ROOF]);
+    const framingG = one(onG, 'Framing').id;
+    expect(one(onG, 'Framing').textFromTask ?? null).toBeNull();
+    const backOnF = setActive(onG, F, '2026-09-15T12:00:00.000Z');
+    const noteOnF = patch(backOnF, framingF, { notes: 'Crew short Tuesday' }, '2026-09-15T15:00:00.000Z');
+    const onGWithNote = setActive(noteOnF, G, '2026-09-16T12:00:00.000Z');
+    expect([one(onGWithNote, 'Framing').id, one(onGWithNote, 'Framing').notes]).toEqual([framingG, 'Crew short Tuesday']);
+    const cleared = patch(onGWithNote, framingG, { notes: '' }, '2026-09-17T09:00:00.000Z');
+    const onGAgain = setActive(setActive(cleared, F, '2026-09-18T12:00:00.000Z'), G, '2026-09-19T12:00:00.000Z');
+    expect([one(onGAgain, 'Framing').id, one(onGAgain, 'Framing').notes]).toEqual([framingG, '']);
+  });
+
+  it('a row never changed since its import holds no clear of his: its blank is filled at Set Active even where the row says it took that text', () => {
+    const onG = approve(withNote, G, [FRAMING_G, ROOF]);
+    const framingG = one(onG, 'Framing').id;
+    expect(one(onG, 'Framing').textFromTask).toMatchObject({ taskId: framingF, notes: 'Crew short Tuesday' });
+    // As the schedule reviewer strands a row of this build (his N23): its owner and note blanked, with no stamp of its own.
+    const stranded: State = { ...onG, items: onG.items.map(item => {
+      if (item.id !== framingG) return item;
+      const { updatedAt: _updatedAt, ...rest } = item;
+      return { ...rest, notes: '', owner: '', contractor: '' } as ScheduleItem;
+    }) };
+    const back = setActive(setActive(stranded, F, '2026-09-17T12:00:00.000Z'), G, '2026-09-18T12:00:00.000Z');
+    expect([one(back, 'Framing').id, ...typed(one(back, 'Framing'))]).toEqual([framingG, ...MIKE]);
+  });
+
+  it('review N3 R3: what he typed over them on the task after the upload, before Make Current, is what the row then shown has', () => {
     const uploaded = upload(withNote, [FRAMING_G, ROOF]);
     const edited = patch(uploaded, framingF, { notes: 'Crew back Wednesday', owner: 'Ana' }, '2026-09-14T15:00:00.000Z');
-    // The upload's row took "Mike" and the first note; only a blank is filled at Make Current.
-    expect(typed(one(makeCurrent(edited, '2026-09-15T12:00:00.000Z'), 'Framing'))).toEqual(MIKE);
+    // Changed deliberately (review N3 R3). This test pinned a limit of review N2 P1 ("a value on the row now shown
+    // stands over the hidden row's": only a blank was filled at Make Current, so the upload's copy, "Mike" and the first
+    // note, stayed). The upload's row says what it took from the task; a field it still holds so is the task's, and
+    // takes what he has typed there since.
+    expect(typed(one(makeCurrent(edited, '2026-09-15T12:00:00.000Z'), 'Framing'))).toEqual(['Ana', 'Acme Framing', 'Crew back Wednesday']);
+    // A note he cleared there since is cleared.
+    const cleared = patch(uploaded, framingF, { notes: '' }, '2026-09-14T15:00:00.000Z');
+    expect(typed(one(makeCurrent(cleared, '2026-09-15T12:00:00.000Z'), 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
   });
 });
 

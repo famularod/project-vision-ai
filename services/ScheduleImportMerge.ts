@@ -35,6 +35,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
+import { scheduleItemTextAsItsTaskHasIt } from './ScheduleItemEditBase';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
@@ -1284,9 +1285,19 @@ function handTasksRestatedWhenCurrent(
  * other changes; null when nothing is filled.
  */
 function scheduleTextCarriedToShownTask(hidden: ScheduleItem, shown: ScheduleItem, row: ScheduleItem, now: string): ScheduleItem | null {
+  // Review N3 R3: a field the shown row still holds exactly as it took it from the hidden row (the web's upload saved
+  // it then) takes what the hidden row has now: he typed over it on the task since, or cleared it, before Make Current.
+  // (Only a blank was filled: his later note stayed behind on the hidden row.)
+  const asItsTask = scheduleItemTextAsItsTaskHasIt(row, hidden);
   // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
   // and the later entry stands.
-  const filled = withControlsOf(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt) ? withBlanksFilledFrom(row, hidden) : row, hidden, false);
+  // And a blank is not filled with the very text the shown row took from the hidden row and has lost since: that blank
+  // is his clear, whichever row was changed later (a percent recorded on the older row while it was shown brought the
+  // cleared note back).
+  const took = timeOf(shown.updatedAt) > 0 && row.textFromTask?.taskId === hidden.id ? row.textFromTask : null;
+  const cleared = took ? TYPED_TEXT_FIELDS.filter(field => !key(row[field]) && key(took[field]) && key(took[field]) === key(hidden[field])) : [];
+  const lender = cleared.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(cleared.map(field => [field, ''])) };
+  const filled = withControlsOf(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt) ? withBlanksFilledFrom(asItsTask, lender) : asItsTask, hidden, false);
   return filled === row ? null : { ...filled, updatedAt: now };
 }
 

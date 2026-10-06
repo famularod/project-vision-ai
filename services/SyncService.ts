@@ -3603,6 +3603,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     settledQueueItemIds: resolvedIds,
     queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
       typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
+    // The copy each task edit in this pass started from, by task (review N3 R3: a master's new row is weighed with it).
+    queuedScheduleItemEditBases: new Map(uploadBatch.flatMap(item => (item.entity === 'schedule_item' && isEditBase((item.payload as Partial<ScheduleItemRecordPayload>).base)
+      ? [[(item.payload as ScheduleItemRecordPayload).id, (item.payload as ScheduleItemRecordPayload).base as ScheduleItemEditBase] as const] : []))),
   };
   // Still queued, with no error: no retry is owed until David chooses.
   heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
@@ -6256,6 +6259,7 @@ type QueueUploadContext = {
   scheduleItemsById?: Map<string, ScheduleItem>;
   /** The ids of the tasks this pass has queued (independent review R02): the ones the list did not hold are read together. */
   queuedScheduleItemIds?: readonly string[];
+  queuedScheduleItemEditBases?: ReadonlyMap<string, ScheduleItemEditBase>;
   /** Those tasks' rows as read by id: the row, or null when the cloud has none. */
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
@@ -6687,11 +6691,18 @@ async function uploadQueueItem(
     // started from it lands, over something else typed there Review Conflicts asks (scheduleItemTextEditOnRow). Only
     // a field that has the copy it started from (so never a carried one, which is the sync's), and not a field asked
     // about on this row itself (that card moves to the task's row when Review Conflicts opens).
+    // To each row that answers to this one and that no other such row answers to: the master's own, and the row of a
+    // schedule uploaded on the web and not made current yet (seed 1281: only the later imported of the two got it).
+    // Not to a row in between (he missed two masters): it is hidden, and a card about it would ask the same twice.
+    // What those rows hold tells a value that came down untouched from one typed on the way.
     if (remote && changedFields) {
-      const rowNow = scheduleItemRowAnsweringTo(payload.id, [...context.scheduleItemsById.values()]);
-      const askedHere = rowNow ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote).asked : [];
-      const onRowNow = rowNow && scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow);
-      if (onRowNow) {
+      const answering = [...context.scheduleItemsById.values()].filter(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id));
+      const rowsNow = answering.filter(row => !answering.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id)));
+      const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote).asked : [];
+      for (const rowNow of rowsNow) {
+        const onRowNow = scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow,
+          answering.filter(row => row !== rowNow && scheduleTaskEarlierIds(rowNow).includes(row.id)));
+        if (!onRowNow) continue;
         const followed = await uploadQueueItem({ ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload }, context);
         if (followed !== 'uploaded' && followed !== 'conflict') return followed;
       }
@@ -6817,7 +6828,8 @@ async function uploadQueueItem(
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
         // and earlier task ids (A8 pass 10 L2).
-        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(scheduleItemTextAsItsTaskHasIt(payload.itemData, takenFrom), remote), remote);
+        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(
+          scheduleItemTextAsItsTaskHasIt(payload.itemData, takenFrom, takenFromId ? context.queuedScheduleItemEditBases?.get(takenFromId) : null, true), remote), remote);
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       if (asked.length > 0) return askAbout(remote);
       if (
