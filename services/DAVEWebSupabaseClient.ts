@@ -28,6 +28,7 @@ import {
   forgetBrowserTabSignIn,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
+import { createDAVEWebSignInRefreshGuard, type DAVEWebSignInRefreshGuard } from './DAVEWebSignInRefreshGuard';
 import {
   applySupabaseKeysetPage,
   chunkSupabaseFilterValues,
@@ -209,7 +210,26 @@ export type DAVEWebSupabaseGateway = ReturnType<typeof createDAVEWebSupabaseGate
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ?? '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? '';
 
-const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
+/**
+ * Batch W1 (6 Oct 2026): this tab never presents a refresh token that tabs
+ * of this browser have replaced twice or more (Chrome's Duplicate Tab; see
+ * DAVEWebSignInRefreshGuard). Every request of the web client goes through
+ * it; only a request for tokens is looked at.
+ */
+const browserSignInGuard = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createDAVEWebSignInRefreshGuard({
+      fetch: (input, init) => fetch(input, init),
+      shared: () => {
+        try {
+          return typeof window === 'undefined' ? null : window.localStorage;
+        } catch {
+          return null;
+        }
+      },
+    })
+  : null;
+
+const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY && browserSignInGuard
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         storage: supabaseSecureAuthStorage,
@@ -217,6 +237,7 @@ const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
         persistSession: true,
         detectSessionInUrl: false,
       },
+      global: { fetch: browserSignInGuard.fetch },
     })
   : null;
 
@@ -252,7 +273,11 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
   };
 }
 
-export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
+export function createDAVEWebSupabaseGateway(
+  client: SupabaseClient | null,
+  /** The guard the client's requests go through, when it has one (batch W1). */
+  signInGuard: Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> | null = null,
+) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
   let authorizedPhotoPaths = new Set<string>();
@@ -339,13 +364,20 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
    * either (owner answer Q26). The account is the one this tab's own
    * storage named when it was last looked at (as the tab started, as its
    * page began to listen, at the event before), never one an event carried.
+   *
+   * Batch W1 (6 Oct 2026): a tab that GAVE WAY (a stale copy made by
+   * Duplicate Tab, which did not present its replaced token) lost its
+   * sign-in in this tab only. The server ended nothing and the account is
+   * still signed in in the working tab, which uses these same report
+   * periods: they stay.
    */
   let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
   /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
   function lookAtTabSignIn(mayHaveEnded: boolean) {
     const held = tabSignInSeenFor;
     tabSignInSeenFor = browserTabSignInUserId();
-    if (mayHaveEnded && held && !tabSignInSeenFor) forgetDAVEWebReportPeriods(held);
+    if (!mayHaveEnded || !held || tabSignInSeenFor) return;
+    if (!signInGuard?.gaveWay()) forgetDAVEWebReportPeriods(held);
   }
 
   /**
@@ -1950,7 +1982,7 @@ function readRawString(value: unknown, key: string): string {
   return typeof candidate === 'string' ? candidate.trim() : '';
 }
 
-export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient);
+export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient, browserSignInGuard);
 
 async function processAuthorizedStorageCleanup(
   client: SupabaseClient,
