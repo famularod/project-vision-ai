@@ -573,7 +573,7 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
   // The last 64 characters are enough to test the end and keep the match linear.
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
-  const nameAfter = wordsIn(name.slice(at.index + at[0].length));
+  const nameAfter = withStreetLetter(wordsIn(name.slice(at.index + at[0].length)));
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
   const following = wordsInCommon(nameAfter, afterWords, true);
   const preceding = wordsInCommon(nameBefore, beforeWords);
@@ -586,6 +586,19 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
 
 function wordsIn(text: string): string[] {
   return text.match(/[a-z0-9]+/gi) ?? [];
+}
+
+/**
+ * Build 231 E1 item 9 (audit A9 pass 17 L2): a name typed with a lower-case
+ * street letter ("24117 - 450 a Street") is read as "450 A Street". Only the
+ * "a" straight after the number and before a street word is the letter;
+ * "2375 a new roof" keeps its article.
+ */
+function withStreetLetter(nameWordsAfterNumber: string[]) {
+  const [first, next] = nameWordsAfterNumber;
+  return first === 'a' && next && STREET_TYPE_WORDS.has(streetWord(next))
+    ? ['A', ...nameWordsAfterNumber.slice(1)]
+    : nameWordsAfterNumber;
 }
 
 /**
@@ -655,6 +668,11 @@ function streetWord(word: string) {
   const lower = word.toLowerCase();
   return STREET_WORDS.get(lower) ?? lower;
 }
+
+/** The street words of STREET_WORDS, written out, without the compass words. */
+const STREET_TYPE_WORDS: ReadonlySet<string> = new Set([
+  'street', 'avenue', 'road', 'boulevard', 'drive', 'lane', 'court', 'place', 'highway', 'parkway',
+]);
 
 /**
  * The words after `number` in a project name (or, without `number`, in

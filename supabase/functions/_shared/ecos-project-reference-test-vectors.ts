@@ -1441,6 +1441,22 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused: '450 (24117 - 450 A Street)',
     refusedClosed: true,
   },
+  // Build 231 E1 item 9 (audit A9 pass 17 L2): a project name typed with a
+  // lower-case street letter is read as its capital.
+  ...([
+    ['What is left at 450 A St?', '450 (24117 - 450 a Street)'],
+    ['What is left at 450 a st?', '450 (24117 - 450 a Street)'],
+    ['What is left at 450 A?', '450 (24117 - 450 a Street)'],
+    ['What is left at 450 a', '450 (24117 - 450 a Street)'],
+    ['Is 450 a priority this week?', null],
+  ] as const).map(([question, refused]) => ({
+    name: `E1 item 9: "${question}" on "450 Elm St" with 24117 - 450 a Street`,
+    projectName: '450 Elm St',
+    question,
+    knownProjectNames: [SELECTED, '450 Elm St', '24117 - 450 a Street'],
+    refused,
+    ...(refused ? { refusedSelected: '450' } : {}),
+  })),
   // Audit A9 pass 16 L2: a spaced capital is the letter of another project
   // numbered with it ("400N Tower"), even where it continues the selected
   // project's address ("24117 - 400 N Main St"); on 400N Tower the address
