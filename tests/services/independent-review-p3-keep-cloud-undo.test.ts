@@ -92,6 +92,7 @@ import {
   queueScheduleItemRecord,
   resolveScheduleItemSyncConflict,
   runScheduleItemCloudSync,
+  sanitizeUserFacingSyncMessage,
   syncConflictChoiceStopReason,
   uploadPendingChanges,
 } from '../../services/SyncService';
@@ -1238,5 +1239,230 @@ describe('independent review pass 4, follow-up 2: Settings says what was sent wh
 
   it('Settings never shows a raw error', () => {
     expect(ADMIN).not.toContain('error.message');
+  });
+});
+
+/* Review pass 5, P5-1: a kept copy left on the queue by a Keep Phone that was cut off ---------------------------- */
+
+/**
+ * Keep Phone is cut off (the app closed) after its kept copy is on the queue and before it is written: this phone's
+ * storage is as it was at that write, and nothing of the choice is still running.
+ */
+async function keepPhoneCutOffBeforeItsWrite(conflictId: string, shown: unknown) {
+  let atTheKill: Map<string, string> | null = null;
+  mockUpsertScheduleItem.mockImplementation(async () => {
+    atTheKill ??= new Map(mockStorage);
+    return mockUnreadable();
+  });
+  await keepPhoneOn(conflictId, shown).catch(() => undefined);
+  expect(atTheKill).not.toBeNull();
+  mockStorage.clear();
+  atTheKill!.forEach((value, key) => mockStorage.set(key, value));
+  mockUpsertScheduleItem.mockReset().mockImplementation(mockCloud.upsert);
+  mockGetScheduleItem.mockClear();
+  const [kept] = await getOfflineQueue();
+  expect(kept.payload).toMatchObject({ forceLocal: true, keptOverRowVersion: expect.any(String) });
+  return kept;
+}
+const NOT_APPLIED = 'Your Keep Phone choice for task “Pour slab” was not applied because the task changed in the cloud first. It is waiting in Review Conflicts for you to choose again.';
+const phoneSideOf = (conflict: { localPayload: unknown }) => (conflict.localPayload as { itemData: ScheduleItem }).itemData;
+
+/**
+ * The kept copy is written only over the row version he was shown (pass 4). Left on the queue by a choice that was
+ * cut off, with the task then written by another device, it was refused at every pass: "Task ... could not sync.
+ * This task changed in the cloud while the sync was running. This copy was not sent over it." at every sync, a queue
+ * record that never drained, and the card still open, until he chose again (the pass-5 reviewer, P5-1). It now goes
+ * back to its card at the first pass that meets the refusal, and he is told once.
+ */
+describe('review pass 5 (P5-1): a kept copy left by a Keep Phone that was cut off goes back to its card, once', () => {
+  it('another device writes the task meanwhile: the next pass takes the copy off the queue, the card shows the cloud as it is, and he is told once', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', notes: WEB_NOTE, updatedAt: '2026-09-30T13:00:00.000Z' });
+
+    // The app starts again and uploads.
+    const first = await uploadPendingChanges();
+
+    // "Task “Pour slab” could not sync. This task changed in the cloud while the sync was running. This copy was
+    // not sent over it." And the same at every pass after it.
+    expect(first.errors).toEqual([NOT_APPLIED]);
+    // A sentence the sync's own filter for what he may be shown leaves as it is.
+    expect(sanitizeUserFacingSyncMessage(NOT_APPLIED)).toBe(NOT_APPLIED);
+    expect(Object.values(first.itemOutcomes ?? {})).toEqual(['conflict']);
+    expect(first.queued).toBe(0);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    // Nothing was sent: the one write was the refused one.
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+    expect(cloudTask()).toMatchObject({ owner: 'Carl', notes: WEB_NOTE });
+    // The card, still the one he chose on: the cloud's side as it is now, this phone's side what he chose to keep.
+    const [card] = await getSyncConflicts();
+    expect(card.id).toBe(conflict.id);
+    expect(scheduleItemConflictFields(card.localPayload)).toEqual(['owner']);
+    expect(card.remotePayload).toMatchObject({ owner: 'Carl', notes: WEB_NOTE });
+    expect(phoneSideOf(card)).toMatchObject({ owner: 'Ana' });
+
+    // Every later pass: nothing to send, nothing to say.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const later = await uploadPendingChanges();
+      expect(later.errors).toEqual([]);
+      expect(later.queued).toBe(0);
+    }
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+
+    // He opens Review Conflicts and chooses again: his owner goes up, beside the other device's note.
+    await expect(keepPhoneOn(card.id, card.remotePayload)).resolves.toMatchObject({ owner: 'Ana' });
+    expect(cloudTask()).toMatchObject({ owner: 'Ana', notes: WEB_NOTE });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('or he chooses Keep Cloud on that card: the cloud\'s copy stays, and nothing is left waiting', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+    await uploadPendingChanges();
+    const [card] = await getSyncConflicts();
+
+    await expect(keepCloudOn(card.id, card.remotePayload)).resolves.toMatchObject({ owner: 'Carl' });
+
+    expect(cloudTask()).toMatchObject({ owner: 'Carl' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('nothing else wrote the task: the copy he chose goes up at the next pass, as it did, with nothing said', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual([]);
+    expect(cloudTask()).toMatchObject({ owner: 'Ana' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('the kept copy had taken the place of a newer edit of his that waited: the card takes its value, so nothing of his is lost', async () => {
+    const { mine, conflict, shown } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Ana (crew B)', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'updatedAt'], mine);
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+
+    await uploadPendingChanges();
+
+    // The newer owner was only in the kept copy: off the queue with it, he would have chosen "Ana" again unknowingly.
+    const [card] = await getSyncConflicts();
+    expect(phoneSideOf(card)).toMatchObject({ owner: 'Ana (crew B)' });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    await expect(keepPhoneOn(card.id, card.remotePayload)).resolves.toMatchObject({ owner: 'Ana (crew B)' });
+    expect(cloudTask()).toMatchObject({ owner: 'Ana (crew B)' });
+  });
+
+  it('a card about the whole task: the same; this phone\'s side is the whole copy he chose to keep', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    const kept = await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: MIKE, updatedAt: '2026-09-30T13:00:00.000Z' });
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual([NOT_APPLIED]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    expect(cloudTask()).toMatchObject({ owner: MIKE, notes: '' });
+    const [card] = await getSyncConflicts();
+    expect(card.id).toBe(conflict.id);
+    expect(scheduleItemConflictFields(card.localPayload)).toEqual([]);
+    expect(card.remotePayload).toMatchObject({ owner: MIKE, notes: '' });
+    expect(phoneSideOf(card)).toEqual((kept.payload as { itemData: ScheduleItem }).itemData);
+    expect((await uploadPendingChanges()).errors).toEqual([]);
+
+    // He sees both whole copies again and keeps the phone's.
+    await expect(keepPhoneOn(card.id, card.remotePayload)).resolves.toMatchObject({ notes: 'Phone note.', owner: '' });
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.', owner: '' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('the task was deleted meanwhile (its deletion record not heard yet): it is not written back, its conflict is closed, and he is told once', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    mockCloudRows.delete(phoneTask.id);
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual(['Your Keep Phone choice for task “Pour slab” was not applied because the task was deleted on another device. Its conflict is closed.']);
+    expect(mockCloudRows.has(phoneTask.id)).toBe(false);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    expect((await uploadPendingChanges()).errors).toEqual([]);
+  });
+
+  it('the cloud\'s row cannot be read at that pass: the copy waits, as it did, and goes back to its card at the next', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+    mockGetScheduleItem.mockImplementationOnce(async () => mockUnreadable());
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual(['Task “Pour slab” could not sync. This task changed in the cloud while the sync was running. This copy was not sent over it.']);
+    expect(await waitingFields()).toEqual([['owner', 'updatedAt']]);
+    expect((await getSyncConflicts())[0].remotePayload).toMatchObject({ owner: 'Bob' });
+
+    const second = await uploadPendingChanges();
+    expect(second.errors).toEqual([NOT_APPLIED]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    expect((await getSyncConflicts())[0].remotePayload).toMatchObject({ owner: 'Carl' });
+  });
+
+  it('what waits behind it for another task is not held up: it goes up in the same pass', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+    const other = mockCloudRows.get('task-other-1')!.item;
+    await queueScheduleItemRecord({ ...other, notes: 'Other task note.', updatedAt: '2026-09-30T13:01:00.000Z' }, false, ['notes', 'updatedAt'], other);
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual([NOT_APPLIED]);
+    expect(first.uploaded).toBe(1);
+    expect(mockCloudRows.get('task-other-1')!.item).toMatchObject({ notes: 'Other task note.' });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('no card is open for the task any more: one is made from the same two copies, his kept value on the cloud\'s row, and nothing of his is dropped', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown);
+    ipadSets({ owner: 'Carl', notes: WEB_NOTE, updatedAt: '2026-09-30T13:00:00.000Z' });
+    const conflictsKey = [...mockStorage.keys()].find(name => mockStorage.get(name)!.includes(conflict.id))!;
+    mockStorage.set(conflictsKey, '[]');
+
+    const first = await uploadPendingChanges();
+
+    expect(first.errors).toEqual([NOT_APPLIED]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    const [card] = await getSyncConflicts();
+    expect(card).toMatchObject({ entity: 'schedule_item', localId: phoneTask.id });
+    expect(card.remotePayload).toMatchObject({ owner: 'Carl', notes: WEB_NOTE });
+    // A whole copy that holds nothing older than the cloud's row but what he chose to keep.
+    expect(phoneSideOf(card)).toMatchObject({ owner: 'Ana', notes: WEB_NOTE });
+    await expect(keepPhoneOn(card.id, card.remotePayload)).resolves.toMatchObject({ owner: 'Ana', notes: WEB_NOTE });
+    expect(cloudTask()).toMatchObject({ owner: 'Ana', notes: WEB_NOTE });
+  });
+
+  it('a choice that is under way deals with its own refused copy, as before: the pass says nothing of its own and the choice answers', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    // Another device writes the task just before the kept copy's write is answered.
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+      return mockCloud.upsert(item, options);
+    });
+
+    const said = await chooseInSettings(conflict.id, 'keep_local', shown);
+
+    expect(said.alerts).toEqual([NOTHING_SENT]);
+    expect(cloudTask()).toMatchObject({ owner: 'Carl' });
+    expect((await getSyncConflicts())[0].remotePayload).toMatchObject({ owner: 'Carl' });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    // And nothing waits to be said at the next pass.
+    expect((await uploadPendingChanges()).errors).toEqual([]);
   });
 });

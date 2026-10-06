@@ -3776,6 +3776,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     if (resultCode === 'conflict') {
       itemOutcomes[item.id] = 'conflict';
       resolvedIds.add(item.id);
+      // A copy he chose to keep that went back to its card (review pass 5, P5-1): said in this pass, and in no later one.
+      const told = uploadContext.keptCopiesReturnedToCard?.get(item.id);
+      if (told) itemFailed(item.id, told);
       continue;
     }
 
@@ -6085,7 +6088,83 @@ async function weighTaskEditsWaitingBesideCard(
   return { cardId: open.id, fields, sent };
 }
 
+/**
+ * The choices on tasks' conflicts under way in this run of the app (review pass 5, P5-1). A copy Keep Phone queued
+ * whose write the cloud refuses meanwhile is that choice's to deal with; one refused with none under way was left
+ * by a choice that was cut off (returnRefusedKeptTaskCopyToItsCard).
+ */
+let taskConflictChoicesUnderWay = 0;
+
+/**
+ * Review pass 5, P5-1 (Low, caused by 623b920): a copy David chose to keep, refused with no choice under way to deal
+ * with the refusal. Keep Phone was cut off (the app closed) after its kept copy was queued and before it was written,
+ * and another device then wrote the task. The kept copy is written only over the row version he was shown, so every
+ * pass refused it: the same sentence at every sync, a queue record that never drained, and the card still open,
+ * until he chose again. (Before 623b920 it went over the other device's edit at the next start, with no card.)
+ *
+ * It goes back to its card, once. The card takes the cloud's row as it is now and, as this phone's side, what he
+ * chose to keep: the kept copy had taken the place of any newer edit of his that waited, so its values are the only
+ * copy of that edit. The sentence returned is what he is told, this once, and the record leaves the queue. Nothing
+ * is sent. With no card open for the task any more, a card of the whole task is made from the same two copies. A
+ * task the cloud no longer has is not written back, and its conflict is closed, as when Keep Phone itself finds it
+ * gone. Null when the cloud's row cannot be read now: the copy waits for the next pass, as it did.
+ */
+async function returnRefusedKeptTaskCopyToItsCard(item: SyncQueueItem, payload: ScheduleItemRecordPayload): Promise<string | null> {
+  const row = await currentCloudScheduleItem(payload.id).catch(() => undefined);
+  if (row === undefined) return null;
+  const taskName = payload.itemData?.taskName || 'Unnamed Task';
+  if (row === null) {
+    await clearScheduleItemSyncConflicts(payload.id);
+    return `Your Keep Phone choice for task “${taskName}” was not applied because the task was deleted on another device. Its conflict is closed.`;
+  }
+  const kept = payload.itemData as unknown as Record<string, unknown>;
+  const keptFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : null;
+  const keptValues = keptFields ? Object.fromEntries(keptFields.map(field => [field, kept[field]])) : kept;
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const open = conflicts.find(conflict => conflict.entity === 'schedule_item' && conflict.localId === payload.id);
+    const openPayload = open && isRecord(open.localPayload) ? open.localPayload : null;
+    const openItem = openPayload && isRecord(openPayload.itemData) ? openPayload.itemData : null;
+    if (open && openPayload && openItem) {
+      await writeSyncConflicts(conflicts.map(conflict => (conflict !== open ? conflict : {
+        ...open,
+        remoteChangedAt: row.updatedAt ?? open.remoteChangedAt,
+        localPayload: { ...openPayload, itemData: keptFields ? { ...openItem, ...keptValues } : kept },
+        remotePayload: row,
+      })));
+      return;
+    }
+    const detectedAt = new Date().toISOString();
+    await writeSyncConflicts([...conflicts.filter(conflict => conflict !== open), {
+      id: createQueueId('schedule_item_conflict', detectedAt),
+      entity: 'schedule_item',
+      localId: payload.id,
+      localChangedAt: item.changedAt,
+      remoteChangedAt: row.updatedAt || null,
+      reason: 'This task changed on another device before the copy chosen in Review Conflicts was sent.',
+      detectedAt,
+      // His values of the fields he chose to keep, on the cloud's row: a whole copy that puts nothing older over it.
+      localPayload: { id: payload.id, itemData: keptFields ? { ...row, ...keptValues } : kept },
+      remotePayload: row,
+    }]);
+  });
+  return `Your Keep Phone choice for task “${taskName}” was not applied because the task changed in the cloud first. It is waiting in Review Conflicts for you to choose again.`;
+}
+
 export async function resolveScheduleItemSyncConflict(
+  conflictId: string,
+  resolution: 'keep_local' | 'keep_cloud',
+  options: Parameters<typeof chooseScheduleItemSyncConflictCopy>[2] = {},
+): Promise<ScheduleItem> {
+  taskConflictChoicesUnderWay += 1;
+  try {
+    return await chooseScheduleItemSyncConflictCopy(conflictId, resolution, options);
+  } finally {
+    taskConflictChoicesUnderWay -= 1;
+  }
+}
+
+async function chooseScheduleItemSyncConflictCopy(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
   /**
@@ -6450,6 +6529,8 @@ type ReferenceDocumentUploadSuccess = {
 };
 
 type QueueUploadContext = {
+  /** What David is told, once, of each copy he chose to keep that went back to its card in this pass (review pass 5, P5-1), by queue item. */
+  keptCopiesReturnedToCard?: Map<string, string>;
   projectsAuthorityPromise?: ReturnType<typeof listProjects>;
   projectIdentityAuthority?: OperationalProjectIdentityAuthority;
   archivedProjectsAuthorityPromise?: ReturnType<typeof listArchivedProjects>;
@@ -7111,7 +7192,16 @@ async function uploadQueueItem(
       // Keep Phone's copy is not read again and sent (independent review pass 3): it is not weighed, it stands, so it
       // went whole over what another device wrote in the moment after Keep Phone had checked the row. It is left
       // unsent, and Keep Phone looks at the row as it is now (resolveScheduleItemSyncConflict).
-      if (payload.forceLocal) keptTaskCopiesRefused.add(payload.id);
+      // Review pass 5 (P5-1): with no choice under way to look at it, it does not wait here refused at every pass. It
+      // goes back to its card, once, and he is told once (returnRefusedKeptTaskCopyToItsCard).
+      if (payload.forceLocal) {
+        const told = taskConflictChoicesUnderWay === 0 ? await returnRefusedKeptTaskCopyToItsCard(item, payload) : null;
+        if (told) {
+          (context.keptCopiesReturnedToCard ??= new Map<string, string>()).set(item.id, told);
+          return 'conflict';
+        }
+        keptTaskCopiesRefused.add(payload.id);
+      }
       const rowNow = payload.forceLocal ? null
         : await cloudRowToWeighAgain(context, `schedule_item:${payload.id}`, payload.id, cloudScheduleItemsByIds);
       if (rowNow) {
