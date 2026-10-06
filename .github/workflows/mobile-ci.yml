@@ -13,7 +13,10 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # npm ci, two short checks and the release gate. The gate's test-suite
+    # step runs as three parts side by side here (VIC_JEST_PARTS below), so
+    # the job is expected to take 25 to 35 minutes; an hour is the limit.
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -33,10 +36,29 @@ jobs:
       - name: Validate release, migration, UI, and device-flow contracts
         run: npm run test:release-contracts
 
-      - name: Run default executable test gate
-        run: npm test
+      # GitHub has no .env file. The release gate's cloud-configuration check
+      # and its web export need a Supabase address and key to be present, so
+      # this job writes stand-ins that are plainly not real: the address has
+      # hyphens, which no Supabase project address has, and the key is words.
+      # They are read from .env the way the Mac's real values are: by the
+      # gate's preflight and by its web export. The test suite does not read
+      # .env. The web export made here cannot sign in; it is written to dist/
+      # on this runner, published nowhere, and thrown away with the runner.
+      # The native job below is given no values at all.
+      - name: Write stand-in cloud values for the release gate (not a real project or key)
+        run: |
+          printf '%s\n' \
+            'EXPO_PUBLIC_SUPABASE_URL=https://ci-stand-in-not-a-project.supabase.co' \
+            'EXPO_PUBLIC_SUPABASE_ANON_KEY=ci-stand-in-not-a-key' > .env
 
+      # The gate itself runs `npm run check` and the whole test suite (its
+      # strict jest step). `npm test` used to run before it, which ran the
+      # suite twice.
       - name: Run complete local release gate
+        env:
+          # The strict jest step as three in-band parts side by side
+          # (scripts/jarvis-jest-gate.js). Not set on the Mac.
+          VIC_JEST_PARTS: 3
         run: npm run qa:release
 
   native-release-generation:

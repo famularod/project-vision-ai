@@ -151,3 +151,8 @@ for (const script of [
 }
 
 console.log('ECOS Assurance release gate timeout and manifest contracts PASS.');
+
+// The gate's strict jest step has its own contract (Build 231 E1: on GitHub
+// the suite runs as in-band parts side by side). It runs from here so that
+// the release-hardening checks, which run this file, hold it as well.
+require('./jarvis-jest-gate-test');
