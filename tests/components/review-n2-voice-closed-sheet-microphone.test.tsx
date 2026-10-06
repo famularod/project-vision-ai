@@ -15,7 +15,8 @@ import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-o
 //
 // The microphone must never stay on behind a closed sheet, in any order of
 // taps and answers. Here every way a sheet closes is driven against every
-// moment of a slow start. The stand-in recorder has a microphone of its own
+// moment of a slow start. (What a close without his Cancel keeps of a
+// recording that was going is in review-n2-voice-closed-sheet-keeps-dictation.) The stand-in recorder has a microphone of its own
 // (on from record() until stop(), whatever the app believes), can be slow at
 // each step, and can report "recording" late, as the real one does (the
 // sheet asks it every 200 ms). Setting the audio mode does not stop it, as on
@@ -347,8 +348,23 @@ describe('review N2 follow-up: Vitruvius goes to the background while the record
   });
 });
 
+/**
+ * The microphone is off and released, the recorder's own file is gone, and what he had dictated is
+ * kept on the device once (decision after pass 3, 5 Oct 2026: a recording still going when the
+ * sheet closes without his Cancel is stopped at once and then kept; it was dropped here. What is kept,
+ * for whom and how it is offered is in review-n2-voice-closed-sheet-keeps-dictation).
+ */
+function expectMicrophoneOffAndDictationKept() {
+  expect(device.microphoneOn).toBe(false);
+  expect(device.allowsRecording).toBe(false);
+  expect(mockFiles.has(RECORDER_FILE)).toBe(false);
+  expect(keptFiles()).toHaveLength(1);
+  expect(entryKeys()).toHaveLength(1);
+  expect(transcription.transcribeDAVECaptureMemoryAudio).not.toHaveBeenCalled();
+}
+
 describe('review N2 follow-up: the sheet closes while a recording is going', () => {
-  it.each(WAYS.filter(way => way.told === null))('$name (not his Cancel): the recorder is stopped at once, and the unfinished recording is not kept', async way => {
+  it.each(WAYS.filter(way => way.told === null))('$name (not his Cancel): the recorder is stopped at once, and what he had dictated is kept for next time', async way => {
     await openScreen();
     fireEvent.press(screen.getByText('Start Recording'));
     expect(await screen.findByText('Stop Recording')).toBeTruthy();
@@ -356,16 +372,11 @@ describe('review N2 follow-up: the sheet closes while a recording is going', () 
     expect(device.microphoneOn).toBe(true);
 
     await way.close();
-    await settle();
+    // Stopped in the same step as the sheet goes, before anything is kept.
     expect(device.microphoneOn).toBe(false);
     expect(recorder.stop).toHaveBeenCalled();
-    expectNothingBehindTheClosedSheet();
-
-    if (way.taken) await openScreen();
-    else await act(async () => { screenControls.open(); await pause(); });
-    expect(screen.queryByText('Recording ready')).toBeNull();
-    expect(screen.queryByText(/^Kept from /)).toBeNull();
-    expect(screen.getByText('Start Recording')).toBeTruthy();
+    await settle();
+    expectMicrophoneOffAndDictationKept();
   });
 
   it('X while it is going still stops and discards it, as before', async () => {
@@ -405,7 +416,7 @@ describe('review N2 follow-up: the sheet closes while the recorder is stopping, 
     expectNothingBehindTheClosedSheet();
   });
 
-  it('the stop fails with the sheet open, and its screen then hides the sheet: the recorder, still going, is stopped', async () => {
+  it('the stop fails with the sheet open, and its screen then hides the sheet: the recorder, still going, is stopped, and what he had dictated is kept', async () => {
     await recordingForTwelveSeconds();
     const stopping = stopThatFails();
     fireEvent.press(screen.getByText('Stop Recording'));
@@ -415,9 +426,9 @@ describe('review N2 follow-up: the sheet closes while the recorder is stopping, 
     expect(device.microphoneOn).toBe(true);
 
     await act(async () => { screenControls.hide(); });
-    await settle();
     expect(device.microphoneOn).toBe(false);
-    expectNothingBehindTheClosedSheet();
+    await settle();
+    expectMicrophoneOffAndDictationKept();
   });
 });
 
@@ -488,12 +499,14 @@ describe('review N2 follow-up: orders in which the old recorder and a new tap me
     expect(recorder.record).toHaveBeenCalledTimes(1);
 
     await act(async () => { stopping.release(); await pause(); });
-    expectNothingBehindTheClosedSheet();
+    expectMicrophoneOffAndDictationKept();
     fireEvent.press(screen.getByText('Start Recording'));
     await waitFor(() => expect(recorder.record).toHaveBeenCalledTimes(2));
     expect(device.microphoneOn).toBe(true);
     expect(device.allowsRecording).toBe(true);
     expect(mockFiles.has(RECORDER_FILE)).toBe(true);
+    // The one kept from before is untouched by the new recording.
+    expect(keptFiles()).toHaveLength(1);
   });
 
   it('the sheet is shown again while a start it let go is still being put back: Start Recording waits for it', async () => {

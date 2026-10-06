@@ -76,6 +76,15 @@ export type DAVEVoiceKeptCapture = Readonly<{
  */
 type RecorderRun = { letGo: 'cancelled' | 'closed' | null };
 
+/** What a recording is kept on the device under: its account, the sheet that keeps it, and its project. */
+type KeepsUnder = Readonly<{
+  owner: string | null;
+  slot: string | undefined;
+  projectId: string | null;
+  projectName: string;
+  walkArea: DAVEProjectWalkContext['recommendedArea'];
+}>;
+
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
 // A recording that ends this close to the limit is treated as having reached it.
@@ -187,6 +196,11 @@ export function DAVEVoiceCaptureSheet({
   const ownerBoundary = useContext(NativeWorkspaceOwnerContext);
   const keptOwner = keepSlot && ownerBoundary !== undefined ? ownerBoundary ?? 'local-device' : null;
   const keepsOnDevice = Boolean(keptOwner && keepSlot);
+  // Review N2 follow-up: the account, sheet and project a recording made now is kept under, and as the
+  // sheet last showed them while it was open (its screen may clear the project as it hides the sheet).
+  const keepsUnder: KeepsUnder = { owner: keptOwner, slot: keepSlot, projectId, projectName, walkArea: walkContext?.recommendedArea ?? null };
+  const openSheetKeepsUnderRef = useRef(keepsUnder);
+  if (visible) openSheetKeepsUnderRef.current = keepsUnder;
   const keptCopyRef = useRef<string | null>(null);
   // Review N1 M1: which recording a keep under way is for. Use, Discard and
   // Record Again move it on, so that keep is undone when it lands.
@@ -292,6 +306,7 @@ export function DAVEVoiceCaptureSheet({
   // transcribed; only stop() finalizes it. So stop first and never resume.
   async function finishRecordingThatEndedOnItsOwn(statusUrl: string, duration: number) {
     const generation = transcriptionOperationRef.current;
+    const run = recorderRunRef.current;
     recordingFinishingRef.current = true;
     let uri: string | null = null;
     try {
@@ -315,8 +330,10 @@ export function DAVEVoiceCaptureSheet({
       recordingFinishingRef.current = false;
     }
     if (abandoned) {
-      // The sheet was closed or the recording discarded while it was finishing.
-      await removeRecording(uri);
+      // The sheet was closed or the recording discarded while it was finishing. Closed without his
+      // Cancel, what he dictated is kept for next time, as below (review N2 follow-up); it was deleted.
+      if (run?.letGo === 'closed') await keepStoppedRecordingForNextTime(uri, duration);
+      else await removeRecording(uri);
       return;
     }
     if (!uri) {
@@ -362,13 +379,25 @@ export function DAVEVoiceCaptureSheet({
     await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
   }
 
+  /** How long the recorder itself says it has been recording, asked directly; 0 when it cannot say. */
+  function recorderDuration(): number {
+    try {
+      return preserveDAVERecordingDuration(recorder.getStatus().durationMillis, recorder.currentTime * 1_000);
+    } catch {
+      return 0;
+    }
+  }
+
   /**
    * The sheet closed without his Cancel (review N2 follow-up). A start under
    * way ends when it next looks (startRecording), and a stop under way keeps
    * its recording off the closed sheet (stopRecording). A recording still
-   * going is stopped here, at once, and not kept: he had not finished it. It
-   * went on to the 3-minute limit behind the closed sheet, and was then kept
-   * on the device.
+   * going is stopped here, at once: it went on to the 3-minute limit behind
+   * the closed sheet. What he had dictated by then is kept on the device for
+   * next time, as a recording he had stopped is: he did not discard it, and
+   * nothing he did not ask for throws it away. Never when the run was his
+   * Cancel's, and never from a recorder that would not stop when asked: only
+   * a stop finishes its file.
    */
   async function standRecorderDownBehindClosedSheet() {
     letGoOfRecorderRun('closed');
@@ -379,8 +408,23 @@ export function DAVEVoiceCaptureSheet({
     // Claimed, so a lock or the limit cannot also finish and offer it.
     recordingActiveRef.current = false;
     recordingFinishingRef.current = true;
-    await standRecorderDown();
-    await removeRecording(recorderFile());
+    // Read now, before the recorder stops: how much he had dictated, and what the sheet was open for
+    // (it may be showing another project by the time the recorder has stopped).
+    const duration = preserveDAVERecordingDuration(recordingDurationRef.current, recorderDuration());
+    const under = openSheetKeepsUnderRef.current;
+    const cancelled = recorderRunRef.current?.letGo === 'cancelled';
+    let stopped = true;
+    try {
+      await recorder.stop();
+    } catch {
+      stopped = false;
+    }
+    const uri = recorderFile();
+    // Asked again when it would not stop; the microphone is released either way.
+    if (stopped) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+    else await standRecorderDown();
+    if (stopped && !cancelled) await keepStoppedRecordingForNextTime(uri, duration, under);
+    else await removeRecording(uri);
     recordingFinishingRef.current = false;
   }
 
@@ -605,21 +649,27 @@ export function DAVEVoiceCaptureSheet({
   }
 
   /**
-   * A recording he had stopped, when the sheet closed under the stop without
-   * his Cancel (review N2 follow-up): a finished recording he did not
+   * A recording he had stopped, or was still making, when the sheet closed
+   * without his Cancel (review N2 follow-up): a recording he did not
    * discard, so a sheet that keeps recordings keeps it on the device (review
    * N1 L2), for the next time it opens for this project. By the service
-   * itself: the closed sheet holds nothing of it. A sheet that keeps nothing
-   * on the device has nowhere to keep it, and it goes.
+   * itself: the closed sheet holds nothing of it. Kept once, under the
+   * account and project the sheet was open for, so it is offered to no other
+   * account and for no other project. A sheet that keeps nothing on the
+   * device has nowhere to keep it, and it goes; so does one too short to use.
    */
-  async function keepStoppedRecordingForNextTime(uri: string | null | undefined, duration: number) {
-    if (uri && keptOwner && keepSlot && daveRecordingIsLongEnough(duration)) {
-      await keptVoiceRecordings().keepVoiceRecording(keptOwner, keepSlot, {
+  async function keepStoppedRecordingForNextTime(
+    uri: string | null | undefined,
+    duration: number,
+    under: KeepsUnder = keepsUnder,
+  ) {
+    if (uri && under.owner && under.slot && daveRecordingIsLongEnough(duration)) {
+      await keptVoiceRecordings().keepVoiceRecording(under.owner, under.slot, {
         uri,
         durationMs: duration,
-        projectId,
-        projectName,
-        walkArea: walkContext?.recommendedArea ?? null,
+        projectId: under.projectId,
+        projectName: under.projectName,
+        walkArea: under.walkArea,
         state: 'ready',
       }).catch(() => undefined);
     }
