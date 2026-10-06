@@ -9,7 +9,7 @@ import {
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
 import type { DAVEReportSharedCheck } from './DAVEReportSnapshotStore';
-import { loadDAVEWebReportPeriod, type DAVEWebReportStore } from './DAVEWebReportSend';
+import { daveWebReportOnlyApprovalKeptInTab, loadDAVEWebReportPeriod, type DAVEWebReportStore } from './DAVEWebReportSend';
 
 /** When this tab first saw each of the other device's sends (the phone keeps the same in ScheduleCloudPull). */
 const firstSeen = new Map<string, string>();
@@ -174,8 +174,20 @@ export function daveWebReportKeptInTabOnlyNote(
    * period left behind the next report counts from that one instead.
    */
   olderPeriodLeft = false,
+  /**
+   * All the tab holds beyond the browser is an approval not yet sent; the last report SENT is in the browser
+   * (review N5 C, 6 Oct 2026). The note said the next report "has no 'since the last report' section until one is
+   * sent from here again", which is so after a send the browser could not keep, and not here: only the approval
+   * goes with the tab, and the next tab counts from the last report sent.
+   */
+  onlyApproval = daveWebReportOnlyApprovalKeptInTab(),
 ): string {
-  const kept = "This browser's storage for Vitruvius is full or switched off, so this computer remembers its last report only while this tab stays open.";
+  const kept = onlyApproval
+    ? "This browser's storage for Vitruvius is full or switched off, so this computer remembers this approval only while this tab stays open."
+    : "This browser's storage for Vitruvius is full or switched off, so this computer remembers its last report only while this tab stays open.";
+  if (onlyApproval && (shared === 'unavailable' || shared === 'loading')) {
+    return `${kept} After that, the approval is gone: the report has to be approved again, and it still counts from the last report this computer knows it sent. Clearing other sites' data in this browser makes room.`;
+  }
   if (shared === 'unavailable' || shared === 'loading') {
     return olderPeriodLeft
       ? `${kept} After that, the next report from this computer may count from an earlier report and repeat what the last one covered: this browser would not clear the earlier one.`

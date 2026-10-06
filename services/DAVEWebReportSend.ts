@@ -66,6 +66,8 @@ const WEB_PREFIX = '@vitruvius/web';
  * here (null: a removal it could not make), and read back from here.
  */
 const tabOnly = new Map<string, string | null>();
+/** The profile storage that refused each value this tab holds instead (review N5 C): where the browser's own copy is. */
+const tabOnlyRefusedBy = new Map<string, BrowserStorage>();
 /**
  * Review N4 L2 (6 Oct 2026): keys whose value in the profile is an OLDER period than the one this tab holds, which
  * the profile would neither replace nor remove (a storage that fails altogether). The removal is tried again each
@@ -246,9 +248,59 @@ export function daveWebReportPeriodKeptInTabOnly(): boolean {
   return false;
 }
 
+/**
+ * Review N5 C (6 Oct 2026, Low, wording; the sentence is 4cc5d40's). Whether all this tab holds beyond the browser is
+ * an APPROVAL not yet sent, of a report that counts from a last report sent which the browser does have. The page
+ * said "the next report from this computer has no 'since the last report' section until one is sent from here
+ * again" whenever the tab held anything; in this state only the approval goes with the tab, and the next tab counts
+ * from the last report sent, as it should.
+ */
+export function daveWebReportOnlyApprovalKeptInTab(): boolean {
+  let found = false;
+  for (const [key, value] of tabOnly) {
+    if (value === null || !key.startsWith(`${WEB_PREFIX}/`)) continue;
+    const mine = daveWebStoredReportValue(value);
+    // The account's list of its own sends and the like: no period, and nothing the next report counts from.
+    if (!storedValueIsPeriod(mine)) continue;
+    const runsFrom = storedPeriodSendTime(mine);
+    // A report sent, or an approval with no report sent before it: not this state.
+    if (runsFrom === null || !storedPeriodIsUnsentApproval(mine)) return false;
+    let keptRunsFrom: number | null = null;
+    try {
+      keptRunsFrom = storedPeriodSendTime(daveWebStoredReportValue(tabOnlyRefusedBy.get(key)?.getItem(key)));
+    } catch {
+      // A storage that cannot be read holds nothing the next tab could count from.
+    }
+    if (keptRunsFrom !== runsFrom) return false;
+    found = true;
+  }
+  return found;
+}
+
+/** Whether a stored value is a report period at all (and not, say, the account's list of its own sends). */
+function storedValueIsPeriod(raw: string | null): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? 'null');
+    return isRecord(parsed) && typeof parsed.scopeKey === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a stored period is an approval not yet sent. */
+function storedPeriodIsUnsentApproval(raw: string | null): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? 'null');
+    return isRecord(parsed) && typeof parsed.scopeKey === 'string' && parsed.deliveredAt === null;
+  } catch {
+    return false;
+  }
+}
+
 /** Test seam: a new tab holds nothing in its own memory (neither a period nor the sender id a full profile refused). */
 export function forgetDAVEWebReportTabMemory(): void {
   tabOnly.clear();
+  tabOnlyRefusedBy.clear();
   olderLeftInProfile.clear();
   sharedAcceptedAt.clear();
 }
@@ -369,6 +421,7 @@ export function daveWebReportStorage(
     } catch {
       if (value === null && !local) tabOnly.delete(key);
       else tabOnly.set(key, value);
+      if (local) tabOnlyRefusedBy.set(key, local);
       if (local && raw !== null) clearOlderPeriod(local, key, raw);
     }
   };
