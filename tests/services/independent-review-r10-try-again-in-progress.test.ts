@@ -32,12 +32,17 @@ import {
 import { askECOSProjectQuestion } from '../../services/ECOSProjectQuestion';
 
 type Body = Record<string, string>;
-type Stored = { status: 'processing' | 'completed'; startedAt: number; payload?: Record<string, unknown> };
+type Stored = { status: 'processing' | 'completed' | 'failed'; startedAt: number; payload?: Record<string, unknown> };
 
 const mockServer = {
   uuids: 0,
   /** Seconds a run takes; Infinity = it never finishes. */
   engineSeconds: 40,
+  /** How each run on the server ends, in order; the last entry repeats. A failing run fails after 20 s. */
+  runs: ['ok'] as Array<'ok' | 'fail'>,
+  runsStarted: 0,
+  /** Seconds the server takes to send an "in progress" refusal. */
+  refusalSeconds: 1,
   /** The wait the server names in an "in progress" refusal; the engine names none, the classic route 15. */
   retryAfterSeconds: null as number | null,
   /** Whether answers carry conversation receipts (the live engine sends none). */
@@ -49,6 +54,9 @@ const mockServer = {
   reset() {
     this.uuids = 0;
     this.engineSeconds = 40;
+    this.runs = ['ok'];
+    this.runsStarted = 0;
+    this.refusalSeconds = 1;
     this.retryAfterSeconds = null;
     this.conversations = false;
     this.records.clear();
@@ -125,15 +133,25 @@ function mockFetch(_url: string, init: { body: string; signal?: AbortSignal }) {
       setTimeout(() => resolve(mockResponse(409, {
         error: 'question_in_progress',
         ...(mockServer.retryAfterSeconds ? { retryAfterSeconds: mockServer.retryAfterSeconds } : {}),
-      })), 1_000);
+      })), mockServer.refusalSeconds * 1_000);
       return;
     }
+    // No record, a failed run, or one marked processing for 2 minutes or more: a run starts.
     arrival.action = 'start';
     const record: Stored = { status: 'processing', startedAt: now };
     mockServer.records.set(key, record);
     mockServer.recordWrites += 1;
+    const outcome = mockServer.runs[Math.min(mockServer.runsStarted, mockServer.runs.length - 1)];
+    mockServer.runsStarted += 1;
     const gatewayTimer = setTimeout(() => resolve(mockResponse(504, { error: 'agent_gateway_timed_out' })), 125_000);
-    if (Number.isFinite(mockServer.engineSeconds)) {
+    if (outcome === 'fail') {
+      setTimeout(() => {
+        record.status = 'failed';
+        mockServer.recordWrites += 1;
+        clearTimeout(gatewayTimer);
+        resolve(mockResponse(502, { error: 'answer_invalid' }));
+      }, 20_000);
+    } else if (Number.isFinite(mockServer.engineSeconds)) {
       setTimeout(() => {
         const answer = mockAnswer(body);
         record.status = 'completed';
@@ -350,6 +368,87 @@ describe('Stop, then Try Again, on the phone and iPad', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  describe('when a check is not refused but taken as a run of its own (review pass 3 A1w)', () => {
+    it('stops saying it is waiting for the earlier answer, and counts the usual steps from that check (the first run had failed)', async () => {
+      // The first run fails on the server 20 s after the first ask. The run after it answers in 40 s.
+      mockServer.runs = ['fail', 'ok'];
+      const { result } = open();
+      await stopThenTryAgain(result);
+      await advance(1_000);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+
+      // Checks at 6, 12 and 18 s are refused. The one at 24 s finds the failed run, starts a new one, and stays open.
+      await advance(20_000);
+      expect(actions()).toEqual(['start', 'in_progress', 'in_progress', 'in_progress', 'start']);
+      expect(secondsSinceFirstAsk()).toEqual([0, 6, 12, 18, 24]);
+      // For the few seconds a refusal could still be on its way, nothing is claimed either way.
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+
+      // Still open 4 s later: this is no refusal. The wording is the ordinary one, counted from that check.
+      await advance(1_000);
+      expect(sheet(result)).toMatchObject({
+        loading: true,
+        error: null,
+        earlierAskStillRunning: false,
+        workingSince: mockServer.arrivals[4].at,
+      });
+      for (let second = 29; second <= 64; second += 1) {
+        await advance(1_000);
+        if (second < 64) expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: false, workingSince: mockServer.arrivals[4].at });
+      }
+      // The new run's answer, 40 s after that check.
+      expect(sheet(result)).toMatchObject({ loading: false, error: null });
+      expect(sheet(result).answer.answer).toBe(ANSWER);
+      expect(mockServer.arrivals).toHaveLength(5);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('does the same when the server gives up on a run that never finished, two minutes after the first ask', async () => {
+      mockServer.engineSeconds = Infinity;
+      const { result } = open();
+      await stopThenTryAgain(result);
+      // Refused until 2 minutes after the first ask.
+      await advance(113_000);
+      expect(actions().at(-1)).toBe('in_progress');
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+      // The check at 120 s is taken as a new run; 4 s on, the screen says so.
+      await advance(11_000);
+      const starts = mockServer.arrivals.filter(arrival => arrival.action === 'start');
+      expect(starts).toHaveLength(2);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: false, workingSince: starts[1].at });
+    });
+
+    it('goes back to "still working on the earlier ask" if a slow refusal arrives after all', async () => {
+      mockServer.refusalSeconds = 6;
+      const { result } = open();
+      await stopThenTryAgain(result);
+      // The first check of a Try Again says nothing about an earlier ask until the server does.
+      await advance(5_000);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: false });
+      await advance(1_000);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+      // The next check goes out 5 s later; open for 4 s, it looks like a run of its own...
+      await advance(9_000);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: false, workingSince: mockServer.arrivals[2].at });
+      // ...until its refusal arrives 2 s after that.
+      await advance(2_000);
+      expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+      expect(actions()).toEqual(['start', 'in_progress', 'in_progress']);
+    });
+
+    it('never says so in the ordinary case: refusals and the stored answer come back at once', async () => {
+      const { result } = open();
+      await stopThenTryAgain(result);
+      await advance(1_000);
+      for (let second = 7; second < 42; second += 1) {
+        expect(sheet(result)).toMatchObject({ loading: true, earlierAskStillRunning: true });
+        await advance(1_000);
+      }
+      await advance(2_000);
+      expect(sheet(result).answer.answer).toBe(ANSWER);
+    });
+  });
+
   it('keeps a follow-up linked to the first answer through Stop and Try Again (only matters if the server ever sends receipts)', async () => {
     mockServer.conversations = true;
     const { result } = open();
@@ -419,6 +518,44 @@ describe('Stop, then Ask ECOS again, on the desktop', () => {
     await advance(2_000);
     expect(screen.queryByText(EARLIER.title)).toBeNull();
     expect(screen.getByText('Finding the right pages and records…')).toBeTruthy();
+  });
+
+  it('says the ordinary thing once a check is taken as a run of its own (review pass 3 A1w: the first run had failed)', async () => {
+    mockServer.runs = ['fail', 'ok'];
+    const screen = render(page());
+    await stopThenAskAgain(screen);
+    await advance(1_000);
+    expect(screen.getByText(EARLIER.title)).toBeTruthy();
+
+    // The check 24 s after the first ask starts a new run. Until it has been open 4 s the wording stands.
+    await advance(20_000);
+    expect(actions()).toEqual(['start', 'in_progress', 'in_progress', 'in_progress', 'start']);
+    expect(screen.getByText(EARLIER.title)).toBeTruthy();
+
+    await advance(1_000);
+    expect(screen.queryByText(EARLIER.title)).toBeNull();
+    expect(screen.queryByText(EARLIER.detail)).toBeNull();
+    expect(screen.getByText('Finding the right pages and records…')).toBeTruthy();
+    // The usual steps, by the time since that check: reading at 8 s, writing at 32 s.
+    await advance(4_000);
+    expect(screen.getByText('Reading the drawing sheet…')).toBeTruthy();
+    await advance(24_000);
+    expect(screen.getByText('Writing the answer…')).toBeTruthy();
+    expect(screen.queryByText(EARLIER.title)).toBeNull();
+    expect(screen.queryByText(REFUSAL)).toBeNull();
+    // The clock under it still counts from the press of Ask ECOS (6 s after the first ask), which is what the 2 min 30 s is measured from.
+    expect(screen.getByText('50 s')).toBeTruthy();
+
+    await advance(8_000);
+    expect(screen.getByText(ANSWER)).toBeTruthy();
+    expect(jest.getTimerCount()).toBe(0);
+
+    // The next question starts its own count: it is not "taking longer than usual" from the start.
+    fireEvent.changeText(screen.getByLabelText(INPUT), FOLLOW_UP);
+    await act(async () => { fireEvent.press(screen.getByText('Ask ECOS')); });
+    await advance(2_000);
+    expect(screen.getByText('Finding the right pages and records…')).toBeTruthy();
+    expect(screen.queryByText('Still working…')).toBeNull();
   });
 
   it('Stop returns control at once during that wait; 2 min 30 s ends it when the server never finishes', async () => {

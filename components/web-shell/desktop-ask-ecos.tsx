@@ -49,7 +49,9 @@ export function DesktopAskECOSWorkspace({
   const [loading, setLoading] = useState(false);
   // The server was already working on this question; the wait is for that answer (review pass 2 A1).
   const [earlierAskStillRunning, setEarlierAskStillRunning] = useState(false);
-  const progress = useECOSAskProgress(loading, earlierAskStillRunning);
+  // When the server took a repeat as a run of its own: the usual steps count from then (review pass 3 A1w).
+  const [workingSince, setWorkingSince] = useState<number | null>(null);
+  const progress = useECOSAskProgress(loading, earlierAskStillRunning, workingSince);
   // Bounds the wait, stops it, and keeps a stopped question's request id (independent review R10).
   const [askWait] = useState(createECOSAskWait);
   useEffect(() => {
@@ -77,12 +79,17 @@ export function DesktopAskECOSWorkspace({
     setError(null);
     setLoading(true);
     setEarlierAskStillRunning(false);
+    setWorkingSince(null);
     const turn = conversation.begin();
     try {
       const nextAnswer = await askWait.run(
         [projectId, cleanQuestion, turn.request.conversationId, turn.request.priorTurnId],
         control => onAsk({ projectId, projectName, question: cleanQuestion, ...turn.request }, control),
-        () => { if (turn.isCurrent()) setEarlierAskStillRunning(true); },
+        (stillRunning, askedAt) => {
+          if (!turn.isCurrent()) return;
+          setEarlierAskStillRunning(stillRunning);
+          setWorkingSince(stillRunning ? null : askedAt);
+        },
       );
       if (!turn.isCurrent()) return;
       turn.accept(nextAnswer.conversation);

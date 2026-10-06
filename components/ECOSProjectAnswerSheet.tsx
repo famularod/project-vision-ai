@@ -23,6 +23,7 @@ export function ECOSProjectAnswerSheet({
   answer,
   loading,
   earlierAskStillRunning = false,
+  workingSince = null,
   error,
   onOpenEvidence,
   onAskAnother,
@@ -37,6 +38,8 @@ export function ECOSProjectAnswerSheet({
   loading: boolean;
   /** The wait is for an answer the server had already started on (review pass 2 A1). */
   earlierAskStillRunning?: boolean;
+  /** When the server took a repeat as a run of its own: the usual steps count from then (review pass 3 A1w). */
+  workingSince?: number | null;
   error: string | null;
   onOpenEvidence: (evidence: DAVEAskEvidence) => void;
   onAskAnother: (suggestedQuestion?: string) => void;
@@ -48,7 +51,7 @@ export function ECOSProjectAnswerSheet({
 }) {
   const { width } = useWindowDimensions();
   const tablet = width >= 700;
-  const progress = useECOSAskProgress(loading, earlierAskStillRunning);
+  const progress = useECOSAskProgress(loading, earlierAskStillRunning, workingSince);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
     ? 'COULD NOT VERIFY'

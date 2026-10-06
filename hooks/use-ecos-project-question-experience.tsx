@@ -27,6 +27,8 @@ type QuestionState = Readonly<{
   canRetry: boolean;
   /** The server was already working on this question; the wait is for that answer (review pass 2 A1). */
   earlierAskStillRunning: boolean;
+  /** When the server took a repeat as a run of its own: the usual steps count from then (review pass 3 A1w). */
+  workingSince: number | null;
 }>;
 
 function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): string | null {
@@ -111,7 +113,7 @@ export function useECOSProjectQuestionExperience({
     setTypedOpen(false);
     const generation = ++requestGeneration.current;
     const turn = conversation.begin();
-    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null, canRetry: false, earlierAskStillRunning: false });
+    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null, canRetry: false, earlierAskStillRunning: false, workingSince: null });
     try {
       const answer = await askWait.run(
         [projectId, cleanQuestion, turn.request.conversationId, turn.request.priorTurnId],
@@ -127,8 +129,8 @@ export function useECOSProjectQuestionExperience({
           ...turn.request,
           ...control,
         }),
-        () => setResult(current => current?.requestGeneration === generation
-          ? { ...current, earlierAskStillRunning: true }
+        (earlierAskStillRunning, askedAt) => setResult(current => current?.requestGeneration === generation
+          ? { ...current, earlierAskStillRunning, workingSince: earlierAskStillRunning ? null : askedAt }
           : current),
       );
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
@@ -222,6 +224,7 @@ export function useECOSProjectQuestionExperience({
       answer={result?.answer || null}
       loading={result?.loading || false}
       earlierAskStillRunning={result?.earlierAskStillRunning || false}
+      workingSince={result?.workingSince ?? null}
       error={result?.error || null}
       onOpenEvidence={evidence => {
         const answerProject = result?.projectName || projectName;

@@ -45,6 +45,16 @@ export function ecosAskInProgressRetryMs(serverRetryAfterSeconds?: unknown): num
     : ECOS_ASK_IN_PROGRESS_RETRY_MS;
 }
 
+/**
+ * How long a repeat of the request may stay open before the app takes it
+ * that the server is working on it as a run of its own (review pass 3 A1w:
+ * when the first run had failed, the screen went on saying it was waiting
+ * for that answer while a new run did the work). An "in progress" refusal
+ * and a stored answer both come back in about a second; a repeat still open
+ * after this is neither.
+ */
+export const ECOS_ASK_REFUSAL_GRACE_MS = 4_000;
+
 export type ECOSAskProgressStage = Readonly<{
   key: 'finding' | 'reading' | 'writing' | 'checking' | 'longer' | 'earlier';
   title: string;

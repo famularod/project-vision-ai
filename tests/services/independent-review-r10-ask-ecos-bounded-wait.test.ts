@@ -9,6 +9,7 @@
 import {
   ECOS_ASK_DEADLINE_MS,
   ECOS_ASK_IN_PROGRESS_RETRY_MS,
+  ECOS_ASK_REFUSAL_GRACE_MS,
   ECOS_ASK_SERVER_LONGEST_WAIT_MS,
   ECOS_ASK_STOPPED_MESSAGE,
   ecosAskInProgressRetryMs,
@@ -477,6 +478,64 @@ describe('the wait both screens share', () => {
       expect(new Set(controls.map(control => control.clientRequestId)).size).toBe(1);
       expect(new Set(controls.map(control => control.signal)).size).toBe(1);
       expect(controls[0].signal.aborted).toBe(false);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('tells the screen when a repeat is no longer refused at once: the server is working on it as a run of its own (review pass 3 A1w)', async () => {
+      const wait = createECOSAskWait();
+      const { controls, answers, failures, request } = recorder();
+      const told: Array<[boolean, number]> = [];
+      const startedAt = Date.now();
+      const state = watch(wait.run(IDENTITY, request, (stillRunning, askedAt) => told.push([stillRunning, askedAt - startedAt])));
+      expect(ECOS_ASK_REFUSAL_GRACE_MS).toBe(4_000);
+
+      // The first try says nothing about an earlier ask, however long it is open.
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(told).toEqual([]);
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(0);
+      expect(told).toEqual([[true, 0]]);
+
+      // The repeat goes out 5 s later. Refused within the 4 s: nothing new to tell but the refusal.
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS + 1_000);
+      failures[1](inProgress());
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS);
+      expect(told).toEqual([[true, 0], [true, 25_000]]);
+      expect(controls).toHaveLength(3);
+
+      // This one stays open. At 4 s the screen is told, with when it went out.
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_REFUSAL_GRACE_MS - 1);
+      expect(told).toHaveLength(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(told).toEqual([[true, 0], [true, 25_000], [false, 31_000]]);
+      // Once, however long it then takes.
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(told).toHaveLength(3);
+
+      answers[2]('The new run\'s answer');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(state.value).toBe('The new run\'s answer');
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('goes back to "the earlier ask is still running" when a refusal arrives late, and leaves no timer when stopped', async () => {
+      const wait = createECOSAskWait();
+      const { failures, request } = recorder();
+      const told: boolean[] = [];
+      const state = watch(wait.run(IDENTITY, request, stillRunning => told.push(stillRunning)));
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS + ECOS_ASK_REFUSAL_GRACE_MS);
+      expect(told).toEqual([true, false]);
+      failures[1](inProgress());
+      await jest.advanceTimersByTimeAsync(0);
+      expect(told).toEqual([true, false, true]);
+
+      // Stopped while the next repeat is inside its 4 s: nothing more is told, no timer is left.
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS + 1_000);
+      wait.cancel();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(isECOSAskStopped(state.error)).toBe(true);
+      expect(told).toEqual([true, false, true]);
       expect(jest.getTimerCount()).toBe(0);
     });
 

@@ -338,6 +338,29 @@ describe('the phone and iPad answer sheet', () => {
     expect(screen.getByLabelText('Stop waiting for this answer')).toBeTruthy();
   });
 
+  it('counts the usual steps from when the server took a repeat as a run of its own, and the clock from the press (review pass 3 A1w)', async () => {
+    const screen = sheet({ loading: true, earlierAskStillRunning: true, onStop: jest.fn() });
+    await advance(30_000);
+    expect(screen.getByText('Still working on this question…')).toBeTruthy();
+
+    // A repeat sent 26 s after the press has stayed open: no longer the earlier ask.
+    const pressedAt = Date.now() - 30_000;
+    screen.rerender(createElement(ECOSProjectAnswerSheet, {
+      visible: true, projectName: '2375 Compliance Project', question: QUESTION, answer: null, error: null,
+      onOpenEvidence: () => undefined, onAskAnother: () => undefined, onClose: () => undefined, onStop: jest.fn(),
+      loading: true, earlierAskStillRunning: false, workingSince: pressedAt + 26_000,
+    }));
+    expect(screen.queryByText('Still working on this question…')).toBeNull();
+    expect(screen.getByText('Finding the right pages and records…')).toBeTruthy();
+    expect(screen.getByText('30 s')).toBeTruthy();
+    // 8 s after that repeat went out: reading. 32 s after: writing.
+    await advance(4_000);
+    expect(screen.getByText('Reading the drawing sheet…')).toBeTruthy();
+    await advance(24_000);
+    expect(screen.getByText('Writing the answer…')).toBeTruthy();
+    expect(screen.getByText('58 s')).toBeTruthy();
+  });
+
   it('shows no Try Again when a retry is not offered', () => {
     const screen = sheet({ error: 'This question names a different project.' });
     expect(screen.queryByText('Try Again')).toBeNull();

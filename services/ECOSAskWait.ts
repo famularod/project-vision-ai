@@ -1,6 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import {
   ECOS_ASK_DEADLINE_MS,
+  ECOS_ASK_REFUSAL_GRACE_MS,
   ECOS_ASK_STOPPED_MESSAGE,
   ecosAskInProgressRetryMs,
   ecosAskTimedOutMessage,
@@ -51,6 +52,11 @@ export function isECOSAskStillInProgress(error: unknown): boolean {
  *   tells the screen through onStillInProgress, waits, and sends the same
  *   request again, until the answer comes, it is stopped, or the time limit
  *   that began with this run() passes.
+ * - What the screen is told stays true (review pass 3 A1w). After a refusal
+ *   onStillInProgress(true) says the earlier ask is still being worked on.
+ *   When a repeat is then not refused at once, the server has taken it as a
+ *   run of its own (the earlier run failed, or was given up on), and
+ *   onStillInProgress(false, askedAt) says so, with when that repeat went out.
  */
 export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
   let current: { stop(code: ECOSAskStopCode, keepRequestId: boolean): void } | null = null;
@@ -61,7 +67,7 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
     async run<T>(
       identity: readonly unknown[],
       request: (control: ECOSAskControl) => Promise<T>,
-      onStillInProgress?: () => void,
+      onStillInProgress?: (earlierAskStillRunning: boolean, askedAt: number) => void,
     ): Promise<T> {
       current?.stop('question_cancelled', false);
       const key = JSON.stringify(identity);
@@ -84,16 +90,27 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
       current = attempt;
       const timer = setTimeout(() => attempt.stop('question_timed_out', true), deadlineMs);
       let pause: ReturnType<typeof setTimeout> | undefined;
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      let refused = false;
       try {
         for (;;) {
+          const askedAt = Date.now();
+          if (refused) {
+            grace = setTimeout(() => onStillInProgress?.(false, askedAt), ECOS_ASK_REFUSAL_GRACE_MS);
+          }
+          let refusal: unknown;
           try {
             return await Promise.race([stopped, request({ signal: controller.signal, clientRequestId })]);
           } catch (error) {
             if (!isECOSAskStillInProgress(error)) throw error;
-            onStillInProgress?.();
-            const retryMs = ecosAskInProgressRetryMs((error as { retryAfterSeconds?: unknown }).retryAfterSeconds);
-            await Promise.race([stopped, new Promise<void>(resolve => { pause = setTimeout(resolve, retryMs); })]);
+            refusal = error;
+          } finally {
+            clearTimeout(grace);
           }
+          refused = true;
+          onStillInProgress?.(true, askedAt);
+          const retryMs = ecosAskInProgressRetryMs((refusal as { retryAfterSeconds?: unknown }).retryAfterSeconds);
+          await Promise.race([stopped, new Promise<void>(resolve => { pause = setTimeout(resolve, retryMs); })]);
         }
       } catch (error) {
         // Nothing came back, so asking again is the same request, not a new one.
