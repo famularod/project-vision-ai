@@ -70,6 +70,8 @@ import {
   loadECOSHostedIndexStatuses,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
+import { ECOS_ASK_OWNER_CHECK_LIMIT_MS } from './ECOSAskProgress';
+import { ECOSAskOwnerCheckTimedOutError } from './ECOSAskWait';
 import { askECOSProjectQuestion, type ECOSProjectQuestionControl } from './ECOSProjectQuestion';
 import {
   analyzeECOSDrawingPage,
@@ -259,6 +261,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
   let cachedAuthorizedRows: DAVEWebRawRows | null = null;
   let authorizationCache: Readonly<{ ownerId: string; expiresAt: number }> | null = null;
   let authorizationInFlight: Promise<string> | null = null;
+  /** When the owner check now on its way was sent. */
+  let authorizationInFlightSince = 0;
   const documentCoverageSummaryCache = new Map<string, Readonly<{
     expiresAt: number;
     summary: ECOSDocumentCoverageSummary;
@@ -384,10 +388,39 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return ownerId;
     });
     authorizationInFlight = request;
+    authorizationInFlightSince = Date.now();
     try {
       return await request;
     } finally {
       if (authorizationInFlight === request) authorizationInFlight = null;
+    }
+  }
+
+  /**
+   * Build 231 E1 item 2: the owner check before an Ask ECOS question has a
+   * time limit of its own, counted from when the check was sent. A check
+   * that never answered held this question, and every later one, to the
+   * full 150 s limit until the page was reloaded: they all waited on the
+   * one check on its way. At the limit this question stops with its own
+   * sentence, and the check is let go of, so the next caller sends a new
+   * one. The old request itself cannot be stopped; if it answers later for
+   * the sign-in the tab still holds, its answer is kept as before.
+   */
+  async function requireAuthorizedOwnerForQuestion(limitMs = ECOS_ASK_OWNER_CHECK_LIMIT_MS): Promise<string> {
+    const check = requireAuthorizedOwnerCached();
+    const waitedFor = authorizationInFlight;
+    if (!waitedFor) return check;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        if (authorizationInFlight === waitedFor) authorizationInFlight = null;
+        reject(new ECOSAskOwnerCheckTimedOutError(limitMs));
+      }, Math.max(0, limitMs - (Date.now() - authorizationInFlightSince)));
+    });
+    try {
+      return await Promise.race([check, limit]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -447,7 +480,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       closedProjectNames?: readonly string[];
     }) {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      await requireAuthorizedOwnerCached();
+      await requireAuthorizedOwnerForQuestion();
       return askECOSProjectQuestion({ client, ...input });
     },
     /**

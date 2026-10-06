@@ -1,9 +1,11 @@
 import * as Crypto from 'expo-crypto';
 import {
   ECOS_ASK_DEADLINE_MS,
+  ECOS_ASK_OWNER_CHECK_LIMIT_MS,
   ECOS_ASK_REFUSAL_GRACE_MS,
   ECOS_ASK_STOPPED_MESSAGE,
   ecosAskInProgressRetryMs,
+  ecosAskOwnerCheckTimedOutMessage,
   ecosAskTimedOutMessage,
 } from './ECOSAskProgress';
 
@@ -20,10 +22,26 @@ export class ECOSAskStoppedError extends Error {
   }
 }
 
-/** Whether a question ended because the app stopped waiting, not because the server answered. */
+/**
+ * The desktop's own sign-in check did not answer in time, so the question
+ * was never sent (Build 231 E1 item 2).
+ */
+export class ECOSAskOwnerCheckTimedOutError extends Error {
+  readonly code = 'owner_check_timed_out';
+  constructor(limitMs: number = ECOS_ASK_OWNER_CHECK_LIMIT_MS) {
+    super(ecosAskOwnerCheckTimedOutMessage(limitMs));
+    this.name = 'ECOSAskOwnerCheckTimedOutError';
+  }
+}
+
+/**
+ * Whether a question ended because the app stopped waiting, not because the
+ * server answered. Nothing came back from the server for it, so the
+ * conversation stands.
+ */
 export function isECOSAskStopped(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
-  return code === 'question_timed_out' || code === 'question_cancelled';
+  return code === 'question_timed_out' || code === 'question_cancelled' || code === 'owner_check_timed_out';
 }
 
 /** Whether the server refused because it is still working on this same question from an earlier ask. */
