@@ -116,9 +116,12 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
   });
 
   it('keeps only recent scopes', () => {
-    for (let index = 0; index < 20; index += 1) rememberReportApproval(`scope-${index}`, `t${index}`);
+    // R1 item 9 (8 Oct 2026): 200 of them, where it was 12.
+    for (let index = 0; index < 220; index += 1) rememberReportApproval(`scope-${index}`, `t${index}`);
     expect(recallReportSessionState('scope-0')).toBeNull();
-    expect(recallReportSessionState('scope-19')).not.toBeNull();
+    expect(recallReportSessionState('scope-19')).toBeNull();
+    expect(recallReportSessionState('scope-20')).not.toBeNull();
+    expect(recallReportSessionState('scope-219')).not.toBeNull();
   });
 
   it('is written only when the manager acts, and read on mount (pass 2: an effect had wiped it on remount)', () => {

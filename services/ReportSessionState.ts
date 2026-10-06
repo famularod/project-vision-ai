@@ -57,7 +57,17 @@ export type ReportSessionState = Readonly<{
 }>;
 
 const EMPTY: ReportSessionState = { edits: null, approvedTextKey: null, acknowledgement: null };
-const REMEMBERED_SCOPES = 12;
+/**
+ * How many report scopes (a selection of projects, in one format) keep what he typed, acknowledged and approved
+ * for the rest of the app session. R1 item 9 (8 Oct 2026, the owner's open items): it was 12, a guess made when
+ * the store was added, with nothing behind it; a superintendent with a dozen projects passes it by opening each
+ * project's report once, and the edits of the first were then gone without a word. The store lives in memory for
+ * the app session only (nothing is written to the phone), and an entry is one report's text, a few thousand
+ * characters, so 200 is a few megabytes at the very most and far more selections than a session makes. It stays
+ * bounded so a session left open for weeks cannot grow without end; the scope used longest ago goes first.
+ */
+export const REMEMBERED_REPORT_SCOPES = 200;
+const REMEMBERED_SCOPES = REMEMBERED_REPORT_SCOPES;
 const store = new Map<string, ReportSessionState>();
 /** When this device sent reports in this app session, so reading one back is never taken for the other device's. */
 const ownSends = new Set<string>();
