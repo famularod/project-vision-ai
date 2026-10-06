@@ -44,6 +44,13 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   notTaskIds?: readonly string[];
   /**
+   * A lookahead's detail task: a row a lookahead added that no master lists
+   * (owner answer Q25; the truth's lookaheadDetail). Review N2 (5 Oct 2026):
+   * such a row is never paired by name with a task that is not one. Absent on
+   * every other task, and on snapshots saved before then.
+   */
+  lookaheadDetail?: true;
+  /**
    * The task's start, kept only while a lookahead's dates are shown for it or
    * it is back on the master schedule's (owner answer 3 Oct 2026, report
    * wording after a lookahead is replaced): the next report can then say its
@@ -568,6 +575,7 @@ export function buildDAVEReportSnapshot({
     taskId: task.taskId,
     ...withEarlierIds(task),
     ...withNotTaskIds(task),
+    ...(task.lookaheadDetail === true ? { lookaheadDetail: true as const } : {}),
     ...withLookaheadDates(task),
     projectName: truth.projectName,
     taskName: task.taskName,
@@ -657,10 +665,18 @@ export function compareDAVEReportSnapshots({
   // row is a new one", the list followed him, and the report still paired the
   // new row with the dropped task by name: "Pour slab moved from 80% to 0%
   // complete." Such a task is added, and the dropped one removed.
-  const revisions = pairRevisedTasks(
-    previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task)),
-    current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task)),
-  );
+  // Review N2 (5 Oct 2026): nor a detail row a lookahead added with a task that is not one, either way round. A
+  // master dropped one Pour slab while a lookahead added a row called Pour slab; the import had made that row a
+  // new detail task, and the report still paired the two by name: "Pour slab finish changed from 10/16/2026 to
+  // 11/08/2026.", which no task did, and the dropped task was never said removed. Detail rows pair by name only
+  // with detail rows, and the others only with each other.
+  const unpairedBefore = previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task));
+  const unpairedNow = current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task));
+  const isLookaheadDetail = (task: DAVEReportSnapshotTask) => task.lookaheadDetail === true;
+  const revisions = new Map([
+    ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
+    ...pairRevisedTasks(unpairedBefore.filter(isLookaheadDetail), unpairedNow.filter(isLookaheadDetail)),
+  ]);
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
   const unchangedTaskIds = new Set<string>();
