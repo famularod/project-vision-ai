@@ -420,7 +420,10 @@ describe.each(RECORDERS)('$name', ({ outlive }) => {
     expect(cacheFiles()).toEqual([phone.recorder.file]);
   });
 
-  it('a second recording for its project comes into the sheet while it is held: it stays held, loses nothing to the other, and is back once the sheet is free', async () => {
+  // Changed on purpose by open item W1-5 (6 Oct 2026). This order used to leave take-1 held aside while the
+  // sheet was open for its own project, and the earlier kept recording came into the sheet instead. Take-1
+  // now comes on screen the moment the phone refuses it; the earlier one stays kept and waits its turn.
+  it('the refusal arrives with the sheet open for its project again: it is on screen at once; another recording kept for that project waits its turn, and each is sent as itself', async () => {
     view = render(<Phone />);
     await settle();
     // The phone refuses to keep take-1 when he stops it…
@@ -439,27 +442,22 @@ describe.each(RECORDERS)('$name', ({ outlive }) => {
     await act(async () => { screenControls.showFor(CANOPY); await pause(20); });
     await act(async () => { slowRefusal.release(); await pause(); });
     await settle();
-    // The earlier one came back from the device into the open sheet; take-1 is held aside.
-    expect(await screen.findByText(/^Kept from /)).toBeTruthy();
-    expect(screen.getByText('0:09')).toBeTruthy();
-    expect(whatIsIn(phone.recorder.file)).toBe('take-1');
 
-    await hideWithoutCancel();
-    await showFor(CANOPY);
-
-    // The one in the sheet stays; take-1 is not put over it.
-    expect(screen.getByText('0:09')).toBeTruthy();
+    // Take-1 is in the sheet; the earlier one was not put over it, and is still kept.
+    expectBackInTheSheetForCanopy();
+    expect(whatIsIn((await readKeptVoiceRecording('owner-a', 'talk', CANOPY))?.uri)).toBe('an earlier take for Canopy Project');
     fireEvent.press(screen.getByText('Continue'));
     await waitFor(() => expect(called.words).toHaveBeenCalledTimes(1));
     await settle();
-    expect(sent).toEqual([`an earlier take for Canopy Project for ${CANOPY} (its id)`]);
-    expect(whatIsIn(phone.recorder.file)).toBe('take-1');
+    expect(sent).toEqual([`take-1 for ${CANOPY} (its id)`]);
     await hideWithoutCancel();
     await showFor(CANOPY);
-    expectBackInTheSheetForCanopy();
+    expect(await screen.findByText(/^Kept from /)).toBeTruthy();
+    expect(screen.getByText('0:09')).toBeTruthy();
     fireEvent.press(screen.getByText('Continue'));
     await waitFor(() => expect(called.words).toHaveBeenCalledTimes(2));
-    expect(sent[1]).toBe(`take-1 for ${CANOPY} (its id)`);
+    expect(sent[1]).toBe(`an earlier take for Canopy Project for ${CANOPY} (its id)`);
+    expect(alert).not.toHaveBeenCalled();
   });
 
   it('unchanged: when the phone can keep it, it is kept for its own project and its cache file goes', async () => {

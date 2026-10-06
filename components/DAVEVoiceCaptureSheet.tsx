@@ -245,6 +245,9 @@ export function DAVEVoiceCaptureSheet({
   };
   const openSheetKeepsUnderRef = useRef(keepsUnder);
   if (visible) openSheetKeepsUnderRef.current = keepsUnder;
+  // Open item W1-5: whether the sheet is on screen now.
+  const sheetShownRef = useRef(visible);
+  sheetShownRef.current = visible;
   // Review P4 L4: what the sheet was open for when it was last hidden.
   const hiddenWhileOpenForRef = useRef<KeepsUnder | null>(null);
   const keptCopyRef = useRef<string | null>(null);
@@ -341,18 +344,16 @@ export function DAVEVoiceCaptureSheet({
   // Shown again for its own project it is still in the sheet, as before.
   // Review P5 N1 (6 Oct 2026): and one the sheet had to hold aside (the phone
   // would not keep it) comes back into the sheet when it is next shown for
-  // its own project, and holds no other recording.
+  // its own project. (The sheet holds no other recording for that project
+  // then: one held aside comes into the sheet the moment the sheet is open
+  // for its project, open item W1-5.)
   useLayoutEffect(() => {
     if (!visible) return undefined;
     const before = hiddenWhileOpenForRef.current;
-    const now = openSheetKeepsUnderRef.current;
-    let held = recordingUriRef.current;
-    if (before && held && !sameAccountAndProject(before, now)) {
-      letGoOfRecordingMadeFor(held, before);
-      held = null;
-    }
+    const held = recordingUriRef.current;
+    if (before && held && !sameAccountAndProject(before, openSheetKeepsUnderRef.current)) letGoOfRecordingMadeFor(held, before);
     const aside = heldAsideRef.current;
-    if (aside && !held && sameAccountAndProject(aside.madeFor, now)) putBackRecordingHeldAside(aside);
+    if (aside && recordingHeldAsideIsForTheOpenSheet(aside)) putBackRecordingHeldAside(aside);
     return () => { hiddenWhileOpenForRef.current = openSheetKeepsUnderRef.current; };
     // Only the sheet being shown or hidden does this; it reads refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -577,10 +578,13 @@ export function DAVEVoiceCaptureSheet({
     }
     // Review P5 N1: a recording for another project is held aside here (the phone would not keep
     // it), in the file this recording would be written over. He is asked first; nothing starts.
+    // Open item W1-5: held for the project the sheet is open for (the phone's refusal came while
+    // this start waited): it comes on screen instead, and nothing is recorded over it.
     const aside = heldAsideRef.current;
     if (aside) {
       recordingStartingRef.current = false;
-      askAboutRecordingHeldAside(aside);
+      if (recordingHeldAsideIsForTheOpenSheet(aside)) putBackRecordingHeldAside(aside);
+      else askAboutRecordingHeldAside(aside);
       return;
     }
     recordingGenerationRef.current += 1;
@@ -826,7 +830,7 @@ export function DAVEVoiceCaptureSheet({
     // start on this sheet begins until both are done, whoever asked for them (review P5 N2).
     return untilItsFileIsSettled((async () => {
       const kept = await keptForNextTime(uri, duration, under);
-      if (kept === 'refused' && uri && sheetInPlaceRef.current) heldAsideRef.current = { uri, durationMs: duration, madeFor: under };
+      if (kept === 'refused' && uri && sheetInPlaceRef.current) holdRecordingAside({ uri, durationMs: duration, madeFor: under });
       else await deleteRecordingFile(uri ?? null);
     })());
   }
@@ -888,9 +892,32 @@ export function DAVEVoiceCaptureSheet({
     void keepStoppedRecordingForNextTime(uri, duration, madeFor);
   }
 
+  /** Whether the sheet is on screen for the account and project a recording held aside was made for. */
+  function recordingHeldAsideIsForTheOpenSheet(aside: RecordingHeldAside): boolean {
+    return sheetShownRef.current && sameAccountAndProject(aside.madeFor, openSheetKeepsUnderRef.current);
+  }
+
+  /**
+   * The phone refused to keep a recording: the sheet holds it aside (review
+   * P5 N1). Open item W1-5 (6 Oct 2026; review pass 6, wording): when the
+   * sheet is already open for the recording's own project (it was hidden
+   * and shown again inside one slow answer from the phone), the recording
+   * was held aside all the same: it was not on screen, and Start Recording
+   * asked him to "open it again for" the project he was in. It now comes
+   * into the sheet at once. A start that is waiting for this very answer
+   * puts it there itself, a moment later (startRecording).
+   */
+  function holdRecordingAside(aside: RecordingHeldAside) {
+    heldAsideRef.current = aside;
+    if (recordingHeldAsideIsForTheOpenSheet(aside) && !recordingStartingRef.current) putBackRecordingHeldAside(aside);
+  }
+
   /** The recording held aside is back in the sheet, shown for its own project again, as it was when he stopped it (review P5 N1). */
   function putBackRecordingHeldAside(aside: RecordingHeldAside) {
     heldAsideRef.current = null;
+    // Known at once, not only once the sheet has drawn again: the kept-recording check may answer
+    // in this same moment, and must find the sheet holding this recording (open item W1-5).
+    recordingUriRef.current = aside.uri;
     setRecordingUri(aside.uri);
     setRecordingDuration(aside.durationMs);
     // Kept on the device from here on, if the phone now can (review N1 L2).
