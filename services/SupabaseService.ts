@@ -2629,31 +2629,72 @@ export async function listDAVESyncTombstones(): Promise<
     { by: row => toRecord(row).entity_type },
     { by: row => toRecord(row).record_id },
   )
-        .map(row => {
-          const record = toRecord(row);
-          const entityType = String(record.entity_type || '');
-          const recordId = String(record.record_id || '').trim();
-          const deletedAt = String(record.deleted_at || '');
-          if (
-            !recordId ||
-            !deletedAt ||
-            ![
-              'project',
-              'project_update',
-              'project_area',
-              'schedule_item',
-              'reference_document',
-            ].includes(entityType)
-          ) return null;
-          return {
-            entityType: entityType as DAVESyncTombstone['entityType'],
-            recordId,
-            deletedAt,
-          };
-        })
+        .map(deletionRecordOfRow)
         .filter((value): value is DAVESyncTombstone => Boolean(value));
 
   return okResult(tombstones, result.status);
+}
+
+/** A deletion record as the cloud's row has it; null for a row that is not one. */
+function deletionRecordOfRow(row: unknown): DAVESyncTombstone | null {
+  const record = toRecord(row);
+  const entityType = String(record.entity_type || '');
+  const recordId = String(record.record_id || '').trim();
+  const deletedAt = String(record.deleted_at || '');
+  if (
+    !recordId ||
+    !deletedAt ||
+    ![
+      'project',
+      'project_update',
+      'project_area',
+      'schedule_item',
+      'reference_document',
+    ].includes(entityType)
+  ) return null;
+  return {
+    entityType: entityType as DAVESyncTombstone['entityType'],
+    recordId,
+    deletedAt,
+  };
+}
+
+/**
+ * The deletion records the cloud holds NOW for these records of one kind
+ * (sync batch Y1, item 2): asked for just the ids a sync is about to create,
+ * not the whole history again. One request for every hundred ids. An id is
+ * asked for as given and in lower case: a deletion record keeps the id as its
+ * writer had it, and the app compares the two without regard to case.
+ */
+export async function listDAVESyncTombstonesForRecords(
+  entityType: DAVESyncTombstone['entityType'],
+  recordIds: readonly string[],
+): Promise<SupabaseServiceResult<DAVESyncTombstone[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const wanted = [...new Set(recordIds.flatMap(id => (typeof id === 'string' && id.trim() ? [id.trim(), id.trim().toLowerCase()] : [])))];
+  const found: DAVESyncTombstone[] = [];
+  let lastStatus: number | undefined;
+  for (const chunk of chunkSupabaseFilterValues(wanted)) {
+    const { data, error, status } = await client
+      .from(DAVE_SYNC_TOMBSTONES_TABLE)
+      .select('entity_type, record_id, deleted_at')
+      .eq('owner_id', owner.data)
+      .eq('entity_type', entityType)
+      .in('record_id', [...chunk]);
+    if (error || !Array.isArray(data)) {
+      return tableAwareErrorResult<DAVESyncTombstone[]>(error?.message || 'The cloud did not answer for these deletion records.', status);
+    }
+    lastStatus = status;
+    found.push(...data.map(deletionRecordOfRow).filter((value): value is DAVESyncTombstone => Boolean(value)));
+  }
+  return okResult(found, lastStatus);
 }
 
 /**

@@ -69,6 +69,8 @@ const mockCloud = {
   closedProjects: [] as Array<{ id: string; name: string }>,
   /** The list of closed projects cannot be read. */
   closedProjectsFail: false,
+  /** The deletion history cannot be asked about named records. */
+  deletionChecksFail: false,
 };
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
@@ -168,6 +170,13 @@ jest.mock('../../services/SupabaseService', () => {
     listReferenceDocuments: async () => mockOk([]),
     upsertReferenceDocument: async (document: unknown) => mockOk(document),
     listDAVESyncTombstones: async () => { await mockRequest('tombstones:list'); return mockOk(mockCopy(mockCloud.tombstones)); },
+    // The deletion records the cloud holds now for these records of one kind (sync batch Y1, item 2).
+    listDAVESyncTombstonesForRecords: async (entityType: string, ids: string[]) => {
+      await mockRequest(`tombstones:ids:${ids.length}`);
+      if (mockCloud.deletionChecksFail) return mockDown();
+      const wanted = new Set(ids.map(id => id.trim().toLowerCase()));
+      return mockOk(mockCopy(mockCloud.tombstones.filter(tombstone => tombstone.entityType === entityType && wanted.has(tombstone.recordId.trim().toLowerCase()))));
+    },
     upsertDAVESyncTombstone: async (tombstone: { entityType: string; recordId: string; deletedAt: string }) => { addTombstones([tombstone]); return mockOk(tombstone); },
     upsertDAVESyncTombstones: async (list: Array<{ entityType: string; recordId: string; deletedAt: string }>) => { addTombstones(list); return mockOk(list); },
 
@@ -384,6 +393,7 @@ beforeEach(() => {
   mockCloud.stamp = 0; mockCloud.before = null; mockCloud.listsReadAsBuild229 = false;
   mockCloud.leftOutOfLists.clear(); mockCloud.readsByIdFail = false;
   mockCloud.openProjects = [{ id: MOCK_PROJECT_ID, name: 'Alpha' }]; mockCloud.closedProjects = []; mockCloud.closedProjectsFail = false;
+  mockCloud.deletionChecksFail = false;
   mockDevice = 'phone';
 });
 afterEach(() => { jest.useRealTimers(); });
@@ -585,6 +595,8 @@ describe('independent review R02: the reads by id are batched', () => {
     expect(result.errors).toEqual([]);
     expect(requests('task:id:')).toEqual([]);
     expect(requests('tasks:ids:')).toEqual([]);
+    // Nothing is about to be created, so the deletion history is not asked a second time (sync batch Y1, item 2).
+    expect(requests('tombstones:ids:')).toEqual([]);
     expect(mockCloud.writes).toEqual([]);
     // Each read of the list is its four pages, once, and the empty page that ends a list whose last page was full.
     expect(requests('tasks:page:').length).toBe(5 * requests('tasks:page:0').length);
@@ -603,6 +615,8 @@ describe('independent review R02: the reads by id are batched', () => {
     // The confirmation asks for all 2,000 at once (20 requests of a hundred at the cloud: see the cloud-reads test);
     // each hundred is then read once more just before it is written.
     expect(requests('tasks:ids:')).toEqual(['tasks:ids:2000', ...Array.from({ length: 20 }, () => 'tasks:ids:100')]);
+    // And each hundred about to be created is asked about once in the deletion history (sync batch Y1, item 2).
+    expect(requests('tombstones:ids:')).toEqual(Array.from({ length: 20 }, () => 'tombstones:ids:100'));
   });
 
   it('250 queued rows of an approved schedule the cloud does not have: read by id together, not 250 times', async () => {
@@ -1205,6 +1219,127 @@ describe('sync batch Y1 (item 1): Full Sync does not make a second copy of a pro
     expect(fullSyncSource).toContain('await cloudProjectNameExists(normalizedName)');
     expect(fullSyncSource).not.toContain('listArchivedProjects(');
     expect(SYNC.split('listArchivedProjects()').length - 1).toBe(2); // the name check, and a field update's closed project
+  });
+});
+
+/**
+ * Left open by R02 (its notes, item 5): the deletion history is read once, when a sync starts. A task deleted on
+ * another device in the seconds after that read has no row any more and no deletion record this device has heard
+ * of, so it read as new to the cloud and was sent back; the next sync took it away again. The history is now asked
+ * once more for just the ids about to be created.
+ */
+describe('sync batch Y1 (item 2): a record deleted on another device after this sync read the deletion history is not sent back', () => {
+  const captured = { id: 'area-1', projectName: 'Alpha', name: 'North Lot', latitude: 33.9, longitude: -118.2, radiusFeet: 100,
+    locationCapturedAt: '2026-09-09T12:00:00.000Z', updatedAt: '2026-09-09T12:00:00.000Z' } as unknown as ProjectArea;
+  /** The iPad deletes the task just after the phone has read the deletion history: before the phone lists the cloud's tasks. */
+  function ipadDeletesAfterTheHistoryWasRead(id: string) {
+    beforeRequest('tasks:page:0', 1, () => {
+      mockCloud.tasks.delete(id);
+      mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: id, deletedAt: new Date().toISOString() });
+      mockCloud.writes.push(`ipad:delete:${id}`);
+    });
+  }
+
+  it('the task is not written back, nothing is reported, and the next sync takes it off this device', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    const doomed = taskId(2);
+    ipadDeletesAfterTheHistoryWasRead(doomed);
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    // It was sent back as a new task: the cloud had it again, on every device, until the next sync.
+    expect(cloudTask(doomed)).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([]);
+    // One question, about the one task that was about to be created.
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+
+    mockCloud.before = null;
+    await fullSync(phone);
+    expect(onDevice(phone, doomed)).toBeUndefined();
+    expect(cloudTask(doomed)).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+  });
+
+  it('a deletion record that keeps the id in another letter case is still found', async () => {
+    seedTasks(1);
+    const phone = newDevice('phone');
+    synced(phone);
+    const made = task(900, { id: 'MASTER F-9' });
+    setter(phone)([...phone.state, made]);
+    mockCloud.tombstones.push({ entityType: 'project_area', recordId: 'MASTER F-9', deletedAt: T0 }); // another kind of record: not this task
+    beforeRequest('tasks:page:0', 1, () => { mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: 'master f-9', deletedAt: new Date().toISOString() }); });
+
+    await fullSync(phone);
+
+    expect(cloudTask('MASTER F-9')).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+  });
+
+  it('a task that really is new still goes up, after one question for it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    setter(phone)([...phone.state, task(900, { notes: 'Made on the phone' })]);
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    expect(result.errors).toEqual([]);
+    expect(shows(cloudTask(taskId(900)))).toEqual([0, 'Made on the phone', '']);
+    expect(writesBy(phone)).toEqual([`phone:task:${taskId(900)}`]);
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+  });
+
+  it('when the deletion history cannot be asked the task is not sent, the sync says so, and the next sync sends it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    setter(phone)([...phone.state, task(900, { notes: 'Made on the phone' })]);
+    mockCloud.deletionChecksFail = true;
+
+    const result = await fullSync(phone);
+
+    const NOT_SENT = 'Schedule task “Task 900” was not sent. Whether it was deleted on another device could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync. Network request failed';
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([NOT_SENT]);
+    expect(onDevice(phone, taskId(900))).toMatchObject({ notes: 'Made on the phone' });
+
+    mockCloud.deletionChecksFail = false;
+    const next = await fullSync(phone);
+    expect(next.errors).toEqual([]);
+    expect(writesBy(phone)).toEqual([`phone:task:${taskId(900)}`]);
+  });
+
+  it('a GPS area deleted on another device in that moment is not sent back either', async () => {
+    const phone = newDevice('phone');
+    beforeRequest('areas:page:0', 1, () => { mockCloud.tombstones.push({ entityType: 'project_area', recordId: 'area-1', deletedAt: new Date().toISOString() }); });
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone, { areas: [captured] });
+
+    expect(mockCloud.areas.has('area-1')).toBe(false);
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+  });
+
+  it('a task whose row another device changed is weighed as before: the deletion history is not asked about it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    const id = taskId(1);
+    setter(phone)(phone.state.map(item => item.id !== id ? item : { ...item, owner: 'Mike', updatedAt: '2026-09-10T07:59:00.000Z' }));
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    expect(result.errors).toEqual([]);
+    expect(writesBy(phone)).toEqual([`phone:task:${id}`]);
+    expect(requests('tombstones:ids:')).toEqual([]);
   });
 });
 

@@ -155,6 +155,11 @@ jest.mock('../../services/SupabaseService', () => {
       return mockOk(mockCopy(item));
     },
     listDAVESyncTombstones: read(() => mockCopy(mockCloud.tombstones)),
+    // The deletion records the cloud holds now for these records of one kind (sync batch Y1, item 2).
+    listDAVESyncTombstonesForRecords: async (entityType: string, ids: string[]) => (mockOnline()
+      ? mockOk(mockCopy(mockCloud.tombstones.filter(tombstone => tombstone.entityType === entityType &&
+        ids.some(id => id.trim().toLowerCase() === tombstone.recordId.trim().toLowerCase()))))
+      : mockDown()),
     upsertDAVESyncTombstone: async (tombstone: { entityType: string; recordId: string; deletedAt: string }) => {
       if (!mockOnline()) return mockDown();
       addTombstones([tombstone]);

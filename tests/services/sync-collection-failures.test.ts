@@ -53,6 +53,9 @@ jest.mock('../../services/SupabaseService', () => {
     getScheduleItem: async () => ({ ok: true, configured: true, stubbed: false, data: null }),
     getScheduleItemsByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
     getProjectAreasByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
+    // Sync batch Y1 (item 2): a record about to be sent as new is asked about once more in the deletion history.
+    // None of them was deleted.
+    listDAVESyncTombstonesForRecords: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
     getSupabaseConfigurationStatus: (...args: unknown[]) =>
       mockCloudConnection.configuration(...args),
     testSupabaseConnection: (...args: unknown[]) => mockCloudConnection.test(...args),

@@ -16,6 +16,7 @@ import {
   listProjectUpdates,
   listProjectAreas,
   listArchivedProjects,
+  listDAVESyncTombstonesForRecords,
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
@@ -4336,6 +4337,34 @@ const cloudScheduleItemsByIds: CloudRecordsByIdReader<ScheduleItem> = async ids 
 
 const cloudProjectAreasByIds: CloudRecordsByIdReader<ProjectArea> = ids => getProjectAreasByIds(ids);
 
+/**
+ * Sync batch Y1 (item 2; left open by independent review R02, its notes item 5): of the records a sync is about to
+ * send to the cloud as NEW (the cloud has no row for them), the ones the cloud holds a deletion record for NOW, by
+ * their keys. A string when that cannot be read.
+ *
+ * The deletion history is read once, when a sync starts. A record deleted on another device in the seconds after
+ * that read has no row any more, and no deletion record this device has heard of: it read as new to the cloud and
+ * was sent back, and the next sync took it away again. The history is asked once more, for just the ids about to be
+ * created (one request for a hundred), so a record deleted meanwhile is not sent back. What is left is the moment
+ * between this read and the write itself, one request wide; only the database could close that.
+ */
+async function recordsDeletedInCloudNow(
+  entity: 'schedule_item' | 'project_area',
+  ids: readonly string[],
+): Promise<Set<string> | string> {
+  if (ids.length === 0) return new Set();
+  try {
+    const read = await listDAVESyncTombstonesForRecords(entity, ids);
+    if (read.ok && !read.stubbed && Array.isArray(read.data)) return new Set(read.data.map(tombstone => cloudRecordKey(tombstone.recordId)));
+    return read.error || read.message || 'The cloud did not answer.';
+  } catch {
+    return 'The cloud did not answer.';
+  }
+}
+
+const DELETION_NOT_CHECKED_BEFORE_SENDING =
+  'Whether it was deleted on another device could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
+
 const RECORD_NOT_CHECKED_BEFORE_SENDING =
   'The cloud\'s copy could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
 
@@ -4773,6 +4802,10 @@ export async function synchronizeLocalData(
   for (const areas of chunkSupabaseFilterValues(syncableProjectAreas)) {
     if (!cloudOwnerUnchanged(owner)) break;
     const cloudNow = await cloudRecordsNow(areas, cloudProjectAreasByIds);
+    // The areas of this read the cloud has no row for: sent as new, unless deleted on another device since this sync
+    // read the deletion history (sync batch Y1, item 2).
+    const areasDeletedNow = typeof cloudNow === 'string' ? new Set<string>()
+      : await recordsDeletedInCloudNow('project_area', areas.filter(area => !cloudRecordOf(cloudNow, area.id)).map(area => area.id));
     for (const weighed of areas) {
       if (!cloudOwnerUnchanged(owner)) break;
       if (typeof cloudNow === 'string') {
@@ -4786,6 +4819,18 @@ export async function synchronizeLocalData(
       if (rowWeighed && !rowNow) {
         progress(`GPS area left for the next sync: ${weighed.name}`);
         continue;
+      }
+      // An area the cloud has no row for (sync batch Y1, item 2): its deletion record may be seconds old.
+      if (!rowNow) {
+        if (typeof areasDeletedNow === 'string') {
+          errors.push(`GPS area “${weighed.name}” was not sent. ${DELETION_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: areasDeletedNow })}`);
+          progress(`GPS area preserved: ${weighed.name}`);
+          continue;
+        }
+        if (areasDeletedNow.has(cloudRecordKey(weighed.id))) {
+          progress(`GPS area left for the next sync: ${weighed.name}`);
+          continue;
+        }
       }
       const area = sameCloudRecord(rowWeighed, rowNow)
         ? weighed
@@ -4848,6 +4893,11 @@ export async function synchronizeLocalData(
         }));
       }
     }
+    // The tasks of this read the cloud has no row for and had none when they were weighed: sent as new, unless
+    // deleted on another device since this sync read the deletion history (sync batch Y1, item 2).
+    const tasksDeletedNow = typeof cloudNow === 'string' ? new Set<string>()
+      : await recordsDeletedInCloudNow('schedule_item', items
+        .filter(item => !cloudNow.get(cloudRecordKey(item.id)) && !deletedKeys.has(cloudRecordKey(item.id))).map(item => item.id));
     for (const weighed of items) {
       if (!cloudOwnerUnchanged(owner)) break;
       if (typeof cloudNow === 'string') {
@@ -4861,6 +4911,17 @@ export async function synchronizeLocalData(
         continue;
       }
       const rowNow = cloudNow.get(key);
+      if (!rowNow) {
+        if (typeof tasksDeletedNow === 'string') {
+          errors.push(`Schedule task “${weighed.taskName}” was not sent. ${DELETION_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: tasksDeletedNow })}`);
+          progress(`Schedule preserved: ${weighed.taskName}`);
+          continue;
+        }
+        if (tasksDeletedNow.has(key)) {
+          progress(`Schedule left for the next sync: ${weighed.taskName}`);
+          continue;
+        }
+      }
       const item = changedKeys.has(key) ? weighedAgain.get(key) : weighed;
       if (!item) {
         // The cloud's row as it is now already holds everything this device's copy would add.
