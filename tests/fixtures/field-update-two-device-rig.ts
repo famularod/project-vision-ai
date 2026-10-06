@@ -31,6 +31,8 @@ export type FieldUpdateTwoDeviceRig = {
   PHONE_NOTE: string;
   /** The cloud: `updates` by id, `writes` as `${device}:update:${id}`, `lostAnswers` (writes that land unanswered). */
   mockCloud: { updates: Map<string, { updatedAt: string; updateData: Record<string, any> }>; writes: string[]; lostAnswers: number };
+  /** Each device's own storage, by device name and storage key. */
+  mockStores: Map<string, Map<string, string>>;
   /** App.tsx's own normalisers, compiled. */
   A: Record<string, (...args: any[]) => any>;
   /** Both devices hold the phone's sent field update (note "Pour", Area 0, photo p0 taken on the phone). */
@@ -62,7 +64,7 @@ export type FieldUpdateTwoDeviceRig = {
 
 const RIG_FILE = path.resolve(__dirname, '../services/owner-answer-q28-conflicts-not-overwrite.test.ts');
 const RIG_NAMES: ReadonlyArray<keyof FieldUpdateTwoDeviceRig> = [
-  'UPDATE_ID', 'MOCK_PROJECT_ID', 'IPAD_NOTE', 'PHONE_NOTE', 'mockCloud', 'A', 'start', 'at', 'on', 'setOnline', 'cardFails',
+  'UPDATE_ID', 'MOCK_PROJECT_ID', 'IPAD_NOTE', 'PHONE_NOTE', 'mockCloud', 'mockStores', 'A', 'start', 'at', 'on', 'setOnline', 'cardFails',
   'openOnly', 'saveOpened', 'openAndSave', 'backgroundUpload', 'waitingUpdateSync', 'refresh', 'fullSync', 'startup',
   'relaunchModules', 'chooseInSettings', 'conflictsOf', 'queueOf', 'cloudUpdate', 'theUpdate', 'updatesSetter', 'newPhoto',
   'asBuild229',

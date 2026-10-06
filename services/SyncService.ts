@@ -2966,6 +2966,7 @@ async function writeStagedProjectUpdateRecord(
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
   const settled = overConflict ? undefined : await settledFieldUpdateBaseFor(update);
+  const inCloud = overConflict || settled || update.status === 'sent' ? undefined : await fieldUpdateCopyKnownInCloud(update);
   return mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === id);
     const unchanged = { nextQueue: queue, result: null, persist: false };
@@ -2985,10 +2986,12 @@ async function writeStagedProjectUpdateRecord(
       fieldUpdateOwesNothingBeyond((existing!.payload as ProjectUpdateRecordPayload).updateData, [], copy));
     // A sync attempt keeps the copy the queued edit started from (owner answer Q28). With nothing queued, a Sent card is
     // the cloud's copy as this device last had it, and starts from that: Sync Now on a device that had not heard the
-    // iPad's newer copy sent the card whole over it, the iPad's photo and note gone. Any other card starts none.
+    // iPad's newer copy sent the card whole over it, the iPad's photo and note gone. So does a card still waiting that
+    // is the very copy this device knows is in the cloud (review N2, the fault behind seed 298; see
+    // noteFieldUpdateCopyInCloud). Any other card starts none.
     const base = overConflict ? undefined
       : existing ? fieldUpdateBaseKept(existing, undefined, copy)
-        : settled ?? (copy.status === 'sent' ? fieldUpdateEditBaseOf(copy, now) : undefined);
+        : settled ?? (copy.status === 'sent' ? fieldUpdateEditBaseOf(copy, now) : inCloud);
     const next: SyncQueueItem = existing && patch
       ? { ...existing, payload: { ...(existing.payload as ProjectUpdateRecordPayload), pendingPhotoAssetIds: pending } }
       : {
@@ -7244,10 +7247,8 @@ async function uploadProjectUpdateQueueItem(
     // card starts from, as a Sent card's is. When a pass other than the card's own sync lands it (the upload retry,
     // after the card's own write failed), the card goes on reading "Waiting to Sync"; the waiting-update sync then
     // staged it again with no copy to start from, and it went up whole, stamped now, over an edit the iPad had made
-    // since, with no card. Kept as a settled copy's is, the copy staged again is weighed.
-    if (!cloudCopy && !payload.keepCloudChoice) {
-      await keepSettledFieldUpdateBase(payload.id, fieldUpdateEditBaseOf(record.updateData, new Date().toISOString()), record.updateData);
-    }
+    // since, with no card. Remembered (noteFieldUpdateCopyInCloud), the copy staged again is weighed.
+    if (!cloudCopy) await noteFieldUpdateCopyInCloud(payload.id, record.updateData);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
@@ -7296,6 +7297,50 @@ async function fieldUpdateChoiceWrittenAfter(updateId: string, base: FieldUpdate
     return isFieldUpdateEditBase(choice) && Date.parse(base.takenAt) <= Date.parse(choice.takenAt) ? choice.fields : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Review N2 (the fault behind seed 298; older than owner answer Q28): the
+ * whole copy of a field update this device knows is in the cloud, because it
+ * put it there or found it there (the cloud receipt), while its card still
+ * owes its own sync: kept on this device, for the signed-in account, through
+ * a relaunch, under its own entry beside the copies he opened.
+ *
+ * The pass that sends a record does not tell its card. When the card's own
+ * sync was not the one that sent it (its write failed and the upload retry
+ * landed it, or it landed with its answer lost and the retry found it in the
+ * cloud), the card goes on reading "Waiting to Sync" with nothing queued.
+ * The waiting-update sync then staged that card with no copy to start from,
+ * stamped now, and it went up whole over an edit the other device had made
+ * since, with no card. A card that is, part for part, this copy starts from
+ * it, as a Sent card starts from itself (writeStagedProjectUpdateRecord), so
+ * it is weighed (owner answer Q28) and the other device's edit stays.
+ *
+ * Its own entry: kept with the copies he opened, an update he had opened and
+ * not saved since kept that copy instead, and the card again started from
+ * none. Only for a copy whose card owes a sync: Sync Now finds every Sent
+ * card's copy in the cloud, and those need no entry.
+ */
+const fieldUpdateInCloudKey = (updateId: string) => `${updateId}\nin cloud`;
+
+async function noteFieldUpdateCopyInCloud(updateId: string, copy: unknown): Promise<void> {
+  if (!isRecord(copy) || !fieldUpdateOwesOwnSync(copy.status)) return;
+  try {
+    const inCloud = fieldUpdateEditBaseOf(copy, new Date().toISOString());
+    await mutateFieldUpdateEditBases(bases => { bases[fieldUpdateInCloudKey(updateId)] = { ...inCloud, settledParts: inCloud.fields }; });
+  } catch {
+    // Not kept: a card still waiting is staged as before.
+  }
+}
+
+/** The copy this device knows is in the cloud, when this card is that copy part for part: the copy it starts from. */
+async function fieldUpdateCopyKnownInCloud(card: ProjectUpdate): Promise<FieldUpdateEditBase | undefined> {
+  try {
+    const inCloud = await mutateFieldUpdateEditBases(bases => bases[fieldUpdateInCloudKey(card.id)]);
+    return isFieldUpdateEditBase(inCloud) && fieldUpdateCopyIsSettled(inCloud, card) ? inCloud : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -7588,6 +7633,9 @@ async function projectUpdateAlreadyHasCloudReceipt(
   if (!queuedFieldUpdateDocumentPatches(item) && !payload.keepCloudChoice) {
     await clearConflictsForLocalRecord('project_update', payload.id);
   }
+  // A whole copy found in the cloud is the copy its card starts from, as one this pass put there is (review N2, the
+  // fault behind seed 298): its write had landed with the answer lost, and its card still reads "Waiting to Sync".
+  if (!queuedFieldUpdateDocumentPatches(item)) await noteFieldUpdateCopyInCloud(payload.id, payload.updateData);
   recordProjectUpdateUpload(payload.id);
   return true;
 }
