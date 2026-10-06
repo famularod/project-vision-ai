@@ -236,7 +236,7 @@ import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItem
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemNewRowMetAgain, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
-import { scheduleItemChangedSinceMade, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
+import { scheduleItemChangedSinceMade, scheduleItemEditBaseOf, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -4113,6 +4113,220 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       expect(scheduleItemChangedSinceMade({ itemData: withPercent, sinceMade: { updatedAt: null, fields: { percentComplete: 0 } } },
         { changedFields: ['percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 40 } }, itemData: { ...withPercent, percentComplete: 60 } }))
         .toEqual({ updatedAt: null, fields: { percentComplete: 0 }, own: { percentComplete: ['40'] } });
+    });
+  });
+
+  describe('Review P7-2: a lookahead approved with no signal, and something else set on the task on another device meanwhile', () => {
+    const LOOK = scheduleDoc('LOOKAHEAD P7', '2026-09-12T09:00:00.000Z', 'lookahead');
+    /** In each of the three places: Framing's start, percent, note, approval status and schedule impact. */
+    const framingEverywhere = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()].map(items => {
+      const row = framingOf(items)[0];
+      const controls = normalizeProjectControls(row?.projectControls);
+      return [row?.startDate, row?.percentComplete, row?.notes || '', controls.approvalStatus, controls.estimatedScheduleImpactDays ?? null];
+    });
+    /**
+     * The phone, with no signal, approves a lookahead that moves Framing to 10/22 (at 40% when `percent`). Meanwhile
+     * `meanwhile` happens with signal. Then everything syncs.
+     */
+    async function lookaheadWithNoSignal(meanwhile: (ipad: Device) => Promise<unknown> | unknown, percent = '40') {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-12T09:00:00.000Z');
+      await approve(phone, LOOK, [`Framing,Alpha,Lot,10/22/2026,11/01/2026,${percent}`], true);
+      at('2026-09-12T10:00:00.000Z');
+      await meanwhile(ipad);
+      await backgroundUpload(ipad);
+      at('2026-09-13T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      return { phone, ipad };
+    }
+
+    it.each([
+      ['an approval status', (ipad: Device) => setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending' }), ['10/22/2026', 40, '', 'Pending', null]],
+      ['a schedule impact', (ipad: Device) => setControls(ipad, theRow(ipad).id, { estimatedScheduleImpactDays: 5 }), ['10/22/2026', 40, '', 'Not Required', 5]],
+      ['a note typed on the web', () => { webWrite(webEdited(cloudRow('MASTER F-1')!, { notes: 'Web note' })); }, ['10/22/2026', 40, 'Web note', 'Not Required', null]],
+      ['a note and an approval status', async (ipad: Device) => { await edit(ipad, theRow(ipad).id, { notes: NOTE }); await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending' }); }, ['10/22/2026', 40, NOTE, 'Pending', null]],
+    ] as const)('%s set meanwhile: the lookahead\'s dates and percent stand, and so does what was set; no card', async (_what, meanwhile, expected) => {
+      const { phone, ipad } = await lookaheadWithNoSignal(meanwhile);
+      // (It was: 10/15 at 0% in all three places, with what the other device had set, and no card. The lookahead in
+      // effect listed the task and the task did not show it.)
+      expect(framingEverywhere(phone, ipad)).toEqual(Array(3).fill(expected));
+      await noCards(phone, ipad);
+      expect([await queueOf(phone), await queueOf(ipad)]).toEqual([[], []]);
+    });
+
+    it('his own percent entered meanwhile: the lookahead\'s dates stand, and the percent is the one the progress\'s own rules give (his, entered after the file\'s)', async () => {
+      const { phone, ipad } = await lookaheadWithNoSignal(ipad => edit(ipad, theRow(ipad).id, { percentComplete: 60 }));
+      // (It was: 10/15 at 60%.)
+      expect(framingEverywhere(phone, ipad)).toEqual(Array(3).fill(['10/22/2026', 60, '', 'Not Required', null]));
+      await noCards(phone, ipad);
+    });
+
+    it('...and that percent is still his when the lookahead is deleted with its items afterwards: the master\'s dates come back, not the percent it had before', async () => {
+      const { phone, ipad } = await lookaheadWithNoSignal(ipad => edit(ipad, theRow(ipad).id, { percentComplete: 60 }));
+      at('2026-09-14T08:00:00.000Z');
+      await deleteWithItems(phone, LOOK);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 60, '', 'Not Required', null]));
+    });
+
+    it('his 30% already on the task, the lookahead states 70%, and he enters 60% elsewhere meanwhile: 60% on the lookahead\'s dates, and 60% still when the lookahead is deleted with its items', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      await edit(phone, theRow(phone).id, { percentComplete: 30 });
+      await backgroundUpload(phone); await refresh(ipad);
+      setOnline(phone, false);
+      at('2026-09-12T09:00:00.000Z');
+      await approve(phone, LOOK, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,70'], true);
+      at('2026-09-12T10:00:00.000Z');
+      await edit(ipad, theRow(ipad).id, { percentComplete: 60 });
+      await backgroundUpload(ipad);
+      at('2026-09-13T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad).map(row => row.slice(0, 2))).toEqual(Array(3).fill(['10/22/2026', 60]));
+      at('2026-09-14T08:00:00.000Z');
+      await deleteWithItems(phone, LOOK);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad).map(row => row.slice(0, 2))).toEqual(Array(3).fill(['10/15/2026', 60]));
+      await noCards(phone, ipad);
+    });
+
+    it('a lookahead that states no percent, and his percent entered meanwhile: both stand', async () => {
+      const { phone, ipad } = await lookaheadWithNoSignal(ipad => edit(ipad, theRow(ipad).id, { percentComplete: 60 }), '');
+      expect(framingEverywhere(phone, ipad)).toEqual(Array(3).fill(['10/22/2026', 60, '', 'Not Required', null]));
+      await noCards(phone, ipad);
+    });
+
+    it('the same field changed on both sides is asked about: the dates he moved by hand meanwhile stay until he chooses, and Keep Phone puts the lookahead\'s', async () => {
+      const { phone, ipad } = await lookaheadWithNoSignal(ipad => edit(ipad, theRow(ipad).id, { startDate: '10/17/2026', finishDate: '10/27/2026' }));
+      // (It was: his hand dates everywhere, the lookahead's dates and its 40% on no device and no card.)
+      expect((await cards(phone)).map(card => [card.row, card.fields, card.here, card.cloud])).toEqual([['MASTER F-1', ['startDate', 'finishDate'], ['10/22/2026', '11/01/2026'], ['10/17/2026', '10/27/2026']]]);
+      expect(framingEverywhere(phone, ipad).map(row => row.slice(0, 2))).toEqual(Array(3).fill(['10/17/2026', 40]));
+      await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_local');
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad).map(row => row.slice(0, 2))).toEqual(Array(3).fill(['10/22/2026', 40]));
+      await noCards(phone, ipad);
+    });
+
+    it('...and Keep Cloud leaves the dates he moved by hand, under the lookahead; nothing else of the lookahead is undone', async () => {
+      const { phone, ipad } = await lookaheadWithNoSignal(ipad => edit(ipad, theRow(ipad).id, { startDate: '10/17/2026', finishDate: '10/27/2026' }));
+      await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_cloud');
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad).map(row => row.slice(0, 2))).toEqual(Array(3).fill(['10/17/2026', 40]));
+      await noCards(phone, ipad);
+      expect([await queueOf(phone), await queueOf(ipad)]).toEqual([[], []]);
+    });
+
+    it('with a note typed here before the lookahead was approved, both still waiting: the same', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      await edit(phone, theRow(phone).id, { notes: NOTE });
+      at('2026-09-12T09:00:00.000Z');
+      await approve(phone, LOOK, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,40'], true);
+      at('2026-09-12T10:00:00.000Z');
+      await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending' });
+      await backgroundUpload(ipad);
+      at('2026-09-13T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad)).toEqual(Array(3).fill(['10/22/2026', 40, NOTE, 'Pending', null]));
+      await noCards(phone, ipad);
+    });
+
+    it('the row it writes is stamped after both copies: the other device\'s Sync Now, run before it has refreshed, takes it and does not send its own older copy back', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-12T09:00:00.000Z');
+      await approve(phone, LOOK, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+      at('2026-09-12T10:00:00.000Z');
+      await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending' });
+      await backgroundUpload(ipad);
+      const asTheIPadWroteIt = cloudRow('MASTER F-1')!.updatedAt!;
+      at('2026-09-13T08:00:00.000Z');
+      setOnline(phone, true); shareDocuments(phone);
+      await backgroundUpload(phone);
+      expect(Date.parse(cloudRow('MASTER F-1')!.updatedAt!)).toBeGreaterThan(Date.parse(asTheIPadWroteIt));
+      shareDocuments(ipad);
+      await fullSync(ipad);
+      expect([cloudRow('MASTER F-1')!.startDate, normalizeProjectControls(cloudRow('MASTER F-1')!.projectControls).approvalStatus, theRow(ipad).startDate]).toEqual(['10/22/2026', 'Pending', '10/22/2026']);
+    });
+
+    it('a copy that holds nothing the cloud\'s row lacks writes nothing: the same whole copy queued again after it went up, with an approval set elsewhere since', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-12T09:00:00.000Z');
+      await edit(phone, theRow(phone).id, { notes: NOTE });
+      await approve(phone, LOOK, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+      at('2026-09-12T10:00:00.000Z');
+      setOnline(phone, true); shareDocuments(phone);
+      await backgroundUpload(phone);
+      await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending' });
+      await backgroundUpload(ipad);
+      const before = cloudRow('MASTER F-1')!;
+      const writes = mockCloud.writes.length;
+      on(phone);
+      await phone.m.sync.queueScheduleItemRecord(theRow(phone), false, undefined, theRow(phone));
+      await backgroundUpload(phone);
+      expect([mockCloud.writes.slice(writes).filter(write => write.endsWith(':MASTER F-1')), cloudRow('MASTER F-1')!.updatedAt, await cards(phone)]).toEqual([[], before.updatedAt, []]);
+    });
+
+    it('the rule on the records alone', () => {
+      const was = { id: 'MASTER F-1', taskName: 'Framing', startDate: '10/15/2026', finishDate: '10/25/2026', percentComplete: 0, status: 'Not Started', notes: '', owner: '', importBatchId: 'batch-MASTER F' } as ScheduleItem;
+      const overlay = { masterStartDate: '10/15/2026', masterFinishDate: '10/25/2026', lookaheads: [{ batchId: 'batch-L', startDate: '10/22/2026', finishDate: '11/01/2026' }] } as unknown as ScheduleItem['lookaheadOverlay'];
+      /** The lookahead's copy: its dates, its note of the master's dates, its 40%, and the import it now belongs to as well. */
+      const mine = { ...was, startDate: '10/22/2026', finishDate: '11/01/2026', lookaheadOverlay: overlay, percentComplete: 40, status: 'In Progress', alsoImportedInBatchIds: ['batch-L'], updatedAt: '2026-09-12T09:00:00.000Z' } as ScheduleItem;
+      const base = scheduleItemWholeCopyBase(was)!;
+      expect(base.copy).toEqual(was);
+      const pending = reviseProjectControls({ current: undefined, patch: { approvalStatus: 'Pending' }, actor: 'David', now: '2026-09-12T10:00:00.000Z' });
+      const weigh = (cloud: ScheduleItem, merged: ScheduleItem = cloud) => scheduleItemWholeCopyFieldByField(mine, base, cloud, merged);
+      // Only the cloud's row changed a field (the approval, a duration set on the web): it stays, with everything only this copy changed.
+      const approved = { ...was, projectControls: pending, durationDays: 9, updatedAt: '2026-09-12T10:00:00.000Z' } as ScheduleItem;
+      expect(weigh(approved)).toEqual({ asked: [], itemData: { ...approved, startDate: '10/22/2026', finishDate: '11/01/2026', lookaheadOverlay: overlay, percentComplete: 40, status: 'In Progress', alsoImportedInBatchIds: ['batch-L'] } });
+      // Both changed the dates, differently: asked, and the cloud's stay; changed to the same days: nothing to ask.
+      expect(weigh({ ...was, startDate: '10/17/2026', finishDate: '10/27/2026' } as ScheduleItem)).toMatchObject({ asked: ['startDate', 'finishDate'], itemData: { startDate: '10/17/2026', finishDate: '10/27/2026', lookaheadOverlay: overlay, percentComplete: 40 } });
+      expect(weigh({ ...was, startDate: '2026-10-22', finishDate: '2026-11-01' } as ScheduleItem)!.asked).toEqual([]);
+      // Both changed the progress: as the sync merge states it, the whole of it together. Only the cloud's row did: the cloud's.
+      const his = { ...was, percentComplete: 60, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: '2026-09-12T10:00:00.000Z', progressConfirmedBy: 'David' } as ScheduleItem;
+      expect(weigh(his, his)).toMatchObject({ asked: [], itemData: { percentComplete: 60, progressSource: 'project_manager', progressConfirmedBy: 'David', startDate: '10/22/2026' } });
+      expect(weigh(his, mine)!.itemData).toMatchObject({ percentComplete: 40, status: 'In Progress' });
+      expect(scheduleItemWholeCopyFieldByField({ ...mine, percentComplete: 0, status: 'Not Started' } as ScheduleItem, base, his, mine)!.itemData).toMatchObject({ percentComplete: 60, progressConfirmedBy: 'David' });
+      // The imports a task belongs to, changed on both: the sync merge's list of both.
+      expect(weigh({ ...was, alsoImportedInBatchIds: ['batch-G'] } as ScheduleItem, { ...was, alsoImportedInBatchIds: ['batch-L', 'batch-G'] } as ScheduleItem)!.itemData.alsoImportedInBatchIds).toEqual(['batch-L', 'batch-G']);
+      // Both changed the lookahead note (two lookaheads approved apart), or the copy keeps no copy it started from: not this rule's.
+      expect(weigh({ ...was, lookaheadOverlay: { ...overlay, lookaheads: [] } } as ScheduleItem)).toBeNull();
+      expect(scheduleItemWholeCopyFieldByField(mine, { updatedAt: null, fields: base.fields, rest: base.rest }, approved, approved)).toBeNull();
+      // His controls on both copies: each field by its own time. The activity of both, when this copy added to it.
+      const impact = reviseProjectControls({ current: undefined, patch: { estimatedScheduleImpactDays: 2 }, actor: 'David', now: '2026-09-12T09:30:00.000Z' });
+      expect(normalizeProjectControls(scheduleItemWholeCopyFieldByField({ ...mine, projectControls: impact } as ScheduleItem, base, approved, approved)!.itemData.projectControls))
+        .toMatchObject({ approvalStatus: 'Pending', estimatedScheduleImpactDays: 2 });
+      const entry = (id: string) => ({ id, message: id, author: 'David', createdAt: '2026-09-12T09:00:00.000Z' });
+      expect(scheduleItemWholeCopyFieldByField({ ...mine, activity: [entry('a')] } as ScheduleItem, base, { ...was, activity: [entry('b')] } as ScheduleItem, was)!.itemData.activity!.map(item => item.id)).toEqual(['b', 'a']);
+      // A field of the rest that is asked about keeps the copy it started from in its card.
+      expect(scheduleItemEditBaseOf(base, ['startDate', 'owner'])).toEqual({ updatedAt: null, fields: { startDate: '10/15/2026', owner: '' } });
+      // A whole copy joining an edit still waiting: the copy it started from is the task less what that edit changed.
+      const typedFirst = { changedFields: ['notes', 'updatedAt'], base: { updatedAt: null, fields: { notes: '' } }, itemData: { ...was, notes: NOTE } };
+      expect(scheduleItemEditBasesMerged(typedFirst, { itemData: { ...mine, notes: NOTE }, base: scheduleItemWholeCopyBase({ ...was, notes: NOTE } as ScheduleItem) })!.copy).toEqual(was);
+      expect(scheduleItemEditBasesMerged(typedFirst, { changedFields: ['owner', 'updatedAt'], itemData: { ...was, notes: NOTE, owner: 'Ana' }, base: { updatedAt: null, fields: { owner: '' } } })!.copy).toBeUndefined();
+    });
+
+    it('two lookaheads approved apart on two devices, each with no signal, end as before: the newer one\'s dates', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false); setOnline(ipad, false);
+      at('2026-09-12T09:00:00.000Z');
+      await approve(phone, LOOK, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+      at('2026-09-12T10:00:00.000Z');
+      await approve(ipad, scheduleDoc('LOOKAHEAD P7 B', '2026-09-12T10:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/24/2026,11/03/2026,'], true);
+      at('2026-09-13T08:00:00.000Z');
+      shareDocuments(phone); shareDocuments(ipad);
+      await allSynced(phone, ipad);
+      expect(framingEverywhere(phone, ipad).map(row => row[0])).toEqual(Array(3).fill('10/24/2026'));
+      await noCards(phone, ipad);
     });
   });
 });

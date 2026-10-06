@@ -74,7 +74,7 @@ import {
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
-  scheduleItemChangedSinceMade, SCHEDULE_ITEM_AS_MADE,
+  scheduleItemChangedSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -7114,17 +7114,22 @@ async function uploadQueueItem(
     // (review N1 finding 3): a note typed on another device had stamped the row newer, and the merge took it whole,
     // dropping the dates of a lookahead approved offline.
     const restUnchanged = Boolean(remote && !changedFields && !payload.forceLocal && scheduleItemWholeCopyRestUnchanged(payload.base, remote));
-    const recovered = remote && !changedFields && !payload.forceLocal
-      ? restUnchanged ? payload.itemData : recoverDAVEScheduleRecords({
+    const merged = remote && !changedFields && !payload.forceLocal && !restUnchanged
+      ? recoverDAVEScheduleRecords({
           local: [payload.itemData],
           cloud: [remote],
           allowCloudOnly: true,
         }).find(candidate => candidate.id === payload.id) || payload.itemData
       : null;
+    // Review P7-2: with the rest of the cloud's row changed too, the copy is weighed field by field from the copy it
+    // started from: what only it changed goes on the cloud's row, what only the cloud's row changed stays, and a
+    // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
+    const byField = merged && remote ? scheduleItemWholeCopyFieldByField(payload.itemData, payload.base, remote, merged) : null;
+    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? merged : null;
     const wholeWeighed = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
-    const asked = weighed?.asked ?? wholeWeighed?.asked ?? firstSent?.asked ?? [];
+    const asked = weighed?.asked ?? (wholeWeighed ? [...(byField?.asked ?? []), ...wholeWeighed.asked] : null) ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
     // answer Q28). A whole copy decides none of a card's fields (review N1): null.
     const settles: readonly string[] | null = sentFields;
@@ -7150,7 +7155,7 @@ async function uploadQueueItem(
       return 'conflict';
     };
     // A whole copy that stands for the rest and, weighed, is the cloud's row but for its stamp has nothing to write.
-    if (remote && restUnchanged && wholeWeighed &&
+    if (remote && (restUnchanged || byField) && wholeWeighed &&
       canonicalScheduleItemJson({ ...wholeWeighed.itemData, updatedAt: remote.updatedAt }) === canonicalScheduleItemJson(remote)) {
       if (asked.length > 0) return askAbout(remote);
       await settleScheduleItemConflicts(payload.id, settles);
@@ -7205,7 +7210,7 @@ async function uploadQueueItem(
         // by hand) the stamp was the time of the upload: a master that only listed the task unchanged stamped its row
         // "just now", and a lookahead approved earlier with no signal then lost its dates and percent to that row.
         ? wholeWeighed && (JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered) ||
-          (restUnchanged && Boolean(payload.itemData.updatedAt || remote!.updatedAt)))
+          ((restUnchanged || byField) && Boolean(payload.itemData.updatedAt || remote!.updatedAt)))
           ? { ...wholeWeighed.itemData, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) }
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)

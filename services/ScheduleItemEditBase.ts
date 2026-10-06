@@ -41,6 +41,13 @@ export type ScheduleItemEditBase = Readonly<{
    * only in what David types about the task.
    */
   rest?: string;
+  /**
+   * On a whole copy's base (review P7-2): the whole task as that copy
+   * started from it. With it the copy is weighed field by field when the
+   * rest of the cloud's row has changed too (scheduleItemWholeCopyFieldByField).
+   * Missing on a copy queued by Build 230 or earlier, which goes as before.
+   */
+  copy?: Readonly<Record<string, unknown>>;
 }>;
 
 /**
@@ -95,8 +102,17 @@ export function scheduleItemWholeCopyBase(before: ScheduleItem | null | undefine
     updatedAt: typeof before.updatedAt === 'string' ? before.updatedAt : null,
     fields: Object.fromEntries(WHOLE_COPY_FIELDS_WEIGHED.map(field => [field, record[field] ?? null])),
     rest: restMark(before),
+    copy: record,
   };
 }
+
+/** Weighed elsewhere, or no change of a copy's: what he types, the controls and the activity (merged), identity and stamps. */
+const WHOLE_COPY_ELSEWHERE: ReadonlySet<string> = new Set<string>([
+  ...WHOLE_COPY_FIELDS_WEIGHED, ...Object.values(FIELD_COMPANIONS).flat(), 'projectControls', 'activity',
+  'id', 'createdAt', 'updatedAt', 'cloudUpdatedAt', 'projectId', 'textFromTask', 'savedLookaheadDates',
+]);
+/** What two copies of a task both add to: the sync merge's union of them stands. */
+const WHOLE_COPY_OF_BOTH: ReadonlySet<string> = new Set<string>(['alsoImportedInBatchIds', 'alsoImportedSourceRow', 'revisedFromTaskIds']);
 
 /** Not part of a task's rest: what is weighed field by field, the stamps, and the project id an upload binds. */
 const REST_ASIDE: ReadonlySet<string> = new Set<string>([
@@ -195,6 +211,69 @@ export function scheduleItemWholeCopyAgainstCloud(
     setRecordEntry(next, field, source);
   });
   return { itemData: next as unknown as ScheduleItem, asked, sentHere };
+}
+
+/**
+ * Review P7-2 (6 Oct 2026, Medium; older: Build 229 lost the same for any
+ * edit made meanwhile, and 3 Oct's d0bdf4f saved only a note or an owner
+ * typed on the phone or iPad): a whole copy of a task weighed against the
+ * cloud's row FIELD BY FIELD, when the rest of the cloud's row has changed
+ * since the copy this one started from.
+ *
+ * A lookahead approved with no signal moved Framing to 10/22 at 40%.
+ * Meanwhile an approval status, a schedule impact, his own percent or a hand
+ * move of the dates was set on the task on another device, or a note was
+ * typed on the web (whose save stamps more of the row than the note). The
+ * cloud's row then read as "changed", was the later, and was taken whole:
+ * 10/15 at 0% on every device, with no card, under a lookahead in effect
+ * that lists the task.
+ *
+ * The one rule, as for an edit (owner answer Q28): the copy is this device's
+ * changes since the copy it started from.
+ *  - a field only this copy changed goes on the cloud's row (the lookahead's
+ *    dates, its note of the master's dates, its percent);
+ *  - a field only the cloud's row changed stays (the approval, the impact,
+ *    the web's note, his percent entered elsewhere);
+ *  - a field changed on both to different values is asked about, and the
+ *    cloud's stays until he chooses (dates moved by hand against the
+ *    lookahead's);
+ *  - what is never asked keeps its own rule: the project controls, each
+ *    field by its own time; the activity of both; the progress, when both
+ *    changed it, as the sync merge states it (`merged`: his own later percent
+ *    over a file's, owner answer Q22); the imports a task belongs to, of both.
+ * What he types about the task (WHOLE_COPY_FIELDS_WEIGHED) is weighed after,
+ * on the row this gives (scheduleItemWholeCopyAgainstCloud).
+ *
+ * Null, and the copy goes as before, without the copy it started from, or
+ * when both changed something that is an import's own and has no rule here
+ * (two lookaheads approved apart: the sync merge orders those).
+ */
+export function scheduleItemWholeCopyFieldByField(
+  local: ScheduleItem,
+  base: ScheduleItemEditBase | null | undefined,
+  remote: ScheduleItem,
+  merged: ScheduleItem,
+): Readonly<{ itemData: ScheduleItem; asked: string[] }> | null {
+  const was = isEditBase(base) ? base.copy : undefined;
+  if (!was || typeof was !== 'object') return null;
+  const changedHere = (field: string) => fieldValue(local, field) !== fieldValue(was, field);
+  const changedThere = (field: string) => fieldValue(remote, field) !== fieldValue(was, field);
+  const next = { ...remote } as unknown as Record<string, unknown>;
+  const asked: string[] = [];
+  const progress: readonly string[] = SCHEDULE_PROGRESS_FIELDS;
+  for (const field of new Set([...Object.keys(local), ...Object.keys(was), ...Object.keys(remote)])) {
+    if (WHOLE_COPY_ELSEWHERE.has(field) || progress.includes(field) || !changedHere(field)) continue;
+    if (!changedThere(field) || fieldValue(remote, field) === fieldValue(local, field)) setField(next, field, local);
+    else if (WHOLE_COPY_OF_BOTH.has(field)) setField(next, field, merged);
+    else if (FIELDS_NEVER_ASKED.has(field)) return null;
+    else asked.push(field);
+  }
+  // The progress goes together: this copy's when only it changed it, the sync merge's when both did.
+  if (progress.some(changedHere)) progress.forEach(field => setField(next, field, progress.some(changedThere) ? merged : local));
+  const controls = local.projectControls && remote.projectControls ? mergeProjectControlsRevisions(local.projectControls, remote.projectControls) : local.projectControls ?? remote.projectControls;
+  if (controls) next.projectControls = controls;
+  if (changedHere('activity')) next.activity = scheduleItemActivityOfBoth(local.activity, remote.activity);
+  return { itemData: next as unknown as ScheduleItem, asked };
 }
 
 /** A whole copy waiting here, as shown over the cloud's row: the weighed fields it left as they were take the cloud's. */
@@ -347,7 +426,10 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
     const mark = valueMark(before);
     own[field] = [...(own[field] ?? []).filter(known => known !== mark), mark].slice(-OWN_VALUES_KEPT);
   });
-  return { updatedAt: earlier?.updatedAt ?? later?.updatedAt ?? null, fields, ...(Object.keys(own).length > 0 ? { own } : {}) };
+  // A whole copy joining an edit still waiting (a note typed with no signal, then a lookahead approved): the task as the
+  // cloud last gave it is the copy the whole copy started from, less what that edit had changed (review P7-2).
+  const copy = !Array.isArray(incoming.changedFields) && later?.copy ? { ...later.copy, ...(earlier?.fields ?? {}) } : undefined;
+  return { updatedAt: earlier?.updatedAt ?? later?.updatedAt ?? null, fields, ...(Object.keys(own).length > 0 ? { own } : {}), ...(copy ? { copy } : {}) };
 }
 
 /**
@@ -597,8 +679,9 @@ export function scheduleItemActivityOfBoth(
 export function scheduleItemEditBaseOf(base: ScheduleItemEditBase, fields: readonly string[]): ScheduleItemEditBase {
   return {
     updatedAt: base.updatedAt,
-    fields: Object.fromEntries(fields.filter(field => Object.prototype.hasOwnProperty.call(base.fields, field))
-      .map(field => [field, base.fields[field]])),
+    // (A field of a whole copy's rest that is asked about, review P7-2: as the copy it started from had it.)
+    fields: Object.fromEntries(fields.filter(field => Object.prototype.hasOwnProperty.call(base.fields, field) || Object.prototype.hasOwnProperty.call(base.copy ?? {}, field))
+      .map(field => [field, Object.prototype.hasOwnProperty.call(base.fields, field) ? base.fields[field] : base.copy![field]])),
   };
 }
 
