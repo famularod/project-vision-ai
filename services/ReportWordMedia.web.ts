@@ -368,6 +368,7 @@ function cropCanvas(
   output.height = crop.outputHeight;
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Drawing crop renderer is unavailable.');
+  fillWhite(outputContext, output);
   outputContext.drawImage(
     sourceCanvas,
     crop.originX,
@@ -389,8 +390,20 @@ function resizeCanvas(sourceCanvas: HTMLCanvasElement) {
   output.height = Math.max(1, Math.round(sourceCanvas.height * scale));
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Image resize renderer is unavailable.');
+  fillWhite(outputContext, output);
   outputContext.drawImage(sourceCanvas, 0, 0, output.width, output.height);
   return canvasResult(output);
+}
+
+/**
+ * A JPEG has no transparency, and a canvas saved as one puts its transparent
+ * areas on black. The phone's image tool puts them on white. So a picture
+ * with a transparent background is drawn on white here too, and the two
+ * reports show the same thing (review pass 4 L5).
+ */
+function fillWhite(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
+  context.fillStyle = '#FFFFFF';
+  context.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 async function canvasResult(canvas: HTMLCanvasElement) {

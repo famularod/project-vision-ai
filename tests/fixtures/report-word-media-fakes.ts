@@ -100,6 +100,52 @@ export function quadrantSheet(width: number, height: number): FakePicture {
   };
 }
 
+/** A pixel with nothing in it. What shows there depends on what the picture is put on. */
+export const FAKE_TRANSPARENT = 'transparent';
+
+/** Ink on a transparent background (a logo, a stamp, an exported sketch): an inked band across the middle. */
+export function inkOnTransparent(width: number, height: number): FakePicture {
+  return {
+    width,
+    height,
+    labelAt: (_x, y) => (y >= height / 3 && y < (2 * height) / 3 ? 'ink' : FAKE_TRANSPARENT),
+  };
+}
+
+/** A picture with every transparent pixel put on the given colour, as saving to a type without transparency does. */
+function flattened(picture: FakePicture, onto: string): FakePicture {
+  return {
+    width: picture.width,
+    height: picture.height,
+    labelAt: (x, y) => {
+      const label = picture.labelAt(x, y);
+      return label === FAKE_TRANSPARENT ? onto : label;
+    },
+  };
+}
+
+/** One picture drawn over what a canvas already holds: its transparent pixels show what is underneath. */
+function drawnOver(top: FakePicture, underneath: FakePicture | null): FakePicture {
+  return {
+    width: top.width,
+    height: top.height,
+    labelAt: (x, y) => {
+      const label = top.labelAt(x, y);
+      return label === FAKE_TRANSPARENT && underneath ? underneath.labelAt(x, y) : label;
+    },
+  };
+}
+
+/** The different labels found across a picture, in order, e.g. ["ink", "white"]. */
+export function fakeLabelsOf(picture: FakePicture): string[] {
+  const found = new Set<string>();
+  const columns = sampled(picture.width);
+  for (const y of sampled(picture.height)) {
+    for (const x of columns) found.add(picture.labelAt(x, y));
+  }
+  return [...found].sort();
+}
+
 function cropped(picture: FakePicture, crop: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>): FakePicture {
   return {
     width: crop.width,
@@ -281,7 +327,9 @@ export function fakeImageManipulator() {
             height: rendered.height,
             async saveAsync(options?: { format?: FakeImageFormat }) {
               const format = fakeMedia.deviceWrites || options?.format || 'jpeg';
-              const bytes = fakeImageBytes(format, rendered);
+              // A JPEG has no transparency. Apple's encoder puts the picture on white
+              // (run on macOS ImageIO by the pass-4 reviewer, notes/p4-ecos/probe.swift).
+              const bytes = fakeImageBytes(format, format === 'jpeg' ? flattened(rendered, 'white') : rendered);
               const savedUri = `file:///cache/ImageManipulator/${fakeMedia.nextId}.${format}`;
               fakeMedia.files.set(savedUri, bytes);
               return { uri: savedUri, width: rendered.width, height: rendered.height };
@@ -299,7 +347,11 @@ type FakeCanvas = {
   width: number;
   height: number;
   picture: FakePicture | null;
-  getContext(kind: string): { drawImage(source: { picture: FakePicture | null }, ...values: number[]): void };
+  getContext(kind: string): {
+    fillStyle: string;
+    fillRect(x: number, y: number, width: number, height: number): void;
+    drawImage(source: { picture: FakePicture | null }, ...values: number[]): void;
+  };
   toBlob(callback: (blob: Blob | null) => void, type?: string): void;
 };
 
@@ -309,12 +361,26 @@ function fakeCanvas(): FakeCanvas {
     height: 0,
     picture: null,
     getContext: () => ({
+      fillStyle: '#000000',
+      fillRect(x, y, width, height) {
+        const colour = /^(#fff(fff)?|white)$/i.test(this.fillStyle) ? 'white' : this.fillStyle;
+        const underneath = canvas.picture;
+        // An opaque fill covers whatever was drawn there before it.
+        canvas.picture = {
+          width: canvas.width,
+          height: canvas.height,
+          labelAt: (px, py) => (px >= x && px < x + width && py >= y && py < y + height
+            ? colour
+            : underneath ? underneath.labelAt(px, py) : FAKE_TRANSPARENT),
+        };
+      },
       drawImage(source, ...values) {
         if (!source.picture) throw new Error('Nothing was drawn on the source.');
+        const underneath = canvas.picture;
         if (values.length === 2) {
-          canvas.picture = source.picture;
+          canvas.picture = drawnOver(source.picture, underneath);
         } else if (values.length === 4) {
-          canvas.picture = resized(source.picture, values[2], values[3]);
+          canvas.picture = drawnOver(resized(source.picture, values[2], values[3]), underneath);
         } else {
           const crop = {
             originX: values[0],
@@ -325,7 +391,7 @@ function fakeCanvas(): FakeCanvas {
             outputHeight: values[7],
           };
           fakeMedia.browserCrops.push(crop);
-          canvas.picture = resized(cropped(source.picture, crop), crop.outputWidth, crop.outputHeight);
+          canvas.picture = drawnOver(resized(cropped(source.picture, crop), crop.outputWidth, crop.outputHeight), underneath);
         }
       },
     }),
@@ -335,7 +401,8 @@ function fakeCanvas(): FakeCanvas {
         return;
       }
       const format = fakeMedia.browserWrites || (type === 'image/png' ? 'png' : 'jpeg');
-      const bytes = fakeImageBytes(format, canvas.picture);
+      // The HTML rule for a type without transparency: the canvas is put on opaque black.
+      const bytes = fakeImageBytes(format, format === 'jpeg' ? flattened(canvas.picture, 'black') : canvas.picture);
       callback(new Blob([bytes.slice().buffer], { type }));
     },
   };
