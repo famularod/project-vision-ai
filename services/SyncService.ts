@@ -6221,6 +6221,25 @@ async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonl
 }
 
 /** Whether a waiting edit of a task changes a field the card does not ask about; a whole copy may change any. */
+/**
+ * Sync batch Y2 (item 1): an edit of single fields that the upload weighs field by field from the copy it started
+ * from (owner answer Q28), and that sets no progress. Only such an edit goes up first beside a card about the whole
+ * task: one with no starting copy is sent unweighed, and a percent is decided by who confirmed it later, so either
+ * could go over a value another device set after the card was shown (audit A7 pass 16 keeps those given up).
+ */
+function taskFieldEditWeighedByItsStart(edit: SyncQueueItem): boolean {
+  const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+  return edit.entity === 'schedule_item' && edit.operation === 'update' && Array.isArray(payload.changedFields) && isEditBase(payload.base) &&
+    !payload.changedFields.some(field => field === 'percentComplete' || field === 'status' || SCHEDULE_PROGRESS_FIELDS.includes(String(field)));
+}
+
+/** The fields a card about the whole task is about (sync batch Y2, item 1): those in which the two copies differ. */
+function taskFieldsInDispute(own: unknown, shown: unknown): Set<string> {
+  const fields = new Set([...Object.keys(isRecord(own) ? own : {}), ...Object.keys(isRecord(shown) ? shown : {})]);
+  return new Set([...fields].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) &&
+    taskFieldValue(own, field) !== taskFieldValue(shown, field)));
+}
+
 function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<string>): boolean {
   if (edit.entity !== 'schedule_item' || edit.operation !== 'update') return false;
   const fields = (edit.payload as Partial<ScheduleItemRecordPayload>).changedFields;
@@ -6242,13 +6261,13 @@ function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<stri
  */
 async function weighTaskEditsWaitingBesideCard(
   conflict: SyncConflict,
-  cardFields: ReadonlySet<string>,
+  /** Whether an edit of his changes something the card does not ask about. */
+  beyond: (edit: SyncQueueItem) => boolean,
   resolution: 'keep_local' | 'keep_cloud',
   /** The cloud's copy as the screen showed it. */
   shown: unknown,
 ): Promise<{ cardId: string; fields: string[]; sent: boolean } | null> {
   const queueItemId = scheduleItemQueueItemId(conflict.localId);
-  const beyond = (edit: SyncQueueItem) => taskEditChangesBeyond(edit, cardFields);
   const waits = async () => (await getOfflineQueue()).find(item => item.id === queueItemId);
   const held = resolution === 'keep_cloud' ? [] : ((conflict.localPayload as Partial<ScheduleItemRecordPayload>).withdrawnEdits ?? [])
     .filter(edit => edit.entity === 'schedule_item' && edit.operation === 'update');
@@ -6448,9 +6467,34 @@ async function chooseScheduleItemSyncConflictCopy(
   // (syncConflictChoiceStopReason), since "Nothing was sent" would not be true.
   const cardFields = askedFields.length > 0 && Array.isArray(localPayload.changedFields)
     ? new Set(localPayload.changedFields.map(String)) : null;
+  // Sync batch Y2 (item 1): Keep Cloud on a card about the WHOLE task too. Such a card is about the fields in which
+  // his copy and the cloud's copy, as shown, differ; it took every waiting edit of the task off the queue, so an owner
+  // set while the card showed two notes was discarded with the note. A waiting FIELD edit that changes a field outside
+  // that difference goes through the ordinary upload first, as beside a card of fields. A whole copy that waits (an
+  // approved schedule's row, a carried percent) holds his side of the difference itself, so it is given up as
+  // before; the card shows it (sync batch Y1, item 5).
+  const wholeTaskDifference = resolution === 'keep_cloud' && !cardFields && isRecord(localItem) && isRecord(shown)
+    ? taskFieldsInDispute(localItem, shown) : null;
+  const besideCard = (edit: SyncQueueItem) => cardFields !== null
+    ? taskEditChangesBeyond(edit, cardFields)
+    : wholeTaskDifference !== null && taskFieldEditWeighedByItsStart(edit) && taskEditChangesBeyond(edit, wholeTaskDifference);
   const decidedAfterWhatWaitsBesideCard = async (): Promise<ScheduleItem | null> => {
-    if (!cardFields || weighedBesideCard !== undefined) return null;
-    const beside = await weighTaskEditsWaitingBesideCard(conflict, cardFields, resolution, shown);
+    if ((!cardFields && !wholeTaskDifference) || weighedBesideCard !== undefined) return null;
+    let beside: Awaited<ReturnType<typeof weighTaskEditsWaitingBesideCard>>;
+    try {
+      beside = await weighTaskEditsWaitingBesideCard(conflict, besideCard, resolution, shown);
+    } catch (error) {
+      // An edit of his that lands closes a card about the whole task, as it always has (settleScheduleItemConflicts):
+      // the cloud's row then holds the cloud's side of the difference with his other field on it, which is what Keep
+      // Cloud was asked for. The choice is made, with that row. Not when an earlier Keep Cloud that could not finish
+      // left edits on the card: one of them may be in the row, and only the choice's own write takes it back.
+      if (wholeTaskDifference && error instanceof Error && error.message === 'sync_conflict_closed' &&
+        choicesStoppedAfterOtherChangeSent.has(error) && !localPayload.withdrawnEdits?.length) {
+        const rowNow = await currentCloudScheduleItem(conflict.localId).catch(() => null);
+        if (rowNow) return rowNow;
+      }
+      throw error;
+    }
     if (!beside) return null;
     try {
       return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields });
@@ -6480,8 +6524,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // On a card of fields (follow-up 1), never an edit that changes another field: it is not his to give up here. One
     // that still waits (it could not be sent in the step above, or was saved a moment ago) stops the choice with
     // nothing changed; chosen again, it is sent first.
-    const besideCard = (edit: SyncQueueItem) => cardFields !== null && taskEditChangesBeyond(edit, cardFields);
-    const waitsBesideCard = async () => cardFields !== null &&
+    const waitsBesideCard = async () => (cardFields !== null || wholeTaskDifference !== null) &&
       (await getOfflineQueue()).some(item => item.id === scheduleItemQueueItemId(conflict.localId) && besideCard(item));
     if (await waitsBesideCard()) throw new Error('sync_conflict_save_failed');
     const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard);
