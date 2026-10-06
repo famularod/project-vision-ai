@@ -71,7 +71,8 @@ export type DAVEVoiceKeptCapture = Readonly<{
  * Start Recording until its recording is in the sheet. `letGo` once the sheet
  * has let go of it: 'cancelled' by him (X, the system's back, Type Instead,
  * the task button), or 'closed' (its screen hid the sheet, or took it away).
- * A run that was let go never starts the microphone.
+ * A run that was let go never starts the microphone, and never hands the
+ * sheet a recording.
  */
 type RecorderRun = { letGo: 'cancelled' | 'closed' | null };
 
@@ -363,10 +364,11 @@ export function DAVEVoiceCaptureSheet({
 
   /**
    * The sheet closed without his Cancel (review N2 follow-up). A start under
-   * way ends when it next looks (startRecording). A recording still going is
-   * stopped here, at once, and not kept: he had not finished it. It went on
-   * to the 3-minute limit behind the closed sheet, and was then kept on the
-   * device.
+   * way ends when it next looks (startRecording), and a stop under way keeps
+   * its recording off the closed sheet (stopRecording). A recording still
+   * going is stopped here, at once, and not kept: he had not finished it. It
+   * went on to the 3-minute limit behind the closed sheet, and was then kept
+   * on the device.
    */
   async function standRecorderDownBehindClosedSheet() {
     letGoOfRecorderRun('closed');
@@ -602,6 +604,28 @@ export function DAVEVoiceCaptureSheet({
     void keptVoiceRecordings().forgetKeptVoiceRecording(keptOwner, keepSlot, kept);
   }
 
+  /**
+   * A recording he had stopped, when the sheet closed under the stop without
+   * his Cancel (review N2 follow-up): a finished recording he did not
+   * discard, so a sheet that keeps recordings keeps it on the device (review
+   * N1 L2), for the next time it opens for this project. By the service
+   * itself: the closed sheet holds nothing of it. A sheet that keeps nothing
+   * on the device has nowhere to keep it, and it goes.
+   */
+  async function keepStoppedRecordingForNextTime(uri: string | null | undefined, duration: number) {
+    if (uri && keptOwner && keepSlot && daveRecordingIsLongEnough(duration)) {
+      await keptVoiceRecordings().keepVoiceRecording(keptOwner, keepSlot, {
+        uri,
+        durationMs: duration,
+        projectId,
+        projectName,
+        walkArea: walkContext?.recommendedArea ?? null,
+        state: 'ready',
+      }).catch(() => undefined);
+    }
+    await removeRecording(uri ?? null);
+  }
+
   async function stopRecording() {
     // A lock or call may already have claimed and be finishing this recording.
     if (!recorderState.isRecording || !recordingActiveRef.current) return;
@@ -619,6 +643,19 @@ export function DAVEVoiceCaptureSheet({
       await recorder.stop();
       const status = recorder.getStatus();
       const uri = recorder.uri || status.url;
+      if (run?.letGo) {
+        // Review N2 follow-up: the sheet let go of this recording while it was stopping, and a
+        // closed sheet is handed nothing. It had been put into the closed sheet, its file
+        // already deleted by his Cancel. X is Cancel (as are the system's back, Type Instead
+        // and the task button): the recording he was stopping is discarded, as X while
+        // listening discards. "Close and Keep on This Device" is the control that keeps, once
+        // a recording is ready. Closed without his Cancel, a recording he had stopped is kept.
+        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+        if (run.letGo === 'closed') await keepStoppedRecordingForNextTime(uri, stoppedDuration);
+        else await removeRecording(uri ?? null);
+        recordingFinishingRef.current = false;
+        return;
+      }
       if (!uri) throw new Error('Recording file missing.');
       recordingDurationRef.current = stoppedDuration;
       noteRecordingCaptured(uri, stoppedDuration);
@@ -626,7 +663,8 @@ export function DAVEVoiceCaptureSheet({
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       recordingFinishingRef.current = false;
-      if (autoSubmitOnStop) await transcribeRecording(uri, stoppedDuration);
+      // A sheet that has let go since does not send it for its words either.
+      if (autoSubmitOnStop && !run?.letGo) await transcribeRecording(uri, stoppedDuration);
     } catch {
       recordingActiveRef.current = false;
       // A stop that failed after the sheet had let go of the recorder is asked again, and the
