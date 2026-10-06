@@ -200,7 +200,8 @@ export function scheduleItemWholeCopyAgainstCloud(
     const here = fieldValue(local, field);
     const cloud = fieldValue(remote, field);
     // (The cloud holding a value this copy held earlier is this device's own write, not another's change: review P7-4.)
-    const byIds = here === was ? remote : cloud === was || cloud === here || isOwnEarlierValue(base, field, cloud) ? local : null;
+    // (Nor is the cloud holding the copy it started from "unchanged there" for a field of his a write has sent: S2 item 6.)
+    const byIds = here === was ? remote : (cloud === was && !base.sent?.includes(field)) || cloud === here || isOwnEarlierValue(base, field, cloud) ? local : null;
     // Review P6-1: links that would be asked about for the rows they name are weighed by the tasks they name. His
     // unchanged by task, or the same by task on both sides: the cloud's, as written there. The cloud's unchanged by
     // task: his, each naming the row the cloud's copy names for its task.
@@ -494,14 +495,23 @@ function scheduleItemFieldsChangedSinceMade(waiting: unknown, sinceMade: Schedul
  * of it stays. Undefined without the record or without the copy the whole
  * copy started from.
  */
-export function scheduleItemWholeCopyBaseSinceMade(sinceMade: unknown, incomingBase: unknown): ScheduleItemEditBase | undefined {
+export function scheduleItemWholeCopyBaseSinceMade(
+  sinceMade: unknown,
+  incomingBase: unknown,
+  /** The copy that waited, and whether a write of it was tried as it stood (Build 231, S2 item 6). */
+  waiting?: Readonly<{ itemData?: unknown; writeTried?: unknown }>,
+): ScheduleItemEditBase | undefined {
   if (!isEditBase(sinceMade) || !isEditBase(incomingBase) || !incomingBase.copy) return undefined;
   const made: Record<string, unknown> = { ...incomingBase.copy, ...sinceMade.fields };
+  // S2 item 6 (the gap review P7-3 left on this path): what a write has already sent of his goes with the record, so
+  // the whole copy's weighing asks, as the retry's edit does, when another device has put such a field back.
+  const sent = [...new Set([...(sinceMade.sent ?? []), ...(waiting?.writeTried === true ? scheduleItemFieldsChangedSinceMade(waiting.itemData, sinceMade) : [])])];
   return {
     updatedAt: null,
     fields: Object.fromEntries(WHOLE_COPY_FIELDS_WEIGHED.map(field => [field, made[field] ?? null])),
     copy: made,
     ...(sinceMade.own ? { own: sinceMade.own } : {}),
+    ...(sent.length > 0 ? { sent } : {}),
   };
 }
 

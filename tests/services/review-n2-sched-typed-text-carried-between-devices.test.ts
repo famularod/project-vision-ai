@@ -4214,6 +4214,19 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
         expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 0, NOTE, '']]));
       });
 
+      it('S2 item 6: with a lookahead approved on the task after the lost answer as well, the web\'s clear of the owner he had typed is still asked about', async () => {
+        const { phone, ipad, newId } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Mike' }), async (phone, id) => {
+          webWrite(webEdited(cloudRow(id)!, { owner: '' }));
+          await offline(device => approve(device, scheduleDoc('LOOKAHEAD P7', '2026-09-12T08:30:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true))(phone, id);
+        });
+        // (It was: "Mike" back on every device with no card: the whole copy's weighing did not know he had been sent.)
+        expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Mike'], cloud: [''] }]);
+        shareDocuments(phone);
+        await allSynced(phone, ipad);
+        // The lookahead's dates are on the task all the same, with the iPad's note; the owner waits for his choice.
+        expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 0, NOTE, '']]));
+      });
+
       it('the rule on the records alone', () => {
         const taskOf = () => (rowId: string) => rowId;
         const made = theRowAsApproved();
@@ -4257,6 +4270,16 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
         const started = scheduleItemWholeCopyBaseSinceMade({ updatedAt: null, fields: { owner: '', percentComplete: 0 }, own: { owner: ['"Mick"'] } }, scheduleItemWholeCopyBase(beforeLookahead))!;
         expect([started.fields.owner, started.copy!.owner, started.copy!.percentComplete, started.copy!.startDate, started.rest, started.own]).toEqual(['', '', 0, made.startDate, undefined, { owner: ['"Mick"'] }]);
         expect(scheduleItemWholeCopyBaseSinceMade(undefined, scheduleItemWholeCopyBase(beforeLookahead))).toBeUndefined();
+        // S2 item 6: and what a write had sent of his goes with it: what the record already says, and all he had changed
+        // when a write of the waiting copy was tried as it stood.
+        const tracked = { updatedAt: null, fields: { owner: '', percentComplete: 0, notes: '' }, sent: ['notes'] };
+        expect(scheduleItemWholeCopyBaseSinceMade(tracked, scheduleItemWholeCopyBase(beforeLookahead))!.sent).toEqual(['notes']);
+        expect(scheduleItemWholeCopyBaseSinceMade(tracked, scheduleItemWholeCopyBase(beforeLookahead), { itemData: beforeLookahead, writeTried: true })!.sent).toEqual(['notes', 'owner', 'percentComplete']);
+        expect(scheduleItemWholeCopyBaseSinceMade(record, scheduleItemWholeCopyBase(beforeLookahead), { itemData: beforeLookahead })!.sent).toBeUndefined();
+        // A field of his that was sent and that the cloud holds as the row was made again: asked, in a whole copy's weighing too.
+        const sentBase = scheduleItemWholeCopyBaseSinceMade(record, scheduleItemWholeCopyBase(beforeLookahead), { itemData: beforeLookahead, writeTried: true })!;
+        expect(scheduleItemWholeCopyAgainstCloud(beforeLookahead, beforeLookahead, sentBase, cleared).asked).toEqual(['owner']);
+        expect(scheduleItemWholeCopyAgainstCloud(beforeLookahead, beforeLookahead, { ...sentBase, sent: undefined }, cleared).asked).toEqual([]);
         expect(scheduleItemWholeCopyBaseSinceMade(record, { updatedAt: null, fields: { owner: 'Mike' } })).toBeUndefined();
         // And a value of his own that an earlier write put in the cloud is not another device's change, in what he types or in the rest.
         const lookahead = { ...beforeLookahead, owner: 'Mike', startDate: '10/24/2026' } as ScheduleItem;

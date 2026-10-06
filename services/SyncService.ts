@@ -1689,7 +1689,7 @@ function mergeScheduleItemQueueChangeScope(
     // Each field keeps the copy its first waiting edit started from, as far as it is known (owner answer Q28).
     // (A whole copy saved over a row this device made and that still waits: the row as made, review P7-4.)
     const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload) ??
-      (Array.isArray(incomingPayload.changedFields) ? undefined : scheduleItemWholeCopyBaseSinceMade(existingPayload.sinceMade, incomingPayload.base));
+      (Array.isArray(incomingPayload.changedFields) ? undefined : scheduleItemWholeCopyBaseSinceMade(existingPayload.sinceMade, incomingPayload.base, existingPayload));
     return {
       ...incoming,
       // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
