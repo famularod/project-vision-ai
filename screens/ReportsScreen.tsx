@@ -966,7 +966,29 @@ export function ReportsScreen({
     // report is never compared against itself or against an approval that
     // never went out (audit A6).
     const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
-    if (!snapshotToSave) return;
+    if (!snapshotToSave) {
+      // Review N2 (5 Oct 2026): the same report is already the approval waiting in the shared period, saved by
+      // the other device, and this device holds no copy of it. Approved on the iPad and emailed (Mail said
+      // "Saved"), then approved and emailed from the phone: the phone, the device he sent from, offered no Mark
+      // as Sent, and nothing said so. Approved here now, this device keeps it too, as the web does, and offers
+      // Mark as Sent. Reading the other device's approval without approving still offers nothing (everyday item 1).
+      const waiting = approvalAwaitingSend;
+      const waitingKey = approvalAwaitingSendKey;
+      if (!waiting || !waitingKey || approvalSavedHereKey === waitingKey) return;
+      // A send can complete before this lands, as below: the delivered mark waits for it, and is never held up
+      // by its failing (the send is then recorded as it was before, from the approval on screen).
+      const kept = reportApprovalSavedHere(waiting)
+        .then(here => (here ? undefined : saveDAVEReportSnapshot(waiting)))
+        .then(() => {
+          if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(waiting)) setApprovalSavedHereKey(waitingKey);
+        })
+        .catch(() => undefined);
+      pendingReportSnapshotSaveRef.current = { snapshot: waiting, save: kept };
+      void kept.finally(() => {
+        if (pendingReportSnapshotSaveRef.current?.save === kept) pendingReportSnapshotSaveRef.current = null;
+      });
+      return;
+    }
     // A send can complete before this save lands (Approve, Share, Copy in
     // about a second): the delivered mark waits for it and finds the
     // snapshot here (audit A6 pass 4).
