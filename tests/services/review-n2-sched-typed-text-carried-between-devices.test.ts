@@ -2435,3 +2435,143 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
   });
 });
+
+/* ---------------------------------------------------------------------------------------------------------------------
+ * Review pass 4 (6 Oct 2026). The tests below are appended after the rig, which is left as it was line for line (the
+ * pass-4 reviewer's generator is built from this file's first 1027 lines).
+ * ------------------------------------------------------------------------------------------------------------------- */
+/** The App's own normalizeScheduleItem, compiled from App.tsx: the phone and the iPad hold every task as it leaves it. */
+const appNormalize: (value: ScheduleItem) => ScheduleItem = (() => {
+  let made: ((value: Partial<ScheduleItem>) => ScheduleItem) | null = null;
+  return (value: ScheduleItem) => {
+    if (!made) {
+      const constant = (name: string) => {
+        const match = new RegExp(`\\nconst ${name}[:= ][^;]*;`).exec(APP);
+        if (!match) throw new Error(`App.tsx has no constant ${name}`);
+        return match[0];
+      };
+      const source = [constant('SCHEDULE_PRIORITIES'), constant('zeroPad'), appFunction('parseFlexibleDate'), appFunction('formatAppDate'), appFunction('normalizeScheduleItem'),
+        'module.exports = { normalizeScheduleItem };'].join('\n');
+      made = evaluate<{ normalizeScheduleItem: (value: Partial<ScheduleItem>) => ScheduleItem }>(transpile(source), {
+        reconcileScheduleProgress: require('../../services/ScheduleProgressInvariant').reconcileScheduleProgress, uid, optionalString,
+        normalizeProjectItemType: require('../../services/ProjectItemWorkflow').normalizeProjectItemType,
+        normalizeProjectItemActivity: require('../../services/ProjectItemWorkflow').normalizeProjectItemActivity,
+        projectTimeZoneOrDefault: require('../../services/ProjectDateTime').projectTimeZoneOrDefault,
+        parseMonthNameDateParts: require('../../services/ProjectDateTime').parseMonthNameDateParts,
+        normalizeScheduleDependencies: require('../../services/VitruviusScheduleEngine').normalizeScheduleDependencies,
+        normalizeImportedScheduleNote: require('../../services/PIEScheduleIntelligence').normalizeImportedScheduleNote, normalizeProjectControls,
+        normalizeDAVECompletionVerification: require('../../services/DAVECompletionVerification').normalizeDAVECompletionVerification,
+      }).normalizeScheduleItem;
+    }
+    return made(value);
+  };
+})();
+/** This device's tasks as the app holds them after reading them (the rig passes tasks through as they are). */
+function heldAsTheAppHoldsThem(device: Device) {
+  setter(device)(device.state.map(appNormalize));
+  device.ref.current = device.state;
+}
+/** A master uploaded on the web desktop and made current there (the web's own plan and activation, its rows written as planned). */
+function webUploadsAndMakesCurrent(id: string, lines: string[]): ReferenceDocument {
+  const { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } = require('../../services/DAVEWebOperations');
+  const { scheduleProgressCarriedToShownTasks } = require('../../services/ScheduleImportMerge');
+  const when = new Date().toISOString();
+  const prepared = prepareDAVEWebDocumentUpload({
+    fileName: `${id}.csv`, mimeType: 'text/csv', sizeBytes: 300, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+    contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), fingerprint: 'd'.repeat(64), now: when,
+  } as never);
+  const document = { ...(prepared.document as ReferenceDocument), id, importBatchId: `batch-${id}` } as ReferenceDocument;
+  const rows = (prepared.scheduleItems as ScheduleItem[]).map((row, index) => ({ ...row, id: `${id}-${index + 1}`, importBatchId: document.importBatchId, sourceDocumentId: id }));
+  const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown().map(item => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null })) } as never, importedScheduleItems: rows });
+  const plain = (item: ScheduleItem) => { const { cloudUpdatedAt: _cloud, ...rest } = item as ScheduleItem & { cloudUpdatedAt?: unknown }; return rest as ScheduleItem; };
+  plan.additions.forEach((item: ScheduleItem) => webWrite(plain(item)));
+  plan.revisions.forEach((revision: { item: ScheduleItem }) => webWrite(plain(revision.item)));
+  cloudDocuments = [...cloudDocuments, document];
+  const shownBefore = webShown();
+  const documentsBefore = cloudDocuments;
+  cloudDocuments = scheduleDocumentsAfterActivation(document, cloudDocuments, 'project', when);
+  mockCloud.documents = cloudDocuments;
+  (scheduleProgressCarriedToShownTasks({ before: shownBefore, after: webShown(), documentsBefore, documentsAfter: cloudDocuments, now: when, known: cloudItems() }) as ScheduleItem[]).forEach(webWrite);
+  return document;
+}
+
+describe('Review P4 F2: his first next step or hand link on a task of a master the web uploaded', () => {
+  const noCards = async (phone: Device, ipad: Device) => expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  const framingOn = (items: readonly ScheduleItem[]) => items.find(item => item.taskName === 'Framing')!;
+
+  it('goes up and stays on the task, on the phone, the iPad and the web; Review Conflicts has nothing to ask', async () => {
+    const { phone, ipad } = await start();
+    at(G.importedAt!);
+    webUploadsAndMakesCurrent('MASTER G', [G_ROW, SURVEY]);
+    // The row the web wrote has no next step and no links at all; the phone holds it with a blank one and an empty list.
+    expect(Object.keys(cloudRow('MASTER G-1')!)).not.toEqual(expect.arrayContaining(['nextAction']));
+    expect(Object.keys(cloudRow('MASTER G-1')!)).not.toEqual(expect.arrayContaining(['dependencies']));
+    at('2026-09-11T09:00:00.000Z');
+    await refresh(phone); await refresh(ipad);
+    heldAsTheAppHoldsThem(phone); heldAsTheAppHoldsThem(ipad);
+    expect(theRow(phone)).toMatchObject({ id: 'MASTER G-1', nextAction: '', dependencies: [] });
+    await edit(phone, theRow(phone).id, { nextAction: 'Call the inspector' });
+    const survey = deviceShown(phone).find(item => item.taskName === 'Survey')!;
+    await edit(phone, theRow(phone).id, { dependencies: [{ predecessorItemId: survey.id, type: 'FS', lagDays: 0 }] } as never);
+    await edit(phone, theRow(phone).id, { isMilestone: true } as never);
+    // (It was: neither in the cloud, and a card "Next action: Call the inspector / (none) · Predecessors: 1 item / (none)".)
+    await backgroundUpload(phone);
+    await noCards(phone, ipad);
+    expect(cloudRow('MASTER G-1')).toMatchObject({ nextAction: 'Call the inspector', dependencies: [{ predecessorItemId: survey.id, type: 'FS', lagDays: 0 }], isMilestone: true });
+    at('2026-09-12T08:00:00.000Z');
+    await settle(phone, ipad);
+    heldAsTheAppHoldsThem(phone); heldAsTheAppHoldsThem(ipad);
+    for (const shown of [deviceShown(phone), deviceShown(ipad), webShown()]) {
+      expect(framingOn(shown)).toMatchObject({ id: 'MASTER G-1', nextAction: 'Call the inspector', isMilestone: true });
+      expect(framingOn(shown).dependencies).toEqual([{ predecessorItemId: survey.id, type: 'FS', lagDays: 0 }]);
+    }
+    await noCards(phone, ipad);
+  });
+
+  it('review P4 P2-5: a lookahead approved with no signal on such a task keeps its dates when the iPad types a note meanwhile (review N1\'s rule holds for a row the web\'s upload wrote)', async () => {
+    const { phone, ipad } = await start();
+    at(G.importedAt!);
+    webUploadsAndMakesCurrent('MASTER G', [G_ROW, SURVEY]);
+    at('2026-09-11T09:00:00.000Z');
+    await refresh(phone); await refresh(ipad);
+    heldAsTheAppHoldsThem(phone); heldAsTheAppHoldsThem(ipad);
+    setOnline(phone, false);
+    const L2 = scheduleDoc('LOOKAHEAD L2', '2026-09-11T12:00:00.000Z', 'lookahead');
+    at(L2.importedAt!);
+    await approve(phone, L2, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+    heldAsTheAppHoldsThem(phone);
+    at('2026-09-11T15:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { notes: NOTE });
+    await backgroundUpload(ipad);
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    // (It was: the phone's copy holds an empty activity list, blank controls and a time zone the cloud's row lacks, so
+    // "the rest of the row" read as changed, the cloud's later row was taken whole, and the lookahead's dates were on
+    // no device.)
+    expect(cloudRow('MASTER G-1')).toMatchObject({ startDate: '10/22/2026', finishDate: '11/01/2026', notes: NOTE });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 0, NOTE, '']]));
+    await noCards(phone, ipad);
+  });
+
+  it('and a next step the web typed there meanwhile is still asked about', async () => {
+    const { phone, ipad } = await start();
+    at(G.importedAt!);
+    webUploadsAndMakesCurrent('MASTER G', [G_ROW, SURVEY]);
+    at('2026-09-11T09:00:00.000Z');
+    await refresh(phone);
+    heldAsTheAppHoldsThem(phone);
+    setOnline(phone, false);
+    await edit(phone, theRow(phone).id, { nextAction: 'Call the inspector' });
+    at('2026-09-11T10:00:00.000Z');
+    webWrite(webEdited(cloudRow('MASTER G-1')!, { nextAction: 'Order rebar' }));
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    await backgroundUpload(phone);
+    expect(cloudRow('MASTER G-1')).toMatchObject({ nextAction: 'Order rebar' });
+    expect((await conflictsOf(phone)).map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields)).toEqual([['nextAction']]);
+    expect(await conflictsOf(ipad)).toEqual([]);
+  });
+});

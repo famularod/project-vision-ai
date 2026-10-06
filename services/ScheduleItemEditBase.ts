@@ -1,7 +1,10 @@
-import type { ProjectItemActivity, ScheduleItem } from '../types';
+import { PROJECT_ITEM_TYPES, SCHEDULE_PRIORITIES, type ProjectItemActivity, type ScheduleItem } from '../types';
+import { projectTimeZoneOrDefault } from './ProjectDateTime';
+import { scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
+import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS, scheduleEntryUndone, scheduleManagersOwnPercent, scheduleProgressIsManagers, scheduleProgressJudgedAt,
 } from './ScheduleProgressSource';
@@ -101,11 +104,16 @@ const REST_ASIDE: ReadonlySet<string> = new Set<string>([
   'textFromTask', // what a row took of the fields weighed one by one (review N3 R3)
 ]);
 
-/** A mark of a task's rest: every field not weighed one by one, stamps aside; a field stored as null reads as a missing one. */
+/**
+ * A mark of a task's rest: every field not weighed one by one, stamps aside. Each field as the app reads it back, and
+ * one that reads as a missing field left out (review P4 F2): the phone's copy of a row the web's upload wrote has
+ * the empty activity list, the blank controls and the time zone the app fills in, and its rest read as changed.
+ */
 function restMark(item: unknown): string {
   const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-  const text = canonicalScheduleItemJson(Object.fromEntries(
-    Object.entries(record).filter(([field, value]) => !REST_ASIDE.has(field) && value !== undefined && value !== null)));
+  const text = canonicalScheduleItemJson(Object.fromEntries(Object.entries(record)
+    .filter(([field]) => !REST_ASIDE.has(field) && fieldValue(record, field) !== fieldValue(null, field))
+    .map(([field, value]) => [field, scheduleItemFieldAsRead(field, value)])));
   let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index += 1) {
@@ -315,9 +323,58 @@ export function isEditBase(value: unknown): value is ScheduleItemEditBase {
     Boolean((value as { fields?: unknown }).fields) && typeof (value as { fields?: unknown }).fields === 'object';
 }
 
-/** One field as compared: key order aside, and a missing field reads as null. */
+/** His text on a task: the app holds '' for none. */
+const TEXT_FIELDS_BLANK_WHEN_MISSING: ReadonlySet<string> = new Set([
+  'projectName', 'locationName', 'milestone', 'owner', 'contractor', 'notes', 'nextAction',
+]);
+/** Text the app holds as null for none. */
+const TEXT_FIELDS_NULL_WHEN_MISSING: ReadonlySet<string> = new Set([
+  'scheduleProjectName', 'wbsCode', 'parentItemId', 'baselineStartDate', 'baselineFinishDate', 'progressConfirmedAt', 'progressConfirmedBy',
+  'importedFrom', 'importedAt', 'importBatchId', 'sourceDocumentId', 'sourceActivityId', 'sourceWbsCode', 'updatedAt',
+]);
+
+/**
+ * Review P4 F2 (6 Oct 2026, Medium; caused by 79a5ae1, owner answer Q28): one
+ * field of a task as the app itself reads it back. The phone and the iPad
+ * hold every task as App.tsx's normalizeScheduleItem leaves it: a field the
+ * saved row lacks is filled in (a blank next step, an empty list of links,
+ * "Task", "Medium", the blank project controls...). A row the web's upload
+ * writes has no next step and no links at all. Compared as stored, his first
+ * next step or hand link on such a task read as "started from a blank, and
+ * the cloud has something else (nothing)": changed on both. It was kept off
+ * the task and Review Conflicts asked "Next action: Call the inspector /
+ * (none)", though nobody had changed anything anywhere else.
+ *
+ * Two copies of a task are compared as the app would read each of them: a
+ * missing field, a null and the value the app fills in for a missing one are
+ * the same thing, and a date is its calendar day however it is written. Every
+ * field the app's normalizer fills in or rewrites is here; the test
+ * (review-p4-sched-fields-as-the-app-reads-them) runs rows through that
+ * normalizer itself, compiled from App.tsx, and compares each field.
+ */
+export function scheduleItemFieldAsRead(field: string, value: unknown): unknown {
+  const text = typeof value === 'string' && value.trim() ? value : null;
+  if (TEXT_FIELDS_BLANK_WHEN_MISSING.has(field)) return text ?? '';
+  if (TEXT_FIELDS_NULL_WHEN_MISSING.has(field)) return text;
+  switch (field) {
+    case 'startDate': case 'finishDate': return scheduleCalendarDayKey(value);
+    case 'dependencies': return normalizeScheduleDependencies(value);
+    case 'activity': return Array.isArray(value) ? value : [];
+    case 'isSummary': case 'isMilestone': return value === true;
+    // (As normalizeProjectItemType reads it; that module is not loaded here, for the scripts that load the sync with no types.)
+    case 'itemType': return (PROJECT_ITEM_TYPES as readonly unknown[]).includes(value) ? value : 'Task';
+    case 'priority': return (SCHEDULE_PRIORITIES as readonly unknown[]).includes(value) ? value : 'Medium';
+    case 'projectControls': return normalizeProjectControls(value);
+    case 'projectTimeZone': return projectTimeZoneOrDefault(value);
+    case 'percentComplete': return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    case 'status': return text ?? 'Not Started';
+    default: return value ?? null;
+  }
+}
+
+/** One field as compared: as the app reads it back (scheduleItemFieldAsRead), key order aside. */
 function fieldValue(source: unknown, field: string): string {
-  const value = source && typeof source === 'object' ? (source as Record<string, unknown>)[field] : undefined;
+  const value = scheduleItemFieldAsRead(field, source && typeof source === 'object' ? (source as Record<string, unknown>)[field] : undefined);
   return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
 }
 

@@ -1424,7 +1424,9 @@ describe('Q28 task bases, one by one', () => {
   });
 
   it('the hand links\' stamp (owner answer Q29) goes with the links: held back when the links are asked about, the cloud\'s with the cloud\'s links', () => {
-    const link = (id: string) => [{ predecessorId: id, type: 'FS' }];
+    // (Review P4 F2: links are compared as the app reads them, so each is written as the app writes one. This fixture
+    // had "predecessorId", a key the app does not read: three lists it would read as no links at all.)
+    const link = (id: string) => [{ predecessorItemId: id, type: 'FS', lagDays: 0 }];
     const before = task({ dependencies: link('a') as never, dependenciesUpdatedAt: '2026-09-01T00:00:00.000Z' } as never);
     const here = task({ dependencies: link('phone') as never, dependenciesUpdatedAt: '2026-09-02T00:00:00.000Z' } as never);
     const cloud = task({ dependencies: link('ipad') as never, dependenciesUpdatedAt: '2026-09-03T00:00:00.000Z' } as never);
