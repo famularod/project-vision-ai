@@ -5781,3 +5781,475 @@ describe('which result stands: finished over failed, then the later, then the la
     expect(await getSyncConflicts()).toEqual([]);
   });
 });
+
+/**
+ * Sync batch Y1 (item 3; medium, older): "the copy this device last put in the cloud" was held in memory only, and
+ * for whichever account. After a relaunch a card still reading "Waiting to Sync" whose record was already in the
+ * cloud was staged again as a whole copy: its photos checked again, "Analyzing" sent for a photo being run again, a
+ * copy weighed against what another device had changed since. It is now kept on the device too, for the signed-in
+ * account, bounded, and read only to spare the send of an identical copy or to keep a finished result or an archive.
+ */
+describe('what this device put in the cloud is still known after a relaunch (sync batch Y1, item 3)', () => {
+  const KNOWN = 'projectVisionAI.fieldUpdateCopiesInCloud.v1';
+  const failedAnalysis = () => ({ status: 'analysis_failed_retry', updatedAt: new Date().toISOString(), error: 'timeout' });
+  const photo = { id: 'photo-y1', uri: 'file:///phone/Documents/project-photos/y1.jpg', caption: '', createdAt: SENT_AT };
+  /** The app is closed and opened again: nothing held in memory, the device's storage as it is. */
+  const relaunch = () => { resetFieldUpdateSyncMemoryForTests(); noteSignedInOwner('owner-a'); };
+  const savedFor = (owner = 'owner-a') => (JSON.parse(mockStorage.get(KNOWN) || '{}')[owner] ?? {}) as Record<string, { at: string; copy: Update }>;
+  const writes = () => (saveProjectUpdate as jest.Mock).mock.calls.length;
+  /** This device's storage, to make one read or write of it slow, fail, or meet an account change. */
+  const deviceStorage = () => jest.requireMock('@react-native-async-storage/async-storage').default as { getItem: jest.Mock; setItem: jest.Mock };
+  let storageRead: (key: string) => Promise<string | null>;
+  let storageWrite: (key: string, value: string) => Promise<void>;
+  beforeEach(() => {
+    storageRead = deviceStorage().getItem.getMockImplementation()!;
+    storageWrite = deviceStorage().setItem.getMockImplementation()!;
+  });
+  afterEach(() => {
+    deviceStorage().getItem.mockImplementation(storageRead);
+    deviceStorage().setItem.mockImplementation(storageWrite);
+  });
+  /** An update with no photos, queued and ready for the next upload pass. */
+  async function queuedForThePass() {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    const first = { ...savedUpdate([], 'queued'), photos: [] };
+    const phone = device([], [first]);
+    await queueProjectUpdateRecord(first, false);
+    await new Promise(resolve => setTimeout(resolve, 5)); // his save's own change of what is saved has been made
+    return phone;
+  }
+  /** A new update whose record an upload pass sent; that pass does not tell the card, which goes on reading Waiting to Sync. */
+  async function sentByAnUploadPassTheCardNotTold(photos: Array<{ id: string } & Record<string, unknown>> = [photo]) {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    const first = { ...savedUpdate([], 'queued'), photos };
+    const phone = device([], [first]);
+    await queueProjectUpdateRecord(first, false);
+    // Its own sync attempt stages it and sends its photos; the app is closed before that attempt's answer reaches the
+    // card. The record goes up by the upload pass (the automatic retry does the same).
+    await stageProjectUpdateForSync(phone.saved() as never, { automatic: true });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+    expect(phone.saved()).toMatchObject({ status: 'queued' });
+    expect(await getOfflineQueue()).toEqual([]);
+    return phone;
+  }
+
+  it('a card still Waiting to Sync whose record is in the cloud: after a relaunch nothing of it is checked or sent again, and it reads Sent', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+    relaunch();
+    (createPhotoSignedUrl as jest.Mock).mockClear();
+    const before = writes();
+
+    const result = await syncWaitingUpdate(phone);
+
+    // It was staged whole again: a queue record written, every photo checked in the cloud once more.
+    expect(createPhotoSignedUrl).not.toHaveBeenCalled();
+    expect(writes()).toBe(before);
+    expect(result.errors).toEqual([]);
+    expect(phone.saved()).toMatchObject({ status: 'sent', notes: 'Pour' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('weak signal after the relaunch: the card does not turn to a failed sync over photos whose record is already in the cloud', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    relaunch();
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(photoCheckFails); // the project list loads, the photo check fails
+
+    await waitingUpdateSync(phone); // the App's own automatic pass
+
+    // It was staged whole, its photo could not be checked, and the card read "Sync failed" with nothing to retry.
+    expect(phone.saved()).toMatchObject({ status: 'sent', notes: 'Pour' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a photo being analysed again when the app is relaunched: "Analyzing" is not sent over the result the cloud holds', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const failed = failedAnalysis();
+    lateAnalysisFinishes(phone, failed);
+    await phone.settle();
+    await uploadPendingChanges(); // the failed result goes up as a patch
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 41 yards' }); // Waiting to Sync
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => {
+      lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() }); // Retry on the photo, mid-upload
+      await phone.settle();
+      return save(params);
+    });
+    await waitingUpdateSync(phone); // the record reached the cloud, but the card changed under it
+    expect(inCloud()).toMatchObject({ notes: 'Pour, 41 yards' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(failed);
+    relaunch(); // the run is still shown as under way
+    const before = writes();
+
+    await waitingUpdateSync(phone);
+
+    expect(firstPhotoAnalysis(inCloud())).toEqual(failed);
+    expect(writes()).toBe(before);
+    expect(phone.saved()?.status).toBe('sent');
+    expect(firstPhotoAnalysis(phone.saved())).toMatchObject({ status: 'analyzing' });
+  });
+
+  it('the same card, the iPad having edited the note meanwhile: after the relaunch the iPad\'s note stays and no conflict is raised', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    await uploadPendingChanges();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: 'Pour, 41 yards' });
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => {
+      lateAnalysisFinishes(phone, { status: 'analyzing', updatedAt: new Date().toISOString() });
+      await phone.settle();
+      return save(params);
+    });
+    await waitingUpdateSync(phone);
+    await iPadEditsNow(IPAD_NOTE);
+    relaunch();
+    const before = writes();
+
+    await waitingUpdateSync(phone);
+
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(writes()).toBe(before);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('a late photo result went up as a patch, then the iPad edited the note: after the relaunch the card is not sent whole over it', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([analyzingPhoto]);
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result); // the card still reads Waiting to Sync; its record is in the cloud
+    await phone.settle();
+    expect((await queuedFor())?.payload).toMatchObject({ documentPatches: [expect.objectContaining({ photoId: analyzingPhoto.id })] });
+    await uploadPendingChanges(); // the result goes up as a patch on the cloud's copy
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    await iPadEditsNow(IPAD_NOTE);
+    relaunch();
+    const before = writes();
+
+    await waitingUpdateSync(phone);
+
+    // The card, with its result, was no copy the device remembered putting in the cloud: it went up whole, stamped now.
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(writes()).toBe(before);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(phone.saved()?.status).toBe('sent');
+  });
+
+  it('a photo result that finishes after the relaunch goes up as a patch on the cloud\'s copy, not as the whole card over the iPad\'s note', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([analyzingPhoto]);
+    await iPadEditsNow(IPAD_NOTE);
+    relaunch();
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result); // the card still reads Waiting to Sync
+    await phone.settle();
+
+    // The whole card was queued, as an edit still owing its own sync: with its own note, stamped now.
+    expect((await queuedFor())?.payload).toMatchObject({ documentPatches: [expect.objectContaining({ photoId: analyzingPhoto.id })] });
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('so does a document taken off the card after the relaunch', async () => {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    const first = { ...savedUpdate([uploaded('permit'), uploaded('survey')], 'queued'), photos: [] };
+    const phone = device([uploaded('permit'), uploaded('survey')], [first]);
+    await queueProjectUpdateRecord(first, false);
+    await stageProjectUpdateForSync(phone.saved() as never, { automatic: true });
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['permit', 'survey']);
+    await iPadEditsNow(IPAD_NOTE);
+    relaunch();
+
+    await phone.deleteFromThisDevice('permit');
+
+    expect((await queuedFor())!.payload.documentPatches).toEqual([{ documentId: 'permit', remove: true }]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('stale is harmless: the cloud\'s copy has moved on, the card is still the copy this device sent: nothing is sent over it', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([]);
+    await iPadEditsNow(IPAD_NOTE);
+    relaunch();
+    const before = writes();
+
+    await syncWaitingUpdate(phone);
+
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(writes()).toBe(before);
+    expect(await getSyncConflicts()).toEqual([]);
+    // The refresh then puts the iPad's copy on the card.
+    await refresh(phone);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+  });
+
+  it('lost is what it was before: with nothing saved for the card, the relaunch stages it whole and checks its photos again', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    mockStorage.delete(KNOWN);
+    relaunch();
+    (createPhotoSignedUrl as jest.Mock).mockClear();
+
+    await syncWaitingUpdate(phone);
+
+    expect(createPhotoSignedUrl).toHaveBeenCalled();
+    expect(phone.saved()).toMatchObject({ status: 'sent', notes: 'Pour' });
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('his save of an edit takes the old copy off the device at once, before anything of the edit is sent', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([]);
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+
+    await editAndSave(phone, { notes: EDIT });
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    // Left there, the device would go on saying the old copy is the one in the cloud after the edit had gone up.
+    expect(savedFor().u1).toBeUndefined();
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+  });
+
+  it('an edit of the card is never taken for the copy in the cloud: after a relaunch his new note goes up', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([]);
+    relaunch();
+    await editAndSave(phone, { notes: EDIT });
+    // His save takes the copy off what is known, in memory and on the device.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(savedFor().u1).toBeUndefined();
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(savedFor().u1.copy).toMatchObject({ notes: EDIT });
+  });
+
+  it('a Sent card is still staged and checked against the cloud after a relaunch, as before: what was saved spares only a card that owes its sync', async () => {
+    const phone = await sentThroughTheApp([photo]);
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+    relaunch();
+    (createPhotoSignedUrl as jest.Mock).mockClear();
+
+    await runFieldUpdateCloudSync(phone.saved() as never, {}); // Sync Now stages every saved update
+
+    expect(createPhotoSignedUrl).toHaveBeenCalled();
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('each account has its own: another account signed in on this device does not take the first one\'s card for sent', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    // Another account signs in (the app keeps running): a card with the same id is not known to be in ITS cloud.
+    noteSignedInOwner('owner-b');
+    mockCloud.clear();
+    const before = writes();
+    await syncWaitingUpdate(phone);
+    expect(writes()).toBe(before + 1);
+    expect(Object.keys(savedFor('owner-b'))).toEqual(['u1']);
+    // And what the first account had saved is as it was, under its own name.
+    expect(Object.keys(savedFor('owner-a'))).toEqual(['u1']);
+  });
+
+  it('a save still on its way when the account changes is not written into the next account\'s storage', async () => {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    const first = { ...savedUpdate([], 'queued'), photos: [] };
+    device([], [first]);
+    await queueProjectUpdateRecord(first, false);
+    const upload = uploadPendingChanges();
+    // The account changes just as the pass answers; this device's storage now belongs to the next account.
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => {
+      const answer = await save(params);
+      noteSignedInOwner('owner-b');
+      return answer;
+    });
+    await upload;
+    expect(savedFor('owner-a')).toEqual({});
+    expect(savedFor('owner-b')).toEqual({});
+  });
+
+  it('the account changes while a save of it is reading the device: nothing of the first account\'s is written into the storage that is now the next account\'s', async () => {
+    await queuedForThePass();
+    let changed = false;
+    deviceStorage().getItem.mockImplementation(async (key: string) => {
+      const value = await storageRead(key);
+      if (key === KNOWN && !changed) {
+        changed = true;
+        noteSignedInOwner('owner-b'); // the sign-in changes
+        mockStorage.delete(KNOWN); // and this device's storage is the next account's, which has none
+      }
+      return value;
+    });
+
+    await uploadPendingChanges(); // puts the copy in the cloud, and saves that it did
+
+    expect(changed).toBe(true);
+    expect(inCloud()).toMatchObject({ notes: 'Pour' });
+    expect(mockStorage.has(KNOWN)).toBe(false);
+  });
+
+  it('this device\'s storage is switched away while a save of it is reading the device, the sign-in not yet changed: the save is not made into the storage that follows', async () => {
+    const { createOwnerStorageSandbox } = jest.requireActual('../../services/OwnerStorageSandbox');
+    const sandbox = createOwnerStorageSandbox({
+      storage: deviceStorage(), now: () => new Date().toISOString(), createId: () => `switch-${mockStorage.size}` });
+    await sandbox.activateOwner('owner-a');
+    await queuedForThePass();
+    // The save's read of the device is held until the storage has been switched.
+    let reading = false;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    deviceStorage().getItem.mockImplementation(async (key: string) => {
+      const value = await storageRead(key);
+      if (key === KNOWN && !reading) {
+        reading = true;
+        await held;
+      }
+      return value;
+    });
+    const pass = uploadPendingChanges(); // puts the copy in the cloud, then waits for the save
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(reading).toBe(true);
+      expect(inCloud()).toMatchObject({ notes: 'Pour' });
+      await sandbox.activateOwner(null); // he signs out: the first account's storage is set aside
+    } finally {
+      release();
+      await pass;
+    }
+
+    expect(mockStorage.has(KNOWN)).toBe(false);
+    // The first account's own storage, brought back, holds what it held before (nothing yet), not a late write.
+    await sandbox.activateOwner('owner-a');
+    expect(savedFor()).toEqual({});
+  });
+
+  it('an upload pass answers only when what it put in the cloud is on the device: on slow storage it waits for that write', async () => {
+    await queuedForThePass();
+    let release!: () => void;
+    const slow = new Promise<void>(resolve => { release = resolve; });
+    deviceStorage().setItem.mockImplementation(async (key: string, value: string) => {
+      if (key === KNOWN) await slow;
+      return storageWrite(key, value);
+    });
+    let answered = false;
+    const pass = uploadPendingChanges().then(result => { answered = true; return result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(inCloud()).toMatchObject({ notes: 'Pour' }); // the cloud has it
+      expect(answered).toBe(false); // and the pass has not said so yet: the app closed now would not know
+    } finally {
+      release();
+      await pass;
+    }
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+  });
+
+  it('what this run put in the cloud stands over an older copy the device could not replace: after the pass, the card is not staged again', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    expect(savedFor().u1.copy).toMatchObject({ notes: 'Pour' });
+    // From here this device's storage refuses every change of what is saved (it is full): the old copy stays named.
+    deviceStorage().setItem.mockImplementation(async (key: string, value: string) => {
+      if (key === KNOWN) throw new Error('The device storage is full.');
+      return storageWrite(key, value);
+    });
+    await editAndSave(phone, { notes: EDIT });
+    await stageProjectUpdateForSync(phone.saved() as never, { automatic: true }); // its photos are staged; the app is closed
+    relaunch();
+    expect(savedFor().u1.copy).toMatchObject({ notes: 'Pour' });
+    await uploadPendingChanges(); // the first thing this run does: his edit goes up
+    expect(inCloud()).toMatchObject({ notes: EDIT });
+    expect(phone.saved()).toMatchObject({ status: 'queued', notes: EDIT });
+    (createPhotoSignedUrl as jest.Mock).mockClear();
+    const before = writes();
+
+    await syncWaitingUpdate(phone);
+
+    // Read back over what this run knows, the old copy made the card read as never sent: staged whole, photos checked.
+    expect(createPhotoSignedUrl).not.toHaveBeenCalled();
+    expect(writes()).toBe(before);
+    expect(phone.saved()).toMatchObject({ status: 'sent', notes: EDIT });
+  });
+
+  it('the switch of this device\'s storage to another account takes it with the rest, and brings it back with that account', async () => {
+    const { createOwnerStorageSandbox, isOwnerSensitiveCanonicalStorageKey } = jest.requireActual('../../services/OwnerStorageSandbox');
+    expect(isOwnerSensitiveCanonicalStorageKey(KNOWN)).toBe(true);
+    const storage = jest.requireMock('@react-native-async-storage/async-storage').default;
+    const sandbox = createOwnerStorageSandbox({ storage, now: () => new Date().toISOString(), createId: () => `switch-${mockStorage.size}` });
+    await sandbox.activateOwner('owner-a');
+    const phone = await sentByAnUploadPassTheCardNotTold();
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+
+    // He signs out: nothing of it is left where the next account could read it.
+    await sandbox.activateOwner(null);
+    noteSignedInOwner(null);
+    expect(mockStorage.has(KNOWN)).toBe(false);
+    // Another account signs in and out again; then the first one comes back.
+    await sandbox.activateOwner('owner-b');
+    noteSignedInOwner('owner-b');
+    expect(mockStorage.has(KNOWN)).toBe(false);
+    await sandbox.activateOwner('owner-a');
+    noteSignedInOwner('owner-a');
+    expect(Object.keys(savedFor())).toEqual(['u1']);
+
+    (createPhotoSignedUrl as jest.Mock).mockClear();
+    await syncWaitingUpdate(phone);
+    expect(createPhotoSignedUrl).not.toHaveBeenCalled();
+    expect(phone.saved()).toMatchObject({ status: 'sent' });
+  });
+
+  it('bounded: the latest forty copies of an account, and never a copy too large to be worth keeping', async () => {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    for (let index = 0; index < 45; index += 1) {
+      const update = { ...savedUpdate([], 'queued', `u-${String(index).padStart(2, '0')}`), photos: [] };
+      await queueProjectUpdateRecord(update, false);
+      await uploadPendingChanges();
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    expect(Object.keys(savedFor()).sort()).toEqual(Array.from({ length: 40 }, (_, index) => `u-${String(index + 5).padStart(2, '0')}`));
+
+    const huge = { ...savedUpdate([], 'queued', 'u-huge'), photos: [], notes: 'x'.repeat(130_000) };
+    const phone = device([], [huge]);
+    await queueProjectUpdateRecord(huge, false);
+    await uploadPendingChanges();
+    expect(savedFor()['u-huge']).toBeUndefined();
+    expect(mockStorage.get(KNOWN)!.length).toBeLessThan(400_000);
+    // In this run it is still known, as every copy was: nothing of it is sent again.
+    const before = writes();
+    await syncWaitingUpdate(phone, 'u-huge');
+    expect(writes()).toBe(before);
+  });
+
+  it('bounded by size too: the oldest copies go when an account\'s copies would take too much room', async () => {
+    (createPhotoSignedUrl as jest.Mock).mockResolvedValue(signedUrl);
+    for (let index = 0; index < 6; index += 1) {
+      const update = { ...savedUpdate([], 'queued', `u-big-${index}`), photos: [], notes: `${index}`.repeat(100_000) };
+      await queueProjectUpdateRecord(update, false);
+      await uploadPendingChanges();
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    expect(Object.keys(savedFor()).sort()).toEqual(['u-big-3', 'u-big-4', 'u-big-5']);
+    expect(mockStorage.get(KNOWN)!.length).toBeLessThan(400_000);
+  });
+
+  it('a restore of this device\'s lists neither writes it nor reads it: the restore code does not know the key', () => {
+    const read = (file: string) => fs.readFileSync(path.resolve(__dirname, '../..', file), 'utf8');
+    ['services/BackupRestoreRuntime.ts', 'services/DeviceBackupWorkflow.ts', 'App.tsx'].forEach(file => {
+      expect(read(file)).not.toContain('fieldUpdateCopiesInCloud');
+    });
+  });
+
+  it('after a restore put an older copy on the card, what is known is not that card\'s copy: it is staged and weighed as before', async () => {
+    const phone = await sentByAnUploadPassTheCardNotTold([]);
+    relaunch();
+    // The backup's copy of the card: an earlier note, still Waiting to Sync.
+    phone.setSavedUpdates(prev => prev.map(update => ({ ...update, notes: 'Pour (as the backup had it)' })));
+    phone.render();
+    await syncWaitingUpdate(phone);
+    expect(inCloud()).toMatchObject({ notes: 'Pour (as the backup had it)' });
+  });
+});

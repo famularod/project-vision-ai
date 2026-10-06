@@ -44,6 +44,7 @@ import {
   projectDocumentBridgeOrphaned,
 } from './ProjectDocumentBridge';
 import { getStoredJson, setStoredJson } from './StorageService';
+import { subscribeToOwnerStorageSwitch } from './OwnerStorageSandbox';
 import {
   deletedDAVERecordIds,
   loadDAVEOperationalTombstones,
@@ -810,6 +811,13 @@ const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 /** The copy of each field update David last opened as the draft, per account (owner answer Q28). */
 const FIELD_UPDATE_EDIT_BASES_STORAGE_KEY = 'projectVisionAI.fieldUpdateEditBases.v1';
 const FIELD_UPDATE_EDIT_BASES_KEPT = 200;
+/** The copy of each field update this device last put in the cloud, per account (sync batch Y1, item 3). */
+const FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY = 'projectVisionAI.fieldUpdateCopiesInCloud.v1';
+/** How much of it is kept on the device: the latest copies, up to this many and this many characters for one account. */
+const FIELD_UPDATE_COPIES_IN_CLOUD_KEPT = 40;
+const FIELD_UPDATE_COPIES_IN_CLOUD_CHARACTERS = 400_000;
+/** One copy larger than this is held in memory only, as every copy was. */
+const FIELD_UPDATE_COPY_IN_CLOUD_CHARACTERS = 120_000;
 const LEGACY_DELETED_PROJECTS_STORAGE_KEY =
   'projectPhotoUpdate.deletedProjects.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
@@ -2681,6 +2689,7 @@ type PatchedProjectUpdate = {
 };
 
 async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
+  await projectUpdateLastVersionInCloud.loaded();
   const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
@@ -3024,6 +3033,7 @@ async function writeStagedProjectUpdateRecord(
   const ownerId = currentCloudOwner().ownerId;
   const settled = overConflict ? undefined : await settledFieldUpdateBaseFor(update);
   const inCloud = overConflict || settled || update.status === 'sent' ? undefined : await fieldUpdateCopyKnownInCloud(update);
+  await projectUpdateLastVersionInCloud.loaded();
   return mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === id);
     const unchanged = { nextQueue: queue, result: null, persist: false };
@@ -3856,6 +3866,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   });
 
   await resolveUploadedArchiveOnlyQuarantines(archiveRecovery, itemOutcomes);
+  // What this pass put in the cloud is on the device before it answers (sync batch Y1, item 3).
+  await projectUpdateLastVersionInCloud.saved();
 
   let storageCleanupRemaining = 0;
   let storageCleanupCompleted = 0;
@@ -8099,10 +8111,139 @@ const projectUpdateUploadedAt = new Map<string, number>();
  * or with a document patch, while nothing newer was queued for it (whole-app
  * audit A7 pass 7 M1). A sync attempt that finds nothing queued for an update
  * still this copy, the document upload state aside, has nothing to send
- * again (writeStagedProjectUpdateRecord). Held in memory: after a relaunch a
- * sync attempt queues the whole copy, as before.
+ * again (writeStagedProjectUpdateRecord).
+ *
+ * Sync batch Y1 (item 3; medium, older): it was held in memory only, and for
+ * whichever account. After a relaunch a card still reading "Waiting to Sync"
+ * whose record was already in the cloud was staged again as a WHOLE copy:
+ * with "Analyzing" for a photo being run again, over the finished result the
+ * cloud held; or to be weighed against a copy another device had changed
+ * since, which could raise a conflict over nothing he had edited.
+ *
+ * It is now kept on the device as well, for the signed-in account:
+ * - each account has its own (in memory and in what is saved); the saved
+ *   value is one of the account's own keys, so the switch of this device's
+ *   storage to another account takes it away with the rest, and what is in
+ *   memory is forgotten at that switch;
+ * - bounded: the latest copies only, by number and by size; a very large
+ *   copy stays in memory only;
+ * - a restore writes its ten lists and nothing else, so it cannot bring an
+ *   old one back; a copy held here that no longer matches a restored card is
+ *   simply not that card's copy.
+ *
+ * What it is trusted for, and no more. It says one thing: "this device put
+ * exactly this copy in the cloud". It is read two ways only: is a card that
+ * very copy (then there is nothing of the card's to send again), and does
+ * that copy hold an archive or a finished photo result that stands over the
+ * card's by the usual rule. It never makes anything be sent, and it is never
+ * the cloud's copy: every write still reads the cloud's own copy and weighs
+ * against that. A copy read back from the device (not put in the cloud in
+ * this run of the app) spares a send only for a card that still owes its own
+ * sync; a Sent card is staged and checked against the cloud as before.
+ *
+ * Lost (a save that failed, the app closed before it was written, more than
+ * the bound) it costs what it cost before: the card is staged whole after a
+ * relaunch. Stale (the cloud's copy has moved on) it can only spare a send
+ * of an identical copy, never cause one.
  */
-const projectUpdateLastVersionInCloud = new Map<string, ProjectUpdate>();
+type FieldUpdateCopiesInCloud = Record<string, Record<string, { at: string; copy: ProjectUpdate }>>;
+const projectUpdateLastVersionInCloud = (() => {
+  type OwnCopies = {
+    copies: Map<string, ProjectUpdate>; changedHere: Set<string>; readBack: Set<string>;
+    /** The read of what is saved on the device: under way or done; and whether it is done. */
+    loading: Promise<void> | null; read: boolean;
+  };
+  const byOwner = new Map<string, OwnCopies>();
+  let tail: Promise<void> = Promise.resolve();
+  /** Goes up when what is in memory is forgotten: a save still on its way from before is then not made. */
+  let run = 0;
+  const ownerKey = () => currentCloudOwner().ownerId ?? '';
+  const own = (key: string): OwnCopies => {
+    let held = byOwner.get(key);
+    if (!held) byOwner.set(key, held = { copies: new Map(), changedHere: new Set(), readBack: new Set(), loading: null, read: false });
+    return held;
+  };
+  /** One change of what is saved for this account, after the ones before it. Never into another account's storage. */
+  const save = (key: string, change: (saved: Record<string, { at: string; copy: ProjectUpdate }>) => void) => {
+    const started = run;
+    const write = async () => {
+      if (ownerKey() !== key || run !== started) return;
+      const stored = await getStoredJson<FieldUpdateCopiesInCloud>(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, {});
+      const all: FieldUpdateCopiesInCloud = isRecord(stored) ? { ...stored } : {};
+      const saved = isRecord(all[key]) ? { ...all[key] } : {};
+      const before = JSON.stringify(saved);
+      change(saved);
+      // The latest first; the oldest go when there are too many, or too much.
+      let size = 0;
+      const kept = Object.entries(saved)
+        .filter(([, entry]) => isRecord(entry) && isRecord(entry.copy) && typeof entry.at === 'string')
+        .sort(([, left], [, right]) => right.at.localeCompare(left.at))
+        .slice(0, FIELD_UPDATE_COPIES_IN_CLOUD_KEPT)
+        .filter(([, entry]) => (size += JSON.stringify(entry).length) <= FIELD_UPDATE_COPIES_IN_CLOUD_CHARACTERS);
+      if (JSON.stringify(Object.fromEntries(kept)) === before) return;
+      if (ownerKey() !== key || run !== started) return;
+      await setStoredJson(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, { ...all, [key]: Object.fromEntries(kept) });
+    };
+    // Not kept when it cannot be saved: after a relaunch that card is staged as before.
+    tail = tail.then(write, write).catch(() => undefined);
+  };
+  const store = {
+    get(updateId: string): ProjectUpdate | undefined {
+      return own(ownerKey()).copies.get(updateId);
+    },
+    /** Whether the copy held for this update was read back from the device, not put in the cloud in this run. */
+    readBack(updateId: string): boolean {
+      return own(ownerKey()).readBack.has(updateId);
+    },
+    set(updateId: string, copy: ProjectUpdate): void {
+      const key = ownerKey();
+      const held = own(key);
+      held.copies.set(updateId, copy);
+      held.changedHere.add(updateId);
+      held.readBack.delete(updateId);
+      const at = new Date().toISOString();
+      const small = JSON.stringify(copy).length <= FIELD_UPDATE_COPY_IN_CLOUD_CHARACTERS;
+      save(key, saved => { if (small) saved[updateId] = { at, copy }; else delete saved[updateId]; });
+    },
+    delete(updateId: string): void {
+      const key = ownerKey();
+      const held = own(key);
+      const known = held.copies.delete(updateId);
+      held.changedHere.add(updateId);
+      held.readBack.delete(updateId);
+      // Nothing is saved for it when this account's copies have been read back and none was held.
+      if (known || !held.read) save(key, saved => { delete saved[updateId]; });
+    },
+    /** What is saved on the device for the signed-in account, read once into memory: before anything asks what is held. */
+    loaded(): Promise<void> {
+      const key = ownerKey();
+      const held = own(key);
+      held.loading ??= (tail = tail.then(async () => {
+        const stored = await getStoredJson<FieldUpdateCopiesInCloud>(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, {});
+        const saved = isRecord(stored) && isRecord(stored[key]) ? stored[key] : {};
+        Object.entries(saved).forEach(([updateId, entry]) => {
+          // What this run has put in the cloud, or taken away, since it started stands over what was saved before it.
+          if (held.changedHere.has(updateId) || !isRecord(entry) || !isRecord(entry.copy) || entry.copy.id !== updateId) return;
+          held.copies.set(updateId, entry.copy as ProjectUpdate);
+          held.readBack.add(updateId);
+        });
+        held.read = true;
+      }).catch(() => undefined));
+      return held.loading;
+    },
+    /** Once what this run has changed so far is on the device (an upload pass waits for it before it answers). */
+    saved(): Promise<void> {
+      return tail;
+    },
+    /** As a relaunch leaves it, or the switch of this device's storage to another account: nothing in memory. */
+    forget(): void {
+      byOwner.clear();
+      run += 1;
+    },
+  };
+  return store;
+})();
+subscribeToOwnerStorageSwitch(() => projectUpdateLastVersionInCloud.forget());
 
 /** Queue records of field updates settled by the cloud's newer copy without a write (owner answer Q28), in this pass. */
 const projectUpdateQueueItemsSettledByCloud = new Set<string>();
@@ -8125,6 +8266,9 @@ function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
  */
 function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
+  // A copy read back from the device (sync batch Y1, item 3) spares the send of a card that still owes its own sync,
+  // which is what it is kept for. A Sent card is staged and checked against the cloud, as after any relaunch.
+  if (sent && projectUpdateLastVersionInCloud.readBack(update.id) && !fieldUpdateOwesOwnSync(update.status)) return false;
   return Boolean(sent) && sameProjectUpdateContent(sent, withSentCopysStandingParts(update, sent) as ProjectUpdate);
 }
 
@@ -8212,7 +8356,7 @@ function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retrySt
  * relaunch does, so no test depends on the one before it.
  */
 export function resetFieldUpdateSyncMemoryForTests(): void {
-  projectUpdateLastVersionInCloud.clear();
+  projectUpdateLastVersionInCloud.forget();
   projectUpdateUploadedAt.clear();
   syncConflictsAsOfQueueRead = [];
   projectUpdatePatchesLanded.clear();
