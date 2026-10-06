@@ -45,6 +45,8 @@ import { createFieldNoteCloudGateway } from './FieldNoteCloudGateway';
 import { forgetDAVEWebReportPeriods } from './DAVEWebReportSend';
 
 export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
+/** How many times one owner check is asked before it gives up, when its answers keep being overtaken (review P4 L2). */
+export const DAVE_WEB_OWNER_CHECK_ASKS = 4;
 export const DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS = 5 * 60_000;
 import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
 import { uploadWebFileResumably } from './ResumableWebStorageUpload';
@@ -295,9 +297,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     collections.forEach(collection => realtimeSatisfiedCollections.delete(collection));
   }
 
+  /** How often this tab's sign-in has changed, or may have: every time what is kept of the owner check is cleared. */
+  let signInChanges = 0;
+
   function invalidateAuthorization() {
     authorizationCache = null;
     authorizationInFlight = null;
+    signInChanges += 1;
   }
 
   /** Nothing read for the signed-out account is kept. */
@@ -338,7 +344,26 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     if (mayHaveEnded && held && !tabSignInSeenFor) forgetDAVEWebReportPeriods(held);
   }
 
-  async function requireAuthorizedOwnerCached(): Promise<string> {
+  /**
+   * Review P4 L2 (5 Oct 2026): an owner check still on its way when he
+   * clicked Sign Out of This Computer answered afterwards, and its answer
+   * was kept. For five minutes the gateway again said "the owner is signed
+   * in" without asking: a report period could be written under his id in
+   * the browser his sign-out had just cleared, and a visitor signing in on
+   * this tab in that moment was taken for the owner (the cloud still gave
+   * him no row). Clearing what was kept at the sign-out could not clear an
+   * answer that had not arrived yet.
+   *
+   * An answer is for the sign-in the tab held when its check was sent. When
+   * that has changed since, or may have (a sign-out, a sign-in, a refresh,
+   * a sign-in the server ended: everything that clears what is kept), the
+   * answer is thrown away when it arrives. Nothing is kept from it, and the
+   * caller that waited for it is not given it either: the check is asked
+   * again, for the sign-in the tab holds now. After his own refresh that is
+   * him again; after a sign-out it is refused. A check whose answers keep
+   * being overtaken gives up, as one that could not be completed.
+   */
+  async function requireAuthorizedOwnerCached(asksLeft = DAVE_WEB_OWNER_CHECK_ASKS): Promise<string> {
     if (
       authorizationCache &&
       authorizationCache.expiresAt > Date.now()
@@ -346,7 +371,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return authorizationCache.ownerId;
     }
     if (authorizationInFlight) return authorizationInFlight;
+    const sentAt = signInChanges;
     const request = requireAuthorizedOwner(client!).then(ownerId => {
+      if (sentAt !== signInChanges) {
+        if (asksLeft <= 1) throw ownerCheckIncomplete();
+        return requireAuthorizedOwnerCached(asksLeft - 1);
+      }
       authorizationCache = Object.freeze({
         ownerId,
         expiresAt: Date.now() + DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS,
