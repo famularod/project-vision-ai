@@ -408,6 +408,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     correlations,
     generatedAt,
     projectTimeZone,
+    input.knownScheduleItems,
   );
   const lookaheadReplacement = input.reportLookaheadReplacement && input.knownScheduleItems
     ? tasksLeftByLookaheadReplacement(input, projectKey, scheduleItems)
@@ -844,10 +845,21 @@ function buildScheduleTruth(
   correlations: DAVEEvidenceCorrelationResult,
   now: string,
   projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
+  /** Every saved task, for what David said of a task's earlier rows (review N2); none: the shown tasks' own. */
+  knownScheduleItems: readonly ScheduleItem[] = scheduleItems,
 ): DAVEScheduleTruth[] {
   const today = new Date(now);
   // A lookahead's detail task is listed but leaves % Complete to the master's scope (owner answer Q25).
   const lookaheadDetail = scheduleTaskAddedByLookaheadsOnly(scheduleItems);
+  // Review N2 (5 Oct 2026): David's answer "this row is a new task" (owner answer Q30) stays with the task. It was
+  // kept on the row he answered for only; the next master re-dated that task as a new row, which answers to the
+  // first by its earlier ids but carried no answer, and the report paired it by name with the same-named task
+  // the master had dropped: "Pour slab was completed" and a finish change of weeks, with the dropped task never
+  // said removed. A row is none of the tasks its earlier rows were said not to be.
+  const saidNotById = new Map<string, readonly string[]>();
+  knownScheduleItems.forEach(item => {
+    if (Array.isArray(item.notRevisionOfTaskIds) && item.notRevisionOfTaskIds.length > 0) saidNotById.set(item.id.trim(), item.notRevisionOfTaskIds);
+  });
   return scheduleItems.map(item => {
     const relatedEvidenceIds = links
       .filter(link => link.targetType === 'schedule-task' && link.targetId === item.id)
@@ -868,7 +880,10 @@ function buildScheduleTruth(
         (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
       )[0];
     const earlierTaskIds = scheduleTaskEarlierIds(item);
-    const notTaskIds = uniqueText(Array.isArray(item.notRevisionOfTaskIds) ? item.notRevisionOfTaskIds.map(id => clean(id)) : []);
+    const notTaskIds = uniqueText([
+      ...(Array.isArray(item.notRevisionOfTaskIds) ? item.notRevisionOfTaskIds : []),
+      ...earlierTaskIds.flatMap(id => saidNotById.get(id) ?? []),
+    ].map(id => clean(id)));
     // Owner answer 3 Oct 2026: shown back on the master's dates (the replaced lookahead's are kept on the shown
     // copy), or on the dates the latest lookahead in its note gave it.
     const replacedLookaheadDates = item.savedLookaheadDates
