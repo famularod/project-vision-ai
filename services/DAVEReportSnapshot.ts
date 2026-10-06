@@ -731,9 +731,17 @@ export function compareDAVEReportSnapshots({
   // The tasks that left with a lookahead, as each counts in this report: as it stood, or completed.
   const leftCounted: DAVEReportSnapshotTask[] = [];
   const leftSeen = new Set<DAVEReportTaskLeftByLookahead>();
+  // Review N2 (5 Oct 2026): a task a master has listed is a master's task from then on. A lookahead added Rebar
+  // delivery; the next master listed it on other days, as a new row that answers to the lookahead's row (its
+  // earlier ids); a newer lookahead replaced the first; a later master dropped it. The lookahead's old saved
+  // row is then a detail row that left with its replaced lookahead, and the earlier report's MASTER row was
+  // looked up under it through its earlier ids: nothing was said and the task went on being counted, where a
+  // master's task had been dropped. A task left with its lookahead only when the row the earlier report had
+  // is that detail row itself, or an earlier row of it; a master's row that answers to it reads as removed.
+  const previousAnswersTo = new Set(previous.tasks.flatMap(task => earlierIdsOf(task)));
   for (const task of previous.tasks) {
     if (currentById.has(task.taskId) || revisedPriorIds.has(task.taskId)) continue;
-    const left = [task.taskId, ...earlierIdsOf(task)].map(id => leftByAnyId.get(id)).find(Boolean);
+    const left = leftByAnyId.get(task.taskId);
     if (left) {
       leftSeen.add(left);
       const now = leftNow(left, task);
@@ -752,7 +760,8 @@ export function compareDAVEReportSnapshots({
   if (Array.isArray(previous.replacedLookaheads)) {
     const replacedBefore = new Set(previous.replacedLookaheads);
     for (const left of tasksLeftByLookahead) {
-      if (leftSeen.has(left) || replacedBefore.has(left.lookahead) || currentById.has(left.taskId)) continue;
+      // Nor the old row of a task the earlier report had under a later row: that task is said above (review N2).
+      if (leftSeen.has(left) || replacedBefore.has(left.lookahead) || currentById.has(left.taskId) || previousAnswersTo.has(left.taskId)) continue;
       const now = leftNow(left);
       if (!snapshotTaskIsComplete(now)) continue;
       leftSeen.add(left);
