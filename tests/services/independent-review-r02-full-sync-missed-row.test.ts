@@ -64,6 +64,11 @@ const mockCloud = {
   leftOutOfLists: new Set<string>(),
   /** Reads by id fail. */
   readsByIdFail: false,
+  /** The cloud's projects: the open ones, and the ones closed there (sync batch Y1). */
+  openProjects: [{ id: MOCK_PROJECT_ID, name: 'Alpha' }] as Array<{ id: string; name: string }>,
+  closedProjects: [] as Array<{ id: string; name: string }>,
+  /** The list of closed projects cannot be read. */
+  closedProjectsFail: false,
 };
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
@@ -152,9 +157,14 @@ jest.mock('../../services/SupabaseService', () => {
     countCloudProjects: async () => mockOk(1),
     verifyDAVEAppOwner: async () => mockOk(true),
     getCurrentSessionAccessToken: async () => ({ ok: true, data: { status: 'token_present' } }),
-    listProjects: async () => { await mockRequest('projects:list'); return mockOk([{ id: MOCK_PROJECT_ID, name: 'Alpha' }]); },
-    listArchivedProjects: async () => mockOk([]),
-    createProject: async (input: { name: string }) => mockOk({ id: MOCK_PROJECT_ID, name: input.name }),
+    listProjects: async () => { await mockRequest('projects:list'); return mockOk(mockCopy(mockCloud.openProjects)); },
+    listArchivedProjects: async () => (mockCloud.closedProjectsFail ? mockDown() : mockOk(mockCopy(mockCloud.closedProjects))),
+    createProject: async (input: { name: string }) => {
+      const created = { id: `project-made-${mockCloud.openProjects.length}`, name: input.name };
+      mockCloud.openProjects.push(created);
+      mockCloud.writes.push(`${mockDevice}:project:${input.name}`);
+      return mockOk(mockCopy(created));
+    },
     listReferenceDocuments: async () => mockOk([]),
     upsertReferenceDocument: async (document: unknown) => mockOk(document),
     listDAVESyncTombstones: async () => { await mockRequest('tombstones:list'); return mockOk(mockCopy(mockCloud.tombstones)); },
@@ -221,7 +231,7 @@ import { scheduleItemConflictFields } from '../../services/ScheduleItemEditBase'
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { SUPABASE_COLLECTION_ANSWER_CAPPED, SUPABASE_COLLECTION_CHANGED_WHILE_READ, SUPABASE_COLLECTION_KEY_OUT_OF_ORDER } from '../../services/SupabaseCollectionPagination';
 import {
-  cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectUpdateRecord,
+  cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectCreate, queueProjectUpdateRecord,
   queueScheduleItemRecord, refreshFieldUpdateConflictCloudCopies, runScheduleItemCloudSync, sanitizeUserFacingSyncMessage, synchronizeLocalData,
   uploadPendingChanges,
 } from '../../services/SyncService';
@@ -298,10 +308,10 @@ async function edit(device: Device, itemId: string, change: Partial<ScheduleItem
 
 type SyncResult = Awaited<ReturnType<typeof synchronizeLocalData>>;
 /** Full Sync from Settings: synchronizeLocalData, then App.tsx's own apply of what it downloaded. */
-async function fullSync(device: Device, more: { areas?: ProjectArea[]; updates?: ProjectUpdate[] } = {}): Promise<SyncResult> {
+async function fullSync(device: Device, more: { areas?: ProjectArea[]; updates?: ProjectUpdate[]; projects?: string[] } = {}): Promise<SyncResult> {
   on(device);
   const result = await synchronizeLocalData({
-    projects: ['Alpha'], savedUpdates: more.updates ?? [], projectAreas: more.areas ?? [], scheduleItems: device.state, referenceDocuments: [],
+    projects: more.projects ?? ['Alpha'], savedUpdates: more.updates ?? [], projectAreas: more.areas ?? [], scheduleItems: device.state, referenceDocuments: [],
   });
   const apply = compiled<(recovered: unknown) => void>(`module.exports = (recovered) => { const failed = recovered.collectionErrors; ${FULL_SYNC_APPLY_SOURCE} };`, {
     normalizeScheduleItems: listCopy, isDAVESafeCloudScheduleRecord, migrateLegacyScheduleItem: identity,
@@ -373,6 +383,7 @@ beforeEach(() => {
   mockCloud.tombstones.length = 0; mockCloud.log.length = 0; mockCloud.writes.length = 0;
   mockCloud.stamp = 0; mockCloud.before = null; mockCloud.listsReadAsBuild229 = false;
   mockCloud.leftOutOfLists.clear(); mockCloud.readsByIdFail = false;
+  mockCloud.openProjects = [{ id: MOCK_PROJECT_ID, name: 'Alpha' }]; mockCloud.closedProjects = []; mockCloud.closedProjectsFail = false;
   mockDevice = 'phone';
 });
 afterEach(() => { jest.useRealTimers(); });
@@ -1114,6 +1125,86 @@ describe('independent review R02: a project neither cloud list returned', () => 
     expect(refresh).toContain("if (!missed) throw new Error('project_refresh_incomplete');");
     expect(refresh).toContain('[...activeProjectsResult.data, ...missed.active]');
     expect(refresh).toContain('[...archivedProjectsResult.data, ...missed.archived]');
+  });
+});
+
+/* Sync batch Y1 --------------------------------------------------------------------- */
+
+/**
+ * Left open by R02 (its notes, item 3): Full Sync creates a project whose name is not in the cloud's OPEN list. One
+ * that is CLOSED in the cloud under that name (closed on another device, which this one has not heard yet) was made
+ * again as a second, open project; everything of the project then stopped uploading with "project identity
+ * ambiguous". The queue's own create has asked both lists since audit A3 pass 2. Full Sync asks the same function.
+ */
+describe('sync batch Y1 (item 1): Full Sync does not make a second copy of a project that is closed in the cloud', () => {
+  const projectWrites = () => mockCloud.writes.filter(write => write.includes(':project:'));
+
+  it('a project closed in the cloud and still open on this device is not created again', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    // It was created: the cloud then held "Bravo Tower" twice, one closed and one open.
+    expect(projectWrites()).toEqual([]);
+    expect(mockCloud.openProjects.map(project => project.name)).toEqual(['Alpha']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('the name is matched as the queue matches it: letter case and outer spaces aside', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'bravo tower ' }];
+
+    await fullSync(phone, { projects: ['Alpha', ' Bravo Tower'] });
+
+    expect(projectWrites()).toEqual([]);
+  });
+
+  it('a project the cloud has in neither list is created, once, as before', async () => {
+    const phone = newDevice('phone');
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    expect(projectWrites()).toEqual(['phone:project:Bravo Tower']);
+    expect(result.errors).toEqual([]);
+    expect(result.details.projectsUploaded).toBe(1);
+  });
+
+  it('when the list of closed projects cannot be read the project is not created, and the sync says so', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+    mockCloud.closedProjectsFail = true;
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    expect(projectWrites()).toEqual([]);
+    expect(result.errors).toEqual(['Project “Bravo Tower” could not sync. Network request failed']);
+
+    // The list answers again: still not created, and nothing more to say.
+    mockCloud.closedProjectsFail = false;
+    const next = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+    expect(projectWrites()).toEqual([]);
+    expect(next.errors).toEqual([]);
+  });
+
+  it('the queue\'s own create gives the same answer (a guard: one question, asked the same way by both)', async () => {
+    newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+    await queueProjectCreate('Bravo Tower');
+
+    const result = await uploadPendingChanges();
+
+    expect(projectWrites()).toEqual([]);
+    expect(result.errors).toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Full Sync asks that question through the queue\'s function, not a second copy of it', () => {
+    const SYNC = fs.readFileSync(path.resolve(__dirname, '../../services/SyncService.ts'), 'utf8');
+    const fullSyncSource = SYNC.slice(SYNC.indexOf('export async function synchronizeLocalData('), SYNC.indexOf('\nexport ', SYNC.indexOf('export async function synchronizeLocalData(') + 10));
+    expect(fullSyncSource).toContain('await cloudProjectNameExists(normalizedName)');
+    expect(fullSyncSource).not.toContain('listArchivedProjects(');
+    expect(SYNC.split('listArchivedProjects()').length - 1).toBe(2); // the name check, and a field update's closed project
   });
 });
 

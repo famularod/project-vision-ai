@@ -4704,6 +4704,23 @@ export async function synchronizeLocalData(
       continue;
     }
 
+    // Sync batch Y1 (item 1; left open by independent review R02): the cloud may hold this project CLOSED. Only the
+    // open list was looked at, so Full Sync made a second, open project of the same name, and everything of that
+    // project then stopped uploading ("project identity ambiguous"). The queue's own create has asked both lists
+    // since audit A3 pass 2; Full Sync now asks the same question the same way (cloudProjectNameExists), just before
+    // it would create the project. When the lists cannot be read the project is not created, and the sync says so.
+    const inCloudAlready = await cloudProjectNameExists(normalizedName);
+    if (typeof inCloudAlready === 'string') {
+      errors.push(`Project “${normalizedName}” could not sync.${cloudWriteFailureReason({ error: inCloudAlready })}`);
+      progress(`Project preserved for retry: ${normalizedName}`);
+      continue;
+    }
+    if (inCloudAlready) {
+      existingProjectNames.add(normalizedName.toLowerCase());
+      progress(`Project already in the cloud: ${normalizedName}`);
+      continue;
+    }
+
     const result = await createProject({ name: normalizedName });
 
     if (result.ok && !result.stubbed) {
