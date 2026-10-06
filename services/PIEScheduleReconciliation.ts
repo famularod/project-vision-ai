@@ -296,8 +296,13 @@ export function selectAuthoritativeScheduleItems({
     if (rows.some(row => own.has(row.id.trim()) || scheduleTaskEarlierIds(row).some(id => own.has(id)))) return false;
     // A row of the master's own that answers to no task may be this one saved without its ids (a device that had a
     // duplicate shown, Q25 with two devices): no telling, so the task is held, as before.
+    // Review N3 D (5 Oct 2026, Low, caused by b07f7c3; the reports reviewer's seed 241): not a row David called a new
+    // task at the review (owner answer Q30: it keeps the tasks he said it is not). That row answers to nothing by his
+    // own word, so there is something telling. Without this, a Pour slab one master dropped (and this rule hid) came
+    // back on the list at its old 30% when a later master listed a "new" Pour slab, and the report said it reopened.
     const masterImport = normalize(current.importBatchId || '');
-    return !rows.some(row => normalize(row.importBatchId || '') === masterImport && scheduleTaskEarlierIds(row).length === 0);
+    return !rows.some(row => normalize(row.importBatchId || '') === masterImport && scheduleTaskEarlierIds(row).length === 0 &&
+      !(Array.isArray(row.notRevisionOfTaskIds) && row.notRevisionOfTaskIds.length > 0));
   };
   const holdingDocuments = (item: ScheduleItem) => {
     const containing = containingDocuments(item);

@@ -70,12 +70,12 @@ function rows(source: ReferenceDocument, lines: string[], project = 'Alpha'): Sc
 }
 
 /** Approving a schedule on the phone (App.tsx): the merge, then a master is made current, a lookahead added. */
-function approve(state: State, source: ReferenceDocument, lines: string[], project = 'Alpha'): State {
+function approve(state: State, source: ReferenceDocument, lines: string[], project = 'Alpha', pairingChoices?: Record<string, string | null>): State {
   const lookahead = source.scheduleRole === 'lookahead';
   const merged = mergeApprovedScheduleImportItems({
     existing: state.items, imported: rows(source, lines, project), completionMatch: () => null, mergeCompletion: item => item,
     isCurrent: scheduleItemsVisibleBeforeImport(state.items, [...state.documents, source], source.importBatchId || ''),
-    approvedAt: source.importedAt, overlay: lookahead,
+    approvedAt: source.importedAt, overlay: lookahead, pairingChoices, // (his answers at the review, owner answer Q30)
   });
   return {
     items: reconcileDAVEScheduleRecords([...merged.additions, ...merged.next]),
@@ -188,6 +188,23 @@ describe('Review N2 P-b: a task the new master drops leaves the list, also when 
     expect(named(onM1, 'Pour slab').map(dates).sort()).toEqual(['10/01/2026-10/05/2026', '10/29/2026-11/02/2026']);
     // With no lookahead ever listing the second, the same.
     expect(named(approve(three, M1, [POUR[0], POUR[2], FR]), 'Pour slab').map(dates).sort()).toEqual(['10/01/2026-10/05/2026', '10/29/2026-11/02/2026']);
+  });
+
+  it('review N3 D: a same-named task a master dropped does not come back when a later master lists a row he called a new task', () => {
+    // The reports reviewer's seed 241, in short. Two Pour slabs, A and B. A lookahead moves A (30%) and is replaced.
+    // Master M1 lists only B, moved: A leaves. Master M2 lists two: he answers "10/25 is a new task; 11/01 is B".
+    const two = approve(EMPTY, M0, ['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/12/2026,10/16/2026,', FR]);
+    const [a, b] = named(two, 'Pour slab').sort((left, right) => left.startDate.localeCompare(right.startDate));
+    const onL2 = approve(approve(two, L1, ['Pour slab,Alpha,Lot,10/06/2026,10/10/2026,30'], 'Alpha', { [`${L1.id}-1`]: a.id }), L2, [FRAMING_L2]);
+    expect(named(onL2, 'Pour slab').map(item => `${dates(item)} ${item.percentComplete}%`).sort()).toEqual(['10/05/2026-10/09/2026 30%', '10/12/2026-10/16/2026 0%']);
+    const onM1 = approve(onL2, M1, ['Pour slab,Alpha,Lot,10/18/2026,10/22/2026,', FR], 'Alpha', { [`${M1.id}-1`]: b.id });
+    expect(named(onM1, 'Pour slab').map(dates)).toEqual(['10/18/2026-10/22/2026']);
+    const bNow = named(onM1, 'Pour slab')[0].id;
+    const onM2 = approve(onM1, M2, ['Pour slab,Alpha,Lot,10/25/2026,10/29/2026,', 'Pour slab,Alpha,Lot,11/01/2026,11/05/2026,', FR], 'Alpha',
+      { [`${M2.id}-1`]: null, [`${M2.id}-2`]: bNow });
+    // (It was: A back on the list too, 10/05-10/09 at 30%, and the report said "Pour slab was reopened at 30% complete.")
+    expect(named(onM2, 'Pour slab').map(item => `${dates(item)} ${item.percentComplete}%`).sort()).toEqual(['10/25/2026-10/29/2026 0%', '11/01/2026-11/05/2026 0%']);
+    expect(onM2.items.find(item => item.id === a.id)).toMatchObject({ percentComplete: 30 });
   });
 
   it('the saved row is kept, hidden: nothing is deleted', () => {
