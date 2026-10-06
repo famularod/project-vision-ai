@@ -1021,7 +1021,8 @@ function buildRecentChanges({
  * 2026). Lines were kept once by name and text, so Pour slab in Lot and Pour
  * slab in Deck, both completed, read "+2 completed" with one "Pour slab was
  * completed." The same task reached twice still says it once. Different tasks
- * in different areas name the area ("Pour slab (Deck) was completed."); in
+ * in different areas name the area ("Pour slab (Deck) was completed.", and
+ * "Pour slab (unassigned area) was completed." for the one with none); in
  * one area they say it once with the count ("Pour slab was completed (2
  * tasks).").
  */
@@ -1039,7 +1040,10 @@ function sameLineOfSameNamedTasks(
     .map(change => {
       const tasks = tasksOn.get(lineKey(change))!;
       if (tasks.length === 1) return change;
-      const area = areasNamed(change) && clean(change.areaName) ? ` (${clean(change.areaName)})` : '';
+      // Open item (A6 pass 24, wording): beside "Pour slab (Deck) was completed.", the same-named task with no area
+      // read "Pour slab was completed.", as a line about Pour slab as a whole. It says it has no area, in the
+      // words the report already uses for one ("moved from Lot to unassigned area").
+      const area = areasNamed(change) ? ` (${clean(change.areaName) || 'unassigned area'})` : '';
       const inArea = tasks.filter(other => areaKey(other) === areaKey(change)).length;
       const prefix = `${change.projectName}: ${change.taskName}`;
       if (!change.summary.startsWith(prefix)) return change;
