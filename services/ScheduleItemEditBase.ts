@@ -48,6 +48,14 @@ export type ScheduleItemEditBase = Readonly<{
    * Missing on a copy queued by Build 230 or earlier, which goes as before.
    */
   copy?: Readonly<Record<string, unknown>>;
+  /**
+   * The fields of which a write has already sent a value of this device's
+   * (review P7-3): on the record a waiting new row keeps, and on the edit
+   * its retry makes. The cloud's row holding such a field as the row was
+   * made is then not "nobody has changed it" but another device's change
+   * back (a clear on the web of the owner he typed), and is asked about.
+   */
+  sent?: readonly string[];
 }>;
 
 /**
@@ -191,7 +199,8 @@ export function scheduleItemWholeCopyAgainstCloud(
     const was = fieldValue(base.fields, field);
     const here = fieldValue(local, field);
     const cloud = fieldValue(remote, field);
-    const byIds = here === was ? remote : cloud === was || cloud === here ? local : null;
+    // (The cloud holding a value this copy held earlier is this device's own write, not another's change: review P7-4.)
+    const byIds = here === was ? remote : cloud === was || cloud === here || isOwnEarlierValue(base, field, cloud) ? local : null;
     // Review P6-1: links that would be asked about for the rows they name are weighed by the tasks they name. His
     // unchanged by task, or the same by task on both sides: the cloud's, as written there. The cloud's unchanged by
     // task: his, each naming the row the cloud's copy names for its task.
@@ -263,7 +272,7 @@ export function scheduleItemWholeCopyFieldByField(
   const progress: readonly string[] = SCHEDULE_PROGRESS_FIELDS;
   for (const field of new Set([...Object.keys(local), ...Object.keys(was), ...Object.keys(remote)])) {
     if (WHOLE_COPY_ELSEWHERE.has(field) || progress.includes(field) || !changedHere(field)) continue;
-    if (!changedThere(field) || fieldValue(remote, field) === fieldValue(local, field)) setField(next, field, local);
+    if (!changedThere(field) || fieldValue(remote, field) === fieldValue(local, field) || isOwnEarlierValue(base as ScheduleItemEditBase, field, fieldValue(remote, field))) setField(next, field, local);
     else if (WHOLE_COPY_OF_BOTH.has(field)) setField(next, field, merged);
     else if (FIELDS_NEVER_ASKED.has(field)) return null;
     else asked.push(field);
@@ -442,20 +451,58 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
  * keeps them). The retry of a first upload whose answer was lost reads it
  * (scheduleItemNewRowMetAgain).
  *
- * Kept only while every change to the waiting copy is such an edit. A whole
- * copy saved over it (a lookahead approved on the task) or a change of the
- * sync's own (a carry) may have changed anything: the record is dropped, and
- * the copy goes on as it did before there was one.
+ * Kept only while every change to the waiting copy is such an edit. A change
+ * of the sync's own (a carry) may have changed anything: the record is
+ * dropped, and the copy goes on as it did before there was one. A whole copy
+ * saved over it (a lookahead approved on the task) takes the record as the
+ * copy it started from (review P7-4, scheduleItemWholeCopyBaseSinceMade).
+ *
+ * Review P7-5: on every row the approval makes, a task the master adds too
+ * (it replaces no row); it was only on a row that replaces one.
  */
 export const SCHEDULE_ITEM_AS_MADE: ScheduleItemEditBase = { updatedAt: null, fields: {} };
 
-export function scheduleItemChangedSinceMade(existing: EditScope & Readonly<{ sinceMade?: unknown }>, incoming: EditScope): ScheduleItemEditBase | undefined {
+export function scheduleItemChangedSinceMade(existing: EditScope & Readonly<{ sinceMade?: unknown; writeTried?: unknown }>, incoming: EditScope): ScheduleItemEditBase | undefined {
   const known = existing.sinceMade;
   const base = incoming.base;
   if (!isEditBase(known) || Array.isArray(existing.changedFields) || !Array.isArray(incoming.changedFields) || !isEditBase(base)) return undefined;
   const fields = incoming.changedFields.map(String).filter(field => field !== 'updatedAt');
   if (!fields.every(field => Object.prototype.hasOwnProperty.call(base.fields, field))) return undefined;
-  return scheduleItemEditBasesMerged({ changedFields: Object.keys(known.fields), base: known, itemData: existing.itemData }, incoming) ?? known;
+  const merged = scheduleItemEditBasesMerged({ changedFields: Object.keys(known.fields), base: known, itemData: existing.itemData }, incoming) ?? known;
+  // Review P7-3: a write of the waiting copy has been tried as it stood (existing.writeTried): what he had changed on
+  // it by then has been sent.
+  const sent = [...new Set([...(known.sent ?? []), ...(existing.writeTried === true ? scheduleItemFieldsChangedSinceMade(existing.itemData, known) : [])])];
+  return sent.length > 0 ? { ...merged, sent } : merged;
+}
+
+/** The fields the record names that the waiting copy no longer holds as the row was made. */
+function scheduleItemFieldsChangedSinceMade(waiting: unknown, sinceMade: ScheduleItemEditBase): string[] {
+  return Object.keys(sinceMade.fields).filter(field => fieldValue(waiting, field) !== fieldValue(sinceMade.fields, field));
+}
+
+/**
+ * Review P7-4 (6 Oct 2026, Low; older: the same on 8f8ec54): a whole copy
+ * saved over a row this device's approval made and that still waits to go up
+ * (a lookahead approved on the task), as the copy the waiting record started
+ * from: the row AS THE APPROVAL MADE IT, what he has changed on it since put
+ * back (the record, `sinceMade`). The record itself was dropped there, and
+ * the copy then went up whole over the row its own first write had made:
+ * with that write's answer lost, the note and owner the first write had
+ * taken from the other device were gone from the task, with no card.
+ * Weighed from the row as made (scheduleItemWholeCopyFieldByField), the
+ * lookahead's dates and his own changes go on the cloud's row and the rest
+ * of it stays. Undefined without the record or without the copy the whole
+ * copy started from.
+ */
+export function scheduleItemWholeCopyBaseSinceMade(sinceMade: unknown, incomingBase: unknown): ScheduleItemEditBase | undefined {
+  if (!isEditBase(sinceMade) || !isEditBase(incomingBase) || !incomingBase.copy) return undefined;
+  const made: Record<string, unknown> = { ...incomingBase.copy, ...sinceMade.fields };
+  return {
+    updatedAt: null,
+    fields: Object.fromEntries(WHOLE_COPY_FIELDS_WEIGHED.map(field => [field, made[field] ?? null])),
+    copy: made,
+    ...(sinceMade.own ? { own: sinceMade.own } : {}),
+  };
 }
 
 export function isEditBase(value: unknown): value is ScheduleItemEditBase {
@@ -583,7 +630,9 @@ export function scheduleItemEditAgainstCloud(
     const cloud = fieldValue(remote, field);
     // The cloud holds what this edit started from, what it has now, or what it held earlier and may have sent itself
     // (review N1 finding 4): nobody else changed the field, and this device's value goes up.
-    if (cloud === was || cloud === here || isOwnEarlierValue(base, field, cloud)) return;
+    // (Review P7-3: not "what it started from" when a value of his for the field has already been sent. The cloud had
+    // it and holds the row's first value again: another device put it back. Asked, unless it is never asked about.)
+    if ((cloud === was && !base.sent?.includes(field)) || cloud === here || isOwnEarlierValue(base, field, cloud)) return;
     if (field === 'dependencies' && taskOf) {
       // Review P6-1: links that differ in the rows they name are weighed by the tasks they name. The cloud's are, by
       // task, the links this edit started from (the approval only pointed one at its task's new row): his go up,
@@ -920,10 +969,14 @@ export function scheduleItemNewRowMetAgain(
   remote: ScheduleItem,
   taskOf: () => (rowId: string) => string,
   sinceMade?: unknown,
+  /** A write of the waiting copy has been tried as it stands (review P7-3): what he has changed on it has been sent. */
+  writeTried = false,
 ): Readonly<{ changedFields: string[]; base: ScheduleItemEditBase }> | null | undefined {
-  const taken = waiting.textFromTask;
-  if (!taken?.taskId) return undefined;
   const tracked = isEditBase(sinceMade) ? sinceMade : null;
+  // (Review P7-5: a task a master adds replaces no row and says nothing of what it took. With the record it is this
+  // device's own row all the same; without, not this case.)
+  const taken = waiting.textFromTask?.taskId ? waiting.textFromTask : tracked ? ({} as NonNullable<ScheduleItem['textFromTask']>) : null;
+  if (!taken) return undefined;
   // (A row is saved unstamped by the approval; every edit of his stamps it.)
   const changedHere = Boolean(waiting.updatedAt) && waiting.updatedAt !== (waiting.importedAt || waiting.createdAt);
   const rest = (item: ScheduleItem) => restMark({ ...item, projectControls: undefined });
@@ -942,6 +995,8 @@ export function scheduleItemNewRowMetAgain(
   const others = Object.keys(tracked?.fields ?? {}).filter(field => !answered(field) && fieldValue(waiting, field) !== fieldValue(tracked!.fields, field) && toSend(field));
   if (text.length + links.length + controls.length + others.length === 0) return null;
   const own = Object.fromEntries(Object.entries(tracked?.own ?? {}).filter(([field]) => (text as string[]).includes(field) || others.includes(field)));
+  // Review P7-3: the fields of these of which a write has already sent a value of his.
+  const sent = tracked ? [...new Set([...(tracked.sent ?? []), ...(writeTried ? scheduleItemFieldsChangedSinceMade(waiting, tracked) : [])])] : [];
   return {
     changedFields: [...text, ...links, ...controls, ...others, 'updatedAt'],
     base: {
@@ -952,6 +1007,7 @@ export function scheduleItemNewRowMetAgain(
         ...(controls.length > 0 ? { projectControls: remote.projectControls ?? null } : {}),
       },
       ...(Object.keys(own).length > 0 ? { own } : {}),
+      ...(sent.length > 0 ? { sent } : {}),
     },
   };
 }

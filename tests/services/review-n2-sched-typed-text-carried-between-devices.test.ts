@@ -71,6 +71,8 @@ const mockCloud = {
   lostAnswers: 0,
   /** The next write of this task's row does not reach the cloud (weak signal), once. */
   failNextWriteOf: null as string | null,
+  /** Review P7-5: the next write of this row reaches the cloud, and its answer does not come back. */
+  lostAnswerFor: null as string | null,
   /** The cloud's schedule documents (what the web desktop works the shown tasks out from). */
   documents: [] as unknown[],
   /**
@@ -180,6 +182,7 @@ jest.mock('../../services/SupabaseService', () => {
       mockCloud.writes.push(`${mockDevice}:${item.id}`);
       mockCloud.events.push({ id: item.id, row: mockCopy(item) });
       if (mockCloud.lostAnswers > 0) { mockCloud.lostAnswers -= 1; return mockDown(); }
+      if (mockCloud.lostAnswerFor === item.id) { mockCloud.lostAnswerFor = null; return mockDown(); }
       return mockOk(mockRowRead(item));
     },
     listDAVESyncTombstones: read(() => mockCopy(mockCloud.tombstones)),
@@ -236,7 +239,7 @@ import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItem
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemNewRowMetAgain, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
-import { scheduleItemChangedSinceMade, scheduleItemEditBaseOf, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
+import { scheduleItemChangedSinceMade, scheduleItemEditBaseOf, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -886,6 +889,7 @@ function resetRig() {
   mockCloud.offline.clear();
   mockCloud.lostAnswers = 0;
   mockCloud.failNextWriteOf = null;
+  mockCloud.lostAnswerFor = null;
   mockCloud.versioned = false;
   mockCloud.versions.clear();
   mockCloud.beforeNextTaskWrite = null;
@@ -4057,15 +4061,17 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       expect(cloudRow(newId)).toMatchObject({ startDate: '10/22/2026', finishDate: '11/01/2026', percentComplete: 30, notes: NOTE });
     });
 
-    it('the record is the approval\'s: on a master\'s new row only, and it gathers what his edits change while the row waits', async () => {
+    it('the record is the approval\'s: on every row it makes, and it gathers what his edits change while the row waits', async () => {
       const { phone } = await start();
       at('2026-09-08T08:00:00.000Z');
       setOnline(phone, false);
       at(G.importedAt!);
       await approve(phone, G, [G_ROW, SURVEY, 'Paint,Alpha,Lot,11/02/2026,11/06/2026,']);
       const [newId, paintId] = [theRow(phone).id, deviceShown(phone).find(item => item.taskName === 'Paint')!.id];
-      // Framing's new row keeps one; Paint, a task the master adds, replaces no row and keeps none.
-      expect([(await waitingFor(phone, newId))?.sinceMade, (await waitingFor(phone, paintId))?.sinceMade]).toEqual([{ updatedAt: null, fields: {} }, undefined]);
+      // Framing's new row keeps one, and so does Paint, a task the master adds (review P7-5); Survey, which the master only
+      // lists again on the row the device already held, keeps none.
+      expect([(await waitingFor(phone, newId))?.sinceMade, (await waitingFor(phone, paintId))?.sinceMade, (await waitingFor(phone, 'MASTER F-2'))?.sinceMade])
+        .toEqual([{ updatedAt: null, fields: {} }, { updatedAt: null, fields: {} }, undefined]);
       at('2026-09-11T09:00:00.000Z');
       await edit(phone, newId, { owner: 'Ana' });
       await edit(phone, newId, { percentComplete: 30 });
@@ -4073,10 +4079,14 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       const record = (await waitingFor(phone, newId))!.sinceMade!;
       // Each field as the row was made, and what he held for it before its latest value.
       expect([record.fields.owner, record.fields.percentComplete, record.own]).toEqual(['', 0, { owner: ['"Ana"'] }]);
-      // A lookahead approved on the task saves a whole copy over the waiting one: no telling what changed, the record goes.
+      // A lookahead approved on the task saves a whole copy over the waiting one. The record becomes that copy's starting
+      // copy: the row as the approval made it, his owner and percent not yet on it (review P7-4).
       at('2026-09-11T13:00:00.000Z');
       await approve(phone, scheduleDoc('LOOKAHEAD P6', '2026-09-11T13:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
-      expect([(await waitingFor(phone, newId))?.changedFields, (await waitingFor(phone, newId))?.sinceMade]).toEqual([undefined, undefined]);
+      const afterLookahead = (await waitingFor(phone, newId))! as { changedFields?: unknown; sinceMade?: unknown; base?: { fields: Record<string, unknown>; copy?: Record<string, unknown>; own?: unknown } };
+      expect([afterLookahead.changedFields, afterLookahead.sinceMade]).toEqual([undefined, undefined]);
+      expect([afterLookahead.base?.fields.owner, afterLookahead.base?.copy?.owner, afterLookahead.base?.copy?.percentComplete, afterLookahead.base?.copy?.startDate, afterLookahead.base?.own])
+        .toEqual(['', '', 0, '10/20/2026', { owner: ['"Ana"'] }]);
       // And a row staged by a caller that does not say which tasks the device had before keeps none: it may be a row the cloud has.
       on(phone);
       await phone.m.sync.runScheduleImportCloudSync({ scheduleItems: [{ ...theRowAsApproved(), id: 'MASTER X-1' }], referenceDocuments: [] } as never);
@@ -4113,6 +4123,193 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       expect(scheduleItemChangedSinceMade({ itemData: withPercent, sinceMade: { updatedAt: null, fields: { percentComplete: 0 } } },
         { changedFields: ['percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 40 } }, itemData: { ...withPercent, percentComplete: 60 } }))
         .toEqual({ updatedAt: null, fields: { percentComplete: 0 }, own: { percentComplete: ['40'] } });
+    });
+
+    describe('Review P7-3, P7-4, P7-5: the retry knows the row as this device made it and what of his it has sent', () => {
+      const SIDING = 'Siding,Alpha,Lot,11/09/2026,11/13/2026,';
+      const siding = (items: readonly ScheduleItem[]) => items.filter(item => item.taskName === 'Siding').map(item => [item.percentComplete, item.owner || '', item.notes || '']);
+      const sidingEverywhere = async (phone: Device, ipad: Device) => { await refresh(phone); await refresh(ipad); return [siding(deviceShown(phone)), siding(deviceShown(ipad)), siding(webShown())]; };
+
+      it('P7-3 (the reviewer\'s NF2): an owner he typed before the first upload, cleared on the web after the lost answer, is asked about; the web\'s clear stands until he chooses', async () => {
+        const { phone, ipad, newId } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Mike' }), (_phone, id) => { webWrite(webEdited(cloudRow(id)!, { owner: '' })); });
+        // (It was: "Mike" back on every device, with no card. Before b4de734: a card for the whole task.)
+        expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Mike'], cloud: [''] }]);
+        expect(cloudRow(newId)).toMatchObject({ owner: '', notes: NOTE });
+        await chooseInSettings(phone, (await conflictsOf(phone))[0].id, 'keep_local');
+        await allSynced(phone, ipad);
+        expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Mike'));
+        await noCards(phone, ipad);
+      });
+
+      it('...his percent entered before the first upload and set back to nothing on the web after: the progress has its own rules and is never asked about', async () => {
+        const { phone, newId } = await lostAnswer((phone, id) => edit(phone, id, { percentComplete: 30 }), (_phone, id) => { webWrite(webEdited(cloudRow(id)!, { percentComplete: 0, status: 'Not Started' })); });
+        expect(await cards(phone)).toEqual([]);
+        expect(await waitingFor(phone, newId)).toBeUndefined();
+      });
+
+      it('...an owner typed AFTER the lost answer goes up as before: nothing of his had been sent, and a pass that fails before it writes does not count as sending', async () => {
+        const { phone, ipad } = await lostAnswer(null, async (phone, id) => {
+          setOnline(phone, false);
+          await edit(phone, id, { owner: 'Mike' });
+          await backgroundUpload(phone); // no signal: the pass cannot even read the cloud
+          setOnline(phone, true);
+        });
+        expect(await cards(phone)).toEqual([]);
+        await allSynced(phone, ipad);
+        expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Mike'));
+        await noCards(phone, ipad);
+      });
+
+      it('...an owner typed before, cleared on the web after, and typed again by him before the retry: asked, his last word against the web\'s clear', async () => {
+        const { phone, newId } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Mike' }), async (phone, id) => {
+          webWrite(webEdited(cloudRow(id)!, { owner: '' }));
+          await offline((device, row) => edit(device, row, { owner: 'Mike R.' }))(phone, id);
+        });
+        expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Mike R.'], cloud: [''] }]);
+      });
+
+      it('...and when the retry\'s own answer is lost as well: the owner he typed after the first lost answer has been sent by then, so the web\'s clear of it is asked about', async () => {
+        const { phone, newId } = await lostAnswer(null, async (phone, id) => {
+          await offline((device, row) => edit(device, row, { owner: 'Mike' }))(phone, id);
+          mockCloud.lostAnswerFor = id; // the retry writes "Mike" on the row; its answer does not come back either
+        });
+        expect([cloudRow(newId)!.owner, await cards(phone), (await waitingFor(phone, newId))?.id]).toEqual(['Mike', [], newId]);
+        webWrite(webEdited(cloudRow(newId)!, { owner: '' }));
+        await backgroundUpload(phone);
+        expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Mike'], cloud: [''] }]);
+        expect(cloudRow(newId)!.owner).toBe('');
+      });
+
+      it('P7-4 (the reviewer\'s NF1): a lookahead approved on the task between the lost answer and the retry keeps the note and approval the other device set, on the lookahead\'s dates', async () => {
+        const { phone, ipad } = await lostAnswer(null, offline(phone => approve(phone, scheduleDoc('LOOKAHEAD P7', '2026-09-12T08:30:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true)));
+        shareDocuments(phone);
+        await allSynced(phone, ipad);
+        // (It was: the whole copy over the row. "Crew short Tuesday" gone everywhere, no card.)
+        expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 0, NOTE, '']]));
+        expect(controlsEverywhere(phone, ipad)).toEqual(Array(3).fill(['Pending', 5]));
+        await noCards(phone, ipad);
+      });
+
+      it('...and with his percent entered after that lookahead, and an owner he had typed on the row before its first upload', async () => {
+        const { phone, ipad } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Mike' }), offline(async (phone, id) => {
+          await approve(phone, scheduleDoc('LOOKAHEAD P7', '2026-09-12T08:30:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+          await edit(phone, id, { percentComplete: 40 });
+        }));
+        shareDocuments(phone);
+        await allSynced(phone, ipad);
+        expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 40, NOTE, 'Mike']]));
+        await noCards(phone, ipad);
+      });
+
+      it('...a lookahead approved before the row first went up, and that upload\'s answer lost: the retry finds the row as it sent it and writes nothing', async () => {
+        const { phone, ipad, newId, writes } = await lostAnswer(phone => approve(phone, scheduleDoc('LOOKAHEAD P7', '2026-09-11T09:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true), null);
+        expect([await cards(phone), await waitingFor(phone, newId), writesOf(newId, writes)]).toEqual([[], undefined, []]);
+        shareDocuments(phone);
+        await allSynced(phone, ipad);
+        expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/22/2026', '11/01/2026', 0, NOTE, '']]));
+      });
+
+      it('the rule on the records alone', () => {
+        const taskOf = () => (rowId: string) => rowId;
+        const made = theRowAsApproved();
+        const withOwner = { ...made, owner: 'Mike', updatedAt: '2026-09-11T09:00:00.000Z' } as ScheduleItem;
+        const record = { updatedAt: null, fields: { owner: '' } };
+        const inTheCloud = { ...made, owner: 'Mike', notes: NOTE, textFromTask: { ...made.textFromTask!, notes: NOTE }, updatedAt: '2026-09-12T08:00:01.000Z' } as ScheduleItem;
+        const cleared = { ...inTheCloud, owner: '' } as ScheduleItem;
+        // P7-3. The retry says which of his fields a write has already sent: all he had changed when a write of this very copy was tried...
+        expect(scheduleItemNewRowMetAgain(withOwner, cleared, taskOf, record, true)).toEqual({ changedFields: ['owner', 'updatedAt'], base: { updatedAt: null, fields: { owner: '' }, sent: ['owner'] } });
+        expect(scheduleItemNewRowMetAgain(withOwner, cleared, taskOf, record)).toEqual({ changedFields: ['owner', 'updatedAt'], base: { updatedAt: null, fields: { owner: '' } } });
+        // (Only what he had changed: a field of the record put back as the row was made was not sent changed.)
+        expect(scheduleItemNewRowMetAgain({ ...made, percentComplete: 30, status: 'In Progress', updatedAt: '2026-09-11T09:00:00.000Z' } as ScheduleItem, cleared, taskOf, { updatedAt: null, fields: { owner: '', percentComplete: 0, status: 'Not Started' } }, true)!.base.sent)
+          .toEqual(['percentComplete', 'status']);
+        // ...or what the record says was sent before a later edit of his joined the waiting copy.
+        expect(scheduleItemNewRowMetAgain({ ...withOwner, percentComplete: 30, status: 'In Progress' } as ScheduleItem, cleared, taskOf, { updatedAt: null, fields: { owner: '', percentComplete: 0, status: 'Not Started' }, sent: ['owner'] })!.base.sent).toEqual(['owner']);
+        const laterEdit = { changedFields: ['percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 0 } }, itemData: { ...withOwner, percentComplete: 30 } };
+        expect(scheduleItemChangedSinceMade({ itemData: withOwner, sinceMade: record, writeTried: true }, laterEdit)).toEqual({ updatedAt: null, fields: { owner: '', percentComplete: 0 }, sent: ['owner'] });
+        expect(scheduleItemChangedSinceMade({ itemData: withOwner, sinceMade: record }, laterEdit)).toEqual({ updatedAt: null, fields: { owner: '', percentComplete: 0 } });
+        expect(scheduleItemChangedSinceMade({ itemData: { ...withOwner, percentComplete: 30 }, sinceMade: { updatedAt: null, fields: { owner: '', percentComplete: 0 }, sent: ['owner'] } },
+          { changedFields: ['notes', 'updatedAt'], base: { updatedAt: null, fields: { notes: '' } }, itemData: { ...withOwner, percentComplete: 30, notes: 'x' } })!.sent).toEqual(['owner']);
+        // A field put back as the row was made by the time the write was tried was not sent changed.
+        expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: record, writeTried: true }, laterEdit)!.sent).toBeUndefined();
+        // An edit weighed against the cloud: the row's first value back in the cloud, for a field of his that was sent, is another device's change. Asked.
+        const edit = (sent?: string[]) => ({ updatedAt: null, fields: { owner: '', percentComplete: 0 }, ...(sent ? { sent } : {}) });
+        expect(scheduleItemEditAgainstCloud(withOwner, ['owner', 'updatedAt'], edit(['owner']), cleared).asked).toEqual(['owner']);
+        expect(scheduleItemEditAgainstCloud(withOwner, ['owner', 'updatedAt'], edit(), cleared).asked).toEqual([]);
+        expect(scheduleItemEditAgainstCloud(withOwner, ['owner', 'updatedAt'], edit(['owner']), inTheCloud)).toMatchObject({ asked: [], keptFromCloud: [] });
+        // (His percent is never asked about, sent or not.)
+        expect(scheduleItemEditAgainstCloud({ ...withOwner, percentComplete: 30 } as ScheduleItem, ['percentComplete', 'updatedAt'], edit(['percentComplete']), cleared)).toMatchObject({ asked: [], keptFromCloud: [] });
+
+        // P7-5. A row that says nothing of what it took (a task the master adds), with the record: his changes since it was made; without: not this case.
+        const added = { ...made, id: 'MASTER G-3', taskName: 'Siding', revisedFromTaskIds: undefined, textFromTask: undefined } as ScheduleItem;
+        const addedInCloud = { ...added, owner: 'Ana', updatedAt: '2026-09-12T08:20:00.000Z' } as ScheduleItem;
+        expect(scheduleItemNewRowMetAgain(added, addedInCloud, taskOf, SCHEDULE_ITEM_AS_MADE)).toBeNull();
+        expect(scheduleItemNewRowMetAgain({ ...added, notes: 'His note', percentComplete: 20, updatedAt: '2026-09-12T08:30:00.000Z' } as ScheduleItem, addedInCloud, taskOf, { updatedAt: null, fields: { notes: '', percentComplete: 0 } }))
+          .toEqual({ changedFields: ['notes', 'percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { notes: '', percentComplete: 0 } } });
+        expect(scheduleItemNewRowMetAgain(added, addedInCloud, taskOf)).toBeUndefined();
+
+        // P7-4. A whole copy saved over the waiting row starts from the row as made: what he had changed put back.
+        const beforeLookahead = { ...withOwner, percentComplete: 30 } as ScheduleItem;
+        const started = scheduleItemWholeCopyBaseSinceMade({ updatedAt: null, fields: { owner: '', percentComplete: 0 }, own: { owner: ['"Mick"'] } }, scheduleItemWholeCopyBase(beforeLookahead))!;
+        expect([started.fields.owner, started.copy!.owner, started.copy!.percentComplete, started.copy!.startDate, started.rest, started.own]).toEqual(['', '', 0, made.startDate, undefined, { owner: ['"Mick"'] }]);
+        expect(scheduleItemWholeCopyBaseSinceMade(undefined, scheduleItemWholeCopyBase(beforeLookahead))).toBeUndefined();
+        expect(scheduleItemWholeCopyBaseSinceMade(record, { updatedAt: null, fields: { owner: 'Mike' } })).toBeUndefined();
+        // And a value of his own that an earlier write put in the cloud is not another device's change, in what he types or in the rest.
+        const lookahead = { ...beforeLookahead, owner: 'Mike', startDate: '10/24/2026' } as ScheduleItem;
+        const ownEarlier = { ...started, copy: { ...started.copy!, startDate: '10/20/2026' }, own: { owner: ['"Mick"'], startDate: ['"2026-10-22"'] } };
+        const earlierInCloud = { ...made, owner: 'Mick', startDate: '10/22/2026' } as ScheduleItem;
+        expect(scheduleItemWholeCopyAgainstCloud(lookahead, lookahead, ownEarlier, earlierInCloud)).toMatchObject({ asked: [], itemData: { owner: 'Mike' } });
+        expect(scheduleItemWholeCopyAgainstCloud(lookahead, lookahead, { ...ownEarlier, own: undefined }, earlierInCloud).asked).toEqual(['owner']);
+        expect(scheduleItemWholeCopyFieldByField(lookahead, ownEarlier, earlierInCloud, earlierInCloud)).toMatchObject({ asked: [], itemData: { startDate: '10/24/2026' } });
+        expect(scheduleItemWholeCopyFieldByField(lookahead, { ...ownEarlier, own: undefined }, earlierInCloud, earlierInCloud)!.asked).toEqual(['startDate']);
+      });
+
+      /** The phone, with no signal, approves master G, which adds Siding. Its rows' first writes reach the cloud; the answer to Siding's is lost. */
+      async function sidingsAnswerLost(between: (phone: Device, sidingId: string) => Promise<unknown> | unknown) {
+        const { phone, ipad } = await start();
+        at('2026-09-08T08:00:00.000Z');
+        setOnline(phone, false);
+        at(G.importedAt!);
+        await approve(phone, G, [G_ROW, SURVEY, SIDING]);
+        const sidingId = deviceShown(phone).find(item => item.taskName === 'Siding')!.id;
+        at('2026-09-12T08:00:00.000Z');
+        setOnline(phone, true);
+        shareDocuments(phone);
+        mockCloud.lostAnswerFor = sidingId;
+        await backgroundUpload(phone);
+        expect([Boolean(cloudRow(sidingId)), (await waitingFor(phone, sidingId))?.id, (await waitingFor(phone, sidingId))?.changedFields]).toEqual([true, sidingId, undefined]);
+        at('2026-09-12T08:30:00.000Z');
+        await between(phone, sidingId);
+        at('2026-09-12T09:00:00.000Z');
+        await backgroundUpload(phone);
+        return { phone, ipad, sidingId };
+      }
+
+      it('P7-5 (the reviewer\'s NF3): a task the master ADDS; the web types an owner on it after the lost answer and he enters 20% before the retry: both are on the task', async () => {
+        const { phone, ipad } = await sidingsAnswerLost(async (phone, id) => {
+          webWrite(webEdited(cloudRow(id)!, { owner: 'Ana' }));
+          await offline((device, row) => edit(device, row, { percentComplete: 20 }))(phone, id);
+        });
+        // (It was: 20% and no owner, the web's "Ana" gone from the task on every device, with no card.)
+        expect(await cards(phone)).toEqual([]);
+        await allSynced(phone, ipad);
+        expect(await sidingEverywhere(phone, ipad)).toEqual(Array(3).fill([[20, 'Ana', '']]));
+        await noCards(phone, ipad);
+      });
+
+      it('...and without his 20% (NF3b): the web\'s owner stays and no card is raised (it was a card for the whole task, with nothing to choose)', async () => {
+        const { phone, ipad, sidingId } = await sidingsAnswerLost((_phone, id) => { webWrite(webEdited(cloudRow(id)!, { owner: 'Ana' })); });
+        expect([await cards(phone), await waitingFor(phone, sidingId)]).toEqual([[], undefined]);
+        await allSynced(phone, ipad);
+        expect(await sidingEverywhere(phone, ipad)).toEqual(Array(3).fill([[0, 'Ana', '']]));
+      });
+
+      it('...a note he types on the added task after the lost answer, where the web has typed one too: asked about the note', async () => {
+        const { phone, sidingId } = await sidingsAnswerLost(async (phone, id) => {
+          webWrite(webEdited(cloudRow(id)!, { notes: 'Web note' }));
+          await offline((device, row) => edit(device, row, { notes: 'His note' }))(phone, id);
+        });
+        expect(await cards(phone)).toEqual([{ row: sidingId, fields: ['notes'], here: ['His note'], cloud: ['Web note'] }]);
+      });
     });
   });
 

@@ -74,7 +74,7 @@ import {
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
-  scheduleItemChangedSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
+  scheduleItemChangedSinceMade, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -776,6 +776,8 @@ type ScheduleItemRecordPayload = {
    * the retry of a first upload whose answer was lost.
    */
   sinceMade?: ScheduleItemEditBase;
+  /** With sinceMade (review P7-3): a write of this copy has been tried as it stands, so what he changed on it has been sent. */
+  writeTried?: boolean;
   /** On a task's conflict only (owner answer Q28): the fields changed here and on another device, which Review Conflicts shows. */
   askedFields?: string[];
   /**
@@ -1676,7 +1678,9 @@ function mergeScheduleItemQueueChangeScope(
     delete fullRecordPayload.carriedOver;
     delete fullRecordPayload.base;
     // Each field keeps the copy its first waiting edit started from, as far as it is known (owner answer Q28).
-    const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload);
+    // (A whole copy saved over a row this device made and that still waits: the row as made, review P7-4.)
+    const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload) ??
+      (Array.isArray(incomingPayload.changedFields) ? undefined : scheduleItemWholeCopyBaseSinceMade(existingPayload.sinceMade, incomingPayload.base));
     return {
       ...incoming,
       // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
@@ -2400,8 +2404,9 @@ async function stageScheduleImportQueue(input: {
     ...input.scheduleItems.map(item => {
       // The copy the approved row started from (owner answer Q28); a row new to this device has none.
       const base = scheduleItemWholeCopyBase(before.get(item.id));
-      // A master's new row, made by this approval (review P6-2): it keeps what he changes on it while it waits.
-      const madeNow = Boolean(input.scheduleItemsBefore) && !before.has(item.id) && Boolean(item.textFromTask?.taskId);
+      // A row this approval makes (review P6-2; a task the master adds too, review P7-5): it keeps what he changes on
+      // it while it waits.
+      const madeNow = Boolean(input.scheduleItemsBefore) && !before.has(item.id);
       return {
         id: scheduleItemQueueItemId(item.id),
         entity: 'schedule_item' as const,
@@ -3813,6 +3818,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
     retriedItemsById.set(item.id, {
       ...attemptedItem,
+      // (A row this device made, whose write was sent and brought no answer: it may have landed, review P7-3.)
+      ...(uploadContext.newRowWritesTried?.has(item.id) ? { payload: { ...attemptedItem.payload, writeTried: true } } : {}),
       retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
       lastFailureCategory: failureCategory,
@@ -6577,6 +6584,8 @@ type ReferenceDocumentUploadSuccess = {
 type QueueUploadContext = {
   /** What David is told, once, of each copy he chose to keep that went back to its card in this pass (review pass 5, P5-1), by queue item. */
   keptCopiesReturnedToCard?: Map<string, string>;
+  /** The queue items of rows this device made whose write this pass sent (review P7-3): what he changed on them has gone, whatever came back. */
+  newRowWritesTried?: Set<string>;
   projectsAuthorityPromise?: ReturnType<typeof listProjects>;
   projectIdentityAuthority?: OperationalProjectIdentityAuthority;
   archivedProjectsAuthorityPromise?: ReturnType<typeof listArchivedProjects>;
@@ -7040,12 +7049,12 @@ async function uploadQueueItem(
     // upload (an edit, a whole copy, an edit sent on to the task's row), not only where a new row first goes up.
     const taskOfRow = (rowId: string) => tasksOfRows()(rowId);
     const setSinceMade = remote && !queuedFields && !payload.forceLocal && !isEditBase(payload.base)
-      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows, payload.sinceMade) : undefined;
+      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows, payload.sinceMade, payload.writeTried === true) : undefined;
     if (setSinceMade === null) {
       await settleScheduleItemConflicts(payload.id, null);
       return 'uploaded';
     }
-    if (setSinceMade) return uploadQueueItem({ ...item, payload: { id: payload.id, itemData: payload.itemData, ...setSinceMade } as ScheduleItemRecordPayload }, context);
+    if (setSinceMade) return uploadQueueItem({ ...item, payload: { id: payload.id, itemData: payload.itemData, ...setSinceMade, sinceMade: payload.sinceMade } as ScheduleItemRecordPayload }, context);
     const takenFromId = newToCloud ? payload.itemData.textFromTask?.taskId : undefined;
     const takenFromRow = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
     if (typeof takenFromRow === 'string') return takenFromRow;
@@ -7255,6 +7264,7 @@ async function uploadQueueItem(
     // (keptOverRowVersion), whatever this pass listed since: a row another device wrote between Keep Phone's read and
     // this pass's read of the list is then not the row it names, and the write is refused, as above. Never as new:
     // Keep Phone saw a row, so none now means it was deleted.
+    if (isEditBase(payload.sinceMade)) (context.newRowWritesTried ??= new Set<string>()).add(item.id);
     const result = await upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
       ? [{ ifUnchangedSince: payload.keptOverRowVersion }]
       : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
