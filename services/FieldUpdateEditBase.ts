@@ -86,7 +86,8 @@ export function fieldUpdateMeaningParts(copy: unknown): Record<string, string> {
   const parts: Record<string, string> = {};
   Object.keys(meaning).forEach(part => {
     if (PARTS_ASIDE.has(part)) return;
-    const value = part === 'photos' ? photosAsSet(meaning[part]) : meaning[part];
+    const value = part === 'photos' ? photosAsSet(meaning[part])
+      : part === 'documents' ? documentsAsReadBack(meaning[part], meaning) : meaning[part];
     const text = stableText(value);
     // An empty part reads as a missing one: a copy read back on a device fills in '', [], false and null where the
     // copy it came from has none.
@@ -157,6 +158,26 @@ function photosAsSet(photos: unknown): unknown {
     if (!photo || typeof photo !== 'object') return photo;
     const record = photo as Record<string, unknown>;
     return Object.fromEntries(PHOTO_PARTS.map(part => [part, record[part] ?? PHOTO_DEFAULTS[part] ?? null]));
+  });
+}
+
+/**
+ * The documents as the app reads a saved update back (review N2 L5, caused
+ * by 79a5ae1 on older normalising code): a document with no area or update
+ * of its own is under the update's (App.tsx normalizeUpdate). One attached
+ * before the area was chosen went up with no area; after a relaunch or a
+ * refresh the device's copy had it under the update's area, so it differed
+ * from the cloud's, and David's next edit raised "Changed on another device:
+ * Documents" with one device in the story. Its project, which the read-back
+ * takes from the app's own project list, is left as it is.
+ */
+function documentsAsReadBack(documents: unknown, update: Record<string, unknown>): unknown {
+  if (!Array.isArray(documents)) return documents;
+  const own = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+  return documents.map(document => {
+    if (!document || typeof document !== 'object') return document;
+    const record = document as Record<string, unknown>;
+    return { ...record, areaId: own(record.areaId) ?? own(update.selectedAreaId), updateId: own(record.updateId) ?? own(update.id) };
   });
 }
 
