@@ -259,27 +259,59 @@ describe('Review N2 F3: judged by when the lookaheads were imported, with nothin
   });
 });
 
-describe('Review N2 F3: a note made before this review (no import time on the lookahead\'s entry)', () => {
+/**
+ * Review N3 R1 (pass 3, schedule; Low, caused by the redone F3; the reviewer's D19, right at 06e7b1c). For a lookahead
+ * approved before review N2 (no import time on its entry) "Delete PDF Only" while it was in effect saved its tasks on
+ * the same dates, to note when they were kept. That save stamped them: with a newer lookahead approved with no signal
+ * on another device, the stamp won when that device came back, and the task showed the deleted file's dates on every
+ * device. The save is gone. Such a lookahead reads as it did before review N2.
+ */
+describe('Review N3 R1: a lookahead approved on an older build, deleted alone while in effect', () => {
   const before = notedBeforeReview(onL1);
-  /** "Delete PDF Only" on L1 while it is in effect, on this build. */
   const keptBefore = deletePdfOnly(before, L1, DELETED_L1);
 
-  it('the delete saves the tasks on the same dates and notes when they were kept', () => {
-    expect(scheduleItemsAfterScheduleDeleted({ items: before.items, removed: [], document: L1, documents: before.documents, fileOnly: true, updatedAt: DELETED_L1 })
-      .map(item => [item.taskName, dates(item), item.lookaheadOverlay?.lookaheads.at(-1)?.datesKeptAt])).toEqual([['Framing', L1S, DELETED_L1]]);
-    expect([dates(one(keptBefore, 'Framing')), dates(saved(keptBefore, framingId))]).toEqual([L1S, L1S]);
-    expect(keptAt(keptBefore)).toEqual([[L1.importBatchId, DELETED_L1]]);
+  it('the delete saves nothing and stamps nothing: the tasks are as they were, on its dates', () => {
+    expect(scheduleItemsAfterScheduleDeleted({ items: before.items, removed: [], document: L1, documents: before.documents, fileOnly: true, updatedAt: DELETED_L1 })).toEqual([]);
+    expect(keptBefore.items).toEqual(before.items);
+    expect(saved(keptBefore, framingId).updatedAt).toBe(saved(before, framingId).updatedAt);
+    expect([dates(one(keptBefore, 'Framing')), keptAt(keptBefore)]).toEqual([L1S, [[L1.importBatchId, null]]]);
   });
 
-  it('a lookahead imported after that replaces it: Framing is back on the master\'s dates; deleting it with its items goes back', () => {
-    const onL2 = approve(keptBefore, L2, [ROOF_L2]);
-    expect(dates(one(onL2, 'Framing'))).toBe(MASTERS);
-    expect(dates(one(deleteWithItems(onL2, L2, '2026-09-14T12:00:00.000Z'), 'Framing'))).toBe(L1S);
+  it('so a newer lookahead approved on another device before the delete, and stamped then, is still the later copy of the task (the reviewer\'s D19)', () => {
+    // The iPad, with no signal, approved L2 moving Framing: its copy of the task is stamped when it approved.
+    const L2moves = schedule('LOOKAHEAD L2 MOVES', '2026-09-09T18:00:00.000Z', 'lookahead');
+    const ipad = approve(before, L2moves, ['Framing,Alpha,Lot,10/08/2026,10/18/2026,']);
+    expect(Date.parse(L2moves.importedAt)).toBeLessThan(Date.parse(DELETED_L1));
+    // The phone's copy after its delete is no later than before it, and the iPad's is later than that.
+    expect(Date.parse(saved(ipad, framingId).updatedAt || '')).toBeGreaterThan(Date.parse(saved(keptBefore, framingId).updatedAt || ''));
+    expect(dates(one(ipad, 'Framing'))).toBe('10/08/2026-10/18/2026');
   });
 
-  it('an older lookahead still saved does not', () => {
-    const both = notedBeforeReview(approve(approve(onM, L0, [ROOF_L2]), L1, L1_LINES));
-    expect(dates(one(deletePdfOnly(both, L1, DELETED_L1), 'Framing'))).toBe(L1S);
+  it('a newer lookahead that leaves the task out does not return it to the master\'s dates, as before review N2 (recorded)', () => {
+    expect(dates(one(approve(keptBefore, L2, [ROOF_L2]), 'Framing'))).toBe(L1S);
+  });
+
+  it('what a later lookahead noted when it restated the task still tells a newer one apart, once that later one is deleted with its items', () => {
+    // L2 moves Framing off the deleted L1's dates and notes, on L1's entry, when it found the task still on them.
+    const onL2 = approve(keptBefore, L2, ['Framing,Alpha,Lot,10/08/2026,10/18/2026,']);
+    expect(keptAt(onL2)).toEqual([[L1.importBatchId, expect.any(String)], [L2.importBatchId, null]]);
+    // L3, newer, leaves Framing out; then Delete PDF + Items on L2. L1's entry is the last in the note again.
+    const L3 = schedule('LOOKAHEAD L3', '2026-09-15T12:00:00.000Z', 'lookahead');
+    const onL3 = approve(onL2, L3, [ROOF_L2]);
+    expect(dates(one(onL3, 'Framing'))).toBe(MASTERS);
+    const back = deleteWithItems(onL3, L2, '2026-09-16T12:00:00.000Z');
+    expect((saved(back, framingId).lookaheadOverlay?.lookaheads || []).map(entry => entry.batchId)).toEqual([L1.importBatchId]);
+    // Not the dates of L1, a file deleted two lookaheads ago: L3 is the lookahead in effect and does not list Framing.
+    expect(dates(one(back, 'Framing'))).toBe(MASTERS);
+    // And in the other order: L2 deleted with its items first (L1's dates are given back, as before), then L3.
+    const backFirst = deleteWithItems(onL2, L2, '2026-09-14T12:00:00.000Z');
+    expect(dates(one(backFirst, 'Framing'))).toBe(L1S);
+    expect(dates(one(approve(backFirst, L3, [ROOF_L2]), 'Framing'))).toBe(MASTERS);
+  });
+
+  it('the same two dates saved again by hand note nothing either', () => {
+    const again = phoneSave(before, framingId, { startDate: '10/05/2026', finishDate: '10/15/2026' }, DELETED_L1);
+    expect(saved(again, framingId).lookaheadOverlay).toEqual(saved(before, framingId).lookaheadOverlay);
   });
 });
 

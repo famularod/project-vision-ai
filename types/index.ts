@@ -796,9 +796,7 @@ export type ScheduleLookaheadOverlay = {
    * dates with its file gone (review N2 F3): noted by the next lookahead to
    * restate the task, when it finds the task still on these dates and this
    * lookahead's file deleted, so that deleting that next lookahead goes back
-   * to them; and, for a note with no importedAt, by "Delete PDF Only" on the
-   * lookahead in effect, where it stands for the import time too. Missing
-   * otherwise.
+   * to them. Missing otherwise.
    */
   lookaheads: {
     batchId: string;

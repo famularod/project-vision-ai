@@ -546,8 +546,10 @@ function withReplacedLookaheadDates(
     // still: a lookahead for its project imported after it is newer and replaces it, as it does that lookahead's own
     // detail tasks (above, by when their rows were imported). The note says when its lookahead's row was imported
     // (importedAt), so the phone, the iPad and the web judge it alike with nothing written by the delete. A note made
-    // before that review does not: there the delete notes when the dates were kept (datesKeptAt), which stands for
-    // the import (no lookahead in between was newer, or it would have replaced it then).
+    // before that review does not, and reads as it did then: its dates stay (review N3 R1: the delete no longer saves
+    // the task to note when they were kept). Unless a later lookahead restated the task and noted it then (datesKeptAt,
+    // scheduleTaskRestatedByLookahead): once that later one is deleted with its items, the time it noted stands for
+    // the import (no lookahead in between was newer, or it would have replaced these dates then).
     const goneSince = saved ? '' : latest.importedAt || latest.datesKeptAt || '';
     const replacedSinceGone = timestamp(goneSince) > 0 && scheduleSources.some(document => scheduleDocumentAddsToMaster(document) &&
       timestamp(document.importedAt) > timestamp(goneSince) && scheduleLookaheadCoversTask(document, item));

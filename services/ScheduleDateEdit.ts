@@ -48,10 +48,11 @@ import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendar
  *   imported, so a newer lookahead that left the task out never returned it
  *   to the master's dates, while that lookahead's own detail tasks did
  *   leave. An entry says when its lookahead was imported (importedAt,
- *   scheduleTaskRestatedByLookahead) and such a save notes nothing. One
- *   made before that review does not: it notes when the dates were kept
- *   (datesKeptAt), and a lookahead imported after that is newer than the
- *   one deleted.
+ *   scheduleTaskRestatedByLookahead) and such a save notes nothing.
+ *   (Until review N3 R1 an entry made before that review, with no import
+ *   time, had the time of this save noted instead, and the delete saved
+ *   the task for it. That save stamped the task and outranked a newer
+ *   lookahead approved with no signal on another device: taken out.)
  * Both dates set to anything else is a hand move, as before.
  */
 export function scheduleEditWithDateChangedAlone(
@@ -70,10 +71,8 @@ export function scheduleEditWithDateChangedAlone(
   if (typeof edit.startDate === 'string' && typeof edit.finishDate === 'string') {
     const setTo = (days: Pick<ScheduleItem, 'startDate' | 'finishDate'>) =>
       sameScheduleCalendarDay(edit.startDate, days.startDate) && sameScheduleCalendarDay(edit.finishDate, days.finishDate);
-    const kept = setTo(latest);
-    if (kept ? Boolean(latest.importedAt) : !setTo({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate })) return edit;
-    const noted = kept ? { datesKeptAt: at } : { datesLeftAt: at };
-    return { ...edit, lookaheadOverlay: { ...overlay, lookaheads: [...entries.slice(0, -1), { ...latest, ...noted }] } };
+    if (setTo(latest) || !setTo({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate })) return edit;
+    return { ...edit, lookaheadOverlay: { ...overlay, lookaheads: [...entries.slice(0, -1), { ...latest, datesLeftAt: at }] } };
   }
   if (startAlone === finishAlone) return edit;
   const field = startAlone ? 'startDate' as const : 'finishDate' as const;

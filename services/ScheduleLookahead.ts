@@ -465,9 +465,8 @@ type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; perce
  * Whether an entry's lookahead file is no longer saved and its dates were
  * not kept. A lookahead deleted alone while in effect keeps its tasks on its
  * dates, and the next lookahead to restate such a task says so on the entry
- * (datesKeptAt, review N2 F3; for a note made before that review the delete
- * itself says so): those dates are still given back when that later
- * lookahead is deleted, as before. Any other entry whose file is gone
+ * (datesKeptAt, review N2 F3): those dates are still given back when that
+ * later lookahead is deleted, as before. Any other entry whose file is gone
  * (deleted alone after a newer lookahead replaced it) gives no dates back.
  * With the schedules not given, as before.
  */
@@ -863,8 +862,13 @@ export function scheduleItemsAfterScheduleDeleted({
   if (fileOnly) {
     const savedById = new Map(items.map(item => [item.id, item]));
     // Each as the phone's task save leaves it when given these two dates (the phone's delete passes only them): with
-    // the note that the task left its lookahead's dates, or was kept on them (review N2 F2, F3; ScheduleDateEdit).
-    return [...scheduleDatesShownUnderReplacedLookahead(items, documents, document), ...scheduleDatesKeptUnderDeletedLookahead(items, documents, document)]
+    // the note that the task left its lookahead's dates (review N2 F2; ScheduleDateEdit).
+    // Review N3 R1 (Low, caused by the redone F3): nothing for the lookahead in effect, whatever build approved it. For
+    // one approved before review N2 the delete saved its tasks on the same dates to note when they were kept; that
+    // save stamped them, and with a newer lookahead approved with no signal on another device the stamp won: its
+    // task showed the deleted file's dates on every device (the reviewer's D19). Such a lookahead reads as it did
+    // before review N2: deleted alone while in effect, its tasks keep its dates.
+    return scheduleDatesShownUnderReplacedLookahead(items, documents, document)
       .flatMap(({ id, startDate, finishDate }) => {
         const saved = savedById.get(id);
         return saved ? [{ ...saved, ...scheduleEditWithDateChangedAlone(saved, { startDate, finishDate }, updatedAt), updatedAt }] : [];
@@ -1019,37 +1023,6 @@ export function scheduleDatesShownUnderReplacedLookahead(
   return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
     .filter(item => item.savedLookaheadDates &&
       (item.lookaheadOverlay?.lookaheads?.at(-1)?.batchId || '').trim().toLowerCase() === batch)
-    .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
-}
-
-/**
- * Review N2 F3 (5 Oct 2026, gap in ada8ef6, owner answer Q25), for a note
- * made before that review: "Delete PDF Only" on the lookahead in effect
- * keeps its tasks on its dates and wrote nothing. A newer lookahead that
- * then left a master task out never returned it to the master's dates,
- * though the deleted lookahead's own detail tasks did leave: with the file
- * gone, nothing said when the lookahead that moved the task was imported. A
- * note now says so itself (importedAt, scheduleTaskRestatedByLookahead) and
- * the delete writes nothing, as before. For a note with no import time (a
- * lookahead approved on Build 229 or earlier): the tasks shown on this
- * lookahead's dates, whose note names it last, with those same dates. The
- * delete saves them as kept (the same task save notes when,
- * ScheduleDateEdit), and the shown schedule reads a lookahead imported after
- * that as the newer one (PIEScheduleReconciliation). None for a replaced
- * lookahead (its tasks are saved on the dates shown, above) or a master.
- */
-export function scheduleDatesKeptUnderDeletedLookahead(
-  items: readonly ScheduleItem[],
-  documents: readonly ReferenceDocument[],
-  document: ReferenceDocument,
-): Array<Pick<ScheduleItem, 'id' | 'startDate' | 'finishDate'>> {
-  const batch = (document.importBatchId || '').trim().toLowerCase();
-  if (!batch || !scheduleDocumentAddsToMaster(document)) return [];
-  return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
-    .filter(item => {
-      const latest = item.lookaheadOverlay?.lookaheads?.at(-1);
-      return !item.savedLookaheadDates && Boolean(latest) && !latest!.importedAt && (latest!.batchId || '').trim().toLowerCase() === batch && sameDates(item, latest!);
-    })
     .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
 }
 
