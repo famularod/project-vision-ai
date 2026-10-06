@@ -670,18 +670,29 @@ export function compareDAVEReportSnapshots({
   // new detail task, and the report still paired the two by name: "Pour slab finish changed from 10/16/2026 to
   // 11/08/2026.", which no task did, and the dropped task was never said removed. Detail rows pair by name only
   // with detail rows, and the others only with each other.
-  // Review N5 B (6 Oct 2026, Low, older): nor a task whose earlier ids are known and none of them is in the earlier
-  // report. A lookahead added a third Pour slab after the last report; the next master listed two, and David
-  // answered "this row is the one the lookahead added". The list followed him. The row's earlier ids (the
-  // lookahead's row) matched nothing in the earlier report, so it was still offered to the pairing by name, and was
-  // paired with the Pour slab the master had dropped: "Pour slab moved from 60% to 0% complete.", "schedule impact
-  // changed from 1 day to not set.", and the dropped task never said removed. A task answers by its ids when it
-  // has any: with none of them in the earlier report it was not in that report, and is added. By name only for
-  // tasks with no earlier ids at all, as the note above says.
-  const knownByEarlierIds = (task: DAVEReportSnapshotTask) => earlierIdsOf(task).length > 0;
+  // Review N5 B (6 Oct 2026, Low, older): nor, among several tasks of one name, a task whose earlier ids are known
+  // and none of them is in the earlier report. A lookahead added a third Pour slab after the last report; the next
+  // master listed two, and David answered "this row is the one the lookahead added". The list followed him. The
+  // row's earlier ids (the lookahead's row) matched nothing in the earlier report, so it was still offered to the
+  // pairing by name, and was paired with the Pour slab the master had dropped: "Pour slab moved from 60% to 0%
+  // complete.", "schedule impact changed from 1 day to not set.", and the dropped task never said removed.
+  // Review N6 (7 Oct 2026, Low, caused by that fix, c65013a): it barred EVERY row with earlier ids from the pairing
+  // by name. Paint was left out by one master and listed again by the next as a new row; a later master re-dated
+  // that row, which gave it earlier ids, none of them in the last report: "Paint moved from 60% to 70% complete."
+  // became "Paint was removed from the current project plan." and "Paint was added to the project plan.", for a
+  // task that was in his list all along. The ids decide only where a name leaves doubt: where either report has
+  // more than one task of that name (the only place he is asked which is which), a task that carries earlier ids
+  // answers by them alone, and with none of them in the earlier report it is added. A task with a name of its own
+  // still pairs by name, whatever rows it has been through. "Of that name" as the pairing by name itself takes it:
+  // in the same project and the same area (a task with no area stated could be in any).
+  const sameNamed = (tasks: readonly DAVEReportSnapshotTask[], task: DAVEReportSnapshotTask) =>
+    tasks.filter(other => normalized(other.projectName) === normalized(task.projectName) && normalized(other.taskName) === normalized(task.taskName) &&
+      (!normalized(other.areaName) || !normalized(task.areaName) || normalized(other.areaName) === normalized(task.areaName))).length;
+  const knownByEarlierIdsAmongSameNamed = (task: DAVEReportSnapshotTask) =>
+    earlierIdsOf(task).length > 0 && (sameNamed(current.tasks, task) > 1 || sameNamed(previous.tasks, task) > 1);
   const unpairedBefore = previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task));
   const unpairedNow = current.tasks.filter(task =>
-    !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task) && !knownByEarlierIds(task));
+    !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task) && !knownByEarlierIdsAmongSameNamed(task));
   const isLookaheadDetail = (task: DAVEReportSnapshotTask) => task.lookaheadDetail === true;
   const revisions = new Map([
     ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
