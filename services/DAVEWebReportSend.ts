@@ -375,6 +375,28 @@ export function daveWebReportOlderPeriodLeftInBrowser(): boolean {
 }
 
 /**
+ * Review N5 D (6 Oct 2026, Low, older: 46e3332). The browser's sender id, made by this tab while the browser's
+ * storage refused writes, lived in the tab only and was never offered to the storage again. A report sent from the
+ * tab later, once the storage worked, was stored carrying that id; the next tab found no id in the browser, made a
+ * second one, and read this computer's own last report as another device's: "Not counted yet: this device hasn't
+ * received your other device's latest changes.", with no shared record at all. The id this tab's sends carry is now
+ * stored as soon as the storage takes it. If another tab has given the browser an id meanwhile, that one is the
+ * browser's and this tab uses it from then on: never two.
+ */
+function settleSenderId(local: BrowserStorage | null): void {
+  const mine = tabOnly.get(REPORT_SENDER_ID_KEY);
+  if (!local || typeof mine !== 'string') return;
+  try {
+    if (local.getItem(REPORT_SENDER_ID_KEY) === null) local.setItem(REPORT_SENDER_ID_KEY, mine);
+    // A storage that takes it in silence and keeps nothing has not taken it.
+    if (local.getItem(REPORT_SENDER_ID_KEY) === null) return;
+    tabOnly.delete(REPORT_SENDER_ID_KEY);
+  } catch {
+    // Still refused: the tab keeps its own.
+  }
+}
+
+/**
  * This browser profile's storage for report periods: each account's own
  * copy under its owner id; the sender id once for the profile, whoever signs
  * in (it names this browser, never the account).
@@ -392,6 +414,7 @@ export function daveWebReportStorage(
   // so it is read first; it goes once the profile takes a write for that key.
   const stored = (key: string) => {
     clearOlderPeriodsLeft();
+    settleSenderId(local);
     if (tabOnly.has(key)) return tabOnly.get(key) ?? null;
     try {
       return local ? local.getItem(key) : null;
