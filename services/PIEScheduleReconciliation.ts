@@ -385,9 +385,11 @@ export function selectAuthoritativeScheduleItems({
     normalize(item.importedFrom || '') && !normalize(item.sourceDocumentId || '') &&
     scheduleItemImportBatchIds(item).length === 0 && answeredTo.has(item.id.trim())));
 
-  const shown = dedupeScheduleItems(lookaheads.length > 0
-    ? withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments, inEffectFor)
-    : shownItems);
+  // (A task only a lookahead keeps in the list, on its latest row: review P4 M1. After the copies of one task are
+  // folded, so that the rules for two copies see the rows they know.)
+  const shown = lookaheads.length > 0
+    ? heldTasksAsLastSet(dedupeScheduleItems(withoutLookaheadDuplicates(shownItems, currentByProject, containingDocuments, inEffectFor)), scheduleItems, currentByProject, containingDocuments)
+    : dedupeScheduleItems(shownItems);
   let rowsByEarlierId: Map<string, ScheduleItem[]> | null = null;
   let rowsById: Map<string, ScheduleItem> | null = null;
   let rowsByName: Map<string, ScheduleItem[]> | null = null;
@@ -604,6 +606,63 @@ export function scheduleItemAsSaved<T extends ScheduleItem>(item: T): T {
   const { savedLookaheadDates: _shown, ...rest } = item;
   const unchanged = sameScheduleCalendarDay(item.startDate, shown.shownStartDate) && sameScheduleCalendarDay(item.finishDate, shown.shownFinishDate);
   return (unchanged ? { ...rest, startDate: shown.startDate, finishDate: shown.finishDate } : rest) as T;
+}
+
+/**
+ * Review P4 M1 (6 Oct 2026, Medium; older, the same on Build 229; the
+ * reports reviewer's seed "plain 106"). A task the newest master leaves out
+ * (or renames) stays in the list while the lookahead in effect lists it. The
+ * lookahead holds the row it restated. A master approved since may have
+ * moved the task to a newer row, where David has entered a percent, an owner
+ * and a schedule impact: the list went back to the older row, and the next
+ * report said his 35% had become 5%, the owner had been removed and the
+ * finish had changed.
+ *
+ * Such a task is shown on its latest row: the one row that answers to the
+ * held row (revisedFromTaskIds) and that no other such row answers to, saved
+ * by a master older than the current one, when that row was made or changed
+ * after the held row last was. So it is listed exactly as it was before the
+ * newest master left it out. Not a row of a schedule newer than
+ * the current master (uploaded and not made current yet, or the master in
+ * use before Set Active went back: Set Active carries what he set to the row
+ * it shows). The rules for one task with two copies have run before this
+ * one, on the rows they know; and a held row is left as it is when a row
+ * that answers to it is shown already. Not a task a lookahead added.
+ */
+function heldTasksAsLastSet(
+  /** The tasks shown, after the copies of one task are folded. */
+  selected: ScheduleItem[],
+  all: readonly ScheduleItem[],
+  currentByProject: ReadonlyMap<string, ReferenceDocument>,
+  containingDocuments: (item: ScheduleItem) => ReferenceDocument[],
+): ScheduleItem[] {
+  let index: { answering: Map<string, ScheduleItem[]>; shownIds: Set<string> } | null = null;
+  return selected.map(item => {
+    // (A task a lookahead added is judged by its lookahead, as before: it shows on that lookahead's row and days, and
+    // leaves with it; the report's "left with its lookahead" rule goes by that row.)
+    if (item.importedAsLookahead === true) return item;
+    const current = currentByProject.get(scheduleTaskAppProject(item));
+    const containing = containingDocuments(item);
+    if (!current || containing.includes(current) || !containing.some(scheduleDocumentAddsToMaster)) return item;
+    if (!index) {
+      const answering = new Map<string, ScheduleItem[]>();
+      all.forEach(row => scheduleTaskEarlierIds(row).forEach(id => answering.set(id, [...(answering.get(id) || []), row])));
+      index = { answering, shownIds: new Set(selected.map(row => row.id.trim())) };
+    }
+    const { answering, shownIds } = index;
+    const answer = (answering.get(item.id.trim()) || []).filter(row => row.id !== item.id);
+    if (answer.some(row => shownIds.has(row.id.trim()))) return item;
+    const later = answer.filter(row => {
+      const masters = containingDocuments(row).filter(document => !scheduleDocumentAddsToMaster(document));
+      return masters.length > 0 && masters.every(document => timestamp(document.importedAt) < timestamp(current.importedAt));
+    });
+    const latest = later.filter(row => !later.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id.trim())));
+    // And only a row made or changed after the held row last was. After Set Active back to the older master the held
+    // row is the one he has worked on since (and the one a lookahead approved then restated): the newer master's row
+    // is behind it, though it answers to it.
+    const lastChanged = (row: ScheduleItem) => Math.max(timestamp(row.updatedAt), timestamp(row.importedAt || row.createdAt));
+    return latest.length === 1 && lastChanged(latest[0]) > lastChanged(item) ? latest[0] : item;
+  });
 }
 
 /**
