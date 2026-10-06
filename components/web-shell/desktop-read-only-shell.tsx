@@ -5741,6 +5741,13 @@ function ReportWorkspace({
       return false;
     }
     setPeriodReload(count => count + 1);
+    // Review N2 (5 Oct 2026): "Was the report sent?" is settled for a report once its send is recorded here, or
+    // refused because another device's later report stands. Recorded with Mark as Sent while the question was
+    // up, the question stayed, and "Not yet" then said "Nothing was recorded. Once you send it, use Mark as Sent."
+    if (outcome) {
+      setSendQuestion(asked => asked && asked.fingerprint === approvedFingerprint &&
+        asked.scopeKey === sentPeriod.scopeKey && asked.reportFormat === sentPeriod.reportFormat ? null : asked);
+    }
     if (outcome?.status === 'already_sent') {
       // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
       say('good', byPeriodCard ? daveWebReportAlreadyMarkedSentMessage(outcome.sentAt) : daveWebReportAlreadyRecordedMessage(outcome.sentAt));
