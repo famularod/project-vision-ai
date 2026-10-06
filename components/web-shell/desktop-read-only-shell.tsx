@@ -5786,8 +5786,15 @@ function ReportWorkspace({
     (periodSentAt === null || Date.parse(reportOwnSendAt as string) > Date.parse(periodSentAt));
   const approvedPeriodMoved = approvedMovedByAnotherTab || (reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
     !reportAheadOnOwnSend && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
+  // R1 item 2 (8 Oct 2026, the owner's open items): for as long as the page's read of the period took after a send
+  // (a second or two), the card still said "This approved report ... isn't recorded as sent" and offered Mark as
+  // Sent for the report just sent: the page's period was still that report's approval. The approval this tab has
+  // just recorded as sent is not offered again while the read catches up.
+  const [approvalRecordedSent, setApprovalRecordedSent] = useState<Readonly<{ scopeKey: string; reportFormat: DAVEWebReportAudience; fingerprint: string }> | null>(null);
   const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
-    periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
+    periodSnapshot?.deliveredAt === null &&
+    !(approvalRecordedSent && approvalRecordedSent.scopeKey === periodScopeKey && approvalRecordedSent.reportFormat === reportAudience &&
+      approvalRecordedSent.fingerprint === periodSnapshot.sourceFingerprint) ? periodSnapshot : null;
   /** The report on screen as the period records it: its facts, these projects, this format. */
   const periodSnapshotOfReport = () => buildDAVEReportSnapshot({
     truths: reportTruths,
@@ -5838,6 +5845,9 @@ function ReportWorkspace({
       setSendQuestion(asked => asked && asked.fingerprint === approvedFingerprint &&
         asked.scopeKey === sentPeriod.scopeKey && asked.reportFormat === sentPeriod.reportFormat ? null : asked);
     }
+    // This approval is now recorded as sent: the card does not offer it for Mark as Sent meanwhile.
+    const sentFingerprint = outcome?.status === 'saved' ? outcome.snapshot?.sourceFingerprint : null;
+    if (sentFingerprint) setApprovalRecordedSent({ ...sentPeriod, fingerprint: sentFingerprint });
     if (outcome?.status === 'already_sent') {
       // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
       say('good', byPeriodCard ? daveWebReportAlreadyMarkedSentMessage(outcome.sentAt) : daveWebReportAlreadyRecordedMessage(outcome.sentAt));
