@@ -13,6 +13,12 @@ const {
   repoRoot,
   validateAcceptanceDefinition,
 } = require('./ecos-ask-live-acceptance-lib');
+const { useStandInRuntime } = require('./ecos-ask-stand-in-runtime');
+
+// The evidence hash below is taken over a stand-in runtime checkout, never a
+// folder that happens to sit next to this repository (Build 231 E1 item 7).
+const standInRuntime = useStandInRuntime();
+process.on('exit', () => standInRuntime.restore());
 
 const SOURCE_SHA = 'b'.repeat(64);
 

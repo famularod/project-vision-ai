@@ -2,11 +2,14 @@
 
 const assert = require('node:assert/strict');
 const {
+  ANSWERING_PACKAGE_HEADER,
+  CONTRACT_FILES,
   LIVE_RESULT_SCHEMA_VERSION,
   REQUIRED_VISUAL_TILE_BOUNDS,
   VISUAL_COVERAGE_SCHEMA_VERSION,
   VISUAL_EVIDENCE_VERSION,
   acceptanceContractHash,
+  answeringPackageOf,
   deployedRuntimePackageSha256,
   evaluateAcceptanceCase,
   loadAcceptanceDefinition,
@@ -16,9 +19,20 @@ const {
   validateLiveAcceptanceResult,
 } = require('./ecos-ask-live-acceptance-lib');
 const {
+  askProductionECOS,
   loadDocumentReadiness,
   safeErrorMessage,
 } = require('./ecos-ask-live-acceptance');
+const {
+  STAND_IN_PACKAGE_SHA256,
+  createStandInRuntime,
+  useStandInRuntime,
+  writeStandInFile,
+} = require('./ecos-ask-stand-in-runtime');
+
+// Every check below binds to a stand-in runtime checkout, never to a folder
+// that happens to sit next to this repository (Build 231 E1 item 7).
+const standInRuntime = useStandInRuntime();
 
 const SOURCE_SHA = 'a'.repeat(64);
 
@@ -226,6 +240,7 @@ const validLiveResult = {
   definitionSchemaVersion: definition.schemaVersion,
   acceptanceContractSha256: acceptanceContractHash(),
   runtimePackageSha256: deployedRuntimePackageSha256(),
+  answeringPackageSha256s: [deployedRuntimePackageSha256()],
   completedAt: '2026-08-06T12:30:00.000Z',
   projectName: definition.projectName,
   indexMode: 'live',
@@ -452,6 +467,7 @@ void (async () => {
     const path = require('node:path');
     const { runtimeContractFiles, runtimeRepoRoot } = require('./ecos-ask-live-acceptance-lib');
     const source = runtimeRepoRoot();
+    assert.equal(source, standInRuntime.root);
     const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ecos-runtime-copy-'));
     for (const relativePath of runtimeContractFiles(source)) {
       fs.mkdirSync(path.dirname(path.join(copy, relativePath)), { recursive: true });
@@ -473,8 +489,87 @@ void (async () => {
     }
   }
 
+  // Build 231 E1 item 7: evidence names the answering code, or is refused.
+  {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { repoRoot, runtimeRepoRoot } = require('./ecos-ask-live-acceptance-lib');
+    const { evidenceFailures } = require('./ecos-ask-live-evidence-gate');
+
+    // No default folder: with ECOS_RUNTIME_REPO not set nothing is stamped or checked.
+    delete process.env.ECOS_RUNTIME_REPO;
+    assert.throws(() => runtimeRepoRoot(), /ECOS_RUNTIME_REPO is not set/);
+    assert.throws(() => acceptanceContractHash(), /ECOS_RUNTIME_REPO is not set/);
+    assert.throws(() => deployedRuntimePackageSha256(), /ECOS_RUNTIME_REPO is not set/);
+    assert.throws(() => validateLiveAcceptanceResult(validLiveResult, definition, now), /ECOS_RUNTIME_REPO is not set/);
+
+    // A checkout that says it is archived is refused; one that does not is read.
+    const archived = createStandInRuntime();
+    try {
+      process.env.ECOS_RUNTIME_REPO = archived;
+      assert.equal(runtimeRepoRoot(), archived);
+      writeStandInFile(archived, 'CANONICAL.md', '# Canonical Ask ECOS runtime\n');
+      assert.equal(runtimeRepoRoot(), archived);
+      writeStandInFile(archived, 'CANONICAL.md', '\n# This repository is ARCHIVED. Do not edit it.\n\nCanonical: elsewhere\n');
+      assert.throws(() => runtimeRepoRoot(), /says it is archived \("This repository is ARCHIVED\. Do not edit it\."\)/);
+      assert.throws(() => acceptanceContractHash(), /says it is archived/);
+    } finally {
+      fs.rmSync(archived, { recursive: true, force: true });
+    }
+    process.env.ECOS_RUNTIME_REPO = standInRuntime.root;
+
+    // The app repository's archived copy of the function is not part of what evidence is stamped against.
+    assert.deepEqual(CONTRACT_FILES.filter(file => file.includes('_archived-')), []);
+    CONTRACT_FILES.forEach(file => assert(fs.existsSync(path.join(repoRoot, file)), `${file} is missing`));
+
+    // What the live service says answered must be the package the checkout pins.
+    assert.equal(deployedRuntimePackageSha256(), STAND_IN_PACKAGE_SHA256);
+    const withPackages = answeringPackageSha256s => validateLiveAcceptanceResult(
+      { ...validLiveResult, answeringPackageSha256s },
+      definition,
+      now,
+    );
+    assert.deepEqual(withPackages([STAND_IN_PACKAGE_SHA256]), []);
+    assert.deepEqual(withPackages([STAND_IN_PACKAGE_SHA256.toUpperCase()]), []);
+    for (const unnamed of [undefined, [], ['unreported'], [STAND_IN_PACKAGE_SHA256, 'unreported']]) {
+      assert(withPackages(unnamed).some(item => item.includes('did not say which Ask ECOS package answered')));
+    }
+    const otherBuild = '9'.repeat(64);
+    for (const wrong of [[otherBuild], [STAND_IN_PACKAGE_SHA256, otherBuild]]) {
+      const failures = withPackages(wrong);
+      assert(failures.some(item => item.includes(`answered with package ${otherBuild}`) &&
+        item.includes(`pins (${STAND_IN_PACKAGE_SHA256})`)), failures.join('\n'));
+    }
+
+    // The stamping script reads it from each answer the live service gives.
+    const headers = value => ({ headers: { get: name => (name === ANSWERING_PACKAGE_HEADER ? value : null) } });
+    assert.equal(answeringPackageOf(headers(otherBuild)), otherBuild);
+    assert.equal(answeringPackageOf(headers(null)), 'unreported');
+    assert.equal(answeringPackageOf(headers('not-a-hash')), 'unreported');
+    assert.equal(answeringPackageOf(undefined), 'unreported');
+    const answered = [];
+    const data = await askProductionECOS({
+      client: { functions: { invoke: async () => ({ data: { answer: 'ok' }, error: null, response: headers(otherBuild) }) } },
+      accessToken: 'token',
+      project: { id: 'project-1', name: 'Project' },
+      question: 'What is the slab thickness?',
+      onAnswered: response => answered.push(answeringPackageOf(response)),
+    });
+    assert.deepEqual(data, { answer: 'ok' });
+    assert.deepEqual(answered, [otherBuild]);
+
+    // The gate says so in a sentence when evidence exists but the checkout is not named.
+    delete process.env.ECOS_RUNTIME_REPO;
+    const unchecked = evidenceFailures(validLiveResult, definition, now);
+    assert.equal(unchecked.length, 1);
+    assert(unchecked[0].startsWith('The evidence could not be checked against the answering code: ECOS_RUNTIME_REPO is not set.'));
+    process.env.ECOS_RUNTIME_REPO = standInRuntime.root;
+    assert.deepEqual(evidenceFailures(validLiveResult, definition, now), []);
+  }
+
   console.log(`Ask ECOS live acceptance contracts PASS (${definition.cases.length} real-world cases; 100% required).`);
+  console.log('These checks ran against a stand-in runtime checkout; they say nothing about the live Ask ECOS service.');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
-});
+}).finally(() => standInRuntime.restore());

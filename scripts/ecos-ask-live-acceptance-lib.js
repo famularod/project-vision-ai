@@ -37,10 +37,13 @@ const REQUIRED_VISUAL_TILE_BOUNDS = Object.freeze({
   '667:500:333:500': Object.freeze({ x: 2 / 3, y: 0.5, width: 1 / 3, height: 0.5 }),
 });
 const REQUIRED_VISUAL_TILE_KEYS = Object.freeze(Object.keys(REQUIRED_VISUAL_TILE_BOUNDS));
+// Build 231 E1 item 7: this repository's archived copy of the Ask ECOS
+// function (the folder under supabase/functions marked "not live") is no
+// longer in this list. It answers nobody, so evidence is not stamped against
+// it. The answering code is the runtime checkout, RUNTIME_CONTRACT_FILES.
 const CONTRACT_FILES = Object.freeze([
   'validation/ecos/ask-ecos-real-world-cases.json',
   'services/ECOSProjectQuestion.ts',
-  'supabase/functions/_archived-ecos-ask-project-not-live/index.ts',
   'supabase/functions/_shared/ecos-project-answer-policy.ts',
   'supabase/functions/_shared/ecos-drawing-evidence.ts',
   'supabase/migrations/20260804000000_ecos_document_search_index.sql',
@@ -492,16 +495,45 @@ const RUNTIME_CONTRACT_FILES = Object.freeze([
 ]);
 const RUNTIME_SHARED_DIR = 'supabase/functions/_shared';
 
+/**
+ * The checkout of the code that answers Ask ECOS questions. Build 231 E1
+ * item 7: there is no default. With ECOS_RUNTIME_REPO not set, the folder
+ * next to this repository (../runtime) was used. That is the archived
+ * runtime, pinned to a build that no longer answers, so evidence made with
+ * the defaults named the wrong server build. A checkout that says it is
+ * archived (a CANONICAL.md at its root) is refused for the same reason.
+ */
 function runtimeRepoRoot() {
   const configured = text(process.env.ECOS_RUNTIME_REPO);
-  const resolved = configured ? path.resolve(repoRoot, configured) : path.resolve(repoRoot, '..', 'runtime');
+  if (!configured) {
+    throw new Error(
+      'ECOS_RUNTIME_REPO is not set. Set it to the checkout of the code that answers Ask ECOS questions ' +
+      '(the canonical runtime repository). Release evidence is stamped against that code, never against a default folder.',
+    );
+  }
+  const resolved = path.resolve(repoRoot, configured);
   if (!fs.existsSync(path.join(resolved, RUNTIME_CONTRACT_FILES[1]))) {
     throw new Error(
       `The Ask ECOS runtime repository was not found at ${resolved}. ` +
       'Set ECOS_RUNTIME_REPO to the runtime checkout; release evidence must bind to the answering code.',
     );
   }
+  const archived = archivedRepositoryNotice(resolved);
+  if (archived) {
+    throw new Error(
+      `The repository at ${resolved} says it is archived ("${archived}"). ` +
+      'Set ECOS_RUNTIME_REPO to the canonical runtime checkout; release evidence must bind to the answering code.',
+    );
+  }
   return resolved;
+}
+
+/** The first line of a checkout's CANONICAL.md when it says the repository is archived; otherwise ''. */
+function archivedRepositoryNotice(root) {
+  const noticePath = path.join(root, 'CANONICAL.md');
+  if (!fs.existsSync(noticePath)) return '';
+  const firstLine = fs.readFileSync(noticePath, 'utf8').split(/\r?\n/).map(line => text(line)).find(Boolean) || '';
+  return /archived/i.test(firstLine) ? firstLine.replace(/^#+\s*/, '').slice(0, 160) : '';
 }
 
 function runtimeContractFiles(root = runtimeRepoRoot()) {
@@ -518,6 +550,35 @@ function deployedRuntimePackageSha256(root = runtimeRepoRoot()) {
   const match = /expectedPackageSha256:\s*["']([a-f0-9]{64})["']/i.exec(shim);
   if (!match) throw new Error('The runtime ecos-ask-project shim does not pin an expectedPackageSha256.');
   return match[1];
+}
+
+/**
+ * Build 231 E1 item 7: the live gateway says which engine package answered
+ * each question (this response header; it refuses any package but the one
+ * it pins). Evidence names the answering code only when every answer came
+ * from the package the ECOS_RUNTIME_REPO checkout pins.
+ */
+const ANSWERING_PACKAGE_HEADER = 'x-ecos-agent-packaged-source-sha256';
+const ANSWERING_PACKAGE_UNREPORTED = 'unreported';
+
+/** What one live answer said about the package that produced it. */
+function answeringPackageOf(response) {
+  const reported = typeof response?.headers?.get === 'function' ? response.headers.get(ANSWERING_PACKAGE_HEADER) : '';
+  return canonicalSha256(reported) || ANSWERING_PACKAGE_UNREPORTED;
+}
+
+function answeringPackageFailures(reported, pinnedPackageSha256) {
+  const packages = Array.isArray(reported) ? [...new Set(reported.map(item => text(item)))] : [];
+  if (packages.length === 0 || packages.some(item => !canonicalSha256(item))) {
+    return ['The live service did not say which Ask ECOS package answered, so this evidence does not name the answering code.'];
+  }
+  const others = packages.filter(item => item.toLowerCase() !== pinnedPackageSha256);
+  return others.length > 0
+    ? [
+      `The live service answered with package ${others.join(', ')}, not the package the ECOS_RUNTIME_REPO checkout pins ` +
+      `(${pinnedPackageSha256}). This evidence does not name the answering code.`,
+    ]
+    : [];
 }
 
 function acceptanceContractHash(selectedDefinitionPath = definitionPath) {
@@ -554,9 +615,11 @@ function validateLiveAcceptanceResult(result, definition, now = new Date()) {
   if (result?.definitionSchemaVersion !== definition.schemaVersion) failures.push('Definition schema changed after the live run.');
   if (normalize(result?.projectName) !== normalize(definition.projectName)) failures.push('Live result is for the wrong project.');
   if (result?.acceptanceContractSha256 !== acceptanceContractHash()) failures.push('Ask ECOS code or acceptance cases changed after the live run.');
-  if (result?.runtimePackageSha256 !== deployedRuntimePackageSha256()) {
+  const pinnedPackageSha256 = deployedRuntimePackageSha256();
+  if (result?.runtimePackageSha256 !== pinnedPackageSha256) {
     failures.push('The deployed Ask ECOS runtime package changed after the live run.');
   }
+  failures.push(...answeringPackageFailures(result?.answeringPackageSha256s, pinnedPackageSha256));
   const completedAt = Date.parse(result?.completedAt || '');
   const maximumAgeMs = Number(definition.evidenceMaximumAgeHours) * 60 * 60 * 1000;
   if (!Number.isFinite(completedAt)) failures.push('Live result has no valid completion time.');
@@ -646,8 +709,11 @@ function configuredRepositoryPath(environmentName, fallbackPath) {
 }
 
 module.exports = {
+  ANSWERING_PACKAGE_HEADER,
   CONTRACT_FILES,
   RUNTIME_CONTRACT_FILES,
+  answeringPackageFailures,
+  answeringPackageOf,
   deployedRuntimePackageSha256,
   runtimeContractFiles,
   runtimeRepoRoot,
