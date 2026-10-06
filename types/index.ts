@@ -781,6 +781,12 @@ export type ScheduleLookaheadOverlay = {
    * after a newer lookahead replaced this one, he was shown the master's
    * dates: his date stands and the other shows the master's. Changed before,
    * it is a hand move and the task shows as saved. Missing otherwise.
+   * datesLeftAt: when a save moved the task from this lookahead's dates to
+   * the master's dates the note keeps (review N2 F2, 5 Oct 2026: the phone's
+   * "Delete PDF Only" on a replaced lookahead saves the dates shown; both
+   * dates set so by hand read the same). The task has left the lookaheads'
+   * dates: deleting a later lookahead gives the master's back, never this
+   * one's or an earlier one's. Missing otherwise.
    */
   lookaheads: {
     batchId: string;
@@ -790,6 +796,7 @@ export type ScheduleLookaheadOverlay = {
     datesReplacedByMaster?: boolean | string;
     percentStated?: true;
     dateByHand?: { field: 'startDate' | 'finishDate'; at: string };
+    datesLeftAt?: string;
   }[];
 };
 

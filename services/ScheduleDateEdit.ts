@@ -25,20 +25,44 @@ import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendar
  * lookahead's Start, a Start after its Finish), the other date he saw was
  * the master's: both are saved, when the master's does not cross it too.
  *
- * The same edit when it changes both dates or neither, when the task has no
- * lookahead note, or when it is not on the dates its latest lookahead gave.
+ * The same edit when it changes neither date, when the task has no lookahead
+ * note, or when it is not on the dates its latest lookahead gave.
+ *
+ * Review N2 F2 (5 Oct 2026; residue of 3e1b312). The phone's "Delete PDF
+ * Only" saves dates through this same task save, and passes the two dates
+ * only (scheduleItemsAfterScheduleDeleted, fileOnly), so what such a save
+ * means is noted here, as for a date changed alone, and the web's delete,
+ * which saves the whole task, reads the same note from the same rule:
+ * - F2. Both dates set to the master's dates the note keeps, on a task saved
+ *   on its latest lookahead's dates (the dates shown under a replaced
+ *   lookahead, saved when its file is deleted alone; or typed so by hand).
+ *   The entry stayed as it was, so after a later lookahead moved the task
+ *   and was deleted with its items, the task went back to the first
+ *   lookahead's dates: a file deleted earlier, dates David had not seen
+ *   since it was replaced. The entry now notes when the task left
+ *   (datesLeftAt), and that delete gives the master's dates back.
+ * Both dates set to anything else is a hand move, as before.
  */
 export function scheduleEditWithDateChangedAlone(
   current: ScheduleItem,
   edit: Partial<ScheduleItem>,
+  /** When the save is made. */
+  at = new Date().toISOString(),
 ): Partial<ScheduleItem> {
   const startAlone = typeof edit.startDate === 'string' && edit.finishDate === undefined;
   const finishAlone = typeof edit.finishDate === 'string' && edit.startDate === undefined;
   const overlay = current.lookaheadOverlay;
   const entries = Array.isArray(overlay?.lookaheads) ? overlay!.lookaheads : [];
   const latest = entries[entries.length - 1];
-  if (startAlone === finishAlone || !overlay || !latest || 'lookaheadOverlay' in edit) return edit;
+  if (!overlay || !latest || 'lookaheadOverlay' in edit) return edit;
   if (!sameScheduleCalendarDay(current.startDate, latest.startDate) || !sameScheduleCalendarDay(current.finishDate, latest.finishDate)) return edit;
+  if (typeof edit.startDate === 'string' && typeof edit.finishDate === 'string') {
+    const setTo = (days: Pick<ScheduleItem, 'startDate' | 'finishDate'>) =>
+      sameScheduleCalendarDay(edit.startDate, days.startDate) && sameScheduleCalendarDay(edit.finishDate, days.finishDate);
+    if (setTo(latest) || !setTo({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate })) return edit;
+    return { ...edit, lookaheadOverlay: { ...overlay, lookaheads: [...entries.slice(0, -1), { ...latest, datesLeftAt: at }] } };
+  }
+  if (startAlone === finishAlone) return edit;
   const field = startAlone ? 'startDate' as const : 'finishDate' as const;
   const value = edit[field] as string;
   // (Noted even when he sets the day the saved task already has: shown on the master's dates, that day is a change.)
@@ -56,7 +80,7 @@ export function scheduleEditWithDateChangedAlone(
     ...edit,
     lookaheadOverlay: {
       ...overlay,
-      lookaheads: [...entries.slice(0, -1), { ...latest, dateByHand: { field, at: new Date().toISOString() } }],
+      lookaheads: [...entries.slice(0, -1), { ...latest, dateByHand: { field, at } }],
     },
   };
 }

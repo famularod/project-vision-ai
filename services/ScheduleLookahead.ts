@@ -14,6 +14,7 @@ import {
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -427,6 +428,24 @@ export function scheduleTaskMasterRestated(
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
 
 /**
+ * The lookaheads of a note whose dates a task can go back to: those after
+ * the last one it left for the master's dates (datesLeftAt).
+ *
+ * Review N2 F2 (5 Oct 2026, residue of 3e1b312): lookahead L1 moved Framing
+ * to 10/05, L2 (Roof only) replaced it, so Framing showed the master's
+ * 10/01, and "Delete PDF Only" on L1 saved those dates. L3 then moved
+ * Framing, and "Delete PDF + Items" on L3 put it on L1's 10/05: the entry of
+ * a file deleted earlier, dates David had not seen since L2. The save that
+ * takes a task from its lookahead's dates to the master's now notes it
+ * (ScheduleDateEdit), and no entry up to there gives its dates back: the
+ * task goes to the master's dates, where it was before L3.
+ */
+function entriesGivingDatesBack(entries: readonly LookaheadEntry[]): LookaheadEntry[] {
+  const left = entries.map(entry => Boolean(entry.datesLeftAt)).lastIndexOf(true);
+  return entries.slice(left + 1);
+}
+
+/**
  * Whole-app audit A5 pass 8 L3 (30 Sep 2026): after a master moved a task a
  * lookahead restated, the question promised "the earlier dates and progress
  * of 1 task" while nothing shown changed: it counted the hidden old row. The
@@ -460,7 +479,8 @@ function tasksAfterLookaheadDeleted(
     // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
     // An earlier lookahead a newer one replaced (owner answer Q25) is saved back too: the task is shown on the master's
     // dates while it is replaced (selectAuthoritativeScheduleItems), worked out the same on every device.
-    const back = [...remaining].reverse().find(entry => !replaced(entry, item)) ||
+    // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2).
+    const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
@@ -793,8 +813,13 @@ export function scheduleItemsAfterScheduleDeleted({
 }>): ScheduleItem[] {
   if (fileOnly) {
     const savedById = new Map(items.map(item => [item.id, item]));
+    // Each as the phone's task save leaves it when given these two dates (the phone's delete passes only them): with
+    // the note that the task left its lookahead's dates (review N2 F2; ScheduleDateEdit).
     return scheduleDatesShownUnderReplacedLookahead(items, documents, document)
-      .flatMap(({ id, startDate, finishDate }) => (savedById.has(id) ? [{ ...savedById.get(id)!, startDate, finishDate, updatedAt }] : []));
+      .flatMap(({ id, startDate, finishDate }) => {
+        const saved = savedById.get(id);
+        return saved ? [{ ...saved, ...scheduleEditWithDateChangedAlone(saved, { startDate, finishDate }, updatedAt), updatedAt }] : [];
+      });
   }
   const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
   const kept = items.map(item => changed.get(item.id) || item);
