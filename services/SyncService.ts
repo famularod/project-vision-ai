@@ -741,6 +741,12 @@ type ScheduleItemRecordPayload = {
   /** Explicit conflict resolution may intentionally replace the cloud copy. */
   forceLocal?: boolean;
   /**
+   * With forceLocal (independent review pass 4): the version of the cloud's row Keep Phone read and checked against
+   * the copy the screen showed. The kept copy is written only over that version, not over whatever the upload's own
+   * read of the list finds later.
+   */
+  keptOverRowVersion?: string;
+  /**
    * Its progress fields are a percent the sync merge carried to the task
    * (whole-app audit A7 pass 26 M-1): they land only while the merge's rule
    * still holds against the cloud's copy (scheduleProgressCarriedOntoCloudCopy).
@@ -6155,6 +6161,7 @@ export async function resolveScheduleItemSyncConflict(
 
   const queueItemId = scheduleItemQueueItemId(localItem.id);
   const ownerId = currentCloudOwner().ownerId;
+  const checkedVersion = cloudRowVersionOf(cloudNow);
   // The kept copy takes the place of what waited for the task, which is kept
   // to put back if the choice fails (A7 pass 16 L-3, as for field updates).
   const { keptItem, before } = await mutateOfflineQueue(queue => {
@@ -6192,7 +6199,13 @@ export async function resolveScheduleItemSyncConflict(
       id: queueItemId,
       entity: 'schedule_item',
       operation: 'update',
-      payload: { id: localItem.id, itemData: keptItem, forceLocal: true, ...(keptFields ? { changedFields: keptFields } : {}) },
+      payload: {
+        id: localItem.id, itemData: keptItem, forceLocal: true, ...(keptFields ? { changedFields: keptFields } : {}),
+        // Written only over the row checked above (independent review pass 4): the upload reads the task list again
+        // before it writes, and a note another device retyped between the two reads was the row "as listed", so the
+        // kept copy went over it though the screen had never shown it.
+        ...(checkedVersion ? { keptOverRowVersion: checkedVersion } : {}),
+      },
       createdAt: now,
       changedAt: now,
       retryCount: 0,
@@ -6882,7 +6895,13 @@ async function uploadQueueItem(
     // queued task, another device set the next one's owner, and that task then went up as "the row as listed, with
     // this device's note": the owner was erased everywhere, with no card. Refused either way, nothing is written; the
     // row is read again by its id and the edit weighed again against it, by the same rules.
-    const result = await upsertScheduleItem(authoritative, ...(newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
+    // Independent review pass 4: Keep Phone's copy is written only over the row version Keep Phone itself checked
+    // (keptOverRowVersion), whatever this pass listed since: a row another device wrote between Keep Phone's read and
+    // this pass's read of the list is then not the row it names, and the write is refused, as above. Never as new:
+    // Keep Phone saw a row, so none now means it was deleted.
+    const result = await upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
+      ? [{ ifUnchangedSince: payload.keptOverRowVersion }]
+      : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       if (asked.length > 0) return askAbout(authoritative);

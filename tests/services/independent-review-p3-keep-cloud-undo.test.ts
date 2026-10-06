@@ -548,3 +548,99 @@ describe('independent review pass 4: the record of what a row took from its task
     expect(cloudTask()).not.toHaveProperty('textFromTask');
   });
 });
+
+/**
+ * Keep Phone reads the row by its id and checks it against the copy the screen showed; then its copy goes up through
+ * the queue, whose upload reads the task LIST before it writes "only over the row as listed". A write by another
+ * device between those two reads was the row as listed, so the kept copy went over it, with no card (the pass-4
+ * reviewer, finding 1; pass 3 had closed only the moment after the list read).
+ */
+describe('independent review pass 4 (1): Keep Phone\'s copy is written only over the row version Keep Phone itself checked', () => {
+  /** Another device writes the task after Keep Phone has read the row, just before the upload's read of the list is answered. */
+  function anotherDeviceWritesBetweenKeepPhonesReadAndTheListRead(write: () => void) {
+    const moment = { checked: false, done: false, version: null as string | null };
+    mockGetScheduleItem.mockImplementation(async (id: string) => {
+      const answer = await mockCloud.get(id);
+      if (!moment.checked) moment.version = mockCloudRows.get(id)?.version ?? null;
+      moment.checked = true;
+      return answer;
+    });
+    mockListScheduleItems.mockImplementation(async () => {
+      if (moment.checked && !moment.done) { moment.done = true; write(); }
+      return mockCloud.list();
+    });
+    return moment;
+  }
+
+  it('a card about the note: the iPad retypes the note between the two reads; nothing is sent, and he reviews again with the corrected note', async () => {
+    const { conflict, shown } = await cardAboutTheNote();
+    const moment = anotherDeviceWritesBetweenKeepPhonesReadAndTheListRead(() => ipadSets({ notes: 'Web note, corrected.', owner: MIKE, updatedAt: '2026-09-30T11:00:00.000Z' }));
+
+    const error = await keepPhoneOn(conflict.id, shown).catch((caught: unknown) => caught);
+
+    expect(moment.done).toBe(true);
+    // Settings: "The cloud copy changed — review again. Nothing was sent."
+    expect(syncConflictChoiceStopReason(error)).toBe('cloud_copy_changed');
+    // It was written over the row as listed: "Phone note." was in the cloud, the card closed, and he had never seen the correction.
+    expect(cloudTask()).toMatchObject({ notes: 'Web note, corrected.', owner: MIKE });
+    // The one write named the row Keep Phone had read, and the cloud refused it.
+    expect(mockUpsertScheduleItem.mock.calls.map(call => call[1])).toEqual([{ ifUnchangedSince: moment.version }]);
+    await expect(getSyncConflicts()).resolves.toEqual([expect.objectContaining({ id: conflict.id, remotePayload: expect.objectContaining({ notes: 'Web note, corrected.', owner: MIKE }) })]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+
+    // He reviews it and chooses Keep Phone again: his note goes up, beside the iPad's owner.
+    const [again] = await getSyncConflicts();
+    await expect(keepPhoneOn(again.id, again.remotePayload)).resolves.toMatchObject({ notes: 'Phone note.' });
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.', owner: MIKE });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('a whole-task card: the same moment; the iPad\'s note and owner are not replaced by the phone\'s whole copy', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    anotherDeviceWritesBetweenKeepPhonesReadAndTheListRead(() => ipadSets({ notes: 'Rebar inspected (typed on the iPad).', owner: MIKE, updatedAt: '2026-09-30T11:00:00.000Z' }));
+
+    const error = await keepPhoneOn(conflict.id, shown).catch((caught: unknown) => caught);
+
+    expect(syncConflictChoiceStopReason(error)).toBe('cloud_copy_changed');
+    expect(cloudTask()).toMatchObject({ notes: 'Rebar inspected (typed on the iPad).', owner: MIKE });
+    await expect(getSyncConflicts()).resolves.toEqual([expect.objectContaining({ id: conflict.id, remotePayload: expect.objectContaining({ owner: MIKE }) })]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('the task is deleted between the two reads (its deletion record not heard yet): it is not sent back as new, and the conflict is closed', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    anotherDeviceWritesBetweenKeepPhonesReadAndTheListRead(() => { mockCloudRows.delete(phoneTask.id); });
+
+    const error = await keepPhoneOn(conflict.id, shown).catch((caught: unknown) => caught);
+
+    // The list and the read by id found no row, so the kept copy went up as a new task.
+    expect(syncConflictChoiceStopReason(error)).toBe('record_deleted');
+    expect(mockCloudRows.has(phoneTask.id)).toBe(false);
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('the row is only written again between the two reads (its stamp alone): the choice is made on it again and goes through', async () => {
+    const { conflict, shown } = await cardAboutTheNote();
+    anotherDeviceWritesBetweenKeepPhonesReadAndTheListRead(() => ipadSets({ updatedAt: '2026-09-30T11:00:00.000Z' }));
+
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.' });
+
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2); // one refused, one that landed
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('with nothing in between it is as it was: one write, and it names the version Keep Phone read', async () => {
+    const { conflict, shown } = await cardAboutTheNote();
+    const read = mockCloudRows.get(phoneTask.id)!.version;
+
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.' });
+
+    expect(mockUpsertScheduleItem.mock.calls.map(call => call[1])).toEqual([{ ifUnchangedSince: read }]);
+    expect(mockGetScheduleItem).toHaveBeenCalledTimes(1);
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+});
