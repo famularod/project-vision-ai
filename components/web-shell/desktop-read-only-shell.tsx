@@ -99,6 +99,7 @@ import {
   createDAVEWebId,
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
+  daveWebReportSourceNotCounted,
   daveWebScheduleImportPairingQuestions,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
@@ -141,7 +142,7 @@ import {
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
-import { buildDAVEReportSourceFingerprint, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceFingerprint, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, reportPeriodSentAfter, reportPeriodSentAt } from '../../services/DAVEReportSnapshot';
 import {
   approveDAVEWebReportPeriod,
@@ -164,6 +165,8 @@ import {
 } from './desktop-report-send';
 import {
   DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
+  DAVE_WEB_REPORT_PREPARED_WHILE_WAITING,
+  DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyRecordedMessage,
@@ -5609,8 +5612,8 @@ function ReportWorkspace({
     [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey),
-    [period.periodKey, selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting),
+    [period.periodKey, periodWaiting, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
@@ -5627,11 +5630,18 @@ function ReportWorkspace({
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   // What the generator last put in the draft: a draft still reading so, never
   // saved, follows the period when it loads or moves (everyday item 3).
+  // Review N2 (5 Oct 2026): and when a wait for the other device's changes ends. It followed the period only
+  // when its key changed, and the end of a wait does not change it (the period is still the other device's
+  // send): the draft kept "Not counted yet" under a card that listed the change, the page called it ready, and
+  // it was approved, sent and recorded, so the change was in no report. On the phone the report is written
+  // again as the wait ends; here the untouched draft now is too.
   const generatedDraftRef = useRef({ title: generatedTitle, body: generatedBody });
   const shownPeriodKeyRef = useRef(period.periodKey);
+  const draftWaitEnded = !periodWaiting && daveWebReportSourceNotCounted(reportSource.fingerprint);
   useEffect(() => {
-    if (shownPeriodKeyRef.current === period.periodKey) return;
+    const periodMoved = shownPeriodKeyRef.current !== period.periodKey;
     shownPeriodKeyRef.current = period.periodKey;
+    if (!periodMoved && !draftWaitEnded) return;
     const untouched = expectedRevision === null &&
       reportStatus === 'draft' &&
       reportTitle === generatedDraftRef.current.title &&
@@ -5642,9 +5652,18 @@ function ReportWorkspace({
     setReportBody(generatedBody);
     setReportGeneratedAt(briefing.generatedAt);
     setReportSource(currentReportSource);
-    // Only a change of period regenerates the draft; facts changing alone still ask for a refresh.
+    // Only a change of period, or the end of a wait, regenerates the draft; facts changing alone still ask for a refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period.periodKey]);
+  }, [period.periodKey, draftWaitEnded]);
+  // Review N2 (5 Oct 2026): a draft he edited or saved while the tab waited is not written again under him (the
+  // phone keeps edits made while it waited the same way, and does not let them be approved). Once the changes
+  // are here it is not ready: the page says why, and it is not approved, shared or put in an email draft.
+  const draftSaysNotCounted = reportBody.includes(REPORT_PERIOD_WAITING_LINE);
+  const draftNotCountedProblem = periodWaiting
+    ? null
+    : draftSaysNotCounted
+      ? DAVE_WEB_REPORT_SAYS_NOT_COUNTED
+      : draftWaitEnded ? DAVE_WEB_REPORT_PREPARED_WHILE_WAITING : null;
   // Owner answer 2 Oct (web sends count): a share or email draft asks whether it went out; Mark as Sent records one sent another way.
   // Review N1 M1 (3 Oct 2026): the question is about the exact report that was shared: its saved approval, its
   // facts and its period. It was one switch, left up when that report was regenerated or the format changed and
@@ -5917,6 +5936,11 @@ function ReportWorkspace({
       setNotice({ tone: 'danger', text: daveWebReportBehindMessage(period.behindSend) });
       return;
     }
+    // Nor is a draft that still says "Not counted yet" once they have arrived (review N2).
+    if (status === 'approved' && draftNotCountedProblem) {
+      setNotice({ tone: 'danger', text: draftNotCountedProblem });
+      return;
+    }
     if (status === 'approved' && !daveWebReportSourceIsCurrent(reportSource.fingerprint, currentReportSource)) {
       setNotice({
         tone: 'danger',
@@ -6065,6 +6089,11 @@ function ReportWorkspace({
 
   const shareApprovedReport = async () => {
     if (reportStatus !== 'approved') return;
+    // A report that says "Not counted yet" does not leave the page (review N2).
+    if (draftSaysNotCounted) {
+      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SAYS_NOT_COUNTED });
+      return;
+    }
     // An approval stands only on the period it was given on (A6 pass 8 M1, on the web since everyday item 3).
     if (approvedPeriodMoved) {
       setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
@@ -6124,6 +6153,10 @@ function ReportWorkspace({
 
   const prepareApprovedReportEmail = async () => {
     if (reportStatus !== 'approved' || typeof window === 'undefined') return;
+    if (draftSaysNotCounted) {
+      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SAYS_NOT_COUNTED });
+      return;
+    }
     if (approvedPeriodMoved) {
       setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey) });
       return;
@@ -6163,7 +6196,8 @@ function ReportWorkspace({
 
   // The report this computer sent to start the period now shown stands on
   // that period, reopened as in the visit it was sent in (review N1 M2).
-  const reportFactsAreCurrent = daveWebReportSourceIsCurrent(
+  // Never current while it says "Not counted yet" and the changes are here (review N2).
+  const reportFactsAreCurrent = !draftNotCountedProblem && daveWebReportSourceIsCurrent(
     (sentFromHereAt && `sent:${sentFromHereAt}` === period.periodKey
       ? daveWebReportSourceOnPeriod(reportSource, period.periodKey)
       : reportSource).fingerprint,
@@ -6425,23 +6459,25 @@ function ReportWorkspace({
               <View style={styles.reportReviewPanel}>
                 <View style={styles.reportReviewHeading}>
                   <View style={styles.reportReviewIcon}>
-                    <Ionicons name={reportFactsAreCurrent ? 'checkmark-circle-outline' : 'alert-circle-outline'} size={24} color={reportFactsAreCurrent ? colors.success : colors.warning} />
+                    <Ionicons name={reportFactsAreCurrent && !periodWaiting ? 'checkmark-circle-outline' : 'alert-circle-outline'} size={24} color={reportFactsAreCurrent && !periodWaiting ? colors.success : colors.warning} />
                   </View>
                   <View style={styles.dataGrow}>
-                    <Text style={styles.cardTitle}>{reportFactsAreCurrent ? 'Ready for review' : 'Refresh required'}</Text>
+                    <Text style={styles.cardTitle}>{periodWaiting ? "Waiting for your other device's changes" : reportFactsAreCurrent ? 'Ready for review' : 'Refresh required'}</Text>
                     <Text style={styles.dataMeta}>{reportSource.taskIds.length} tasks · {reportSource.updateIds.length} field updates</Text>
                   </View>
                 </View>
                 <Text style={styles.reportReviewText}>
                   {period.behindSend
                     ? daveWebReportBehindMessage(period.behindSend)
-                    : approvedPeriodMoved
-                      ? daveWebReportPeriodMovedMessage(period.periodKey)
-                      : sentFromHereAt
-                        ? daveWebReportSentFromHereNote(sentFromHereAt)
-                        : reportFactsAreCurrent
-                          ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
-                          : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
+                    : draftNotCountedProblem
+                      ? draftNotCountedProblem
+                      : approvedPeriodMoved
+                        ? daveWebReportPeriodMovedMessage(period.periodKey)
+                        : sentFromHereAt
+                          ? daveWebReportSentFromHereNote(sentFromHereAt)
+                          : reportFactsAreCurrent
+                            ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
+                            : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
                 </Text>
                 <View style={styles.reportActionStack}>
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={resetFromCurrentTruth} disabled={pending}>
@@ -6507,9 +6543,9 @@ function ReportWorkspace({
                 onGoBack={() => setUnsentApprovalWarningUp(false)}
               />
             ) : null}
-            {!reportFactsAreCurrent ? (
+            {!reportFactsAreCurrent && notice?.text !== draftNotCountedProblem ? (
               <View style={styles.errorBanner} accessibilityRole="alert">
-                <Text style={styles.errorText}>Project facts changed after this draft was prepared. Regenerate from current facts before approval.</Text>
+                <Text style={styles.errorText}>{draftNotCountedProblem ?? 'Project facts changed after this draft was prepared. Regenerate from current facts before approval.'}</Text>
               </View>
             ) : null}
             {notice ? (

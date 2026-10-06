@@ -181,6 +181,22 @@ export function daveWebReportBehindMessage(send: DAVEReportSnapshot): string {
 }
 
 /**
+ * Review N2 (5 Oct 2026): a draft written while this tab waited for the other
+ * device's changes says "Not counted yet" under "Since the Last Report".
+ * Untouched, it is written again when the changes arrive. Edited or saved, it
+ * is his, and stays as it is (the phone keeps edits made while it waited the
+ * same way, and does not let them be approved): the page says this in place
+ * of "The draft matches the latest project facts", and when he presses
+ * Approve, Share or Prepare Email.
+ */
+export const DAVE_WEB_REPORT_SAYS_NOT_COUNTED =
+  'This report\'s "Since the Last Report" section says "Not counted yet", so it does not list what changed since the last report. Regenerate it from current facts before you approve or share it.';
+
+/** The same draft after he took that line out by hand: it still lists nothing that changed (review N2). */
+export const DAVE_WEB_REPORT_PREPARED_WHILE_WAITING =
+  "This draft was prepared before this computer had your other device's latest changes, so it does not list what changed since the last report. Regenerate it from current facts before approval.";
+
+/**
  * Another device sent a later report than the one this approval counted
  * from (A6 pass 7 on the phone): an approval stops, and a send is not
  * recorded (owner answer 2 Oct, web sends count).

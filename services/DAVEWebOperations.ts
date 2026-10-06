@@ -538,6 +538,14 @@ export function buildDAVEWebReportSource(
    * 3): a report counted from a sent report is current only on that period.
    */
   periodKey?: string,
+  /**
+   * Review N2 (5 Oct 2026): the report is prepared while this tab still waits
+   * for the other device's changes, so its "since the last report" section
+   * says "Not counted yet". It is current only while the tab still waits:
+   * the fingerprint had the period but not the wait, so once the changes
+   * arrived the page called that draft current, and it was approved and sent.
+   */
+  periodNotCounted = false,
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
@@ -573,7 +581,7 @@ export function buildDAVEWebReportSource(
     version: 'dave-web-report-source/1.0',
     scopeKey,
     refreshedAt: snapshot.refreshedAt,
-    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}${periodKey?.startsWith('sent:') ? `:period-${periodKey}` : ''}`,
+    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}${periodNotCounted ? NOT_COUNTED_MARK : ''}${periodKey?.startsWith('sent:') ? `:period-${periodKey}` : ''}`,
     taskIds: Object.freeze(uniqueSorted(truths.flatMap(truth =>
       truth.schedule.map(task => task.taskId),
     ))),
@@ -585,6 +593,19 @@ export function buildDAVEWebReportSource(
       .map(record => record.sourceRecordId))),
     ...(periodKey ? { periodKey } : {}),
   });
+}
+
+/** In the fingerprint of a report prepared while "since the last report" was not counted (review N2); before the period, which ends it. */
+const NOT_COUNTED_MARK = ':not-counted';
+
+/**
+ * Whether a report with this source fingerprint was prepared while this tab
+ * waited for the other device's changes (review N2, 5 Oct 2026). A saved
+ * report keeps its fingerprint, so a draft saved then still says so when it
+ * is reopened.
+ */
+export function daveWebReportSourceNotCounted(sourceFingerprint: string | null | undefined): boolean {
+  return Boolean(sourceFingerprint?.replace(/:period-sent:.*$/, '').endsWith(NOT_COUNTED_MARK));
 }
 
 /**
