@@ -105,12 +105,21 @@ function sameProject(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
-async function fileExists(uri: string): Promise<boolean> {
+/**
+ * Whether a kept recording's audio is on the phone. 'unknown' when the phone
+ * could not say (review N2, 5 Oct 2026): a check that failed was read as
+ * "gone", so one failed check when the sheet opened removed the recording's
+ * entry, and the sweep then deleted its audio, with nothing said. Only an
+ * answer that the audio is gone (or empty) removes anything.
+ */
+async function keptAudioOnPhone(uri: string): Promise<'there' | 'gone' | 'unknown'> {
   try {
     const info = await FileSystem.getInfoAsync(uri);
-    return Boolean(info.exists) && (typeof (info as { size?: unknown }).size !== 'number' || (info as { size: number }).size > 0);
+    const there = Boolean(info.exists) &&
+      (typeof (info as { size?: unknown }).size !== 'number' || (info as { size: number }).size > 0);
+    return there ? 'there' : 'gone';
   } catch {
-    return false;
+    return 'unknown';
   }
 }
 
@@ -154,7 +163,8 @@ export function keepVoiceRecording(
       await FileSystem.makeDirectoryAsync(folder, { intermediates: true }).catch(() => undefined);
       const target = `${folder}recording-${Date.now()}-${Math.floor(Math.random() * 1e9).toString(36)}.m4a`;
       await FileSystem.copyAsync({ from: uri, to: target });
-      if (!await fileExists(target)) throw new Error('The recording could not be kept on this device.');
+      // Kept only once the phone says the copy is there.
+      if (await keptAudioOnPhone(target) !== 'there') throw new Error('The recording could not be kept on this device.');
       uri = target;
     }
     const fileName = uri.slice(folder.length);
@@ -176,7 +186,11 @@ export function keepVoiceRecording(
   });
 }
 
-/** This account's kept recordings, oldest first; an entry whose audio is gone is removed. */
+/**
+ * This account's kept recordings, oldest first; an entry whose audio is gone
+ * is removed. One whose audio could not be checked stays, and is listed: it
+ * is still kept (review N2).
+ */
 async function storedKeptVoiceRecordings(ownerKey: string): Promise<StoredKeptVoiceRecording[]> {
   const stored: StoredKeptVoiceRecording[] = [];
   for (const scope of await keptDraftScopes(KIND, ownerKey)) {
@@ -184,7 +198,7 @@ async function storedKeptVoiceRecordings(ownerKey: string): Promise<StoredKeptVo
     const entry = kept?.value as Partial<KeptVoiceRecordingEntry> | undefined;
     if (!kept || !entry || typeof entry.fileName !== 'string' || typeof entry.projectName !== 'string') continue;
     const uri = keptUri(entry.fileName);
-    if (!uri || !await fileExists(uri)) {
+    if (!uri || await keptAudioOnPhone(uri) === 'gone') {
       await keepDraft(KIND, ownerKey, scope, null);
       continue;
     }
