@@ -24,7 +24,9 @@ import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
-import { scheduleTaskEarlierIds, scheduleTaskLinks, type ScheduleTaskLink } from './ScheduleTaskRevisions';
+import {
+  scheduleTaskEarlierIds, scheduleTaskLinkTargets, scheduleTaskLinks, scheduleTaskLinksOf, scheduleTaskLinksPointedAt, type ScheduleTaskLink,
+} from './ScheduleTaskRevisions';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -413,7 +415,7 @@ export function selectAuthoritativeScheduleItems({
     const siblings = [...new Set(scheduleTaskEarlierIds(item).flatMap(id => index.get(id) || []))].filter(ofCurrent);
     return siblings.length === 1 ? siblings[0] : null;
   };
-  return withReplacedLookaheadDates(shown, scheduleSources, replacedFor, (item: ScheduleItem, lookahead: ReferenceDocument) => {
+  const listed = withReplacedLookaheadDates(shown, scheduleSources, replacedFor, (item: ScheduleItem, lookahead: ReferenceDocument) => {
     if (!rowsByEarlierId || !rowsById || !rowsByName) {
       const index = new Map<string, ScheduleItem[]>();
       scheduleItems.forEach(row => scheduleTaskEarlierIds(row).forEach(id => index.set(id, [...(index.get(id) || []), row])));
@@ -502,6 +504,8 @@ export function selectAuthoritativeScheduleItems({
     // Two rows of that master (same-named tasks whose rows answer to the same earlier row): no telling which is this one.
     return best.length === 1 ? masterWordOf(best[0]) : null;
   });
+  // His hand links name the rows shown (review P5-2).
+  return withLinksNamingTheRowsShown(listed, scheduleItems);
 }
 
 /**
@@ -606,6 +610,33 @@ export function scheduleItemAsSaved<T extends ScheduleItem>(item: T): T {
   const { savedLookaheadDates: _shown, ...rest } = item;
   const unchanged = sameScheduleCalendarDay(item.startDate, shown.shownStartDate) && sameScheduleCalendarDay(item.finishDate, shown.shownFinishDate);
   return (unchanged ? { ...rest, startDate: shown.startDate, finishDate: shown.finishDate } : rest) as T;
+}
+
+/**
+ * Review P5-2 (6 Oct 2026, Medium; older): a hand link names its predecessor
+ * by a row's id, and a task's row changes when a master moves it. The link
+ * was re-pointed only at the approval and at Set Active, from the acting
+ * device's own copy: linked on the phone while the iPad, with no signal,
+ * approved a master that moved the predecessor (or the other way round), the
+ * link went on naming the old, hidden row, and the schedule read it as a
+ * missing predecessor.
+ *
+ * In the list, a link that names a row not shown names the row shown for
+ * that task (by the ids rows answer to: scheduleTaskLinkTargets, as the
+ * web's Schedule already read it), whichever master is current and whichever
+ * device heard of what first. Nothing is written for it; the next change
+ * that saves the task saves the link so. A link to a task no row of which is
+ * shown is left as it is (it comes back with its row, as before).
+ */
+function withLinksNamingTheRowsShown(shown: ScheduleItem[], all: readonly ScheduleItem[]): ScheduleItem[] {
+  if (!shown.some(item => scheduleTaskLinksOf(item).length > 0)) return shown;
+  const shownIds = new Set(shown.map(item => item.id.trim()));
+  let targets: ReturnType<typeof scheduleTaskLinkTargets> | null = null;
+  return shown.map(item => {
+    if (scheduleTaskLinksOf(item).every(link => shownIds.has(String(link.predecessorItemId).trim()))) return item;
+    targets ??= scheduleTaskLinkTargets(shown, all);
+    return scheduleTaskLinksPointedAt(item, id => (shownIds.has(id) ? undefined : targets!(id)?.id));
+  });
 }
 
 /**

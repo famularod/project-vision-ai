@@ -558,7 +558,39 @@ export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'next
  * project controls (approval status, schedule impact, assignee, checklist and the rest). Never asked about: two
  * copies are merged field by field, the later entry of each field standing.
  */
-const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectControls'] as const;
+// (And his hand links, review P5-2: one more thing he sets on a task. Weighed as a set of links, by the task each
+// names: scheduleItemLinksKey.)
+const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectControls', 'dependencies'] as const;
+
+/**
+ * Review P5-2 (6 Oct 2026, Medium; older, the same on 1fb4166): a task's hand
+ * links as compared between two rows of the task. A link names its
+ * predecessor by a row's id, and the rows of one task have different ids (a
+ * master that moves the predecessor too re-points the link at its new row),
+ * so two copies of the same links can differ in their ids alone. `taskOf`
+ * gives the task of a row id (scheduleTaskOfRowId); the links are compared
+ * as the set of tasks they name, with each link's kind and lag.
+ */
+function scheduleItemLinksKey(source: unknown, taskOf: (rowId: string) => string): string {
+  const links = normalizeScheduleDependencies(source && typeof source === 'object' ? (source as { dependencies?: unknown }).dependencies : undefined);
+  return canonicalScheduleItemJson(links.map(link => ({ ...link, predecessorItemId: taskOf(String(link.predecessorItemId ?? '').trim()) }))
+    .sort((left, right) => String(left.predecessorItemId).localeCompare(String(right.predecessorItemId))));
+}
+
+/**
+ * The task of a row id, among these rows (review P5-2): the rows of one task
+ * answer to one another (revisedFromTaskIds), so every id of a task gives the
+ * same name here; an id no row knows gives itself.
+ */
+export function scheduleTaskOfRowId(rows: readonly Pick<ScheduleItem, 'id' | 'revisedFromTaskIds'>[]): (rowId: string) => string {
+  const parent = new Map<string, string>();
+  const find = (id: string): string => { let root = id; while (parent.has(root)) root = parent.get(root)!; return root; };
+  rows.forEach(row => scheduleTaskEarlierIds(row).forEach(earlier => {
+    const [one, other] = [find(String(row.id).trim()), find(earlier)];
+    if (one !== other) parent.set(one > other ? one : other, one > other ? other : one);
+  }));
+  return rowId => find(rowId);
+}
 
 /**
  * Review P4 F1 (6 Oct 2026): the one rule for what David has set on a task
@@ -608,11 +640,19 @@ const isBlank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
  * cloud's row; the approval may have had no signal, and the device may not
  * have heard what another device did to the task), and at Set Active and Make
  * Current (against the row hidden for it).
+ *
+ * Review P5-2: with `taskOf` (the first upload gives it), his hand links are
+ * weighed the same way, from the links the row was made with (the record's
+ * `dependencies`, none included): linked on the phone with signal while the
+ * iPad, with no signal, approved the master, the new row had no link and the
+ * task had none anywhere. Set Active and Make Current keep their own rule for
+ * links (owner answer Q29, scheduleTaskLinksFollowingShownTasks).
  */
 export function scheduleItemAgainstItsTask(
   row: ScheduleItem,
   task: ScheduleItem | null | undefined,
   bothChanged: 'ask' | 'row' | 'task',
+  taskOf?: (rowId: string) => string,
 ): Readonly<{ row: ScheduleItem; asked: string[]; base: ScheduleItemEditBase }> {
   const taken = row.textFromTask;
   const none = { row, asked: [], base: { updatedAt: null, fields: {} } };
@@ -630,12 +670,22 @@ export function scheduleItemAgainstItsTask(
     }
     next[field] = task[field] ?? '';
   });
+  let linksStamp: Partial<Pick<ScheduleItem, 'dependenciesUpdatedAt'>> = {};
+  if (taskOf && Object.prototype.hasOwnProperty.call(taken, 'dependencies')) {
+    const [here, theirs, was] = [row, task, taken].map(source => scheduleItemLinksKey(source, taskOf));
+    // The task's links, when its row's have changed since and this row's have not, or both have and he is asked.
+    if (theirs !== here && (here === was || (theirs !== was && bothChanged !== 'row'))) {
+      if (here !== was && bothChanged === 'ask') asked.push('dependencies');
+      next.dependencies = normalizeScheduleDependencies(task.dependencies);
+      linksStamp = { dependenciesUpdatedAt: task.dependenciesUpdatedAt ?? null };
+    }
+  }
   const controls = task.projectControls ? mergeProjectControlsRevisions(row.projectControls, task.projectControls) : row.projectControls;
   const controlsChanged = fieldValue({ projectControls: controls }, 'projectControls') !== fieldValue(row, 'projectControls');
   if (Object.keys(next).length === 0 && !controlsChanged) return none;
   return {
     row: {
-      ...row, ...next, ...(controlsChanged ? { projectControls: controls } : {}), textFromTask: { ...taken, ...next },
+      ...row, ...next, ...linksStamp, ...(controlsChanged ? { projectControls: controls } : {}), textFromTask: { ...taken, ...next },
       // (After the row's own import time too: a row is ranked by the latest of its times.)
       updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
     } as ScheduleItem,
@@ -667,7 +717,7 @@ export function scheduleItemAsOwnWaitingEditLeavesIt(
   if (!edit || !isEditBase(base)) return remote;
   const fields = (Array.isArray(edit.changedFields) ? edit.changedFields : Object.keys(base.fields));
   const mine = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
-    fieldValue(edit.itemData, field) !== fieldValue(base.fields, field) && fieldValue(remote, field) === fieldValue(base.fields, field));
+    fieldValue(remote, field) === fieldValue(base.fields, field) && fieldValue(remote, field) !== fieldValue(edit.itemData, field));
   return mine.length === 0 ? remote : { ...remote, ...Object.fromEntries(mine.map(field => [field, edit.itemData[field]])) } as ScheduleItem;
 }
 
@@ -762,8 +812,9 @@ export function scheduleItemTextEditOnRow(
   const stillAsTaken = (field: string) => [row, ...between].every(held => asTaken(held, field));
   return {
     id: row.id,
-    itemData: { ...row, ...Object.fromEntries(typed.map(field => [field, edit.itemData[field]])) },
-    changedFields: [...typed, 'updatedAt'],
+    // (A field goes with its stamp: his links with when he changed them.)
+    itemData: { ...row, ...Object.fromEntries(scheduleItemFieldsWithCompanions(typed).map(field => [field, (edit.itemData as unknown as Record<string, unknown>)[field]])) } as ScheduleItem,
+    changedFields: [...scheduleItemFieldsWithCompanions(typed), 'updatedAt'],
     base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])) },
     // (Only for the row that replaced the very row he typed on: that row holds his value too now, so the two agree
     // again. Sent on past a row in between, which is not written, the newest row's record stays what that row had:

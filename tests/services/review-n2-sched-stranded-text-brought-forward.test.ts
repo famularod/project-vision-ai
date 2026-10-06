@@ -147,7 +147,7 @@ describe('Review N2 P1, second part: an owner and a note stranded on a hidden ro
     // (A row says what the row it replaces had, and is weighed against the cloud's copy of that row when it first goes
     // up. G's row had nothing, and has nothing in the cloud: noted as taken from it, the text was cleared.)
     // Review P4 F1: the record is there, and says G's row had nothing; so the text reads as set on the new row itself.
-    expect(framing.textFromTask).toEqual({ taskId: framingG, owner: '', contractor: '', notes: '', nextAction: '', milestone: '' });
+    expect(framing.textFromTask).toEqual({ taskId: framingG, owner: '', contractor: '', notes: '', nextAction: '', milestone: '', dependencies: [] });
     const sent = scheduleItemAgainstItsTask(framing, saved(onH, framingG), 'ask');
     expect([typed(sent.row), sent.asked]).toEqual([MIKE, []]);
   });

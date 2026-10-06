@@ -782,6 +782,15 @@ export function scheduleTaskLinksFollowingShownTasks({
     const pointed = scheduleTaskLinksPointedAt(item, pointTo(item));
     if (pointed !== item || changed.has(idOf(item.id))) changed.set(idOf(item.id), pointed);
   });
+  // Review P5-2: the list already shows a link at the row shown for its task, while the saved row may still name a row
+  // a master hid (the device that made the link, or the one that approved the master, had not heard of the other).
+  // Such a link is saved here as shown, with every other link this change moves: left as saved, a link to a row this
+  // change deletes was dropped afterwards.
+  const savedById = new Map(known.map(item => [idOf(item.id), item] as const));
+  afterNow.forEach(item => {
+    const saved = savedById.get(idOf(item.id));
+    if (saved && !changed.has(idOf(item.id)) && !sameLinks(scheduleTaskLinksOf(saved), scheduleTaskLinksOf(item))) changed.set(idOf(item.id), item);
+  });
   if (removed.size > 0) {
     known.filter(item => !afterIds.has(idOf(item.id)) && !removed.has(idOf(item.id)) &&
       scheduleTaskLinksOf(item).some(link => removed.has(idOf(link.predecessorItemId))))
@@ -791,7 +800,7 @@ export function scheduleTaskLinksFollowingShownTasks({
       });
   }
   // Only the tasks whose links (or who holds them) end up different: a row whose links moved away and back is not saved.
-  const original = new Map([...known, ...after].map(item => [idOf(item.id), item]));
+  const original = new Map([...after, ...known].map(item => [idOf(item.id), item]));
   return [...changed.values()]
     .filter(item => {
       const was = original.get(idOf(item.id));

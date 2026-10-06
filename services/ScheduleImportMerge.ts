@@ -1679,10 +1679,17 @@ export function mergeApprovedScheduleImportItems({
     additions.splice(0, additions.length, ...additions.map(pointed));
   }
 
+  // Review P5-2: a new row that says which row it replaces says which hand links it was made with too, none included
+  // (as for his text: review P4 F1), so that whatever weighs the two rows later can tell links nobody changed on this
+  // row from links set here. Not a row whose own file stated links: those are the file's.
+  const fileStatesLinks = new Set(imported.filter(item => scheduleTaskLinksOf(item).length > 0).map(item => item.id));
+  const withLinksTakenNoted = (item: ScheduleItem): ScheduleItem => (item.textFromTask && !fileStatesLinks.has(item.id)
+    ? { ...item, textFromTask: { ...item.textFromTask, dependencies: scheduleTaskLinksOf(item) } } : item);
+
   // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
   const unchanged = new Set(existing);
   return {
     next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
-    additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+    additions: additions.map(withLinksTakenNoted).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
   };
 }

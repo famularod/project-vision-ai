@@ -973,7 +973,11 @@ export type ScheduleItem = {
    * (SyncService). Only fields taken from the task: none the file stated.
    * Kept in the task's JSON record. Missing on a row saved before.
    */
-  textFromTask?: { taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string } | null;
+  textFromTask?: {
+    taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string;
+    /** Review P5-2: the hand links the row was made with (taken from that task's row, none included), when its file stated none. */
+    dependencies?: ScheduleDependency[];
+  } | null;
   /**
    * The saved tasks David said at import review this row is not (owner
    * answer Q30, 2 Oct 2026): a same-named row he called a new task. Set
