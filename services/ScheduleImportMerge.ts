@@ -35,7 +35,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
-import { scheduleItemTextAsItsTaskHasIt } from './ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask } from './ScheduleItemEditBase';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
@@ -277,22 +277,28 @@ function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<Schedul
 }
 
 /**
- * Review N3 R3 (5 Oct 2026, Medium; caused by review N2 P1's fill): the new
- * row a master saves for a task takes his owner, contractor and note from
- * the copy of the task the approving device holds. When that copy was behind
- * (he had cleared the note, or changed the owner, on another device that the
- * approving one had not heard), the old value went onto the new row and so
- * onto every device, with no card: the reviewer's C1 to C4. The approval can
- * be made with no signal, so it cannot ask the cloud. It notes on the new
- * row what it took from the task's own row and from which row
- * (textFromTask), and the upload of the new row weighs it against the
- * cloud's copy of that row (SyncService). Only what came from the task's own
- * row: not a value the file stated, nor one read back from a row before it
- * (review N2 P1, second part).
+ * Review N3 R3 and review P4 F1: the new row a master saves for a task takes
+ * his owner, contractor, note, next step and milestone from the copy of the
+ * task the approving device holds. That copy may be behind (he changed or
+ * cleared one on another device that this one has not heard), and the
+ * approval may have no signal, so it cannot ask the cloud. The new row says
+ * which row it replaces and, for every one of those fields the file left
+ * unset, what that row had, a blank included (textFromTask). Everything that
+ * later weighs the two rows reads it as the copy the new row started from
+ * (ScheduleItemEditBase, scheduleItemAgainstItsTask).
+ *
+ * What the row had itself: text read back for it from a row before it
+ * (review N2 P1, second part) is not what that row had, so on the new row it
+ * reads as set there and is not weighed against that row's blank. A field
+ * the file states has no entry: the file's value is not his to follow.
+ * (At first only the values taken were recorded, and no record was kept when
+ * none was. A master approved with no signal by a device that had heard
+ * nothing of an owner, a note or an approval set elsewhere then had nothing
+ * to weigh its new row against: the reviewer's A, A2, B and X.)
  */
 function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
-  const taken = TYPED_TEXT_FIELDS.filter(field => filled[field] !== row[field] && key(task[field]) && filled[field] === task[field]);
-  return taken.length === 0 ? filled : { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(taken.map(field => [field, task[field]])) } };
+  const unset = TYPED_TEXT_FIELDS.filter(field => !key(row[field]));
+  return { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])) } };
 }
 
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
@@ -1285,20 +1291,22 @@ function handTasksRestatedWhenCurrent(
  * other changes; null when nothing is filled.
  */
 function scheduleTextCarriedToShownTask(hidden: ScheduleItem, shown: ScheduleItem, row: ScheduleItem, now: string): ScheduleItem | null {
-  // Review N3 R3: a field the shown row still holds exactly as it took it from the hidden row (the web's upload saved
-  // it then) takes what the hidden row has now: he typed over it on the task since, or cleared it, before Make Current.
-  // (Only a blank was filled: his later note stayed behind on the hidden row.)
-  const asItsTask = scheduleItemTextAsItsTaskHasIt(row, hidden);
+  const hiddenLater = timeOf(hidden.updatedAt) > timeOf(shown.updatedAt);
+  // Review N3 R3, review P4 F1: the shown row took his text from the hidden row (the web's upload saved it then, or a
+  // master on the phone). Each field is weighed from what it took: one only the hidden row has changed since (he typed
+  // over it on the task, or cleared it, before Make Current) takes the hidden row's; one only the shown row has changed
+  // keeps its own, a clear too, whichever row was changed later (a percent recorded on the older row while it was shown
+  // brought a cleared note back); one changed on both is the later row's, as nothing is asked here.
+  const taken = row.textFromTask?.taskId === hidden.id ? row.textFromTask : null;
+  const weighed = taken ? scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt }, hidden, hiddenLater ? 'task' : 'row').row : row;
+  // A field with no such record (a row saved before rows kept one; the older master's row shown again): the hidden
+  // row's fills a blank when it was the row changed later, as before.
+  const recorded = TYPED_TEXT_FIELDS.filter(field => taken && Object.prototype.hasOwnProperty.call(taken, field));
+  const lender = recorded.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(recorded.map(field => [field, ''])) };
   // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
   // and the later entry stands.
-  // And a blank is not filled with the very text the shown row took from the hidden row and has lost since: that blank
-  // is his clear, whichever row was changed later (a percent recorded on the older row while it was shown brought the
-  // cleared note back).
-  const took = timeOf(shown.updatedAt) > 0 && row.textFromTask?.taskId === hidden.id ? row.textFromTask : null;
-  const cleared = took ? TYPED_TEXT_FIELDS.filter(field => !key(row[field]) && key(took[field]) && key(took[field]) === key(hidden[field])) : [];
-  const lender = cleared.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(cleared.map(field => [field, ''])) };
-  const filled = withControlsOf(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt) ? withBlanksFilledFrom(asItsTask, lender) : asItsTask, hidden, false);
-  return filled === row ? null : { ...filled, updatedAt: now };
+  const filled = withControlsOf(hiddenLater ? withBlanksFilledFrom(weighed, lender) : weighed, hidden, false);
+  return filled === row || JSON.stringify({ ...filled, updatedAt: row.updatedAt }) === JSON.stringify(row) ? null : { ...filled, updatedAt: now };
 }
 
 function progressCarried(

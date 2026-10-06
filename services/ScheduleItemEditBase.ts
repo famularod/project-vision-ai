@@ -177,10 +177,12 @@ export function scheduleItemWholeCopyAgainstCloud(
     if (!source) {
       asked.push(field);
       [field, ...companions].forEach(name => setField(next, name, remote));
+      setRecordEntry(next, field, remote);
       return;
     }
     if (here !== was) sentHere.push(field);
     [field, ...companions].forEach(name => setField(next, name, source));
+    setRecordEntry(next, field, source);
   });
   return { itemData: next as unknown as ScheduleItem, asked, sentHere };
 }
@@ -196,9 +198,29 @@ export function scheduleItemWholeCopyOverCloud(
   WHOLE_COPY_FIELDS_WEIGHED.forEach(field => {
     if (Object.prototype.hasOwnProperty.call(base.fields, field) && fieldValue(local, field) === fieldValue(base.fields, field)) {
       [field, ...(FIELD_COMPANIONS[field] ?? [])].forEach(name => setField(next, name, cloud));
+      setRecordEntry(next, field, cloud);
     }
   });
   return next as unknown as ScheduleItem;
+}
+
+/**
+ * Review P4: what a row says it took for a field (textFromTask) goes with the
+ * field's value when two copies of the row are put together. The cloud's
+ * copy held an owner an edit had been sent on to it with, and its record said
+ * so; a whole copy from a device that had not heard (a master approved there
+ * that left the task where it was) kept the cloud's owner beside its own
+ * older record, a blank. The owner cleared on the row after that read as "a
+ * blank the row took", and came back from the old row (the reviewer's
+ * generator, two masters apart, seed 9139).
+ */
+function setRecordEntry(target: Record<string, unknown>, field: string, source: unknown) {
+  const own = target.textFromTask as ScheduleItem['textFromTask'];
+  const from = source && typeof source === 'object' ? (source as ScheduleItem).textFromTask : undefined;
+  if (!own || !from || own.taskId !== from.taskId) return;
+  const has = (record: object) => Object.prototype.hasOwnProperty.call(record, field);
+  if (!has(own) || !has(from) || fieldValue(own, field) === fieldValue(from, field)) return;
+  target.textFromTask = { ...own, [field]: (from as Record<string, unknown>)[field] } as ScheduleItem['textFromTask'];
 }
 
 function setField(target: Record<string, unknown>, field: string, source: unknown) {
@@ -539,98 +561,168 @@ export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'next
 const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectControls'] as const;
 
 /**
- * Review N3 R3 (5 Oct 2026, Medium): a master's new row for a task, as it
- * should first reach the cloud. The row took his owner, contractor and note
- * from the copy of the task the approving device held (textFromTask). `task`
- * is the cloud's row of that task now. A field the new row still holds as
- * taken, which the cloud's row has otherwise, was changed or cleared on
- * another device before this one heard: only that side changed it, so the
- * cloud's stands (owner answer Q28) and the new row takes it, stamped just
- * after both rows so that this device takes the corrected row back. When
- * this device changed it too, its own edit of the task's row has already
- * been weighed in this pass and waits in Review Conflicts: the cloud's value
- * stays on the new row until he chooses. The same row when nothing differs,
- * when nothing was taken, or when the cloud has no such row.
+ * Review P4 F1 (6 Oct 2026): the one rule for what David has set on a task
+ * that a master moved to a new row.
+ *
+ * The new row says what it took from the row it replaces, and which row that
+ * is (textFromTask): for each of his owner, contractor, note, next step and
+ * milestone that the file left unset, the value that row had, a blank
+ * included. That record is the copy the new row started from. So, of a field
+ * with an entry there:
+ *  - the row still holds it as recorded: it is a copy, typed by nobody on
+ *    this row;
+ *  - the row holds something else: it was set or cleared on this row.
+ * A field with no entry is the file's own value, or the row was saved before
+ * rows kept this record (Build 229, and the first builds of this round, which
+ * recorded only the values a row took): those keep the older rules.
+ *
+ * (A row never changed since its import holds nothing David set on it: a
+ * blank there where the record has text is no clear of his. No import leaves
+ * a row so; the schedule reviewer's generator does, to stand for a row Build
+ * 229 left blank.)
  */
-export function scheduleItemTextAsItsTaskHasIt(
+export function scheduleItemHoldsAsTaken(row: ScheduleItem, field: string): boolean {
+  const taken = row.textFromTask;
+  if (!taken || !Object.prototype.hasOwnProperty.call(taken, field)) return false;
+  return fieldValue(row, field) === fieldValue(taken, field) || (isBlank(fieldValue(row, field)) && !row.updatedAt);
+}
+
+const isBlank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
+
+/**
+ * Review P4 F1: a master's new row weighed against the row of its task
+ * (`task`), field by field, by the rules of owner answer Q28, with what the
+ * new row took as the copy both started from:
+ *  - only the task's row has changed since: its value goes on the new row (a
+ *    clear like any other change), and the record with it;
+ *  - only the new row has: its value stands;
+ *  - both have, to different values: `bothChanged` says which stands, or that
+ *    David is to be asked. Asked, the task's value goes on the new row until
+ *    he chooses, and the field is named in `asked`.
+ * His project controls are merged as two copies of one task's always are:
+ * each field has its own time, the later entry stands, nothing is asked.
+ * A row that changes is stamped just after both rows and all its own times,
+ * so every device takes it. The same row when nothing differs.
+ *
+ * Used where the two rows meet: when the new row first goes up (against the
+ * cloud's row; the approval may have had no signal, and the device may not
+ * have heard what another device did to the task), and at Set Active and Make
+ * Current (against the row hidden for it).
+ */
+export function scheduleItemAgainstItsTask(
   row: ScheduleItem,
   task: ScheduleItem | null | undefined,
-  /**
-   * The copy this device's own edit of the task's row started from, while that edit still waits in the queue: the
-   * cloud's row reading as that copy has not been changed by anyone else, it is only behind this device, and the
-   * value taken stands (the reviewer's generator, seeds 1126, 1190, 1281: the new row went up before the edit did,
-   * and took the blank the cloud's row still had).
-   */
-  ownEditWaiting?: ScheduleItemEditBase | null,
-  /** The row's first upload: a blank it had nothing to take for takes the cloud's value too (not at Set Active, where a blank on a row already shown may be one he left). */
-  firstUpload = false,
-): ScheduleItem {
+  bothChanged: 'ask' | 'row' | 'task',
+): Readonly<{ row: ScheduleItem; asked: string[]; base: ScheduleItemEditBase }> {
   const taken = row.textFromTask;
-  if (!taken || !task || task.id !== taken.taskId) return row;
-  const blank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
-  const same = (left: string, right: string) => left === right || (blank(left) && blank(right));
-  const agreed = (field: string) => (ownEditWaiting && Object.prototype.hasOwnProperty.call(ownEditWaiting.fields, field)
-    ? fieldValue(ownEditWaiting.fields, field) : fieldValue(taken, field));
-  // Still as taken; or a blank where the copy this device held had nothing to take (the cloud's row may have been given
-  // an owner on another device since: seed 20251, where the row's new stamp then kept the sync's carry from filling it).
-  const asTaken = (field: string) => (Object.prototype.hasOwnProperty.call(taken, field)
-    ? fieldValue(row, field) === fieldValue(taken, field) : firstUpload && blank(fieldValue(row, field)));
-  const behind = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => asTaken(field) &&
-    !same(fieldValue(task, field), fieldValue(row, field)) && !same(fieldValue(task, field), agreed(field)));
-  const now: Partial<ScheduleItem> = Object.fromEntries(behind.map(field => [field, task[field] ?? '']));
-  // Review N3 C: his project controls came the same way. The cloud's row of the task may hold an approval or a
-  // schedule impact set on another device since: of the two, the later entry of each field (as two copies of one
-  // task's are merged).
+  const none = { row, asked: [], base: { updatedAt: null, fields: {} } };
+  if (!taken || !task) return none;
+  const next: Record<string, unknown> = {};
+  const asked: string[] = [];
+  SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
+    const here = fieldValue(row, field);
+    const theirs = fieldValue(task, field);
+    if (theirs === here) return;
+    if (!scheduleItemHoldsAsTaken(row, field)) {
+      // Set or cleared on this row: it stands unless the task's row has changed since too.
+      if (theirs === fieldValue(taken, field) || bothChanged === 'row') return;
+      if (bothChanged === 'ask') asked.push(field);
+    }
+    next[field] = task[field] ?? '';
+  });
   const controls = task.projectControls ? mergeProjectControlsRevisions(row.projectControls, task.projectControls) : row.projectControls;
-  if (fieldValue({ controls }, 'controls') !== fieldValue({ controls: row.projectControls && normalizeProjectControls(row.projectControls) }, 'controls')) now.projectControls = controls;
-  if (Object.keys(now).length === 0) return row;
-  // (After the row's own import time too: a row is ranked by the latest of its times.)
+  const controlsChanged = fieldValue({ projectControls: controls }, 'projectControls') !== fieldValue(row, 'projectControls');
+  if (Object.keys(next).length === 0 && !controlsChanged) return none;
   return {
-    ...row, ...now, textFromTask: { ...taken, ...Object.fromEntries(behind.map(field => [field, task[field] ?? ''])) },
-    updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
+    row: {
+      ...row, ...next, ...(controlsChanged ? { projectControls: controls } : {}), textFromTask: { ...taken, ...next },
+      // (After the row's own import time too: a row is ranked by the latest of its times.)
+      updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
+    } as ScheduleItem,
+    asked,
+    base: { updatedAt: null, fields: Object.fromEntries(asked.map(field => [field, taken[field as keyof typeof taken] ?? ''])) },
   };
 }
 
 /**
- * Review N3 R3: an edit of David's owner, contractor or note typed on a row
- * a newer master has since replaced (by a device that had not heard of that
- * master), as an edit of the row the task lives on now: that row with his
- * values, weighed from the copy his edit started from, by the same rules as
- * any edit (owner answer Q28). Null when the edit holds no such field with
- * its copy, or changes nothing on that row. A field that row still holds
- * exactly as it took it from the task (textFromTask: the web's upload saved
- * the row days ago, and the task's note has been typed over since) was not
- * typed on that row: it counts as the copy his edit started from, so his
- * goes over it with nothing asked (the reviewer's always-online run with
- * clears, seed 65096: a card "his note / the note the upload copied").
- * `between`: the rows of the task between the one he typed on and this one
- * (he missed two masters). Only a value every one of them also still holds
- * as it took it came down untouched: one typed on a row in between, and
- * copied on by the second master, is another device's edit of the task, and
- * his is asked about over it.
+ * Review N3 R3: an edit of what David sets on a task, typed on a row a newer
+ * master has since replaced (by a device that had not heard of that master),
+ * as an edit of the row the task lives on now: that row with his values,
+ * weighed from the copy his edit started from, by the same rules as any edit
+ * (owner answer Q28). Null when the edit holds no such field with its copy,
+ * or changes nothing on that row.
+ *
+ * A field that row still holds as it took it (scheduleItemHoldsAsTaken) was
+ * not typed on that row: it counts as the copy his edit started from, so his
+ * goes over it with nothing asked. `between`: the rows of the task between
+ * the one he typed on and this one (he missed two masters). Only a value
+ * every one of them also still holds as taken came down untouched: one typed
+ * on a row in between, and copied on by the second master, is another
+ * device's edit of the task, and his is asked about over it.
+ *
+ * Review P4 F3: not a field whose value in this edit is the very value the
+ * task's new row recorded as taken from the row he typed on. That row was
+ * made from this edit (on this device, after he typed it), so whatever it
+ * holds now was set after it: one device, no signal, owner Mike typed, the
+ * master approved, the owner cleared; "Mike" was then sent on to the new row
+ * and went over the clear.
+ *
+ * A row saved before rows recorded what they took: a field it holds nothing
+ * in counts as taken (a blank nobody typed), anything else as typed there.
  */
 export function scheduleItemTextEditOnRow(
-  edit: Readonly<{ itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }>,
+  edit: Readonly<{ id?: string; itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }>,
   fields: readonly string[],
   row: ScheduleItem,
   between: readonly ScheduleItem[] = [],
-): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase } | null {
+): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase; sentOn: string[] } | null {
   const base = edit.base;
   if (!isEditBase(base)) return null;
+  // (Made after it: a row saved before he typed can say it took the same value, a blank most of all. The note typed
+  // and cleared again on a row made current in between was not sent on to the newest row, which had taken a blank.)
+  const typedAt = Date.parse(edit.itemData.updatedAt || '');
+  const madeFromThisEdit = (field: string) => Boolean(edit.id) && [row, ...between].some(held => Boolean(held.textFromTask) &&
+    held.textFromTask!.taskId === edit.id && Object.prototype.hasOwnProperty.call(held.textFromTask, field) &&
+    fieldValue(held.textFromTask, field) === fieldValue(edit.itemData, field) && Date.parse(held.importedAt || held.createdAt || '') > typedAt);
   const typed = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
-    fieldValue(edit.itemData, field) !== fieldValue(row, field));
+    fieldValue(edit.itemData, field) !== fieldValue(row, field) && fieldValue(edit.itemData, field) !== fieldValue(base.fields, field) &&
+    !madeFromThisEdit(field));
   if (typed.length === 0) return null;
-  // (Or holds nothing there and took nothing for it: a blank nobody typed. Seed 5052 of the always-online run: an owner
-  // set on the web, which sends no edit on, then changed on the phone, asked "Ana / blank" about an uploaded row.)
   const asTaken = (held: ScheduleItem, field: string) => (held.textFromTask && Object.prototype.hasOwnProperty.call(held.textFromTask, field)
-    ? fieldValue(held, field) === fieldValue(held.textFromTask, field) : /^(null|"\s*")$/.test(fieldValue(held, field)));
+    ? scheduleItemHoldsAsTaken(held, field) : isBlank(fieldValue(held, field)));
   const stillAsTaken = (field: string) => [row, ...between].every(held => asTaken(held, field));
   return {
     id: row.id,
     itemData: { ...row, ...Object.fromEntries(typed.map(field => [field, edit.itemData[field]])) },
     changedFields: [...typed, 'updatedAt'],
     base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])) },
+    // (Only for the row that replaced the very row he typed on: that row holds his value too now, so the two agree
+    // again. Sent on past a row in between, which is not written, the newest row's record stays what that row had:
+    // an owner cleared so, two masters on, read as "a blank it took", and the row in between gave the owner back.)
+    sentOn: Boolean(edit.id) && row.textFromTask?.taskId === edit.id ? [...typed] : [],
   };
+}
+
+/**
+ * Review P4: the record a row keeps of what it took (textFromTask), after
+ * the sync itself has written some of those fields on it: an edit sent on
+ * from the row it replaces (scheduleItemTextEditOnRow, sentOn), or a carry.
+ * Such a field is again a copy of what that row has, so the record follows
+ * it; a clear David then types on the row reads as his, not as the blank the
+ * row once took. (A note sent on to the
+ * task's new row and cleared there afterwards read as "still as taken", and
+ * was filled again from the old row.) An edit he makes on the row itself
+ * leaves the record alone: that is what makes the field read as set there.
+ * Nothing when the row keeps no record, or none of the fields is in it.
+ */
+export function scheduleItemRecordAfterTheSyncWrote(
+  row: ScheduleItem,
+  written: ScheduleItem,
+  fields: readonly string[],
+): Partial<Pick<ScheduleItem, 'textFromTask'>> {
+  const taken = row.textFromTask;
+  const synced = taken ? SCHEDULE_TYPED_TEXT_FIELDS.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(taken, field)) : [];
+  return taken && synced.length > 0 ? { textFromTask: { ...taken, ...Object.fromEntries(synced.map(field => [field, written[field] ?? ''])) } } : {};
 }
 
 /**
@@ -650,9 +742,13 @@ export function scheduleItemEditBaseOverTextBroughtForward(
   remote: ScheduleItem,
   earlier: readonly ScheduleItem[],
 ): ScheduleItemEditBase {
-  const blank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
+  // Review P4 F5: only on a row that keeps no record of taking the field. The carry brings text forward to rows saved
+  // before rows recorded what they took. On a row that says it took the field, the same text on an earlier row is that
+  // copy's source: an owner typed on the row in between and copied on by the second master read as "brought forward",
+  // and an older owner from a device with no signal across both masters went over it with no card.
   const brought = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => changedFields.includes(field) &&
-    Object.prototype.hasOwnProperty.call(base.fields, field) && blank(fieldValue(base.fields, field)) && !blank(fieldValue(remote, field)) &&
+    Object.prototype.hasOwnProperty.call(base.fields, field) && isBlank(fieldValue(base.fields, field)) && !isBlank(fieldValue(remote, field)) &&
+    !Object.prototype.hasOwnProperty.call(remote.textFromTask ?? {}, field) &&
     earlier.some(row => fieldValue(row, field) === fieldValue(remote, field)));
   return brought.length === 0 ? base : { ...base, fields: { ...base.fields, ...Object.fromEntries(brought.map(field => [field, remote[field]])) } };
 }

@@ -72,7 +72,7 @@ import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
-  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemTextAsItsTaskHasIt, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -759,6 +759,8 @@ type ScheduleItemRecordPayload = {
    * (review N2 P1): each only fills a blank in the cloud's row, and is never asked about.
    */
   carriedText?: Array<keyof ScheduleItem>;
+  /** The fields of an edit typed on a row a newer master has replaced, as sent on to the task's row (review N3 R3): the sync's write there, not an edit typed on that row. */
+  sentOn?: Array<keyof ScheduleItem>;
   /**
    * The copy the edit started from (owner answer Q28, 2 Oct 2026): each
    * changed field's value before the edit, and that copy's stamp. The upload
@@ -3614,9 +3616,6 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     settledQueueItemIds: resolvedIds,
     queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
       typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
-    // The copy each task edit in this pass started from, by task (review N3 R3: a master's new row is weighed with it).
-    queuedScheduleItemEditBases: new Map(uploadBatch.flatMap(item => (item.entity === 'schedule_item' && isEditBase((item.payload as Partial<ScheduleItemRecordPayload>).base)
-      ? [[(item.payload as ScheduleItemRecordPayload).id, (item.payload as ScheduleItemRecordPayload).base as ScheduleItemEditBase] as const] : []))),
   };
   // Still queued, with no error: no retry is owed until David chooses.
   heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
@@ -6461,7 +6460,6 @@ type QueueUploadContext = {
   scheduleItemsById?: Map<string, ScheduleItem>;
   /** The ids of the tasks this pass has queued (independent review R02): the ones the list did not hold are read together. */
   queuedScheduleItemIds?: readonly string[];
-  queuedScheduleItemEditBases?: ReadonlyMap<string, ScheduleItemEditBase>;
   /** Those tasks' rows as read by id: the row, or null when the cloud has none. */
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
@@ -6507,7 +6505,7 @@ async function preloadProjectUpdateCloudReceipts(
 }
 
 function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
-  return queue
+  return scheduleRowsAfterTheRowsTheyAnswerTo(queue
     .map((item, index) => ({ item, index }))
     .sort((left, right) => {
       const leftIsTask = left.item.entity === 'schedule_item';
@@ -6528,7 +6526,31 @@ function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
 
       return left.index - right.index;
     })
-    .map(entry => entry.item);
+    .map(entry => entry.item));
+}
+
+/**
+ * Review P4 F3 and F6 (6 Oct 2026): a task's row goes up after the rows it answers to that are waiting too. Tasks go
+ * newest first, so a master's new row went up before this device's own older edit of the row it replaced, and the
+ * second of two masters approved with no signal before the first. A new row is weighed against the cloud's row of the
+ * task it replaces when it first goes up; that row has to hold this device's own word, or be there at all, by then.
+ * (The older edit, sent after it, went on to the new row as if it were news: an owner he had cleared since came back.)
+ */
+function scheduleRowsAfterTheRowsTheyAnswerTo(ordered: readonly SyncQueueItem[]): SyncQueueItem[] {
+  const rowOf = (item: SyncQueueItem) => (item.entity === 'schedule_item' && item.operation !== 'delete'
+    ? (item.payload as Partial<ScheduleItemRecordPayload>).itemData ?? null : null);
+  const waiting = new Map(ordered.flatMap(item => { const row = rowOf(item); return row && typeof row.id === 'string' ? [[row.id, item] as const] : []; }));
+  const placed = new Set<SyncQueueItem>();
+  const next: SyncQueueItem[] = [];
+  const place = (item: SyncQueueItem) => {
+    if (placed.has(item)) return;
+    placed.add(item);
+    const row = rowOf(item);
+    if (row) [...scheduleTaskEarlierIds(row), row.textFromTask?.taskId ?? ''].forEach(id => { const earlier = waiting.get(id); if (earlier) place(earlier); });
+    next.push(item);
+  };
+  ordered.forEach(place);
+  return next;
 }
 
 async function prepareQueueItemProjectIdentity(
@@ -6869,13 +6891,17 @@ async function uploadQueueItem(
     }
     // The cloud had no row for this task when it was read by its id.
     const newToCloud = !remote;
-    // Review N3 R3 (Medium, caused by 14b3569): a master's new row first goes up with his owner, contractor and note
-    // as the cloud's row of the task has them now, where the copy the approving device took them from was behind
-    // (scheduleItemTextAsItsTaskHasIt). That row is read by its id when the list did not hold it; when it cannot be
-    // read the new row waits here, as any task whose cloud copy cannot be checked does.
+    // Review N3 R3, review P4 F1: a master's new row first goes up weighed against the cloud's row of the task it
+    // replaces, field by field, from what it took of that row (scheduleItemAgainstItsTask): the approval may have had
+    // no signal, and the device may not have heard what was set on the task elsewhere. His text and his controls alike,
+    // whether the row took a value or a blank; a field changed on that row and on the new row is asked about. That
+    // row is read by its id when the list did not hold it; when it cannot be read the new row waits here, as any task
+    // whose cloud copy cannot be checked does. (This device's own waiting edits of that row have gone up before it:
+    // pendingUploadOrder.)
     const takenFromId = newToCloud ? payload.itemData.textFromTask?.taskId : undefined;
     const takenFrom = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
     if (typeof takenFrom === 'string') return takenFrom;
+    const firstSent = newToCloud ? scheduleItemAgainstItsTask(payload.itemData, takenFrom, 'ask') : null;
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
     // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
@@ -6946,7 +6972,7 @@ async function uploadQueueItem(
     const wholeWeighed = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote)
       : null;
-    const asked = weighed?.asked ?? wholeWeighed?.asked ?? [];
+    const asked = weighed?.asked ?? wholeWeighed?.asked ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
     // answer Q28). A whole copy decides none of a card's fields (review N1): null.
     const settles: readonly string[] | null = sentFields;
@@ -6964,7 +6990,7 @@ async function uploadQueueItem(
           id: payload.id,
           itemData: payload.itemData,
           changedFields: [...asked, ...(weighed?.held ?? []), 'updatedAt'] as Array<keyof ScheduleItem>,
-          base: scheduleItemEditBaseOf(payload.base as ScheduleItemEditBase, asked),
+          base: scheduleItemEditBaseOf((firstSent?.asked.length ? firstSent.base : payload.base) as ScheduleItemEditBase, asked),
           askedFields: asked,
         } satisfies ScheduleItemRecordPayload,
         remotePayload: row,
@@ -7013,6 +7039,8 @@ async function uploadQueueItem(
             remote,
           ),
           ...(laterPercentGivenBack ?? {}),
+          // (What the sync itself writes on a row is again a copy of what the task has: the row's record follows it.)
+          ...scheduleItemRecordAfterTheSyncWrote(remote, sent.itemData, sentFields.filter(field => (sent.carriedText ?? []).includes(field) || (sent.sentOn ?? []).includes(field))),
           updatedAt: new Date().toISOString(),
         }
       : recovered
@@ -7030,8 +7058,7 @@ async function uploadQueueItem(
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
         // and earlier task ids (A8 pass 10 L2).
-        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(
-          scheduleItemTextAsItsTaskHasIt(payload.itemData, takenFrom, takenFromId ? context.queuedScheduleItemEditBases?.get(takenFromId) : null, true), remote), remote);
+        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(firstSent?.row ?? payload.itemData, remote), remote);
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       if (asked.length > 0) return askAbout(remote);
       if (

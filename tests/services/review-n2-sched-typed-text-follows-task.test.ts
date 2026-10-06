@@ -142,15 +142,17 @@ describe('Review N3 C: what else he sets on a task goes with it to the row a mas
     const framing = one(onG, 'Framing');
     expect(framing.id).not.toBe(framingF);
     expect([dates(framing), ...controlsOf(framing), framing.nextAction, framing.milestone]).toEqual(['10/05/2026-10/15/2026', 'Pending', 5, 'Lee', 'Order rebar', 'Slab pour']);
-    // The row says which task's row it took them from (review N3 R3), with the text it took.
-    expect(framing.textFromTask).toEqual({ taskId: framingF, nextAction: 'Order rebar', milestone: 'Slab pour' });
+    // The row says which task's row it replaces (review N3 R3) and what that row had of his text, a blank too (review P4 F1).
+    expect(framing.textFromTask).toEqual({ taskId: framingF, owner: '', contractor: '', notes: '', nextAction: 'Order rebar', milestone: 'Slab pour' });
   });
 
   it('with only controls to take, the row still says which row it took from; a task with none set gives none', () => {
     const onlyControls = setControls(onF, framingF, { approvalStatus: 'Approved' }, '2026-09-08T10:00:00.000Z');
     expect(one(approve(onlyControls, G, [FRAMING_G, ROOF]), 'Framing')).toMatchObject({ textFromTask: { taskId: framingF } });
     const plain = one(approve(onF, G, [FRAMING_G, ROOF]), 'Framing');
-    expect([plain.projectControls ?? null, plain.textFromTask ?? null]).toEqual([one(onF, 'Framing').projectControls ?? null, null]);
+    // (Review P4 F1: the row says which row it replaces even so, and that it took nothing: it is weighed from that.)
+    expect([plain.projectControls ?? null, plain.textFromTask]).toEqual([one(onF, 'Framing').projectControls ?? null,
+      { taskId: framingF, owner: '', contractor: '', notes: '', nextAction: '', milestone: '' }]);
   });
 
   it('a file states no controls: a row that arrives with the blank set every task starts with takes the task\'s as they are', () => {
@@ -379,11 +381,11 @@ describe('Review N2 P1: the web\'s upload and Make Current, and the phone\'s Set
     expect(typed(one(setActive(noteOnF, G, '2026-09-18T12:00:00.000Z'), 'Framing'))).toEqual(['Mike', 'Acme Framing', 'Crew back Wednesday']);
   });
 
-  it('and a note the newer row never took (typed on the older row while that was shown, carried at Set Active, then cleared on the newer row): the row changed later keeps its blank', () => {
-    // G's row is saved before any note exists, so it says nothing of having taken one.
+  it('and a note typed only later, on the older row while that was shown: it reaches the newer row at Set Active; cleared there after, the newer row keeps its blank', () => {
+    // G's row is saved before any note exists: it says it took a blank.
     const onG = approve(onF, G, [FRAMING_G, ROOF]);
     const framingG = one(onG, 'Framing').id;
-    expect(one(onG, 'Framing').textFromTask ?? null).toBeNull();
+    expect(one(onG, 'Framing').textFromTask).toMatchObject({ taskId: framingF, notes: '' });
     const backOnF = setActive(onG, F, '2026-09-15T12:00:00.000Z');
     const noteOnF = patch(backOnF, framingF, { notes: 'Crew short Tuesday' }, '2026-09-15T15:00:00.000Z');
     const onGWithNote = setActive(noteOnF, G, '2026-09-16T12:00:00.000Z');

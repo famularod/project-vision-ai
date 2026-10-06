@@ -25,7 +25,7 @@ import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence'
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemTextAsItsTaskHasIt } from '../../services/ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask } from '../../services/ScheduleItemEditBase';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
@@ -144,10 +144,12 @@ describe('Review N2 P1, second part: an owner and a note stranded on a hidden ro
     const onH = approve(stranded, H, [FRAMING_H, ROOF]);
     const framing = one(onH, 'Framing');
     expect(typed(framing)).toEqual(MIKE);
-    // (A row says which fields it took from the task's own row, and those are weighed against the cloud's copy of
-    // that row when it first goes up. G's row is blank in the cloud too: noted as taken from it, they were cleared.)
-    expect(Object.keys(framing.textFromTask ?? {}).filter(field => field !== 'taskId')).toEqual([]);
-    expect(typed(scheduleItemTextAsItsTaskHasIt({ ...framing, textFromTask: framing.textFromTask ?? { taskId: framingG } }, saved(onH, framingG)))).toEqual(MIKE);
+    // (A row says what the row it replaces had, and is weighed against the cloud's copy of that row when it first goes
+    // up. G's row had nothing, and has nothing in the cloud: noted as taken from it, the text was cleared.)
+    // Review P4 F1: the record is there, and says G's row had nothing; so the text reads as set on the new row itself.
+    expect(framing.textFromTask).toEqual({ taskId: framingG, owner: '', contractor: '', notes: '', nextAction: '', milestone: '' });
+    const sent = scheduleItemAgainstItsTask(framing, saved(onH, framingG), 'ask');
+    expect([typed(sent.row), sent.asked]).toEqual([MIKE, []]);
   });
 
   it('two masters since he typed them, both on Build 229: the third master\'s row reads back through the row between', () => {

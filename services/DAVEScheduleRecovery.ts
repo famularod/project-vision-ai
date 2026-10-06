@@ -141,7 +141,8 @@ export function recoverDAVEScheduleRecords({
     combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies, deleted));
   });
   const dropped = deletedRowsHeld(local, cloud, deleted);
-  return typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), dropped), dropped);
+  return typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), dropped), dropped,
+    new Map(cloud.map(record => [normalized(record.id), record] as const)));
 }
 
 function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
@@ -506,7 +507,12 @@ export function scheduleItemsTakingCarriedText(
  * too) gives the note back once. (Not since review N3 R3 when the new row
  * says it took a note from the old row: see below.)
  */
-function typedTextCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
+function typedTextCarriedToRevisedTasks(
+  records: ScheduleItem[],
+  deleted: readonly ScheduleItem[] = [],
+  /** The cloud's rows in this merge, by id: what this device holds beyond them is its own word, waiting to go up. */
+  cloud?: ReadonlyMap<string, ScheduleItem>,
+): ScheduleItem[] {
   const answering = new Map<string, ScheduleItem[]>();
   records.forEach(record => scheduleTaskEarlierIds(record).forEach(id => {
     const key = normalized(id);
@@ -524,25 +530,62 @@ function typedTextCarriedToRevisedTasks(records: ScheduleItem[], deleted: readon
     const taken = from.get(newest[0]);
     if (!taken || timestamp(earlier.updatedAt) > timestamp(taken.updatedAt)) from.set(newest[0], earlier);
   });
-  if (from.size === 0) return records;
+  const byId = new Map(records.map(record => [normalized(record.id), record] as const));
   return records.map(record => {
-    const earlier = from.get(record);
-    if (!earlier) return record;
     // As the row was before a percent carried in this same merge stamped it (withOwnStamp).
     const own = rowsTakingCarriedProgress.get(record) ?? record;
-    if (!(timestamp(earlier.updatedAt) > timestamp(own.updatedAt))) return record;
-    // Review N3 R3: not a field this row took a value for from that earlier row and has lost since (the row says what
-    // it took, textFromTask). That blank is his clear, and a clear is a change like any other. The earlier row was
-    // changed later by something else (an owner set there by a device that had not heard of the master, a lookahead's
-    // delete giving its dates back), and the note he had cleared came back on every device: the second limit above,
-    // gone for a row that says what it took. Nor is other text typed on the earlier row since carried into it: that
-    // edit goes on to this row with its own upload and is weighed there against his clear (Review Conflicts asks,
-    // SyncService); filled here as well, the card it raised was left asking about a value the row already held.
-    // (A row never changed since its import holds no clear of his: its blank is filled as before.)
-    const took = timestamp(own.updatedAt) > 0 ? record.textFromTask : null;
-    const fields = TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !(took && text(took[field])));
+    // Review P4 F1 and F4: a row that says what it took for a field from the row it replaces (textFromTask) is not
+    // carried into by the rule above. That rule goes by one time per row, so a hidden row stamped later for any reason
+    // reads as "typed later": an owner he had cleared came back after the next master, because the oldest row, stamped
+    // by the other device's percent, lent it to the newest row's blank. Such a row is kept right by weighing it from
+    // its record: when it first goes up, when an edit typed on an earlier row arrives, at Set Active and Make Current
+    // (ScheduleItemEditBase). Rows saved before rows kept the record (Build 229, which left his text behind on the
+    // hidden row) are carried as before.
+    const took = record.textFromTask ?? null;
+    const recorded = (field: TypedTextField) => Boolean(took) && Object.prototype.hasOwnProperty.call(took, field);
+    // Still as taken (and a row never changed since its import whose blank stands where it took text is no clear of his).
+    const asTaken = (field: TypedTextField) => recorded(field) &&
+      (text(record[field]) === text(took![field]) || (!text(record[field]) && !(timestamp(own.updatedAt) > 0)));
+    // A field it does record is taken only by the record: from the very row it replaces, only while this row still holds
+    // it as taken, and only in a merge that holds the cloud's copy of that row (so what this device has of it is not
+    // behind).
+    const replaced = took && cloud ? byId.get(normalized(took.taskId)) : undefined;
+    // A blank it took, where the row it took it from has text now: typed there by something that does not send its
+    // edit on (the web on a master made current again, a whole copy from a lookahead approved with no signal), or by
+    // this device with no signal, on the row he still saw, and waiting to go up (shown on the task at once). Filled,
+    // and sent as the carry is: it only fills a blank in the cloud's row. Through a row in between only while that
+    // row holds the same blank it took itself; only the newest row of the task (the rows in between are left as they
+    // are: filled, each would lend on to the next in a later merge, whatever was typed there since); and only when the
+    // row with the text was changed after this row last was. The record says what the row held, not when: a blank
+    // typed back over an owner set here reads as the blank taken (seed 9179 of the reviewer's run with two masters
+    // apart: the owner of a card still open was written over the web's later clear).
+    const lender = (field: TypedTextField): ScheduleItem | null => {
+      if (!replaced || answering.has(normalized(record.id)) || !asTaken(field) || text(record[field])) return null;
+      let row: ScheduleItem | undefined = replaced;
+      for (let hops = 0; row && cloud!.has(normalized(row.id)) && hops < records.length; hops += 1) {
+        if (text(row[field])) return timestamp(row.updatedAt) > timestamp(own.updatedAt) ? row : null;
+        const before: ScheduleItem['textFromTask'] = row.textFromTask;
+        if (!before || !Object.prototype.hasOwnProperty.call(before, field) || text(before[field])) return null;
+        row = byId.get(normalized(before.taskId));
+      }
+      return null;
+    };
+    const lent = new Map(TYPED_TEXT_FIELDS.flatMap(field => { const row = lender(field); return row ? [[field, row] as const] : []; }));
+    const filledFromEarlier = [...lent.keys()];
+    const earlier = from.get(record);
+    const carried = earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt)
+      ? TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !recorded(field))
+      : [];
+    const fields = [...new Set([...carried, ...filledFromEarlier])];
     if (fields.length === 0) return record;
-    const filled = { ...record, ...Object.fromEntries(fields.map(field => [field, earlier[field]])) } as ScheduleItem;
+    const fromEarlier = Object.fromEntries(filledFromEarlier.map(field => [field, lent.get(field)![field] ?? '']));
+    // What it has from the very row it replaces is again a copy of what that row has: the record follows it, so a clear
+    // he types here later reads as his. (Not what came through a row in between: the record is of that row, still blank.)
+    const fromReplaced = Object.fromEntries(filledFromEarlier.filter(field => lent.get(field) === replaced).map(field => [field, replaced![field] ?? '']));
+    const filled = {
+      ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, earlier![field]])),
+      ...(took && Object.keys(fromReplaced).length > 0 ? { textFromTask: { ...took, ...fromReplaced } } : {}),
+    } as ScheduleItem;
     const percentBefore = rowsTakingCarriedProgress.get(record);
     if (percentBefore) rowsTakingCarriedProgress.set(filled, percentBefore);
     rowsTakingCarriedText.set(filled, fields);
