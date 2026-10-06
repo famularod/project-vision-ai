@@ -313,23 +313,24 @@ export function daveWebReportSnapshotCloud(
     expectedOwnerId?: string;
   }>) => Promise<'saved' | 'unavailable'>,
 ): DAVEReportSnapshotCloud {
-  // The account the shared record last answered for: a write that names none is that account's.
-  let lastOwner: string | null = null;
-  return Object.freeze({
+  // The account the shared record last answered for (a write that names none is that account's), and the last
+  // write of each period with how it was answered.
+  const asked: SharedRecordAsked = { owner: null, writes: new Map() };
+  const cloud: DAVEReportSnapshotCloud = Object.freeze({
     async read(scopeKey: string, reportFormat: DAVEReportFormat) {
-      const asked = ++sharedSeq;
+      const askedAt = ++sharedSeq;
       const result = await load(scopeKey, reportFormat);
       if (result === 'unavailable') return null;
-      lastOwner = result.ownerId;
+      asked.owner = result.ownerId;
       // What the shared record runs from, as this browser has now seen it (review N2 follow-up).
       const shown = reportPeriodSentAt(validReportPeriodSnapshot(result.snapshot, scopeKey, reportFormat));
-      noteSharedRecord(result.ownerId, scopeKey, reportFormat, shown, asked, 'read');
+      noteSharedRecord(result.ownerId, scopeKey, reportFormat, shown, askedAt, 'read');
       return result;
     },
     async write(snapshot: DAVEReportSnapshot, expectedOwnerId?: string) {
-      const asked = ++sharedSeq;
-      const owner = expectedOwnerId ?? lastOwner;
-      const answer = await save({
+      const askedAt = ++sharedSeq;
+      const owner = expectedOwnerId ?? asked.owner;
+      const saving = save({
         scopeKey: snapshot.scopeKey,
         format: snapshot.reportFormat as DAVEReportFormat,
         snapshot,
@@ -337,13 +338,84 @@ export function daveWebReportSnapshotCloud(
         deliveredAt: reportPeriodSentAt(snapshot),
         expectedOwnerId,
       });
+      if (snapshot.reportFormat) {
+        asked.writes.set(`${snapshot.scopeKey}|${snapshot.reportFormat}`, saving.then(answer => answer, () => 'failed' as const));
+      }
+      const answer = await saving;
       // Accepted: the shared record now runs from this period's send, or from a later one it kept.
       if (answer === 'saved' && owner && snapshot.reportFormat) {
-        noteSharedRecord(owner, snapshot.scopeKey, snapshot.reportFormat, reportPeriodSentAt(snapshot), asked, 'accepted');
+        noteSharedRecord(owner, snapshot.scopeKey, snapshot.reportFormat, reportPeriodSentAt(snapshot), askedAt, 'accepted');
       }
       return answer;
     },
   });
+  sharedRecordAsked.set(cloud, asked);
+  return cloud;
+}
+
+/** What a cloud made here was last asked: for which account, and each period's last write with its answer. */
+type SharedRecordAsked = { owner: string | null; writes: Map<string, Promise<'saved' | 'unavailable' | 'failed'>> };
+const sharedRecordAsked = new WeakMap<DAVEReportSnapshotCloud, SharedRecordAsked>();
+
+/** How long a send waits for the shared record's answer before the page says where the send stands. */
+const SEND_SHARED_ANSWER_WAIT_MS = 2500;
+
+/**
+ * Review N2 follow-up (5 Oct 2026): where a send just recorded on this
+ * computer stands in the shared record. The page said "The next report on
+ * every device runs from this one" from its last READ of the shared record,
+ * not from whether this send's own write arrived: a send made as the record
+ * went out of reach said "every device" before it had got there. This waits
+ * (a moment at most) for the answer to that write, or for a read that shows
+ * the send there: 'checked' when the record is known to run from the send;
+ * 'unavailable' when reports are not shared between his devices yet;
+ * 'unchecked' when it has not arrived (yet).
+ */
+export async function daveWebReportSendReachedShared(
+  cloud: DAVEReportSnapshotCloud,
+  period: Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat }>,
+  sentAt: string,
+  waitMs: number = SEND_SHARED_ANSWER_WAIT_MS,
+): Promise<DAVEReportSharedCheck> {
+  const asked = sharedRecordAsked.get(cloud);
+  const write = asked?.writes.get(`${period.scopeKey}|${period.reportFormat}`);
+  if (!asked || !write) return 'unchecked';
+  const arrived = () => Boolean(asked.owner && daveWebReportSendSeenInSharedRecord(asked.owner, period, sentAt));
+  if (arrived()) return 'checked';
+  let waiting: ReturnType<typeof setTimeout> | undefined;
+  let stopListening: () => void = () => undefined;
+  const answer = await Promise.race([
+    write,
+    // A read of the record that shows the send there says so too, whatever became of the write's own answer.
+    new Promise<'seen'>(resolve => {
+      stopListening = onDAVEWebReportSharedRecordSeen(() => {
+        if (arrived()) resolve('seen');
+      });
+    }),
+    new Promise<'no_answer_yet'>(resolve => {
+      waiting = setTimeout(() => resolve('no_answer_yet'), waitMs);
+    }),
+  ]);
+  stopListening();
+  if (waiting) clearTimeout(waiting);
+  if (answer === 'unavailable') return 'unavailable';
+  return arrived() ? 'checked' : 'unchecked';
+}
+
+/** What `onDAVEWebReportSharedRecordSeen` tells: the send the shared record was just seen to run from, for which period. */
+export type DAVEWebSharedRecordSeen = Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat; sentAt: string | null }>;
+const sharedRecordSeenListeners = new Set<(seen: DAVEWebSharedRecordSeen) => void>();
+
+/**
+ * Tells `listener` whenever this browser sees the shared record run from another send than it last saw (review N2
+ * follow-up): the page corrects "Your other devices count from it once this computer reaches the shared record
+ * again" when the send does arrive. Returns how to stop.
+ */
+export function onDAVEWebReportSharedRecordSeen(listener: (seen: DAVEWebSharedRecordSeen) => void): () => void {
+  sharedRecordSeenListeners.add(listener);
+  return () => {
+    sharedRecordSeenListeners.delete(listener);
+  };
 }
 
 /**
@@ -426,7 +498,15 @@ function noteSharedRecord(
     // Asked before the write was accepted: it says nothing against it.
     return;
   }
-  if ((sentAt ?? null) !== known) keepAccountValue(key, sentAt ?? null);
+  if ((sentAt ?? null) === known) return;
+  keepAccountValue(key, sentAt ?? null);
+  for (const listener of [...sharedRecordSeenListeners]) {
+    try {
+      listener({ scopeKey, reportFormat, sentAt: sentAt ?? null });
+    } catch {
+      // A page that fails to hear it changes nothing here.
+    }
+  }
 }
 
 /** Whether this browser has seen the shared record run from the send at `sentAt`, or from a later one (review N2 follow-up). */

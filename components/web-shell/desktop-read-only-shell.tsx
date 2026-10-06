@@ -157,10 +157,12 @@ import {
   daveWebOwnReportSends,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
+  daveWebReportSendReachedShared,
   daveWebReportSentHereAt,
   daveWebReportSentInThisTab,
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
+  onDAVEWebReportSharedRecordSeen,
   recordDAVEWebReportSend,
   shareDAVEWebReportSendsBeforeSignOut,
   type DAVEWebPeriodOutcome,
@@ -5655,7 +5657,24 @@ function ReportWorkspace({
   // Review N2 (5 Oct 2026): `byPeriodCard`: said in the "Since the last report" card, where Mark as Sent is, in
   // place of the report workspace. Mark as Sent can be pressed with the workspace closed, and its outcome was
   // shown only inside it: recorded or refused, the panel just went away.
-  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string; byPeriodCard?: true } | null>(null);
+  // Review N2 follow-up (5 Oct 2026): `awaitingShared`: the line says a send from here has not reached the shared
+  // record yet; it is corrected when the record is seen to run from that send.
+  const [notice, setNotice] = useState<{
+    tone: 'good' | 'danger';
+    text: string;
+    byPeriodCard?: true;
+    awaitingShared?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
+  } | null>(null);
+  useEffect(() => onDAVEWebReportSharedRecordSeen(seen => {
+    setNotice(current => current?.awaitingShared && seen.sentAt === current.awaitingShared.sentAt &&
+      seen.scopeKey === current.awaitingShared.scopeKey && seen.reportFormat === current.awaitingShared.reportFormat
+      ? {
+        tone: 'good',
+        text: daveWebReportRecordedMessage(current.awaitingShared.sentAt, 'checked'),
+        ...(current.byPeriodCard ? { byPeriodCard: true as const } : {}),
+      }
+      : current);
+  }), []);
   // What the generator last put in the draft: a draft still reading so, never
   // saved, follows the period when it loads or moves (everyday item 3).
   // Review N2 (5 Oct 2026): and when a wait for the other device's changes ends. It followed the period only
@@ -5817,7 +5836,16 @@ function ReportWorkspace({
     setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
       ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
       : source);
-    say('good', daveWebReportRecordedMessage(sentAt, currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'unchecked'));
+    // Review N2 follow-up (5 Oct 2026): "on every device" only once this send's own write is known to have
+    // arrived. It was said from the page's last read of the shared record, also for a send made as the record
+    // went out of reach. Until it arrives the line says where the send stands, and is corrected when it does.
+    const reached = await daveWebReportSendReachedShared(periodStore.cloud, sentPeriod, sentAt);
+    setNotice({
+      tone: 'good',
+      text: daveWebReportRecordedMessage(sentAt, reached),
+      ...(byPeriodCard ? { byPeriodCard: true as const } : {}),
+      ...(reached === 'unchecked' ? { awaitingShared: { sentAt, ...sentPeriod } } : {}),
+    });
     return true;
   };
   /** The approved report on screen, as a share or an email draft takes it (review N1 M1). */
