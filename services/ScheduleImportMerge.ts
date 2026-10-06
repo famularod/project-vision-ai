@@ -869,8 +869,20 @@ function pairGroup(
   const ruled = restRows.length === rows.length && restSaved.length === saved.length
     ? pairSameNamedTasks(rows, saved, rule)
     : pairSameNamedTasks(restRows, restSaved, rule);
-  ruled.forEach((item, row) => { if (!saidNotRevision(row, item)) known.set(row, item); });
+  // Review P4 P2-1: nor, for a master (its approval, the web's upload, Set Active, Make Current), with a task whose
+  // Unique ID is another one. The id was looked at only among same-named twins; a master that dropped one Pour slab
+  // and added another left one row and one task of the name at Make Current, and they were paired as "the task,
+  // moved": the new task took the dropped one's note, owner, approval and schedule impact. (His own answer at the
+  // review, and the ids an approval gave, stand as they are. A lookahead's rows pair as before: its file may number
+  // tasks its own way.)
+  ruled.forEach((item, row) => { if (!saidNotRevision(row, item) && !(differentUniqueIds(row, item) && !rule.lookahead)) known.set(row, item); });
   return known;
+}
+
+/** Both carry Microsoft Project's Unique ID, and not the same one: two tasks, whatever their names and dates (review P4 P2-1). */
+function differentUniqueIds(left: ScheduleItem, right: ScheduleItem): boolean {
+  const [one, other] = [key(left.sourceUniqueId), key(right.sourceUniqueId)];
+  return Boolean(one) && Boolean(other) && one !== other;
 }
 
 /** Whether David said at review one of these is not the other (owner answer Q30). */
@@ -1478,7 +1490,9 @@ export function mergeApprovedScheduleImportItems({
     const movedByHand = Boolean(paired) && !ownedByImport(paired!) && !unchangedTask(paired!, importedItem) && !repeated.dates;
     const found = paired
       ? (unchangedTask(paired, importedItem) || repeated.dates || movedByHand ? paired : undefined)
-      : answeredNew(importedItem) ? undefined : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      : answeredNew(importedItem) ? undefined
+        // (Never a saved row with another Unique ID: review P4 P2-1.)
+        : next.find(item => !claimed.has(item.id) && !differentUniqueIds(item, importedItem) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
     // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
