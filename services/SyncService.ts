@@ -6056,32 +6056,44 @@ export async function resolveScheduleItemSyncConflict(
       if (reread === undefined) {
         throw new Error('sync_conflict_cloud_copy_unreadable');
       }
-      const cloudNow = reread;
-      // The cloud already holds its own copy, so nothing is written back,
-      // unless it holds an edit of this phone's that David discarded: an
-      // upload under way when he chose landed it, before Keep Cloud read the
-      // cloud or after. It is undone, back to the copy the screen showed
-      // (A7 pass 15 L-1: only a landing between the two reads was undone).
-      const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded);
-      if (phoneFields.length === 0) {
-        await clearResolvedConflict(conflict.id);
-        return cloudNow;
+      let cloudNow = reread;
+      for (let refused = 0; ; refused += 1) {
+        // The cloud already holds its own copy, so nothing is written back,
+        // unless it holds an edit of this phone's that David discarded: an
+        // upload under way when he chose landed it, before Keep Cloud read the
+        // cloud or after. It is undone, back to the copy the screen showed
+        // (A7 pass 15 L-1: only a landing between the two reads was undone).
+        const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded);
+        if (phoneFields.length === 0) {
+          await clearResolvedConflict(conflict.id);
+          return cloudNow;
+        }
+        const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
+        // A write that fails may still have landed (its answer lost on weak
+        // signal), so Settings does not say "Neither copy was changed" (A7
+        // pass 16 L-2). Chosen again, Keep Cloud finds the restore there, or
+        // writes it.
+        // Independent review pass 3 (P3-2): the undo is written only over the row it was worked out on. An edit
+        // another device made in the instant after that row was read was replaced, with no card (and a task deleted
+        // in that instant was written back). Refused, nothing was written: the row is read again and the undo worked
+        // out on it, as a queued edit is weighed again; a row that keeps changing leaves the choice to be made again.
+        const restore = await upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow)).catch(() => null);
+        if (restore?.ok && !restore.stubbed) {
+          await clearResolvedConflict(conflict.id);
+          return restored;
+        }
+        if (restore?.code !== CLOUD_ROW_CHANGED_SINCE_READ) throw new Error('sync_conflict_save_unconfirmed');
+        if (refused >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) throw new Error('sync_conflict_cloud_copy_changed');
+        const rowNow = await currentCloudScheduleItem(conflict.localId);
+        if (!rowNow) break; // deleted on another device in that instant: closed below, and not written back
+        cloudNow = rowNow;
       }
-      const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
-      // A write that fails may still have landed (its answer lost on weak
-      // signal), so Settings does not say "Neither copy was changed" (A7
-      // pass 16 L-2). Chosen again, Keep Cloud finds the restore there, or
-      // writes it.
-      const restore = await upsertScheduleItem(restored).catch(() => null);
-      if (!restore?.ok || restore.stubbed) {
-        throw new Error('sync_conflict_save_unconfirmed');
-      }
-      await clearResolvedConflict(conflict.id);
-      return restored;
     } catch (error) {
       await putBackTaskConflictAsItWas(conflict, phoneEdits);
       throw error;
     }
+    await clearScheduleItemSyncConflicts(conflict.localId);
+    throw new Error('sync_conflict_record_deleted');
   }
 
   if (!localItem || typeof localItem.id !== 'string') {
