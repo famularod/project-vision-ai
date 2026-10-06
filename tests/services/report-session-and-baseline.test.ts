@@ -135,6 +135,11 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     expect(screen).toMatch(/rememberReportApproval\(\n\s+reportStateIdentityKey,\n\s+approvalTextKey,\n\s+reportSourceFingerprint,\n\s+reportPeriodSentAt\(previousReportSnapshotRef\.current\),\n\s+\);/);
     // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
     expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
+    // R3 item 2b (deliberate): one write is not a tap. Something to review that he has not marked reviewed ends an
+    // approval that would otherwise come back when it leaves by itself. It is made once the period is loaded and
+    // decided from the store's own record, never the screen's state, so a remount cannot wipe an approval.
+    expect(screen.match(/forgetApprovalEndedByUnreviewedAdvisory\(reportStateIdentityKey, approvalTextKey, loadedPeriodSentAt, /g)?.length).toBe(1);
+    expect(screen).toMatch(/if \(!reviewAdvisoryKey \|\| !snapshotScopeLoaded \|\| loadedPeriodKeyRef\.current !== currentReportPeriodKey\) return;\n\s+forgetApprovalEndedByUnreviewedAdvisory\(/);
     expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);
     expect(screen).toContain('rememberReportEdits(reportStateIdentityKey, null);');
     expect(screen).toContain('rememberReportAcknowledgement(reportStateIdentityKey, next);');

@@ -100,6 +100,7 @@ import {
 import {
   approvedReportFingerprint,
   approvedReportPeriodSentAt,
+  forgetApprovalEndedByUnreviewedAdvisory,
   ownReportSendTimes,
   recallReportSessionState,
   rememberApprovedReportSent,
@@ -744,6 +745,19 @@ export function ReportsScreen({
       approvalTextKey,
     ) === loadedPeriodSentAt);
   }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt]);
+
+  // Open item (A6 passes 3 and 4): something to review that he has not marked
+  // reviewed ends an approval that would otherwise come back when it leaves
+  // by itself (the connection returning). Read from the session's own record
+  // once this period is loaded, never from the screen's state: on a return to
+  // the tab the reviewed marks are restored a render after the first.
+  const reviewAdvisoryKey = reportApprovalPolicy.waitingForProjectData
+    ? ''
+    : reportApprovalPolicy.items.filter(item => item.kind === 'advisory').map(item => item.id).join('\n');
+  useEffect(() => {
+    if (!reviewAdvisoryKey || !snapshotScopeLoaded || loadedPeriodKeyRef.current !== currentReportPeriodKey) return;
+    forgetApprovalEndedByUnreviewedAdvisory(reportStateIdentityKey, approvalTextKey, loadedPeriodSentAt, reviewAdvisoryKey.split('\n'));
+  }, [approvalTextKey, currentReportPeriodKey, loadedPeriodSentAt, reportStateIdentityKey, reviewAdvisoryKey, snapshotScopeLoaded]);
 
   useEffect(() => {
     if (

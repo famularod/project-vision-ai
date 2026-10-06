@@ -158,6 +158,46 @@ export function approvedReportPeriodSentAt(
   return restoredReportApproval(state, approvalTextKey) ? state?.approvedPeriodSentAt ?? null : undefined;
 }
 
+/**
+ * Whether a standing approval of this text ends because something to review
+ * is on screen that he has not marked reviewed in this scope (open item, A6
+ * passes 3 and 4, 30 Sep 2026). Approved, then the connection dropped: the
+ * report asked for a review, and when the connection came back by itself the
+ * earlier approval came back with it, unseen. Marking the item reviewed
+ * already asked for a fresh approval; an item that leaves by itself now does
+ * too. An item he marked reviewed before approving never ends the approval.
+ */
+export function approvalEndedByUnreviewedAdvisory(
+  state: ReportSessionState | null,
+  approvalTextKey: string,
+  advisoryIds: readonly string[],
+): boolean {
+  if (!restoredReportApproval(state, approvalTextKey)) return false;
+  const reviewed = state?.acknowledgement?.ids ?? [];
+  return advisoryIds.some(id => !reviewed.includes(id));
+}
+
+/**
+ * Ends such an approval, when it is one that would come back: of this text,
+ * given on the period now loaded (`periodSentAt`). True when it ended one.
+ * The one write to this store not made by a tap: the screen calls it from an
+ * effect, so it reads the store's own record of what he marked reviewed and
+ * never the screen's state (pass 2: a write-through effect wiped the store on
+ * remount before the restore settled).
+ */
+export function forgetApprovalEndedByUnreviewedAdvisory(
+  scopeKey: string,
+  approvalTextKey: string,
+  periodSentAt: string | null,
+  advisoryIds: readonly string[],
+): boolean {
+  const state = recallReportSessionState(scopeKey);
+  if (approvedReportPeriodSentAt(state, approvalTextKey) !== periodSentAt) return false;
+  if (!approvalEndedByUnreviewedAdvisory(state, approvalTextKey, advisoryIds)) return false;
+  rememberReportApproval(scopeKey, null);
+  return true;
+}
+
 /** On sign-out: another account must not inherit this one's narrative or approval. */
 export function forgetAllReportSessionState(): void {
   store.clear();
