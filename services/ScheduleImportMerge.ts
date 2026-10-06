@@ -158,7 +158,10 @@ import {
  * a blank (withBlanksFilledFrom), on the phone's approval and the web's
  * upload alike. A lookahead restates the task in place, so nothing moves.
  * Set Active and Make Current fill the row they show from the row they hide
- * when that row was changed later (scheduleTextCarriedToShownTask).
+ * when that row was changed later (scheduleTextCarriedToShownTask). What
+ * earlier imports left behind goes with the task the next time a master
+ * moves it, where it can be told from a blank David left
+ * (textStrandedOnEarlierRows).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -248,6 +251,78 @@ const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
 function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>): T {
   const filled = TYPED_TEXT_FIELDS.filter(field => !key(row[field]) && key(task[field]));
   return filled.length === 0 ? row : { ...row, ...Object.fromEntries(filled.map(field => [field, task[field]])) };
+}
+
+type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
+
+/**
+ * Review N2 P1, second part (5 Oct 2026): the owners, contractors and notes
+ * that imports made before the fix above (Build 229 and earlier) left on
+ * hidden rows. For each task shown, what it is missing that an earlier row
+ * of the same task still holds. A row a master moves the task to takes them
+ * with the task's own (mergeApprovedScheduleImportItems).
+ *
+ * The earlier rows of a task are known only by the ids its row answers to
+ * (revisedFromTaskIds, kept since A10 pass 5 M1): the pairing an import
+ * made, David's answers included. A row saved before that keeps no id, and
+ * a guess by name could put one same-named task's note on another, so such
+ * a row is never read. The row before a row is the one whose own ids are
+ * exactly the rest of its chain: with a row between deleted, or ids added
+ * out of order by a delete, the chain is not followed.
+ *
+ * A blank on the task shown cannot be told from a note David cleared, so
+ * the earlier rows are read only for a task never changed since its import
+ * (no update stamp: every edit of his, on the phone or the web, stamps the
+ * task; a moved row is saved unstamped). The walk back likewise passes only
+ * rows never changed since their import: a blank on a row he edited stands.
+ * Never from a row that is itself shown, nor from one that two tasks shown
+ * answer to (same-named tasks).
+ *
+ * Only for the row an import is saving anyway. Filling a task that stays on
+ * its row was tried and taken out: each device makes that fill at its own
+ * next approval, and the two copies of the same change met in Review
+ * Conflicts as a card with nothing to choose, after which an offline
+ * lookahead's percent on another task was lost (the reviewer's generator,
+ * seed 20137). That needs the sync's own carry, which is not in this file.
+ */
+function textStrandedOnEarlierRows(
+  existing: readonly ScheduleItem[],
+  isCurrent: (item: ScheduleItem) => boolean,
+): Map<string, TypedText> {
+  const stranded = new Map<string, TypedText>();
+  const shown = existing.filter(isCurrent);
+  if (!shown.some(item => scheduleTaskEarlierIds(item).length > 0)) return stranded;
+  const idOf = (item: ScheduleItem) => item.id.trim();
+  const rowById = new Map(existing.map(item => [idOf(item), item] as const));
+  const shownIds = new Set(shown.map(idOf));
+  const answering = new Map<string, number>();
+  shown.forEach(item => scheduleTaskEarlierIds(item).forEach(id => answering.set(id, (answering.get(id) || 0) + 1)));
+  const neverChanged = (row: ScheduleItem) => !key(row.updatedAt);
+  const rowBefore = (row: ScheduleItem): ScheduleItem | undefined => {
+    const chain = scheduleTaskEarlierIds(row);
+    const before = chain.map(id => rowById.get(id)).filter((candidate): candidate is ScheduleItem => {
+      if (!candidate) return false;
+      const own = new Set([idOf(candidate), ...scheduleTaskEarlierIds(candidate)]);
+      return own.size === chain.length && chain.every(id => own.has(id));
+    });
+    return before.length === 1 ? before[0] : undefined;
+  };
+  shown.forEach(task => {
+    if (!neverChanged(task)) return;
+    let blank = TYPED_TEXT_FIELDS.filter(field => !key(task[field]));
+    const found: TypedText = {};
+    let row = task;
+    while (blank.length > 0) {
+      const earlier = rowBefore(row);
+      if (!earlier || shownIds.has(idOf(earlier)) || answering.get(idOf(earlier)) !== 1 || !sameTask(earlier, task)) break;
+      blank.forEach(field => { if (key(earlier[field])) found[field] = earlier[field]; });
+      blank = blank.filter(field => !(field in found));
+      if (!neverChanged(earlier)) break;
+      row = earlier;
+    }
+    if (Object.keys(found).length > 0) stranded.set(task.id, found);
+  });
+  return stranded;
 }
 
 /**
@@ -1201,6 +1276,9 @@ export function mergeApprovedScheduleImportItems({
   const lookaheadsOnly = statedOnlyByLookaheads(existing);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
+  // What a task shown is missing that an earlier row of it still holds, from imports before review N2 P1: it goes
+  // with the task to the row this master moves it to.
+  const stranded = textStrandedOnEarlierRows(existing, isCurrent);
 
   imported.forEach(importedItem => {
     const match = completionMatch(importedItem, next);
@@ -1316,8 +1394,9 @@ export function mergeApprovedScheduleImportItems({
     }
     // The task on new dates, on its new row: the file's owner, contractor and notes win, the task's fill a blank,
     // whether or not David entered a percent on it (review N2 P1; at first only beside his own progress, below).
+    // (With what an import before the fix left on the task's earlier rows: review N2 P1, second part.)
     const filled = paired && key(paired.importBatchId) !== key(importedItem.importBatchId)
-      ? withBlanksFilledFrom(importedItem, paired)
+      ? withBlanksFilledFrom(importedItem, { ...paired, ...(stranded.get(paired.id) || {}) })
       : importedItem;
     if (
       paired &&
