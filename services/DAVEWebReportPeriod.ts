@@ -197,6 +197,17 @@ export const DAVE_WEB_REPORT_PREPARED_WHILE_WAITING =
   "This draft was prepared before this computer had your other device's latest changes, so it does not list what changed since the last report. Regenerate it from current facts before approval.";
 
 /**
+ * Review N2 follow-up (5 Oct 2026): Download Word Report pressed while this
+ * tab still waits for the other device's changes and the draft says "Not
+ * counted yet". The Word file would carry that sentence to the client, so it
+ * is held back, as Approve is, until the changes have arrived.
+ */
+export function daveWebReportWordWaitsMessage(send: DAVEReportSnapshot): string {
+  return "This computer hasn't received your other device's latest changes yet: it sent the last report " +
+    `${describeReportSendTime(send.deliveredAt as string)}. Vitruvius is downloading them now; download the Word report once they arrive.`;
+}
+
+/**
  * Another device sent a later report than the one this approval counted
  * from (A6 pass 7 on the phone): an approval stops, and a send is not
  * recorded (owner answer 2 Oct, web sends count).

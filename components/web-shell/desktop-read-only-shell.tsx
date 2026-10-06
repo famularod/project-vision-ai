@@ -195,6 +195,7 @@ import {
   daveWebReportPeriodNote,
   daveWebReportPeriodState,
   daveWebReportSentFromHereNote,
+  daveWebReportWordWaitsMessage,
   readDAVEWebReportPeriod,
   type DAVEWebReportPeriodRead,
 } from '../../services/DAVEWebReportPeriod';
@@ -5865,18 +5866,36 @@ function ReportWorkspace({
     [selectedProject, snapshot.projects, snapshot.scheduleItems],
   );
 
+  // Review N2 follow-up (5 Oct 2026): a Word file is one of the ways he sends a report to a client, and Download
+  // Word Report was held back by nothing: a draft that said "Not counted yet" went into the file with that
+  // sentence in it, the red line on the page beside the button notwithstanding. It is held back as Approve, Share
+  // and Prepare Email are, with their line and their way out; from Report history the line is said under the row.
+  const [wordHeldBack, setWordHeldBack] = useState<Readonly<{ documentId: string; text: string }> | null>(null);
   const downloadWordReport = async ({
     title,
     body,
     generatedAt,
     updateIds,
+    historyDocumentId,
   }: {
     title: string;
     body: string;
     generatedAt: string;
     updateIds: readonly string[];
+    /** The Report history row it was pressed on; absent for the report in the workspace. */
+    historyDocumentId?: string;
   }) => {
     if (pending) return;
+    if (body.includes(REPORT_PERIOD_WAITING_LINE)) {
+      // The draft in the workspace is written again by itself once the changes arrive; a saved report is not.
+      const text = !historyDocumentId && period.behindSend
+        ? daveWebReportWordWaitsMessage(period.behindSend)
+        : DAVE_WEB_REPORT_SAYS_NOT_COUNTED;
+      if (historyDocumentId) setWordHeldBack({ documentId: historyDocumentId, text });
+      else setNotice({ tone: 'danger', text });
+      return;
+    }
+    setWordHeldBack(null);
     setPending(true);
     setNotice(null);
     try {
@@ -6662,6 +6681,7 @@ function ReportWorkspace({
                         body: report.body,
                         generatedAt: report.generatedAt,
                         updateIds: report.sourceUpdateIds,
+                        historyDocumentId: document.id,
                       });
                     }}
                     disabled={pending}
@@ -6669,6 +6689,9 @@ function ReportWorkspace({
                     <Text style={styles.secondaryButtonText}>Download Word Report</Text>
                   </Pressable>
                 </View>
+                {wordHeldBack?.documentId === document.id ? (
+                  <Text style={styles.errorText} accessibilityRole="alert">{wordHeldBack.text}</Text>
+                ) : null}
               </View>
             );
           })}
