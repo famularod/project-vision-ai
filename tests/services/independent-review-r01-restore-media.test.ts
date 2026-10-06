@@ -811,6 +811,42 @@ describe('independent review pass 2 (L9b): a second restore straight after "Rest
   });
 });
 
+/**
+ * Independent review pass 4 (the restore lock, already in Build 229): a restore held for recovery, one of whose
+ * written lists something else saves again before the next start. The recovery checked every list it had written,
+ * found that one different and threw, at every start: the app stayed locked, and its journal and files stayed for good.
+ */
+describe('independent review pass 4: a held restore finishes at the next start though one of its written lists was saved again', () => {
+  it('at every write the restore can stop at: the start recovers, every attachment a record names opens its bytes, and nothing is left over', async () => {
+    const total = await cleanRestoreMutationCount();
+    let held = 0;
+    for (let at = 3; at < total; at += 1) {
+      const device = newDevice();
+      const session = startApp(device);
+      device.mutations = 0;
+      device.fault = { at, mode: 'writes_fail_until_restart', tripped: false };
+      await session.restore();
+      const journal = JSON.parse(device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) ?? 'null') as null |
+        { operations: Array<{ kind: string; key: string }>; appliedOperationIndexes: number[] };
+      const written = (journal?.appliedOperationIndexes ?? []).map(index => journal!.operations[index]).filter(operation => operation.kind === 'set');
+      if (session.locked.length === 0 || written.length === 0) continue;
+      held += 1;
+      expect(session.alerts).toEqual(['Restore recovery required']);
+      // Storage works again; a save already on its way when the restore stopped lands on the first list it had written.
+      const key = written[0].key;
+      const saved = JSON.parse(device.values.get(key) as string) as unknown;
+      device.values.set(key, JSON.stringify(Array.isArray(saved) ? [...saved, { id: 'saved-meanwhile', projectName: 'Old', photos: [] }] : { ...(saved as object), savedMeanwhile: true }));
+
+      // Three starts: the first finishes the restore, the next two find nothing to do.
+      for (let start = 1; start <= 3; start += 1) await restart(device);
+
+      expect({ at, restored: isRestored(device) }).toEqual({ at, restored: true });
+      expectSettledDevice(device, `stopped at write ${at}, ${key} saved again`);
+    }
+    expect(held).toBeGreaterThan(10);
+  });
+});
+
 describe('independent review R01: the restored-file ledger', () => {
   const memory = () => {
     const values = new Map<string, string>();

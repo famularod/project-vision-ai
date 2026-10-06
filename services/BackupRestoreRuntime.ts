@@ -1,6 +1,6 @@
 import type { DurableLocalTransactionOperation } from './DurableLocalTransaction';
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
-import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
+import { holdLocalStorageKeysForRecovery, runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
 export const APP_BACKUP_VERSION = 1 as const;
 export const BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY =
@@ -365,7 +365,22 @@ export function createBackupRestoreRuntime({
     journalKey: BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY,
     createTransactionId,
     now,
+    // Independent review pass 4: once storage works, a held restore always finishes. A list it had written that
+    // something else has saved again since is written again; it was checked instead, found different, and the
+    // recovery refused, at that start and at every start after it, with no way out but removing the app.
+    // Finished over the later save, not ended as "not completed" with that save kept: he asked for the restore, and
+    // from "Restore recovery required" on editing is locked, so the only saves that can land are results of work
+    // begun before the restore, made from the lists as they were before it. Kept, such a save would leave a list from
+    // before the restore among restored ones, a state nobody chose; undone, the restore he asked for would be thrown
+    // away with the files it placed. Finished, the device holds what an uninterrupted restore leaves.
+    recoveryWritesAgain: true,
   });
+  // The door that save came through (the same review): while this restore's journal waits, its lists belong to its
+  // recovery, and the writers of those lists ask before they write (LocalStorageMutationCoordinator). Asked of
+  // storage each time (one read of a key that is nearly always absent): the journal is the only truth about it, and
+  // it comes and goes with the account's other records when the signed-in account changes.
+  holdLocalStorageKeysForRecovery(Object.values(targetKeys), async () =>
+    typeof await storage.getItem(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) === 'string');
   const mutationKeys = [
     BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY,
     ...Object.values(targetKeys),

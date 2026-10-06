@@ -11,7 +11,7 @@ import {
 } from './SyncService';
 import type { ProjectUpdate } from '../types';
 import type { PersistedFieldUpdateStatus } from './FieldUpdateLifecycle';
-import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
+import { assertLocalStorageKeysNotHeldForRecovery, runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 import {
   localCorruptionRecoveryError,
   quarantineCorruptLocalValue,
@@ -72,6 +72,9 @@ export async function persistAndQueueProjectUpdateDeletion<
     runExclusiveLocalStorageMutation(
       [updatesStorageKey, tombstonesStorageKey],
       async () => {
+        // Not while a held device-backup restore waits to be finished (independent review pass 4): the updates
+        // list is the restore's until then.
+        await assertLocalStorageKeysNotHeldForRecovery([updatesStorageKey, tombstonesStorageKey]);
         const deletionState = async () => {
           const [storedUpdates, storedTombstones] = await Promise.all([
             readStoredArray<ProjectUpdate>(

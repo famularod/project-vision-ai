@@ -1,7 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
-import { runExclusiveLocalStorageMutation } from '../services/LocalStorageMutationCoordinator';
+import {
+  LocalStorageHeldForRecoveryError,
+  assertLocalStorageKeysNotHeldForRecovery,
+  runExclusiveLocalStorageMutation,
+} from '../services/LocalStorageMutationCoordinator';
 
 const RETRY_DELAYS_MS = [50, 250] as const;
 let persistenceAlertVisible = false;
@@ -18,7 +22,10 @@ export type StoragePersistenceFailure = Readonly<{
   error: unknown;
 }>;
 
-export function reportStoragePersistenceFailure({ label }: StoragePersistenceFailure) {
+export function reportStoragePersistenceFailure({ label, error }: StoragePersistenceFailure) {
+  // Not saved because a restore is being finished (independent review pass 4): the screen already says that editing
+  // is locked until it has, and "check available storage" would not be true.
+  if (error instanceof LocalStorageHeldForRecoveryError) return;
   if (persistenceAlertVisible) return;
   persistenceAlertVisible = true;
   Alert.alert(
@@ -29,16 +36,28 @@ export function reportStoragePersistenceFailure({ label }: StoragePersistenceFai
   );
 }
 
+/**
+ * Independent review pass 4 (the restore lock): neither writes a list that a
+ * held restore is waiting to finish. A save already on its way when the
+ * restore stopped (a debounced list, a result of work begun before it) landed
+ * over a list the restore had written, and the restore's recovery then failed
+ * at every start. It is refused (LocalStorageHeldForRecoveryError) and the
+ * recovery writes the restore's lists. The question is part of the save: when
+ * storage does not answer it, it is asked again as the write itself is tried
+ * again, and then the save has failed and is reported, as any other.
+ */
 export function persistStorageItem(storageKey: string, value: string): Promise<void> {
-  return runExclusiveLocalStorageMutation([storageKey], () => retryStorageMutation(
-    () => AsyncStorage.setItem(storageKey, value),
-  ));
+  return runExclusiveLocalStorageMutation([storageKey], () => retryStorageMutation(async () => {
+    await assertLocalStorageKeysNotHeldForRecovery([storageKey]);
+    await AsyncStorage.setItem(storageKey, value);
+  }));
 }
 
 export function removePersistedStorageItem(storageKey: string): Promise<void> {
-  return runExclusiveLocalStorageMutation([storageKey], () => retryStorageMutation(
-    () => AsyncStorage.removeItem(storageKey),
-  ));
+  return runExclusiveLocalStorageMutation([storageKey], () => retryStorageMutation(async () => {
+    await assertLocalStorageKeysNotHeldForRecovery([storageKey]);
+    await AsyncStorage.removeItem(storageKey);
+  }));
 }
 
 /**
@@ -196,7 +215,8 @@ async function retryStorageMutation(mutate: () => Promise<void>) {
       await mutate();
       return;
     } catch (error) {
-      if (attempt >= RETRY_DELAYS_MS.length) throw error;
+      // A save refused because a restore is being finished is not tried again: waiting does not change the answer.
+      if (attempt >= RETRY_DELAYS_MS.length || error instanceof LocalStorageHeldForRecoveryError) throw error;
       await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
   }

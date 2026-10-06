@@ -89,11 +89,23 @@ export function createDurableLocalTransactionRepository({
   journalKey,
   createTransactionId,
   now,
+  recoveryWritesAgain = false,
 }: {
   storage: DurableLocalTransactionStorage;
   journalKey: string;
   createTransactionId: () => string;
   now: () => string;
+  /**
+   * What recovery does when a key this journal had already written holds
+   * something else by now (independent review pass 4). By default it stops,
+   * as it always has: and since the journal stays, it stops again at every
+   * later recovery, for good. With this set, recovery writes the journal's
+   * value again and finishes; a conditional removal that was made stays made,
+   * and whatever was saved under its key since is left alone, as when the
+   * removal is skipped. For a journal whose values must stand over anything
+   * saved while it waited (a restore he asked for, with editing locked).
+   */
+  recoveryWritesAgain?: boolean;
 }): DurableLocalTransactionRepository {
   assertStorageKey(journalKey, 'journal');
   let mutationTail: Promise<void> = Promise.resolve();
@@ -144,8 +156,11 @@ export function createDurableLocalTransactionRepository({
     recovered: boolean,
   ): Promise<DurableLocalTransactionResult> {
     let journal = initial;
+    // A journal found waiting: what it had written is written again where it no longer stands.
+    const again = recovered && recoveryWritesAgain;
+    if (again) await writeAgainWhatChanged(journal);
     if (journal.phase === 'committed') {
-      await verifyJournalOutcome(journal);
+      await verifyJournalOutcome(journal, again);
       await cleanupJournal(journal.transactionId);
       return resultFor(journal, recovered);
     }
@@ -180,7 +195,7 @@ export function createDurableLocalTransactionRepository({
       }
     }
 
-    await verifyJournalOutcome(journal);
+    await verifyJournalOutcome(journal, again);
     journal = withJournalProgress(journal, { phase: 'committed' });
     await persistJournal(journal, 'journal_write_failed');
     await cleanupJournal(journal.transactionId);
@@ -216,7 +231,30 @@ export function createDurableLocalTransactionRepository({
     return false;
   }
 
-  async function verifyJournalOutcome(journal: DurableLocalTransactionJournal) {
+  /**
+   * Independent review pass 4: a 'set' the waiting journal had applied, whose
+   * key holds another value now, is applied again. It failed the outcome check
+   * instead, at this recovery and at every one after it.
+   */
+  async function writeAgainWhatChanged(journal: DurableLocalTransactionJournal) {
+    for (const index of journal.appliedOperationIndexes) {
+      const operation = journal.operations[index];
+      if (operation.kind !== 'set' || await storage.getItem(operation.key) === operation.value) continue;
+      try {
+        await applyOperation(operation);
+      } catch (cause) {
+        throw transactionError(
+          'operation_failed',
+          'A durable local transaction operation failed. The journal remains available for retry.',
+          journal.transactionId,
+          true,
+          cause,
+        );
+      }
+    }
+  }
+
+  async function verifyJournalOutcome(journal: DurableLocalTransactionJournal, removalsStayMade = false) {
     for (let index = 0; index < journal.operations.length; index += 1) {
       const operation = journal.operations[index];
       const observed = await storage.getItem(operation.key);
@@ -225,9 +263,10 @@ export function createDurableLocalTransactionRepository({
         // value exists. Recovery must never remove it later.
         continue;
       }
+      // A removal that was made is not undone by a value saved under the key since, and never removes it.
       const verified = operation.kind === 'set'
         ? observed === operation.value
-        : observed === null;
+        : observed === null || removalsStayMade;
       if (!verified) {
         throw transactionError(
           'verification_failed',
