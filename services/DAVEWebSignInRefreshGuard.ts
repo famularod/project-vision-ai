@@ -29,6 +29,15 @@
  * holds is taken or trusted: a tab looks only for the fingerprint of the
  * token it is itself about to present, and the note can only make it send
  * less. Another account's tab has another sign-in and other tokens.
+ *
+ * Open item W1-3 (6 Oct 2026): "too many requests" is not an ended
+ * sign-in. When the sign-in server answered a routine refresh with 429,
+ * auth-js took it for a refusal: with the hourly token run out the tab
+ * dropped to the sign-in page, and the account's report periods went with
+ * it. The tab is now told the server could not be reached just then, which
+ * is how auth-js keeps a sign-in and tries again; and until the time the
+ * server asked for has passed (a minute when it names none) the tab's
+ * refreshes are answered here, so its retries do not add to the count.
  */
 
 /** The browser profile's storage, shared by its tabs (localStorage). */
@@ -37,6 +46,10 @@ export type DAVEWebSharedStorage = Pick<Storage, 'getItem' | 'setItem'>;
 export const DAVE_WEB_SIGN_IN_TURNS_KEY = 'vitruvius.web.sign-in-turns.v1';
 /** What the refusal a stale tab is answered with is called. */
 export const DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE = 'refresh_token_replaced_in_another_tab';
+/** How long a tab waits before it refreshes again after "too many requests", when the server names no time. */
+export const DAVE_WEB_REFRESH_WAIT_MS = 60_000;
+/** The longest wait the server may ask for. */
+const REFRESH_WAIT_LIMIT_MS = 10 * 60_000;
 /** How many replaced tokens of one sign-in are remembered (one an hour: over a week). */
 const TOKENS_REMEMBERED = 200;
 /** How many sign-ins are remembered. */
@@ -108,6 +121,13 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   shared: () => DAVEWebSharedStorage | null;
 }>): DAVEWebSignInRefreshGuard {
   let gaveWay = false;
+  /** Until when the sign-in server asked this tab not to refresh. */
+  let refreshWaitsUntil = 0;
+
+  /** auth-js keeps the sign-in and tries again later (a 503 is "not reachable just now" to it). */
+  const askedToWait = () => new Response(JSON.stringify({
+    message: 'The sign-in server asked this tab to wait before it refreshes again.',
+  }), { status: 503, headers: { 'content-type': 'application/json' } });
 
   function readTurns(): Turns | null {
     try {
@@ -160,7 +180,13 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
         }), { status: 400, headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' } });
       }
     }
+    if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil) return askedToWait();
     const response = await options.fetch(input, init);
+    if (grant === 'refresh_token' && response.status === 429) {
+      const asked = Number(response.headers.get('retry-after')) * 1_000;
+      refreshWaitsUntil = Date.now() + (asked > 0 ? Math.min(asked, REFRESH_WAIT_LIMIT_MS) : DAVE_WEB_REFRESH_WAIT_MS);
+      return askedToWait();
+    }
     if (response.ok) {
       const tokens = await response.clone().json().catch(() => null) as unknown;
       const sessionId = sessionIdOf(textField(tokens, 'access_token'));
