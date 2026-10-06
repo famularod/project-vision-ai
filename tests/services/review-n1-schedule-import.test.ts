@@ -562,8 +562,9 @@ describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF O
   /** App.tsx's "Delete PDF Only": the dates shown are saved first (the helper, through updateScheduleItem), then the file goes. */
   function deletePdfOnly(state: State, document: ReferenceDocument): State {
     let items = state.items;
-    scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true }).forEach(shownTask => {
-      const { saved: row } = phoneUpdate({ ...state, items }, shownTask.id, { startDate: shownTask.startDate, finishDate: shownTask.finishDate });
+    // (Each as the helper gives it: review P6-5. It was the task's two dates only.)
+    scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true }).forEach(shownTask => {
+      const { saved: row } = phoneUpdate({ ...state, items }, shownTask.id, shownTask, true);
       items = items.map(item => item.id === shownTask.id ? row : item);
     });
     return { items, documents: state.documents.filter(other => other.id !== document.id) };
@@ -594,7 +595,7 @@ describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF O
   it('the phone\'s Delete PDF Only saves them before it removes the file', () => {
     const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
     const handler = APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
-    const saves = handler.indexOf('fileOnly: true }).forEach(item => updateScheduleItem(item.id, { startDate: item.startDate, finishDate: item.finishDate }))');
+    const saves = handler.indexOf('fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true))');
     expect(saves).toBeGreaterThan(0);
     expect(saves).toBeLessThan(handler.indexOf('removeReferenceDocumentEverywhere('));
   });

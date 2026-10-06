@@ -8,6 +8,9 @@
  *
  * The steps are the reports reviewer's (notes/p4-reports/pass5/p5-setactive-then-delete.test.ts).
  */
+import fs from 'fs';
+import path from 'path';
+import ts from 'typescript';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
@@ -19,7 +22,8 @@ import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, sch
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
-import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
+import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
+import { normalizeProjectControls, reviseProjectControls, withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(async () => null), setItem: jest.fn(async () => undefined), removeItem: jest.fn(async () => undefined), getAllKeys: jest.fn(async () => []), multiGet: jest.fn(async () => []) }));
@@ -76,13 +80,35 @@ function phoneDeleteWithItems(state: State, id: string, at: string): State {
   const saved = new Map(scheduleItemsAfterScheduleDeleted({ items: kept, removed, document, documents, updatedAt: at }).map(item => [item.id, item]));
   return { items: kept.map(item => saved.get(item.id) || item), documents };
 }
-/** The phone's "Delete PDF Only" (App.tsx): of each task the helper returns, the two dates only. */
+const APP_SOURCE = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+/**
+ * The phone's "Delete PDF Only" (review P6-5): what App.tsx's own handler saves before it removes the file, compiled
+ * from its source, with App.tsx's own updateScheduleItem (compiled from its source too) doing each save.
+ */
 function phoneDeletePdfOnly(state: State, id: string, at: string): State {
   const document = state.documents.find(saved => saved.id === id)!;
-  let next = state;
-  scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, updatedAt: at })
-    .forEach(task => { next = patch(next, task.id, { startDate: task.startDate, finishDate: task.finishDate }, at); });
-  return { items: next.items, documents: next.documents.filter(other => other.id !== id) };
+  const handler = APP_SOURCE.slice(APP_SOURCE.indexOf("text: 'Delete PDF Only'"));
+  const saves = handler.slice(handler.indexOf('scheduleItemsAfterScheduleDeleted({'), handler.indexOf('void removeReferenceDocumentEverywhere('));
+  expect(saves).toContain('fileOnly: true');
+  const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
+  const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);
+  const js = ts.transpileModule(`module.exports = () => { ${APP_SOURCE.slice(from, to)}\n ${saves}\n };`,
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const ref = { current: state.items };
+  const deps: Record<string, unknown> = {
+    scheduleItemsCurrentRef: ref, referenceDocumentsCurrentRef: { current: state.documents }, document, scheduleItemsAfterScheduleDeleted,
+    withProjectControlsEditMerged, reconcileScheduleProgressEdit,
+    normalizeScheduleItem: (value: ScheduleItem) => ({ ...value }), displayName: 'David',
+    resolveProjectItemWorkflowMutation: ({ candidate }: { candidate: ScheduleItem }) => ({ ok: true, item: candidate }),
+    advanceScheduleItemSyncGeneration: () => 1, markScheduleItemsAuthorityReady: () => undefined,
+    setScheduleItems: () => undefined, scheduleItemChangeUsesDebouncedSync: () => false, cancelScheduleItemTextSync: () => undefined,
+    syncScheduleItemRevision: () => undefined, queueScheduleItemRecord: async () => undefined, Alert: { alert: () => undefined },
+  };
+  const mod = { exports: {} as unknown };
+  new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
+  jest.useFakeTimers({ now: new Date(at) });
+  try { (mod.exports as () => void)(); } finally { jest.useRealTimers(); }
+  return { items: ref.current, documents: state.documents.filter(other => other.id !== id) };
 }
 /** The web's "Delete Document + Tasks" / "Delete Document Only": its plan's tasks saved whole, then the file gone. */
 function webDelete(state: State, id: string, at: string, keepTasks: boolean): State {
@@ -131,6 +157,8 @@ const AT = '2026-09-11T10:00:00.000Z';
 describe('Review P5 R-A: a schedule\'s delete that changes the row shown for a task shows what he last set on it', () => {
   it.each([
     ['the phone\'s Delete PDF + Items', (state: State) => phoneDeleteWithItems(state, 'LOOKAHEAD 1', AT)],
+    // (Review P6-5; until then the phone's file-only delete took the two dates alone of each task the helper returned.)
+    ['the phone\'s Delete PDF Only', (state: State) => phoneDeletePdfOnly(state, 'LOOKAHEAD 1', AT)],
     ['the web\'s Delete Document + Tasks', (state: State) => webDelete(state, 'LOOKAHEAD 1', AT, false)],
     ['the web\'s Delete Document Only', (state: State) => webDelete(state, 'LOOKAHEAD 1', AT, true)],
   ] as const)('%s on the old lookahead: master 1\'s row is shown with his owner, approval and schedule impact, and the report says nothing about them', (_door, deleteIt) => {
@@ -158,15 +186,18 @@ describe('Review P5 R-A: a schedule\'s delete that changes the row shown for a t
     expect(saved.map(item => item.taskName)).not.toContain('Sitework');
   });
 
-  it('NOT the phone\'s Delete PDF Only: the app takes only the two dates of each task the helper returns, so the helper returns the same tasks as before for it', () => {
+  it('the file-only delete returns the row it shows only to a caller that asks for it, as the phone and the web both do now; and the phone keeps his percent as he stated it', () => {
     const { state } = afterSetActiveOnTheOlderMaster();
     const document = state.documents.find(saved => saved.id === 'LOOKAHEAD 1')!;
-    const asThePhoneAsks = scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, updatedAt: AT });
-    expect(asThePhoneAsks.map(item => item.id)).not.toContain('MASTER 1-13');
-    // Still wrong there (recorded): the list goes to master 1's row without what he set, his percent included.
-    expect(sitework(phoneDeletePdfOnly(state, 'LOOKAHEAD 1', AT))).toEqual([['MASTER 1-13', 0, '', 'Not Required', null]]);
-    // The same helper, asked for them (as the web asks), returns that row with what he set.
-    const asTheWebAsks = scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: AT });
-    expect(asTheWebAsks.find(item => item.id === 'MASTER 1-13')).toMatchObject({ owner: 'Dana', percentComplete: 40 });
+    const withoutAsking = scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, updatedAt: AT });
+    expect(withoutAsking.map(item => item.id)).not.toContain('MASTER 1-13');
+    const asked = scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: AT });
+    expect(asked.find(item => item.id === 'MASTER 1-13')).toMatchObject({ owner: 'Dana', percentComplete: 40 });
+    // The phone saves the row as the helper gives it: his 40% stays his entry of the 8th (it is not entered again as
+    // of the delete, which would outrank a later entry made on another device: audit A5 pass 12).
+    const saved = phoneDeletePdfOnly(state, 'LOOKAHEAD 1', AT).items.find(item => item.id === 'MASTER 1-13')!;
+    const given = asked.find(item => item.id === 'MASTER 1-13')!;
+    expect([saved.percentComplete, saved.progressSource, saved.progressConfirmedBy, saved.progressConfirmedAt]).toEqual([40, given.progressSource, given.progressConfirmedBy, given.progressConfirmedAt]);
+    expect(saved.progressConfirmedAt).not.toBe(AT);
   });
 });

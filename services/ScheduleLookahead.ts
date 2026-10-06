@@ -862,8 +862,9 @@ export function scheduleItemsAfterScheduleDeleted({
   fileOnly?: boolean;
   /**
    * With `fileOnly` (review P5 R-A): also the tasks this delete shows on another row, with what he last set on them.
-   * For a caller that saves each returned task whole (the web). The phone's "Delete PDF Only" takes only the two
-   * dates of each task returned, so it does not ask for these.
+   * For a caller that saves each returned task as it is given: the web, and the phone's "Delete PDF Only" too
+   * (review P6-5; until then it took only the two dates of each task returned, and the task lost its owner,
+   * approval and schedule impact there).
    */
   withWhatHeSet?: boolean;
 }>): ScheduleItem[] {

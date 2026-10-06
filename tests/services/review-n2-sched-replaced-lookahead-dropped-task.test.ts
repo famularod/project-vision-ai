@@ -85,7 +85,7 @@ function approve(state: State, source: ReferenceDocument, lines: string[], proje
 
 const APP_SOURCE = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
 /** App.tsx's own updateScheduleItem, compiled from its source, at the time given: the task as the phone saves it. */
-function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: string): State {
+function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: string, restoresProgress = false): State {
   const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
   const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);
   expect(from).toBeGreaterThan(0); expect(to).toBeGreaterThan(from);
@@ -103,7 +103,7 @@ function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: st
   const mod = { exports: {} as unknown };
   new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
   jest.useFakeTimers({ now: new Date(at) });
-  try { (mod.exports as (id: string, edit: Partial<ScheduleItem>) => void)(id, edit); } finally { jest.useRealTimers(); }
+  try { (mod.exports as (id: string, edit: Partial<ScheduleItem>, workflow?: unknown, restores?: boolean) => void)(id, edit, undefined, restoresProgress); } finally { jest.useRealTimers(); }
   return { ...state, items: ref.current };
 }
 
@@ -112,12 +112,12 @@ const DELETE_PDF_ONLY = (() => {
   const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
   return APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
 })();
-/** "Delete PDF Only" as the phone does it: the helper's tasks, each saved with its two dates only, then the file goes. */
+/** "Delete PDF Only" as the phone does it: the helper's tasks, each saved as the helper gives it (review P6-5; it was its two dates only), then the file goes. */
 function deletePdfOnly(state: State, document: ReferenceDocument, at: string): State {
-  expect(DELETE_PDF_ONLY).toContain('fileOnly: true }).forEach(item => updateScheduleItem(item.id, { startDate: item.startDate, finishDate: item.finishDate }))');
+  expect(DELETE_PDF_ONLY).toContain('fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true))');
   let next = state;
-  scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, updatedAt: at })
-    .forEach(task => { next = phoneSave(next, task.id, { startDate: task.startDate, finishDate: task.finishDate }, at); });
+  scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: at })
+    .forEach(task => { next = phoneSave(next, task.id, task, at, true); });
   return { items: next.items, documents: next.documents.filter(other => other.id !== document.id) };
 }
 
