@@ -242,8 +242,14 @@ export function daveWebStoredReportValue(stored: string | null | undefined): str
  */
 export function daveWebReportPeriodKeptInTabOnly(): boolean {
   // An account's own keys: the profile's sender id is no period.
+  // Review N6 (7 Oct 2026, Low, wording, older): nor is the account's list of its own sends, or what it has seen of
+  // the shared record. Any of the account's keys held in the tab counted as a period. A report was sent while the
+  // browser was full; room came back; he approved the next report, so the browser held the period again; the page
+  // still said the storage "is full or switched off" and that the next report "has no 'since the last report'
+  // section until one is sent from here again", because the tab still held its list of own sends (rewritten only
+  // at the next send). Neither half was so. Said only while the tab holds a period the browser does not.
   for (const [key, value] of tabOnly) {
-    if (value !== null && key.startsWith(`${WEB_PREFIX}/`)) return true;
+    if (value !== null && key.startsWith(`${WEB_PREFIX}/`) && storedValueIsPeriod(daveWebStoredReportValue(value))) return true;
   }
   return false;
 }
