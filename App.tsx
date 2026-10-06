@@ -227,7 +227,7 @@ import {
 } from './hooks/use-startup-hydration';
 import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
 import { useCommittedText } from './hooks/use-committed-text';
-import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
+import { useScheduleProgressDraft, useScheduleVerificationNoteDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from './services/ScheduleProgressSource';
@@ -20190,7 +20190,6 @@ function ScheduleItemRow({
       afterTextInputBlur(() => setInternalExpanded(current => !current));
     }
   };
-  const [verificationNote, setVerificationNote] = useState('');
   const normalizedItemType = normalizeProjectItemType(item.itemType);
   const isStructuredProjectItem = normalizedItemType !== 'Task';
   const isStructuredProjectItemClosed =
@@ -20201,6 +20200,7 @@ function ScheduleItemRow({
   const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
     item as unknown as import('./types').ScheduleItem,
   );
+  const [verificationNote, setVerificationNote] = useScheduleVerificationNoteDraft(item.id, needsCompletionVerification); // kept by task id, like the staged progress (open item W1-7)
   const completionVerificationLabel = scheduleCompletionVerificationLabel(
     item as unknown as import('./types').ScheduleItem,
   );
