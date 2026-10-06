@@ -304,6 +304,57 @@ describe('a picture drawing the phone\'s image tool cannot open (review pass 2 W
   });
 });
 
+describe('a drawing record with no file path (review pass 2 W4)', () => {
+  const NO_FILE = 'This drawing has no file on this device, so its excerpt was left out.';
+
+  it.each<[string, unknown]>([
+    ['no path at all', undefined],
+    ['a null path', null],
+    ['an empty path', ''],
+    ['a blank path', '   '],
+  ])('is listed in plain words for %s', async (_name, uri) => {
+    for (const stored of [
+      { mimeType: 'image/jpeg', originalFileName: 'site-plan.jpg' },
+      { mimeType: 'application/pdf', originalFileName: 'site-plan.pdf' },
+      { mimeType: undefined, originalFileName: undefined },
+    ]) {
+      const result = await native(TOP_RIGHT, { uri, ...stored });
+      expect(result.media).toEqual([]);
+      expect(result.unavailableMedia).toEqual([{
+        id: 'ref-1',
+        kind: 'drawing',
+        label: '2321 Compliance Project · North Lot · Site Plan · Rev 2 · Sheet C1.0',
+        reason: NO_FILE,
+      }]);
+    }
+    expect(renderPdfExcerpt).not.toHaveBeenCalled();
+    expect(fakeMedia.deviceOpened).toEqual([]);
+  });
+
+  it('has no on-screen preview, for the same reason', async () => {
+    await expect(renderNativeReportDrawingPreview(reference(TOP_RIGHT, { uri: undefined }))).rejects.toThrow(NO_FILE);
+    await expect(renderNativeReportDrawingPreview(reference(TOP_RIGHT, { uri: '' }))).rejects.toThrow(NO_FILE);
+  });
+
+  it('lists a photo with no file path in words too, not as a program error', async () => {
+    const result = await resolveNativeReportWordMedia({
+      updates: [{
+        id: 'update-1',
+        projectName: '2321 Compliance Project',
+        photos: [{ id: 'photo-1', uri: undefined, caption: 'North lot paving' }],
+      }] as never,
+      reportPhotoIds: ['photo-1'],
+      drawingReferences: [],
+    });
+    expect(result.unavailableMedia).toEqual([{
+      id: 'photo-1',
+      kind: 'photo',
+      label: 'Photo 1 — North lot paving',
+      reason: 'The local image path is missing.',
+    }]);
+  });
+});
+
 describe('the same citation on the phone and on the desktop', () => {
   it.each<[string, Region, number, number, string]>([
     ['a quarter of a landscape sheet', TOP_RIGHT, 4000, 3000, 'B'],

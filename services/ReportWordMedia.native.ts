@@ -27,6 +27,12 @@ import type {
 } from './ReportWordDocument';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
 
+/**
+ * A drawing record with no file path at all (review pass 2 W4: it was listed
+ * with the reason "Cannot read properties of undefined (reading 'trim')").
+ */
+const DRAWING_HAS_NO_FILE = 'This drawing has no file on this device, so its excerpt was left out.';
+
 export type ResolvedNativeReportWordMedia = Readonly<{
   media: readonly ReportWordMedia[];
   unavailableMedia: readonly ReportWordUnavailableMedia[];
@@ -71,6 +77,7 @@ export async function resolveNativeReportWordMedia(args: {
     const document = reference.excerpt.document;
     const label = `${reference.projectName} · ${reference.areaName} · ${reference.citation.label}`;
     try {
+      if (!document.uri?.trim()) throw new Error(DRAWING_HAS_NO_FILE);
       const raster = drawingIsPdf(document)
         ? await localPdfExcerpt(reference)
         : await localDrawingImageExcerpt(document.uri, reference.excerpt.region);
@@ -183,8 +190,8 @@ function drawingIsPdf(document: ReferenceDocument) {
     (document.originalFileName || document.name || '').toLowerCase().endsWith('.pdf');
 }
 
-async function localRaster(uri: string) {
-  const normalizedUri = uri.trim();
+async function localRaster(uri: string | null | undefined) {
+  const normalizedUri = (uri || '').trim();
   if (!normalizedUri) throw new Error('The local image path is missing.');
   const file = new File(normalizedUri);
   if (!file.exists) throw new Error('The local image file is missing.');
@@ -407,6 +414,7 @@ async function keepDrawingPreview(madeUri: string) {
 
 async function renderDrawingPreviewFile(reference: ReportDrawingReference) {
   const document = reference.excerpt.document;
+  if (!document.uri?.trim()) throw new Error(DRAWING_HAS_NO_FILE);
   if (!drawingIsPdf(document)) {
     const file = new File(document.uri);
     if (!file.exists) throw new Error('The current drawing image is missing on this device.');
