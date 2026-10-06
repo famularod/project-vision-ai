@@ -4,7 +4,7 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { buildDAVEProjectTruth, type DAVEProjectTruth } from './DAVEProjectTruth';
+import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 
@@ -34,29 +34,36 @@ export type DAVEReportProjectTruthsInput = {
 /**
  * The Project Truth a report is written from, one per project: the one
  * recipe for the phone's Reports screen and the web's Reports page (open
- * item, 6 Oct 2026). Each had its own copy. It gives each exactly what its
- * own copy gave (Build 230's result, to the byte): the saved tasks go to the
- * truth, and the step that decides whose update it is reads without them,
- * as both copies did.
+ * item, 6 Oct 2026). Each had its own copy.
+ *
+ * Whose update it is (R3 item 1, under the fingerprint's version 2.0, R4
+ * item 4a): the saved tasks are handed to the scope as well as to the truth,
+ * so a hidden row decides as a shown one does. A field update on a task's
+ * old row (a new master moved the task and hid that row), filed under an
+ * older name of the project, is the project's, as the app's own scope
+ * already counts it (A10 pass 2 F1); one on another project's hidden row is
+ * not.
+ *
+ * That changes which updates a report counts for the same saved data, and so
+ * its fingerprint. A report approved or sent by Build 230 must still be
+ * known, so where the two ways of scoping differ the truth is also built as
+ * Build 230 scoped it, and kept beside the report's truth for the 1.0
+ * fingerprint only (daveProjectTruthAsBuilt). Where they do not differ,
+ * which is nearly always, nothing is built twice.
  */
 export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
   const known = input.knownScheduleItems;
   return input.projects.map(project => {
-    const scope = buildDailyReportAuthorityScope({
+    const scopeInput = {
       selectedProjectName: project.name,
       selectedProjectNames: [project.name],
       projectRecords: input.projectRecords,
       updates: input.updates,
       scheduleItems: input.scheduleItems,
-      // NOT handed the saved tasks (R4, first commit): Build 230 did not hand them to this step, and handing them
-      // here changes which updates are a project's where an update sits on a hidden row under an older name. That
-      // moves the report's fingerprint for the same saved data, so an approval or a sent report made by Build 230
-      // would no longer be known after the update. It waits for the fingerprint's new version, which still works
-      // out the earlier fingerprint for reports made under it.
       projectAreas: input.projectAreas,
       referenceDocuments: input.referenceDocuments,
-    });
-    return buildDAVEProjectTruth({
+    };
+    const truthOf = (scope: ReturnType<typeof buildDailyReportAuthorityScope>) => buildDAVEProjectTruth({
       projectId: project.projectId,
       projectName: project.name,
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
@@ -78,5 +85,14 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       })),
       ...(input.now ? { now: input.now } : {}),
     });
+    // As Build 230 scoped it: without the saved tasks.
+    const scopeAsBefore = buildDailyReportAuthorityScope(scopeInput);
+    // Whose task a hidden row is (A10 pass 2 F1), as the app's own scope reads it.
+    const scope = known ? buildDailyReportAuthorityScope({ ...scopeInput, knownScheduleItems: known }) : scopeAsBefore;
+    const sameUpdates = scope.updates.length === scopeAsBefore.updates.length &&
+      scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
+    const truth = truthOf(scope);
+    // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
+    return daveProjectTruthInStableOrder(truth, sameUpdates ? truth : truthOf(scopeAsBefore));
   });
 }

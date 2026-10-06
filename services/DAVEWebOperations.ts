@@ -16,7 +16,7 @@ import {
   buildDAVEReportSourceFingerprint,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
-import type { DAVEReportSnapshot } from './DAVEReportSnapshot';
+import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot';
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
@@ -920,7 +920,8 @@ export function daveWebReportSourceIsCurrent(
   sourceFingerprint: string | null | undefined,
   currentSource: DAVEWebReportSource,
 ): boolean {
-  return Boolean(sourceFingerprint && sourceFingerprint === currentSource.fingerprint);
+  // The same facts, also when the report was prepared under the earlier fingerprint version (R4 item 4a).
+  return sameReportSource(sourceFingerprint, currentSource.fingerprint);
 }
 
 function buildDAVEWebProjectTruths(

@@ -67,6 +67,7 @@ import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
   type DAVEReportSnapshot,
+  sameReportSource,
 } from '../services/DAVEReportSnapshot';
 import {
   loadDAVEReportPeriod,
@@ -1029,7 +1030,7 @@ export function ReportsScreen({
   // about a report that differed from it (this device's sync caught up).
   const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
-    previousReportSnapshot.sourceFingerprint === reportSourceFingerprint &&
+    sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
     !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)
     ? laterSharedReportNotice(previousReportSnapshot, reportSourceFingerprint, 'refresh', false)
     : '';
@@ -1045,7 +1046,7 @@ export function ReportsScreen({
   ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
-    if (pending && pending.snapshot.sourceFingerprint === sentFingerprint && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
+    if (pending && sameReportSource(pending.snapshot.sourceFingerprint, sentFingerprint) && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
       void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey), () => undefined);
       return;
     }
@@ -1072,7 +1073,7 @@ export function ReportsScreen({
     deliveredAt: string = new Date().toISOString(),
     markedSentAt: string | null = null,
   ): Promise<boolean> => {
-    if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);
+    if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
     // a tab switch is never taken for the other device's; the approval it
     // sent now stands on the period that send starts (A6 pass 8 M1).
@@ -1139,7 +1140,7 @@ export function ReportsScreen({
     const period = { scopeKey: approval.scopeKey, reportFormat };
     const stateKey = reportStateIdentityKey;
     // The screen's approval moves to the new period only when it is this report's (A6 pass 8 M1).
-    const approvalStateKey = recallReportSessionState(stateKey)?.approvedFingerprint === approval.sourceFingerprint ? stateKey : '';
+    const approvalStateKey = sameReportSource(recallReportSessionState(stateKey)?.approvedFingerprint, approval.sourceFingerprint) ? stateKey : '';
     setMarkSentRecording(true);
     setMarkSentMessage('');
     void (async () => {
@@ -1516,7 +1517,7 @@ function laterSharedReportNotice(
     return `Your other device sent a report ${when}, after this one was approved, so this one was not recorded as sent. ` +
       'The next report counts from your other device\'s report.';
   }
-  if (later.deliveredAt !== null && later.sourceFingerprint === currentFingerprint) {
+  if (later.deliveredAt !== null && sameReportSource(later.sourceFingerprint, currentFingerprint)) {
     return moment === 'send'
       ? `${ALREADY_SENT_NOTICE_START} ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
       : `${ALREADY_SENT_NOTICE_START} ${when}. Approve it only if you want to send it a second time.`;

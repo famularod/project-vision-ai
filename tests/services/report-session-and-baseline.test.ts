@@ -82,7 +82,8 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);");
     // Everyday item 1 (2 Oct 2026): the mark now resolves whether it saved (Mark as Sent says so), so the
     // guard returns Promise.resolve(false); pin updated deliberately. Behaviour in everyday-1-report-mark-sent.
-    expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);");
+    // R4 item 4a (deliberate): the saved report is known by the same facts, also when it was approved under the earlier fingerprint version.
+    expect(screen).toContain("if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and edits must be of the "since" section on screen.
     // Whole-app audit A6 pass 9 M2 (30 Sep 2026): and this device must have the other device's latest

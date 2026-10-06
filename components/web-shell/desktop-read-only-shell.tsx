@@ -161,6 +161,7 @@ import {
   reportPeriodSentAfter,
   reportPeriodSentAt,
   type DAVEReportSnapshot,
+  sameReportSource,
 } from '../../services/DAVEReportSnapshot';
 import {
   approveDAVEWebReportPeriod,
@@ -5979,7 +5980,7 @@ function ReportWorkspace({
       // on screen and its facts are the current ones, so this computer takes the approval as its own, as Approve
       // here would, and records the send; the later-send check applies as for any approval.
       // Not over another approved report this computer still has to mark sent: that one would be lost (review N1 L5).
-      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && approvedFingerprint === reportFingerprint &&
+      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && sameReportSource(approvedFingerprint, reportFingerprint) &&
         sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience && !approvalToMarkSent) {
         const approved = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
         outcome = approved.status === 'later_send'
@@ -6025,7 +6026,7 @@ function ReportWorkspace({
     }
     // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
     const recordedFingerprint = outcome.snapshot?.sourceFingerprint;
-    setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
+    setReportSource(source => sameReportSource(source.fingerprint.split(':media-')[0], recordedFingerprint)
       ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
       : source);
     // Review N2 follow-up (5 Oct 2026): "on every device" only once this send's own write is known to have
@@ -6057,7 +6058,7 @@ function ReportWorkspace({
   // for it only while its own approval is the one waiting here; once another device's (or another tab's) later
   // report has overtaken it, the page says so. The question and its "Not yet" promised Mark as Sent either way.
   const sharedCanBeMarkedSent = Boolean(sharedReportOnScreen && approvalToMarkSent &&
-    approvalToMarkSent.sourceFingerprint === sharedReportOnScreen.fingerprint);
+    sameReportSource(approvalToMarkSent.sourceFingerprint, sharedReportOnScreen.fingerprint));
   const sharedOvertaken = sharedReportOnScreen && approvedPeriodMoved
     ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
     : null;

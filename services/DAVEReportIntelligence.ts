@@ -1,4 +1,4 @@
-import type { DAVEProjectTruth } from './DAVEProjectTruth';
+import { daveProjectTruthAsBuilt, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
   buildScheduleTaskAccounting,
@@ -10,6 +10,7 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
+  rememberLegacyReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
   reportTasksLeftByLookahead,
@@ -18,7 +19,14 @@ import {
 } from './DAVEReportSnapshot';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
-export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
+/**
+ * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
+ * were saved in, nor the id each device files the project under. 1.0 is
+ * still worked out beside it for reports made under it (DAVEReportSnapshot,
+ * sameReportSource).
+ */
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
+const DAVE_LEGACY_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
   id: string;
@@ -151,13 +159,72 @@ export function buildDAVEReportSourceFingerprint(
     .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(reportSourceFactsOf(truth)),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
+  rememberLegacyReportSource(fingerprint, buildDAVELegacyReportSourceFingerprint(truths));
+  return fingerprint;
+}
+
+/**
+ * The fingerprint as version 1.0 wrote it, unchanged: of the truths as they
+ * were built, in saved order, with the id each device files the project
+ * under. Only to know a report made under 1.0 for the same facts.
+ */
+export function buildDAVELegacyReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  const truthFingerprints = truths
+    .map(daveProjectTruthAsBuilt)
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
         withoutVolatileReportSourceFields(truth),
       ))),
     }))
     .sort((left, right) => left.projectName.localeCompare(right.projectName));
 
-  return `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  return `${DAVE_LEGACY_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
 }
+
+/**
+ * What version 2.0 hashes of a truth (R4 item 4a): every fact, without
+ *  - `briefing`, Project Truth's own summary lines. They are written from
+ *    the facts hashed beside them, and take "the first" of each list;
+ *  - `entityLinks`, the links from each record to the project, its tasks
+ *    and the work areas saved on the device. They too are worked out from
+ *    the facts hashed beside them, and from the phone's saved work areas,
+ *    which the web does not download: with them in, a project with GPS work
+ *    areas never had the same fingerprint on the phone and on the web; and
+ *  - the id the truth is filed under, wherever an id carries it
+ *    ("timeline:<project id>:…"). The phone files a report's truth under
+ *    "report:<name>" and the web under the cloud project's id, so the two
+ *    never agreed on the fingerprint of the same facts.
+ */
+function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
+  const { briefing: _briefing, entityLinks: _entityLinks, ...facts } = truth as DAVEProjectTruth & Record<string, unknown>;
+  const projectId = typeof truth.projectId === 'string' ? truth.projectId : '';
+  if (!projectId) return facts;
+  // As written, and as an id inside an id carries it: encoded once, twice ("report%253Aalpha") or three times.
+  const once = encodeURIComponent(projectId);
+  const twice = encodeURIComponent(once);
+  const forms = [encodeURIComponent(twice), twice, once, projectId].filter((form, index, all) => all.indexOf(form) === index);
+  const withoutProjectId = (text: string) => forms.reduce((value, form) => value.split(form).join(REPORT_SOURCE_PROJECT_ID), text);
+  const isIdKey = (key: string) => key === 'id' || /Ids?$/.test(key);
+  const walk = (value: unknown, inId: boolean): unknown => {
+    if (typeof value === 'string') return inId ? withoutProjectId(value) : value;
+    if (Array.isArray(value)) return value.map(item => walk(item, inId));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, walk(child, isIdKey(key))]));
+    }
+    return value;
+  };
+  return walk(facts, false);
+}
+const REPORT_SOURCE_PROJECT_ID = '<project>';
 
 export function buildDAVEReportBriefing({
   truths,

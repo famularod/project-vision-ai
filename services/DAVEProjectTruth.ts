@@ -446,6 +446,102 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   });
 }
 
+/** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
+const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
+
+/** A task date as a number, read the same way on every device ("10/08/2026", "2026-10-08…"); unreadable or blank: null. */
+function stableDateValue(value: string | null | undefined): number | null {
+  const text = (value || '').trim();
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+  if (us) return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  return iso ? Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) : null;
+}
+const plainOrder = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
+
+/**
+ * The tasks in an order that does not depend on the order they were saved in:
+ * by finish date, then start date (a task with no date last), then name,
+ * area and id. Compared by code unit, never by locale, so the phone and the
+ * web put them in the same order.
+ */
+function scheduleTruthInStableOrder(schedule: readonly DAVEScheduleTruth[]): DAVEScheduleTruth[] {
+  const key = (task: DAVEScheduleTruth) => [
+    stableDateValue(task.finishDate) ?? Number.MAX_SAFE_INTEGER,
+    stableDateValue((task as { startDate?: string | null }).startDate) ?? Number.MAX_SAFE_INTEGER,
+  ] as const;
+  return [...schedule].sort((left, right) => {
+    const [leftFinish, leftStart] = key(left);
+    const [rightFinish, rightStart] = key(right);
+    return leftFinish - rightFinish || leftStart - rightStart ||
+      plainOrder(left.taskName, right.taskName) || plainOrder(left.areaName || '', right.areaName || '') || plainOrder(left.taskId, right.taskId);
+  });
+}
+
+/**
+ * The truth a report is written from, with nothing in it left in the order
+ * the tasks happened to be saved in (R4 item 4a, the owner's open item "task
+ * save order can reorder Current Work lines"). The app saves tasks in the
+ * order a sync leaves them. Project Truth kept that order in its lists, and
+ * its own summary lines took "the first" of them ("The schedule state for
+ * <the first saved task> is not corroborated ...", the first five risks), so
+ * a sync that only reordered the rows changed the written report and its
+ * fingerprint, and Reports offered a fresh report for the same facts.
+ *
+ * The lists are put in a stable order and the summary lines and the
+ * verification queue written again from them, by the same code. Nothing is
+ * added or dropped. The truth as built (as the build before built it,
+ * `asBuiltBefore`) is kept beside the view (`daveProjectTruthAsBuilt`) for
+ * the earlier fingerprint version only.
+ * For a report's truth (built without a runtime or core), as the report
+ * recipe builds it.
+ */
+export function daveProjectTruthInStableOrder(
+  truth: DAVEProjectTruth,
+  /** The same project's truth as the build before scoped its updates, where that differs (for the 1.0 fingerprint). */
+  asBuiltBefore: DAVEProjectTruth = truth,
+): DAVEProjectTruth {
+  if (truthAsBuilt.has(truth)) return truth;
+  const schedule = scheduleTruthInStableOrder(truth.schedule);
+  const place = new Map(schedule.map((task, index) => [task.taskId, index]));
+  const byTask = <T extends { taskId: string }>(items: readonly T[]): T[] => [...items].sort((left, right) =>
+    (place.get(left.taskId) ?? Number.MAX_SAFE_INTEGER) - (place.get(right.taskId) ?? Number.MAX_SAFE_INTEGER) || plainOrder(left.taskId, right.taskId));
+  const byText = <T,>(items: readonly T[]): T[] => items.map(item => ({ item, text: JSON.stringify(item) }))
+    .sort((left, right) => plainOrder(left.text, right.text)).map(entry => entry.item);
+  const reasoning = { ...truth.reasoning, decisions: byTask(truth.reasoning.decisions), criticalDecisions: byTask(truth.reasoning.criticalDecisions) };
+  const correlations = { ...truth.correlations, tasks: byTask(truth.correlations.tasks) };
+  const photoComparisons = byText(truth.photoComparisons);
+  const byId = <T extends { id: string }>(items: readonly T[]): T[] => [...items].sort((left, right) => plainOrder(left.id, right.id));
+  const evidence = { ...truth.evidence, records: byId(truth.evidence.records), unresolvedRecords: byId(truth.evidence.unresolvedRecords) };
+  const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
+  const stable = deepFreeze({
+    ...truth,
+    evidence,
+    photoComparisons,
+    correlations,
+    reasoning,
+    schedule,
+    verificationQueue,
+    briefing: buildPMBriefing({
+      projectName: truth.projectName,
+      intelligence: truth.intelligence,
+      evidence,
+      photoComparisons,
+      correlations,
+      reasoning,
+      schedule,
+      verificationQueue,
+    }),
+  }) as DAVEProjectTruth;
+  truthAsBuilt.set(stable, asBuiltBefore);
+  return stable;
+}
+
+/** The truth as the build before built it, for a stable-order view; any other truth is its own. */
+export function daveProjectTruthAsBuilt(truth: DAVEProjectTruth): DAVEProjectTruth {
+  return truthAsBuilt.get(truth) ?? truth;
+}
+
 /**
  * The saved detail tasks of this project that are not shown because every
  * lookahead that listed them was replaced by a newer one (owner answer Q25),

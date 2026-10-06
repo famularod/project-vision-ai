@@ -199,6 +199,64 @@ export function reportPeriodKey(snapshot: Pick<DAVEReportSnapshot, 'scopeKey' | 
   return JSON.stringify([snapshot.scopeKey, snapshot.reportFormat ?? null]);
 }
 
+/**
+ * R4 item 4a (the fingerprint's versions). A report's source fingerprint says
+ * which version wrote it in its first characters. Version 1.0 followed the
+ * order the tasks were saved in and the id each device files the project
+ * under; 2.0 follows neither. An approval, a sent report or a saved web
+ * report made under 1.0 must still be known for the same facts, so wherever
+ * the app works out today's fingerprint it also works out the 1.0 one for
+ * the same facts and remembers the pair here (in memory: both are worked out
+ * again whenever the facts are). Kept for as long as a 1.0 fingerprint can
+ * still be in a saved period, a saved web report or the web's list of sent
+ * reports.
+ */
+const LEGACY_REPORT_SOURCE_PREFIX = 'dave-report-source/1.0:';
+const REMEMBERED_LEGACY_SOURCES = 400;
+const legacyReportSources = new Map<string, Set<string>>();
+
+export function isLegacyReportSource(fingerprint: string | null | undefined): boolean {
+  return typeof fingerprint === 'string' && fingerprint.startsWith(LEGACY_REPORT_SOURCE_PREFIX);
+}
+
+/** Today's fingerprint of some facts, and the 1.0 fingerprint of the same facts. */
+export function rememberLegacyReportSource(current: string, legacy: string): void {
+  if (!current || !legacy || current === legacy) return;
+  const known = legacyReportSources.get(current) ?? new Set<string>();
+  known.add(legacy);
+  // Most recently worked out last, so the oldest pair is the one dropped.
+  legacyReportSources.delete(current);
+  legacyReportSources.set(current, known);
+  while (legacyReportSources.size > REMEMBERED_LEGACY_SOURCES) {
+    const oldest = legacyReportSources.keys().next().value;
+    if (oldest === undefined) break;
+    legacyReportSources.delete(oldest);
+  }
+}
+
+/** The 1.0 fingerprints known for the facts of `current`; none for a 1.0 fingerprint itself. */
+export function legacyReportSourcesOf(current: string | null | undefined): readonly string[] {
+  return current ? [...(legacyReportSources.get(current) ?? [])] : [];
+}
+
+/**
+ * Whether two fingerprints are of the same facts: the same fingerprint, or
+ * one written under 1.0 and the other today's fingerprint of those facts.
+ * The web's longer source fingerprint ("<facts>:media-…") is compared by its
+ * facts part, with the rest the same.
+ */
+export function sameReportSource(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const [leftFacts, ...leftRest] = left.split(':media-');
+  const [rightFacts, ...rightRest] = right.split(':media-');
+  if (leftRest.join(':media-') !== rightRest.join(':media-')) return false;
+  if (isLegacyReportSource(leftFacts) === isLegacyReportSource(rightFacts)) return false;
+  return isLegacyReportSource(leftFacts)
+    ? legacyReportSourcesOf(rightFacts).includes(leftFacts)
+    : legacyReportSourcesOf(leftFacts).includes(rightFacts);
+}
+
 function wasDelivered(snapshot: DAVEReportSnapshot): boolean {
   return snapshot.deliveredAt !== null;
 }
@@ -225,7 +283,7 @@ export function reportBaselineSnapshot(
   currentFingerprint: string,
 ): DAVEReportSnapshot | null {
   if (!previous) return null;
-  if (previous.sourceFingerprint === currentFingerprint) {
+  if (sameReportSource(previous.sourceFingerprint, currentFingerprint)) {
     return previous.supersedes ?? (isLegacySnapshot(previous) ? previous : null);
   }
   if (!wasDelivered(previous)) return previous.supersedes ?? null;
@@ -245,7 +303,7 @@ export function reportSnapshotToSave(
 ): DAVEReportSnapshot | null {
   // The same projects and, since owner answer Q17, the same report format.
   const samePeriod = previous ? reportPeriodKey(previous) === reportPeriodKey(current) : false;
-  if (previous && samePeriod && previous.sourceFingerprint === current.sourceFingerprint) {
+  if (previous && samePeriod && sameReportSource(previous.sourceFingerprint, current.sourceFingerprint)) {
     return null;
   }
   const pending = { ...current, deliveredAt: null };
@@ -438,7 +496,7 @@ export function otherDeviceSendNotReceived({
 }): DAVEReportSnapshot | null {
   const send = reportPeriodSend(period);
   if (typeof send?.deliveredAt !== 'string' || ownSends.has(send.deliveredAt)) return null;
-  if (send.sourceFingerprint === currentFingerprint) return null;
+  if (sameReportSource(send.sourceFingerprint, currentFingerprint)) return null;
   const pulled = Date.parse(pulledAt ?? '');
   if (Number.isNaN(pulled)) return send;
   if (pulled > reportSendCountsFrom(send)) return null;

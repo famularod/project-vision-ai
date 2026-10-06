@@ -74,22 +74,19 @@ describe('R3 item 1: the web report counts a field update by its task\'s hidden 
     expect(scope.updates.map(update => update.id)).toEqual(['u-old-row']);
   });
 
-  // R4, first commit: handing the saved tasks to this step changes which updates are a project's, and so the
-  // report's fingerprint, for the same saved data. An approval made by Build 230 would not be known after the
-  // update. Until the fingerprint has its new version (R4 item 4a) the report's facts are scoped exactly as Build
-  // 230 scoped them; the two tests below say what that is, and R4 item 4a turns them round.
-  it('held for the fingerprint\'s new version: the web report\'s facts are scoped as Build 230 scoped them (the update on the hidden row is not in them yet)', () => {
+  it('the web report\'s facts have the update, on the task as it is shown now', () => {
     const truth = buildDAVEWebReportTruths(webSnapshot(moved, [onOldRow]), 'Alpha')[0];
-    expect(truth.evidence.records.filter(entry => entry.kind === 'update')).toEqual([]);
+    const record = truth.evidence.records.find(entry => entry.kind === 'update');
+    expect(record).toMatchObject({ sourceRecordId: 'u-old-row', taskId: 'MASTER 2-1' });
   });
 
-  it('held for the fingerprint\'s new version: an update on another project\'s hidden row filed under this project\'s name is still counted here, as in Build 230', () => {
+  it('an update on another project\'s hidden row stays out, whatever name it was filed under', () => {
     const beta = approveImport(moved, schedule('BETA 1', '2026-09-08T12:00:00.000Z', 'Beta'), ['Pour slab,Beta,Yard,09/15/2026,09/18/2026,0']);
     const betaMoved = approveImport(beta, schedule('BETA 2', '2026-09-15T12:00:00.000Z', 'Beta'), ['Pour slab,Beta,Yard,09/23/2026,09/26/2026,0']);
     const onBetaOldRow = { ...onOldRow, id: 'u-beta-old-row', projectName: 'Alpha', scheduleItemId: 'BETA 1-1', selectedAreaName: 'Yard' } as ProjectUpdate;
     expect(shown(betaMoved).map(item => item.id).sort()).toEqual(['BETA 2-1', 'MASTER 1-2', 'MASTER 2-1']);
-    expect(updatesIn(webSnapshot(betaMoved, [onOldRow, onBetaOldRow]), 'Alpha')).toEqual(['u-beta-old-row']);
-    expect(updatesIn(webSnapshot(betaMoved, [onOldRow, onBetaOldRow]), 'Beta')).toEqual([]);
+    expect(updatesIn(webSnapshot(betaMoved, [onOldRow, onBetaOldRow]), 'Alpha')).toEqual(['u-old-row']);
+    expect(updatesIn(webSnapshot(betaMoved, [onOldRow, onBetaOldRow]), 'Beta')).toEqual(['u-beta-old-row']);
   });
 
   it('guard: an update on a shown task, and one with its parent kept, are counted as before', () => {

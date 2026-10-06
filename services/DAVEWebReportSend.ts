@@ -7,6 +7,8 @@ import {
   validReportPeriodSnapshot,
   type DAVEReportFormat,
   type DAVEReportSnapshot,
+  sameReportSource,
+  legacyReportSourcesOf,
 } from './DAVEReportSnapshot';
 import {
   carryUpDAVEReportPeriod,
@@ -803,10 +805,16 @@ export function daveWebReportSentHereAt(
 ): string | null {
   if (!fingerprint) return null;
   const sent = periodSends(period).find(send =>
-    send.sourceFingerprint === fingerprint && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
+    sameReportSource(send.sourceFingerprint, fingerprint) && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
   if (sent?.deliveredAt) return sent.deliveredAt;
   // R2 item 1: a report from before the three the period remembers, by this browser's own list of what it sent.
-  return period?.reportFormat ? ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, fingerprint)) ?? null : null;
+  // By these facts' fingerprint, or by the one the earlier version gave them when the report was sent (R4 item 4a).
+  if (!period?.reportFormat) return null;
+  for (const facts of [fingerprint, ...legacyReportSourcesOf(fingerprint)]) {
+    const sentAt = ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, facts));
+    if (sentAt) return sentAt;
+  }
+  return null;
 }
 
 /**
@@ -963,7 +971,7 @@ export async function recordDAVEWebReportSend(
   // This computer's own copy holds its approval; the shared copy may already hold a later send.
   const own = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, LOCAL_ONLY)).snapshot;
   let approval = own;
-  if (!own || own.deliveredAt !== null || (approvedFingerprint !== null && own.sourceFingerprint !== approvedFingerprint)) {
+  if (!own || own.deliveredAt !== null || (approvedFingerprint !== null && !sameReportSource(own.sourceFingerprint, approvedFingerprint))) {
     // No approval of these facts is waiting here. Already sent from here? Its own copy, then the shared period, says.
     const merged = await loadDAVEWebReportPeriod(store, period.scopeKey, period.reportFormat).catch(() => null);
     const sentAt = daveWebReportSentHereAt(own, approvedFingerprint) ?? daveWebReportSentHereAt(merged?.snapshot, approvedFingerprint);
@@ -972,7 +980,7 @@ export async function recordDAVEWebReportSend(
     // The approval waiting in the shared period is of exactly these facts: the report going out now is that
     // approved report, and its send is recorded, where it was dropped with "no approval… on this computer".
     const waiting = merged?.snapshot;
-    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || waiting.sourceFingerprint !== approvedFingerprint) return null;
+    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || !sameReportSource(waiting.sourceFingerprint, approvedFingerprint)) return null;
     approval = waiting;
   }
   if (!approval) return null;
