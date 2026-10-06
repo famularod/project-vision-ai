@@ -644,9 +644,12 @@ describe('review N1 (Low): a report another tab of this browser sent is not call
     const truths = buildDAVEWebReportTruths(mockAuth.snapshot, null);
     const facts = buildDAVEReportSourceFingerprint(truths);
     const current = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: facts, capturedAt: '2026-10-01T12:00:00.000Z', reportFormat: 'project_manager' });
-    expect((await approveDAVEWebReportPeriod(store(), current, '2026-10-01T10:00:00.000Z')).status).toBe('saved');
     const sentAt = new Date().toISOString();
-    expect((await recordDAVEWebReportSend(store(), { scopeKey: 'tower', reportFormat: 'project_manager' }, facts, sentAt))?.status).toBe('saved');
+    // In the test both tabs are one page's memory, so this tab's page hears the other's send: inside act.
+    await act(async () => {
+      expect((await approveDAVEWebReportPeriod(store(), current, '2026-10-01T10:00:00.000Z')).status).toBe('saved');
+      expect((await recordDAVEWebReportSend(store(), { scopeKey: 'tower', reportFormat: 'project_manager' }, facts, sentAt))?.status).toBe('saved');
+    });
     // This tab's own memory knows nothing of it until it reads the period again.
     forgetDAVEWebOwnReportSends();
     return current;

@@ -195,16 +195,22 @@ describe('review N1 (Low): a second Share of a report this computer already sent
     render(<DesktopReadOnlyShell page="reports" />);
     await approveOnWeb();
     const facts = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(mockAuth.snapshot, null));
+    // The page is on screen and hears the shared record, so the store is asked inside act.
+    const recordSend = async (sourceFacts: string, sentAt: string) => {
+      let answer: Awaited<ReturnType<typeof recordDAVEWebReportSend>> | undefined;
+      await act(async () => { answer = await recordDAVEWebReportSend(store, period, sourceFacts, sentAt); });
+      return answer;
+    };
     // Never approved here with these facts: nothing to record, and nothing was sent.
-    await expect(recordDAVEWebReportSend(store, period, 'other-facts', '2026-10-01T12:40:00.000Z')).resolves.toBeNull();
-    await expect(recordDAVEWebReportSend(store, period, facts, '2026-10-01T12:45:00.000Z')).resolves.toMatchObject({ status: 'saved' });
+    await expect(recordSend('other-facts', '2026-10-01T12:40:00.000Z')).resolves.toBeNull();
+    await expect(recordSend(facts, '2026-10-01T12:45:00.000Z')).resolves.toMatchObject({ status: 'saved' });
     // The same report again, a moment later (before the page has read the period again): already sent, at the first time.
-    await expect(recordDAVEWebReportSend(store, period, facts, '2026-10-01T12:46:00.000Z'))
+    await expect(recordSend(facts, '2026-10-01T12:46:00.000Z'))
       .resolves.toEqual({ status: 'already_sent', sentAt: '2026-10-01T12:45:00.000Z' });
     expect(sharedRow()?.deliveredAt).toBe('2026-10-01T12:45:00.000Z');
     expect(ownSendTimes()).toEqual(['2026-10-01T12:45:00.000Z']);
     // Another report's facts are still not this one's send.
-    await expect(recordDAVEWebReportSend(store, period, 'other-facts', '2026-10-01T12:47:00.000Z')).resolves.toBeNull();
+    await expect(recordSend('other-facts', '2026-10-01T12:47:00.000Z')).resolves.toBeNull();
   });
 
   it('a report with no approval on this computer whose facts have changed since, never sent from it, still says nothing was recorded', async () => {

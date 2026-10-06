@@ -11,7 +11,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn(async () => undefined),
 }));
 
-import { render, screen } from '@testing-library/react-native';
+import { act, render, screen } from '@testing-library/react-native';
 import React from 'react';
 
 import {
@@ -74,7 +74,7 @@ const fieldUpdate = (id: string) => ({
 });
 
 describe('VoiceOver reads the card\'s "Document change waiting to sync" line (everyday item 9)', () => {
-  it('the App\'s update card says it in its VoiceOver label exactly while the line shows', () => {
+  it('the App\'s update card says it in its VoiceOver label exactly while the line shows', async () => {
     const UpdateHistoryCard = compileUpdateHistoryCard();
     const card = (id: string) => (
       <UpdateHistoryCard update={fieldUpdate(id)} lifecycle="sent" pieStatus={null}
@@ -84,6 +84,8 @@ describe('VoiceOver reads the card\'s "Document change waiting to sync" line (ev
     // Its upload failed: the line shows, and the card's label says it.
     snapshot.mockReturnValue([patchItem('u1', 'Network request failed')] as never);
     const view = render(card('u1'));
+    // The first card to subscribe reads the saved queue once; that read lands here, not after the test.
+    await act(async () => { for (let i = 0; i < 5; i += 1) await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(screen.getByText(FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT)).toBeTruthy();
     expect(screen.getByLabelText(`Tower. Slab poured. Photo update. Sent. ${FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT}. Today`)).toBeTruthy();
     // Nothing waiting: no line, and the label reads as before.
