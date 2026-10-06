@@ -76,6 +76,30 @@ export type DAVEVoiceKeptCapture = Readonly<{
  */
 type RecorderRun = { letGo: 'cancelled' | 'closed' | null };
 
+/**
+ * Review P4 (5 Oct 2026): the recorder run that last switched the phone to
+ * recording. The phone has ONE audio mode, and the app several voice sheets
+ * in place at once (Talk, Ask ECOS, Field Notes, the walk, task fill), each
+ * with its own recorder. A sheet closed while its recorder was still
+ * starting or stopping switched the phone's audio back when that step
+ * finally answered; if he had opened another voice sheet and begun to
+ * dictate by then, it went back under that recording, and on iOS that stops
+ * every recorder: the dictation he had just begun was cut off, shown as
+ * stopped by a lock or a call.
+ */
+let microphoneLastTakenBy: RecorderRun | null = null;
+
+/**
+ * Switches the phone's audio back from recording after `run`, unless another
+ * start has taken the microphone since: then that start's own end switches
+ * it back. (On one sheet a start waits for the stand-down before it, so
+ * "another" is always another sheet's.)
+ */
+async function audioBackFromRecordingAfter(run: RecorderRun | null) {
+  if (run !== microphoneLastTakenBy) return;
+  await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+}
+
 /** What a recording is kept on the device under: its account, the sheet that keeps it, and its project. */
 type KeepsUnder = Readonly<{
   /** The signed-in account, also on a sheet that keeps nothing on the device (`owner` is null there). */
@@ -360,7 +384,7 @@ export function DAVEVoiceCaptureSheet({
       setRecordingDuration(duration);
     }
     try {
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      await audioBackFromRecordingAfter(run);
     } catch {
       if (uri && !abandoned) setError('Recording ended, but audio settings could not be reset. Close and reopen Talk.');
     } finally {
@@ -408,13 +432,13 @@ export function DAVEVoiceCaptureSheet({
   }
 
   /** The recorder is stopped and the microphone released; asking twice, or when it never started, is harmless. */
-  async function standRecorderDown() {
+  async function standRecorderDown(run: RecorderRun | null) {
     try {
       await recorder.stop();
     } catch {
       // Not recording, or gone with the sheet.
     }
-    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+    await audioBackFromRecordingAfter(run).catch(() => undefined);
   }
 
   /** How long the recorder itself says it has been recording, asked directly; 0 when it cannot say. */
@@ -460,7 +484,8 @@ export function DAVEVoiceCaptureSheet({
     const duration = preserveDAVERecordingDuration(recordingDurationRef.current, recorderDuration());
     const uri = recorderFile();
     const under = openSheetKeepsUnderRef.current;
-    const cancelled = recorderRunRef.current?.letGo === 'cancelled';
+    const run = recorderRunRef.current;
+    const cancelled = run?.letGo === 'cancelled';
     let stopped = true;
     try {
       await recorder.stop();
@@ -468,8 +493,8 @@ export function DAVEVoiceCaptureSheet({
       stopped = false;
     }
     // Asked again when it would not stop; the microphone is released either way.
-    if (stopped) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
-    else await standRecorderDown();
+    if (stopped) await audioBackFromRecordingAfter(run).catch(() => undefined);
+    else await standRecorderDown(run);
     if (stopped && !cancelled) await keepStoppedRecordingForNextTime(uri, duration, under);
     else await removeRecording(uri);
     recordingFinishingRef.current = false;
@@ -508,6 +533,7 @@ export function DAVEVoiceCaptureSheet({
       microphoneRefused = permission !== null && !permission.granted;
       if (permission?.granted && !mustNotStart()) {
         recorderTaken = true;
+        microphoneLastTakenBy = run;
         await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
         if (!mustNotStart()) await recorder.prepareToRecordAsync();
         if (!mustNotStart()) {
@@ -522,7 +548,7 @@ export function DAVEVoiceCaptureSheet({
     try {
       if (started) return;
       if (recorderTaken && mustNotStart()) {
-        await standRecorderDown();
+        await standRecorderDown(run);
         await removeRecording(recorderFile());
       }
       // A closed sheet is told nothing.
@@ -770,7 +796,7 @@ export function DAVEVoiceCaptureSheet({
         // and the task button): the recording he was stopping is discarded, as X while
         // listening discards. "Close and Keep on This Device" is the control that keeps, once
         // a recording is ready. Closed without his Cancel, a recording he had stopped is kept.
-        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+        await audioBackFromRecordingAfter(run).catch(() => undefined);
         if (run.letGo === 'closed') await keepStoppedRecordingForNextTime(uri, stoppedDuration);
         else await removeRecording(uri ?? null);
         recordingFinishingRef.current = false;
@@ -790,7 +816,7 @@ export function DAVEVoiceCaptureSheet({
       // A stop that failed after the sheet had let go of the recorder is asked again, and the
       // microphone released: behind a closed sheet nothing else would stop it (review N2 follow-up).
       if (run?.letGo) {
-        await standRecorderDown();
+        await standRecorderDown(run);
         await removeRecording(uri);
       }
       recordingFinishingRef.current = false;
