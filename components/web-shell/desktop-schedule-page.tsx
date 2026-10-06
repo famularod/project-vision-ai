@@ -1682,12 +1682,14 @@ function ScheduleEditor({
       </View>
       <View style={styles.relationshipSection}>
         <Text style={styles.fieldLabel}>Status</Text>
-        <View style={styles.choiceWrap}>
+        <View style={styles.choiceWrap} accessibilityRole="radiogroup" accessibilityLabel="Status">
           {(['Not Started', 'In Progress', 'Waiting', 'Complete'] as ScheduleStatus[]).map(status => (
             <Pressable
               key={status}
               style={[styles.choiceChip, state.status === status && styles.choiceChipSelected]}
               onPress={() => update('status', status)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: state.status === status }}
             >
               <Text style={[styles.choiceChipText, state.status === status && styles.choiceChipTextSelected]}>{status}</Text>
             </Pressable>
@@ -1704,6 +1706,7 @@ function ScheduleEditor({
           style={[styles.input, styles.notesInput]}
           placeholder="Optional schedule note"
           placeholderTextColor="#7D8794"
+          accessibilityLabel="Planning notes"
         />
       </View>
       {editingTask && scenario ? (
@@ -1796,11 +1799,13 @@ function EditorField({
   return (
     <View style={[styles.formField, wide && styles.formFieldWide]}>
       <Text style={styles.fieldLabel}>{label}</Text>
+      {/* Named by its label, as the date, area and list boxes are (independent review F03). */}
       <TextInput
         value={value}
         onChangeText={onChange}
         inputMode={numeric ? 'numeric' : 'text'}
         style={styles.input}
+        accessibilityLabel={label}
       />
     </View>
   );
