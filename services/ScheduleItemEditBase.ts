@@ -234,7 +234,7 @@ export function scheduleItemFieldsWithOwnProgress<T extends string>(local: Sched
   return ownOverFiles ? [...new Set([...changedFields, ...(progress as readonly T[])])] : [...changedFields];
 }
 
-type EditScope = Readonly<{ changedFields?: unknown; base?: unknown; itemData?: unknown }>;
+type EditScope = Readonly<{ changedFields?: unknown; base?: unknown; itemData?: unknown; carriedText?: unknown }>;
 
 /** How many of an edit's own earlier values a field keeps (the latest ones). */
 const OWN_VALUES_KEPT = 40;
@@ -250,16 +250,36 @@ function valueMark(value: string): string {
   return `#${value.length}:${(hash >>> 0).toString(36)}`;
 }
 
+/**
+ * Among a field's own earlier values: the cloud's row had nothing in the field when a carry filled it on this
+ * device, and David typed over the carried value before it went up (review N3 P3-1). No value's mark reads so.
+ */
+const BLANK_UNDER_CARRY = '(blank)';
+
 /** Whether the cloud's value of a field is one this edit itself held earlier (ScheduleItemEditBase.own). */
 function isOwnEarlierValue(base: ScheduleItemEditBase, field: string, cloud: string): boolean {
   const own = base.own?.[field];
-  return Array.isArray(own) && own.includes(valueMark(cloud));
+  if (!Array.isArray(own)) return false;
+  return own.includes(valueMark(cloud)) || (own.includes(BLANK_UNDER_CARRY) && (cloud === 'null' || /^"\s*"$/.test(cloud)));
 }
 
 /**
  * Two queued edits of a task made one: each field keeps the copy its first
  * edit started from. A field the earlier edit changed without a base (a
  * queue item from Build 229 or earlier) gets none: it is sent as before.
+ *
+ * Review N3 P3-1 (pass 3, sync; Low, caused by c3899ef): an owner, a
+ * contractor or a note the sync carried to a task's new row waits to go up
+ * in the same queue record (review N2 P1: `carriedText` names those fields).
+ * It is the sync's, not an edit of David's, and started from no copy. When he
+ * typed over one before it had gone up, the carry counted as that field's
+ * first edit, so his own kept no copy and went up unweighed: over an owner
+ * another device had set on that row meanwhile, with no card. His edit of
+ * such a field is the field's first: it keeps the copy he saw (the carried
+ * value), and the blank the carry was to fill counts as a value this record
+ * started from. So over a blank his goes up, as the carry would have; over
+ * the very value he typed over (another device carried the same) his goes
+ * up; over anything else Review Conflicts asks, as for any edit of his.
  */
 export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditScope): ScheduleItemEditBase | undefined {
   const earlier = isEditBase(existing.base) ? existing.base : undefined;
@@ -267,15 +287,18 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
   // A whole copy queued earlier may have changed any field: its own base, or none.
   if (!Array.isArray(existing.changedFields)) return earlier;
   const earlierFields = new Set(existing.changedFields.map(String));
+  const carried = new Set(Array.isArray(existing.carriedText) ? existing.carriedText.map(String) : []);
+  const overWaitingCarry = (field: string) => carried.has(field) && !Object.prototype.hasOwnProperty.call(earlier?.fields ?? {}, field);
   const fields: Record<string, unknown> = { ...(earlier?.fields ?? {}) };
   Object.entries(later?.fields ?? {}).forEach(([field, value]) => {
-    if (!earlierFields.has(field)) fields[field] = value;
+    if (!earlierFields.has(field) || overWaitingCarry(field)) fields[field] = value;
   });
   if (Object.keys(fields).length === 0) return undefined;
   // What the waiting edit held for a field the newer edit changes again is its own earlier value (review N1 finding
   // 4): an upload may have landed it with its answer lost, and the retry then set David's text against his own.
   const own: Record<string, readonly string[]> = { ...(earlier?.own ?? {}) };
   (Array.isArray(incoming.changedFields) ? incoming.changedFields.map(String) : []).forEach(field => {
+    if (overWaitingCarry(field) && Object.prototype.hasOwnProperty.call(later?.fields ?? {}, field)) { own[field] = [BLANK_UNDER_CARRY]; return; }
     if (field === 'updatedAt' || !earlierFields.has(field) || !Object.prototype.hasOwnProperty.call(earlier?.fields ?? {}, field)) return;
     const before = fieldValue(existing.itemData, field);
     if (before === fieldValue(incoming.itemData, field)) return;

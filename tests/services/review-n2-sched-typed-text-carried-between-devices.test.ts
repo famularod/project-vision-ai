@@ -71,7 +71,20 @@ const mockCloud = {
   lostAnswers: 0,
   /** The cloud's schedule documents (what the web desktop works the shown tasks out from). */
   documents: [] as unknown[],
+  /**
+   * Review N3 P3-1: when on, the cloud keeps each task row's version and refuses a write made against an older one,
+   * as the real one does (independent review pass 2, item 1). Off for the tests written before.
+   */
+  versioned: false,
+  versions: new Map<string, number>(),
+  /** Run once, just before the next task write reaches the cloud: another device writing in that moment. */
+  beforeNextTaskWrite: null as (() => void) | null,
+  /** Task writes the cloud refused because the row had changed since it was read. */
+  refused: [] as string[],
 };
+const mockVersionUp = (id: string) => { mockCloud.versions.set(id, (mockCloud.versions.get(id) ?? 0) + 1); };
+/** Each device loads its own modules: a row's version is kept by the copy of CloudRowVersion that device's sync service uses. */
+const mockRowVersions = new Map<string, typeof import('../../services/CloudRowVersion')>();
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
 const mockDown = () => ({ ok: false, configured: true, stubbed: false, data: null, error: 'Network request failed' });
@@ -80,6 +93,10 @@ const mockTick = () => { try { jest.setSystemTime(Date.now() + 1000); } catch { 
 const MOCK_PROJECT_ID = '607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
 jest.mock('../../services/SupabaseService', () => {
   const actual = jest.requireActual('../../services/SupabaseService');
+  /** A task row as the cloud answers a read: with its version beside it, when the cloud keeps versions. */
+  const mockRowRead = <T extends { id: string }>(row: T): T => (mockCloud.versioned
+    ? mockRowVersions.get(mockDevice)!.withCloudRowVersion(mockCopy(row), String(mockCloud.versions.get(row.id) ?? 0))
+    : mockCopy(row));
   const read = <T,>(data: () => T) => async () => { mockTick(); return mockOnline() ? mockOk(data()) : mockDown(); };
   const addTombstones = (list: Array<{ entityType: string; recordId: string; deletedAt: string }>) => {
     list.forEach(tombstone => {
@@ -132,21 +149,32 @@ jest.mock('../../services/SupabaseService', () => {
       mockCloud.photos.add(pathName);
       return mockOk({ path: pathName });
     },
-    listScheduleItems: read(() => [...mockCloud.rows.values()].map(mockCopy)),
+    listScheduleItems: read(() => [...mockCloud.rows.values()].map(row => mockRowRead(row as { id: string }))),
     listReferenceDocuments: read(() => mockCopy(mockCloud.documents)),
-    getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockCopy(mockCloud.rows.get(id)) : null) : mockDown(); },
+    getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockRowRead(mockCloud.rows.get(id) as { id: string }) : null) : mockDown(); },
     // Independent review R02: several tasks' rows are read by their ids in one request, and a GPS area's row by its id.
     getScheduleItemsByIds: async (ids: string[]) => (mockOnline()
-      ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockCopy(mockCloud.rows.get(id))] : []))) : mockDown()),
+      ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockRowRead(mockCloud.rows.get(id) as { id: string })] : []))) : mockDown()),
     getProjectAreasByIds: async () => (mockOnline() ? mockOk([]) : mockDown()),
-    upsertScheduleItem: async (item: { id: string }) => {
+    upsertScheduleItem: async (item: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
       mockTick();
       if (!mockOnline()) return mockDown();
+      if (mockCloud.versioned) {
+        const meanwhile = mockCloud.beforeNextTaskWrite;
+        mockCloud.beforeNextTaskWrite = null;
+        if (meanwhile) meanwhile();
+        if (options?.ifUnchangedSince && String(mockCloud.versions.get(item.id) ?? 0) !== options.ifUnchangedSince) {
+          mockCloud.refused.push(`${mockDevice}:${item.id}`);
+          return { ok: false, configured: true, stubbed: false, data: null, status: 409, error: 'The cloud copy changed.',
+            code: mockRowVersions.get(mockDevice)!.CLOUD_ROW_CHANGED_SINCE_READ };
+        }
+      }
       mockCloud.rows.set(item.id, mockCopy(item));
+      mockVersionUp(item.id);
       mockCloud.writes.push(`${mockDevice}:${item.id}`);
       mockCloud.events.push({ id: item.id, row: mockCopy(item) });
       if (mockCloud.lostAnswers > 0) { mockCloud.lostAnswers -= 1; return mockDown(); }
-      return mockOk(mockCopy(item));
+      return mockOk(mockRowRead(item));
     },
     listDAVESyncTombstones: read(() => mockCopy(mockCloud.tombstones)),
     upsertDAVESyncTombstone: async (tombstone: { entityType: string; recordId: string; deletedAt: string }) => {
@@ -210,6 +238,7 @@ type Mods = {
   tomb: typeof import('../../services/DAVESyncTombstones');
   realtime: typeof import('../../services/DAVEOperationalRealtimeApplication');
   removed: typeof import('../../services/FieldUpdateRemovedDocuments');
+  versions: typeof import('../../services/CloudRowVersion');
 };
 /**
  * The sync merge marks the rows it carries a percent to in its own module (DAVEScheduleRecovery), and the App's code
@@ -231,6 +260,7 @@ function loadMods(): Mods {
       tomb: require('../../services/DAVESyncTombstones'),
       realtime: require('../../services/DAVEOperationalRealtimeApplication'),
       removed: require('../../services/FieldUpdateRemovedDocuments'),
+      versions: require('../../services/CloudRowVersion'),
     };
   });
   return mods!;
@@ -354,7 +384,7 @@ function newDevice(name: DeviceName): Device {
   return { name, m, state: [], ref: { current: [] }, documents: [], saves: 0, generation: new Map(), effectsSeen: null, pendingEffects: [],
     updates: [], updatesRef: { current: [] }, updateSaves: 0, draftRef: { current: { id: '', status: 'draft' } } };
 }
-const on = (device: Device) => { mockDevice = device.name; };
+const on = (device: Device) => { mockDevice = device.name; mockRowVersions.set(device.name, device.m.versions); };
 function setter(device: Device) {
   return (next: ScheduleItem[] | ((previous: ScheduleItem[]) => ScheduleItem[])) => {
     const value = typeof next === 'function' ? (next as (previous: ScheduleItem[]) => ScheduleItem[])(device.state) : next;
@@ -723,6 +753,7 @@ function shareDocuments(device: Device) { on(device); syncDocuments(device); }
 /* The web desktop: writes straight to the cloud ---------------------------- */
 function webWrite(item: ScheduleItem) {
   mockCloud.rows.set(item.id, mockCopy(item));
+  mockVersionUp(item.id);
   mockCloud.writes.push(`web:${item.id}`);
   mockCloud.events.push({ id: item.id, row: mockCopy(item) });
 }
@@ -844,6 +875,10 @@ function resetRig() {
   mockCloud.events.length = 0;
   mockCloud.offline.clear();
   mockCloud.lostAnswers = 0;
+  mockCloud.versioned = false;
+  mockCloud.versions.clear();
+  mockCloud.beforeNextTaskWrite = null;
+  mockCloud.refused.length = 0;
   heard.clear();
   heardTombstones.clear();
   cloudDocuments = [];
@@ -1206,7 +1241,7 @@ describe('Review N2 P1: the carry waiting to go up, and what David does to the t
     expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
   });
 
-  it('he types over the carried note while the web has typed one there too: it is his edit, and goes up as one', async () => {
+  it('he types over the carried note while the web has typed one there too: it is his edit, weighed like any edit of his', async () => {
     const { phone, ipad, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
     await refresh(ipad, false);
     at('2026-09-12T08:30:00.000Z');
@@ -1215,8 +1250,13 @@ describe('Review N2 P1: the carry waiting to go up, and what David does to the t
     await edit(ipad, newId, { notes: 'Crew back Wednesday' });
     setOnline(ipad, true);
     await backgroundUpload(ipad);
-    // Not held back as a carried note would be: the cloud has what he typed, at once, and the carried owner beside it.
-    expect(cloudRow(newId)).toMatchObject({ notes: 'Crew back Wednesday', owner: 'Mike' });
+    // Changed deliberately (review N3 P3-1). This test pinned the fault: "it is his edit, and goes up as one", his note
+    // over the web's with no card. It is still his edit and not held back as a carried note is (the web's note is not
+    // simply left to stand): Review Conflicts asks which of the two notes, and the carried owner goes up beside it.
+    expect(cloudRow(newId)).toMatchObject({ notes: 'Typed on the web', owner: 'Mike' });
+    const [conflict] = await conflictsOf(ipad);
+    expect((conflict.localPayload as { askedFields?: string[] }).askedFields).toEqual(['notes']);
+    await chooseInSettings(ipad, conflict.id, 'keep_local');
     await settle(phone, ipad);
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Crew back Wednesday', 'Mike'));
   });
@@ -1359,5 +1399,151 @@ describe('Review N2 P1: the merge\'s rule, on the records alone', () => {
     const out = merged(rows, ['A']);
     expect(out.map(item => item.id)).toEqual(['B']);
     expect(textOf(out, 'B')).toEqual(['Mike', '', 'typed', null]);
+  });
+});
+
+/**
+ * Review N3 P3-1 (pass 3, sync; Low, caused by c3899ef). David types over a carried owner or note while the carry is
+ * still waiting on the device, and another device has filled that same field of the task's new row. The carry and
+ * his edit share one queue record; the carry counted as that field's first waiting edit and kept no copy it started
+ * from, so his edit was not weighed against the cloud (owner answer Q28) and went up over the other device's value,
+ * with no card. His edit of a field is now weighed from the copy he saw when he made it, carry or no carry. The
+ * carry itself still only fills a blank, asks nothing and closes no card.
+ */
+describe('Review N3 P3-1: his edit typed over a carry still waiting is weighed against the cloud like any edit of his', () => {
+  /** The iPad has carried the note and the owner to the task's new row and not sent them yet; it then loses signal. */
+  async function carryWaitingOnTheIpad() {
+    const rig = await typedOnTheOldRow(noteAndOwner, null, false);
+    await refresh(rig.ipad, false);
+    expect(theRow(rig.ipad)).toMatchObject({ id: rig.newId, notes: NOTE, owner: 'Mike' });
+    expect(cloudRow(rig.newId)).toMatchObject({ notes: '', owner: '' });
+    at('2026-09-12T08:30:00.000Z');
+    setOnline(rig.ipad, false);
+    return rig;
+  }
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+
+  it('another device set the owner of the task\'s new row meanwhile: Review Conflicts asks, and that owner stays until he chooses', async () => {
+    const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+    webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+    await edit(ipad, newId, { owner: 'Lee' });
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    // (It was: owner 'Lee' in the cloud, Ana's gone on every device, no card.)
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Ana', notes: NOTE });
+    expect(await asked(ipad)).toEqual([{ row: newId, fields: ['owner'], here: ['Lee'], cloud: ['Ana'] }]);
+    expect(theRow(ipad)).toMatchObject({ owner: 'Lee', notes: NOTE });
+    await settle(phone, ipad);
+    expect([onDevice(phone), onWeb()]).toEqual(Array(2).fill([['10/20/2026', '10/30/2026', 0, NOTE, 'Ana']]));
+    expect(await asked(ipad)).toEqual([{ row: newId, fields: ['owner'], here: ['Lee'], cloud: ['Ana'] }]);
+  });
+
+  it('Keep Phone then puts his owner everywhere; Keep Cloud the other device\'s', async () => {
+    for (const [resolution, owner] of [['keep_local', 'Lee'], ['keep_cloud', 'Ana']] as const) {
+      resetRig();
+      const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+      webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+      await edit(ipad, newId, { owner: 'Lee' });
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      const [conflict] = await conflictsOf(ipad);
+      await chooseInSettings(ipad, conflict.id, resolution);
+      await settle(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, owner));
+      expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+    }
+  });
+
+  it('nobody else touched the field: his owner goes up over the blank the carry was to fill, and nothing is asked', async () => {
+    const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+    await edit(ipad, newId, { owner: 'Lee' });
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Lee', notes: NOTE });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Lee'));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  });
+
+  it('the phone carried the same owner there first, so the cloud holds the very value he typed over: his goes up, nothing is asked', async () => {
+    const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+    await refresh(phone);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Mike', notes: NOTE });
+    await edit(ipad, newId, { owner: 'Lee' });
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Lee', notes: NOTE });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Lee'));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  });
+
+  it('he types over it twice while it waits: still weighed from the copy he first typed over', async () => {
+    const { ipad, newId } = await carryWaitingOnTheIpad();
+    webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+    await edit(ipad, newId, { owner: 'Lee' });
+    await edit(ipad, newId, { owner: 'Sam' });
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Ana', notes: NOTE });
+    expect(await asked(ipad)).toEqual([{ row: newId, fields: ['owner'], here: ['Sam'], cloud: ['Ana'] }]);
+  });
+
+  it('the carried field he did not touch still only fills a blank: over the other device\'s note the cloud\'s stands, with nothing asked about it', async () => {
+    const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+    webWrite(webEdited(cloudRow(newId)!, { notes: 'Typed on the web' }));
+    await edit(ipad, newId, { owner: 'Lee' });
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Lee', notes: 'Typed on the web' });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Typed on the web', 'Lee'));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  });
+
+  describe('with a cloud that refuses a write made against a row changed since it was read (independent review pass 2, item 1)', () => {
+    it('his edit over the carry: the other device\'s owner lands in the moment before the write; refused, read again, weighed again, asked', async () => {
+      const { ipad, newId } = await carryWaitingOnTheIpad();
+      await edit(ipad, newId, { owner: 'Lee' });
+      setOnline(ipad, true);
+      mockCloud.versioned = true;
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+      await backgroundUpload(ipad);
+      expect(mockCloud.refused).toEqual([`ipad:${newId}`]);
+      // (It was: weighed again with no copy to weigh from, and 'Lee' written over Ana's.)
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Ana', notes: NOTE });
+      expect(await asked(ipad)).toEqual([{ row: newId, fields: ['owner'], here: ['Lee'], cloud: ['Ana'] }]);
+    });
+
+    it('the carry alone: the other device\'s owner lands in that moment; refused, read again, and the cloud\'s stands with nothing asked', async () => {
+      const { phone, ipad, newId } = await carryWaitingOnTheIpad();
+      setOnline(ipad, true);
+      mockCloud.versioned = true;
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+      await backgroundUpload(ipad);
+      expect(mockCloud.refused).toEqual([`ipad:${newId}`]);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Ana', notes: NOTE });
+      expect(await conflictsOf(ipad)).toEqual([]);
+      await settle(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Ana'));
+      expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+      expect(mockCloud.refused).toEqual([`ipad:${newId}`]);
+    });
+
+    it('with no one else writing, the carry and his edit go up in one write, made against the row as read', async () => {
+      const { ipad, newId } = await carryWaitingOnTheIpad();
+      await edit(ipad, newId, { owner: 'Lee' });
+      setOnline(ipad, true);
+      mockCloud.versioned = true;
+      const writes = cloudWrites();
+      await backgroundUpload(ipad);
+      expect([mockCloud.refused, mockCloud.writes.slice(writes)]).toEqual([[], [`ipad:${newId}`]]);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Lee', notes: NOTE });
+      expect(await conflictsOf(ipad)).toEqual([]);
+    });
   });
 });
