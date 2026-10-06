@@ -81,6 +81,9 @@ const mockCloud = {
   beforeNextTaskWrite: null as (() => void) | null,
   /** Task writes the cloud refused because the row had changed since it was read. */
   refused: [] as string[],
+  /** Review N3 R3: rows the list leaves out (it pages), and rows a read by id cannot reach just now. */
+  unlisted: new Set<string>(),
+  unreadable: new Set<string>(),
 };
 const mockVersionUp = (id: string) => { mockCloud.versions.set(id, (mockCloud.versions.get(id) ?? 0) + 1); };
 /** Each device loads its own modules: a row's version is kept by the copy of CloudRowVersion that device's sync service uses. */
@@ -149,11 +152,11 @@ jest.mock('../../services/SupabaseService', () => {
       mockCloud.photos.add(pathName);
       return mockOk({ path: pathName });
     },
-    listScheduleItems: read(() => [...mockCloud.rows.values()].map(row => mockRowRead(row as { id: string }))),
+    listScheduleItems: read(() => [...mockCloud.rows.values()].filter(row => !mockCloud.unlisted.has((row as { id: string }).id)).map(row => mockRowRead(row as { id: string }))),
     listReferenceDocuments: read(() => mockCopy(mockCloud.documents)),
-    getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockRowRead(mockCloud.rows.get(id) as { id: string }) : null) : mockDown(); },
+    getScheduleItem: async (id: string) => { mockTick(); return mockOnline() && !mockCloud.unreadable.has(id) ? mockOk(mockCloud.rows.has(id) ? mockRowRead(mockCloud.rows.get(id) as { id: string }) : null) : mockDown(); },
     // Independent review R02: several tasks' rows are read by their ids in one request, and a GPS area's row by its id.
-    getScheduleItemsByIds: async (ids: string[]) => (mockOnline()
+    getScheduleItemsByIds: async (ids: string[]) => (mockOnline() && !ids.some(id => mockCloud.unreadable.has(id))
       ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockRowRead(mockCloud.rows.get(id) as { id: string })] : []))) : mockDown()),
     getProjectAreasByIds: async () => (mockOnline() ? mockOk([]) : mockDown()),
     upsertScheduleItem: async (item: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
@@ -229,6 +232,7 @@ import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, sche
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
+import { scheduleItemTextAsItsTaskHasIt, scheduleItemTextEditOnRow } from '../../services/ScheduleItemEditBase';
 
 /* Per-device module sets --------------------------------------------------- */
 type SyncModule = typeof import('../../services/SyncService');
@@ -879,6 +883,8 @@ function resetRig() {
   mockCloud.versions.clear();
   mockCloud.beforeNextTaskWrite = null;
   mockCloud.refused.length = 0;
+  mockCloud.unlisted.clear();
+  mockCloud.unreadable.clear();
   heard.clear();
   heardTombstones.clear();
   cloudDocuments = [];
@@ -1073,6 +1079,33 @@ async function typedOnTheOldRow(
   if (reconnects) await refresh(ipad);
   return { phone, ipad, oldId, newId };
 }
+/**
+ * A carry that has to wait (review N3 R3: an edit typed on a row a master has replaced now goes on to the task's new row
+ * with its own upload, so that case leaves nothing for the carry). Here the iPad, with signal, types the note and the
+ * owner on the task; the phone, with none and not having heard, approves master G, whose new row for the task is
+ * therefore blank, and sends it when it is back. The iPad's upload could not take them there (that row was not in the
+ * cloud yet): the sync merge carries them, on whichever device merges next.
+ */
+async function typedBeforeTheMasterArrived() {
+  const { phone, ipad } = await start();
+  const oldId = theRow(phone).id;
+  at('2026-09-08T08:00:00.000Z');
+  setOnline(phone, false);
+  at('2026-09-09T09:00:00.000Z');
+  await edit(ipad, oldId, { notes: NOTE });
+  at('2026-09-09T09:05:00.000Z');
+  await edit(ipad, oldId, { owner: 'Mike' });
+  await backgroundUpload(ipad);
+  at(G.importedAt!);
+  await approve(phone, G, [G_ROW, SURVEY]);
+  const newId = theRow(phone).id;
+  at('2026-09-12T08:00:00.000Z');
+  setOnline(phone, true);
+  shareDocuments(phone);
+  await backgroundUpload(phone);
+  expect(cloudRow(newId)).toMatchObject({ notes: '', owner: '' });
+  return { phone, ipad, oldId, newId };
+}
 const noteAndOwner = async (ipad: Device, oldId: string) => {
   await edit(ipad, oldId, { notes: NOTE });
   at('2026-09-11T09:05:00.000Z');
@@ -1167,14 +1200,22 @@ describe('Review N2 P1: only a blank is filled, and a blank he left stands', () 
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Mike'));
   });
 
-  it('a note typed on the new row (the phone\'s) stands over the one typed on the old row; the owner, blank there, still follows', async () => {
-    const { phone, ipad, oldId } = await typedOnTheOldRow(noteAndOwner, async (phone, newId) => {
+  it('a note typed on the new row (the phone\'s) and one typed on the old row by the iPad that had not heard: he is asked; the owner, blank there, still follows', async () => {
+    const { phone, ipad, oldId, newId } = await typedOnTheOldRow(noteAndOwner, async (phone, newId) => {
       at('2026-09-11T10:00:00.000Z');
       await edit(phone, newId, { notes: 'Typed on the phone' });
+      await backgroundUpload(phone);
     });
+    // Changed deliberately (review N3 R3). It was: the phone's note stands and the iPad's stays on the hidden row, with
+    // nothing asked ("only a blank is filled"). Both are his, typed on two devices on the same task: Review Conflicts
+    // asks, on the iPad, and the note in the cloud stays until he chooses.
+    expect(cloudRow(newId)).toMatchObject({ notes: 'Typed on the phone', owner: 'Mike' });
+    expect(cloudRow(oldId)).toMatchObject({ notes: NOTE });
+    const [conflict] = await conflictsOf(ipad);
+    expect([conflict.localId, (conflict.localPayload as { askedFields?: string[] }).askedFields]).toEqual([newId, ['notes']]);
+    await chooseInSettings(ipad, conflict.id, 'keep_cloud');
     await settle(phone, ipad);
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Typed on the phone', 'Mike'));
-    expect(cloudRow(oldId)).toMatchObject({ notes: NOTE });
     expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
   });
 
@@ -1211,7 +1252,7 @@ describe('Review N2 P1: only a blank is filled, and a blank he left stands', () 
 
 describe('Review N2 P1: both devices carry the same owner and note', () => {
   it('one of them writes the row; the other finds it as it would write it, writes nothing and asks nothing', async () => {
-    const { phone, ipad, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
+    const { phone, ipad, newId } = await typedBeforeTheMasterArrived();
     // The iPad's edits of the old row are in the cloud; each device now merges, and neither has sent its carry yet.
     const writes = cloudWrites();
     await refresh(ipad, false);
@@ -1228,7 +1269,7 @@ describe('Review N2 P1: both devices carry the same owner and note', () => {
 
 describe('Review N2 P1: the carry waiting to go up, and what David does to the task meanwhile', () => {
   it('he types over the carried note before it has gone up: his note goes up, the carried owner with it', async () => {
-    const { phone, ipad, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
+    const { phone, ipad, newId } = await typedBeforeTheMasterArrived();
     await refresh(ipad, false);
     expect(theRow(ipad)).toMatchObject({ id: newId, notes: NOTE, owner: 'Mike' });
     at('2026-09-12T08:30:00.000Z');
@@ -1242,7 +1283,7 @@ describe('Review N2 P1: the carry waiting to go up, and what David does to the t
   });
 
   it('he types over the carried note while the web has typed one there too: it is his edit, weighed like any edit of his', async () => {
-    const { phone, ipad, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
+    const { phone, ipad, newId } = await typedBeforeTheMasterArrived();
     await refresh(ipad, false);
     at('2026-09-12T08:30:00.000Z');
     setOnline(ipad, false);
@@ -1262,7 +1303,7 @@ describe('Review N2 P1: the carry waiting to go up, and what David does to the t
   });
 
   it('he enters a percent on the task before the carry has gone up, and the web has typed a note there: his percent lands, the web\'s note stands', async () => {
-    const { phone, ipad, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
+    const { phone, ipad, newId } = await typedBeforeTheMasterArrived();
     await refresh(ipad, false);
     at('2026-09-12T08:30:00.000Z');
     setOnline(ipad, false);
@@ -1279,7 +1320,7 @@ describe('Review N2 P1: the carry waiting to go up, and what David does to the t
 
 describe('Review N2 P1: a card waiting in Review Conflicts is not closed by the carry', () => {
   it('a whole-copy card on the task\'s new row stays until David chooses', async () => {
-    const { phone, newId } = await typedOnTheOldRow(noteAndOwner, null, false);
+    const { phone, newId } = await typedBeforeTheMasterArrived();
     // The phone merges first, so the carry that goes up is the phone's own.
     await refresh(phone, false);
     expect(theRow(phone)).toMatchObject({ id: newId, notes: NOTE, owner: 'Mike' });
@@ -1413,7 +1454,7 @@ describe('Review N2 P1: the merge\'s rule, on the records alone', () => {
 describe('Review N3 P3-1: his edit typed over a carry still waiting is weighed against the cloud like any edit of his', () => {
   /** The iPad has carried the note and the owner to the task's new row and not sent them yet; it then loses signal. */
   async function carryWaitingOnTheIpad() {
-    const rig = await typedOnTheOldRow(noteAndOwner, null, false);
+    const rig = await typedBeforeTheMasterArrived();
     await refresh(rig.ipad, false);
     expect(theRow(rig.ipad)).toMatchObject({ id: rig.newId, notes: NOTE, owner: 'Mike' });
     expect(cloudRow(rig.newId)).toMatchObject({ notes: '', owner: '' });
@@ -1545,5 +1586,296 @@ describe('Review N3 P3-1: his edit typed over a carry still waiting is weighed a
       expect(cloudRow(newId)).toMatchObject({ owner: 'Lee', notes: NOTE });
       expect(await conflictsOf(ipad)).toEqual([]);
     });
+  });
+});
+
+/**
+ * Review N3 R3 (pass 3, schedule; MEDIUM, caused by the note-follows fixes 14b3569 and c3899ef). An owner or a note he
+ * CHANGED or CLEARED on one device came back as the old one on every device, with no card, when a master that moves
+ * the task was approved on a device that had not heard the change (the reviewer's C1-C4), or the change was typed on
+ * the old row by a device that had not heard of the master (C6, C7). The master's new row was filled from the
+ * approving device's own copy, and the carry only fills a blank. What follows the task to its new row is now what he
+ * last did to that field on any device, by the rules of owner answer Q28.
+ */
+describe('Review N3 R3: what follows a task to its new row is what he last did to the field, on any device', () => {
+  /** Both devices and the cloud hold this on Framing (the phone typed it, the iPad heard it). */
+  async function onBoth(change: Partial<ScheduleItem>) {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    await edit(phone, oldId, change);
+    await backgroundUpload(phone);
+    await echoes(ipad);
+    expect(theRow(ipad)).toMatchObject(change);
+    return { phone, ipad, oldId };
+  }
+  /** The phone, with no signal, approves master G, which moves Framing; then gets its signal back. */
+  async function phoneApprovesOffline(phone: Device, back: 'auto' | 'syncnow' = 'auto') {
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    if (back === 'syncnow') await fullSync(phone); else await backgroundUpload(phone);
+  }
+  const noCards = async (phone: Device, ipad: Device) => expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+
+  it('C1: he clears the note on the iPad; the phone, which has not heard, approves the master: the note stays cleared everywhere', async () => {
+    const { phone, ipad } = await onBoth({ notes: NOTE });
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { notes: '' });
+    await backgroundUpload(ipad);
+    await phoneApprovesOffline(phone);
+    // (It was: the old note on the task's new row in the cloud, and then on every device.)
+    expect(cloudRow(theRow(phone).id)).toMatchObject({ notes: '' });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
+    await noCards(phone, ipad);
+  });
+
+  it('C2 and C4: owner Mike changed to Lee on the iPad; the phone approves the master unheard: Lee everywhere, by the automatic upload and by Sync Now', async () => {
+    for (const back of ['auto', 'syncnow'] as const) {
+      resetRig();
+      const { phone, ipad } = await onBoth({ owner: 'Mike' });
+      setOnline(phone, false);
+      at('2026-09-09T08:00:00.000Z');
+      await edit(ipad, theRow(ipad).id, { owner: 'Lee' });
+      await backgroundUpload(ipad);
+      await phoneApprovesOffline(phone, back);
+      await settle(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Lee'));
+      await noCards(phone, ipad);
+    }
+  });
+
+  it('C3: the same when he cleared the note on the web', async () => {
+    const { phone, ipad, oldId } = await onBoth({ notes: NOTE });
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    webWrite(webEdited(cloudRow(oldId)!, { notes: '' }));
+    await phoneApprovesOffline(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
+    await noCards(phone, ipad);
+  });
+
+  it('C5, as before: the phone had heard the change before it lost signal', async () => {
+    const { phone, ipad } = await onBoth({ owner: 'Mike' });
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, theRow(ipad).id, { owner: 'Lee' });
+    await backgroundUpload(ipad);
+    await echoes(phone);
+    setOnline(phone, false);
+    await phoneApprovesOffline(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Lee'));
+    await noCards(phone, ipad);
+  });
+
+  it('C6: the master first; then the iPad, which has not heard of it, clears the note on the row it still sees: cleared everywhere', async () => {
+    const { phone, ipad, oldId } = await onBoth({ notes: NOTE });
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    const newId = theRow(phone).id;
+    expect(cloudRow(newId)).toMatchObject({ notes: NOTE });
+    at('2026-09-11T09:00:00.000Z');
+    await edit(ipad, oldId, { notes: '' });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    // His clear reaches the task's new row as his edit, at once (it stayed on the hidden row).
+    expect([cloudRow(oldId)!.notes, cloudRow(newId)!.notes]).toEqual(['', '']);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
+    await noCards(phone, ipad);
+  });
+
+  it('C7: the same with the owner changed from Mike to Lee on the row the iPad still sees', async () => {
+    const { phone, ipad, oldId } = await onBoth({ owner: 'Mike' });
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    at('2026-09-11T09:00:00.000Z');
+    await edit(ipad, oldId, { owner: 'Lee' });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(theRow(phone).id)).toMatchObject({ owner: 'Lee' });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Lee'));
+    await noCards(phone, ipad);
+  });
+
+  it('both changed it: Lee typed on the old row by the iPad that had not heard, Sam typed on the new row meanwhile: Review Conflicts asks', async () => {
+    const { phone, ipad, oldId } = await onBoth({ owner: 'Mike' });
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    const newId = theRow(phone).id;
+    at('2026-09-11T08:00:00.000Z');
+    await edit(phone, newId, { owner: 'Sam' });
+    await backgroundUpload(phone);
+    at('2026-09-11T09:00:00.000Z');
+    await edit(ipad, oldId, { owner: 'Lee' });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect(cloudRow(newId)).toMatchObject({ owner: 'Sam' });
+    expect(await asked(ipad)).toEqual([{ fields: ['owner'], here: ['Lee'], cloud: ['Sam'] }]);
+    const [conflict] = await conflictsOf(ipad);
+    await chooseInSettings(ipad, conflict.id, 'keep_local');
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', 'Lee'));
+    await noCards(phone, ipad);
+  });
+
+  it('both changed it, and the device that approves the master is one of them: the other\'s note is on the new row until he chooses (the card no longer closes unasked)', async () => {
+    const { phone, ipad, oldId } = await onBoth({ notes: NOTE });
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, oldId, { notes: 'Typed on the iPad' });
+    await backgroundUpload(ipad);
+    at('2026-09-09T09:00:00.000Z');
+    await edit(phone, oldId, { notes: 'Typed on the phone' });
+    await phoneApprovesOffline(phone);
+    const newId = theRow(phone).id;
+    expect(cloudRow(newId)).toMatchObject({ notes: 'Typed on the iPad' });
+    // The card is the phone's, about the old row; opening Review Conflicts moves it to the task's row, where it still asks.
+    const [conflict] = await conflictsOf(phone);
+    await chooseInSettings(phone, conflict.id, 'keep_local');
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Typed on the phone', ''));
+    await noCards(phone, ipad);
+  });
+
+  it('changed on the old row itself by two of them after the master (Ana on a web page still open on it, Lee on the iPad): asked about there, and nothing goes on to the new row unasked', async () => {
+    const { phone, ipad, oldId } = await onBoth({ owner: 'Mike' });
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    const newId = theRow(phone).id;
+    at('2026-09-11T08:00:00.000Z');
+    webWrite(webEdited(cloudRow(oldId)!, { owner: 'Ana' }));
+    at('2026-09-11T09:00:00.000Z');
+    await edit(ipad, oldId, { owner: 'Lee' });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect([cloudRow(oldId)!.owner, cloudRow(newId)!.owner]).toEqual(['Ana', 'Mike']);
+    expect((await conflictsOf(ipad)).map(conflict => [conflict.localId, (conflict.localPayload as { askedFields?: string[] }).askedFields])).toEqual([[oldId, ['owner']]]);
+  });
+
+  it('Sync Now while the old row\'s cloud copy cannot be read: the new row is not sent then either', async () => {
+    const { phone, ipad, oldId } = await onBoth({ notes: NOTE });
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, oldId, { notes: '' });
+    await backgroundUpload(ipad);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    const newId = theRow(phone).id;
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    mockCloud.unlisted.add(oldId);
+    mockCloud.unreadable.add(oldId);
+    await fullSync(phone);
+    expect(cloudRow(newId)).toBeUndefined();
+    mockCloud.unreadable.clear();
+    mockCloud.unlisted.clear();
+    await fullSync(phone);
+    expect(cloudRow(newId)).toMatchObject({ notes: '' });
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
+  });
+
+  describe('the rules on the records alone', () => {
+    const task = (extra: Partial<ScheduleItem>): ScheduleItem => ({
+      id: 'F-1', taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/01/2026', finishDate: '10/11/2026', status: 'Not Started',
+      percentComplete: 0, priority: 'Medium', notes: '', owner: '', contractor: '', milestone: '', createdAt: '2026-09-01T12:00:00.000Z', importedAt: '2026-09-01T12:00:00.000Z',
+      importBatchId: 'batch-F', sourceDocumentId: 'MASTER F', ...extra,
+    } as ScheduleItem);
+    const movedBy = (saved: ScheduleItem, fileSays: Partial<ScheduleItem> = {}) => mergeApprovedScheduleImportItems({
+      existing: [saved],
+      imported: [task({ id: 'G-1', startDate: '10/20/2026', finishDate: '10/30/2026', importBatchId: 'batch-G', sourceDocumentId: 'MASTER G', createdAt: '2026-09-10T18:00:00.000Z', importedAt: '2026-09-10T18:00:00.000Z', ...fileSays })],
+      completionMatch: () => null, mergeCompletion: item => item, approvedAt: '2026-09-10T18:00:00.000Z',
+    }).additions[0];
+
+    it('the master\'s new row says what it took from the task and from which row; not what the file stated, and nothing when it took nothing', () => {
+      expect(movedBy(task({ notes: NOTE, owner: 'Mike' }))).toMatchObject({ notes: NOTE, owner: 'Mike', textFromTask: { taskId: 'F-1', notes: NOTE, owner: 'Mike' } });
+      const fileNamesTheOwner = movedBy(task({ notes: NOTE, owner: 'Mike' }), { owner: 'Acme Framing' });
+      expect([fileNamesTheOwner.owner, fileNamesTheOwner.textFromTask]).toEqual(['Acme Framing', { taskId: 'F-1', notes: NOTE }]);
+      expect(movedBy(task({}))).not.toHaveProperty('textFromTask');
+      // A value the file states stands as the file's even when the task had the same: it is not his to follow.
+      expect(movedBy(task({ owner: 'Mike' }), { owner: 'Mike' })).not.toHaveProperty('textFromTask');
+    });
+
+    it('first sent, a field still as taken takes what the cloud\'s row of the task has now, a clear too, and the row is stamped after all its own times', () => {
+      const row = movedBy(task({ notes: NOTE, owner: 'Mike' }));
+      const cloudsTask = task({ notes: '', owner: 'Lee', updatedAt: '2026-09-09T08:00:00.000Z' });
+      const sent = scheduleItemTextAsItsTaskHasIt(row, cloudsTask);
+      expect(sent).toMatchObject({ id: 'G-1', notes: '', owner: 'Lee', textFromTask: { taskId: 'F-1', notes: '', owner: 'Lee' } });
+      expect(Date.parse(sent.updatedAt!)).toBeGreaterThan(Date.parse(row.importedAt!));
+    });
+
+    it('not a field he has typed on the new row since, not one the file stated, and nothing when the task\'s row reads the same or is not there', () => {
+      const row = movedBy(task({ notes: NOTE, owner: 'Mike' }), { contractor: 'Acme Framing' });
+      const cloudsTask = task({ notes: 'Changed on the iPad', owner: 'Mike', contractor: 'Other' });
+      expect(scheduleItemTextAsItsTaskHasIt({ ...row, notes: 'Typed on the new row' }, cloudsTask)).toMatchObject({ notes: 'Typed on the new row', owner: 'Mike', contractor: 'Acme Framing' });
+      expect(scheduleItemTextAsItsTaskHasIt(row, task({ notes: NOTE, owner: 'Mike' }))).toBe(row);
+      expect(scheduleItemTextAsItsTaskHasIt(row, null)).toBe(row);
+      expect(scheduleItemTextAsItsTaskHasIt(row, task({ id: 'another row', notes: '' }))).toBe(row);
+    });
+
+    it('an edit typed on the old row, as an edit of the task\'s new row: his values, from the copy his edit started from; nothing for a field with no such copy or the same value', () => {
+      const newRow = task({ id: 'G-1', notes: NOTE, owner: 'Mike' });
+      const edit = { itemData: task({ notes: '', owner: 'Mike', priority: 'High' }), changedFields: ['notes', 'priority', 'updatedAt'], base: { updatedAt: null, fields: { notes: NOTE, priority: 'Medium' } } };
+      expect(scheduleItemTextEditOnRow(edit, edit.changedFields, newRow)).toEqual({
+        id: 'G-1', itemData: { ...newRow, notes: '' }, changedFields: ['notes', 'updatedAt'], base: { updatedAt: null, fields: { notes: NOTE } },
+      });
+      expect(scheduleItemTextEditOnRow({ ...edit, base: undefined }, edit.changedFields, newRow)).toBeNull();
+      expect(scheduleItemTextEditOnRow(edit, edit.changedFields, { ...newRow, notes: '' })).toBeNull();
+      expect(scheduleItemTextEditOnRow(edit, ['priority', 'updatedAt'], newRow)).toBeNull();
+    });
+  });
+
+  it('the old row\'s cloud copy cannot be read just then: the new row waits on the device, and goes up right at the next try', async () => {
+    const { phone, ipad, oldId } = await onBoth({ notes: NOTE });
+    setOnline(phone, false);
+    at('2026-09-09T08:00:00.000Z');
+    await edit(ipad, oldId, { notes: '' });
+    await backgroundUpload(ipad);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    const newId = theRow(phone).id;
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    mockCloud.unlisted.add(oldId);
+    mockCloud.unreadable.add(oldId);
+    await backgroundUpload(phone);
+    expect(cloudRow(newId)).toBeUndefined();
+    expect((await queueOf(phone)).length).toBeGreaterThan(0);
+    mockCloud.unreadable.clear();
+    await backgroundUpload(phone);
+    expect(cloudRow(newId)).toMatchObject({ notes: '' });
+    mockCloud.unlisted.clear();
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ON_G(0, '', ''));
   });
 });

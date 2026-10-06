@@ -254,6 +254,25 @@ function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<Schedul
   return filled.length === 0 ? row : { ...row, ...Object.fromEntries(filled.map(field => [field, task[field]])) };
 }
 
+/**
+ * Review N3 R3 (5 Oct 2026, Medium; caused by review N2 P1's fill): the new
+ * row a master saves for a task takes his owner, contractor and note from
+ * the copy of the task the approving device holds. When that copy was behind
+ * (he had cleared the note, or changed the owner, on another device that the
+ * approving one had not heard), the old value went onto the new row and so
+ * onto every device, with no card: the reviewer's C1 to C4. The approval can
+ * be made with no signal, so it cannot ask the cloud. It notes on the new
+ * row what it took from the task's own row and from which row
+ * (textFromTask), and the upload of the new row weighs it against the
+ * cloud's copy of that row (SyncService). Only what came from the task's own
+ * row: not a value the file stated, nor one read back from a row before it
+ * (review N2 P1, second part).
+ */
+function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
+  const taken = TYPED_TEXT_FIELDS.filter(field => filled[field] !== row[field] && key(task[field]) && filled[field] === task[field]);
+  return taken.length === 0 ? filled : { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(taken.map(field => [field, task[field]])) } };
+}
+
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
 
 /**
@@ -1479,7 +1498,7 @@ export function mergeApprovedScheduleImportItems({
     // whether or not David entered a percent on it (review N2 P1; at first only beside his own progress, below).
     // (With what an import before the fix left on the task's earlier rows: review N2 P1, second part.)
     const filled = paired && key(paired.importBatchId) !== key(importedItem.importBatchId)
-      ? withBlanksFilledFrom(importedItem, { ...paired, ...(stranded.get(paired.id) || {}) })
+      ? withTextTakenNoted(importedItem, withBlanksFilledFrom(importedItem, { ...paired, ...(stranded.get(paired.id) || {}) }), paired)
       : importedItem;
     if (
       paired &&

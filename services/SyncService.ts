@@ -72,7 +72,7 @@ import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
-  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemTextAsItsTaskHasIt, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -6662,6 +6662,13 @@ async function uploadQueueItem(
     }
     // The cloud had no row for this task when it was read by its id.
     const newToCloud = !remote;
+    // Review N3 R3 (Medium, caused by 14b3569): a master's new row first goes up with his owner, contractor and note
+    // as the cloud's row of the task has them now, where the copy the approving device took them from was behind
+    // (scheduleItemTextAsItsTaskHasIt). That row is read by its id when the list did not hold it; when it cannot be
+    // read the new row waits here, as any task whose cloud copy cannot be checked does.
+    const takenFromId = newToCloud ? payload.itemData.textFromTask?.taskId : undefined;
+    const takenFrom = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
+    if (typeof takenFrom === 'string') return takenFrom;
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
     // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
@@ -6673,6 +6680,21 @@ async function uploadQueueItem(
       ? ownFields.filter(field => !carriedText.includes(field) || !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim())
       : ownFields;
     if (carriedText.length > 0 && changedFields!.every(field => field === 'updatedAt')) return 'uploaded';
+    // Review N3 R3 (Medium, caused by c3899ef): his owner, contractor or note typed on a row a newer master has since
+    // replaced (this device had not heard of that master) stayed on the hidden row unless the new row was blank. It
+    // also goes to the row the task lives on now, as his edit, weighed there by the same rules: over the copy it
+    // started from it lands, over something else typed there Review Conflicts asks (scheduleItemTextEditOnRow). Only
+    // a field that has the copy it started from (so never a carried one, which is the sync's), and not a field asked
+    // about on this row itself (that card moves to the task's row when Review Conflicts opens).
+    if (remote && changedFields) {
+      const rowNow = scheduleItemRowAnsweringTo(payload.id, [...context.scheduleItemsById.values()]);
+      const askedHere = rowNow ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote).asked : [];
+      const onRowNow = rowNow && scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow);
+      if (onRowNow) {
+        const followed = await uploadQueueItem({ ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload }, context);
+        if (followed !== 'uploaded' && followed !== 'conflict') return followed;
+      }
+    }
     // Owner answer Q28 (2 Oct 2026): an edit that keeps the copy it started from is weighed field by field against the
     // cloud's row. A field only this device changed goes up; a field another device changed and this one left as it was
     // stays the cloud's; one changed on both to different values is asked about in Review Conflicts, while the edit's
@@ -6792,7 +6814,7 @@ async function uploadQueueItem(
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
         // and earlier task ids (A8 pass 10 L2).
-        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(payload.itemData, remote), remote);
+        : withScheduleTaskEarlierIdsOf(withScheduleImportMembershipOf(scheduleItemTextAsItsTaskHasIt(payload.itemData, takenFrom), remote), remote);
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       if (asked.length > 0) return askAbout(remote);
       if (

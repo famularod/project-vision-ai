@@ -97,6 +97,7 @@ export function scheduleItemWholeCopyBase(before: ScheduleItem | null | undefine
 /** Not part of a task's rest: what is weighed field by field, the stamps, and the project id an upload binds. */
 const REST_ASIDE: ReadonlySet<string> = new Set<string>([
   ...WHOLE_COPY_FIELDS_WEIGHED, ...Object.values(FIELD_COMPANIONS).flat(), 'updatedAt', 'cloudUpdatedAt', 'projectId',
+  'textFromTask', // what a row took of the fields weighed one by one (review N3 R3)
 ]);
 
 /** A mark of a task's rest: every field not weighed one by one, stamps aside; a field stored as null reads as a missing one. */
@@ -467,6 +468,60 @@ export function scheduleItemEditBaseAfterLanding(
   return {
     updatedAt: typeof landedData.updatedAt === 'string' ? landedData.updatedAt : current.base.updatedAt, fields,
     ...(Object.keys(own).length > 0 ? { own } : {}),
+  };
+}
+
+/** What David types about a task that follows it from row to row (review N2 P1). */
+export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+
+/**
+ * Review N3 R3 (5 Oct 2026, Medium): a master's new row for a task, as it
+ * should first reach the cloud. The row took his owner, contractor and note
+ * from the copy of the task the approving device held (textFromTask). `task`
+ * is the cloud's row of that task now. A field the new row still holds as
+ * taken, which the cloud's row has otherwise, was changed or cleared on
+ * another device before this one heard: only that side changed it, so the
+ * cloud's stands (owner answer Q28) and the new row takes it, stamped just
+ * after both rows so that this device takes the corrected row back. When
+ * this device changed it too, its own edit of the task's row has already
+ * been weighed in this pass and waits in Review Conflicts: the cloud's value
+ * stays on the new row until he chooses. The same row when nothing differs,
+ * when nothing was taken, or when the cloud has no such row.
+ */
+export function scheduleItemTextAsItsTaskHasIt(row: ScheduleItem, task: ScheduleItem | null | undefined): ScheduleItem {
+  const taken = row.textFromTask;
+  if (!taken || !task || task.id !== taken.taskId) return row;
+  const behind = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field) &&
+    fieldValue(row, field) === fieldValue(taken, field) && fieldValue(task, field) !== fieldValue(taken, field));
+  if (behind.length === 0) return row;
+  const now = Object.fromEntries(behind.map(field => [field, task[field] ?? '']));
+  // (After the row's own import time too: a row is ranked by the latest of its times.)
+  return { ...row, ...now, textFromTask: { ...taken, ...now }, updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt) };
+}
+
+/**
+ * Review N3 R3: an edit of David's owner, contractor or note typed on a row
+ * a newer master has since replaced (by a device that had not heard of that
+ * master), as an edit of the row the task lives on now: that row with his
+ * values, weighed from the copy his edit started from, by the same rules as
+ * any edit (owner answer Q28). Null when the edit holds no such field with
+ * its copy, or changes nothing on that row.
+ */
+export function scheduleItemTextEditOnRow(
+  edit: Readonly<{ itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }>,
+  fields: readonly string[],
+  row: ScheduleItem,
+): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase } | null {
+  const base = edit.base;
+  if (!isEditBase(base)) return null;
+  const typed = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
+    fieldValue(edit.itemData, field) !== fieldValue(row, field));
+  if (typed.length === 0) return null;
+  return {
+    id: row.id,
+    itemData: { ...row, ...Object.fromEntries(typed.map(field => [field, edit.itemData[field]])) },
+    changedFields: [...typed, 'updatedAt'],
+    base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, base.fields[field]])) },
   };
 }
 

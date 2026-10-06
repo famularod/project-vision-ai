@@ -965,6 +965,17 @@ export type ScheduleItem = {
    */
   revisedFromTaskIds?: string[] | null;
   /**
+   * Review N3 R3 (5 Oct 2026): the owner, contractor and note this row took
+   * from the task it answers to (taskId) when a master moved the task here:
+   * each as the approving device's copy of that task had it then (owner
+   * answer Q28's "copy it started from", for a row). A field that still reads
+   * so was not typed on this row; when the row first reaches the cloud, the
+   * cloud's row of that task says what he did to the field last
+   * (SyncService). Only fields taken from the task: none the file stated.
+   * Kept in the task's JSON record. Missing on a row saved before.
+   */
+  textFromTask?: { taskId: string; owner?: string; contractor?: string; notes?: string } | null;
+  /**
    * The saved tasks David said at import review this row is not (owner
    * answer Q30, 2 Oct 2026): a same-named row he called a new task. Set
    * Active and Make Current never pair it with them, so his answer holds when
