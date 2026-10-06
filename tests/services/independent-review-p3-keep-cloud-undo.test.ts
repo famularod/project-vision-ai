@@ -19,6 +19,9 @@
  * for each row and makes a conditional write in one step, as the real one
  * does. Synthetic data only.
  */
+import * as fs from 'fs';
+import * as path from 'path';
+import * as ts from 'typescript';
 import type { ScheduleItem } from '../../types';
 
 const mockStorage = new Map<string, string>();
@@ -800,8 +803,9 @@ describe('independent review pass 4 (2): Keep Phone decides only what the card a
 
     const error = await keepPhoneOn(conflict.id, shown).catch((caught: unknown) => caught);
 
-    // Settings: "This task's conflict closed by itself (an edit from this phone reached the cloud), so nothing was sent."
-    expect(syncConflictChoiceStopReason(error)).toBe('conflict_closed');
+    // Settings (follow-up 2): "This task's conflict closed by itself when your other change to this task was sent. This
+    // choice was not applied." It said "(an edit from this phone reached the cloud), so nothing was sent".
+    expect(syncConflictChoiceStopReason(error)).toBe('conflict_closed_other_change_sent');
     expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: 'Crew short (typed on this phone).' });
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
@@ -870,7 +874,7 @@ describe('independent review pass 4, follow-up 1: Keep Cloud on a card of fields
 
     const error = await keepCloudOn(conflict.id, seen).catch((caught: unknown) => caught);
 
-    // Settings: "The cloud copy changed — review again. Nothing was sent."
+    // Nothing of his went up, so Settings keeps "The cloud copy changed — review again. Nothing was sent."
     expect(syncConflictChoiceStopReason(error)).toBe('cloud_copy_changed');
     expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: WEB_NOTE });
     expect(await cards()).toEqual([['owner', 'notes']]);
@@ -1041,5 +1045,198 @@ describe('independent review pass 4, follow-up 1: Keep Cloud on a card of fields
     expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
     await expect(getSyncConflicts()).resolves.toEqual([]);
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+});
+
+/* Follow-up 2: what Settings says ------------------------------------------------------------------------------- */
+
+const ADMIN = fs.readFileSync(path.resolve(__dirname, '../../screens/AdminScreen.tsx'), 'utf8');
+/** One of AdminScreen's own functions, as its source has it. */
+function adminFunction(name: string): string {
+  const match = new RegExp(`\\n  (?:async )?function ${name}\\(`).exec(ADMIN);
+  if (!match) throw new Error(`no AdminScreen function ${name}`);
+  const open = ADMIN.indexOf(' {\n', match.index) + 1;
+  let depth = 0;
+  for (let index = open; index < ADMIN.length; index += 1) {
+    if (ADMIN[index] === '{') depth += 1;
+    if (ADMIN[index] === '}') { depth -= 1; if (depth === 0) return ADMIN.slice(match.index + 3, index + 1); }
+  }
+  throw new Error('unbalanced function');
+}
+/** Keep Phone or Keep Cloud in Settings, by AdminScreen's own resolveConflict: the alert it shows, or the line it puts under Sync. */
+async function chooseInSettings(conflictId: string, resolution: 'keep_local' | 'keep_cloud', shown?: unknown) {
+  const said = { alerts: [] as string[][], line: null as string | null, applied: [] as ScheduleItem[] };
+  const js = ts.transpileModule(`${adminFunction('resolveConflict')}\nmodule.exports = { resolveConflict };`,
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const deps: Record<string, unknown> = {
+    setResolvingConflictId: () => undefined,
+    resolveScheduleItemSyncConflict, syncConflictChoiceStopReason, getSyncConflicts,
+    onApplyCloudConflictScheduleItem: (item: ScheduleItem) => { said.applied.push(item); },
+    getSyncStatus: async () => null, setSyncConflicts: () => undefined, setSyncStatus: () => undefined, setConflictReviewVisible: () => undefined,
+    setSyncAttemptMessage: (line: string) => { said.line = line; },
+    Alert: { alert: (title: string, message: string) => { said.alerts.push([title, message]); } },
+  };
+  const mod = { exports: {} as { resolveConflict: (conflict: unknown, resolution: string) => Promise<void> } };
+  new Function('module', 'exports', ...Object.keys(deps), js)(mod, mod.exports, ...Object.values(deps));
+  const conflict = (await getSyncConflicts()).find(item => item.id === conflictId)!;
+  await mod.exports.resolveConflict(shown === undefined ? conflict : { ...conflict, remotePayload: shown }, resolution);
+  return said;
+}
+const NOTHING_SENT = ['Cloud copy changed', 'The cloud copy changed — review again. Nothing was sent.'];
+const OTHER_CHANGE_SENT = ['Cloud copy changed', 'The cloud copy changed — review again. Your other change to this task was sent. This choice was not applied.'];
+const OTHER_CHANGE_SENT_NOT_APPLIED = ['Conflict not resolved', 'Your other change to this task was sent. This choice was not applied. Check the cloud connection and try again.'];
+const CHOICES: Array<['Keep Phone' | 'Keep Cloud', 'keep_local' | 'keep_cloud']> = [['Keep Phone', 'keep_local'], ['Keep Cloud', 'keep_cloud']];
+
+/**
+ * When what waited beside the card went up and the choice then stopped, Settings said "The cloud copy changed —
+ * review again. Nothing was sent." (or "Neither copy was changed", or "closed by itself ... so nothing was sent").
+ * Something of his had been sent, though nothing of the choice was. It now says that; where nothing was sent it says
+ * what it said.
+ */
+describe('independent review pass 4, follow-up 2: Settings says what was sent when a choice on a card of fields stops', () => {
+  it.each(CHOICES)('%s: one field of his waiting record goes up and another becomes part of the card: his other change was sent, the choice was not applied', async (_label, resolution) => {
+    const { mine, conflict, shown } = await cardAboutTheOwner();
+    ipadSets({ notes: WEB_NOTE, updatedAt: '2026-09-30T11:00:00.000Z' });
+    await queueScheduleItemRecord({ ...mine, notes: NOTE, nextAction: 'Call the inspector.', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['notes', 'nextAction', 'updatedAt'], mine);
+    const seen = { ...shown, notes: WEB_NOTE, updatedAt: '2026-09-30T11:00:00.000Z' };
+
+    const said = await chooseInSettings(conflict.id, resolution, seen);
+
+    // "Nothing was sent." His next action had been.
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT]);
+    expect(said.applied).toEqual([]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: WEB_NOTE, nextAction: 'Call the inspector.' });
+    expect(await cards()).toEqual([['owner', 'notes']]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it.each(CHOICES)('%s: every field of his waiting record becomes part of the card: nothing of his was sent, and it says so as before', async (_label, resolution) => {
+    const { mine, conflict, shown } = await cardAboutTheOwner();
+    ipadSets({ notes: WEB_NOTE, updatedAt: '2026-09-30T11:00:00.000Z' });
+    await aNoteOfHisWaits(mine);
+
+    const said = await chooseInSettings(conflict.id, resolution, { ...shown, notes: WEB_NOTE, updatedAt: '2026-09-30T11:00:00.000Z' });
+
+    expect(said.alerts).toEqual([NOTHING_SENT]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: WEB_NOTE });
+    expect(await cards()).toEqual([['owner', 'notes']]);
+  });
+
+  it('Keep Phone: a newer owner and a note in one waiting record: the note was sent, and he is shown the newer owner before it is kept', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Ana (crew B)', notes: NOTE, updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'notes', 'updatedAt'], mine);
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: NOTE });
+    expect(await cards()).toEqual([['owner']]);
+
+    // Chosen again: nothing waits beside the card now, and it goes through with no message.
+    const [open] = await getSyncConflicts();
+    const again = await chooseInSettings(open.id, 'keep_local');
+    expect(again.alerts).toEqual([]);
+    expect(again.line).toBe('Cloud conflicts resolved.');
+    expect(again.applied).toEqual([expect.objectContaining({ owner: 'Ana (crew B)', notes: NOTE })]);
+    expect(cloudTask()).toMatchObject({ owner: 'Ana (crew B)', notes: NOTE });
+  });
+
+  it('Keep Phone: his note went up, then another device set the owner again: review again, and his note was sent', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    // Just before Keep Phone reads the row (the read after the one that tells what went up).
+    mockGetScheduleItem.mockImplementationOnce(mockCloud.get).mockImplementationOnce(async (id: string) => {
+      ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T12:30:00.000Z' });
+      return mockCloud.get(id);
+    });
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT]);
+    expect(cloudTask()).toMatchObject({ owner: 'Carl', notes: NOTE });
+    expect(await cards()).toEqual([['owner']]);
+  });
+
+  it('Keep Phone: his note went up, then the kept owner could not be written: the note was sent, the choice was not applied', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    // The note's write goes through; the kept copy's does not.
+    mockUpsertScheduleItem.mockImplementationOnce(mockCloud.upsert).mockImplementation(async () => mockUnreadable());
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    // "Neither copy was changed." The cloud's copy had his note in it.
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT_NOT_APPLIED]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: NOTE });
+    expect(await cards()).toEqual([['owner']]);
+  });
+
+  it('Keep Phone: his note went up, then the cloud\'s row could not be read: by what the upload reported, the note was sent', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    mockGetScheduleItem.mockImplementation(async () => mockUnreadable());
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT_NOT_APPLIED]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: NOTE });
+    expect(await cards()).toEqual([['owner']]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Keep Phone: the note\'s write landed but its answer was lost: the row is looked at, so it says the note was sent', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      await mockCloud.upsert(item, options);
+      return mockUnreadable();
+    });
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    // The note still waits (its upload was not confirmed), so nothing is decided over it; but the cloud has it.
+    expect(said.alerts).toEqual([OTHER_CHANGE_SENT_NOT_APPLIED]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: NOTE });
+    expect(await cards()).toEqual([['owner']]);
+    expect(await waitingFields()).toEqual([['notes', 'updatedAt']]);
+  });
+
+  it('a choice that fails with nothing waiting beside the card says what it said: neither copy was changed', async () => {
+    const { conflict } = await cardAboutTheOwner();
+    mockUpsertScheduleItem.mockImplementation(async () => mockUnreadable());
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    expect(said.alerts).toEqual([['Conflict not resolved', 'Neither copy was changed. Check the cloud connection and try again.']]);
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: '' });
+  });
+
+  it.each(CHOICES)('%s: his waiting record also puts the cloud\'s own owner in the card\'s field: the card closes by itself, and his other change was sent', async (_label, resolution) => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Bob', notes: NOTE, updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'notes', 'updatedAt'], mine);
+
+    const said = await chooseInSettings(conflict.id, resolution);
+
+    // "...closed by itself (an edit from this phone reached the cloud), so nothing was sent."
+    expect(said.alerts).toEqual([]);
+    expect(said.line).toBe('This task\'s conflict closed by itself when your other change to this task was sent. This choice was not applied.');
+    expect(cloudTask()).toMatchObject({ owner: 'Bob', notes: NOTE });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Keep Cloud that goes through after his other change went up says nothing more: the task takes the cloud\'s copy, his note in it', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+
+    const said = await chooseInSettings(conflict.id, 'keep_cloud');
+
+    expect(said.alerts).toEqual([]);
+    expect(said.line).toBe('Cloud conflicts resolved.');
+    expect(said.applied).toEqual([expect.objectContaining({ owner: 'Bob', notes: NOTE })]);
+  });
+
+  it('Settings never shows a raw error', () => {
+    expect(ADMIN).not.toContain('error.message');
   });
 });

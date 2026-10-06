@@ -5595,24 +5595,38 @@ async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Prom
 }
 
 /**
+ * The choices on a task's card of fields that stopped after an edit of this
+ * phone's that waited beside the card had gone up (independent review pass 4,
+ * follow-up 2). "Nothing was sent" is then not true: something of his was
+ * sent, though nothing of the choice was, and Settings says that instead.
+ */
+const choicesStoppedAfterOtherChangeSent = new WeakSet<object>();
+
+/**
  * Why a conflict choice stopped, for Settings to explain in plain words: the
  * record was deleted on another device, the cloud's copy changed since the
  * screen showed it, or a task's conflict closed by itself meanwhile (nothing
  * was sent for any of these); or a task's Keep Cloud wrote and the cloud did
  * not confirm it. Null for any other failure, which Settings reports without
  * detail (raw errors are never shown there).
+ *
+ * The three `..._other_change_sent` reasons are the same stops (the last one
+ * any other failure) after another change of his to the task went up in this
+ * choice: that change was sent, the choice was not applied.
  */
 export function syncConflictChoiceStopReason(
   error: unknown,
-): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | 'conflict_closed' | null {
+): 'record_deleted' | 'cloud_copy_changed' | 'save_unconfirmed' | 'conflict_closed'
+  | 'cloud_copy_changed_other_change_sent' | 'conflict_closed_other_change_sent' | 'not_applied_other_change_sent' | null {
   if (!(error instanceof Error)) return null;
+  const otherChangeSent = choicesStoppedAfterOtherChangeSent.has(error);
   if (error.message === 'sync_conflict_record_deleted') return 'record_deleted';
-  if (error.message === 'sync_conflict_cloud_copy_changed') return 'cloud_copy_changed';
+  if (error.message === 'sync_conflict_cloud_copy_changed') return otherChangeSent ? 'cloud_copy_changed_other_change_sent' : 'cloud_copy_changed';
   // A task's Keep Cloud wrote and the cloud did not answer (A7 pass 16 L-2).
   if (error.message === 'sync_conflict_save_unconfirmed') return 'save_unconfirmed';
   // A task's conflict closed while Keep Phone read the cloud (A7 pass 16 L-6).
-  if (error.message === 'sync_conflict_closed') return 'conflict_closed';
-  return null;
+  if (error.message === 'sync_conflict_closed') return otherChangeSent ? 'conflict_closed_other_change_sent' : 'conflict_closed';
+  return otherChangeSent ? 'not_applied_other_change_sent' : null;
 }
 
 /**
@@ -6003,8 +6017,8 @@ function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<stri
 /**
  * Independent review pass 4 (2), and its follow-up for Keep Cloud: this phone's edits of a task that wait beside its
  * card of fields and change another field go up by the ordinary upload before a choice decides the card. Null when
- * none waits. Otherwise the card to decide and the fields that went through the upload; or it throws: the card closed
- * by itself, or the card now asks about more (review again).
+ * none waits. Otherwise the card to decide, the fields that went through the upload, and `sent`: whether something of
+ * his did reach the cloud; or it throws: the card closed by itself, or the card now asks about more (review again).
  *
  * Keep Phone decides the card as it was shown: one that now holds a newer value of his is shown to him first. Keep
  * Cloud gives up his side whatever it now is, so it goes on, on the card open now, unless that asks about more.
@@ -6017,7 +6031,9 @@ async function weighTaskEditsWaitingBesideCard(
   conflict: SyncConflict,
   cardFields: ReadonlySet<string>,
   resolution: 'keep_local' | 'keep_cloud',
-): Promise<{ cardId: string; fields: string[] } | null> {
+  /** The cloud's copy as the screen showed it. */
+  shown: unknown,
+): Promise<{ cardId: string; fields: string[]; sent: boolean } | null> {
   const queueItemId = scheduleItemQueueItemId(conflict.localId);
   const beyond = (edit: SyncQueueItem) => taskEditChangesBeyond(edit, cardFields);
   const waits = async () => (await getOfflineQueue()).find(item => item.id === queueItemId);
@@ -6041,17 +6057,33 @@ async function weighTaskEditsWaitingBesideCard(
   const record = await waits();
   const recordPayload = record?.payload as Partial<ScheduleItemRecordPayload> | undefined;
   const fields = Array.isArray(recordPayload?.changedFields) ? recordPayload.changedFields.map(String).filter(field => field !== 'updatedAt') : [];
-  const result = await uploadPendingChanges();
-  if (!result.itemOutcomes?.[queueItemId] && await waits()) await uploadPendingChanges();
+  let result = await uploadPendingChanges();
+  if (!result.itemOutcomes?.[queueItemId] && await waits()) result = await uploadPendingChanges();
   const open = (await getSyncConflicts()).find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
-  if (!open) throw new Error('sync_conflict_closed');
+  // Whether something of his went up (follow-up 2): the cloud's row now holds a value of that record where the screen
+  // showed another. So not a record that could not be sent; and not a write of the row as the cloud had it with only
+  // its stamp new, when every field of the record is asked about now. A write whose answer was lost is seen there too.
+  // The row: the one saved with a card this upload made, else read by its id; when it cannot be read, by what the
+  // upload reported.
+  const rowAfter: unknown = open && open.id !== conflict.id
+    ? open.remotePayload
+    : await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+  const sent = Boolean(record) && (rowAfter === undefined
+    ? result.itemOutcomes?.[queueItemId] === 'uploaded'
+    : isRecord(rowAfter) && taskFieldsHoldingPhoneEdits(rowAfter as unknown as ScheduleItem, shown, record ? [record] : []).length > 0);
+  const stopped = (message: string) => {
+    const error = new Error(message);
+    if (sent) choicesStoppedAfterOtherChangeSent.add(error);
+    return error;
+  };
+  if (!open) throw stopped('sync_conflict_closed');
   const asked = (card: SyncConflict) => [...scheduleItemConflictFields(card.localPayload)].sort().join();
   // The card now asks about more; or, for Keep Phone, about a newer value of his: he is shown it before anything is decided.
   if (asked(open) !== asked(conflict) || (resolution === 'keep_local' && open.id !== conflict.id)) {
-    throw new Error('sync_conflict_cloud_copy_changed');
+    throw stopped('sync_conflict_cloud_copy_changed');
   }
   // An edit that could not go up now still waits: the choice finds it there and decides nothing over it.
-  return { cardId: open.id, fields };
+  return { cardId: open.id, fields, sent };
 }
 
 export async function resolveScheduleItemSyncConflict(
@@ -6123,14 +6155,20 @@ export async function resolveScheduleItemSyncConflict(
   // Follow-up 1: Keep Cloud too. It took every waiting edit of the task off the queue, so that note was discarded,
   // on this phone as well, though the card had asked about the owner only (the long-recorded "Keep Cloud withdraws
   // newer queued edits", for a task's card of fields). It gives up what the card asks about and nothing else.
+  // Follow-up 2: whatever stops the choice after something of his has gone up this way, Settings is told so
+  // (syncConflictChoiceStopReason), since "Nothing was sent" would not be true.
   const cardFields = askedFields.length > 0 && Array.isArray(localPayload.changedFields)
     ? new Set(localPayload.changedFields.map(String)) : null;
   const decidedAfterWhatWaitsBesideCard = async (): Promise<ScheduleItem | null> => {
     if (!cardFields || weighedBesideCard !== undefined) return null;
-    const beside = await weighTaskEditsWaitingBesideCard(conflict, cardFields, resolution);
-    return beside
-      ? resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields })
-      : null;
+    const beside = await weighTaskEditsWaitingBesideCard(conflict, cardFields, resolution, shown);
+    if (!beside) return null;
+    try {
+      return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields });
+    } catch (error) {
+      if (beside.sent && error instanceof Error) choicesStoppedAfterOtherChangeSent.add(error);
+      throw error;
+    }
   };
 
   if (resolution === 'keep_cloud') {

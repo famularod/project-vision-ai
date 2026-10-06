@@ -1044,6 +1044,31 @@ export function AdminScreen({
           : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
         return;
       }
+      // Independent review pass 4, follow-up 2: on a task's card of fields, another change of his to the task that
+      // was waiting goes up before the choice is made. When the choice then stops, that change was sent though nothing
+      // of the choice was: "Nothing was sent" and "Neither copy was changed" are not true then, and these three say so.
+      if (stopReason === 'conflict_closed_other_change_sent') {
+        await showConflictsAfterChoice(
+          'This task\'s conflict closed by itself when your other change to this task was sent. This choice was not applied.',
+        ).catch(() => undefined);
+        return;
+      }
+      if (stopReason === 'cloud_copy_changed_other_change_sent') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert(
+          'Cloud copy changed',
+          'The cloud copy changed — review again. Your other change to this task was sent. This choice was not applied.',
+        );
+        return;
+      }
+      if (stopReason === 'not_applied_other_change_sent') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert(
+          'Conflict not resolved',
+          'Your other change to this task was sent. This choice was not applied. Check the cloud connection and try again.',
+        );
+        return;
+      }
       // A task's conflict closed while Keep Phone read the cloud (whole-app
       // audit A7 pass 16 L-6): this phone's own edit, already on its way up,
       // landed. It said "The cloud copy changed — review again" over an
