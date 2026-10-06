@@ -125,6 +125,27 @@ describe('Review N2 L7: Keep Phone does not come back as a new question about hi
     expect(await queueOf(phone)).toEqual([]);
   });
 
+  it('Keep Phone whose own write lands with its answer lost says it was not resolved; Keep Phone again ends with his latest copy and no second card', async () => {
+    const { phone, ipad } = await cardWaits();
+    at('2026-09-08T09:00:00.000Z');
+    await refresh(phone);
+    cardFails(phone);
+    await openAndSave(phone, () => TASK);
+    at('2026-09-08T10:00:00.000Z');
+    rig.mockCloud.lostAnswers = 1; // weak signal at the choice: its write lands, the answer does not come back
+    const conflict = (await conflictsOf(phone)).find(item => item.entity === 'project_update')!;
+    await expect(chooseInSettings(phone, conflict.id, 'keep_local')).rejects.toThrow(); // Settings: "Conflict not resolved"
+    expect(shows(cloudUpdate())).toEqual({ notes: PHONE_NOTE, area: 'Area 0', task: '' }); // his copy is in the cloud all the same
+    expect(await conflictsOf(phone)).toHaveLength(1);
+    at('2026-09-08T10:05:00.000Z');
+    await keepPhone(phone); // found in the cloud this time (the cloud receipt)
+    await refresh(ipad);
+
+    expect(await cardsSay(phone)).toEqual([]);
+    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill({ notes: 'Pour', area: 'Area 1', task: 'task-9' }));
+    expect([theUpdate(phone)!.status, await queueOf(phone)]).toEqual(['sent', []]);
+  });
+
   it('a change the iPad makes after his choice, before the later edit goes up, is asked about, and the card names that change alone', async () => {
     const { phone, ipad } = await cardWaits();
     at('2026-09-08T09:00:00.000Z');
@@ -167,18 +188,23 @@ describe('Review N2 L7: Keep Phone does not come back as a new question about hi
     expect(shows(cloudUpdate())).toEqual({ notes: PHONE_NOTE, area: 'Area 0', task: '' });
   });
 
-  it('Keep Cloud is not such a write: a draft opened before it and saved after it is asked about, and the iPad\'s copy stays', async () => {
+  it.each([
+    ['its copy took in a late photo result of the phone\'s, so it was written', true],
+    ['its copy was the cloud\'s as it stood, so it was found there', false],
+  ] as const)('Keep Cloud is not such a write (%s): a draft opened before it and saved after it is asked about, and the iPad\'s copy stays', async (_label, lateResult) => {
     const { phone } = await cardWaits();
     at('2026-09-08T09:00:00.000Z');
     cardFails(phone);
     await openOnly(phone); // the draft starts from the card showing his own note
-    setOnline(phone, false);
-    await lateResultArrives(phone); // Keep Cloud's copy takes it in, so that copy is written
-    setOnline(phone, true);
+    if (lateResult) {
+      setOnline(phone, false);
+      await lateResultArrives(phone);
+      setOnline(phone, true);
+    }
     at('2026-09-08T10:00:00.000Z');
     await chooseInSettings(phone, (await conflictsOf(phone)).find(conflict => conflict.entity === 'project_update')!.id, 'keep_cloud');
     expect(shows(theUpdate(phone))).toEqual({ notes: 'Pour', area: 'Area 1', task: '' });
-    expect(cloudUpdate()!.photos[0].photoIntelligence).toMatchObject({ summary: 'Slab poured' });
+    if (lateResult) expect(cloudUpdate()!.photos[0].photoIntelligence).toMatchObject({ summary: 'Slab poured' });
     at('2026-09-08T11:00:00.000Z');
     await saveOpened(phone, () => TASK); // the note he chose to drop is still in this draft
 

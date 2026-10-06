@@ -7636,6 +7636,12 @@ async function projectUpdateAlreadyHasCloudReceipt(
   // A whole copy found in the cloud is the copy its card starts from, as one this pass put there is (review N2, the
   // fault behind seed 298): its write had landed with the answer lost, and its card still reads "Waiting to Sync".
   if (!queuedFieldUpdateDocumentPatches(item)) await noteFieldUpdateCopyInCloud(payload.id, payload.updateData);
+  // The copy a choice of his put in the cloud is his own write also when it is found there (review N2 L7): Keep
+  // Phone's write landed with its answer lost, Settings said "Conflict not resolved", and Keep Phone again met its own
+  // copy in the cloud. Not remembered, the newer edit it sends next came back as the second card.
+  if (!queuedFieldUpdateDocumentPatches(item) && payload.overConflict && !payload.keepCloudChoice) {
+    await noteFieldUpdateChoiceWritten(payload.id, payload.updateData);
+  }
   recordProjectUpdateUpload(payload.id);
   return true;
 }
