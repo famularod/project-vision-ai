@@ -124,6 +124,11 @@ export function forgetDAVEWebReportPeriods(ownerId: string): void {
   // The signed-out account's send times are no other account's own sends.
   ownSends.clear();
   sentInThisTab.clear();
+  // Nor is anything noted for it by an answer from the shared record that arrives after this (review N2 follow-up).
+  sharedForgottenAt.set(prefix, ++sharedSeq);
+  for (const key of [...sharedAcceptedAt.keys()]) {
+    if (key.startsWith(prefix)) sharedAcceptedAt.delete(key);
+  }
 }
 
 /**
@@ -238,6 +243,7 @@ export function daveWebReportPeriodKeptInTabOnly(): boolean {
 /** Test seam: a new tab holds nothing in its own memory (neither a period nor the sender id a full profile refused). */
 export function forgetDAVEWebReportTabMemory(): void {
   tabOnly.clear();
+  sharedAcceptedAt.clear();
 }
 
 /**
@@ -307,20 +313,130 @@ export function daveWebReportSnapshotCloud(
     expectedOwnerId?: string;
   }>) => Promise<'saved' | 'unavailable'>,
 ): DAVEReportSnapshotCloud {
+  // The account the shared record last answered for: a write that names none is that account's.
+  let lastOwner: string | null = null;
   return Object.freeze({
     async read(scopeKey: string, reportFormat: DAVEReportFormat) {
+      const asked = ++sharedSeq;
       const result = await load(scopeKey, reportFormat);
-      return result === 'unavailable' ? null : result;
+      if (result === 'unavailable') return null;
+      lastOwner = result.ownerId;
+      // What the shared record runs from, as this browser has now seen it (review N2 follow-up).
+      const shown = reportPeriodSentAt(validReportPeriodSnapshot(result.snapshot, scopeKey, reportFormat));
+      noteSharedRecord(result.ownerId, scopeKey, reportFormat, shown, asked, 'read');
+      return result;
     },
-    write: (snapshot: DAVEReportSnapshot, expectedOwnerId?: string) => save({
-      scopeKey: snapshot.scopeKey,
-      format: snapshot.reportFormat as DAVEReportFormat,
-      snapshot,
-      approvedAt: snapshot.capturedAt,
-      deliveredAt: reportPeriodSentAt(snapshot),
-      expectedOwnerId,
-    }),
+    async write(snapshot: DAVEReportSnapshot, expectedOwnerId?: string) {
+      const asked = ++sharedSeq;
+      const owner = expectedOwnerId ?? lastOwner;
+      const answer = await save({
+        scopeKey: snapshot.scopeKey,
+        format: snapshot.reportFormat as DAVEReportFormat,
+        snapshot,
+        approvedAt: snapshot.capturedAt,
+        deliveredAt: reportPeriodSentAt(snapshot),
+        expectedOwnerId,
+      });
+      // Accepted: the shared record now runs from this period's send, or from a later one it kept.
+      if (answer === 'saved' && owner && snapshot.reportFormat) {
+        noteSharedRecord(owner, snapshot.scopeKey, snapshot.reportFormat, reportPeriodSentAt(snapshot), asked, 'accepted');
+      }
+      return answer;
+    },
   });
+}
+
+/**
+ * Review N2 follow-up (5 Oct 2026): what this browser has seen of the shared
+ * record, for each account and period: the send it was last seen to run
+ * from. Sign Out's warning ("A report sent from this computer may not have
+ * reached your other devices") appeared whenever the shared record could not
+ * be reached at sign-out, also for a send that had reached it long before (8
+ * of the 11 times in the reviewer's sequences). A send is known to be there
+ * once the record accepted it, or a read showed the record running from it
+ * (or from a later one; the record never runs backwards). A read that shows
+ * an older send takes that back, unless it was asked before the write was
+ * accepted. Kept beside the account's periods in this browser, and removed
+ * with them at sign-out.
+ */
+const SHARED_SEEN_KEY = '@vitruvius/report-snapshots/shared-seen/v1';
+/** Counts what is asked of the shared record and when an account was forgotten, in order. */
+let sharedSeq = 0;
+/** When each account's periods were last removed from this browser: an answer asked for before that notes nothing. */
+const sharedForgottenAt = new Map<string, number>();
+/** When the shared record last accepted a write of each period. */
+const sharedAcceptedAt = new Map<string, number>();
+
+function sharedSeenKey(ownerId: string, scopeKey: string, reportFormat: DAVEReportFormat): string {
+  return `${accountPrefix(ownerId)}${SHARED_SEEN_KEY}:${encodeURIComponent(scopeKey)}:${reportFormat}`;
+}
+
+/** A small value this browser keeps for an account beside its periods, read at once (this tab's own copy first). */
+function accountValue(key: string): string | null {
+  if (tabOnly.has(key)) return tabOnly.get(key) ?? null;
+  try {
+    return browserLocalStorage()?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps it, or removes it (null): in the profile's storage, or in this tab's memory when that will not take it. */
+function keepAccountValue(key: string, value: string | null): void {
+  const local = browserLocalStorage();
+  if (local && !profileStorages.has(local)) profileStorages.set(local, new Set());
+  try {
+    if (!local) throw new Error('no profile storage');
+    if (value === null) local.removeItem(key);
+    else local.setItem(key, value);
+    if (value === null) profileStorages.get(local)?.delete(key);
+    else profileStorages.get(local)?.add(key);
+    tabOnly.delete(key);
+  } catch {
+    if (value === null) tabOnly.delete(key);
+    else tabOnly.set(key, value);
+  }
+}
+
+const sendTime = (sentAt: string | null | undefined) => {
+  const time = Date.parse(sentAt ?? '');
+  return Number.isNaN(time) ? -Infinity : time;
+};
+
+function noteSharedRecord(
+  ownerId: string,
+  scopeKey: string,
+  reportFormat: DAVEReportFormat,
+  /** The send the shared record runs from; null for none. */
+  sentAt: string | null,
+  /** When the read or write was asked for. */
+  asked: number,
+  how: 'read' | 'accepted',
+): void {
+  // The account's periods were removed from this browser meanwhile (a sign-out): nothing of it is written back.
+  if ((sharedForgottenAt.get(accountPrefix(ownerId)) ?? 0) > asked) return;
+  const key = sharedSeenKey(ownerId, scopeKey, reportFormat);
+  const known = accountValue(key);
+  const earlier = sendTime(sentAt) < sendTime(known);
+  if (how === 'accepted') {
+    sharedAcceptedAt.set(key, ++sharedSeq);
+    // The record kept a later send it already had.
+    if (earlier) return;
+  } else if (earlier && asked < (sharedAcceptedAt.get(key) ?? 0)) {
+    // Asked before the write was accepted: it says nothing against it.
+    return;
+  }
+  if ((sentAt ?? null) !== known) keepAccountValue(key, sentAt ?? null);
+}
+
+/** Whether this browser has seen the shared record run from the send at `sentAt`, or from a later one (review N2 follow-up). */
+export function daveWebReportSendSeenInSharedRecord(
+  ownerId: string,
+  period: Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat }>,
+  sentAt: string,
+): boolean {
+  const seen = accountValue(sharedSeenKey(ownerId, period.scopeKey, period.reportFormat));
+  return seen !== null && sendTime(seen) >= sendTime(sentAt) && sendTime(sentAt) > -Infinity;
 }
 
 export type DAVEWebReportStore = Readonly<{ storage: SnapshotStorage; cloud: DAVEReportSnapshotCloud }>;
@@ -557,7 +673,8 @@ function keptReportPeriods(ownerId: string): Array<Readonly<{ scopeKey: string; 
  * and does not wait to find that out (review N2).
  */
 export function daveWebReportPeriodsKeptHere(): boolean {
-  const kept = (key: string) => key.startsWith(`${WEB_PREFIX}/`);
+  // What this browser has seen of the shared record is no period, and nothing to carry up.
+  const kept = (key: string) => key.startsWith(`${WEB_PREFIX}/`) && !key.includes(SHARED_SEEN_KEY);
   if ([...tabOnly].some(([key, value]) => value !== null && kept(key))) return true;
   const profile = browserLocalStorage();
   if (profile && !profileStorages.has(profile)) profileStorages.set(profile, new Set());
@@ -623,6 +740,9 @@ export async function shareDAVEWebReportSendsBeforeSignOut(
       const kept = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, storage, LOCAL_ONLY)).snapshot;
       const send = reportPeriodSend(kept);
       if (send && await reportSnapshotSentHere(send, storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false)) {
+        // Seen in the shared record before now (accepted by it, or read back from it): it is there, though the
+        // record cannot be reached at this moment, and nothing is said (review N2 follow-up).
+        if (daveWebReportSendSeenInSharedRecord(owner, period, send.deliveredAt as string)) return;
         notShared.push({ ...period, sentAt: send.deliveredAt as string });
       }
     }));
