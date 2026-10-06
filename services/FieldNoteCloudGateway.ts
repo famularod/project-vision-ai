@@ -5,9 +5,10 @@ import {
   normalizeFieldNote,
   type FieldNote,
 } from './FieldNoteRepository';
-import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
+import { applySupabaseKeysetPage, paginateSupabaseCollectionByKey, sortSupabaseRows } from './SupabaseCollectionPagination';
 
 const FIELD_NOTES_TABLE = 'field_notes';
+const FIELD_NOTE_KEY = Object.freeze(['id'] as const);
 const REALTIME_RETRY_DELAYS_MS = Object.freeze([1_000, 3_000, 10_000, 30_000]);
 let realtimeSubscriptionSequence = 0;
 
@@ -72,20 +73,20 @@ export function createFieldNoteCloudGateway(
   return Object.freeze({
     async list(expectedOwnerId?: string): Promise<readonly FieldNote[]> {
       const context = await authorizedContext(expectedOwnerId);
-      const result = await paginateSupabaseCollection<Record<string, unknown>>(
-        async ({ from, to }) => {
-          const response = await context.client
+      // Read by each note's id, which with its owner is the table's key and
+      // which no edit changes, so a note saved or edited elsewhere while the
+      // list is read can neither repeat a note nor hide one (independent
+      // review pass 2, item 4). Then newest first, as before.
+      const result = await paginateSupabaseCollectionByKey<Record<string, unknown>>(
+        request => applySupabaseKeysetPage(
+          context.client
             .from(FIELD_NOTES_TABLE)
             .select('*')
-            .eq('owner_id', context.ownerId)
-            .order('created_at', { ascending: false })
-            // Two notes saved at the same instant keep one order from page to
-            // page (independent review R02): the read now refuses a list in
-            // which a note is seen twice.
-            .order('id', { ascending: true })
-            .range(from, to);
-          return response;
-        },
+            .eq('owner_id', context.ownerId),
+          FIELD_NOTE_KEY,
+          request,
+        ),
+        { key: FIELD_NOTE_KEY },
       );
       if (!result.ok) {
         throw new FieldNoteCloudError(
@@ -93,7 +94,11 @@ export function createFieldNoteCloudGateway(
           'Field Notes could not be refreshed from the cloud.',
         );
       }
-      return Object.freeze(result.rows.map(normalizeFieldNoteCloudRow));
+      return Object.freeze(sortSupabaseRows(
+        result.rows,
+        { by: row => row.created_at, time: true, descending: true },
+        { by: row => row.id },
+      ).map(normalizeFieldNoteCloudRow));
     },
 
     async create(note: FieldNote, expectedOwnerId?: string): Promise<FieldNote> {

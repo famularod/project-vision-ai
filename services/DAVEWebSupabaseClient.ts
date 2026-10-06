@@ -29,8 +29,10 @@ import {
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
 import {
+  applySupabaseKeysetPage,
   chunkSupabaseFilterValues,
-  paginateSupabaseCollection,
+  paginateSupabaseCollectionByKey,
+  sortSupabaseRows,
 } from './SupabaseCollectionPagination';
 import {
   attachDAVEOperationalRealtime,
@@ -633,20 +635,19 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         shouldRead('projects')
           // Archived rows too: the snapshot needs their names to keep them
           // out of the portfolio (DAVEWebReadOnlyRepository.portfolioProjects).
-          ? readOwnerRows(client, 'projects', userId, query => query.order('created_at', { ascending: false }).order('id', { ascending: true }))
+          ? readOwnerRows(client, 'projects', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projects ?? []),
         shouldRead('schedule_items')
-          ? readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false }).order('id', { ascending: true }))
+          ? readOwnerRows(client, 'schedule_items', userId, ROW_ID_KEY, 'updated_at')
           : Promise.resolve(cachedRows?.scheduleItems ?? []),
         shouldRead('project_updates')
-          ? readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false }).order('id', { ascending: true }))
+          ? readOwnerRows(client, 'project_updates', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projectUpdates ?? []),
         shouldRead('reference_documents')
           ? readAuthorizedReferenceDocumentMetadata(client)
           : Promise.resolve(cachedRows?.referenceDocuments ?? []),
         shouldRead('sync_tombstones')
-          ? readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false })
-            .order('entity_type', { ascending: true }).order('record_id', { ascending: true }), deletionRecordRowKey)
+          ? readOwnerRows(client, 'dave_sync_tombstones', userId, DELETION_RECORD_KEY, 'deleted_at')
           : Promise.resolve(cachedRows?.syncTombstones ?? []),
       ]);
       const shouldReadReferenceDocuments = shouldRead('reference_documents');
@@ -722,16 +723,18 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       const cacheKey = `${ownerId}:${normalizedDocumentId}:${documentRevision?.trim() || 'current'}`;
       const cached = documentCoverageSummaryCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.summary;
-      const result = await paginateSupabaseCollection<unknown>(async ({ from, to }) => {
-        const page = await client
+      // A document's pages in page order, each page after the last page number read: the table's key is the owner,
+      // the document and the page number, so a page indexed meanwhile cannot shift the rest (independent review pass
+      // 2, item 4).
+      const result = await paginateSupabaseCollectionByKey<unknown>(request => applySupabaseKeysetPage(
+        client
           .from('ecos_document_pages')
           .select('page_number,sheet_number,sheet_mapping_status,visual_coverage')
           .eq('owner_id', ownerId)
-          .eq('document_id', normalizedDocumentId)
-          .order('page_number', { ascending: true })
-          .range(from, to);
-        return page;
-      });
+          .eq('document_id', normalizedDocumentId),
+        DOCUMENT_PAGE_KEY,
+        request,
+      ), { key: DOCUMENT_PAGE_KEY });
       if (!result.ok) {
         throw new Error('ECOS page coverage could not be loaded for this document.');
       }
@@ -1014,7 +1017,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           client,
           'reference_documents',
           ownerId,
-          query => query.order('updated_at', { ascending: false }),
+          ROW_ID_KEY,
+          'updated_at',
         );
         const duplicate = existingRows.some(value => {
           const row = isRecord(value) ? value : {};
@@ -1177,7 +1181,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           client,
           'reference_documents',
           ownerId,
-          query => query.order('updated_at', { ascending: false }),
+          ROW_ID_KEY,
+          'updated_at',
         );
         const duplicate = existingRows.some(value => {
           const row = isRecord(value) ? value : {};
@@ -2366,14 +2371,6 @@ function scheduleImportConflictError() {
   );
 }
 
-/** A deletion record has no id of its own: what it deletes is what makes it the same record on another page. */
-function deletionRecordRowKey(row: unknown): string | null {
-  const record = isRecord(row) ? row : {};
-  return typeof record.entity_type === 'string' && typeof record.record_id === 'string' && record.entity_type && record.record_id
-    ? `${record.entity_type}\u0000${record.record_id}`
-    : null;
-}
-
 function staleDocumentError() {
   return new DAVEWebDocumentMutationError(
     'conflict',
@@ -2381,31 +2378,47 @@ function staleDocumentError() {
   );
 }
 
+/** A row's own id: the key the desktop's lists are read in the order of. */
+const ROW_ID_KEY = Object.freeze(['id'] as const);
+const DOCUMENT_PAGE_KEY = Object.freeze(['page_number'] as const);
+/** A deletion record has no id of its own: what it deletes (the kind of record, and which) is its key, and the table's. */
+const DELETION_RECORD_KEY = Object.freeze(['entity_type', 'record_id'] as const);
+
 /**
- * Independent review R02: the desktop reads these lists a page at a time too.
- * Each is ordered down to a column that is the row's alone, so two rows saved
- * at the same instant keep one order from page to page; and a row seen twice,
- * or a count that does not match, means the list changed while it was read:
- * it is read again, and the load fails if it keeps changing, as it does when
- * a page cannot be read. The workspace is never shown with a row missing.
+ * Independent review R02: the desktop reads these lists a page at a time too,
+ * and is never shown a workspace with a row missing.
+ *
+ * Independent review pass 2 (item 4): read by key, not by offset. Read by
+ * offset newest first, every task another device wrote moved a row, and while
+ * a phone sent an approved schedule's tasks the desktop's refresh of a
+ * workspace with more than a page of them failed until the upload stopped.
+ * Read in the order of a key no edit changes, a write elsewhere can neither
+ * repeat a row nor hide one, and nothing is read again. The rows are then put
+ * newest first, as before.
  */
 async function readOwnerRows(
   client: SupabaseClient,
   table: string,
   ownerId: string,
-  refine: (query: any) => any,
-  rowKey?: (row: unknown) => string | null,
+  key: readonly [string] | readonly [string, string],
+  newestBy: string,
 ): Promise<readonly unknown[]> {
-  const result = await paginateSupabaseCollection<unknown>(({ from, to, includeExactCount }) => {
-    const baseQuery = client
+  const result = await paginateSupabaseCollectionByKey<unknown>(request => applySupabaseKeysetPage(
+    client
       .from(table)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
-      .eq('owner_id', ownerId);
-    return refine(baseQuery).range(from, to);
-  }, undefined, { requestExactCount: true, ...(rowKey ? { rowKey } : {}) });
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', ownerId),
+    key,
+    request,
+  ), { key, requestExactCount: true });
 
   if (!result.ok) throw new Error(`Authorized ${table.replace(/_/g, ' ')} could not be loaded.`);
-  return Object.freeze([...result.rows]);
+  const column = (name: string) => (row: unknown) => (isRecord(row) ? row[name] : undefined);
+  return Object.freeze(sortSupabaseRows(
+    result.rows,
+    { by: column(newestBy), time: true, descending: true },
+    ...key.map(name => ({ by: column(name) })),
+  ));
 }
 
 async function readAuthorizedReferenceDocumentMetadata(

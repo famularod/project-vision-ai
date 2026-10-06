@@ -43,8 +43,12 @@ import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepositor
 import type { DAVEProjectTruthSnapshot } from './DAVEProjectTruthRepository';
 import { bindDAVECloudDatabaseIdentity } from './DAVECloudRecovery';
 import {
+  applySupabaseKeysetPage,
   chunkSupabaseFilterValues,
   paginateSupabaseCollection,
+  paginateSupabaseCollectionByKey,
+  sortSupabaseRows,
+  type SupabaseRowOrder,
 } from './SupabaseCollectionPagination';
 import { SCHEDULE_ITEM_ALREADY_IN_CLOUD } from './CloudListAbsenceCheck';
 import {
@@ -1868,21 +1872,18 @@ export async function listProjects(): Promise<SupabaseServiceResult<CloudProject
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+  const result = await paginateSupabaseCollectionByKey(request => applySupabaseKeysetPage(
     client
       .from(PROJECTS_TABLE)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
       .eq('owner_id', owner.data)
-      .eq('archived', false)
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to),
-    undefined,
-    WHOLE_LIST_OR_NOT_OK,
-  );
+      .eq('archived', false),
+    ROW_ID_KEY,
+    request,
+  ), LIST_READ_BY_ROW_ID);
 
   if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
-  return okResult(result.rows.map(normalizeProject), result.status);
+  return okResult(newestCreatedFirst(result.rows).map(normalizeProject), result.status);
 }
 
 export async function listArchivedProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
@@ -1894,21 +1895,18 @@ export async function listArchivedProjects(): Promise<SupabaseServiceResult<Clou
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+  const result = await paginateSupabaseCollectionByKey(request => applySupabaseKeysetPage(
     client
       .from(PROJECTS_TABLE)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
       .eq('owner_id', owner.data)
-      .eq('archived', true)
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to),
-    undefined,
-    WHOLE_LIST_OR_NOT_OK,
-  );
+      .eq('archived', true),
+    ROW_ID_KEY,
+    request,
+  ), LIST_READ_BY_ROW_ID);
 
   if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
-  return okResult(result.rows.map(normalizeProject), result.status);
+  return okResult(newestCreatedFirst(result.rows).map(normalizeProject), result.status);
 }
 
 /**
@@ -2112,17 +2110,14 @@ export async function listProjectUpdates<TUpdate>(): Promise<
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+  const result = await paginateSupabaseCollectionByKey(request => applySupabaseKeysetPage(
     client
       .from(PROJECT_UPDATES_TABLE)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
-      .eq('owner_id', owner.data)
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to),
-    undefined,
-    WHOLE_LIST_OR_NOT_OK,
-  );
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data),
+    ROW_ID_KEY,
+    request,
+  ), LIST_READ_BY_ROW_ID);
 
   if (!result.ok) {
     return tableAwareListResult<CloudProjectUpdate<TUpdate>>(
@@ -2132,7 +2127,7 @@ export async function listProjectUpdates<TUpdate>(): Promise<
   }
 
   return okResult(
-    result.rows.map(row => normalizeProjectUpdate<TUpdate>(row)),
+    newestCreatedFirst(result.rows).map(row => normalizeProjectUpdate<TUpdate>(row)),
     result.status,
   );
 }
@@ -2553,26 +2548,28 @@ export async function listDAVESyncTombstones(): Promise<
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+  // A deletion record has no id of its own: what it deletes (the kind of
+  // record, and which) is its key, and the table's (independent review R02).
+  const result = await paginateSupabaseCollectionByKey(request => applySupabaseKeysetPage(
     client
       .from(DAVE_SYNC_TOMBSTONES_TABLE)
       .select('entity_type, record_id, deleted_at', {
-        count: includeExactCount ? 'exact' : undefined,
+        count: request.includeExactCount ? 'exact' : undefined,
       })
-      .eq('owner_id', owner.data)
-      .order('deleted_at', { ascending: false })
-      .order('entity_type', { ascending: true })
-      .order('record_id', { ascending: true })
-      .range(from, to),
-    undefined,
-    // A deletion record has no id of its own: what it deletes is what makes it
-    // the same record on another page (independent review R02).
-    { ...WHOLE_LIST_OR_NOT_OK, rowKey: row => deletionRecordKey(row) },
-  );
+      .eq('owner_id', owner.data),
+    DELETION_RECORD_KEY,
+    request,
+  ), { key: DELETION_RECORD_KEY, requestExactCount: true });
 
   if (!result.ok) return tableAwareListResult<DAVESyncTombstone>(result.error, result.status);
 
-  const tombstones = result.rows
+  // Newest deletion first, as the list was when the cloud sorted it.
+  const tombstones = sortSupabaseRows(
+    result.rows,
+    { by: row => toRecord(row).deleted_at, time: true, descending: true },
+    { by: row => toRecord(row).entity_type },
+    { by: row => toRecord(row).record_id },
+  )
         .map(row => {
           const record = toRecord(row);
           const entityType = String(record.entity_type || '');
@@ -2833,22 +2830,26 @@ export async function listPIEExecutiveJudgmentsCloud(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEExecutiveJudgmentRecord[]>();
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+  // Read by each row's id (its primary key), then put newest first as before (independent review pass 2, item 4).
+  const result = await paginateSupabaseCollectionByKey(request => applySupabaseKeysetPage(
     client
       .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
       .eq('organization_id', organizationId)
-      .eq('project_id', projectId)
-      .order('judgment_time', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to),
-  );
+      .eq('project_id', projectId),
+    ROW_ID_KEY,
+    request,
+  ), { key: ROW_ID_KEY });
 
   if (!result.ok) {
     return tableAwareListResult<PIEExecutiveJudgmentRecord>(result.error, result.status);
   }
   return okResult(
-    result.rows.map(normalizePIEExecutiveJudgmentRow),
+    sortSupabaseRows(
+      result.rows,
+      { by: row => toRecord(row).judgment_time, time: true, descending: true },
+      { by: row => toRecord(row).id },
+    ).map(normalizePIEExecutiveJudgmentRow),
     result.status,
   );
 }
@@ -3293,60 +3294,39 @@ export async function listPIEDecisionRecords(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEDecisionRecord[]>();
 
-  const recordsResult = await paginateSupabaseCollection(async ({
-    from,
-    to,
-    includeExactCount,
-  }) => {
-    let query = client
-      .from(PIE_DECISION_RECORDS_TABLE)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
-      .eq('organization_id', organizationId)
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: true });
-    if (projectId) query = query.eq('project_id', projectId);
-    return query.range(from, to);
-  });
-  if (!recordsResult.ok) {
-    return tableAwareListResult<PIEDecisionRecord>(recordsResult.error, recordsResult.status);
+  // Each of the four tables is read by its rows' id (their primary keys, in the ledger's migration), then put in the
+  // order the cloud gave them before (independent review pass 2, item 4): decisions newest first; a decision's
+  // versions by number, its outcomes and its audit events oldest first.
+  const readByRowId = (table: string) => paginateSupabaseCollectionByKey<unknown>(request => {
+    const query = client
+      .from(table)
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
+      .eq('organization_id', organizationId);
+    return applySupabaseKeysetPage(projectId ? query.eq('project_id', projectId) : query, ROW_ID_KEY, request);
+  }, { key: ROW_ID_KEY });
+  const column = (name: string) => (row: unknown) => toRecord(row)[name];
+
+  const decisionsRead = await readByRowId(PIE_DECISION_RECORDS_TABLE);
+  if (!decisionsRead.ok) {
+    return tableAwareListResult<PIEDecisionRecord>(decisionsRead.error, decisionsRead.status);
   }
+  const recordsResult = {
+    ...decisionsRead,
+    rows: sortSupabaseRows(decisionsRead.rows, { by: column('created_at'), time: true, descending: true }, { by: column('id') }),
+  };
   if (recordsResult.rows.length === 0) return okResult([], recordsResult.status);
 
-  const [versionsResult, outcomesResult, auditResult] = await Promise.all([
-    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
-      let query = client
-        .from(PIE_DECISION_VERSIONS_TABLE)
-        .select('*', { count: includeExactCount ? 'exact' : undefined })
-        .eq('organization_id', organizationId)
-        .order('decision_id', { ascending: true })
-        .order('version', { ascending: true })
-        .order('id', { ascending: true });
-      if (projectId) query = query.eq('project_id', projectId);
-      return query.range(from, to);
-    }),
-    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
-      let query = client
-        .from(PIE_DECISION_OUTCOMES_TABLE)
-        .select('*', { count: includeExactCount ? 'exact' : undefined })
-        .eq('organization_id', organizationId)
-        .order('decision_id', { ascending: true })
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true });
-      if (projectId) query = query.eq('project_id', projectId);
-      return query.range(from, to);
-    }),
-    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
-      let query = client
-        .from(PIE_DECISION_AUDIT_EVENTS_TABLE)
-        .select('*', { count: includeExactCount ? 'exact' : undefined })
-        .eq('organization_id', organizationId)
-        .order('decision_id', { ascending: true })
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true });
-      if (projectId) query = query.eq('project_id', projectId);
-      return query.range(from, to);
-    }),
+  const [versionsRead, outcomesRead, auditRead] = await Promise.all([
+    readByRowId(PIE_DECISION_VERSIONS_TABLE),
+    readByRowId(PIE_DECISION_OUTCOMES_TABLE),
+    readByRowId(PIE_DECISION_AUDIT_EVENTS_TABLE),
   ]);
+  const inOrder = (read: typeof versionsRead, second: SupabaseRowOrder<unknown>): typeof versionsRead => (read.ok
+    ? { ...read, rows: sortSupabaseRows(read.rows, { by: column('decision_id') }, second, { by: column('id') }) }
+    : read);
+  const versionsResult = inOrder(versionsRead, { by: column('version') });
+  const outcomesResult = inOrder(outcomesRead, { by: column('created_at'), time: true });
+  const auditResult = inOrder(auditRead, { by: column('created_at'), time: true });
 
   const failedChildren = [versionsResult, outcomesResult, auditResult]
     .find(result => !result.ok);
@@ -3955,19 +3935,36 @@ async function updateOwnedJsonRecord<T>({
 /**
  * Independent review R02 (Build 229): this account's lists are read whole, one
  * page after another, and what is done next treats a record that is not in
- * the list as one the cloud does not have. An exact count on the first page
- * shows a row that slid out of the pages when another device deleted one
- * (a repeated row shows one that slid the other way); the list is then read
- * again, and is not ok if it keeps changing. The count is over the same
- * account's rows the read returns anyway.
+ * the list as one the cloud does not have. Read by offset, a list said ok
+ * with a row missing when another device edited or deleted a row between two
+ * pages.
+ *
+ * Independent review pass 2 (item 4): these lists are read by key, not by
+ * offset. A list read by offset newest first is disturbed by every write
+ * elsewhere, and while a schedule's hundreds of tasks were going up from one
+ * device every other read of the task list failed until it stopped. Read in
+ * the order of each row's own `id`, which no edit changes, an edit elsewhere
+ * can neither repeat a row nor hide one, and nothing is read again.
+ * (paginateSupabaseCollectionByKey says what the count still does.)
+ *
+ * What is assumed of the cloud, which this app cannot see: within one
+ * account a row's `id` is that row's alone and never changes. The task and
+ * area writes already rest on that (an upsert on the table's key, a read by
+ * `id` that expects one row); the field update write names `id` as its
+ * conflict key; projects are read and written by `id`. Deletion records: the
+ * table's key is (owner_id, entity_type, record_id), in its migration.
  */
-const WHOLE_LIST_OR_NOT_OK = Object.freeze({ requestExactCount: true });
+const ROW_ID_KEY = Object.freeze(['id'] as const);
+const LIST_READ_BY_ROW_ID = Object.freeze({ key: ROW_ID_KEY, requestExactCount: true });
+const DELETION_RECORD_KEY = Object.freeze(['entity_type', 'record_id'] as const);
 
-function deletionRecordKey(row: unknown): string | null {
-  const record = toRecord(row);
-  const entityType = typeof record.entity_type === 'string' ? record.entity_type : '';
-  const recordId = typeof record.record_id === 'string' ? record.record_id : '';
-  return entityType && recordId ? `${entityType}\u0000${recordId}` : null;
+/** Newest created first, then by id: the order the cloud gave projects and field updates. */
+function newestCreatedFirst<T>(rows: readonly T[]): T[] {
+  return sortSupabaseRows(
+    rows,
+    { by: row => toRecord(row).created_at, time: true, descending: true },
+    { by: row => toRecord(row).id },
+  );
 }
 
 /**
@@ -4027,22 +4024,27 @@ async function listOwnedJsonRecords<T>({
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(
-    async ({ from, to, includeExactCount }) =>
+  const result = await paginateSupabaseCollectionByKey(
+    request => applySupabaseKeysetPage(
       client
         .from(table)
-        .select(`id, updated_at, ${jsonColumn}`, { count: includeExactCount ? 'exact' : undefined })
-        .eq('owner_id', owner.data)
-        .order('updated_at', { ascending: false })
-        .order('id', { ascending: true })
-        .range(from, to),
+        .select(`id, updated_at, ${jsonColumn}`, { count: request.includeExactCount ? 'exact' : undefined })
+        .eq('owner_id', owner.data),
+      ROW_ID_KEY,
+      request,
+    ),
+    LIST_READ_BY_ROW_ID,
     pageSize,
-    WHOLE_LIST_OR_NOT_OK,
   );
 
   if (!result.ok) return tableAwareListResult<T>(result.error, result.status);
 
-  const records = result.rows
+  // Most recently written first, as the list was when the cloud sorted it.
+  const records = sortSupabaseRows(
+    result.rows,
+    { by: row => toRecord(row).updated_at, time: true, descending: true },
+    { by: row => toRecord(row).id },
+  )
     .map(row => {
       const databaseRow = toRecord(row);
       const jsonRecord = toRecord(databaseRow[jsonColumn]);
