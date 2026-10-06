@@ -509,6 +509,12 @@ function projectQuestionErrorMessage(
   if (code === 'answer_timed_out') {
     return 'ECOS reached the time limit before it could finish checking the answer. Please try again; no answer has been verified.';
   }
+  // The server gave up waiting on its own side: the live gateway answers 504
+  // "agent_gateway_timed_out" after 125 s (Build 231 E1 item 3).
+  if (status === 504 || code.endsWith('_timed_out')) {
+    return 'ECOS ran out of time before it finished this question, so it stopped. ' +
+      'No answer has been verified. Your question is still here — try again.';
+  }
   if (code === 'answer_research_unavailable') {
     return 'ECOS could not complete the project evidence search because a required service failed. This does not mean your documents are missing. Please try again shortly.';
   }
