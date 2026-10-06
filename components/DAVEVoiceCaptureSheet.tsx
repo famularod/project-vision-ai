@@ -308,10 +308,11 @@ export function DAVEVoiceCaptureSheet({
     const generation = transcriptionOperationRef.current;
     const run = recorderRunRef.current;
     recordingFinishingRef.current = true;
-    let uri: string | null = null;
+    // Its file is read before the stop, not after (review P4 L1, below): the recorder may have gone by then.
+    const file = recorderFile() || statusUrl;
+    let uri: string | null = file;
     try {
       await recorder.stop();
-      uri = recorder.uri || recorder.getStatus().url || statusUrl;
     } catch {
       uri = null;
     }
@@ -332,8 +333,9 @@ export function DAVEVoiceCaptureSheet({
     if (abandoned) {
       // The sheet was closed or the recording discarded while it was finishing. Closed without his
       // Cancel, what he dictated is kept for next time, as below (review N2 follow-up); it was deleted.
-      if (run?.letGo === 'closed') await keepStoppedRecordingForNextTime(uri, duration);
-      else await removeRecording(uri);
+      // One whose stop failed cannot be kept, and is not left in the phone's cache either (review P4 L1).
+      if (uri && run?.letGo === 'closed') await keepStoppedRecordingForNextTime(uri, duration);
+      else await removeRecording(file);
       return;
     }
     if (!uri) {
@@ -398,6 +400,15 @@ export function DAVEVoiceCaptureSheet({
    * nothing he did not ask for throws it away. Never when the run was his
    * Cancel's, and never from a recorder that would not stop when asked: only
    * a stop finishes its file.
+   *
+   * Review P4 L1 (5 Oct 2026): the recorder's file is read BEFORE it is asked
+   * to stop. When the sheet's screen is taken away (the app rebuilt for
+   * another account, a panel that failed to draw) expo-audio releases the
+   * recorder with it, and a recorder that has gone answers nothing: read
+   * after the stop, there was no file to keep, so what he had dictated was
+   * not kept and its file stayed in the phone's cache, never offered. A
+   * recording that cannot be kept (the stop was refused) is deleted from the
+   * cache by the same address. Stop and a lock or the limit read it first too.
    */
   async function standRecorderDownBehindClosedSheet() {
     letGoOfRecorderRun('closed');
@@ -408,9 +419,10 @@ export function DAVEVoiceCaptureSheet({
     // Claimed, so a lock or the limit cannot also finish and offer it.
     recordingActiveRef.current = false;
     recordingFinishingRef.current = true;
-    // Read now, before the recorder stops: how much he had dictated, and what the sheet was open for
-    // (it may be showing another project by the time the recorder has stopped).
+    // Read now, before the recorder stops: how much he had dictated, its file, and what the sheet was
+    // open for (it may be showing another project by the time the recorder has stopped).
     const duration = preserveDAVERecordingDuration(recordingDurationRef.current, recorderDuration());
+    const uri = recorderFile();
     const under = openSheetKeepsUnderRef.current;
     const cancelled = recorderRunRef.current?.letGo === 'cancelled';
     let stopped = true;
@@ -419,7 +431,6 @@ export function DAVEVoiceCaptureSheet({
     } catch {
       stopped = false;
     }
-    const uri = recorderFile();
     // Asked again when it would not stop; the microphone is released either way.
     if (stopped) await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
     else await standRecorderDown();
@@ -689,10 +700,10 @@ export function DAVEVoiceCaptureSheet({
     // Finishing until it is in the sheet, as one that ends on its own is: the kept check
     // and Start Recording leave a recorder that is still stopping alone (review N2).
     recordingFinishingRef.current = true;
+    // Read before the stop: the recorder may have gone with its screen by the time it answers (review P4 L1).
+    const uri = recorderFile();
     try {
       await recorder.stop();
-      const status = recorder.getStatus();
-      const uri = recorder.uri || status.url;
       if (run?.letGo) {
         // Review N2 follow-up: the sheet let go of this recording while it was stopping, and a
         // closed sheet is handed nothing. It had been put into the closed sheet, its file
@@ -721,7 +732,7 @@ export function DAVEVoiceCaptureSheet({
       // microphone released: behind a closed sheet nothing else would stop it (review N2 follow-up).
       if (run?.letGo) {
         await standRecorderDown();
-        await removeRecording(recorderFile());
+        await removeRecording(uri);
       }
       recordingFinishingRef.current = false;
       setError('The recording could not finish. Try again.');
@@ -912,9 +923,12 @@ export function DAVEVoiceCaptureSheet({
     // and until it did, a Cancel left it running behind the closed sheet.
     const recording = recordingActiveRef.current || recorderState.isRecording;
     recordingActiveRef.current = false;
+    // The recorder's file, read before the stop: the recorder may have gone with its screen by the
+    // time it answers, and the file he discarded stayed in the phone's cache (review P4 L1).
+    const file = recordingUri || recorderFile();
     if (recording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
-    await removeRecording(recordingUri || recorder.uri);
+    await removeRecording(file);
     forgetRecordingKeptOnDevice();
     captureRef.current = null;
     setRecordingUri(null);
