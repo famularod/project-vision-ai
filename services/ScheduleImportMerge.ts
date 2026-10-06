@@ -280,11 +280,12 @@ type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
  * answer to (same-named tasks).
  *
  * Only for the row an import is saving anyway. Filling a task that stays on
- * its row was tried and taken out: each device makes that fill at its own
- * next approval, and the two copies of the same change met in Review
+ * its row was tried here and taken out: each device made that fill at its
+ * own next approval, and the two copies of the same change met in Review
  * Conflicts as a card with nothing to choose, after which an offline
  * lookahead's percent on another task was lost (the reviewer's generator,
- * seed 20137). That needs the sync's own carry, which is not in this file.
+ * seed 20137). The sync's own carry does that part, sent as those fields
+ * alone (DAVEScheduleRecovery, typedTextCarriedToRevisedTasks).
  */
 function textStrandedOnEarlierRows(
   existing: readonly ScheduleItem[],

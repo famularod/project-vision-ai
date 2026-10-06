@@ -748,6 +748,11 @@ type ScheduleItemRecordPayload = {
   /** The task's progress fields as they were when the merge carried the percent (A7 pass 26 M-1). */
   carriedOver?: Partial<ScheduleItem>;
   /**
+   * The owner, contractor or note among its fields that the sync merge carried to the task from its earlier row
+   * (review N2 P1): each only fills a blank in the cloud's row, and is never asked about.
+   */
+  carriedText?: Array<keyof ScheduleItem>;
+  /**
    * The copy the edit started from (owner answer Q28, 2 Oct 2026): each
    * changed field's value before the edit, and that copy's stamp. The upload
    * weighs each field against it (ScheduleItemEditBase). Missing on an edit
@@ -1689,12 +1694,14 @@ function mergeScheduleItemQueueChangeScope(
   const carriedProgress = incomingPayload.carriedProgress === true || (existingPayload.carriedProgress === true &&
     SCHEDULE_CARRIED_PROGRESS_FIELDS.every(field =>
       JSON.stringify(itemData[field] ?? null) === JSON.stringify(existingPayload.itemData[field] ?? null)));
-  const { carriedProgress: _carried, carriedOver: _over, base: _base, ...mergedPayload } = incomingPayload;
+  const { carriedProgress: _carried, carriedOver: _over, carriedText: _text, base: _base, ...mergedPayload } = incomingPayload;
   // What the progress was before the carry: the first carry's, while this entry still holds a carry.
   const carriedOver = !carriedProgress ? undefined
     : existingPayload.carriedProgress === true ? existingPayload.carriedOver : incomingPayload.carriedOver;
   // Each field keeps the copy its first waiting edit started from (owner answer Q28).
   const base = scheduleItemEditBasesMerged(existingPayload, incomingPayload);
+  // A carried owner or note David has typed over since is his edit (review N2 P1).
+  const carriedText = [...new Set([...(existingPayload.carriedText ?? []).filter(field => !incomingFields.has(field)), ...(incomingPayload.carriedText ?? [])])];
   return {
     ...incoming,
     payload: {
@@ -1708,6 +1715,7 @@ function mergeScheduleItemQueueChangeScope(
       ],
       ...(carriedProgress ? { carriedProgress: true } : {}),
       ...(carriedOver ? { carriedOver } : {}),
+      ...(carriedText.length > 0 ? { carriedText } : {}),
       ...(base ? { base } : {}),
     },
   };
@@ -1861,6 +1869,21 @@ export async function queueScheduleItemProgressCarried(item: ScheduleItem, befor
       carriedOver: Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, before[field] ?? null])),
     },
     changedAt: item.updatedAt || item.progressConfirmedAt || new Date().toISOString(),
+  });
+}
+
+/**
+ * Review N2 P1 (the carry between devices): an owner, contractor or note the sync merge carried to a task's newest row
+ * from the row David typed it on (DAVEScheduleRecovery) goes up as those fields alone, like a carried percent. At the
+ * upload each only fills a blank: where the cloud's row already holds a value, the cloud's stands and nothing is asked.
+ */
+export async function queueScheduleItemTextCarried(item: ScheduleItem, fields: readonly (keyof ScheduleItem)[]): Promise<void> {
+  await enqueuePendingChange<ScheduleItemRecordPayload>({
+    id: scheduleItemQueueItemId(item.id),
+    entity: 'schedule_item',
+    operation: 'update',
+    payload: { id: item.id, itemData: item, changedFields: [...fields, 'updatedAt'], carriedText: [...fields] },
+    changedAt: item.updatedAt || new Date().toISOString(),
   });
 }
 
@@ -6440,9 +6463,10 @@ function scheduleItemCarriedOntoCloudCopy(
 }
 
 /** A queued carry with nothing of David's queued with it: only the carried progress and its stamp (A7 pass 27 L1). */
-function scheduleItemCarryOnly(changedFields: readonly (keyof ScheduleItem)[]): boolean {
+function scheduleItemCarryOnly(changedFields: readonly (keyof ScheduleItem)[], carriedText: readonly string[] = []): boolean {
   const progressFields = new Set<keyof ScheduleItem>(SCHEDULE_CARRIED_PROGRESS_FIELDS);
-  return changedFields.every(field => field === 'updatedAt' || progressFields.has(field));
+  // (A carried owner, contractor or note is the sync's as well: review N2 P1.)
+  return changedFields.every(field => field === 'updatedAt' || progressFields.has(field) || carriedText.includes(field));
 }
 
 function timestampOf(value: string | null | undefined): number {
@@ -6600,7 +6624,14 @@ async function uploadQueueItem(
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
     // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
-    const changedFields = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
+    const ownFields = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
+    // A carried owner, contractor or note only fills a blank in the cloud's row (review N2 P1): over a value the cloud
+    // holds, the cloud's stands, with nothing asked and, when that leaves nothing to send, nothing written.
+    const carriedText = remote && ownFields ? (payload.carriedText ?? []) as string[] : [];
+    const changedFields = ownFields && carriedText.length > 0
+      ? ownFields.filter(field => !carriedText.includes(field) || !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim())
+      : ownFields;
+    if (carriedText.length > 0 && changedFields!.every(field => field === 'updatedAt')) return 'uploaded';
     // Owner answer Q28 (2 Oct 2026): an edit that keeps the copy it started from is weighed field by field against the
     // cloud's row. A field only this device changed goes up; a field another device changed and this one left as it was
     // stays the cloud's; one changed on both to different values is asked about in Review Conflicts, while the edit's
@@ -6675,7 +6706,7 @@ async function uploadQueueItem(
     // Whole-app audit A7 pass 27 L1 (Low, caused by 30170fc): a carried percent sent on its own is the sync's, not an
     // edit of David's, so it never settles a conflict on the task waiting for Review Conflicts (Keep Phone then said the
     // conflict had closed by itself). Queued with an edit of his, the edit settles it, as any edit does.
-    const carryOnly = carriedOnto !== null && scheduleItemCarryOnly(changedFields || []);
+    const carryOnly = (carriedOnto !== null || carriedText.length > 0) && scheduleItemCarryOnly(changedFields || [], carriedText);
     if (carriedOnto === 'unchanged') {
       if (asked.length > 0) return askAbout(remote!);
       if (!carryOnly) await settleScheduleItemConflicts(payload.id, settles);

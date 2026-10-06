@@ -8,10 +8,12 @@
  * device writes a row it would not write anyway: when a master next moves a
  * task that was never changed since its import, its new row reads them back
  * through rows never changed either. A task that stays on its row is left
- * as it is (filling it in place made two devices write the same change and
- * meet in Review Conflicts; see the notes). The real CSV normalizer, the
- * phone's merge, the shown-schedule pick, the web's plan and the report.
- * Synthetic data.
+ * as it is by the approval (filling it in place there made two devices write
+ * the same change and meet in Review Conflicts); the sync's carry brings it
+ * forward at the next refresh, sent as those fields alone
+ * (review-n2-sched-typed-text-carried-between-devices). The real CSV
+ * normalizer, the phone's merge, the shown-schedule pick, the web's plan and
+ * the report. Synthetic data.
  */
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
@@ -163,10 +165,10 @@ describe('Review N2 P1, second part: an owner and a note stranded on a hidden ro
   });
 });
 
-describe('Review N2 P1, second part: a task that stays on its row is left as it is', () => {
+describe('Review N2 P1, second part: a task that stays on its row is left as it is by the approval', () => {
   // Filling it in place was tried and taken out: each device made the fill at its own next approval, and the two copies
   // of the same change met in Review Conflicts (the reviewer's generator, seed 20137). No row is written here that the
-  // import would not write anyway.
+  // import would not write anyway; the sync's carry does it at the next refresh.
   it('a master that leaves the task on its dates writes nothing on it beyond its own import', () => {
     const onH = approve(stranded, H, [FRAMING_G, 'Roof,Alpha,Lot,10/15/2026,10/23/2026,']);
     const framing = one(onH, 'Framing');

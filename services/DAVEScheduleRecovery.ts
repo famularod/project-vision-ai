@@ -140,7 +140,8 @@ export function recoverDAVEScheduleRecords({
     }
     combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies, deleted));
   });
-  return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), deletedRowsHeld(local, cloud, deleted));
+  const dropped = deletedRowsHeld(local, cloud, deleted);
+  return typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), dropped), dropped);
 }
 
 function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
@@ -447,8 +448,96 @@ export function scheduleItemsAfterCloudDeletion(items: readonly ScheduleItem[], 
   const removed = items.filter(item => normalized(item.id) === id);
   const kept = items.filter(item => normalized(item.id) !== id);
   if (removed.length === 0 || !id) return kept;
-  const lent = progressCarriedToRevisedTasks(kept, removed);
+  const lent = typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(kept, removed), removed);
   return lent.map((row, index) => scheduleTaskEarlierIds(kept[index]).some(earlier => normalized(earlier) === id) ? row : kept[index]);
+}
+
+/** What David types on a task that a schedule file may also state. */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+type TypedTextField = typeof TYPED_TEXT_FIELDS[number];
+
+/**
+ * The rows a recovery merge gave an owner, contractor or note from an earlier
+ * row of their task, each with the fields filled: the app sends each to the
+ * cloud as those fields alone (ScheduleProgressCarryUpload).
+ */
+const rowsTakingCarriedText = new WeakMap<ScheduleItem, readonly TypedTextField[]>();
+
+export function scheduleItemsTakingCarriedText(
+  items: readonly ScheduleItem[],
+): Array<Readonly<{ item: ScheduleItem; fields: readonly TypedTextField[] }>> {
+  return items.flatMap(item => {
+    const fields = rowsTakingCarriedText.get(item);
+    return fields ? [{ item, fields }] : [];
+  });
+}
+
+/**
+ * Review N2 P1, the carry between devices (5 Oct 2026; older, the same on
+ * Build 229; the reviewer's seed 56). The phone approved a master that moved
+ * Framing, so Framing got a new row answering to the old one. The iPad, which
+ * had not heard of that master, still showed the old row, and David assigned
+ * Mike and typed a note there. After everything synced, every device showed
+ * the new row with no owner and no note: they stayed on the hidden old row.
+ * The import's own fill (ScheduleImportMerge) cannot reach this: the new row
+ * was saved before he typed. His percent has a carry for exactly this (A6 pass
+ * 22 M1, above); his owner, contractor and note had none.
+ *
+ * The newest row of a task (it alone, as for the percent) now takes a blank
+ * owner, contractor or note from the row it answers to that was changed last,
+ * when that row was changed after the newest row last was (or the newest row
+ * never was). The rule Set Active and Make Current use
+ * (scheduleTextCarriedToShownTask), for the same reason: a row has one time
+ * for all its fields, so a blank on the row changed later is taken as one
+ * David left (a note he cleared there does not come back from the old row),
+ * and only a blank is ever filled. The row keeps its own stamp, as a carried
+ * percent's row does: the carry is no edit of David's, and must not make this
+ * device's copy read newer than the cloud's. A deleted row this sync drops
+ * lends them by the same rule, once.
+ *
+ * It also brings forward what an import before review N2 P1 left on a hidden
+ * row, for a task not changed since that row was: the same rule cannot tell
+ * the two apart, and both are wanted.
+ *
+ * Limits, by that one time per row: a task changed after he typed on the old
+ * row (a percent on it, a lookahead that restated it) keeps its blank; and a
+ * hidden old row changed by something other than David after he cleared a
+ * note on the new row (a lookahead's delete gives dates back on hidden rows
+ * too) gives the note back once.
+ */
+function typedTextCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonly ScheduleItem[] = []): ScheduleItem[] {
+  const answering = new Map<string, ScheduleItem[]>();
+  records.forEach(record => scheduleTaskEarlierIds(record).forEach(id => {
+    const key = normalized(id);
+    answering.set(key, [...(answering.get(key) || []), record]);
+  }));
+  if (answering.size === 0) return records;
+  // For each newest row, the row it answers to that was changed last.
+  const from = new Map<ScheduleItem, ScheduleItem>();
+  [...records, ...deleted].forEach(earlier => {
+    const moved = timestamp(earlier.updatedAt) > 0 ? answering.get(normalized(earlier.id)) : undefined;
+    if (!moved) return;
+    const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
+    const newest = moved.filter(record => !superseded.has(normalized(record.id)));
+    if (newest.length !== 1) return;
+    const taken = from.get(newest[0]);
+    if (!taken || timestamp(earlier.updatedAt) > timestamp(taken.updatedAt)) from.set(newest[0], earlier);
+  });
+  if (from.size === 0) return records;
+  return records.map(record => {
+    const earlier = from.get(record);
+    if (!earlier) return record;
+    // As the row was before a percent carried in this same merge stamped it (withOwnStamp).
+    const own = rowsTakingCarriedProgress.get(record) ?? record;
+    if (!(timestamp(earlier.updatedAt) > timestamp(own.updatedAt))) return record;
+    const fields = TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])));
+    if (fields.length === 0) return record;
+    const filled = { ...record, ...Object.fromEntries(fields.map(field => [field, earlier[field]])) } as ScheduleItem;
+    const percentBefore = rowsTakingCarriedProgress.get(record);
+    if (percentBefore) rowsTakingCarriedProgress.set(filled, percentBefore);
+    rowsTakingCarriedText.set(filled, fields);
+    return filled;
+  });
 }
 
 /**
