@@ -111,6 +111,9 @@ type KeepsUnder = Readonly<{
   walkArea: DAVEProjectWalkContext['recommendedArea'];
 }>;
 
+/** A recording held aside by its sheet, and what it was made for (review P5 N1). */
+type RecordingHeldAside = Readonly<{ uri: string; durationMs: number; madeFor: KeepsUnder }>;
+
 /** Whether a sheet is open for the account and the project a recording in it was made for (review P4 L4). */
 function sameAccountAndProject(left: KeepsUnder, right: KeepsUnder): boolean {
   return left.account === right.account &&
@@ -257,6 +260,9 @@ export function DAVEVoiceCaptureSheet({
   const captureRef = useRef<(DAVEVoiceKeptCapture & { restored: boolean }) | null>(null);
   const recordingUriRef = useRef<string | null>(null);
   recordingUriRef.current = recordingUri;
+  // Review P5 N1: a recording the sheet let go of (it was shown for another project) that the phone
+  // would not keep. The sheet still holds it, for its own project and account only.
+  const heldAsideRef = useRef<RecordingHeldAside | null>(null);
   // Review P5 N2: the keeps and deletes of this sheet's recording files that are still under way.
   const filesSettlingRef = useRef<{ underWay: number; settled: Promise<unknown> }>({ underWay: 0, settled: Promise.resolve() });
 
@@ -323,12 +329,20 @@ export function DAVEVoiceCaptureSheet({
   // sheet now lets go of it as it is shown, in the same step (a layout
   // effect), so it is never on screen there and cannot be sent from there.
   // Shown again for its own project it is still in the sheet, as before.
+  // Review P5 N1 (6 Oct 2026): and one the sheet had to hold aside (the phone
+  // would not keep it) comes back into the sheet when it is next shown for
+  // its own project, and holds no other recording.
   useLayoutEffect(() => {
     if (!visible) return undefined;
     const before = hiddenWhileOpenForRef.current;
-    if (before && recordingUriRef.current && !sameAccountAndProject(before, openSheetKeepsUnderRef.current)) {
-      letGoOfRecordingMadeFor(before);
+    const now = openSheetKeepsUnderRef.current;
+    let held = recordingUriRef.current;
+    if (before && held && !sameAccountAndProject(before, now)) {
+      letGoOfRecordingMadeFor(held, before);
+      held = null;
     }
+    const aside = heldAsideRef.current;
+    if (aside && !held && sameAccountAndProject(aside.madeFor, now)) putBackRecordingHeldAside(aside);
     return () => { hiddenWhileOpenForRef.current = openSheetKeepsUnderRef.current; };
     // Only the sheet being shown or hidden does this; it reads refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -543,6 +557,14 @@ export function DAVEVoiceCaptureSheet({
     // recording the sheet holds stays as it is.
     if (run.letGo) {
       recordingStartingRef.current = false;
+      return;
+    }
+    // Review P5 N1: a recording for another project is held aside here (the phone would not keep
+    // it), in the file this recording would be written over. He is asked first; nothing starts.
+    const aside = heldAsideRef.current;
+    if (aside) {
+      recordingStartingRef.current = false;
+      askAboutRecordingHeldAside(aside);
       return;
     }
     recordingGenerationRef.current += 1;
@@ -778,18 +800,31 @@ export function DAVEVoiceCaptureSheet({
     // The copy, and the delete that follows it, are one piece of work on the recorder's file: no
     // start on this sheet begins until both are done, whoever asked for them (review P5 N2).
     return untilItsFileIsSettled((async () => {
-      if (uri && under.owner && under.slot && daveRecordingIsLongEnough(duration)) {
-        await keptVoiceRecordings().keepVoiceRecording(under.owner, under.slot, {
-          uri,
-          durationMs: duration,
-          projectId: under.projectId,
-          projectName: under.projectName,
-          walkArea: under.walkArea,
-          state: 'ready',
-        }).catch(() => undefined);
-      }
+      await keptForNextTime(uri, duration, under);
       await deleteRecordingFile(uri ?? null);
     })());
+  }
+
+  /**
+   * Keeps a recording on the device by the service, under what it was made
+   * for. Answers 'refused' when the phone would not keep it (its storage is
+   * full), and 'nowhere' when there is nowhere to keep it: a sheet that
+   * keeps nothing on the device, or a recording too short to use.
+   */
+  async function keptForNextTime(
+    uri: string | null | undefined,
+    duration: number,
+    under: KeepsUnder,
+  ): Promise<'kept' | 'refused' | 'nowhere'> {
+    if (!uri || !under.owner || !under.slot || !daveRecordingIsLongEnough(duration)) return 'nowhere';
+    return keptVoiceRecordings().keepVoiceRecording(under.owner, under.slot, {
+      uri,
+      durationMs: duration,
+      projectId: under.projectId,
+      projectName: under.projectName,
+      walkArea: under.walkArea,
+      state: 'ready',
+    }).then(() => 'kept' as const, () => 'refused' as const);
   }
 
   /**
@@ -801,18 +836,68 @@ export function DAVEVoiceCaptureSheet({
    * the recorder's own file in the cache goes. One not kept yet (the keep
    * was still under way, or had failed) is kept now, by the service itself
    * and under what it was made for, as a recording stopped behind a closed
-   * sheet is. A sheet that keeps nothing on the device has nowhere to keep
-   * it, and it goes; so does one too short to use.
+   * sheet is.
+   *
+   * Review P5 N1 (6 Oct 2026): and when the phone will not keep it now
+   * either (its storage is full), it is not deleted, as it was: the sheet
+   * holds it aside, in its file, for its own project and account. It is not
+   * shown and cannot be sent while the sheet is open for another project;
+   * it is back in the sheet the next time the sheet is shown for its own;
+   * and only his own Use, Discard or Record Again removes it. Until then
+   * the sheet asks before it records anything else (askAboutRecordingHeldAside).
+   *
+   * Only where there is nowhere to keep it does it go: a sheet that keeps
+   * nothing on the device, and a recording too short to use.
    */
-  function letGoOfRecordingMadeFor(madeFor: KeepsUnder) {
-    const uri = recordingUriRef.current;
+  function letGoOfRecordingMadeFor(uri: string, madeFor: KeepsUnder) {
     const duration = recordingDuration;
     // A keep still under way undoes itself when it lands: the sheet has let go.
     const copy = letGoOfKeptCopy();
     setRecordingUri(null);
     setRecordingDuration(0);
-    if (!copy) void keepStoppedRecordingForNextTime(uri, duration, madeFor);
-    else if (uri !== copy) void removeRecording(uri);
+    if (copy) {
+      if (uri !== copy) void removeRecording(uri);
+      return;
+    }
+    void untilItsFileIsSettled((async () => {
+      if (await keptForNextTime(uri, duration, madeFor) === 'refused') heldAsideRef.current = { uri, durationMs: duration, madeFor };
+      else await deleteRecordingFile(uri);
+    })());
+  }
+
+  /** The recording held aside is back in the sheet, shown for its own project again, as it was when he stopped it (review P5 N1). */
+  function putBackRecordingHeldAside(aside: RecordingHeldAside) {
+    heldAsideRef.current = null;
+    setRecordingUri(aside.uri);
+    setRecordingDuration(aside.durationMs);
+    // Kept on the device from here on, if the phone now can (review N1 L2).
+    noteRecordingCaptured(aside.uri, aside.durationMs);
+  }
+
+  /**
+   * Start Recording, with a recording for another project held aside in
+   * this sheet (review P5 N1). On an iPhone the recorder would write the new
+   * recording over it. Only his own Discard removes it, so he is asked.
+   */
+  function askAboutRecordingHeldAside(aside: RecordingHeldAside) {
+    const itsProject = aside.madeFor.projectName;
+    Alert.alert(
+      `A recording for ${itsProject} is still here`,
+      `It has not been used, and it could not be kept on this device. Close this and open it again for ${itsProject} to use it. To record here now, discard it first.`,
+      [
+        { text: 'Keep', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            // Back in the sheet since he was asked: no longer this question's to discard.
+            if (heldAsideRef.current !== aside) return;
+            heldAsideRef.current = null;
+            void removeRecording(aside.uri);
+          },
+        },
+      ],
+    );
   }
 
   async function stopRecording() {
@@ -1061,8 +1146,9 @@ export function DAVEVoiceCaptureSheet({
     // time it answers, and the file he discarded stayed in the phone's cache (review P4 L1).
     // With no recording in the sheet, the recorder's own file is deleted too (a recording still
     // going, or a file a start had made ready). Not while an earlier recording at that address is
-    // still being kept: his Cancel of nothing took it from under the copy (review P5 N2).
-    const file = recordingUri || (filesSettlingRef.current.underWay > 0 ? null : recorderFile());
+    // still being kept: his Cancel of nothing took it from under the copy (review P5 N2). Nor
+    // while one is held aside there for another project: this Cancel is not its Discard (N1).
+    const file = recordingUri || (filesSettlingRef.current.underWay > 0 || heldAsideRef.current ? null : recorderFile());
     if (recording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(file);
