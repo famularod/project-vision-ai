@@ -2688,7 +2688,14 @@ type PatchedProjectUpdate = {
   documents?: ReadonlyArray<{ id: string }> | null;
 };
 
+/**
+ * The document changes and photo results that reached an update while Keep Cloud worked on it, until its card has
+ * the chosen copy (sync batch Y1, item 6). In memory: a kill there leaves the conflict open and the card as it was.
+ */
+const changesWhileKeepCloudRuns = new Map<string, FieldUpdateDocumentPatch[]>();
+
 async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
+  changesWhileKeepCloudRuns.get(update.id)?.push(patch); // at once: the card already shows it
   await projectUpdateLastVersionInCloud.loaded();
   const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
@@ -5435,6 +5442,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
     let queuedCloudCopy: SyncQueueItem | null = null;
     let chosenCloudUpdate: TUpdate;
+    changesWhileKeepCloudRuns.set(conflict.localId, []);
     try {
       await uploadPendingChanges();
       withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId));
@@ -5504,9 +5512,19 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           : exact.error || 'sync_conflict_save_failed');
       }
     } catch (error) {
+      changesWhileKeepCloudRuns.delete(conflict.localId);
       await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
       throw error;
     }
+    // Sync batch Y1 (item 6): the card took the copy as it was queued. A photo result or a document upload finishing
+    // while that copy went up reached the cloud (taken into the queued copy, or sent after it as its own patch), and
+    // the card read "Analyzing" or "Document upload failed" until the next refresh. The card takes the copy with
+    // those changes, under the rule for every patch: not a result the copy's own stands over. Nothing is awaited
+    // between the upload's answer and the card.
+    const sinceItRan = changesWhileKeepCloudRuns.get(conflict.localId) ?? [];
+    changesWhileKeepCloudRuns.delete(conflict.localId);
+    chosenCloudUpdate = applyFieldUpdateDocumentPatches(chosenCloudUpdate as object,
+      fieldUpdatePatchesNotSuperseded(chosenCloudUpdate as object, sinceItRan)) as TUpdate;
     beforeClose?.(chosenCloudUpdate);
     await clearResolvedConflict(conflict.id);
     return chosenCloudUpdate;
