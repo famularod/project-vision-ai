@@ -228,6 +228,33 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
 }
 
 /**
+ * Review N2 (5 Oct 2026): what Sign Out says before it goes ahead when a
+ * report sent from this computer could not be confirmed in the shared record
+ * (it was sent while the record could not be reached, and one more try at
+ * sign-out did not reach it either). Signing out removes this account's
+ * report periods from this browser, so it says what that means for his other
+ * devices, and how to keep the send. `sentAts`: newest first, never empty.
+ */
+export function daveWebReportSendsNotSharedWarning(sentAts: readonly string[]): Readonly<{ title: string; lines: readonly string[] }> {
+  const when = describeReportSendTime(sentAts[0] ?? '');
+  const one = sentAts.length <= 1;
+  const it = one ? 'it' : 'them';
+  return Object.freeze({
+    title: one
+      ? 'A report sent from this computer may not have reached your other devices'
+      : 'Reports sent from this computer may not have reached your other devices',
+    lines: Object.freeze([
+      one
+        ? `Vitruvius tried again just now and could not confirm that the report sent from this computer ${when} is in the record your devices share.`
+        : `Vitruvius tried again just now and could not confirm that ${sentAts.length} reports sent from this computer (the latest ${when}) are in the record your devices share.`,
+      `Signing out removes this computer's own record of ${it}. If the shared record does not have ${it}, your other devices will not count from ${it}: ` +
+        `the next report on every device will count from the report before ${it}, and may repeat what ${one ? 'it' : 'they'} covered.`,
+      'Cancel and sign out a little later so Vitruvius can try again, or sign out now.',
+    ]),
+  });
+}
+
+/**
  * A report that went out from this browser with no approval of it waiting
  * here or in the shared period, where this computer cannot take the approval
  * as its own either (review N1 L2, 3 Oct 2026): its facts have changed since

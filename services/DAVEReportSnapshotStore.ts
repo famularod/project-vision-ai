@@ -166,6 +166,47 @@ export async function saveDAVEReportSnapshot(
   if (snapshot.reportFormat) void writeShared(cloud, snapshot);
 }
 
+/**
+ * What became of carrying this device's period up to the shared copy:
+ * 'shared': the shared copy now runs from this device's last send, or from a
+ * later one (or this device keeps no period); 'unavailable': there is no
+ * shared copy to carry it to (the table not created yet); 'not_reached': it
+ * could not be read, written or read back (offline, a server error, or no
+ * answer in four seconds), so whether it holds this device's send is unknown.
+ */
+export type DAVEReportPeriodCarriedUp = 'shared' | 'unavailable' | 'not_reached';
+
+/**
+ * Review N2 (5 Oct 2026): this device's period carried up to the shared copy
+ * now, and waited for. Opening Reports carries it up in the background and
+ * never says whether it arrived (`loadDAVEReportPeriod`); the web's Sign Out
+ * of This Computer removes this device's own copy, so it has to know first:
+ * a send made while the shared record could not be reached was otherwise
+ * lost with it. The shared copy is read, written only when this device's
+ * period is the later one (the table keeps a later send anyway), and read
+ * back. Never throws.
+ */
+export async function carryUpDAVEReportPeriod(
+  scopeKey: string,
+  reportFormat: DAVEReportFormat,
+  storage: SnapshotStorage,
+  cloud: DAVEReportSnapshotCloud,
+): Promise<DAVEReportPeriodCarriedUp> {
+  try {
+    const local = await loadLocalDAVEReportSnapshot(scopeKey, reportFormat, storage);
+    if (!local) return 'shared';
+    const read = await readShared(cloud, scopeKey, reportFormat);
+    if (read.status !== 'checked') return read.status === 'unavailable' ? 'unavailable' : 'not_reached';
+    if (!reportPeriodIsLater(local, validSnapshot(read.value.snapshot, scopeKey, reportFormat))) return 'shared';
+    if (await writeSharedInTime(cloud, local, read.value.ownerId) === 'timed_out') return 'not_reached';
+    const after = await readShared(cloud, scopeKey, reportFormat);
+    if (after.status !== 'checked') return after.status === 'unavailable' ? 'unavailable' : 'not_reached';
+    return reportPeriodIsLater(local, validSnapshot(after.value.snapshot, scopeKey, reportFormat)) ? 'not_reached' : 'shared';
+  } catch {
+    return 'not_reached';
+  }
+}
+
 let senderIdCreation: Promise<string> | null = null;
 /**
  * The id read from (or made in) the Keychain this app session (whole-app
@@ -361,6 +402,21 @@ async function readShared(
     return value ? { status: 'checked', value } : { status: 'unavailable' };
   } catch {
     return { status: 'unchecked' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** A write to the shared copy, waited for as long as a read is (review N2): 'timed_out' with no answer in four seconds; rejects as the write does. */
+async function writeSharedInTime(cloud: DAVEReportSnapshotCloud, snapshot: DAVEReportSnapshot, expectedOwnerId: string): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      cloud.write(snapshot, expectedOwnerId),
+      new Promise<'timed_out'>(resolve => {
+        timer = setTimeout(() => resolve('timed_out'), CLOUD_READ_TIMEOUT_MS);
+      }),
+    ]);
   } finally {
     if (timer) clearTimeout(timer);
   }

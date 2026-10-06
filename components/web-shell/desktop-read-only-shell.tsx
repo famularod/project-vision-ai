@@ -148,10 +148,12 @@ import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
   daveWebReportPeriodKeptInTabOnly,
+  daveWebReportPeriodsKeptHere,
   daveWebReportSentHereAt,
   daveWebReportSnapshotCloud,
   daveWebReportStorage,
   recordDAVEWebReportSend,
+  shareDAVEWebReportSendsBeforeSignOut,
   type DAVEWebPeriodOutcome,
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
@@ -178,6 +180,7 @@ import {
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportRecordedMessage,
+  daveWebReportSendsNotSharedWarning,
   daveWebReportPeriodMoved,
   daveWebReportPeriodMovedMessage,
   daveWebReportPeriodNote,
@@ -6639,12 +6642,30 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
   const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
   const [problem, setProblem] = useState('');
+  // Review N2 (5 Oct 2026): signing out removes this account's report periods from this browser (review N1). A
+  // report sent from here while the shared record could not be reached was only in this browser, though the page
+  // had said "Your other devices count from it once this computer reaches the shared record again": signed out
+  // first, it was gone for good. The record is tried once more before the sign-out; a send that still cannot be
+  // confirmed there is said, with what it means, and he chooses.
+  const [sendsNotShared, setSendsNotShared] = useState<Readonly<{ scope: DAVEWebSignOutScope; sentAts: readonly string[] }> | null>(null);
 
-  const signOut = async (scope: DAVEWebSignOutScope) => {
+  const signOut = async (scope: DAVEWebSignOutScope, despiteSendsNotShared = false) => {
     if (pending) return;
     setPending(scope);
     setProblem('');
     try {
+      // A browser that keeps no report period has nothing to carry up, and signs out at once as before.
+      if (!despiteSendsNotShared && daveWebReportPeriodsKeptHere()) {
+        const notShared = await shareDAVEWebReportSendsBeforeSignOut(
+          auth.reportOwnerId,
+          daveWebReportSnapshotCloud(auth.loadReportPeriod, auth.saveReportPeriod),
+        );
+        if (notShared.length > 0) {
+          setSendsNotShared({ scope, sentAts: notShared.map(send => send.sentAt) });
+          setPending(null);
+          return;
+        }
+      }
       // Once signed out, the sign-in page replaces this workspace.
       await auth.signOutOfDesktop(scope);
     } catch (error) {
@@ -6656,6 +6677,40 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       setPending(null);
     }
   };
+
+  if (sendsNotShared) {
+    const warning = daveWebReportSendsNotSharedWarning(sendsNotShared.sentAts);
+    const all = sendsNotShared.scope === 'global';
+    return (
+      <View style={styles.deleteConfirm} accessibilityRole="alert">
+        <View style={styles.dataGrow}>
+          <Text style={styles.deleteConfirmTitle}>{warning.title}</Text>
+          {warning.lines.map(line => <Text key={line} style={styles.dataMeta}>{line}</Text>)}
+          {problem ? <Text style={styles.errorText}>{problem}</Text> : null}
+        </View>
+        <View style={styles.inlineButtons}>
+          <Pressable
+            style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+            onPress={onCancel}
+            disabled={pending !== null}
+            accessibilityRole="button"
+          >
+            <Text style={styles.secondaryButtonText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+            onPress={() => { void signOut(sendsNotShared.scope, true); }}
+            disabled={pending !== null}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>
+              {pending ? 'Signing out…' : all ? 'Sign Out of All Devices Anyway' : 'Sign Out of This Computer Anyway'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.deleteConfirm} accessibilityRole="alert">

@@ -4,10 +4,12 @@ import {
   reportPeriodSentAfter,
   reportPeriodSentAt,
   reportSnapshotToSave,
+  validReportPeriodSnapshot,
   type DAVEReportFormat,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
 import {
+  carryUpDAVEReportPeriod,
   loadDAVEReportPeriod,
   rememberReportSentHere,
   REPORT_SENDER_ID_KEY,
@@ -495,4 +497,123 @@ export async function recordDAVEWebReportSend(
   const delivered = markReportSnapshotDelivered(approval, deliveredAt, sentBy, markedSentAt);
   await saveDAVEReportSnapshot(delivered, store.storage, store.cloud);
   return { status: 'saved', snapshot: delivered };
+}
+
+/** Every period this browser keeps for `ownerId` (profile storage, and this tab's own copies), by its projects and format. */
+function keptReportPeriods(ownerId: string): Array<Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat }>> {
+  const prefix = accountPrefix(ownerId);
+  const stored = new Map<string, string | null>();
+  for (const [key, value] of tabOnly) {
+    if (key.startsWith(prefix)) stored.set(key, value);
+  }
+  const profile = browserLocalStorage();
+  if (profile && !profileStorages.has(profile)) profileStorages.set(profile, new Set());
+  for (const [local, written] of profileStorages) {
+    for (const key of storedKeys(local, written)) {
+      if (!key.startsWith(prefix) || stored.has(key)) continue;
+      try {
+        stored.set(key, local.getItem(key));
+      } catch {
+        // A storage that cannot be read holds no period this browser could carry up.
+      }
+    }
+  }
+  const periods = new Map<string, Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat }>>();
+  for (const value of stored.values()) {
+    try {
+      // The account's own-send list and anything else kept under its id is no period.
+      const parsed: unknown = JSON.parse(daveWebStoredReportValue(value) ?? 'null');
+      if (!isRecord(parsed) || typeof parsed.scopeKey !== 'string') continue;
+      const reportFormat = parsed.reportFormat === 'project_manager' || parsed.reportFormat === 'executive' ? parsed.reportFormat : null;
+      if (!reportFormat || !validReportPeriodSnapshot(parsed, parsed.scopeKey, reportFormat)) continue;
+      periods.set(JSON.stringify([parsed.scopeKey, reportFormat]), { scopeKey: parsed.scopeKey, reportFormat });
+    } catch {
+      // Not a period this build wrote.
+    }
+  }
+  return [...periods.values()];
+}
+
+/**
+ * Whether this browser keeps anything under an account's id at all (a
+ * period, an own-send list): Sign Out has nothing to carry up without one,
+ * and does not wait to find that out (review N2).
+ */
+export function daveWebReportPeriodsKeptHere(): boolean {
+  const kept = (key: string) => key.startsWith(`${WEB_PREFIX}/`);
+  if ([...tabOnly].some(([key, value]) => value !== null && kept(key))) return true;
+  const profile = browserLocalStorage();
+  if (profile && !profileStorages.has(profile)) profileStorages.set(profile, new Set());
+  for (const [local, written] of profileStorages) {
+    if (storedKeys(local, written).some(kept)) return true;
+  }
+  return false;
+}
+
+/** How long a sign-out waits to learn who is signed in before it goes ahead without carrying anything up (as long as a read of the shared record is given). */
+const SIGN_OUT_OWNER_WAIT_MS = 4000;
+
+/** A report this computer recorded as sent that the shared record may not have: its period, and when it was sent. */
+export type DAVEWebReportSendNotShared = Readonly<{ scopeKey: string; reportFormat: DAVEReportFormat; sentAt: string }>;
+
+/**
+ * Review N2 (5 Oct 2026, caused by b1281f0): a report sent from here while
+ * the shared record could not be reached is kept in this browser, and the
+ * page says "Your other devices count from it once this computer reaches the
+ * shared record again". It is carried up the next time Reports is opened.
+ * But Sign Out of This Computer removes this account's periods from the
+ * browser (review N1, and it still does): signed out before Reports was
+ * opened again, the send was gone for good, and every device's next report
+ * repeated what it had covered.
+ *
+ * So before a sign-out the signed-in account's periods kept here are carried
+ * up once more, and waited for. Resolves with this computer's own sends that
+ * still could not be confirmed in the shared record, newest first, for the
+ * page to say before it signs out; empty when there is nothing to say: all
+ * are there, or reports are not shared between his devices yet (the period
+ * was this computer's alone, as the Reports page said). Only the account
+ * `ownerId` names is read or written, and only into its own shared record.
+ * Never throws.
+ */
+export async function shareDAVEWebReportSendsBeforeSignOut(
+  ownerId: () => Promise<string>,
+  cloud: DAVEReportSnapshotCloud,
+): Promise<readonly DAVEWebReportSendNotShared[]> {
+  let waiting: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Who is signed in is asked of the cloud when it is not already known; the sign-out does not wait on it for long.
+    const owner = await Promise.race([
+      ownerId(),
+      new Promise<never>((_resolve, reject) => {
+        waiting = setTimeout(() => reject(new Error('The signed-in account was not confirmed in time.')), SIGN_OUT_OWNER_WAIT_MS);
+      }),
+    ]);
+    const storage = daveWebReportStorage(async () => owner);
+    const ownCloud: DAVEReportSnapshotCloud = Object.freeze({
+      async read(scopeKey: string, reportFormat: DAVEReportFormat) {
+        const row = await cloud.read(scopeKey, reportFormat);
+        // Another account signed in meanwhile: its record is not this account's to read or write.
+        if (row && row.ownerId !== owner) throw new Error('The signed-in account changed.');
+        return row;
+      },
+      write: cloud.write,
+    });
+    const notShared: DAVEWebReportSendNotShared[] = [];
+    await Promise.all(keptReportPeriods(owner).map(async period => {
+      const carried = await carryUpDAVEReportPeriod(period.scopeKey, period.reportFormat, storage, ownCloud);
+      if (carried !== 'not_reached') return;
+      // Only a send of this computer's own is at stake: another device's is in the shared record already.
+      const kept = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, storage, LOCAL_ONLY)).snapshot;
+      const send = reportPeriodSend(kept);
+      if (send && await reportSnapshotSentHere(send, storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false)) {
+        notShared.push({ ...period, sentAt: send.deliveredAt as string });
+      }
+    }));
+    return notShared.sort((left, right) => right.sentAt.localeCompare(left.sentAt));
+  } catch {
+    // Who is signed in could not be confirmed, or the browser's storage could not be read: nothing can be carried up.
+    return [];
+  } finally {
+    if (waiting) clearTimeout(waiting);
+  }
 }
