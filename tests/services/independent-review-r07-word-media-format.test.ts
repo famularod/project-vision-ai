@@ -199,6 +199,23 @@ describe('the shared Word image format policy', () => {
     expect(detectReportImageSignature(Uint8Array.from([0xff, 0xd8]))).toBe('unknown');
   });
 
+  it('does not take an AVIF for an iPhone photo because it lists the general brand mif1 (review pass 4 nit)', () => {
+    const text = (value: string) => Array.from(value, character => character.charCodeAt(0));
+    const ftyp = (major: string, ...compatible: string[]) =>
+      Uint8Array.from([0, 0, 0, 16 + 4 * compatible.length, ...text('ftyp'), ...text(major), 0, 0, 0, 0, ...compatible.flatMap(text)]);
+    // AVIF, however its brands are ordered.
+    expect(detectReportImageSignature(ftyp('avif', 'avif', 'mif1', 'miaf'))).toBe('unknown');
+    expect(detectReportImageSignature(ftyp('avis', 'avis', 'msf1', 'miaf'))).toBe('unknown');
+    expect(detectReportImageSignature(ftyp('mif1', 'mif1', 'avif', 'miaf'))).toBe('unknown');
+    expect(detectReportImageSignature(Uint8Array.from(FAKE_SIGNATURES.avifWithMif1))).toBe('unknown');
+    // iPhone photos, in the layouts they come in, still read as HEIC.
+    expect(detectReportImageSignature(ftyp('heic', 'mif1', 'MiHE', 'MiPr', 'miaf', 'MiHB', 'heic'))).toBe('heic');
+    expect(detectReportImageSignature(ftyp('mif1', 'mif1', 'heic'))).toBe('heic');
+    expect(detectReportImageSignature(ftyp('msf1', 'msf1', 'hevc'))).toBe('heic');
+    expect(detectReportImageSignature(ftyp('heix', 'mif1', 'heix'))).toBe('heic');
+    expect(detectReportImageSignature(ftyp('mif1', 'mif1'))).toBe('heic');
+  });
+
   it('embeds only what the Word builder can declare, and converts the rest', () => {
     expect((['jpeg', 'png', 'gif', 'bmp'] as const).map(reportWordEmbedMimeType))
       .toEqual(['image/jpeg', 'image/png', 'image/gif', 'image/bmp']);
@@ -304,6 +321,21 @@ describe('a photo in the phone and iPad Word report', () => {
     expect(result.media).toEqual([]);
     expect(result.unavailableMedia.map(item => item.reason))
       .toEqual(['The TIFF image could not be prepared for the Word report.']);
+  });
+
+  it('converts an AVIF that lists mif1 like any other picture, and does not call it an iPhone photo if that fails (review pass 4 nit)', async () => {
+    const source: Source = { id: 'photo-1', format: 'avifWithMif1', mimeType: 'image/avif', fileName: 'a.avif' };
+    const converted = await nativePhotos([source]);
+    expect(converted.unavailableMedia).toEqual([]);
+    expect(converted.media[0].mimeType).toBe('image/jpeg');
+    expectLabelsMatchBytes(converted.media);
+
+    fakeMedia.deviceCannotOpen.add(localUri(source));
+    const refused = await nativePhotos([source]);
+    expect(refused.media).toEqual([]);
+    expect(refused.unavailableMedia.map(item => item.reason)).toEqual([NOT_A_PICTURE]);
+    expect(summarizeReportWordUnavailableMedia(refused.unavailableMedia))
+      .toBe('1 report source image could not be prepared.');
   });
 
   it('keeps the existing iPhone-photo wording when a HEIC cannot be converted', async () => {
@@ -506,6 +538,13 @@ describe('the media inside the generated Word document', () => {
 describe('a photo in the desktop Word report', () => {
   it('draws a WebP again as a real JPEG', async () => {
     const result = await desktopPhotos([{ id: 'photo-1', format: 'webp', mimeType: 'image/jpeg', fileName: 'a.jpg' }]);
+    expect(result.unavailableMedia).toEqual([]);
+    expect(result.media[0].mimeType).toBe('image/jpeg');
+    expectLabelsMatchBytes(result.media);
+  });
+
+  it('opens an AVIF that lists mif1 itself, instead of sending it to the iPhone-photo converter (review pass 4 nit)', async () => {
+    const result = await desktopPhotos([{ id: 'photo-1', format: 'avifWithMif1', mimeType: 'image/avif', fileName: 'a.avif' }]);
     expect(result.unavailableMedia).toEqual([]);
     expect(result.media[0].mimeType).toBe('image/jpeg');
     expectLabelsMatchBytes(result.media);

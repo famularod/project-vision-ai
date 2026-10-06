@@ -65,7 +65,8 @@ export function detectReportImageSignature(bytes: Uint8Array): ReportImageFormat
   }
   if (bytes.length >= 12 && ascii(bytes, 4, 4) === 'ftyp') {
     const brands = ascii(bytes, 8, Math.min(40, bytes.length - 8));
-    if (/(heic|heix|hevc|hevx|heif|heim|heis|mif1|msf1)/.test(brands)) {
+    // An AVIF lists the general brand mif1 too. It is not an iPhone photo (review pass 4).
+    if (!/avi[fs]/.test(brands) && /(heic|heix|hevc|hevx|heif|heim|heis|mif1|msf1)/.test(brands)) {
       return 'heic';
     }
   }
