@@ -1152,7 +1152,14 @@ export function scheduleLookaheadDeleteNote(
   /** The button that does it: the phone's, or the web's "Delete Document + N Tasks" (review N2 W1). */
   button = 'Delete PDF + Items',
 ): string {
-  if (!scheduleDocumentAddsToMaster(document)) return '';
+  if (!scheduleDocumentAddsToMaster(document)) {
+    // Build 231, S2 item 5: a master's delete with its items also removes the earlier rows of tasks a newer schedule
+    // has moved, which he does not see in his list (the task shows on the newer row, and stays). Said, in the count's
+    // own terms.
+    const gone = new Set(removed.map(item => item.id));
+    const earlier = removed.filter(item => items.some(other => !gone.has(other.id) && scheduleTaskEarlierIds(other).includes(item.id))).length;
+    return earlier === 0 ? '' : ` ${earlier} of those items ${earlier === 1 ? 'is the earlier row of a task' : 'are earlier rows of tasks'} a newer schedule has moved; ${earlier === 1 ? 'that task stays' : 'those tasks stay'} in your list.`;
+  }
   const removedIds = new Set(removed.map(item => item.id));
   const kept = items.filter(item => !removedIds.has(item.id));
   const after = documents?.filter(saved => saved.id !== document.id);

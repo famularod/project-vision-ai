@@ -219,3 +219,34 @@ describe('the delete question for a schedule with no tasks of its own', () => {
     expect(question(OLDER, ALL)[0]).toBe('LOOKAHEAD 1 will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
   });
 });
+
+/*
+ * Build 231, S2 item 5 (small): the delete question did not say that the items a master's delete removes include the
+ * earlier rows of tasks a newer schedule has moved, which he does not see in his list.
+ */
+describe('S2 item 5: the delete question says when the items removed include earlier rows of tasks a newer schedule moved', () => {
+  const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+  const row = (id: string, name: string, document: ReferenceDocument, revisedFromTaskIds?: string[]) => ({ ...task(name, document), id, ...(revisedFromTaskIds ? { revisedFromTaskIds } : {}) }) as ScheduleItem;
+  /** F listed Framing, Paint and Roofing; G moved Framing and Paint (new rows that answer to F's) and left Roofing out. */
+  const SAVED = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('F-3', 'Roofing', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2'])];
+  const question = (document: ReferenceDocument, items: ScheduleItem[]) => {
+    const app = phone([F, G], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(document.id);
+    return app.alerts[0].message;
+  };
+
+  it('the older master: two of its three items are earlier rows of tasks master G moved', () => {
+    expect(question(F, SAVED)).toBe('MASTER F will be removed. You can also remove the 3 schedule items only this PDF contains so outdated dates do not confuse Upcoming. 2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.');
+  });
+
+  it('one such row; none; and a lookahead\'s question is unchanged', () => {
+    const one = SAVED.filter(item => item.id !== 'G-2');
+    expect(question(F, one)).toContain('contains so outdated dates do not confuse Upcoming. 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+    expect(question(G, SAVED)).toBe('MASTER G will be removed, with the 2 schedule items only this PDF contains.');
+    expect(scheduleLookaheadDeleteNote(SAVED, G, SAVED.filter(item => item.id.startsWith('G-')), [F, G])).toBe('');
+    // A row whose newer row is removed with it is not such a row: that task does not stay.
+    expect(scheduleLookaheadDeleteNote(SAVED, F, SAVED.filter(item => ['F-1', 'G-1', 'F-3'].includes(item.id)), [F, G])).toBe('');
+    expect(scheduleLookaheadDeleteNote(TASKS, NEWER, [TASKS[2]], ALL)).not.toContain('earlier row');
+  });
+});
