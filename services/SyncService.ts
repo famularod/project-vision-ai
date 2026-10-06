@@ -5558,6 +5558,19 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   });
   const exact = await uploadExactQueueItem(queueItemId, written);
   if (!exact.landed) {
+    // Sync batch Y1 (item 5): Settings said "Neither copy was changed" whenever the kept copy's write failed. A write
+    // whose answer was lost HAS landed. The cloud's copy is read once. It is the kept copy: the upload is run once more,
+    // finds it there and ends as when the answer had arrived (the newer edit queued after it). It cannot be read, or
+    // that second run does not get through either: Settings says the change may or may not have been saved. Only when
+    // it is read and is not the kept copy is neither copy changed.
+    const after = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    const readable = Boolean(after?.ok && !after.stubbed);
+    const landedUnanswered = readable && isRecord(after?.data?.updateData) &&
+      daveProjectUpdateMatchesCloudReceipt((written.payload as ProjectUpdateRecordPayload).updateData, after!.data!.updateData);
+    if (landedUnanswered && (await uploadExactQueueItem(queueItemId, written)).landed) {
+      await clearResolvedConflict(conflict.id);
+      return localUpdateData;
+    }
     // The queue as it was before the choice (whole-app audit A4 pass 16 L1):
     // with no newer edit, the kept copy stayed queued, marked as David's
     // choice, and went up by itself once the signal returned, clearing the
@@ -5566,7 +5579,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // earlier kept copy of this choice gives way to the edit it carries.
     const earlierChoice = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
     await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written);
-    throw new Error(exact.error || 'sync_conflict_save_failed');
+    throw new Error(!readable || landedUnanswered ? 'sync_conflict_save_unconfirmed' : exact.error || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
@@ -6104,6 +6117,33 @@ export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConf
     await recordTaskCloudCopyIfChanged(conflict, row, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()));
   }
   return getSyncConflicts();
+}
+
+/**
+ * Sync batch Y1 (item 5): this device's side of a task's conflict as Keep Phone will send it, when that is not the
+ * copy saved with the conflict: the conflict's copy with this device's newer waiting edits of the task over it (any
+ * a Keep Cloud that could not finish left on the card, then the one on the queue), as Keep Phone folds them in. On a
+ * card of fields, the fields it asks about only: a waiting edit of another field goes up by itself first and is no
+ * part of the choice. Null when nothing newer waits. Review Conflicts showed the conflict's copy on its "Phone:"
+ * line while Keep Phone sent the newer value, and Keep Cloud gave it up unsaid.
+ */
+export function newerPhoneCopyForScheduleItemConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): ScheduleItem | null {
+  if (conflict.entity !== 'schedule_item' || !isRecord(conflict.localPayload)) return null;
+  const payload = conflict.localPayload as Partial<ScheduleItemRecordPayload>;
+  if (!isRecord(payload.itemData)) return null;
+  const own = payload.itemData as ScheduleItem;
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  const kept = withNewerPhoneTaskEdits(own, [
+    ...(Array.isArray(payload.withdrawnEdits) ? payload.withdrawnEdits : []),
+    ...queue.filter(item => item.id === queueItemId),
+  ]);
+  const asked = scheduleItemConflictFields(conflict.localPayload);
+  const shown = asked.length > 0 ? asked
+    : [...new Set([...Object.keys(own), ...Object.keys(kept)])].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field));
+  if (shown.every(field => taskFieldValue(kept, field) === taskFieldValue(own, field))) return null;
+  return asked.length > 0
+    ? { ...own, ...Object.fromEntries(asked.map(field => [field, (kept as unknown as Record<string, unknown>)[field]])) } as ScheduleItem
+    : kept;
 }
 
 /** Takes a task's waiting edits off the queue; the edits taken. One that `stays` is left waiting. */
@@ -6654,8 +6694,19 @@ async function chooseScheduleItemSyncConflictCopy(
       if (rowAfter && refusedBefore < QUEUED_RECORD_WEIGH_AGAIN_LIMIT) {
         return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1, weighedBesideCard });
       }
+      throw new Error(result.errors[0] || 'sync_conflict_save_failed');
     }
-    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+    // Sync batch Y1 (item 5): any other failure of the kept copy's write. Settings said "Neither copy was changed",
+    // but a write whose answer was lost HAS landed. The row is read once. It holds what he chose to keep: the choice
+    // is made, and ends as when the answer had arrived. It cannot be read: Settings says the change may or may not
+    // have been saved. Only when it is read and does not hold his copy is neither copy changed.
+    const rowAfter = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    if (rowAfter === undefined) throw new Error('sync_conflict_save_unconfirmed');
+    const keptValues = cardFields ? [...cardFields].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field)) : null;
+    const landed = Boolean(rowAfter) && (keptValues
+      ? keptValues.every(field => taskFieldValue(rowAfter, field) === taskFieldValue(keptItem, field))
+      : sameTaskContent(rowAfter, keptItem));
+    if (!landed) throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);

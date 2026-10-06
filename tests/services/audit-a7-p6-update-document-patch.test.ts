@@ -3574,7 +3574,11 @@ describe('a failed Keep Phone leaves neither copy changed (audit A4 pass 16 L1)'
 });
 
 /** Keep Phone or Keep Cloud in Settings (AdminScreen's own resolveConflict): everything the screen shows afterwards. */
-async function chooseInSettingsSeeing(phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud') {
+async function chooseInSettingsSeeing(
+  phone: Device, conflict: { id: string }, resolution: 'keep_local' | 'keep_cloud',
+  /** Settings' Retry callback (A4 pass 17 L2). */
+  onRetryUpdateSync: (...args: unknown[]) => Promise<unknown> = jest.fn(async () => ({})),
+) {
   const seen = {
     alerts: [] as Array<{ title: string; message?: string }>, messages: [] as string[],
     conflictsShown: [] as unknown[][], reviewClosed: false, applied: [] as Update[],
@@ -3585,7 +3589,7 @@ async function chooseInSettingsSeeing(phone: Device, conflict: { id: string }, r
       setResolvingConflictId: () => undefined, resolveScheduleItemSyncConflict: jest.fn(), onApplyCloudConflictScheduleItem: jest.fn(),
       resolveProjectUpdateSyncConflict, syncConflictChoiceStopReason, onApplyCloudConflictUpdate: (update: Update) => { seen.applied.push(update); },
       savedUpdates: phone.savedUpdatesRef.current, savedUpdatesRef: phone.savedUpdatesRef, projectUpdateCopyIsLastInCloud,
-      onRetryUpdateSync: jest.fn(async () => ({})), // Settings' Retry callback (A4 pass 17 L2)
+      onRetryUpdateSync,
       getSyncConflicts, getSyncStatus: async () => null, setSyncStatus: () => undefined,
       setSyncConflicts: (conflicts: unknown[]) => { seen.conflictsShown.push(conflicts); },
       setSyncAttemptMessage: (message: string | null) => { if (message) seen.messages.push(message); },
@@ -6344,5 +6348,133 @@ describe('what this device put in the cloud is still known after a relaunch (syn
     phone.render();
     await syncWaitingUpdate(phone);
     expect(inCloud()).toMatchObject({ notes: 'Pour (as the backup had it)' });
+  });
+});
+
+/**
+ * Sync batch Y1 (item 5): Review Conflicts' wording for a field update.
+ * (b) A Keep Phone whose write landed with its answer lost said "Conflict not resolved. Neither copy was changed."
+ * (c) After Keep Phone, Settings sends the newer edit itself (its Retry callback) and writes "Cloud conflicts
+ *     resolved." while that send is still going. When the newer edit then met a conflict of its own, the line stayed.
+ */
+describe('Review Conflicts says what happened to a field update (sync batch Y1, item 5)', () => {
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const NOT_CHANGED = { title: 'Conflict not resolved', message: 'Neither copy was changed. Check the cloud connection and try again.' };
+  const UNCONFIRMED = { title: 'Conflict not resolved',
+    message: 'The cloud did not confirm the change, so it may or may not have been saved. The conflict is still open — check the cloud connection and choose again.' };
+  const noAnswer = { ok: false, configured: true, stubbed: false, data: null, error: 'Network request failed' };
+  const cloudRead = () => supabaseMock().getProjectUpdateSyncMetadata as jest.Mock;
+  /** The kept copy's write reaches the cloud, and its answer does not come back. */
+  function theWriteLandsAndItsAnswerIsLost() {
+    const save = (saveProjectUpdate as jest.Mock).getMockImplementation()!;
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: unknown) => { await save(params); return noAnswer; });
+  }
+
+  it('Keep Phone\'s write lands and its answer is lost: the conflict is resolved, with the phone\'s copy in the cloud', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    theWriteLandsAndItsAnswerIsLost();
+    const writes = (saveProjectUpdate as jest.Mock).mock.calls.length;
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local');
+
+    // It said "Conflict not resolved. Neither copy was changed." The cloud held the phone's note.
+    expect(seen.alerts).toEqual([]);
+    expect(seen.messages.at(-1)).toBe('Cloud conflicts resolved.');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(writes + 1); // found in the cloud, not written twice
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(seen.applied).toEqual([expect.objectContaining({ notes: RETRY_SYNC_OFFLINE_EDIT })]);
+    expect(seen.reviewClosed).toBe(true);
+  });
+
+  it('with a newer edit held for review: that edit still follows the kept copy', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const edited = await editAndSave(phone, { notes: NEWER });
+    await appSaveSync(phone)(edited);
+    theWriteLandsAndItsAnswerIsLost();
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync);
+    await settled();
+    await uploadPendingChanges();
+
+    expect(seen.alerts).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('Keep Phone\'s write never reaches the cloud: neither copy was changed, and it still says so', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    (saveProjectUpdate as jest.Mock).mockImplementationOnce(async () => noAnswer);
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local');
+
+    expect(seen.alerts).toEqual([NOT_CHANGED]);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+
+  it('the write lands, its answer is lost, and the cloud cannot be read after it: it may or may not have been saved, and it says that', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    theWriteLandsAndItsAnswerIsLost();
+    const read = cloudRead().getMockImplementation()!;
+    let landed = false;
+    cloudRead().mockImplementation(async (id: string) => {
+      landed ||= inCloud().notes === RETRY_SYNC_OFFLINE_EDIT;
+      return landed ? noAnswer : read(id);
+    });
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local');
+    cloudRead().mockImplementation(read);
+
+    // "Neither copy was changed." The cloud held the phone's note.
+    expect(seen.alerts).toEqual([UNCONFIRMED]);
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(await getSyncConflicts()).toHaveLength(1);
+  });
+
+  it('Settings\' own send of the newer edit meets a conflict of its own: the line under Sync no longer says the conflicts are resolved', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const edited = await editAndSave(phone, { notes: NEWER });
+    await appSaveSync(phone)(edited);
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+    // The iPad saves again just as Settings starts that send.
+    const retry = jest.fn(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await iPadEditsNow(IPAD_SECOND_NOTE);
+      return onRetryUpdateSync(...args);
+    });
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local', retry);
+    expect(seen.messages.at(-1)).toBe('Cloud conflicts resolved.'); // written while that send was still going
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await settled();
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    expect(await getSyncConflicts()).toHaveLength(1);
+    // The line stayed "Cloud conflicts resolved." with a conflict in the list.
+    expect(seen.messages.at(-1)).toBe('1 conflict remains to review.');
+    expect(seen.conflictsShown.at(-1)).toEqual([expect.objectContaining({ localId: 'u1' })]);
+  });
+
+  it('that send goes through: the line stays as it was written, and is not written a second time', async () => {
+    const phone = await offlineEditInConflictWithIPad([]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const edited = await editAndSave(phone, { notes: NEWER });
+    await appSaveSync(phone)(edited);
+    const { onRetryUpdateSync, settled } = settingsRetryCallback(phone);
+
+    const seen = await chooseInSettingsSeeing(phone, (await getSyncConflicts())[0], 'keep_local', onRetryUpdateSync);
+    await settled();
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    expect(seen.messages).toEqual(['Cloud conflicts resolved.']);
+    expect(await getSyncConflicts()).toEqual([]);
+    // The list and the counts are read again all the same.
+    expect(seen.conflictsShown.length).toBeGreaterThan(1);
+    expect(inCloud()).toMatchObject({ notes: NEWER });
   });
 });

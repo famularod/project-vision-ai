@@ -74,6 +74,7 @@ import {
   refreshFieldUpdateConflictCloudCopies,
   refreshScheduleItemConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
+  newerPhoneCopyForScheduleItemConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
   syncConflictChoiceStopReason,
@@ -951,14 +952,19 @@ export function AdminScreen({
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
   ) {
-    /** The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it. */
-    const showConflictsAfterChoice = async (closed: string | null) => {
+    /**
+     * The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it.
+     * `afterOwnRetry`: read again once Settings' own send of a newer edit has ended; the line is then written only
+     * when a conflict is open after all, so that it does not go over a line something else has put there since.
+     */
+    const showConflictsAfterChoice = async (closed: string | null, afterOwnRetry = false) => {
       const [nextConflicts, nextStatus] = await Promise.all([
         getSyncConflicts(),
         getSyncStatus(),
       ]);
       setSyncConflicts(nextConflicts);
       setSyncStatus(nextStatus);
+      if (afterOwnRetry && nextConflicts.length === 0) return;
       const remaining = nextConflicts.length > 0
         ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
         : null;
@@ -1028,7 +1034,11 @@ export function AdminScreen({
           const card: ArchivableUpdate = kept.isArchived && !(phoneCopy as ArchivableUpdate).isArchived
             ? { ...phoneCopy!, isArchived: true, archivedAt: kept.archivedAt ?? null }
             : phoneCopy!;
-          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined);
+          // And when that send has ended, the conflicts and the line under Sync are read again (sync batch Y1, item
+          // 5): the line below was written while it was still going, so "Cloud conflicts resolved." stayed on screen
+          // when the newer edit then met a conflict of its own, or could not be sent.
+          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined)
+            .then(() => showConflictsAfterChoice(null, true)).catch(() => undefined);
         }
       }
 
@@ -1588,7 +1598,10 @@ function SyncConflictReviewList({
         const newerPhoneUpdate = conflictNewerPhoneUpdate(conflict, queue);
         const phoneUpdate = newerPhoneUpdate ?? conflictUpdate(conflict, 'keep_local');
         const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
-        const phoneTask = conflictScheduleItem(conflict, 'keep_local');
+        // A task's side as Keep Phone will send it (sync batch Y1, item 5): with a newer edit of his that still waits.
+        // The line showed the copy saved with the conflict; Keep Phone sent the newer value, Keep Cloud gave it up.
+        const newerPhoneTask = conflict.entity === 'schedule_item' ? newerPhoneCopyForScheduleItemConflict(conflict, queue) : null;
+        const phoneTask = newerPhoneTask ?? conflictScheduleItem(conflict, 'keep_local');
         const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
         // A task's fields changed on both devices (owner answer Q28): those fields, as each copy has them.
         const askedFields = scheduleItemConflictFields(conflict.localPayload);
@@ -1618,7 +1631,7 @@ function SyncConflictReviewList({
                 ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(phoneTask, askedFields) : formatTaskConflictCopy(phoneTask)
                 : formatConflictCopy(phoneUpdate)}
             </Text>
-            {newerPhoneUpdate ? (
+            {newerPhoneUpdate || newerPhoneTask ? (
               <Text style={styles.settingsRowDetail}>{CONFLICT_NEWER_PHONE_EDIT_NOTE}</Text>
             ) : null}
             <Text style={styles.settingsRowDetail}>
@@ -1637,7 +1650,7 @@ function SyncConflictReviewList({
               <SecondaryButton
                 label={resolving ? 'Saving…' : 'Keep Cloud'}
                 icon="cloud-outline"
-                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate))}
+                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate || newerPhoneTask))}
                 disabled={Boolean(resolvingConflictId)}
                 compact
               />

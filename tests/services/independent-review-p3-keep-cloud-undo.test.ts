@@ -89,6 +89,7 @@ jest.mock('../../services/SupabaseService', () => ({
 import {
   getOfflineQueue,
   getSyncConflicts,
+  newerPhoneCopyForScheduleItemConflict,
   queueScheduleItemRecord,
   resolveScheduleItemSyncConflict,
   runScheduleItemCloudSync,
@@ -397,21 +398,58 @@ describe('independent review pass 3: Keep Phone\'s copy is not sent over a row t
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
-  it('a kept copy that landed with its answer lost is not called a changed cloud copy: reported as before, with no further read', async () => {
+  // Sync batch Y1 (item 5): this pinned "reported as before" (Settings: "Neither copy was changed") for a write that
+  // HAD landed. The row is now read once after a write that failed without being refused.
+  it('a kept copy that landed with its answer lost: the row is read once, holds his copy, and the choice is made', async () => {
     const { conflict, shown } = await conflictWithWebCopy();
     mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
       await mockCloud.upsert(item, options);
       return mockUnreadable();
     });
 
+    await expect(keepPhone(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.' });
+
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+    expect(mockGetScheduleItem).toHaveBeenCalledTimes(2); // Keep Phone's check, then the read after the unanswered write
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a kept copy whose write never reached the cloud: the row is read, does not hold it, and neither copy was changed', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    mockUpsertScheduleItem.mockImplementationOnce(async () => mockUnreadable());
+
     const error = await keepPhone(conflict.id, shown).catch((caught: unknown) => caught);
 
+    // Settings: "Conflict not resolved. Neither copy was changed. Check the cloud connection and try again." Exact.
     expect(error).toBeInstanceOf(Error);
     expect(syncConflictChoiceStopReason(error)).toBeNull();
-    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
-    // Only a write the cloud refused sends Keep Phone back to the row.
-    expect(mockGetScheduleItem).toHaveBeenCalledTimes(1);
+    expect(cloudTask()).toMatchObject({ notes: '' });
     await expect(getSyncConflicts()).resolves.toEqual([expect.objectContaining({ id: conflict.id, remotePayload: conflict.remotePayload })]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('a kept copy whose write failed and the row cannot be read after it: it may or may not have been saved, and Settings says that', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      await mockCloud.upsert(item, options);
+      return mockUnreadable();
+    });
+    mockGetScheduleItem
+      .mockImplementationOnce(mockCloud.get)                 // Keep Phone's check
+      .mockImplementationOnce(async () => mockUnreadable()); // the read after the unanswered write
+
+    const error = await keepPhone(conflict.id, shown).catch((caught: unknown) => caught);
+
+    // It said "Neither copy was changed". The cloud held his copy.
+    expect(syncConflictChoiceStopReason(error)).toBe('save_unconfirmed');
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
+    await expect(getSyncConflicts()).resolves.toHaveLength(1);
+    // Chosen again with signal: his copy is what the cloud has, and the choice is made.
+    const [open] = await getSyncConflicts();
+    await expect(keepPhone(open.id, cloudTask())).resolves.toMatchObject({ notes: 'Phone note.' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 
   it('the row cannot be read after the refused write: nothing was sent, reported as a choice that did not go through, the conflict as it was', async () => {
@@ -1464,5 +1502,102 @@ describe('review pass 5 (P5-1): a kept copy left by a Keep Phone that was cut of
     await expect(getOfflineQueue()).resolves.toEqual([]);
     // And nothing waits to be said at the next pass.
     expect((await uploadPendingChanges()).errors).toEqual([]);
+  });
+});
+
+/* Sync batch Y1 (item 5): Review Conflicts' wording for a task ---------------------------------------------------- */
+
+/**
+ * (a) The "Phone:" line showed the copy saved with the conflict, while Keep Phone sent a newer edit of his that
+ * still waited, and Keep Cloud gave that edit up without saying so. Settings now asks this for the copy to show.
+ * (b) A kept copy whose write landed with its answer lost: "Neither copy was changed" (the tests above, in the pass-3
+ * block, and the two here).
+ */
+describe('sync batch Y1 (item 5): a task\'s side of Review Conflicts is what Keep Phone will send', () => {
+  const sideShown = async () => {
+    const [card] = await getSyncConflicts();
+    return newerPhoneCopyForScheduleItemConflict(card, await getOfflineQueue());
+  };
+
+  it('nothing newer waits: the copy saved with the conflict is the one, and nothing more is said', async () => {
+    await cardAboutTheOwner();
+    await expect(sideShown()).resolves.toBeNull();
+  });
+
+  it('a newer value of the field the card asks about waits: that is the value shown, and the one Keep Phone sends', async () => {
+    const { mine, conflict, shown } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Ana (crew B)', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'updatedAt'], mine);
+
+    // The line read "Ana"; Keep Phone sent "Ana (crew B)".
+    await expect(sideShown()).resolves.toMatchObject({ owner: 'Ana (crew B)' });
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ owner: 'Ana (crew B)' });
+    expect(cloudTask()).toMatchObject({ owner: 'Ana (crew B)' });
+  });
+
+  it('a waiting edit of another field is no part of the choice: the card\'s own copy is shown', async () => {
+    const { mine } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    await expect(sideShown()).resolves.toBeNull();
+  });
+
+  it('one waiting record with a newer owner and a note: the newer owner is shown, the note is not the card\'s', async () => {
+    const { mine } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Ana (crew B)', notes: NOTE, updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'notes', 'updatedAt'], mine);
+    const side = await sideShown();
+    expect(side).toMatchObject({ owner: 'Ana (crew B)', notes: '' });
+  });
+
+  it('an edit a Keep Cloud that could not finish left on the card counts too: Keep Phone folds it in', async () => {
+    const { mine, conflict } = await cardAboutTheOwner();
+    await queueScheduleItemRecord({ ...mine, owner: 'Ana (crew B)', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'updatedAt'], mine);
+    await anUnfinishedKeepCloudLeftItOnTheCard(conflict.id);
+    await expect(sideShown()).resolves.toMatchObject({ owner: 'Ana (crew B)' });
+  });
+
+  it('a card about the whole task: the whole copy with his newer edit over it, as Keep Phone sends it', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    await queueScheduleItemRecord({ ...phoneTask, owner: 'Ana', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'updatedAt'], phoneTask);
+
+    await expect(sideShown()).resolves.toMatchObject({ notes: 'Phone note.', owner: 'Ana' });
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.', owner: 'Ana' });
+  });
+
+  it('another kind of record, or a card with no copy, has no such side', async () => {
+    const [card] = [(await cardAboutTheOwner()).conflict];
+    expect(newerPhoneCopyForScheduleItemConflict({ ...card, entity: 'project_update' }, [])).toBeNull();
+    expect(newerPhoneCopyForScheduleItemConflict({ ...card, localPayload: null }, [])).toBeNull();
+  });
+
+  it('a card of fields: the kept owner landed with its answer lost: the choice is made, and Settings says nothing more', async () => {
+    const { conflict } = await cardAboutTheOwner();
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      await mockCloud.upsert(item, options);
+      return mockUnreadable();
+    });
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    // "Conflict not resolved. Neither copy was changed." The cloud had "Ana".
+    expect(said.alerts).toEqual([]);
+    expect(said.line).toBe('Cloud conflicts resolved.');
+    expect(said.applied).toEqual([expect.objectContaining({ owner: 'Ana' })]);
+    expect(cloudTask()).toMatchObject({ owner: 'Ana' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('the kept owner\'s write failed and the row cannot be read after it: Settings says it may or may not have been saved', async () => {
+    const { conflict } = await cardAboutTheOwner();
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      await mockCloud.upsert(item, options);
+      return mockUnreadable();
+    });
+    mockGetScheduleItem.mockImplementationOnce(mockCloud.get).mockImplementationOnce(async () => mockUnreadable());
+
+    const said = await chooseInSettings(conflict.id, 'keep_local');
+
+    expect(said.alerts).toEqual([['Conflict not resolved',
+      'The cloud did not confirm the change, so it may or may not have been saved. The conflict is still open — check the cloud connection and choose again.']]);
+    expect(await cards()).toEqual([['owner']]);
   });
 });
