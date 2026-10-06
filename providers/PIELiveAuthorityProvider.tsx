@@ -38,6 +38,7 @@ import type { DAVEConfirmedCaptureMemory } from '../services/DAVECaptureMemory';
 import type { DAVEDailyBriefDocument } from '../services/DAVEDailyBrief';
 import {
   buildDAVEProjectTruth,
+  daveProjectTruthUpdatesFor,
   type DAVEProjectTruth,
 } from '../services/DAVEProjectTruth';
 import { createDAVEProjectTruthRepository } from '../services/DAVEProjectTruthRepository';
@@ -610,7 +611,15 @@ export function PIELiveAuthorityProvider({
   const projectTruth = useMemo(() => buildDAVEProjectTruth({
     projectId: truthProjectId,
     projectName: truthInput.projectName,
-    updates: truthInput.updates,
+    // A project's own updates count whatever name they were filed under (R4: an older update under a building name).
+    updates: (truthInput.projectTruthPersistencePolicy || 'persist_project') === 'persist_project'
+      ? daveProjectTruthUpdatesFor({
+          projectName: truthInput.projectName,
+          updates: truthInput.updates,
+          scheduleItems: truthInput.scheduleItems,
+          knownScheduleItems: truthInput.knownScheduleItems,
+        })
+      : truthInput.updates,
     scheduleItems: truthInput.scheduleItems,
     knownScheduleItems: truthInput.knownScheduleItems,
     projectAreas: truthInput.projectAreas,
@@ -627,6 +636,7 @@ export function PIELiveAuthorityProvider({
     truthInput.projectDocuments,
     truthInput.projectAreas,
     truthInput.projectName,
+    truthInput.projectTruthPersistencePolicy,
     truthInput.referenceDocuments,
     truthInput.scheduleItems,
     truthInput.updates,

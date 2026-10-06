@@ -446,6 +446,41 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   });
 }
 
+/**
+ * The field updates as the saved Project Truth should take them (R4, the
+ * owner's open item: "Project Truth keeps only updates whose project name
+ * matches exactly, so older updates filed under a building name are left
+ * out"). An update started from a task on an older schedule names the
+ * building ("Building 2321") as its project. Project Truth kept an update
+ * only when the name it was filed under was the project's, so those dropped
+ * out of the home and workspace summaries, though the reports had them.
+ *
+ * An update is this project's, whatever name it was filed under, when what
+ * identifies it says so: the parent project kept on it, or its task being
+ * one of this project's saved tasks (shown or hidden). It is handed on under
+ * the project's name, as the reports hand theirs. An update with neither is
+ * left as it is: a building name alone is not an identity.
+ */
+export function daveProjectTruthUpdatesFor(input: {
+  projectName: string;
+  updates: readonly ProjectUpdate[];
+  scheduleItems: readonly ScheduleItem[];
+  knownScheduleItems?: readonly ScheduleItem[];
+}): ProjectUpdate[] {
+  const projectKey = normalizedKey(input.projectName);
+  if (!projectKey) return [...input.updates];
+  const taskIds = new Set([...input.scheduleItems, ...(input.knownScheduleItems ?? [])]
+    .filter(item => scheduleMatchesProject(projectKey, item))
+    .map(item => clean(item.id))
+    .filter((id): id is string => Boolean(id)));
+  return input.updates.map(update => {
+    if (projectMatches(projectKey, update.projectName)) return update;
+    const taskId = clean(update.scheduleItemId || '');
+    const itsOwn = projectMatches(projectKey, update.scheduleProjectName) || Boolean(taskId && taskIds.has(taskId));
+    return itsOwn ? { ...update, projectName: input.projectName } : update;
+  });
+}
+
 /** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
 const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
 
