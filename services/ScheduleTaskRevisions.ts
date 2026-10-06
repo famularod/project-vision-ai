@@ -1,4 +1,4 @@
-import type { ReferenceDocument, ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleDependency, ScheduleItem } from '../types';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
@@ -616,5 +616,214 @@ function scheduleLeftTaskOut(
       const named = projectRowsOf(batch, project);
       return Boolean(named) && !(named!.get(goneName) || []).some(row => sameRemovedTask(row, gone));
     });
+  };
+}
+
+/**
+ * Owner answer Q29 (David, 2 Oct 2026): "YES, he links tasks by hand. Hand
+ * links follow a task to its new row when a new master moves it."
+ *
+ * A link is a task's predecessor (ScheduleItem.dependencies, "Framing after
+ * Excavate"), made by hand on the web's Schedule Builder; no import brings
+ * links today (dependency extraction is off), so every saved link is
+ * David's. A link stayed on the exact row it was made on (whole-app audit A5
+ * pass 15, A6 pass 15): when a new master moved the task onto a new row the
+ * link was gone from it, a link to a moved task pointed at its old hidden
+ * row (the web's Schedule showed "Missing"), and Delete PDF + Items moved a
+ * link only to a row shown at that moment.
+ *
+ * Now a link follows the task. The rows of one task are known by the ids
+ * they answer to (revisedFromTaskIds, ScheduleTaskRevisions) or by the
+ * pairing the change itself made. When the row shown for a task changes (a
+ * master approved, Set Active, Make Current, Delete PDF + Items), the row
+ * now shown takes the links of the row that was shown (the one David saw and
+ * edited), and every link to a row no longer shown points at the row shown
+ * for that task. Of two rows of one task, the one whose links David changed
+ * later holds them (dependenciesUpdatedAt); with neither changed since, the
+ * row that has links. A link to a task no row of which is shown is kept
+ * where it points (it comes back with its row), and one to a deleted row
+ * nothing answers to is dropped, as before.
+ */
+export function scheduleTaskLinksOf(item: Pick<ScheduleItem, 'dependencies'>): ScheduleDependency[] {
+  return Array.isArray(item.dependencies) ? item.dependencies.filter(link => Boolean(link) && Boolean(idOf(link.predecessorItemId))) : [];
+}
+
+/** The row whose links stand, of the row shown now and the row of the same task shown before (Q29). */
+export function scheduleTaskLinksHeldBy<T extends Pick<ScheduleItem, 'dependencies' | 'dependenciesUpdatedAt'>>(shown: T, before: T): T {
+  const at = (item: T) => {
+    const parsed = Date.parse(item.dependenciesUpdatedAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  if (at(shown) || at(before)) return at(before) >= at(shown) ? before : shown;
+  return scheduleTaskLinksOf(before).length > 0 ? before : shown;
+}
+
+/** The links of `from` on `to`, with when David changed them; null when they are the same. */
+export function scheduleTaskWithLinksOf<T extends ScheduleItem>(to: T, from: Pick<ScheduleItem, 'dependencies' | 'dependenciesUpdatedAt'>): T | null {
+  const links = scheduleTaskLinksOf(from).filter(link => idOf(link.predecessorItemId) !== idOf(to.id));
+  const same = sameLinks(scheduleTaskLinksOf(to), links) && (to.dependenciesUpdatedAt ?? null) === (from.dependenciesUpdatedAt ?? null);
+  if (same) return null;
+  const { dependenciesUpdatedAt: _stamp, ...rest } = to;
+  return {
+    ...(rest as T),
+    ...(links.length > 0 || Array.isArray(to.dependencies) ? { dependencies: links } : {}),
+    ...(from.dependenciesUpdatedAt ? { dependenciesUpdatedAt: from.dependenciesUpdatedAt } : {}),
+  };
+}
+
+function sameLinks(left: readonly ScheduleDependency[], right: readonly ScheduleDependency[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * A task's links pointed at the rows `pointTo` names for the ids they point
+ * at; a link that would point at the task itself, or repeat one it has, is
+ * dropped, and one `pointTo` drops (null) too. The same task when nothing
+ * changes.
+ */
+export function scheduleTaskLinksPointedAt<T extends ScheduleItem>(item: T, pointTo: (predecessorId: string) => string | null | undefined): T {
+  const links = scheduleTaskLinksOf(item);
+  if (links.length === 0) return item;
+  const own = idOf(item.id);
+  const targets = links.map(link => {
+    const id = idOf(link.predecessorItemId);
+    const target = pointTo(id);
+    return { link, id, next: target === undefined ? id : target === null ? '' : idOf(target) };
+  });
+  // A link the task keeps as it is stands over one moved onto the same task (never doubled, as before).
+  const standing = new Set(targets.filter(entry => entry.next === entry.id).map(entry => entry.id));
+  const kept: ScheduleDependency[] = [];
+  const seen = new Set<string>();
+  let changed = links.length !== (Array.isArray(item.dependencies) ? item.dependencies.length : 0);
+  targets.forEach(({ link, id, next }) => {
+    if (!next || next === own || seen.has(next) || (next !== id && standing.has(next))) {
+      changed = true;
+      return;
+    }
+    seen.add(next);
+    if (next !== id) changed = true;
+    kept.push(next === id ? link : { ...link, predecessorItemId: next });
+  });
+  return changed ? { ...item, dependencies: kept } : item;
+}
+
+/**
+ * The tasks whose links change when the tasks shown change (owner answer
+ * Q29, above): each task shown now that was not takes the links of the task
+ * shown before for it (its row by the ids rows answer to, else `paired`, the
+ * change's own pairing), and every link points at the row shown for its
+ * task. `removedIds`: rows the change deleted; a link to one nothing answers
+ * to is dropped, on hidden rows too. Returns the changed tasks (from `after`,
+ * or from `known` for hidden rows).
+ */
+export function scheduleTaskLinksFollowingShownTasks({
+  before,
+  after,
+  known = [],
+  paired,
+  removedIds = [],
+  now,
+}: Readonly<{
+  /** The tasks shown before the change. */
+  before: readonly ScheduleItem[];
+  /** The tasks shown after, with the change's other edits. */
+  after: readonly ScheduleItem[];
+  /** Every saved task after the change, hidden ones included. */
+  known?: readonly ScheduleItem[];
+  /** The change's own pairing of a task shown now with the task shown before for it. */
+  paired?: (shown: ScheduleItem) => ScheduleItem | null | undefined;
+  removedIds?: readonly string[];
+  /** When the change was made: each changed task's updatedAt. */
+  now?: string;
+}>): ScheduleItem[] {
+  const removed = new Set(removedIds.map(idOf).filter(Boolean));
+  const linked = (items: readonly ScheduleItem[]) => items.some(item => scheduleTaskLinksOf(item).length > 0);
+  if (!linked(before) && !linked(after) && (removed.size === 0 || !linked(known))) return [];
+  const beforeIds = new Set(before.map(item => idOf(item.id)));
+  const afterIds = new Set(after.map(item => idOf(item.id)));
+  const nowHidden = before.filter(item => !afterIds.has(idOf(item.id)));
+  const hiddenById = new Map(nowHidden.map(item => [idOf(item.id), item]));
+  const hiddenByEarlierId = new Map<string, ScheduleItem[]>();
+  nowHidden.forEach(hidden => scheduleTaskEarlierIds(hidden).forEach(id => hiddenByEarlierId.set(id, [...(hiddenByEarlierId.get(id) || []), hidden])));
+  const changed = new Map<string, ScheduleItem>();
+  // The task shown before for each task shown now: by the ids rows answer to, in its project, else the change's pairing.
+  const shownFor = new Map<string, string>();
+  const taken = new Set<string>();
+  after.filter(item => !beforeIds.has(idOf(item.id))).forEach(shown => {
+    const project = scheduleTaskProjectKey(shown);
+    const byChain = [...new Set([
+      ...[idOf(shown.id), ...scheduleTaskEarlierIds(shown)].map(id => hiddenById.get(id)),
+      ...(hiddenByEarlierId.get(idOf(shown.id)) || []),
+    ])].filter((hidden): hidden is ScheduleItem => Boolean(hidden) && scheduleTaskProjectKey(hidden!) === project);
+    const previous = byChain.length === 1 ? byChain[0] : byChain.length === 0 ? paired?.(shown) ?? undefined : undefined;
+    if (!previous || !hiddenById.has(idOf(previous.id)) || taken.has(idOf(previous.id))) return;
+    taken.add(idOf(previous.id));
+    shownFor.set(idOf(shown.id), idOf(previous.id));
+    const holder = scheduleTaskLinksHeldBy(shown, previous);
+    const moved = holder === previous ? scheduleTaskWithLinksOf(shown, previous) : null;
+    if (moved) changed.set(idOf(shown.id), moved);
+  });
+  const afterNow = after.map(item => changed.get(idOf(item.id)) || item);
+  const hiddenToShown = new Map([...shownFor.entries()].map(([shown, hidden]) => [hidden, shown]));
+  const answeringShown = scheduleTaskLinks(afterNow, [...known, ...before]);
+  const answeringSaved = scheduleTaskLinks(known, known);
+  const pointTo = (task: ScheduleItem) => (id: string): string | null | undefined => {
+    if (afterIds.has(id)) return undefined;
+    const shown = hiddenToShown.get(id);
+    if (shown) return shown;
+    const link = answeringShown({ scheduleItemId: id, projectName: task.projectName, scheduleProjectName: task.scheduleProjectName });
+    if (link && link.basis !== 'stored_task_name') return link.item.id;
+    if (!removed.has(id)) return undefined;
+    // A deleted row: the saved row that answers to it, hidden or not, else none (dropped, as before).
+    const saved = answeringSaved({ scheduleItemId: id });
+    return saved && saved.basis !== 'stored_task_name' && !removed.has(idOf(saved.item.id)) ? saved.item.id : null;
+  };
+  afterNow.forEach(item => {
+    const pointed = scheduleTaskLinksPointedAt(item, pointTo(item));
+    if (pointed !== item || changed.has(idOf(item.id))) changed.set(idOf(item.id), pointed);
+  });
+  // Review P5-2: the list already shows a link at the row shown for its task, while the saved row may still name a row
+  // a master hid (the device that made the link, or the one that approved the master, had not heard of the other).
+  // Such a link is saved here as shown, with every other link this change moves: left as saved, a link to a row this
+  // change deletes was dropped afterwards.
+  const savedById = new Map(known.map(item => [idOf(item.id), item] as const));
+  afterNow.forEach(item => {
+    const saved = savedById.get(idOf(item.id));
+    if (saved && !changed.has(idOf(item.id)) && !sameLinks(scheduleTaskLinksOf(saved), scheduleTaskLinksOf(item))) changed.set(idOf(item.id), item);
+  });
+  if (removed.size > 0) {
+    known.filter(item => !afterIds.has(idOf(item.id)) && !removed.has(idOf(item.id)) &&
+      scheduleTaskLinksOf(item).some(link => removed.has(idOf(link.predecessorItemId))))
+      .forEach(item => {
+        const pointed = scheduleTaskLinksPointedAt(item, id => (removed.has(id) ? pointTo(item)(id) : undefined));
+        if (pointed !== item) changed.set(idOf(item.id), pointed);
+      });
+  }
+  // Only the tasks whose links (or who holds them) end up different: a row whose links moved away and back is not saved.
+  const original = new Map([...after, ...known].map(item => [idOf(item.id), item]));
+  return [...changed.values()]
+    .filter(item => {
+      const was = original.get(idOf(item.id));
+      return !was || !sameLinks(scheduleTaskLinksOf(was), scheduleTaskLinksOf(item)) ||
+        (was.dependenciesUpdatedAt ?? null) !== (item.dependenciesUpdatedAt ?? null);
+    })
+    .map(item => (now ? { ...item, updatedAt: now } : item));
+}
+
+/**
+ * The task shown that a link's predecessor id names (owner answer Q29): the
+ * task itself, or the row shown for it by the ids rows answer to; null when
+ * none is shown. Links saved before 2 Oct 2026 can still point at a row a
+ * master hid; the web's Schedule reads them as the row shown, not "Missing",
+ * until the next change moves them.
+ */
+export function scheduleTaskLinkTargets(
+  shown: readonly ScheduleItem[],
+  known: readonly ScheduleItem[] = [],
+): (predecessorId: string) => ScheduleItem | null {
+  const answering = scheduleTaskLinks(shown, known);
+  return predecessorId => {
+    const link = answering({ scheduleItemId: predecessorId });
+    return link && link.basis !== 'stored_task_name' ? link.item : null;
   };
 }

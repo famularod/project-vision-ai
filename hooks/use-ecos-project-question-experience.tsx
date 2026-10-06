@@ -4,8 +4,10 @@ import { DAVETypedCaptureSheet } from '../components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from '../components/DAVEVoiceCaptureSheet';
 import { ECOSProjectAnswerSheet } from '../components/ECOSProjectAnswerSheet';
 import type { DAVEAskEvidence } from '../services/DAVEAsk';
+import { createECOSAskWait, isECOSAskStopped } from '../services/ECOSAskWait';
 import {
   askECOSProjectQuestion,
+  ecosAskCanRetry,
   ecosClosedProjectNames,
   type ECOSProjectQuestionAnswer,
 } from '../services/ECOSProjectQuestion';
@@ -21,6 +23,12 @@ type QuestionState = Readonly<{
   answer: ECOSProjectQuestionAnswer | null;
   loading: boolean;
   error: string | null;
+  /** Whether Try Again is offered: the same question could end differently. */
+  canRetry: boolean;
+  /** The server was already working on this question; the wait is for that answer (review pass 2 A1). */
+  earlierAskStillRunning: boolean;
+  /** When the server took a repeat as a run of its own: the usual steps count from then (review pass 3 A1w). */
+  workingSince: number | null;
 }>;
 
 function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): string | null {
@@ -62,11 +70,15 @@ export function useECOSProjectQuestionExperience({
   // question of the project (audit A9 pass 2 F2).
   const [conversationEpoch, setConversationEpoch] = useState(0);
   const requestGeneration = useRef(0);
+  // Bounds the wait, stops it, and keeps a stopped question's request id (independent review R10).
+  const [askWait] = useState(createECOSAskWait);
   const dismissResult = useCallback(() => {
     requestGeneration.current += 1;
+    // The request is stopped too, not only its answer ignored.
+    askWait.cancel();
     setResult(null);
-  }, []);
-  useEffect(() => () => { requestGeneration.current += 1; }, []);
+  }, [askWait]);
+  useEffect(() => () => { requestGeneration.current += 1; askWait.reset(); }, [askWait]);
   const projectId = useMemo(() => projectIdFor(projectRecords, projectName), [projectName, projectRecords]);
   // The unarchived projects the user can pick, so Ask ECOS refuses a number only
   // when it names one of them (owner answer Q20; audit A9 pass 1 #2).
@@ -101,19 +113,26 @@ export function useECOSProjectQuestionExperience({
     setTypedOpen(false);
     const generation = ++requestGeneration.current;
     const turn = conversation.begin();
-    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null });
+    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null, canRetry: false, earlierAskStillRunning: false, workingSince: null });
     try {
-      const answer = await askECOSProjectQuestion({
-        client: getSupabaseClient(),
-        projectId,
-        projectName: selectedProjectName,
-        question: cleanQuestion,
-        knownProjectNames,
-        closedProjectNames,
-        // The answer sheet has no project picker (audit A9 pass 3 L3).
-        refusalWording: 'phone',
-        ...turn.request,
-      });
+      const answer = await askWait.run(
+        [projectId, cleanQuestion, turn.request.conversationId, turn.request.priorTurnId],
+        control => askECOSProjectQuestion({
+          client: getSupabaseClient(),
+          projectId,
+          projectName: selectedProjectName,
+          question: cleanQuestion,
+          knownProjectNames,
+          closedProjectNames,
+          // The answer sheet has no project picker (audit A9 pass 3 L3).
+          refusalWording: 'phone',
+          ...turn.request,
+          ...control,
+        }),
+        (earlierAskStillRunning, askedAt) => setResult(current => current?.requestGeneration === generation
+          ? { ...current, earlierAskStillRunning, workingSince: earlierAskStillRunning ? null : askedAt }
+          : current),
+      );
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
       turn.accept(answer.conversation);
       setResult(current => current?.requestGeneration === generation
@@ -121,12 +140,14 @@ export function useECOSProjectQuestionExperience({
         : current);
     } catch (error) {
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
-      turn.accept(null);
+      // Stopped or timed out: nothing came back, so the conversation stands
+      // and Try Again repeats this same request.
+      if (!isECOSAskStopped(error)) turn.accept(null);
       setResult(current => current?.requestGeneration === generation
-        ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
+        ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.', canRetry: ecosAskCanRetry(error) }
         : current);
     }
-  }, [projectId, projectName, conversation, knownProjectNames, closedProjectNames]);
+  }, [askWait, projectId, projectName, conversation, knownProjectNames, closedProjectNames]);
 
   // Runs after the reset effect above, once the named project's conversation exists.
   useEffect(() => {
@@ -170,6 +191,7 @@ export function useECOSProjectQuestionExperience({
       guidance="Ask one project question. ECOS will review current tasks, field updates, and indexed documents, then show the exact proof it used."
       continueLabel="Ask ECOS"
       transcriptionPurpose="question"
+      keepSlot="ask"
       showWalkContext={false}
       onMemoryReady={answer => { void ask(answer.transcript); }}
       onProjectChange={name => { dismissResult(); setProjectName(name); }}
@@ -201,6 +223,8 @@ export function useECOSProjectQuestionExperience({
       question={result?.question || ''}
       answer={result?.answer || null}
       loading={result?.loading || false}
+      earlierAskStillRunning={result?.earlierAskStillRunning || false}
+      workingSince={result?.workingSince ?? null}
       error={result?.error || null}
       onOpenEvidence={evidence => {
         const answerProject = result?.projectName || projectName;
@@ -217,6 +241,8 @@ export function useECOSProjectQuestionExperience({
         dismissResult();
         setVoiceOpen(true);
       }}
+      onStop={() => askWait.cancel()}
+      onRetry={result?.canRetry ? () => { void ask(result.question); } : undefined}
       onClose={dismissResult}
     />
   </>;

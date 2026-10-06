@@ -52,6 +52,8 @@ jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: () => mockOk([]),
   upsertDAVESyncTombstones: (tombstones: unknown[]) => mockOk(tombstones),
   listScheduleItems: () => mockOk([]),
+  // Independent review R02: a queued task the list does not hold is read by its id before it is sent as new.
+  getScheduleItem: () => mockOk(null),
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: () => mockOk([]),
   listDAVEStorageCleanupIntents: () => mockOk([]),
@@ -220,11 +222,12 @@ describe('Schedule Builder: a new item takes its project’s own cloud id (A12 p
     const result = await phoneUploads(created);
     expect(result.errors).toEqual([]);
     expect([result.uploaded, result.queued]).toEqual([1, 0]);
+    // Written only if the cloud still has no row for it (independent review R02).
     expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({
       id: created.id,
       projectId: mockMainStId,
       projectName: '2375 Main St',
-    }));
+    }), { onlyIfAbsent: true });
   });
 
   test('a project that is not an open cloud project: nothing is saved, and he is told why', async () => {

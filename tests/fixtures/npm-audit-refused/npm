@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stand-in for `npm audit --json` when the registry refuses the audit
+# (independent review R12). npm prints this error object and exits 1.
+echo '{"error":{"code":"ENOAUDIT","summary":"Your configured registry does not support audit requests.","detail":""}}'
+exit 1

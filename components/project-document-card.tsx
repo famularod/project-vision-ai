@@ -10,6 +10,8 @@ import {
 } from '../services/ProjectDocumentClassification';
 import { colors, styles } from './app-shell-theme';
 import { MobileDocumentECOSStatus } from './mobile-document-ecos-status';
+import { useNativeWorkspaceSignInPending } from './native-workspace-owner';
+import { PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN, projectDocumentWaitsForSignIn } from '../services/ProjectDocumentUploadRetry';
 
 export type ProjectDocumentCardDocument = {
   id: string;
@@ -63,7 +65,9 @@ function formatSavedTime(value: string | null | undefined) {
   });
 }
 
-function projectDocumentStatusDetail(document: ProjectDocumentCardDocument) {
+function projectDocumentStatusDetail(document: ProjectDocumentCardDocument, waitsForSignIn: boolean) {
+  // Everyday item 5: waiting for "offline, sign-in pending" to finish, not failed.
+  if (waitsForSignIn) return PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN;
   if (document.status === 'failed') return 'Document upload failed · Retry';
   if (document.status === 'uploading') {
     const percent = typeof document.uploadProgress === 'number'
@@ -109,6 +113,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
   onDelete: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const waitsForSignIn = projectDocumentWaitsForSignIn(document as never, useNativeWorkspaceSignInPending());
   const isCurrentSchedule = document.category === 'Schedule' && (scheduleCurrent ?? Boolean(document.isCurrent));
   const selectedUpdate = updates.find(update => update.id === document.updateId);
   const selectedArea = projectAreas.find(area => area.id === document.areaId);
@@ -135,7 +140,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
         <View style={styles.rowMain}>
           <Text style={styles.photoTitle}>{document.name}</Text>
           <Text style={styles.rowSub}>
-            {document.category} · {projectDocumentStatusDetail(document)}
+            {document.category} · {projectDocumentStatusDetail(document, waitsForSignIn)}
           </Text>
           {isCurrentSchedule ? (
             <View style={[styles.statusPill, styles.documentCurrentBadge]}>
@@ -180,7 +185,7 @@ export function ProjectDocumentCard<TDocument extends ProjectDocumentCardDocumen
           <Ionicons name="cloud-download-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Download & Open</Text>
         </TouchableOpacity>
-        {(document.status === 'failed' || document.status === 'local') ? (
+        {(document.status === 'failed' || document.status === 'local') && !waitsForSignIn ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry Upload</Text>

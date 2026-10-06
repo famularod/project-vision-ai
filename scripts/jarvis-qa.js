@@ -99,7 +99,9 @@ const buildUpdate = liveAppSlice('function BuildUpdateScreen', 'function ReadOnl
 const reportsScreen = readFile('screens/ReportsScreen.tsx');
 const daveReportIntelligence = readFile('services/DAVEReportIntelligence.ts');
 const daveReportSnapshot = readFile('services/DAVEReportSnapshot.ts');
-const daveReportSnapshotRepository = readFile('services/DAVEReportSnapshotRepository.ts');
+// Owner answer 2 Oct (web sends count): the phone's repository gives its device to the shared store, where the
+// rules now live (the web desktop uses the same ones); both are read, pin updated deliberately.
+const daveReportSnapshotRepository = readFile('services/DAVEReportSnapshotRepository.ts') + readFile('services/DAVEReportSnapshotStore.ts');
 const projectOverviewScreen = liveAppSlice('function ProjectWorkspaceScreen', 'function ProjectDocumentsScreen');
 const liveAuthorityProvider = readFile('providers/PIELiveAuthorityProvider.tsx');
 const daveProjectTruth = readFile('services/DAVEProjectTruth.ts');
@@ -7605,7 +7607,8 @@ if (
     'Project Status Details',
     'Current Task Position',
     'Source-backed task and schedule facts',
-    'This approval establishes the baseline for the next reporting period.',
+    // Review N1 (3 Oct 2026): was 'This approval establishes...'; the send establishes it, so the line says so.
+    'Sending this report establishes the baseline for the next reporting period.',
   ]) &&
   hasAll(daveReportIntelligence, [
     'DAVE_REPORT_INTELLIGENCE_VERSION',
@@ -7618,7 +7621,8 @@ if (
     'DAVEReportControlMetrics',
     'controls',
     'EXECUTIVE STATUS',
-    'SINCE THE LAST APPROVED REPORT',
+    // Owner answer 2 Oct (report heading): the heading is "SINCE THE LAST REPORT"; pin updated deliberately.
+    'SINCE THE LAST REPORT',
     'MANAGEMENT ACTIONS',
     'CURRENT STATUS',
     'ACTION PLAN',
@@ -7651,14 +7655,14 @@ if (
 ) {
   pass(
     'PIE Reporter narrative quality',
-    'Reporter builds construction understanding, compares against the last approved report, presents current project position and accountable management actions, and omits empty or unknown-state sections.',
+    'Reporter builds construction understanding, compares against the last report sent, presents current project position and accountable management actions, and omits empty or unknown-state sections.',
     'services/PIEReporter.ts, services/DAVEReportIntelligence.ts, services/DAVEReportSnapshot.ts, services/DAVEReportSnapshotRepository.ts, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'PIE Reporter narrative quality',
     'Reporter 2.0 quality gates were not satisfied.',
-    'Keep review rigor internal while publishing verified current conditions, movement since the last approved report, accountable actions, milestones, controls, and non-empty report sections.',
+    'Keep review rigor internal while publishing verified current conditions, movement since the last report sent, accountable actions, milestones, controls, and non-empty report sections.',
     'services/PIEReporter.ts, services/DAVEReportIntelligence.ts, services/DAVEReportSnapshot.ts, services/DAVEReportSnapshotRepository.ts, screens/ReportsScreen.tsx',
   );
 }

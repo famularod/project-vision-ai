@@ -776,6 +776,27 @@ export type ScheduleLookaheadOverlay = {
    * none (at or below David's own, Q22), a newer word than an older master's
    * percent (whole-app audit A5 pass 21 R3); missing otherwise, and on an
    * entry noted before.
+   * dateByHand: the one date David changed by hand, alone, while the task was
+   * on this lookahead's dates, and when (review N1 M1, 3 Oct 2026). Changed
+   * after a newer lookahead replaced this one, he was shown the master's
+   * dates: his date stands and the other shows the master's. Changed before,
+   * it is a hand move and the task shows as saved. Missing otherwise.
+   * datesLeftAt: when a save moved the task from this lookahead's dates to
+   * the master's dates the note keeps (review N2 F2, 5 Oct 2026: the phone's
+   * "Delete PDF Only" on a replaced lookahead saves the dates shown; both
+   * dates set so by hand read the same). The task has left the lookaheads'
+   * dates: deleting a later lookahead gives the master's back, never this
+   * one's or an earlier one's. Missing otherwise.
+   * importedAt: when this lookahead's row was imported (review N2 F3, 5 Oct
+   * 2026), noted when it restates the task. Once this lookahead's file is
+   * deleted alone it stands for the file: a lookahead for the task's project
+   * imported after it is newer and replaces it (owner answer Q25), as it does
+   * while the file is saved. Missing on a note made before that review.
+   * datesKeptAt: when the task was last known to be on this lookahead's
+   * dates with its file gone (review N2 F3): noted by the next lookahead to
+   * restate the task, when it finds the task still on these dates and this
+   * lookahead's file deleted, so that deleting that next lookahead goes back
+   * to them. Missing otherwise.
    */
   lookaheads: {
     batchId: string;
@@ -784,6 +805,10 @@ export type ScheduleLookaheadOverlay = {
     percentComplete?: number | null;
     datesReplacedByMaster?: boolean | string;
     percentStated?: true;
+    dateByHand?: { field: 'startDate' | 'finishDate'; at: string };
+    importedAt?: string;
+    datesLeftAt?: string;
+    datesKeptAt?: string;
   }[];
 };
 
@@ -809,6 +834,14 @@ export type ScheduleItem = {
   parentItemId?: string | null;
   sortOrder?: number | null;
   dependencies?: ScheduleDependency[];
+  /**
+   * When David last changed this task's links by hand (owner answer Q29, 2
+   * Oct 2026): the links follow the task from row to row as masters move it
+   * and as Set Active / Make Current switch rows, and of two rows of one task
+   * the one changed later holds them. Kept in the task's JSON record; missing
+   * on a task whose links were never changed since.
+   */
+  dependenciesUpdatedAt?: string | null;
   isSummary?: boolean;
   isMilestone?: boolean;
   baselineStartDate?: string | null;
@@ -913,6 +946,15 @@ export type ScheduleItem = {
    */
   lookaheadOverlay?: ScheduleLookaheadOverlay | null;
   /**
+   * Only on a copy of the task as shown, never saved (owner answer Q25, 2 Oct
+   * 2026): the task is shown on the master's dates because the lookahead
+   * that moved it was replaced; these are the dates saved on the task and
+   * those shown. A change written from the shown copy that leaves the dates
+   * as shown keeps the saved ones (scheduleItemAsSaved), so the newest
+   * lookahead's deletion can show the one before it again.
+   */
+  savedLookaheadDates?: Readonly<{ startDate: string; finishDate: string; shownStartDate: string; shownFinishDate: string }> | null;
+  /**
    * The ids this task had before new masters moved its dates, oldest first
    * (whole-app audit A10 pass 5 M1, 30 Sep 2026): a new master saves a moved
    * task as a new row with a new id, and a field update linked to an earlier
@@ -920,6 +962,29 @@ export type ScheduleItem = {
    * record, as lookaheadOverlay is. Missing on a row saved before.
    */
   revisedFromTaskIds?: string[] | null;
+  /**
+   * Review N3 R3 (5 Oct 2026): the owner, contractor, note, next step and
+   * milestone this row took
+   * from the task it answers to (taskId) when a master moved the task here:
+   * each as the approving device's copy of that task had it then (owner
+   * answer Q28's "copy it started from", for a row). A field that still reads
+   * so was not typed on this row; when the row first reaches the cloud, the
+   * cloud's row of that task says what he did to the field last
+   * (SyncService). Only fields taken from the task: none the file stated.
+   * Kept in the task's JSON record. Missing on a row saved before.
+   */
+  textFromTask?: {
+    taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string;
+    /** Review P5-2: the hand links the row was made with (taken from that task's row, none included), when its file stated none. */
+    dependencies?: ScheduleDependency[];
+  } | null;
+  /**
+   * The saved tasks David said at import review this row is not (owner
+   * answer Q30, 2 Oct 2026): a same-named row he called a new task. Set
+   * Active and Make Current never pair it with them, so his answer holds when
+   * he switches masters. Kept in the task's JSON record; missing otherwise.
+   */
+  notRevisionOfTaskIds?: string[] | null;
   /**
    * A task entered by hand: the rows of schedules uploaded on the web, not
    * current yet, that restate it (whole-app audit A5 pass 18 L3, 1 Oct
@@ -937,6 +1002,13 @@ export type ScheduleItem = {
   sourceWbsCode?: string | null;
   /** Immutable one-based source row used when activity/WBS values are not unique. */
   sourceRowNumber?: number | null;
+  /**
+   * Microsoft Project's Unique ID for the row, when the file has the column
+   * (owner answer Q30, 2 Oct 2026): unlike the ID, row and WBS it survives a
+   * revision, so same-named tasks pair by it without asking. Missing when the
+   * file has none.
+   */
+  sourceUniqueId?: string | null;
   completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
   /** Last user-authored task change. Imported legacy rows may omit it. */

@@ -2,13 +2,23 @@ import type { ReferenceDocument, ScheduleItem, ScheduleRowAwaitingCurrent } from
 import { scheduleImportItemIdentity } from './PIEScheduleImportBatch';
 import {
   currentScheduleDocumentsByProject,
+  scheduleItemAsSaved,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
+  scheduleDocumentAddsToMaster,
 } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
-import { scheduleTaskRevisedFrom } from './ScheduleTaskRevisions';
+import {
+  scheduleTaskEarlierIds,
+  scheduleTaskLinksFollowingShownTasks,
+  scheduleTaskLinkTargets,
+  scheduleTaskLinksOf,
+  scheduleTaskLinksPointedAt,
+  scheduleTaskRevisedFrom,
+  scheduleTaskWithLinksOf,
+} from './ScheduleTaskRevisions';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
@@ -25,6 +35,8 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
+import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
+import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
  * How an approved schedule import joins the tasks already saved.
@@ -137,6 +149,22 @@ import {
  * paired none. Twins now pair by one rule per schedule role
  * (pairSameNamedTasks). A schedule uploaded on the web restates a task
  * entered by hand only when it is made current (scheduleRowsAwaitingCurrent).
+ *
+ * Review N2 P1 (5 Oct 2026, older: the same on Build 229): the row a master
+ * moves a task to filled its blank owner, contractor and notes from the
+ * task only when David had also entered a percent on it (the fill above, A5
+ * pass 3 F3, sat in the branch for his own progress). An owner he assigned
+ * or a note he typed on a task he had not started stayed on the hidden old
+ * row when next week's master slipped the task, and the report said "Framing
+ * owner changed from Mike to unassigned." Every row a master moves a task to
+ * now fills them, by the same rule: the file's value wins, the task's fills
+ * a blank (withBlanksFilledFrom), on the phone's approval and the web's
+ * upload alike. A lookahead restates the task in place, so nothing moves.
+ * Set Active and Make Current fill the row they show from the row they hide
+ * when that row was changed later (scheduleTextCarriedToShownTask). What
+ * earlier imports left behind goes with the task the next time a master
+ * moves it, where it can be told from a blank David left
+ * (textStrandedOnEarlierRows).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -212,6 +240,138 @@ function withManagersPercentUnderFile(row: ScheduleItem, paired: ScheduleItem): 
   // With when David judged it (A6 pass 24 L1).
   const judgedAt = paired.managersPercentUnderFileJudgedAt;
   return { ...row, managersPercentUnderFile: under, ...(judgedAt !== undefined ? { managersPercentUnderFileJudgedAt: judgedAt } : {}) };
+}
+
+/** The fields David types on a task that a schedule file may also state (next step and milestone: review N3 C). */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
+
+/**
+ * Review N3 C (5 Oct 2026, Medium; older, already in Build 229): what else
+ * David sets on a task stayed on the hidden old row when a master moved the
+ * task. He set Paint's approval to Pending, or a schedule impact of 5 days;
+ * a new master listed Paint on other dates; the new row started with none,
+ * and the next report said "Paint approval changed from Pending to Not
+ * Required." or "Survey schedule impact changed from 1 day to not set.",
+ * though nobody had changed either. A row with the task's project controls
+ * (approval status, schedule impact, assignee, checklist and the rest). No
+ * schedule file states them, so a row from a file takes the task's as they
+ * are; between two rows that both hold his (Set Active, Make Current), the
+ * later entry of each field stands, as two copies of one task's are merged.
+ * The same row when the task has none, or the row already holds them.
+ */
+function withControlsOf(row: ScheduleItem, task: Pick<ScheduleItem, 'projectControls'>, fromFile: boolean): ScheduleItem {
+  if (!task.projectControls) return row;
+  const controls = fromFile || !row.projectControls ? task.projectControls : mergeProjectControlsRevisions(row.projectControls, task.projectControls);
+  return JSON.stringify(controls) === JSON.stringify(row.projectControls ?? null) ? row : { ...row, projectControls: controls };
+}
+
+/**
+ * A row with its blank owner, contractor and notes filled from the task it
+ * is a row of: the file's value wins, the task's fills a blank (A5 pass 3
+ * F3; for every moved row since review N2 P1). The same row when nothing is
+ * filled.
+ */
+function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>): T {
+  const filled = TYPED_TEXT_FIELDS.filter(field => !key(row[field]) && key(task[field]));
+  return filled.length === 0 ? row : { ...row, ...Object.fromEntries(filled.map(field => [field, task[field]])) };
+}
+
+/**
+ * Review N3 R3 and review P4 F1: the new row a master saves for a task takes
+ * his owner, contractor, note, next step and milestone from the copy of the
+ * task the approving device holds. That copy may be behind (he changed or
+ * cleared one on another device that this one has not heard), and the
+ * approval may have no signal, so it cannot ask the cloud. The new row says
+ * which row it replaces and, for every one of those fields the file left
+ * unset, what that row had, a blank included (textFromTask). Everything that
+ * later weighs the two rows reads it as the copy the new row started from
+ * (ScheduleItemEditBase, scheduleItemAgainstItsTask).
+ *
+ * What the row had itself: text read back for it from a row before it
+ * (review N2 P1, second part) is not what that row had, so on the new row it
+ * reads as set there and is not weighed against that row's blank. A field
+ * the file states has no entry: the file's value is not his to follow.
+ * (At first only the values taken were recorded, and no record was kept when
+ * none was. A master approved with no signal by a device that had heard
+ * nothing of an owner, a note or an approval set elsewhere then had nothing
+ * to weigh its new row against: the reviewer's A, A2, B and X.)
+ */
+function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
+  const unset = TYPED_TEXT_FIELDS.filter(field => !key(row[field]));
+  return { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])) } };
+}
+
+type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
+
+/**
+ * Review N2 P1, second part (5 Oct 2026): the owners, contractors and notes
+ * that imports made before the fix above (Build 229 and earlier) left on
+ * hidden rows. For each task shown, what it is missing that an earlier row
+ * of the same task still holds. A row a master moves the task to takes them
+ * with the task's own (mergeApprovedScheduleImportItems).
+ *
+ * The earlier rows of a task are known only by the ids its row answers to
+ * (revisedFromTaskIds, kept since A10 pass 5 M1): the pairing an import
+ * made, David's answers included. A row saved before that keeps no id, and
+ * a guess by name could put one same-named task's note on another, so such
+ * a row is never read. The row before a row is the one whose own ids are
+ * exactly the rest of its chain: with a row between deleted, or ids added
+ * out of order by a delete, the chain is not followed.
+ *
+ * A blank on the task shown cannot be told from a note David cleared, so
+ * the earlier rows are read only for a task never changed since its import
+ * (no update stamp: every edit of his, on the phone or the web, stamps the
+ * task; a moved row is saved unstamped). The walk back likewise passes only
+ * rows never changed since their import: a blank on a row he edited stands.
+ * Never from a row that is itself shown, nor from one that two tasks shown
+ * answer to (same-named tasks).
+ *
+ * Only for the row an import is saving anyway. Filling a task that stays on
+ * its row was tried here and taken out: each device made that fill at its
+ * own next approval, and the two copies of the same change met in Review
+ * Conflicts as a card with nothing to choose, after which an offline
+ * lookahead's percent on another task was lost (the reviewer's generator,
+ * seed 20137). The sync's own carry does that part, sent as those fields
+ * alone (DAVEScheduleRecovery, typedTextCarriedToRevisedTasks).
+ */
+function textStrandedOnEarlierRows(
+  existing: readonly ScheduleItem[],
+  isCurrent: (item: ScheduleItem) => boolean,
+): Map<string, TypedText> {
+  const stranded = new Map<string, TypedText>();
+  const shown = existing.filter(isCurrent);
+  if (!shown.some(item => scheduleTaskEarlierIds(item).length > 0)) return stranded;
+  const idOf = (item: ScheduleItem) => item.id.trim();
+  const rowById = new Map(existing.map(item => [idOf(item), item] as const));
+  const shownIds = new Set(shown.map(idOf));
+  const answering = new Map<string, number>();
+  shown.forEach(item => scheduleTaskEarlierIds(item).forEach(id => answering.set(id, (answering.get(id) || 0) + 1)));
+  const neverChanged = (row: ScheduleItem) => !key(row.updatedAt);
+  const rowBefore = (row: ScheduleItem): ScheduleItem | undefined => {
+    const chain = scheduleTaskEarlierIds(row);
+    const before = chain.map(id => rowById.get(id)).filter((candidate): candidate is ScheduleItem => {
+      if (!candidate) return false;
+      const own = new Set([idOf(candidate), ...scheduleTaskEarlierIds(candidate)]);
+      return own.size === chain.length && chain.every(id => own.has(id));
+    });
+    return before.length === 1 ? before[0] : undefined;
+  };
+  shown.forEach(task => {
+    if (!neverChanged(task)) return;
+    let blank = TYPED_TEXT_FIELDS.filter(field => !key(task[field]));
+    const found: TypedText = {};
+    let row = task;
+    while (blank.length > 0) {
+      const earlier = rowBefore(row);
+      if (!earlier || shownIds.has(idOf(earlier)) || answering.get(idOf(earlier)) !== 1 || !sameTask(earlier, task)) break;
+      blank.forEach(field => { if (key(earlier[field])) found[field] = earlier[field]; });
+      blank = blank.filter(field => !(field in found));
+      if (!neverChanged(earlier)) break;
+      row = earlier;
+    }
+    if (Object.keys(found).length > 0) stranded.set(task.id, found);
+  });
+  return stranded;
 }
 
 /**
@@ -434,18 +594,56 @@ function uniquelyNearest<T>(candidates: readonly T[], scoreOf: (candidate: T) =>
  * with none (a new row, never David's progress on another task).
  */
 function pairByNearestDays(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem> {
-  const score = (row: ScheduleItem, twin: ScheduleItem): number | null => {
-    const span = spanOf(row);
-    const spans = [spanOf(twin), twin.lookaheadOverlay ? spanOf(masterDays(twin)) : null]
-      .filter((value): value is readonly [number, number] => value !== null);
-    return span && spans.length > 0 ? Math.min(...spans.map(twinSpan => apart(span, twinSpan))) : null;
-  };
   const pairs = new Map<ScheduleItem, ScheduleItem>();
   rows.forEach(row => {
-    const twin = uniquelyNearest(saved, candidate => score(row, candidate));
-    if (twin && uniquelyNearest(rows, candidate => score(candidate, twin)) === row) pairs.set(row, twin);
+    const twin = uniquelyNearest(saved, candidate => daysApart(row, candidate));
+    if (twin && uniquelyNearest(rows, candidate => daysApart(candidate, twin)) === row) pairs.set(row, twin);
   });
   return pairs;
+}
+
+/** How far a lookahead's row is from a saved twin: from the days it shows, or the master's days its note keeps. */
+function daysApart(row: ScheduleItem, twin: ScheduleItem): number | null {
+  const span = spanOf(row);
+  const spans = [spanOf(twin), twin.lookaheadOverlay ? spanOf(masterDays(twin)) : null]
+    .filter((value): value is readonly [number, number] => value !== null);
+  return span && spans.length > 0 ? Math.min(...spans.map(twinSpan => apart(span, twinSpan))) : null;
+}
+
+/**
+ * Review N1 L5 (3 Oct 2026, older; owner answer Q30 says ask): a lookahead's
+ * row as near to one saved twin as to another pairs with neither
+ * (pairByNearestDays) and came in as a new task, unasked; so did the one row
+ * of a master that lists fewer of the name than are saved. Whether the guess
+ * leaves a row new that two of the saved twins it leaves unpaired are equally
+ * nearest to, or leaves a saved twin unpaired that two such rows are equally
+ * nearest to.
+ *
+ * Review N2 G2 (5 Oct 2026, Low, older: the same on Build 229): Pour slabs on
+ * 10/01, 10/15 and 10/29; a lookahead lists the second one week later
+ * (10/22) and the third two days later (10/31). The 10/22 row is as near to
+ * the second as to the third, so it pairs with neither, but the third was
+ * taken by the 10/31 row and no longer counted: no question, and 10/22 came
+ * in as a new task (listed alone, it was asked). A row the guess leaves new
+ * is also tied when two of all the saved twins are equally nearest to it,
+ * whichever rows took them. Only a question more: confirmed as guessed, the
+ * approval does what it did.
+ */
+function tiedBetweenTwins(
+  rows: readonly ScheduleItem[],
+  saved: readonly ScheduleItem[],
+  guess: ReadonlyMap<ScheduleItem, ScheduleItem>,
+): boolean {
+  const paired = new Set(guess.values());
+  const rowsLeft = rows.filter(row => !guess.has(row));
+  const savedLeft = saved.filter(item => !paired.has(item));
+  const tied = <T,>(candidates: readonly T[], scoreOf: (candidate: T) => number | null) => {
+    const scores = candidates.map(scoreOf).filter((score): score is number => score !== null);
+    const lowest = Math.min(...scores);
+    return scores.filter(score => score === lowest).length > 1;
+  };
+  return rowsLeft.some(row => tied(savedLeft, twin => daysApart(row, twin)) || tied(saved, twin => daysApart(row, twin))) ||
+    savedLeft.some(twin => tied(rowsLeft, row => daysApart(row, twin)));
 }
 
 /**
@@ -564,7 +762,27 @@ function pairTaskRevisions(
   isCurrent: (item: ScheduleItem) => boolean,
   lookahead = false,
   inFile = true,
+  /** David's answers at import review: an imported row's id to the saved task's, or null for none (owner answer Q30). */
+  choices?: ReadonlyMap<string, string | null>,
 ): Map<ScheduleItem, ScheduleItem> {
+  const addedByLookahead = statedOnlyByLookaheads(existing);
+  const pairs = new Map<ScheduleItem, ScheduleItem>();
+  revisionGroups(existing, imported, isCurrent, lookahead, inFile)
+    .forEach(group => pairGroup(group, { lookahead, inFile, addedByLookahead }, choices).forEach((item, row) => pairs.set(row, item)));
+  return pairs;
+}
+
+type RevisionGroup = Readonly<{ rows: readonly ScheduleItem[]; saved: readonly ScheduleItem[] }>;
+type TwinRule = Parameters<typeof pairSameNamedTasks>[2];
+
+/** The rows of one task name, project and area, with the saved tasks they may revise (pairTaskRevisions). */
+function revisionGroups(
+  existing: readonly ScheduleItem[],
+  imported: readonly ScheduleItem[],
+  isCurrent: (item: ScheduleItem) => boolean,
+  lookahead: boolean,
+  inFile: boolean,
+): RevisionGroup[] {
   const groups = new Map<string, ScheduleItem[]>();
   imported.forEach(item => {
     // Whole-app audit A6 pass 19 L1 (1 Oct 2026): Set Active back to G showed one Pour slab from F's import
@@ -578,19 +796,285 @@ function pairTaskRevisions(
     const eligible = existing.filter(item => isCurrent(item) || inImport(item, rows[0].importBatchId));
     const strict = eligible.filter(item => sameTask(item, rows[0]));
     const saved = lookahead ? eligible.filter(item => sameTask(item, rows[0], true)) : strict;
+    // Review N1 M2 (3 Oct 2026, caused by ada8ef6): a task only lookaheads listed leaves the list when a newer
+    // lookahead leaves it out (owner answer Q25). Listed again by a later file, on any dates, it is that task again,
+    // with David's note and percent, as it was while every lookahead stayed in effect; only when no task he sees
+    // has the name, and never for the tasks Set Active and Make Current show.
+    if (inFile && saved.length === 0) {
+      const returning = existing.filter(item => item.importedAsLookahead === true && sameTask(item, rows[0], lookahead));
+      const returningStrict = returning.filter(item => sameTask(item, rows[0]));
+      return { rows, saved: returning, vague: returning.length !== returningStrict.length };
+    }
     // A lookahead row matched only loosely pairs with the one task it can be, never with either of two.
     return { rows, saved, vague: saved.length !== strict.length };
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
-  const addedByLookahead = statedOnlyByLookaheads(existing);
-  const pairs = new Map<ScheduleItem, ScheduleItem>();
-  candidates
+  return candidates
     .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
       saved.every(item => groupCount.get(item.id) === 1))
-    .forEach(({ rows, saved }) => pairSameNamedTasks(rows, saved, { lookahead, inFile, addedByLookahead })
-      .forEach((item, row) => pairs.set(row, item)));
-  return pairs;
+    .map(({ rows, saved }) => ({ rows, saved }));
+}
+
+/**
+ * One group's pairs (owner answer Q30, 2 Oct 2026). David's answers at the
+ * import review decide for the rows he answered (scheduleImportPairingQuestions).
+ * Otherwise a row's own identity first: Microsoft Project's Unique ID, for
+ * same-named rows when the file and the saved twins carry it (rows that all
+ * carry it pair only by it), and, for the saved tasks Set Active and Make
+ * Current show again (inFile false), the ids rows answer to
+ * (revisedFromTaskIds): the pairing an approval made, David's choice
+ * included, holds when he switches back and forth. The rest by the rule for
+ * twins (pairSameNamedTasks).
+ */
+function pairGroup(
+  { rows, saved }: RevisionGroup,
+  rule: TwinRule,
+  choices?: ReadonlyMap<string, string | null>,
+): Map<ScheduleItem, ScheduleItem> {
+  const known = new Map<ScheduleItem, ScheduleItem>();
+  const taken = new Set<ScheduleItem>();
+  const take = (row: ScheduleItem, item: ScheduleItem) => { known.set(row, item); taken.add(item); };
+  const answered = new Set<ScheduleItem>();
+  if (choices) {
+    rows.forEach(row => {
+      if (!choices.has(row.id)) return;
+      answered.add(row);
+      const chosen = choices.get(row.id);
+      const item = chosen ? saved.find(candidate => candidate.id === chosen && !taken.has(candidate)) : undefined;
+      if (item) take(row, item);
+    });
+  }
+  const twins = rows.length > 1 || saved.length > 1;
+  const uniqueId = (item: ScheduleItem) => key(item.sourceUniqueId);
+  if (twins) {
+    rows.filter(row => !answered.has(row) && uniqueId(row)).forEach(row => {
+      const same = saved.filter(item => !taken.has(item) && uniqueId(item) === uniqueId(row));
+      if (same.length === 1) take(row, same[0]);
+    });
+  }
+  if (!rule.inFile) {
+    rows.filter(row => !answered.has(row) && !known.has(row)).forEach(row => {
+      const own = new Set([row.id, ...scheduleTaskEarlierIds(row)]);
+      const chained = saved.filter(item => !taken.has(item) && (own.has(item.id) || scheduleTaskEarlierIds(item).includes(row.id)));
+      if (chained.length === 1) take(row, chained[0]);
+    });
+  }
+  const identified = twins && [...rows, ...saved].every(item => uniqueId(item));
+  const restRows = rows.filter(row => !answered.has(row) && !known.has(row));
+  const restSaved = saved.filter(item => !taken.has(item));
+  if (identified || restRows.length === 0 || restSaved.length === 0) return known;
+  // David's answers and the rows' identity leave the rest as before: the rule for twins, never pairing a row with
+  // a task he said at review it is not (notRevisionOfTaskIds).
+  const ruled = restRows.length === rows.length && restSaved.length === saved.length
+    ? pairSameNamedTasks(rows, saved, rule)
+    : pairSameNamedTasks(restRows, restSaved, rule);
+  // Review P4 P2-1: nor, for a master (its approval, the web's upload, Set Active, Make Current), with a task whose
+  // Unique ID is another one. The id was looked at only among same-named twins; a master that dropped one Pour slab
+  // and added another left one row and one task of the name at Make Current, and they were paired as "the task,
+  // moved": the new task took the dropped one's note, owner, approval and schedule impact. (His own answer at the
+  // review, and the ids an approval gave, stand as they are. A lookahead's rows pair as before: its file may number
+  // tasks its own way.)
+  ruled.forEach((item, row) => { if (!saidNotRevision(row, item) && !(differentUniqueIds(row, item) && !rule.lookahead)) known.set(row, item); });
+  return known;
+}
+
+/** Both carry Microsoft Project's Unique ID, and not the same one: two tasks, whatever their names and dates (review P4 P2-1). */
+function differentUniqueIds(left: ScheduleItem, right: ScheduleItem): boolean {
+  const [one, other] = [key(left.sourceUniqueId), key(right.sourceUniqueId)];
+  return Boolean(one) && Boolean(other) && one !== other;
+}
+
+/** Whether David said at review one of these is not the other (owner answer Q30). */
+function saidNotRevision(left: ScheduleItem, right: ScheduleItem): boolean {
+  return (left.notRevisionOfTaskIds || []).includes(right.id) || (right.notRevisionOfTaskIds || []).includes(left.id);
+}
+
+/**
+ * The same-days reading with the rows left over paired with the saved tasks
+ * left over (owner answer Q30): the unchanged twins stay, the rest moved. In
+ * start order when as many of each are left, and each with its uniquely
+ * nearest one (pairByNearestDays).
+ */
+function withRestPaired(
+  pairs: ReadonlyMap<ScheduleItem, ScheduleItem>,
+  rows: readonly ScheduleItem[],
+  saved: readonly ScheduleItem[],
+): Map<ScheduleItem, ScheduleItem>[] {
+  const taken = new Set(pairs.values());
+  const restRows = inStableOrder(rows.filter(row => !pairs.has(row)), true);
+  const restSaved = inStableOrder(saved.filter(item => !taken.has(item)), false);
+  if (restRows.length === 0 || restSaved.length === 0) return [];
+  const inOrder = restRows.length === restSaved.length
+    ? [new Map([...pairs, ...restRows.map((row, index) => [row, restSaved[index]] as const)])]
+    : [];
+  return [...inOrder, new Map([...pairs, ...pairByNearestDays(restRows, restSaved)])];
+}
+
+/**
+ * The "every date slipped" readings of same-named rows (owner answer Q30):
+ * the rows and the saved tasks each in start order, one side's run lined up
+ * with the other's at each offset, where every row (two or more) starts the
+ * same number of days after its saved task.
+ */
+function uniformSlipReadings(rows: readonly ScheduleItem[], saved: readonly ScheduleItem[]): Map<ScheduleItem, ScheduleItem>[] {
+  const rowOrder = inStableOrder(rows, true);
+  const savedOrder = inStableOrder(saved, false);
+  const shorter = Math.min(rowOrder.length, savedOrder.length);
+  const readings: Map<ScheduleItem, ScheduleItem>[] = [];
+  // One pair is no pattern: a single row is any saved task "slipped" (the same days and nearest readings cover it).
+  if (shorter < 2) return readings;
+  for (let offset = 0; offset <= Math.abs(rowOrder.length - savedOrder.length); offset += 1) {
+    const pairs = Array.from({ length: shorter }, (_, index) => rowOrder.length <= savedOrder.length
+      ? [rowOrder[index], savedOrder[index + offset]] as const
+      : [rowOrder[index + offset], savedOrder[index]] as const);
+    const shifts = pairs.map(([row, item]) => {
+      const rowStart = dayNumber(row.startDate);
+      const savedStart = dayNumber(item.startDate);
+      return rowStart === null || savedStart === null ? null : rowStart - savedStart;
+    });
+    if (shifts.every(shift => shift !== null && shift === shifts[0])) readings.push(new Map(pairs));
+  }
+  return readings;
+}
+
+/**
+ * A question the import review asks David (owner answer Q30, 2 Oct 2026):
+ * "YES, repeated task names within an area. The import review asks him to
+ * confirm instead of guessing."
+ */
+export type ScheduleImportPairingQuestion = Readonly<{
+  /** The task name, project and area. */
+  key: string;
+  taskName: string;
+  projectName: string;
+  areaName: string;
+  /** "2 tasks named Pour slab in Lot A — confirm which is which". */
+  title: string;
+  /** The saved tasks of that name there, as David sees them, by start day. */
+  saved: readonly ScheduleItem[];
+  /** The file's rows of that name there, by start day. */
+  rows: readonly ScheduleItem[];
+  /** The app's best guess: each row's saved task, or null for a new task. */
+  guess: Readonly<Record<string, string | null>>;
+}>;
+
+/**
+ * Same-named tasks in one area whose pairing the file's dates cannot settle
+ * (owner answer Q30). Whole-app audit A5 passes 17-18 paired them by one rule
+ * per schedule role: a master keeps their order (the slip reading), a
+ * lookahead takes the nearest days (the rolling-window reading). Some
+ * changes look identical by dates alone: "every date slipped one week" and
+ * "the first was dropped and a new one added". The review now asks when the
+ * readings disagree: the app's rule (its guess, pre-selected), the
+ * same-days reading (a row on exactly a saved task's days is that task; the
+ * rest moved: in order, or each to its nearest, withRestPaired) and the
+ * slip readings (every row the same number of days after its saved task, in
+ * order); a group is asked about when any of the others pairs a row
+ * differently from the guess. Never when the rows sit on exactly the saved
+ * tasks' days, when a slip reads the same every way, for one row and one
+ * task, or when the file and the saved tasks carry Microsoft Project's
+ * Unique ID. Given the tasks shown and the rows to approve, as the merge
+ * pairs them (a lookahead when overlay).
+ */
+export function scheduleImportPairingQuestions({
+  existing,
+  imported,
+  isCurrent = () => true,
+  overlay = false,
+  alsoAsk,
+}: {
+  existing: readonly ScheduleItem[];
+  imported: readonly ScheduleItem[];
+  isCurrent?: (item: ScheduleItem) => boolean;
+  overlay?: boolean;
+  /** Groups (by key) to ask about although these rows' dates settle them: unsettled from what David sees (review N2 G1). */
+  alsoAsk?: ReadonlySet<string>;
+}): ScheduleImportPairingQuestion[] {
+  const rule: TwinRule = { lookahead: overlay, inFile: true, addedByLookahead: statedOnlyByLookaheads(existing) };
+  return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap(group => {
+    const { rows, saved } = group;
+    if (rows.length === 0 || saved.length === 0 || (rows.length < 2 && saved.length < 2)) return [];
+    if ([...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
+    // Two rows of one task (one answers to the other) shown at once are not twins: nothing to ask about them.
+    const savedIds = new Set(saved.map(item => item.id));
+    if (saved.some(item => scheduleTaskEarlierIds(item).some(id => savedIds.has(id)))) return [];
+    const guess = pairGroup(group, rule);
+    const sameDays = pairOnSameDays(rows, saved, true);
+    const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
+    // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
+    const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
+    const first = rows[0];
+    const groupKey = [first.taskName, projectKey(first), first.locationName].map(key).join('|');
+    if (!disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
+    const areaName = (saved.find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
+    const projectName = (first.projectName || first.scheduleProjectName || '').trim();
+    const count = Math.max(saved.length, rows.length);
+    const byStart = (items: readonly ScheduleItem[], inFile: boolean) => inStableOrder(items, inFile);
+    return [{
+      key: groupKey,
+      taskName: first.taskName.trim(),
+      projectName,
+      areaName,
+      title: `${count} tasks named ${first.taskName.trim()} in ${areaName || projectName} — confirm which is which`,
+      saved: byStart(saved, false),
+      rows: byStart(rows, true),
+      guess: Object.fromEntries(rows.map(row => [row.id, guess.get(row)?.id ?? null])),
+    }];
+  });
+}
+
+/**
+ * Review N2 G1 (5 Oct 2026, Low; owner answer Q25's shown and saved dates,
+ * ada8ef6, meeting owner answer Q30, 9a1c22d). The phone's import review
+ * asked from the tasks as shown, while the approval pairs on the saved rows:
+ * a task a replaced lookahead moved is shown on the master's dates and saved
+ * on the lookahead's. Two Pour slabs, 10/01 (his 40%) and 10/15 (his 70%);
+ * lookahead L1 moves the second to 10/11; L2 lists neither, so it shows
+ * 10/15 again; L3 lists 10/15 and 10/06. From what he sees this is plain,
+ * and the review asked nothing; the approval found the 10/06 row as near to
+ * the second task's saved 10/11 as to the first, and saved it as a third
+ * Pour slab (or put his percent and note on the other task).
+ *
+ * The questions the phone's review asks, worked out as the approval pairs:
+ * on every saved task, with the tasks shown before this import as the ones
+ * a row may revise (scheduleItemsVisibleBeforeImport). The guess shown is
+ * then what the approval would do unasked. Each saved task of a question is
+ * given as David sees it (the dates shown), since he is asked about the
+ * tasks in his list; his answer names the task, so the approval pairs it
+ * whatever its saved dates.
+ *
+ * And still whatever the tasks as shown leave unsettled, as before: the
+ * saved dates he cannot see can also settle a pairing that is a toss-up
+ * from what he sees (the same two tasks, then one row on 10/08: as near to
+ * 10/01 as to 10/15 in his list, but on two days of the second task's saved
+ * 10/11-10/15, so the approval takes the second, unasked). Either way of
+ * reading the dates that leaves a doubt is a question, with the approval's
+ * guess selected.
+ */
+export function scheduleImportReviewPairingQuestions({
+  saved,
+  documents,
+  importBatchId,
+  imported,
+  overlay = false,
+}: {
+  /** Every saved task, hidden rows included. */
+  saved: readonly ScheduleItem[];
+  /** The schedules saved now. */
+  documents: readonly ReferenceDocument[];
+  /** The import under review. */
+  importBatchId: string;
+  imported: readonly ScheduleItem[];
+  overlay?: boolean;
+}): ScheduleImportPairingQuestion[] {
+  const shown = new Map(selectAuthoritativeScheduleItems({
+    scheduleItems: [...saved],
+    scheduleDocuments: documents.filter(document => key(document.importBatchId) !== key(importBatchId)),
+  }).map(item => [item.id, item] as const));
+  const unsettledAsShown = new Set(scheduleImportPairingQuestions({ existing: [...shown.values()], imported, overlay }).map(question => question.key));
+  return scheduleImportPairingQuestions({ existing: saved, imported, isCurrent: item => shown.has(item.id), overlay, alsoAsk: unsettledAsShown })
+    .map(question => ({ ...question, saved: question.saved.map(item => shown.get(item.id) || item) }));
 }
 
 /**
@@ -617,6 +1101,18 @@ function statedOnlyByLookaheads(existing: readonly ScheduleItem[]): (item: Sched
 }
 
 /**
+ * The lookahead files saved when an approval's test of which tasks are shown
+ * was made (review N2 F2, the other order; 5 Oct 2026). The approval is
+ * given that test and not the saved schedules, and a lookahead that restates
+ * a task needs to know whether the file of the lookahead the task is on has
+ * been deleted (scheduleTaskRestatedByLookahead). Kept beside the test the
+ * phone's approval already passes (scheduleItemsVisibleBeforeImport), so
+ * what calls the approval is unchanged. The web's upload never restates as a
+ * lookahead and is told nothing.
+ */
+const savedLookaheadBatchesKnown = new WeakMap<(item: ScheduleItem) => boolean, ReadonlySet<string>>();
+
+/**
  * The tasks the manager saw before this import: the current schedules, with
  * this import's own documents left out so the rows a later Accept Selected
  * approves still pair with the tasks the first approval hid (A5 pass 3 F3).
@@ -630,7 +1126,9 @@ export function scheduleItemsVisibleBeforeImport(
     scheduleItems: [...items],
     scheduleDocuments: documents.filter(document => key(document.importBatchId) !== key(importBatchId)),
   }).map(item => item.id));
-  return item => visible.has(item.id);
+  const shown = (item: ScheduleItem) => visible.has(item.id);
+  savedLookaheadBatchesKnown.set(shown, new Set(documents.filter(scheduleDocumentAddsToMaster).map(document => key(document.importBatchId)).filter(Boolean)));
+  return shown;
 }
 
 function timeOf(value: string | null | undefined): number {
@@ -661,6 +1159,7 @@ export function scheduleProgressCarriedToShownTasks({
   documentsBefore,
   documentsAfter,
   now = new Date().toISOString(),
+  known,
 }: {
   /** The tasks shown before the schedule was made current. */
   before: readonly ScheduleItem[];
@@ -670,18 +1169,33 @@ export function scheduleProgressCarriedToShownTasks({
   documentsBefore?: readonly ReferenceDocument[];
   documentsAfter?: readonly ReferenceDocument[];
   now?: string;
+  /** Every saved task, hidden ones included, when known: the rows of each task, for its links (owner answer Q29). */
+  known?: readonly ScheduleItem[];
 }): ScheduleItem[] {
-  const carried = progressCarried(before, after, now);
+  const { carried, pairs } = progressCarried(before, after, now);
   const restated = documentsBefore && documentsAfter ? handTasksRestatedWhenCurrent(after, documentsBefore, documentsAfter, now) : [];
   const carriedIds = new Set(carried.map(item => item.id));
   const saved = [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
-  if (!documentsBefore || !documentsAfter) return saved;
-  // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
   const changed = new Map(saved.map(item => [item.id, item]));
-  scheduleTasksOnNotedDatesWhenCurrent({
-    after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
+  // An owner or a note typed on the row now hidden, after the row now shown was last changed, follows the task (review N2 P1).
+  pairs.forEach((hidden, shown) => {
+    const filled = scheduleTextCarriedToShownTask(hidden, shown, changed.get(shown.id) || shown, now, known);
+    if (filled) changed.set(shown.id, filled);
+  });
+  // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
+  if (documentsBefore && documentsAfter) {
+    scheduleTasksOnNotedDatesWhenCurrent({
+      after: after.map(item => changed.get(item.id) || item), documentsBefore, documentsAfter, now,
+    }).forEach(item => changed.set(item.id, item));
+  }
+  // Owner answer Q29 (2 Oct 2026): David's hand links follow each task to the row shown for it now.
+  const pairedById = new Map([...pairs].map(([shown, hidden]) => [shown.id, hidden]));
+  scheduleTaskLinksFollowingShownTasks({
+    before, after: after.map(item => changed.get(item.id) || item), known: known ?? [...before, ...after],
+    paired: shown => pairedById.get(shown.id), now,
   }).forEach(item => changed.set(item.id, item));
-  return [...changed.values()];
+  // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
+  return [...changed.values()].map(scheduleItemAsSaved);
 }
 
 /**
@@ -775,18 +1289,50 @@ function handTasksRestatedWhenCurrent(
   });
 }
 
-function progressCarried(before: readonly ScheduleItem[], after: readonly ScheduleItem[], now: string): ScheduleItem[] {
+/**
+ * Review N2 P1 (5 Oct 2026, older): Set Active and Make Current carried only
+ * progress and links to the row they show. A schedule uploaded on the web
+ * saves a moved task's new row at the upload; an owner David assigned or a
+ * note he typed on the task before he made that schedule current (on the row
+ * he still saw) stayed on the row Make Current hid. The row now shown takes
+ * them by the import's rule: its own value stands, the hidden row's fills a
+ * blank. Only when the hidden row was changed after the shown row last was
+ * (or the shown row never was): a blank David left on the row he edited
+ * later stands, so a note he cleared does not come back when he switches
+ * masters back and forth. `row` is the shown task with the activation's
+ * other changes; null when nothing is filled.
+ */
+function scheduleTextCarriedToShownTask(
+  hidden: ScheduleItem,
+  shown: ScheduleItem,
+  row: ScheduleItem,
+  now: string,
+  /** Every saved task, when known: the rows between the two (Set Active across two masters or more). */
+  known?: readonly ScheduleItem[],
+): ScheduleItem | null {
+  // (The weighing itself is shared with a schedule's delete, which changes the row shown too: review P5 R-A.)
+  return scheduleItemAsLastSetOnItsOtherRow(hidden, shown, row, now, known);
+}
+
+function progressCarried(
+  before: readonly ScheduleItem[],
+  after: readonly ScheduleItem[],
+  now: string,
+): { carried: ScheduleItem[]; pairs: Map<ScheduleItem, ScheduleItem> } {
   const beforeIds = new Set(before.map(item => item.id));
   const afterIds = new Set(after.map(item => item.id));
   const nowShown = after.filter(item => !beforeIds.has(item.id));
   const nowHidden = before.filter(item => !afterIds.has(item.id));
-  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  if (nowShown.length === 0 || nowHidden.length === 0) return { carried: [], pairs: new Map() };
   const pairs = pairTaskRevisions(nowHidden, nowShown, () => true, false, false);
-  return nowShown.flatMap(shown => {
-    const hidden = pairs.get(shown);
-    const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
-    return carried ? [carried] : [];
-  });
+  return {
+    pairs,
+    carried: nowShown.flatMap(shown => {
+      const hidden = pairs.get(shown);
+      const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
+      return carried ? [carried] : [];
+    }),
+  };
 }
 
 /** The phone's form: every saved task, and the schedules before and after Set Active. */
@@ -804,8 +1350,18 @@ export function scheduleProgressCarriedOnActivation({
   const shownWith = (documents: readonly ReferenceDocument[]) =>
     selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] });
   return scheduleProgressCarriedToShownTasks({
-    before: shownWith(documentsBefore), after: shownWith(documentsAfter), documentsBefore, documentsAfter, now,
+    before: shownWith(documentsBefore), after: shownWith(documentsAfter), documentsBefore, documentsAfter, now, known: items,
   });
+}
+
+/**
+ * A task's new row with the links of the row it replaces, when the new row has none of its own (owner answer Q29),
+ * and when David changed them: links he removed stay removed on the task's older rows' return.
+ */
+function withLinksOf(row: ScheduleItem, paired: ScheduleItem): ScheduleItem {
+  if (scheduleTaskLinksOf(row).length > 0) return row;
+  if (scheduleTaskLinksOf(paired).length === 0 && !paired.dependenciesUpdatedAt) return row;
+  return scheduleTaskWithLinksOf(row, paired) ?? row;
 }
 
 /** The import identity, with an empty saved area matching the imported one. */
@@ -824,6 +1380,7 @@ export function mergeApprovedScheduleImportItems({
   approvedAt = new Date().toISOString(),
   overlay = false,
   current = true,
+  pairingChoices,
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
@@ -842,6 +1399,12 @@ export function mergeApprovedScheduleImportItems({
    * made current (scheduleRowsAwaitingCurrent, A5 pass 18 L3).
    */
   current?: boolean;
+  /**
+   * David's answers to the review's question about same-named tasks (owner
+   * answer Q30): an imported row's id to the saved task it revises, or null
+   * for a new task. They decide the pairing of those rows.
+   */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }): ScheduleImportMergeResult {
   let next = [...existing];
   const additions: ScheduleItem[] = [];
@@ -849,10 +1412,23 @@ export function mergeApprovedScheduleImportItems({
   const carriedProgressIds: string[] = [];
   const fileProgressIds: string[] = [];
   const overlaidIds: string[] = [];
-  const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay);
+  const choices = pairingChoices ? new Map(Object.entries(pairingChoices)) : undefined;
+  const pairs = pairTaskRevisions(existing, imported, isCurrent, overlay, true, choices);
+  // A row David answered is a new task never pairs by the import identity either (owner answer Q30), and is never
+  // paired with those saved tasks later (notRevisionOfTaskIds, Set Active and Make Current).
+  const answeredNew = (row: ScheduleItem) => Boolean(choices?.has(row.id) && !choices.get(row.id));
+  const twinsSaidNotOf = (row: ScheduleItem): Partial<ScheduleItem> => {
+    const ids = answeredNew(row) ? existing.filter(item => isCurrent(item) && sameTask(item, row, overlay)).map(item => item.id) : [];
+    return ids.length > 0 ? { notRevisionOfTaskIds: ids } : {};
+  };
   const lookaheadsOnly = statedOnlyByLookaheads(existing);
   const claimed = new Set([...pairs.values()].map(item => item.id));
   const seen = new Set<string>();
+  // What a task shown is missing that an earlier row of it still holds, from imports before review N2 P1: it goes
+  // with the task to the row this master moves it to.
+  const stranded = textStrandedOnEarlierRows(existing, isCurrent);
+  // The earlier rows of the tasks shown (review P4 P2-2).
+  const pastOfShownTasks = new Set(existing.filter(isCurrent).flatMap(scheduleTaskEarlierIds));
 
   imported.forEach(importedItem => {
     const match = completionMatch(importedItem, next);
@@ -867,10 +1443,11 @@ export function mergeApprovedScheduleImportItems({
     const pairedId = pairs.get(importedItem)?.id;
     const pairedSaved = pairedId ? next.find(item => item.id === pairedId) : undefined;
     if (overlay) {
-      const saved = pairedSaved || next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      const saved = pairedSaved || (answeredNew(importedItem) ? undefined
+        : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem)));
       if (!saved) {
         // Added by the lookahead: it says so itself, after the lookahead's notes are gone (A6 pass 19 M2).
-        additions.push({ ...importedItem, importedAsLookahead: true });
+        additions.push({ ...importedItem, importedAsLookahead: true, ...twinsSaidNotOf(importedItem) });
         return;
       }
       claimed.add(saved.id);
@@ -889,7 +1466,7 @@ export function mergeApprovedScheduleImportItems({
         ? (percentOf(importedItem) === endsAt || fileProgress !== statedProgress ? endsAt : null)
         : (fileProgress && statusStartsTask(target, importedItem) && endsAt === 1 ? 1 : null); // the 1% "In Progress" gave (A5 pass 10 L1)
       next = next.map(item => item.id === target.id
-        ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
+        ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent, savedLookaheadBatchesKnown.get(isCurrent) ?? null), ...(fileProgress || {}) }
         : item);
       overlaidIds.push(target.id);
       if (fileProgress) fileProgressIds.push(target.id);
@@ -908,14 +1485,24 @@ export function mergeApprovedScheduleImportItems({
     const movedByHand = Boolean(paired) && !ownedByImport(paired!) && !unchangedTask(paired!, importedItem) && !repeated.dates;
     const found = paired
       ? (unchangedTask(paired, importedItem) || repeated.dates || movedByHand ? paired : undefined)
-      : next.find(item => !claimed.has(item.id) && sameImportIdentity(item, importedItem));
+      : answeredNew(importedItem) ? undefined
+        // (Never a saved row with another Unique ID: review P4 P2-1. Nor the earlier row of a task that is shown on a
+        // newer row: review P4 P2-2. A Pour slab moved a week earlier; a later master added another Pour slab on exactly
+        // its old days; the new one was taken for the task's own hidden old row, and both showed his percent and note.)
+        : next.find(item => !claimed.has(item.id) && !pastOfShownTasks.has(item.id) && !differentUniqueIds(item, importedItem) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
     // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
     const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
-    const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
-      ? scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired)
-      : row;
+    // David's hand links go with the task to its new row (owner answer Q29).
+    // And his project controls (review N3 C); the row says which task's row it took them from, as for his owner and
+    // note (review N3 R3).
+    const revision = (row: ScheduleItem): ScheduleItem => {
+      if (!paired || paired.id === row.id) return row;
+      const moved = withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired);
+      const withHis = withControlsOf(moved, paired, true);
+      return withHis === moved || withHis.textFromTask ? withHis : { ...withHis, textFromTask: { taskId: paired.id } };
+    };
     if (duplicate) {
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import
@@ -964,19 +1551,17 @@ export function mergeApprovedScheduleImportItems({
       if (fileProgress) fileProgressIds.push(duplicate.id);
       return;
     }
+    // The task on new dates, on its new row: the file's owner, contractor and notes win, the task's fill a blank,
+    // whether or not David entered a percent on it (review N2 P1; at first only beside his own progress, below).
+    // (With what an import before the fix left on the task's earlier rows: review N2 P1, second part.)
+    const filled = paired && key(paired.importBatchId) !== key(importedItem.importBatchId)
+      ? withTextTakenNoted(importedItem, withBlanksFilledFrom(importedItem, { ...paired, ...(stranded.get(paired.id) || {}) }), paired)
+      : importedItem;
     if (
       paired &&
       paired.progressSource === 'project_manager' &&
       key(paired.importBatchId) !== key(importedItem.importBatchId)
     ) {
-      // The file's owner, contractor and notes win; the manager's fill a blank.
-      const kept = (value: string, saved: string) => key(value) || !key(saved) ? value : saved;
-      const filled = {
-        ...importedItem,
-        owner: kept(importedItem.owner, paired.owner),
-        contractor: kept(importedItem.contractor, paired.contractor),
-        notes: kept(importedItem.notes, paired.notes),
-      };
       // The manager's progress, unless the file's is higher or the saved progress was a file's (A5 pass 4 #1),
       // never below the manager's own percent a lookahead's note shows (A5 pass 6 M2).
       const fileProgress = fileProgressFor(paired, importedItem, approvedAt);
@@ -1011,14 +1596,14 @@ export function mergeApprovedScheduleImportItems({
     }
     if (paired && statusStartsTask(paired, importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
       // "In Progress" with no percent over Not Started 0%: the task on its new dates starts at 1% (A5 pass 10 L1).
-      additions.push(revision({ ...importedItem, percentComplete: 1, status: 'In Progress' }));
+      additions.push(revision({ ...filled, percentComplete: 1, status: 'In Progress' }));
       fileProgressIds.push(importedItem.id);
       return;
     }
     if (paired && !scheduleRowStatesPercent(importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
       // The file states no percent: the task on its new dates keeps the progress it had (A5 pass 5 H1).
       additions.push(revision({
-        ...importedItem,
+        ...filled,
         percentComplete: paired.percentComplete,
         status: paired.status,
         progressSource: paired.progressSource ?? null,
@@ -1030,8 +1615,39 @@ export function mergeApprovedScheduleImportItems({
       carriedProgressIds.push(importedItem.id);
       return;
     }
-    additions.push(revision(importedItem));
+    additions.push({ ...revision(filled), ...twinsSaidNotOf(importedItem) });
   });
 
-  return { next, additions: additions.map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds };
+  if (current && [...next, ...additions].some(item => scheduleTaskLinksOf(item).length > 0)) {
+    // Owner answer Q29 (2 Oct 2026): a link to a task this master moved points at its new row, and one to a row
+    // an earlier master hid at the row shown for its task. On the tasks shown before and the rows added; a
+    // schedule not current yet (a web upload) re-points at Make Current.
+    const newRowOf = new Map<string, string | null>();
+    additions.forEach(item => scheduleTaskEarlierIds(item).forEach(id => newRowOf.set(id, newRowOf.has(id) ? null : item.id)));
+    const replaced = new Set([...newRowOf.keys()]);
+    const shownAfter = [...next.filter(item => isCurrent(item) && !replaced.has(item.id)), ...additions];
+    const shownIds = new Set(shownAfter.map(item => item.id));
+    const answering = scheduleTaskLinkTargets(shownAfter, [...existing, ...additions]);
+    const pointTo = (id: string) => newRowOf.get(id) || (shownIds.has(id) ? undefined : answering(id)?.id);
+    const pointed = (item: ScheduleItem) => {
+      const moved = scheduleTaskLinksPointedAt(item, pointTo);
+      return moved === item ? item : { ...moved, updatedAt: approvedAt };
+    };
+    next = next.map(item => isCurrent(item) && !replaced.has(item.id) ? pointed(item) : item);
+    additions.splice(0, additions.length, ...additions.map(pointed));
+  }
+
+  // Review P5-2: a new row that says which row it replaces says which hand links it was made with too, none included
+  // (as for his text: review P4 F1), so that whatever weighs the two rows later can tell links nobody changed on this
+  // row from links set here. Not a row whose own file stated links: those are the file's.
+  const fileStatesLinks = new Set(imported.filter(item => scheduleTaskLinksOf(item).length > 0).map(item => item.id));
+  const withLinksTakenNoted = (item: ScheduleItem): ScheduleItem => (item.textFromTask && !fileStatesLinks.has(item.id)
+    ? { ...item, textFromTask: { ...item.textFromTask, dependencies: scheduleTaskLinksOf(item) } } : item);
+
+  // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
+  const unchanged = new Set(existing);
+  return {
+    next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
+    additions: additions.map(withLinksTakenNoted).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+  };
 }

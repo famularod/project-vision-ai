@@ -14,7 +14,7 @@ describe('this phone’s own deletions reach the realtime applier at once', () =
     expect(app).toMatch(/recordDAVESyncTombstone\('project_area', areaId\)\n\s+\.then\(tombstone => \{\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
     // The document and schedule-PDF deletes (and a phone document's Delete
     // from All Devices) share one function since audit A7 pass 4.
-    expect(app).toMatch(/async function removeReferenceDocumentEverywhere\(documentId: string\) \{\n\s+const tombstone = await recordDAVESyncTombstone\('reference_document', documentId\);\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
+    expect(app).toMatch(/async function removeReferenceDocumentEverywhere\(documentId: string\) \{\n\s+if \(fileOnlyDeleteRefused\(documentId\)\) return false;[^\n]*\n\s+const tombstone = await recordDAVESyncTombstone\('reference_document', documentId\);\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
     expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(2);
     expect(app).toMatch(/\.then\(tombstones => \{[\s\S]{0,400}?rememberOperationalTombstones\(tombstones\);/);
     // Pin changed deliberately (A10 pass 7 L5, 30 Sep 2026): a task delete records its own deletion and the

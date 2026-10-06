@@ -32,8 +32,8 @@ import {
   queueProjectAreaRecord,
   queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation,
   queueProjectUpdateRecord, queueProjectUpdateDocumentChange, queueProjectUpdatePhotoAnalysis, requeueRemovedFieldUpdateDocuments, loadRemovedFieldUpdateDocuments,
-  queueScheduleItemRecord,
-  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject,
+  queueScheduleItemRecord, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad, noteFieldUpdateEditOpened, // each edit's base (owner answer Q28)
+  removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject, cloudProjectsMissedByLists,
   synchronizeLocalData,
   uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
   type FieldUpdateSyncWorkAttempt,
@@ -181,7 +181,7 @@ import {
 } from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
-import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
+import { FIELD_UPDATE_CONFLICT_REVIEW_LABEL, FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT, FieldUpdateDocumentChangeNotice, retryOverConflictConfirmed, useFieldUpdateConflictReview, useFieldUpdateDocumentChangeWaiting, type FieldUpdateRetry, type FieldUpdateSyncChoice } from './components/field-update-document-change-notice';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
@@ -219,8 +219,8 @@ import {
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
-import { forgetFieldNoteDraft } from './hooks/use-field-note-draft';
-import { forgetKeptWalkMemoryDrafts, useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { settleUnsavedDraftsOnAccountChange } from './hooks/unsaved-drafts-on-account-change';
 import {
   isStartupHydrationReady,
   useStartupHydration,
@@ -288,7 +288,7 @@ import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixT
 import { optionalString, uid } from './services/RecordValues';
 import { normalizeFieldUpdateSyncDiagnostics, type FieldUpdateSyncDiagnostics, type FieldUpdateSyncFailureCategory, type FieldUpdateSyncStepResult } from './services/FieldUpdateSyncDiagnosticsRecord';
 import { reissueDraftAsNewUpdate } from './services/DraftReissue';
-import { classifySyncFailureText } from './services/SyncFailureCategory';
+import { classifySyncFailureText, syncFailureCategoryOfError } from './services/SyncFailureCategory';
 import { forgetAllReportSessionState } from './services/ReportSessionState';
 import {
   archiveDraftEnvelopeForValidation,
@@ -297,6 +297,7 @@ import {
   markPhotoUnavailableInBackup,
 } from './services/BackupArchivePhotos';
 import { isResumableFieldUpdateStatus } from './services/FieldUpdateLifecycle';
+import { isOpenDraftRow, updatesWithOpenDraft } from './services/FieldUpdateOpenDraftRow';
 import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
@@ -355,7 +356,7 @@ import { normalizeProjectControls, withProjectControlsEditMerged } from './servi
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { refreshKeepsLocalProjectUpdate } from './services/ProjectUpdateQueueRevision';
-import { scheduleItemRevisionForCloudRefresh } from './services/ScheduleItemQueueRevision';
+import { scheduleItemRevisionForCloudRefresh, scheduleItemsWithPendingEditsOverCloud } from './services/ScheduleItemQueueRevision';
 import { queueScheduleProgressCarriedToCloud } from './services/ScheduleProgressCarryUpload';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
 import {
@@ -409,7 +410,8 @@ import {
   requireOwnedProjectDocumentAccess,
   synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
-import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN, projectDocumentsAwaitingUpload, projectDocumentUploadAttemptsAfterFailure, projectDocumentWaitsForSignIn, uploadedProjectDocumentToShare } from './services/ProjectDocumentUploadRetry';
+import { useAfterSignInPendingEnds } from './hooks/use-after-sign-in-pending-ends';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
@@ -445,6 +447,7 @@ import {
   unavailablePhotosNotice,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import { createRestoredMediaLedger, type RestoredMediaOutcome } from './services/RestoredMediaLedger';
 import {
   isAttachmentReadError, REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_MESSAGE_IMAGE_BYTES,
   REPORT_TEXT_IMAGE_LIMIT,
@@ -614,7 +617,7 @@ import type { ReportDrawingReference } from './services/ReportDrawingReferences'
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
-  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike,
+  scheduleDocumentAddsToMaster, scheduleDocumentCurrentLabel, scheduleDocumentIsCurrentEverywhere, scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -688,7 +691,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -979,8 +982,11 @@ const projectDeletionRuntime = createProjectDeletionRuntime({
     ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR, deleteOwnedReferenceDocument: deleteStoredReferenceDocument,
   }),
 });
+// The files a restore placed, kept while it can still finish (independent review R01).
+const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId,
+  priorityKeys: [UPDATES_STORAGE_KEY, DRAFT_STORAGE_KEY, REFERENCE_DOCUMENTS_STORAGE_KEY, PROJECT_DOCUMENTS_STORAGE_KEY] });
 const backupRestoreRuntime = createBackupRestoreRuntime({
-  storage: AsyncStorage,
+  storage: AsyncStorage, settleRestoredMedia: restoredMediaLedger.settlePending,
   targetKeys: {
     updates: UPDATES_STORAGE_KEY, projects: PROJECTS_STORAGE_KEY, archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY,
     contacts: CONTACTS_STORAGE_KEY,
@@ -3148,7 +3154,8 @@ async function deleteOwnedProjectDocument(document: ProjectDocument) {
   });
 }
 
-function projectDocumentStatusDetail(document: ProjectDocument) {
+function projectDocumentStatusDetail(document: ProjectDocument, signInPending = false) {
+  if (signInPending && projectDocumentWaitsForSignIn(document, true)) return PROJECT_DOCUMENT_WAITING_FOR_SIGN_IN; // everyday item 5
   if (document.status === 'failed') {
     return 'Document upload failed · Retry';
   }
@@ -4999,6 +5006,7 @@ function AppShell() {
   archivedProjectsCurrentRef.current = archivedProjects;
   operationalSyncTombstonesRef.current = operationalSyncTombstones;
   const [projectDocumentUploadRetry] = useState(() => createProjectDocumentUploadRetryRunner(() => projectDocumentsCurrentRef.current)); // documents added without signal upload by themselves (whole-app audit A8 pass 1 F5, 30 Sep 2026)
+  useAfterSignInPendingEnds(() => void projectDocumentUploadRetry.run(retryProjectDocumentUpload, { ignoreBackoff: true })); // and once "offline, sign-in pending" ends (everyday item 5)
   // A card's typed text is queued once typing pauses (whole-app audit A8 pass 1 F1 (30 Sep 2026)).
   const projectDocumentSharedRecordSync = useProjectDocumentSharedRecordSync(documentId => {
     const latest = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
@@ -5156,7 +5164,7 @@ function AppShell() {
           const latest = scheduleItemsCurrentRef.current.find(
             candidate => candidate.id === itemId,
           );
-          if (latest) void syncScheduleItemRevision(latest, generation);
+          if (latest) void syncScheduleItemRevision(latest, generation, undefined, undefined, true); // sends what waits, never a new whole copy (review N1)
         },
       });
     });
@@ -5785,12 +5793,12 @@ useEffect(() => {
     ),
     applyLocal: (items, found) => { setScheduleItems(items); setScheduleItemsLocalLoaded(true); markScheduleItemsAuthorityReady(found); },
     onLocalError: error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error),
-    loadCloud: listScheduleItems, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    loadCloud: listScheduleItemsWithEditsWaiting, synchronizeTombstones: synchronizeDAVESyncTombstones,
     normalizeCloud: items => normalizeScheduleItems(
       items.filter(isDAVESafeCloudScheduleRecord),
     ).map(migrateLegacyScheduleItem),
     applyCloud: (items, tombstones) => setScheduleItems(current => recoverDAVEScheduleRecords({
-      local: current, cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
+      local: scheduleItemsWithPendingEditsOverCloud(current, items, scheduleItemEditsWaitingAtLastLoad()), cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
       allowCloudOnly: true,
     })),
     onCloudApplied: () => markScheduleItemsAuthorityReady(true),
@@ -6226,12 +6234,15 @@ useEffect(() => {
         ) {
           throw new Error('project_refresh_incomplete');
         }
+        // A project neither list returned is read by its id before it is taken as deleted elsewhere (independent review R02).
+        const missed = await cloudProjectsMissedByLists(projectRecordsCurrentRef.current, activeProjectsResult.data, archivedProjectsResult.data);
+        if (!missed) throw new Error('project_refresh_incomplete');
         if (!active || !refreshCommit.isCurrent()) return;
 
-        const cloudActiveRecords = activeProjectsResult.data
+        const cloudActiveRecords = [...activeProjectsResult.data, ...missed.active]
           .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
           .map(projectRecordFromCloud);
-        const cloudArchivedRecords = archivedProjectsResult.data
+        const cloudArchivedRecords = [...archivedProjectsResult.data, ...missed.archived]
           .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
           .map(projectRecordFromCloud);
         const reconciled = reconcileDAVEOperationalProjects({
@@ -7011,6 +7022,7 @@ useEffect(() => {
       ) ||
       draft.documents?.find(document => document.id === documentId);
 
+    if (target && projectDocumentWaitsForSignIn(target, signInPendingRef.current)) return false; // waits for the sign-in, then uploads (everyday item 5)
     if (!target?.localUri) {
       updateDocumentEverywhere(documentId, document => ({
         ...document,
@@ -7931,9 +7943,7 @@ useEffect(() => {
       }
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        classifySyncFailureCategory([
-          error instanceof Error ? error.message : 'unknown sync error',
-        ]),
+        syncFailureCategoryOfError(error), // offline by the error's type and code (everyday item 6)
         attemptedAt,
         1,
         null,
@@ -8100,9 +8110,7 @@ useEffect(() => {
       return reconciliation.current || finalUpdate;
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        classifySyncFailureCategory([
-          error instanceof Error ? error.message : 'unknown sync error',
-        ]),
+        syncFailureCategoryOfError(error), // offline by the error's type and code (everyday item 6)
         now,
         1,
         null,
@@ -10217,7 +10225,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // (audit A6 pass 3: a dismissed sheet started the next reporting period).
     const sent = await askToContinue(
       'Was the report sent?',
-      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded and you can send it later.',
+      'If you sent it from Outlook, the next report will run from this one. If not, nothing is recorded: once you send it, use Mark as Sent in Reports.',
       'Yes, it was sent',
       'Not yet',
     );
@@ -10723,8 +10731,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function applyRestoredData(data: RestoredAppData): Promise<boolean> {
-    if (backupRestoreInFlightRef.current) return false;
+  async function applyRestoredData(data: RestoredAppData): Promise<RestoredMediaOutcome> {
+    if (backupRestoreInFlightRef.current) return 'aborted';
     backupRestoreInFlightRef.current = true;
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current); savedUpdatesSaveTimer.current = null;
@@ -10764,7 +10772,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Device backup restored',
         `${DEVICE_BACKUP_RESTORE_NOTICE} Included project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.`,
       );
-      return true;
+      return 'committed';
     } catch (error) {
       const recoveryBlocked = error instanceof BackupRestoreRecoveryRequiredError;
       if (recoveryBlocked) {
@@ -10776,7 +10784,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? 'The restore was partially written and editing is locked until Retry Recovery succeeds or the app restarts.'
           : 'The backup could not be safely restored. Existing app data and deletion records were not intentionally replaced.',
       );
-      return false;
+      // Recovery-required may still finish at the next start: its files are kept (independent review R01).
+      return recoveryBlocked ? 'recovery_required' : 'aborted';
     } finally {
       backupRestoreInFlightRef.current = false;
     }
@@ -10880,7 +10889,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       referenceDocumentsDirectory: ensureReferenceDocumentsDirectory,
                       ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR,
                       cacheDirectory: FileSystem.cacheDirectory,
-                      importProjectDocument: importProjectDocumentIntoOwnedStorage,
+                      importProjectDocument: importProjectDocumentIntoOwnedStorage, mediaLedger: restoredMediaLedger,
                     },
                   );
                   // Carried photos have their files now; photos declared
@@ -10892,9 +10901,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     Alert.alert('Restore failed', normalized.message);
                     return;
                   }
-                  const committed = await applyRestoredData(normalized.data);
-                  if (!committed) await materialized.cleanup();
-                  onProgress?.(committed ? 'Restore finished.' : 'Restore did not finish.');
+                  const outcome = await applyRestoredData(normalized.data);
+                  await materialized.settle(outcome);
+                  onProgress?.(outcome === 'committed' ? 'Restore finished.' : 'Restore did not finish.');
                 } finally {
                   await staged?.cleanup();
                 }
@@ -11071,7 +11080,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = mergedDocuments;
       setReferenceDocuments(mergedDocuments);
-      if (carried.size > 0) { markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); }); }
+      if (carried.size > 0) { const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); } // with the copy each started from (owner answer Q28)
       return true;
     } catch {
       Alert.alert(
@@ -11551,7 +11560,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
       if (!sharedRecord || sharedWithAnotherDocument) return void removeFromDevice();
       void removeReferenceDocumentEverywhere(sharedRecord.id)
-        .then(removeFromDevice)
+        .then(removed => (removed === false ? undefined : removeFromDevice()))
         .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
     };
 
@@ -11569,7 +11578,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   // Deleted on every device: the durable deletion record first; the cloud
   // then removes the row, its file and its ECOS index.
+  /** The PDF of a lookahead in effect is never deleted on its own (owner answer Q36): he is told why, and nothing changes. */
+  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('Lookahead in effect', refusal); return Boolean(refusal); };
   async function removeReferenceDocumentEverywhere(documentId: string) {
+    if (fileOnlyDeleteRefused(documentId)) return false; // whoever asks: a dialog left open, another screen (owner answer Q36)
     const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
     rememberOperationalTombstones([tombstone]);
     markReferenceDocumentsAuthorityReady(true);
@@ -11577,6 +11589,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     referenceDocumentsCurrentRef.current = updated;
     setReferenceDocuments(updated);
     void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+    return true;
   }
 
   function deleteReferenceDocument(documentId: string) {
@@ -11597,9 +11610,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           style: 'destructive',
           onPress: () => {
             void removeReferenceDocumentEverywhere(documentId)
-              .then(() => {
-                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
-              })
+              .then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })
               .catch(() => {
                 Alert.alert(
                   'Delete failed',
@@ -11639,26 +11650,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
+    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead in effect (owner answer Q36)
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
+      `${document.name} will be removed${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
+        ...(pdfOnly ? [{
           text: 'Delete PDF Only',
           onPress: () => {
+            if (fileOnlyDeleteRefused(documentId)) return; scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true)); // the dates shown under a replaced lookahead stay (review N1); a task the delete shows on another row shows what he last set (review P6-5)
             void removeReferenceDocumentEverywhere(documentId)
-              .then(() => {
-                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
-              })
-              .catch(() => {
-                Alert.alert(
-                  'Delete failed',
-                  `${document.name} could not be saved as deleted. Try again.`,
-                );
-              });
+              .then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })
+              .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
           },
-        },
+        }] : []),
         {
           text: 'Delete PDF + Items',
           style: 'destructive',
@@ -11680,14 +11686,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
-                const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
+                const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); const restored = new Map(scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current.filter(item => !deletedItemIds.has(item.id)) as unknown as import('./types').ScheduleItem[], removed: relatedScheduleItems as unknown as import('./types').ScheduleItem[], document, documents: updated }).map(item => [item.id, item as unknown as ScheduleItem])); // a lookahead's master tasks go back to the master's dates (owner answer Q22); a moved task answers to its removed row (A10 pass 6 M1)
                 const nextScheduleItems = scheduleItemsCurrentRef.current
                   .filter(item => !deletedItemIds.has(item.id)).map(item => restored.get(item.id) || item);
                 referenceDocumentsCurrentRef.current = updated;
                 scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
                 setScheduleItems(nextScheduleItems);
-                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id)); });
+                restored.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); // with the copy it started from (owner answer Q28)
                 dropDeletedPredecessors([...deletedItemIds], updated); // shared tasks survive (whole-app audit A5 pass 3 F7 (30 Sep 2026)); a link moves to the task shown that answers to its removed row (A6 pass 14 L1)
                 return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
@@ -11738,9 +11744,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
     item: ScheduleItem,
     generation?: number,
     changedFields?: readonly (keyof ScheduleItem)[],
+    before?: ScheduleItem, // the task the edit started from (owner answer Q28)
+    followUp = false, // the editor sending again what it queued: nothing new is queued (review N1)
   ): Promise<boolean> {
     try {
-      const result = await runScheduleItemCloudSync(item, changedFields);
+      const result = await runScheduleItemCloudSync(item, changedFields, before, followUp);
       const itemStillExists = scheduleItemsCurrentRef.current.some(
         candidate => candidate.id === item.id,
       );
@@ -11829,7 +11837,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         const latest = scheduleItemsCurrentRef.current.find(
           candidate => candidate.id === readyItemId,
         );
-        if (latest) void syncScheduleItemRevision(latest, readyGeneration);
+        if (latest) void syncScheduleItemRevision(latest, readyGeneration, undefined, undefined, true); // sends what waits, never a new whole copy (review N1)
       },
     });
   }
@@ -11842,7 +11850,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
   ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
-    const next = withProjectControlsEditMerged(current, edit); // newer controls kept (audit A2 p4 L1)
+    const { savedLookaheadDates: shownDates, ...taskEdit } = edit; // the shown copy's marker is never saved, nor dates only shown (review N1 L1)
+    if (shownDates && taskEdit.startDate === shownDates.shownStartDate && taskEdit.finishDate === shownDates.shownFinishDate) { delete taskEdit.startDate; delete taskEdit.finishDate; }
+    const next = withProjectControlsEditMerged(current, taskEdit); // newer controls kept (audit A2 p4 L1)
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
@@ -11906,7 +11916,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         scheduleItemTextSyncLifecycleRef.current,
         itemId,
       );
-      void queueScheduleItemRecord(updated, true, changedFields)
+      void queueScheduleItemRecord(updated, true, changedFields, current)
         .then(() => queueDebouncedScheduleItemTextSync(itemId, syncGeneration))
         .catch(() => {
           if (
@@ -11923,7 +11933,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     cancelScheduleItemTextSync(itemId);
-    void syncScheduleItemRevision(updated, syncGeneration, changedFields);
+    void syncScheduleItemRevision(updated, syncGeneration, changedFields, current);
   }
 
   async function saveScheduleItemChanges(itemId: string): Promise<boolean> {
@@ -11936,7 +11946,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     cancelScheduleItemTextSync(itemId);
     const generation = scheduleItemSyncGenerationsRef.current.get(itemId);
-    return syncScheduleItemRevision(latest, generation);
+    return syncScheduleItemRevision(latest, generation, undefined, undefined, true); // Save sends what waits, never a new whole copy (review N1)
   }
 
   /** This phone's own deletions reach the realtime applier at once, not at the next refresh (audit A7 pass 3). */
@@ -12523,6 +12533,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         completionMatch: findExactScheduleTaskForCompletionClaim,
         isCurrent: scheduleItemsVisibleBeforeImport(scheduleItemsCurrentRef.current, referenceDocumentsCurrentRef.current, approvedBatch.id),
         overlay: scheduleImportAddsToMaster(approvedBatch, referenceDocumentsCurrentRef.current), // a lookahead restates the master's tasks in place (owner answer Q22)
+        pairingChoices: approvedBatch.pairingChoices, // which saved task each same-named row is, as David confirmed it (owner answer Q30)
         mergeCompletion: (item, importedItem) => normalizeScheduleItem(
           mergeReportedCompletionClaim(item, importedItem) as unknown as Partial<ScheduleItem>,
         ) as unknown as import('./types').ScheduleItem,
@@ -12560,7 +12571,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const syncResult = await runScheduleImportCloudSync({
       scheduleItems: scheduleSyncItems,
-      referenceDocuments: referenceDocumentSyncRecords,
+      referenceDocuments: referenceDocumentSyncRecords, scheduleItemsBefore: scheduleItemsCurrentRef.current, // each row's copy before (owner answer Q28)
     });
     if (!syncResult.durablyQueued) {
       throw new Error(
@@ -12716,6 +12727,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setScreen(screenForUpdateResume(draftRef.current));
       return;
     }
+    void noteFieldUpdateEditOpened(update); // the copy David's edit starts from (owner answer Q28)
 
     if (hasDraftContent(draft)) {
       const photoCount = draft.photos.length;
@@ -13038,6 +13050,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // A sign-out or another account drops photo analyses in progress; the
       // hourly token refresh and a name save do not (whole-app audit A1 pass 1).
       // A transient null (an offline start, owner answer Q13) is not an account.
+      const previousUserId = lastUserId; // whose unsaved work a sign-out not asked for sets aside (everyday item 7)
       const change = workspaceAccountChange(lastUserId, event, session?.user?.id);
       if (!change) return;
       const { firstEvent, accountChanged } = change;
@@ -13058,7 +13071,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // Another account must not inherit this one's report narrative or
       // approval (audit A6, pass 2), whether or not a sign-out came first (A1).
       if (accountChanged) forgetAllReportSessionState();
-      if (accountChanged) { forgetFieldNoteDraft(); forgetKeptWalkMemoryDrafts(); } // nobody's unsaved note or walk memory carries over (A2 M3, A11 pass 4 L3)
+      // Nobody's unsaved note, walk memory or kept recording carries over (A2 M3, A11 pass 4 L3, everyday item 4);
+      // a sign-out not asked for here sets them aside for that account instead (everyday item 7).
+      if (accountChanged) settleUnsavedDraftsOnAccountChange(event, previousUserId, change.userId);
     });
 
     return () => {
@@ -13873,6 +13888,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onReportFormatChange={setReportFormat}
               updates={liveAuthorityInput.updates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
               scheduleItems={liveAuthorityInput.scheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
+              knownScheduleItems={liveAuthorityInput.knownScheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['knownScheduleItems']} knownScheduleDocuments={referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['knownScheduleDocuments']} // what a newer lookahead replaced (owner answer 3 Oct)
               currentUpdate={liveAuthorityInput.currentUpdate as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
               projectAreas={liveAuthorityInput.projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
               contacts={liveAuthorityInput.contacts as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}
@@ -14101,7 +14117,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     recovered.scheduleItems.filter(isDAVESafeCloudScheduleRecord),
                   ).map(migrateLegacyScheduleItem);
                   setScheduleItems(previous => recoverDAVEScheduleRecords({
-                    local: previous,
+                    local: scheduleItemsWithPendingEditsOverCloud(previous, safeCloudItems, recovered.scheduleItemEditsWaiting), // a task edit waiting with its base, over the cloud's row (owner answer Q28)
                     cloud: safeCloudItems,
                     deletedIds: deletedDAVERecordIds(
                       recovered.tombstones,
@@ -14169,12 +14185,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'SavedUpdates' && (
             <SavedUpdatesScreen
               contentStyle={contentStyle}
-              updates={savedUpdates}
+              updates={updatesWithOpenDraft(savedUpdates, draft, hasMeaningfulDraft(draft))}
               deletedTaskEvidenceIds={deletedTaskEvidenceIds}
               projectAreas={projectAreas}
               contactBook={contactBook}
               onOpen={openSavedUpdate}
-              onDelete={deleteSavedUpdate}
+              onDelete={updateId => (isOpenDraftRow(savedUpdates, draft, updateId) ? discardDraft() : deleteSavedUpdate(updateId))}
               onArchive={archiveSavedUpdate}
               onRetryPhotoAnalysis={(update, photo) => {
                 void retryPhotoAnalysis(update, photo);
@@ -14352,6 +14368,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               title="Talk"
               prompt="What do you need?"
               guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
+              keepSlot="talk" // a recording waiting for signal survives iOS closing the app (everyday item 4)
               continueLabel="Continue"
               operationLabel="Create a task"
               operationGuidance="Answer guided questions so every task field is reviewed before saving."
@@ -15203,9 +15220,10 @@ function ProjectDocumentInlineRow({
   document: ProjectDocument;
   onRetry?: () => void;
 }) {
+  const signInPending = useNativeWorkspaceSignInPending();
   const canRetry =
     Boolean(onRetry) &&
-    (document.status === 'failed' || document.status === 'local');
+    (document.status === 'failed' || document.status === 'local') && !projectDocumentWaitsForSignIn(document, signInPending);
 
   return (
     <View style={styles.compactLocationRow}>
@@ -15213,7 +15231,7 @@ function ProjectDocumentInlineRow({
       <View style={styles.rowMain}>
         <Text style={styles.projectName}>{document.name}</Text>
         <Text style={styles.rowSub}>
-          {document.category} · {projectDocumentStatusDetail(document)}
+          {document.category} · {projectDocumentStatusDetail(document, signInPending)}
         </Text>
       </View>
       {canRetry ? (
@@ -17589,15 +17607,17 @@ function ProjectWorkspaceScreen({
         projectName={projectName}
         walkContext={projectWalkContext}
         candidateLocations={projectAreas.map(area => area.name)}
-        onMemoryReady={result => {
+        keepSlot={`walk:${projectName}`}
+        onMemoryReady={(result, kept) => {
           projectWalkLocationRequest.current += 1;
-          const createdAt = new Date().toISOString();
+          // A recording brought back from the device keeps the time and area it was dictated in (review N1 L3).
+          const createdAt = kept?.recordedAt ?? new Date().toISOString();
           const memoryId = `voice-memory-${uid()}`;
           const proposedFields = result.understanding.status === 'succeeded'
             ? result.understanding.fields
             : { ...result.understanding.fields, generalMemory: result.transcript };
           const transcriptArea = result.understanding.recommendedLocation;
-          const gpsArea = projectWalkContext.recommendedArea;
+          const gpsArea = kept ? kept.walkArea : projectWalkContext.recommendedArea;
           const areasConflict = Boolean(
             transcriptArea.value && gpsArea &&
             transcriptArea.value.toLowerCase() !== gpsArea.name.toLowerCase(),
@@ -19094,6 +19114,7 @@ function UpdateHistoryCard({
   const documents = update.documents || [];
   const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
   const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
+  const documentChangeWaiting = useFieldUpdateDocumentChangeWaiting(update.id); // VoiceOver reads the card's label, so it says the line too (everyday item 9)
   const statusLine = conflictReview ? null :
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
@@ -19121,7 +19142,7 @@ function UpdateHistoryCard({
       onPress={onOpen}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
+      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${documentChangeWaiting ? `${FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT}. ` : ''}${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
         {thumbnail.uri ? (
@@ -19767,7 +19788,7 @@ function ScheduleScreen({
               onCancel={onCancelImport}
               incomingBatch={incomingImportBatch}
               onIncomingBatchConsumed={onIncomingImportConsumed}
-              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
+              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }} savedItems={knownScheduleItems as unknown as import('./types').ScheduleItem[] | undefined} // the rows the approval pairs on (review N2 G1)
             />
           ) : null}
 
@@ -19782,8 +19803,8 @@ function ScheduleScreen({
                 <View style={styles.rowMain}>
                   <Text style={styles.panelTitle}>Schedule Sources</Text>
                   <Text style={styles.rowSub}>
-                    {scheduleDocuments.filter(document => document.category === 'Schedules' && document.isCurrent).length} current ·{' '}
-                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !document.isCurrent).length} prior
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && (scheduleDocumentAddsToMaster(document) ? scheduleLookaheadInEffect(document, scheduleDocuments) : document.isCurrent)).length} current ·{' '}
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !(scheduleDocumentAddsToMaster(document) ? scheduleLookaheadInEffect(document, scheduleDocuments) : document.isCurrent)).length} prior{/* a lookahead counts while it is the newest for a project (owner answer Q25) */}
                     {scheduleDocuments.some(document => document.notes.includes('[Schedule communication screenshot]'))
                       ? ` · ${scheduleDocuments.filter(document => document.notes.includes('[Schedule communication screenshot]')).length} supporting`
                       : ''}
@@ -20468,13 +20489,13 @@ function ScheduleItemRow({
             <NativeDateField
               label="Start Date"
               value={item.startDate}
-              onChange={startDate => onUpdate({ startDate })}
+              onChange={startDate => onUpdate({ startDate, finishDate: item.finishDate })} // with the other date as shown (review N1 M1)
               testID={`schedule-start-date-${item.id}`}
             />
             <NativeDateField
               label="Finish / Due Date"
               value={item.finishDate}
-              onChange={finishDate => onUpdate({ finishDate })}
+              onChange={finishDate => onUpdate({ finishDate, startDate: item.startDate })} // with the other date as shown (review N1 M1)
               testID={`schedule-finish-date-${item.id}`}
             />
             <ScheduleCommittedTextField

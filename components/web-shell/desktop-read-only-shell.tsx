@@ -2,6 +2,14 @@ import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ScheduleImportPairingCheck,
+  scheduleImportPairingGuess,
+  scheduleImportPairingRefusal,
+  withScheduleImportPairingChoices,
+  type ScheduleImportPairingAnswer,
+} from '../schedule-import-pairing-check';
+import type { ScheduleImportPairingQuestion } from '../../services/ScheduleImportMerge';
+import {
   ActivityIndicator,
   Image,
   Pressable,
@@ -33,6 +41,7 @@ import {
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
+  daveWebDocumentInEffect,
   groupDAVEWebDocuments,
 } from '../../services/DAVEWebDocumentManagement';
 import {
@@ -83,11 +92,16 @@ import {
   buildDAVEWebReportDraft,
   buildDAVEWebReportSource,
   buildDAVEWebReportTitle,
+  buildDAVEWebReportTruths,
+  daveWebReportSourceOnPeriod,
   buildDAVEWebTruthDiagnostics,
   createDAVEWebBackup,
   createDAVEWebId,
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
+  daveWebReportSourceNotCounted,
+  daveWebScheduleDocumentDeleteNote,
+  daveWebScheduleImportPairingQuestions,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   prepareDAVEWebLinkedDocument,
@@ -129,6 +143,66 @@ import {
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
+import { buildDAVEReportSourceFingerprint, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
+import {
+  buildDAVEReportSnapshot,
+  daveReportSnapshotScopeKey,
+  reportPeriodSend,
+  reportPeriodSentAfter,
+  reportPeriodSentAt,
+  type DAVEReportSnapshot,
+} from '../../services/DAVEReportSnapshot';
+import {
+  approveDAVEWebReportPeriod,
+  daveWebOwnReportSends,
+  daveWebReportOlderPeriodLeftInBrowser,
+  daveWebReportPeriodKeptInTabOnly,
+  daveWebReportPeriodsKeptHere,
+  daveWebReportSendReachedShared,
+  daveWebReportSentHereAt,
+  daveWebReportSentInThisTab,
+  daveWebReportSnapshotCloud,
+  daveWebReportStorage,
+  onDAVEWebReportSharedRecordSeen,
+  recordDAVEWebReportSend,
+  shareDAVEWebReportSendsBeforeSignOut,
+  type DAVEWebPeriodOutcome,
+  type DAVEWebSendOutcome,
+} from '../../services/DAVEWebReportSend';
+import { approvalReplacesUnsentApproval, manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
+import {
+  DesktopReportMarkSent,
+  DesktopReportSentQuestion,
+  DesktopReportUnsentApprovalWarning,
+  sameSharedReport,
+  type DesktopSharedReport,
+} from './desktop-report-send';
+import {
+  DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
+  DAVE_WEB_REPORT_PREPARED_WHILE_WAITING,
+  DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
+  DAVE_WEB_REPORT_SEND_NOT_RECORDED,
+  DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
+  daveWebReportAlreadyMarkedSentMessage,
+  daveWebReportAlreadyRecordedMessage,
+  daveWebReportAlreadySentNote,
+  daveWebReportCheckedPressAgain,
+  daveWebReportCountedFromLine,
+  daveWebReportKeptInTabOnlyNote,
+  daveWebReportBehindMessage,
+  daveWebReportLaterSendMessage,
+  daveWebReportNotYetMessage,
+  daveWebReportRecordedMessage,
+  daveWebReportSendsNotSharedWarning,
+  daveWebReportPeriodMoved,
+  daveWebReportPeriodMovedMessage,
+  daveWebReportPeriodNote,
+  daveWebReportPeriodState,
+  daveWebReportSentFromHereNote,
+  daveWebReportWordWaitsMessage,
+  readDAVEWebReportPeriod,
+  type DAVEWebReportPeriodRead,
+} from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
   ECOSDocumentExtractionCancelledError,
@@ -653,8 +727,9 @@ function DesktopPageData({
         // Unarchived projects, so Ask ECOS refuses a number only when it names
         // one of them (owner answer Q20; audit A9 pass 1 #2), and closed ones,
         // whose numbers are refused as closed (audit A9 pass 3 L1).
-        onAsk={input => auth.askProjectQuestion({
+        onAsk={(input, control) => auth.askProjectQuestion({
           ...input,
+          ...control,
           knownProjectNames: snapshot.projects.map(project => project.name),
           closedProjectNames: snapshot.closedProjectNames ?? [],
         })}
@@ -686,6 +761,8 @@ function DesktopPageData({
         <DocumentManagementWorkspace
           documents={documents}
           tasks={snapshot.scheduleItems}
+          knownTasks={snapshot.knownScheduleItems}
+          scheduleDocuments={snapshot.referenceDocuments}
           projects={snapshot.projects.map(project => project.name)}
           projectIdentities={projectIdentities}
           selectedProject={selectedProject}
@@ -3683,6 +3760,8 @@ type DocumentCoverageSummaryState = Readonly<{
 function DocumentManagementWorkspace({
   documents,
   tasks,
+  knownTasks,
+  scheduleDocuments,
   projects,
   projectIdentities,
   selectedProject,
@@ -3690,6 +3769,9 @@ function DocumentManagementWorkspace({
 }: {
   documents: readonly DAVEWebReferenceDocument[];
   tasks: readonly DAVEWebScheduleItem[];
+  /** Every saved task and schedule, for what a lookahead's delete with its tasks puts back (review N2 W1). */
+  knownTasks?: readonly ScheduleItem[];
+  scheduleDocuments: readonly DAVEWebReferenceDocument[];
   projects: readonly string[];
   projectIdentities: readonly ECOSProjectIdentity[];
   selectedProject: string | null;
@@ -3721,6 +3803,14 @@ function DocumentManagementWorkspace({
   );
   const [replacementId, setReplacementId] = useState<string>('');
   const [preparedUpload, setPreparedUpload] = useState<DAVEWebPreparedUpload | null>(null);
+  // Same-named tasks whose pairing the dates cannot settle: David confirms which is which before the upload, as in
+  // the phone's import review (owner answer Q30; review N1: the web's review asked nothing).
+  const pairingQuestions = useMemo(() => preparedUpload
+    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })
+    : [], [auth.snapshot, preparedUpload]);
+  const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${question.key}`;
+  const pairingAnswerOf = (question: ScheduleImportPairingQuestion) => pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
   const [preparedBytes, setPreparedBytes] = useState<ArrayBuffer | null>(null);
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -3944,11 +4034,16 @@ function DocumentManagementWorkspace({
 
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
+    const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
+    if (pairingRefusal) {
+      setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') });
+      return;
+    }
     setUploading(true);
     setUploadProgress(0);
     setNotice(null);
     try {
-      let reviewedUpload = preparedUpload;
+      let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);
       if (normalizedName(preparedUpload.document.category) === 'drawing') {
         const controls = { drawingNumber, drawingRevision, drawingDiscipline,
           drawingStatus, drawingIssuedAt, replacementDocumentId: replacementId || null };
@@ -4031,6 +4126,7 @@ function DocumentManagementWorkspace({
   async function makeCurrent(document: DAVEWebReferenceDocument) {
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
+    if (!documentOffersMakeCurrent(document)) return; // a lookahead is never made current (review N1 web M1)
     const readiness = buildECOSDocumentReadiness(document);
     // Every task the import contains counts, unchanged ones shared with the
     // prior revision included; linkedScheduleItems is only those no other
@@ -4541,6 +4637,15 @@ function DocumentManagementWorkspace({
                   ))}
                 </View>
               ) : null}
+              {pairingQuestions.map(question => (
+                <ScheduleImportPairingCheck
+                  key={pairingKey(question)}
+                  question={question}
+                  answer={pairingAnswerOf(question)}
+                  disabled={uploading}
+                  onChange={answer => setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }))}
+                />
+              ))}
               <Pressable
                 style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, uploading && styles.buttonDisabled]}
                 onPress={() => { void uploadPreparedDocument(); }}
@@ -4592,7 +4697,7 @@ function DocumentManagementWorkspace({
                   : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
-                  : ''}
+                  : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
               </Text>
             )}
           </View>
@@ -4876,7 +4981,7 @@ function DocumentList({
           </Pressable>
           {onDelete ? (
             <View style={styles.taskCardActions}>
-              {onMakeCurrent ? (
+              {onMakeCurrent && documentOffersMakeCurrent(document) ? (
                 <Pressable
                   style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed, !documentCanBeMadeCurrent(document) && styles.buttonDisabled]}
                   onPress={() => onMakeCurrent(document)}
@@ -5127,7 +5232,7 @@ function DocumentDetailsPanel({
             <Text style={styles.secondaryButtonText}>Legacy browser re-index (manual fallback)</Text>
           </Pressable>
         ) : null}
-        {onMakeCurrent ? (
+        {onMakeCurrent && documentOffersMakeCurrent(document) ? (
           <Pressable
             style={({ pressed }) => [
               styles.primaryButton,
@@ -5450,6 +5555,9 @@ function ReportFactCard({
   );
 }
 
+/** A later send that stops an approved report before it leaves the page: the period it started, and whether another tab of this browser sent it. */
+type SendCheckStop = Readonly<{ periodKey: string; fromThisBrowser: boolean }>;
+
 function ReportWorkspace({
   snapshot,
   selectedProject,
@@ -5460,22 +5568,80 @@ function ReportWorkspace({
   documents: readonly DAVEWebReferenceDocument[];
 }) {
   const auth = useDesktopAuth();
-  const briefing = useMemo(
-    () => buildDAVEWebReportDraft(snapshot, selectedProject),
+  const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
+  // Everyday item 3 (2 Oct 2026): "since the last report", counted as the
+  // phone counts it. Owner answer 2 Oct (web sends count): this computer
+  // approves and sends into that period like the phone (DAVEWebReportSend).
+  const reportTruths = useMemo(
+    () => buildDAVEWebReportTruths(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
-  const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
+  const reportFingerprint = useMemo(() => buildDAVEReportSourceFingerprint(reportTruths), [reportTruths]);
+  const periodScopeKey = daveReportSnapshotScopeKey(reportTruths.map(truth => truth.projectName));
+  const periodReadKey = `${periodScopeKey}|${reportAudience}`;
+  const [periodRead, setPeriodRead] = useState<{ key: string; read: DAVEWebReportPeriodRead }>({
+    key: '',
+    read: { status: 'loading' },
+  });
+  const { loadReportPeriod, saveReportPeriod, reportOwnerId } = auth;
+  const periodStore = useMemo(() => ({
+    storage: daveWebReportStorage(reportOwnerId),
+    cloud: daveWebReportSnapshotCloud(loadReportPeriod, saveReportPeriod),
+  }), [loadReportPeriod, reportOwnerId, saveReportPeriod]);
+  const [periodReload, setPeriodReload] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    void readDAVEWebReportPeriod(periodStore, periodScopeKey, reportAudience).then(read => {
+      if (!cancelled) setPeriodRead({ key: periodReadKey, read });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Read again on each refresh of the project record: a report sent from the phone then shows up.
+  }, [periodStore, periodReadKey, periodScopeKey, periodReload, reportAudience, snapshot.refreshedAt]);
+  const currentPeriodRead: DAVEWebReportPeriodRead = periodRead.key === periodReadKey
+    ? periodRead.read
+    : { status: 'loading' };
+  const period = daveWebReportPeriodState({
+    read: currentPeriodRead,
+    fingerprint: reportFingerprint,
+    pulledAt: snapshot.tasksPulledAt ?? null,
+    ownSends: daveWebOwnReportSends(),
+  });
+  // Behind the other device's send: nothing is counted, and every task is downloaded again, once per send.
+  const behindKey = period.behindSend ? `${period.behindSend.sentBy ?? ''}|${period.behindSend.deliveredAt}` : null;
+  const requestedDownloadRef = useRef<string | null>(null);
+  const refreshSnapshot = auth.refreshSnapshot;
+  useEffect(() => {
+    if (!behindKey || requestedDownloadRef.current === behindKey) return;
+    requestedDownloadRef.current = behindKey;
+    void refreshSnapshot().catch(() => false);
+  }, [behindKey, refreshSnapshot]);
+  const periodBaseline = period.previousSnapshot;
+  const periodWaiting = Boolean(period.behindSend);
+  const briefing = useMemo(
+    () => buildDAVEWebReportDraft(snapshot, selectedProject, {
+      previousSnapshot: periodBaseline,
+      waitingForOtherDevice: periodWaiting,
+    }),
+    [periodBaseline, periodWaiting, selectedProject, snapshot],
+  );
+  const periodChecked = currentPeriodRead.status === 'loaded';
+  const sinceSection = useMemo(() => {
+    const lines = periodChecked ? reportPeriodMovementLines(briefing) : null;
+    return lines ? { label: briefing.reportingPeriod.label, lines } : null;
+  }, [briefing, periodChecked]);
   const generatedTitle = useMemo(
     () => buildDAVEWebReportTitle(briefing, reportAudience),
     [briefing, reportAudience],
   );
   const generatedBody = useMemo(
-    () => formatDAVEWebReport(briefing, reportAudience),
-    [briefing, reportAudience],
+    () => formatDAVEWebReport(briefing, reportAudience, sinceSection),
+    [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject),
-    [selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting),
+    [period.periodKey, periodWaiting, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
@@ -5489,7 +5655,255 @@ function ReportWorkspace({
   const [pending, setPending] = useState(false);
   const [editingReportBody, setEditingReportBody] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  // Review N2 (5 Oct 2026): `byPeriodCard`: said in the "Since the last report" card, where Mark as Sent is, in
+  // place of the report workspace. Mark as Sent can be pressed with the workspace closed, and its outcome was
+  // shown only inside it: recorded or refused, the panel just went away.
+  // Review N2 follow-up (5 Oct 2026): `awaitingShared`: the line says a send from here has not reached the shared
+  // record yet; it is corrected when the record is seen to run from that send.
+  const [notice, setNotice] = useState<{
+    tone: 'good' | 'danger';
+    text: string;
+    byPeriodCard?: true;
+    awaitingShared?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
+  } | null>(null);
+  useEffect(() => onDAVEWebReportSharedRecordSeen(seen => {
+    setNotice(current => current?.awaitingShared && seen.sentAt === current.awaitingShared.sentAt &&
+      seen.scopeKey === current.awaitingShared.scopeKey && seen.reportFormat === current.awaitingShared.reportFormat
+      ? {
+        tone: 'good',
+        text: daveWebReportRecordedMessage(current.awaitingShared.sentAt, 'checked'),
+        ...(current.byPeriodCard ? { byPeriodCard: true as const } : {}),
+      }
+      : current);
+  }), []);
+  // What the generator last put in the draft: a draft still reading so, never
+  // saved, follows the period when it loads or moves (everyday item 3).
+  // Review N2 (5 Oct 2026): and when a wait for the other device's changes ends. It followed the period only
+  // when its key changed, and the end of a wait does not change it (the period is still the other device's
+  // send): the draft kept "Not counted yet" under a card that listed the change, the page called it ready, and
+  // it was approved, sent and recorded, so the change was in no report. On the phone the report is written
+  // again as the wait ends; here the untouched draft now is too.
+  const generatedDraftRef = useRef({ title: generatedTitle, body: generatedBody });
+  const shownPeriodKeyRef = useRef(period.periodKey);
+  const draftWaitEnded = !periodWaiting && daveWebReportSourceNotCounted(reportSource.fingerprint);
+  useEffect(() => {
+    const periodMoved = shownPeriodKeyRef.current !== period.periodKey;
+    shownPeriodKeyRef.current = period.periodKey;
+    if (!periodMoved && !draftWaitEnded) return;
+    const untouched = expectedRevision === null &&
+      reportStatus === 'draft' &&
+      reportTitle === generatedDraftRef.current.title &&
+      reportBody === generatedDraftRef.current.body;
+    if (!untouched) return;
+    generatedDraftRef.current = { title: generatedTitle, body: generatedBody };
+    setReportTitle(generatedTitle);
+    setReportBody(generatedBody);
+    setReportGeneratedAt(briefing.generatedAt);
+    setReportSource(currentReportSource);
+    // Only a change of period, or the end of a wait, regenerates the draft; facts changing alone still ask for a refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period.periodKey, draftWaitEnded]);
+  // Review N2 (5 Oct 2026): a draft he edited or saved while the tab waited is not written again under him (the
+  // phone keeps edits made while it waited the same way, and does not let them be approved). Once the changes
+  // are here it is not ready: the page says why, and it is not approved, shared or put in an email draft.
+  const draftSaysNotCounted = reportBody.includes(REPORT_PERIOD_WAITING_LINE);
+  const draftNotCountedProblem = periodWaiting
+    ? null
+    : draftSaysNotCounted
+      ? DAVE_WEB_REPORT_SAYS_NOT_COUNTED
+      : draftWaitEnded ? DAVE_WEB_REPORT_PREPARED_WHILE_WAITING : null;
+  // Owner answer 2 Oct (web sends count): a share or email draft asks whether it went out; Mark as Sent records one sent another way.
+  // Review N1 M1 (3 Oct 2026): the question is about the exact report that was shared: its saved approval, its
+  // facts and its period. It was one switch, left up when that report was regenerated or the format changed and
+  // the next one approved, and "Yes" then recorded the new report, never shared, as sent: what changed between
+  // the two was never reported. It is withdrawn when the report on screen is no longer that approval, and "Yes"
+  // records only the report that was shared.
+  const [sendQuestion, setSendQuestion] = useState<DesktopSharedReport | null>(null);
+  const [markSentRecording, setMarkSentRecording] = useState(false);
+  const [markSentMessage, setMarkSentMessage] = useState('');
+  const [unsentApprovalWarningUp, setUnsentApprovalWarningUp] = useState(false);
+  const periodSnapshot = currentPeriodRead.status === 'loaded' ? currentPeriodRead.snapshot : null;
+  // Before the shared record exists a send from here is this computer's own period: the lines say so (review N1).
+  const reportsSharedBetweenDevices = currentPeriodRead.status !== 'loaded' || currentPeriodRead.shared !== 'unavailable';
+  // Review N1 M2 (2 Oct 2026): an approved report this computer had sent,
+  // reopened from Report history, could not be shared again. The saved report
+  // keeps the period it was prepared on; its own send had moved the period,
+  // and that read as "Your other device sent a report at <this computer's
+  // own send time>". This computer's own sends are never another device's:
+  // the report on screen is one it sent (`sentFromHereAt`), or the period
+  // now runs from a send of its own; only another device's later send stops
+  // an approval (A6 pass 8 M1).
+  const sentFromHereAt = reportStatus === 'approved'
+    ? daveWebReportSentHereAt(periodSnapshot, reportSource.fingerprint.split(':media-')[0])
+    : null;
+  const periodSentAt = reportPeriodSentAt(periodSnapshot);
+  const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
+  // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
+  // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
+  // the other tab's send is this browser's own, and own sends never stopped a share (review N1 M2). Only
+  // afterwards did the page say it could not be recorded. A later report this browser sent from another tab now
+  // stops a report approved in this tab as another device's does, in the same words but for "Another tab of
+  // this browser". This tab's own sends never stop it, and an older report opened from Report history is still
+  // copied after this browser's later sends, as pass 1 pinned it (review-n1-web-report-resend).
+  const [approvedInThisTab, setApprovedInThisTab] = useState(false);
+  /** When another tab sent the report `periodNow` runs from, if that stops the approved report on screen; else null. */
+  const anotherTabSentLater = (
+    periodNow: DAVEReportSnapshot | null,
+    preparedKey: string | undefined,
+    reportFacts: string,
+  ): string | null => {
+    const send = reportPeriodSend(periodNow);
+    const sentAt = typeof send?.deliveredAt === 'string' ? send.deliveredAt : null;
+    if (!sentAt || !approvedInThisTab) return null;
+    // This browser's, but not this tab's own.
+    if (!daveWebOwnReportSends().has(sentAt) || daveWebReportSentInThisTab(sentAt)) return null;
+    // Later than the report this one counts from ('none': it counted from no report), and not this very report.
+    const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+    if (countedFrom === undefined || !reportPeriodSentAfter(periodNow, countedFrom)) return null;
+    return daveWebReportSentHereAt(periodNow, reportFacts) ? null : sentAt;
+  };
+  const approvedMovedByAnotherTab = reportStatus === 'approved' && !sentFromHereAt &&
+    Boolean(anotherTabSentLater(periodSnapshot, reportSource.periodKey, reportSource.fingerprint.split(':media-')[0]));
+  // Review N2 follow-up (5 Oct 2026): the report stands on a send this tab has just recorded, later than the send
+  // the page last read the period from: the page has yet to catch up with its own send. No other device sent
+  // anything, yet until that read came back the panel said "Your other device sent a report <the one before>,
+  // after this one was approved…".
+  const reportOwnSendAt = reportSource.periodKey?.startsWith('sent:') ? reportSource.periodKey.slice('sent:'.length) : null;
+  const reportAheadOnOwnSend = daveWebReportSentInThisTab(reportOwnSendAt) &&
+    (periodSentAt === null || Date.parse(reportOwnSendAt as string) > Date.parse(periodSentAt));
+  const approvedPeriodMoved = approvedMovedByAnotherTab || (reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
+    !reportAheadOnOwnSend && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
+  const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
+    periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
+  /** The report on screen as the period records it: its facts, these projects, this format. */
+  const periodSnapshotOfReport = () => buildDAVEReportSnapshot({
+    truths: reportTruths,
+    scopeKey: periodScopeKey,
+    sourceFingerprint: reportFingerprint,
+    capturedAt: reportTruths.map(truth => truth.generatedAt).sort().at(-1),
+    reportFormat: reportAudience,
+  });
+  /**
+   * Records the approved report as sent from here, or as sent another way at
+   * `sentAt` (Mark as Sent), exactly as the phone records a send; says what
+   * happened. Not recorded over a later send from another device.
+   */
+  const recordSend = async (
+    sentAt: string,
+    markedSentAt: string | null,
+    approvedFingerprint: string | null,
+    /** The period of the report that went out, when it is not the one on screen now (review N1 M1). */
+    sentPeriod: Readonly<{ scopeKey: string; reportFormat: DAVEWebReportAudience }> = { scopeKey: periodScopeKey, reportFormat: reportAudience },
+    /** Mark as Sent: what happened is said by its own card, open workspace or not (review N2). */
+    byPeriodCard = false,
+  ) => {
+    const say = (tone: 'good' | 'danger', text: string) => setNotice(byPeriodCard ? { tone, text, byPeriodCard: true } : { tone, text });
+    let outcome: DAVEWebSendOutcome | null = null;
+    try {
+      outcome = await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
+      // Review N1 L2 (3 Oct 2026): no approval of this report here or in the shared period (approved in another
+      // browser before reports were shared, or this browser's site data was cleared). It is the approved report
+      // on screen and its facts are the current ones, so this computer takes the approval as its own, as Approve
+      // here would, and records the send; the later-send check applies as for any approval.
+      // Not over another approved report this computer still has to mark sent: that one would be lost (review N1 L5).
+      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && approvedFingerprint === reportFingerprint &&
+        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience && !approvalToMarkSent) {
+        const approved = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
+        outcome = approved.status === 'later_send'
+          ? approved
+          : await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
+      }
+    } catch {
+      say('danger', "The report couldn't be recorded as sent on this computer. Try again.");
+      return false;
+    }
+    setPeriodReload(count => count + 1);
+    // Review N2 (5 Oct 2026): "Was the report sent?" is settled for a report once its send is recorded here, or
+    // refused because another device's later report stands. Recorded with Mark as Sent while the question was
+    // up, the question stayed, and "Not yet" then said "Nothing was recorded. Once you send it, use Mark as Sent."
+    if (outcome) {
+      setSendQuestion(asked => asked && asked.fingerprint === approvedFingerprint &&
+        asked.scopeKey === sentPeriod.scopeKey && asked.reportFormat === sentPeriod.reportFormat ? null : asked);
+    }
+    if (outcome?.status === 'already_sent') {
+      // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
+      say('good', byPeriodCard ? daveWebReportAlreadyMarkedSentMessage(outcome.sentAt) : daveWebReportAlreadyRecordedMessage(outcome.sentAt));
+      return true;
+    }
+    if (!outcome) {
+      // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
+      say('danger', DAVE_WEB_REPORT_SEND_NOT_RECORDED);
+      return false;
+    }
+    if (outcome.status === 'later_send') {
+      say('danger', daveWebReportLaterSendMessage(outcome.later, 'record', outcome.fromThisBrowser));
+      return false;
+    }
+    // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
+    const recordedFingerprint = outcome.snapshot?.sourceFingerprint;
+    setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
+      ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
+      : source);
+    // Review N2 follow-up (5 Oct 2026): "on every device" only once this send's own write is known to have
+    // arrived. It was said from the page's last read of the shared record, also for a send made as the record
+    // went out of reach. Until it arrives the line says where the send stands, and is corrected when it does.
+    const reached = await daveWebReportSendReachedShared(periodStore.cloud, sentPeriod, sentAt);
+    setNotice({
+      tone: 'good',
+      text: daveWebReportRecordedMessage(sentAt, reached),
+      ...(byPeriodCard ? { byPeriodCard: true as const } : {}),
+      ...(reached === 'unchecked' ? { awaitingShared: { sentAt, ...sentPeriod } } : {}),
+    });
+    return true;
+  };
+  /** The approved report on screen, as a share or an email draft takes it (review N1 M1). */
+  const reportAsShared = (): DesktopSharedReport => ({
+    reportId,
+    revision: expectedRevision,
+    fingerprint: reportSource.fingerprint.split(':media-')[0] || null,
+    scopeKey: periodScopeKey,
+    reportFormat: reportAudience,
+  });
+  // Asked only while the report on screen is still the approval that was shared.
+  const sharedReportOnScreen = sendQuestion && reportStatus === 'approved' && sameSharedReport(sendQuestion, reportAsShared())
+    ? sendQuestion
+    : null;
+  // Review N2 follow-up (5 Oct 2026): what is true of the report the question is about. Mark as Sent is offered
+  // for it only while its own approval is the one waiting here; once another device's (or another tab's) later
+  // report has overtaken it, the page says so. The question and its "Not yet" promised Mark as Sent either way.
+  const sharedCanBeMarkedSent = Boolean(sharedReportOnScreen && approvalToMarkSent &&
+    approvalToMarkSent.sourceFingerprint === sharedReportOnScreen.fingerprint);
+  const sharedOvertaken = sharedReportOnScreen && approvedPeriodMoved
+    ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
+    : null;
+  const answerSendQuestion = (sent: boolean) => {
+    const shared = sharedReportOnScreen;
+    setSendQuestion(null);
+    if (!shared) return;
+    if (!sent) {
+      setNotice({ tone: 'good', text: daveWebReportNotYetMessage(sharedCanBeMarkedSent, sharedOvertaken) });
+      return;
+    }
+    // The report that was shared, by its own facts and period: never whatever is on screen by now.
+    void recordSend(new Date().toISOString(), null, shared.fingerprint, { scopeKey: shared.scopeKey, reportFormat: shared.reportFormat });
+  };
+  const markReportSentManually = (choice: 'now' | Date) => {
+    if (!approvalToMarkSent || markSentRecording) return;
+    const checked = manualReportSendTime(choice, approvalToMarkSent);
+    if (!checked.ok) {
+      setMarkSentMessage(checked.message);
+      return;
+    }
+    setMarkSentRecording(true);
+    setMarkSentMessage('');
+    void recordSend(
+      checked.sentAt,
+      manualReportMarkTime(checked.sentAt),
+      approvalToMarkSent.sourceFingerprint,
+      { scopeKey: periodScopeKey, reportFormat: reportAudience },
+      true,
+    ).finally(() => setMarkSentRecording(false));
+  };
   const selectedProjectNames = useMemo(
     () => selectedProject
       ? scheduleProjectScopeNames(selectedProject, [...snapshot.scheduleItems])
@@ -5497,18 +5911,36 @@ function ReportWorkspace({
     [selectedProject, snapshot.projects, snapshot.scheduleItems],
   );
 
+  // Review N2 follow-up (5 Oct 2026): a Word file is one of the ways he sends a report to a client, and Download
+  // Word Report was held back by nothing: a draft that said "Not counted yet" went into the file with that
+  // sentence in it, the red line on the page beside the button notwithstanding. It is held back as Approve, Share
+  // and Prepare Email are, with their line and their way out; from Report history the line is said under the row.
+  const [wordHeldBack, setWordHeldBack] = useState<Readonly<{ documentId: string; text: string }> | null>(null);
   const downloadWordReport = async ({
     title,
     body,
     generatedAt,
     updateIds,
+    historyDocumentId,
   }: {
     title: string;
     body: string;
     generatedAt: string;
     updateIds: readonly string[];
+    /** The Report history row it was pressed on; absent for the report in the workspace. */
+    historyDocumentId?: string;
   }) => {
     if (pending) return;
+    if (body.includes(REPORT_PERIOD_WAITING_LINE)) {
+      // The draft in the workspace is written again by itself once the changes arrive; a saved report is not.
+      const text = !historyDocumentId && period.behindSend
+        ? daveWebReportWordWaitsMessage(period.behindSend)
+        : DAVE_WEB_REPORT_SAYS_NOT_COUNTED;
+      if (historyDocumentId) setWordHeldBack({ documentId: historyDocumentId, text });
+      else setNotice({ tone: 'danger', text });
+      return;
+    }
+    setWordHeldBack(null);
     setPending(true);
     setNotice(null);
     try {
@@ -5570,6 +6002,10 @@ function ReportWorkspace({
   };
 
   const resetFromCurrentTruth = () => {
+    // The report that was shared is replaced: its question goes with it (review N1 M1).
+    const askedOfShared = Boolean(sharedReportOnScreen);
+    setSendQuestion(null);
+    generatedDraftRef.current = { title: generatedTitle, body: generatedBody };
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(generatedTitle);
     setReportBody(generatedBody);
@@ -5578,13 +6014,21 @@ function ReportWorkspace({
     setAudit([]);
     setReportSource(currentReportSource);
     setReportStatus('draft');
-    setNotice({ tone: 'good', text: 'A fresh draft was generated from the latest reconciled project record.' });
+    setNotice({
+      tone: 'good',
+      text: askedOfShared
+        ? 'A fresh draft was generated from the latest reconciled project record. Nothing was recorded for the report you shared: if it was sent, use Mark as Sent before you approve this one.'
+        : 'A fresh draft was generated from the latest reconciled project record.',
+    });
   };
 
   const applyReportAudience = (audience: DAVEWebReportAudience) => {
     if (audience === reportAudience) return;
     const nextTitle = buildDAVEWebReportTitle(briefing, audience);
+    // The other format's period is read next; its "since" section follows (everyday item 3).
     const nextBody = formatDAVEWebReport(briefing, audience);
+    generatedDraftRef.current = { title: nextTitle, body: nextBody };
+    setSendQuestion(null); // the report that was shared is no longer on screen (review N1 M1)
     setReportAudience(audience);
     setReportId(createDAVEWebId('web-report'));
     setReportTitle(nextTitle);
@@ -5603,8 +6047,31 @@ function ReportWorkspace({
     });
   };
 
-  const save = async (status: 'draft' | 'approved') => {
+  const save = async (status: 'draft' | 'approved', overUnsentApproval = false) => {
     if (pending || !reportTitle.trim() || !reportBody.trim()) return;
+    // Review N1 L5 (3 Oct 2026): this approval would replace an approved report not recorded as sent, and only
+    // the newest approval can be marked sent. He is told first, as on the phone, and can go back and mark it.
+    if (status === 'approved' && !overUnsentApproval && approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportFingerprint)) {
+      setUnsentApprovalWarningUp(true);
+      return;
+    }
+    setUnsentApprovalWarningUp(false);
+    // Saved or approved again: no longer the approval that was shared (review N1 M1).
+    setSendQuestion(null);
+    // Approval waits for the period, and for this tab to have the other device's changes (everyday item 3).
+    if (status === 'approved' && currentPeriodRead.status === 'loading') {
+      setNotice({ tone: 'danger', text: 'The reporting period is still loading.' });
+      return;
+    }
+    if (status === 'approved' && period.behindSend) {
+      setNotice({ tone: 'danger', text: daveWebReportBehindMessage(period.behindSend) });
+      return;
+    }
+    // Nor is a draft that still says "Not counted yet" once they have arrived (review N2).
+    if (status === 'approved' && draftNotCountedProblem) {
+      setNotice({ tone: 'danger', text: draftNotCountedProblem });
+      return;
+    }
     if (status === 'approved' && !daveWebReportSourceIsCurrent(reportSource.fingerprint, currentReportSource)) {
       setNotice({
         tone: 'danger',
@@ -5614,6 +6081,24 @@ function ReportWorkspace({
     }
     setPending(true);
     setNotice(null);
+    if (status === 'approved') {
+      // As on the phone (A6 pass 7): the period is read again; a later send from another device stops the approval.
+      let outcome: DAVEWebPeriodOutcome;
+      try {
+        outcome = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
+      } catch {
+        outcome = { status: 'saved', snapshot: null };
+        // Said plainly, with what it means; "Try Approve again" never helped (review N1 L1).
+        setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_PERIOD_NOT_SAVED });
+      }
+      if (outcome.status === 'later_send') {
+        setPeriodReload(count => count + 1);
+        setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'approve', outcome.fromThisBrowser) });
+        setPending(false);
+        return;
+      }
+      setPeriodReload(count => count + 1);
+    }
     const now = new Date().toISOString();
     const nextAudit = [
       ...audit,
@@ -5636,6 +6121,7 @@ function ReportWorkspace({
       sourceTaskIds: reportSource.taskIds,
       sourceUpdateIds: reportSource.updateIds,
       sourceDocumentIds: reportSource.documentIds,
+      sourcePeriodKey: reportSource.periodKey ?? null,
       audit: nextAudit,
     };
     try {
@@ -5648,7 +6134,8 @@ function ReportWorkspace({
       setAudit(nextAudit);
       setExpectedRevision(savedRevision);
       setReportStatus(status);
-      setNotice({ tone: 'good', text: status === 'approved' ? 'Report approved and saved with its source snapshot and audit history.' : 'Report draft saved to the shared project record.' });
+      if (status === 'approved') setApprovedInThisTab(true);
+      setNotice(current => current?.tone === 'danger' ? current : { tone: 'good', text: status === 'approved' ? 'Report approved and saved with its source snapshot and audit history.' : 'Report draft saved to the shared project record.' });
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
       await auth.refreshSnapshot();
@@ -5662,6 +6149,7 @@ function ReportWorkspace({
     if (!report) return;
     const savedAudience: DAVEWebReportAudience = report.audience
       || (report.title.toLowerCase().includes('executive') ? 'executive' : 'project_manager');
+    setSendQuestion(null); // another report is opened: the question was about the one shared (review N1 M1)
     setReportAudience(savedAudience);
     setReportId(document.id);
     setReportTitle(report.title);
@@ -5678,14 +6166,86 @@ function ReportWorkspace({
       taskIds: Object.freeze([...report.sourceTaskIds]),
       updateIds: Object.freeze([...report.sourceUpdateIds]),
       documentIds: Object.freeze([...(report.sourceDocumentIds || [])]),
+      ...(report.sourcePeriodKey ? { periodKey: report.sourcePeriodKey } : {}),
     });
+    setApprovedInThisTab(false); // opened from Report history: copied after this browser's later sends, as before (review N2)
     setNotice(null);
     setComposerOpen(true);
   };
 
+  // Review N1 (3 Oct 2026, by reading): the later-send check comes BEFORE the report leaves the page. Copy and the
+  // share menu ran first and the period was read again only to record the send, so when another device had sent
+  // a report since this page last read the period (it reads on a refresh), the text copied still counted from
+  // the older one, and he was told only that it "was not recorded". The period is now read again first, and a
+  // report another device has overtaken is not copied, shared or put in an email draft.
+  //
+  // A browser lets a page copy, share or open a window only within a click, and waiting for the read can use
+  // the click up. So the read is made as the pointer reaches the buttons, and a check that passed stands for a
+  // minute: the click then goes straight through. When the click itself had to wait and the browser refuses, he
+  // is told the check passed and to press again.
+  const sendCheckRef = useRef<{ key: string; at: number } | null>(null);
+  const sendCheckUnderWayRef = useRef<{ key: string; check: Promise<SendCheckStop | null> } | null>(null);
+  const sendCheckKey = [reportId, expectedRevision ?? '', reportSource.fingerprint, periodReadKey].join('|');
+  const sendCheckStands = () => Boolean(sentFromHereAt) ||
+    (sendCheckRef.current?.key === sendCheckKey && Date.now() - sendCheckRef.current.at < DESKTOP_REPORT_SEND_CHECK_STANDS_MS);
+  /** Reads the period again. The period a later send started (another device's, or another tab's), or null when this report still stands. */
+  const checkPeriodBeforeSend = (): Promise<SendCheckStop | null> => {
+    const underWay = sendCheckUnderWayRef.current;
+    if (underWay?.key === sendCheckKey) return underWay.check;
+    const key = sendCheckKey;
+    const readKey = periodReadKey;
+    const preparedKey = reportSource.periodKey;
+    const reportFacts = reportSource.fingerprint.split(':media-')[0];
+    const check = readDAVEWebReportPeriod(periodStore, periodScopeKey, reportAudience).then(read => {
+      setPeriodRead({ key: readKey, read });
+      const periodNow = read.status === 'loaded' ? read.snapshot : null;
+      // The rule the record applies afterwards (recordDAVEWebReportSend), applied first: another device sent a
+      // report after the one this report counts from ('none': it counted from no report). This computer's own
+      // sends, and a report it already sent, are never stopped (review N1 M2); nor is a report saved before
+      // reports kept their period, or one whose period could not be read at all.
+      const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+      const later = countedFrom === undefined ? null : reportPeriodSentAfter(periodNow, countedFrom, daveWebOwnReportSends());
+      if (later && !daveWebReportSentHereAt(periodNow, reportFacts)) return { periodKey: `sent:${reportPeriodSentAt(later)}`, fromThisBrowser: false };
+      // Nor one another tab of this browser has overtaken since it was approved here (review N2).
+      const byAnotherTab = anotherTabSentLater(periodNow, preparedKey, reportFacts);
+      if (byAnotherTab) return { periodKey: `sent:${byAnotherTab}`, fromThisBrowser: true };
+      sendCheckRef.current = { key, at: Date.now() };
+      return null;
+    }).finally(() => {
+      if (sendCheckUnderWayRef.current?.check === check) sendCheckUnderWayRef.current = null;
+    });
+    sendCheckUnderWayRef.current = { key, check };
+    return check;
+  };
+  /** As the pointer or the keyboard reaches Share or Prepare Email: the check is made ahead of the click. */
+  const checkAheadOfSend = () => {
+    if (reportStatus !== 'approved' || approvedPeriodMoved || sendCheckStands()) return;
+    void checkPeriodBeforeSend().catch(() => null);
+  };
+
   const shareApprovedReport = async () => {
     if (reportStatus !== 'approved') return;
+    // A report that says "Not counted yet" does not leave the page (review N2).
+    if (draftSaysNotCounted) {
+      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SAYS_NOT_COUNTED });
+      return;
+    }
+    // An approval stands only on the period it was given on (A6 pass 8 M1, on the web since everyday item 3).
+    if (approvedPeriodMoved) {
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab) });
+      return;
+    }
+    const checkedAhead = sendCheckStands();
+    if (!checkedAhead) {
+      const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
+      if (overtakenBy) {
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy.periodKey, overtakenBy.fromThisBrowser) });
+        return;
+      }
+    }
     setNotice(null);
+    // The report as it is shared now: what "Was the report sent?" and the record are about (review N1 M1).
+    const shared = reportAsShared();
     try {
       const shareData = {
         title: reportTitle.trim(),
@@ -5693,17 +6253,31 @@ function ReportWorkspace({
       };
       if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
         await navigator.share(shareData);
+        if (sentFromHereAt) {
+          // Already recorded as sent from here: nothing to ask, and nothing more to record (review N1 M2).
+          setNotice({ tone: 'good', text: `The approved report was handed to the system share menu. ${daveWebReportAlreadySentNote(sentFromHereAt)}` });
+          return;
+        }
         setNotice({ tone: 'good', text: 'The approved report was handed to the system share menu.' });
+        // The share menu cannot say whether it went out (owner answer 2 Oct, web sends count).
+        setSendQuestion(shared);
         return;
       }
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(`${shareData.title}\n\n${shareData.text}`);
         setNotice({ tone: 'good', text: 'The approved report was copied for project communication.' });
+        // Copied to be pasted and sent, a send as the phone's Copy Report is (owner answer 2 Oct).
+        void recordSend(new Date().toISOString(), null, shared.fingerprint, { scopeKey: shared.scopeKey, reportFormat: shared.reportFormat });
         return;
       }
       throw new Error('Sharing is unavailable in this browser.');
     } catch (error) {
       const cancelled = error instanceof Error && error.name === 'AbortError';
+      // The click waited for the check and the browser no longer takes it as a click: the check stands, so the next press shares at once.
+      if (!cancelled && !checkedAhead && error instanceof Error && error.name === 'NotAllowedError') {
+        setNotice({ tone: 'good', text: daveWebReportCheckedPressAgain('Share Approved Report') });
+        return;
+      }
       if (!cancelled) {
         setNotice({
           tone: 'danger',
@@ -5713,25 +6287,56 @@ function ReportWorkspace({
     }
   };
 
-  const prepareApprovedReportEmail = () => {
+  const prepareApprovedReportEmail = async () => {
     if (reportStatus !== 'approved' || typeof window === 'undefined') return;
+    if (draftSaysNotCounted) {
+      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SAYS_NOT_COUNTED });
+      return;
+    }
+    if (approvedPeriodMoved) {
+      setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab) });
+      return;
+    }
+    if (!sendCheckStands()) {
+      const overtakenBy = await checkPeriodBeforeSend().catch(() => null);
+      if (overtakenBy) {
+        setNotice({ tone: 'danger', text: daveWebReportPeriodMovedMessage(overtakenBy.periodKey, overtakenBy.fromThisBrowser) });
+        return;
+      }
+      // A browser opens a window only within a click; where it says this one was used up by the wait, the next press opens the draft.
+      const activation = typeof navigator !== 'undefined' ? (navigator as { userActivation?: { isActive?: boolean } }).userActivation : undefined;
+      if (activation && activation.isActive === false) {
+        setNotice({ tone: 'good', text: daveWebReportCheckedPressAgain('Prepare Email') });
+        return;
+      }
+    }
+    const shared = reportAsShared();
     const subject = encodeURIComponent(reportTitle.trim());
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
+    // Already recorded as sent from here: said, and nothing is asked (review N1 M2).
+    const alreadySent = sentFromHereAt ? ` ${daveWebReportAlreadySentNote(sentFromHereAt)}` : '';
     setNotice(emailBody.shortened
       ? {
         tone: 'danger',
-        text: 'An email draft was opened with a shortened report: the full text did not fit an email draft. Review it, and share the full report from Vitruvius if needed.',
+        text: `An email draft was opened with a shortened report: the full text did not fit an email draft. Review it, and share the full report from Vitruvius if needed.${alreadySent}`,
       }
       : {
         tone: 'good',
-        text: 'An email draft was opened. Review the recipients and content before sending.',
+        text: `An email draft was opened. Review the recipients and content before sending.${alreadySent}`,
       });
+    // An email draft cannot say whether it was sent (owner answer 2 Oct, web sends count).
+    if (!sentFromHereAt) setSendQuestion(shared);
   };
 
-  const reportFactsAreCurrent = daveWebReportSourceIsCurrent(
-    reportSource.fingerprint,
+  // The report this computer sent to start the period now shown stands on
+  // that period, reopened as in the visit it was sent in (review N1 M2).
+  // Never current while it says "Not counted yet" and the changes are here (review N2).
+  const reportFactsAreCurrent = !draftNotCountedProblem && daveWebReportSourceIsCurrent(
+    (sentFromHereAt && `sent:${sentFromHereAt}` === period.periodKey
+      ? daveWebReportSourceOnPeriod(reportSource, period.periodKey)
+      : reportSource).fingerprint,
     currentReportSource,
   );
   const conditionTone = briefing.overallCondition === 'critical'
@@ -5774,6 +6379,52 @@ function ReportWorkspace({
                 <Text style={styles.dataMeta}>{condition.schedule}</Text>
               </View>
             ))}
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.reportNextActionsCard} accessibilityLabel="Since the last report">
+        <View style={styles.reportFactHeading}>
+          <View style={[styles.reportFactIcon, styles.reportFactIcon_neutral]}>
+            <Ionicons name="time-outline" size={21} color={desktopSurfaces.accent} />
+          </View>
+          <View style={styles.dataGrow}>
+            <Text style={styles.reportFactTitle}>Since the last report</Text>
+            <Text style={styles.dataMeta}>
+              {sinceSection ? sinceSection.label : daveWebReportCountedFromLine(currentPeriodRead)}
+            </Text>
+          </View>
+        </View>
+        {sinceSection ? (
+          <View style={styles.reportFactList}>
+            {sinceSection.lines.map((line, index) => (
+              <View key={`since:${index}:${line}`} style={styles.reportFactRow}>
+                <View style={styles.reportFactBullet} />
+                <Text style={styles.reportFactText}>{line}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {daveWebReportPeriodNote(currentPeriodRead) ? (
+          <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
+        ) : null}
+        {daveWebReportPeriodKeptInTabOnly() ? (
+          <Text style={styles.reportFactEmpty}>
+            {daveWebReportKeptInTabOnlyNote(currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'loading', daveWebReportOlderPeriodLeftInBrowser())}
+          </Text>
+        ) : null}
+        {approvalToMarkSent ? (
+          <DesktopReportMarkSent
+            approval={approvalToMarkSent}
+            sharedBetweenDevices={reportsSharedBetweenDevices}
+            recording={markSentRecording}
+            message={markSentMessage}
+            onRecord={markReportSentManually}
+          />
+        ) : null}
+        {notice?.byPeriodCard ? (
+          <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
+            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
           </View>
         ) : null}
       </View>
@@ -5949,17 +6600,25 @@ function ReportWorkspace({
               <View style={styles.reportReviewPanel}>
                 <View style={styles.reportReviewHeading}>
                   <View style={styles.reportReviewIcon}>
-                    <Ionicons name={reportFactsAreCurrent ? 'checkmark-circle-outline' : 'alert-circle-outline'} size={24} color={reportFactsAreCurrent ? colors.success : colors.warning} />
+                    <Ionicons name={reportFactsAreCurrent && !periodWaiting ? 'checkmark-circle-outline' : 'alert-circle-outline'} size={24} color={reportFactsAreCurrent && !periodWaiting ? colors.success : colors.warning} />
                   </View>
                   <View style={styles.dataGrow}>
-                    <Text style={styles.cardTitle}>{reportFactsAreCurrent ? 'Ready for review' : 'Refresh required'}</Text>
+                    <Text style={styles.cardTitle}>{periodWaiting ? "Waiting for your other device's changes" : reportFactsAreCurrent ? 'Ready for review' : 'Refresh required'}</Text>
                     <Text style={styles.dataMeta}>{reportSource.taskIds.length} tasks · {reportSource.updateIds.length} field updates</Text>
                   </View>
                 </View>
                 <Text style={styles.reportReviewText}>
-                  {reportFactsAreCurrent
-                    ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
-                    : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
+                  {period.behindSend
+                    ? daveWebReportBehindMessage(period.behindSend)
+                    : draftNotCountedProblem
+                      ? draftNotCountedProblem
+                      : approvedPeriodMoved
+                        ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
+                        : sentFromHereAt
+                          ? daveWebReportSentFromHereNote(sentFromHereAt)
+                          : reportFactsAreCurrent
+                            ? 'The draft matches the latest project facts. Review the wording, then save or approve it.'
+                            : 'Project facts changed after this draft was prepared. Regenerate it before approval.'}
                 </Text>
                 <View style={styles.reportActionStack}>
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={resetFromCurrentTruth} disabled={pending}>
@@ -5990,6 +6649,9 @@ function ReportWorkspace({
                       <Pressable
                         style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]}
                         onPress={() => { void shareApprovedReport(); }}
+                        onHoverIn={checkAheadOfSend}
+                        onFocus={checkAheadOfSend}
+                        onPressIn={checkAheadOfSend}
                         disabled={pending}
                         accessibilityRole="button"
                       >
@@ -5997,7 +6659,10 @@ function ReportWorkspace({
                       </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]}
-                        onPress={prepareApprovedReportEmail}
+                        onPress={() => { void prepareApprovedReportEmail(); }}
+                        onHoverIn={checkAheadOfSend}
+                        onFocus={checkAheadOfSend}
+                        onPressIn={checkAheadOfSend}
                         disabled={pending}
                         accessibilityRole="button"
                       >
@@ -6008,12 +6673,29 @@ function ReportWorkspace({
                 </View>
               </View>
             </View>
-            {!reportFactsAreCurrent ? (
+            {sharedReportOnScreen ? (
+              <DesktopReportSentQuestion
+                pending={pending}
+                onAnswer={answerSendQuestion}
+                sharedBetweenDevices={reportsSharedBetweenDevices}
+                markAsSentOffered={sharedCanBeMarkedSent}
+                overtaken={sharedOvertaken}
+              />
+            ) : null}
+            {unsentApprovalWarningUp && approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportFingerprint) ? (
+              <DesktopReportUnsentApprovalWarning
+                approval={approvalToMarkSent}
+                pending={pending}
+                onApprove={() => { void save('approved', true); }}
+                onGoBack={() => setUnsentApprovalWarningUp(false)}
+              />
+            ) : null}
+            {!reportFactsAreCurrent && notice?.text !== draftNotCountedProblem ? (
               <View style={styles.errorBanner} accessibilityRole="alert">
-                <Text style={styles.errorText}>Project facts changed after this draft was prepared. Regenerate from current facts before approval.</Text>
+                <Text style={styles.errorText}>{draftNotCountedProblem ?? 'Project facts changed after this draft was prepared. Regenerate from current facts before approval.'}</Text>
               </View>
             ) : null}
-            {notice ? (
+            {notice && !notice.byPeriodCard ? (
               <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
                 <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
               </View>
@@ -6050,6 +6732,7 @@ function ReportWorkspace({
                         body: report.body,
                         generatedAt: report.generatedAt,
                         updateIds: report.sourceUpdateIds,
+                        historyDocumentId: document.id,
                       });
                     }}
                     disabled={pending}
@@ -6057,6 +6740,9 @@ function ReportWorkspace({
                     <Text style={styles.secondaryButtonText}>Download Word Report</Text>
                   </Pressable>
                 </View>
+                {wordHeldBack?.documentId === document.id ? (
+                  <Text style={styles.errorText} accessibilityRole="alert">{wordHeldBack.text}</Text>
+                ) : null}
               </View>
             );
           })}
@@ -6080,12 +6766,30 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
   const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
   const [problem, setProblem] = useState('');
+  // Review N2 (5 Oct 2026): signing out removes this account's report periods from this browser (review N1). A
+  // report sent from here while the shared record could not be reached was only in this browser, though the page
+  // had said "Your other devices count from it once this computer reaches the shared record again": signed out
+  // first, it was gone for good. The record is tried once more before the sign-out; a send that still cannot be
+  // confirmed there is said, with what it means, and he chooses.
+  const [sendsNotShared, setSendsNotShared] = useState<Readonly<{ scope: DAVEWebSignOutScope; sentAts: readonly string[] }> | null>(null);
 
-  const signOut = async (scope: DAVEWebSignOutScope) => {
+  const signOut = async (scope: DAVEWebSignOutScope, despiteSendsNotShared = false) => {
     if (pending) return;
     setPending(scope);
     setProblem('');
     try {
+      // A browser that keeps no report period has nothing to carry up, and signs out at once as before.
+      if (!despiteSendsNotShared && daveWebReportPeriodsKeptHere()) {
+        const notShared = await shareDAVEWebReportSendsBeforeSignOut(
+          auth.reportOwnerId,
+          daveWebReportSnapshotCloud(auth.loadReportPeriod, auth.saveReportPeriod),
+        );
+        if (notShared.length > 0) {
+          setSendsNotShared({ scope, sentAts: notShared.map(send => send.sentAt) });
+          setPending(null);
+          return;
+        }
+      }
       // Once signed out, the sign-in page replaces this workspace.
       await auth.signOutOfDesktop(scope);
     } catch (error) {
@@ -6097,6 +6801,40 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       setPending(null);
     }
   };
+
+  if (sendsNotShared) {
+    const warning = daveWebReportSendsNotSharedWarning(sendsNotShared.sentAts);
+    const all = sendsNotShared.scope === 'global';
+    return (
+      <View style={styles.deleteConfirm} accessibilityRole="alert">
+        <View style={styles.dataGrow}>
+          <Text style={styles.deleteConfirmTitle}>{warning.title}</Text>
+          {warning.lines.map(line => <Text key={line} style={styles.dataMeta}>{line}</Text>)}
+          {problem ? <Text style={styles.errorText}>{problem}</Text> : null}
+        </View>
+        <View style={styles.inlineButtons}>
+          <Pressable
+            style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+            onPress={onCancel}
+            disabled={pending !== null}
+            accessibilityRole="button"
+          >
+            <Text style={styles.secondaryButtonText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+            onPress={() => { void signOut(sendsNotShared.scope, true); }}
+            disabled={pending !== null}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>
+              {pending ? 'Signing out…' : all ? 'Sign Out of All Devices Anyway' : 'Sign Out of This Computer Anyway'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.deleteConfirm} accessibilityRole="alert">
@@ -6804,16 +7542,18 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
 
 /**
  * Current, or a lookahead, which is in effect by its role whatever its flag:
- * the cloud's activation of a master clears that flag (owner answer Q22).
+ * the cloud's activation of a master clears that flag (owner answer Q22),
+ * until newer lookaheads replace it (owner answer Q25).
  */
 function documentInEffect(document: DAVEWebReferenceDocument): boolean {
-  return document.isCurrent || scheduleDocumentAddsToMaster(document);
+  return daveWebDocumentInEffect(document);
 }
 
 /**
- * Where a lookahead is deleted, until the owner decides whether a newer one
- * replaces an older (Q25): the web keeps it, and the phone's or iPad's
- * Delete PDF + Items also puts back the master's dates (A12 pass 3 A8-L2).
+ * Where a lookahead in effect is deleted: the web keeps it, and the phone's
+ * or iPad's Delete PDF + Items also puts back the master's dates (A12 pass 3
+ * A8-L2). One newer lookaheads replaced (owner answer Q25, 2 Oct 2026) has
+ * no dates left to put back: it is a prior version the web may delete.
  */
 const LOOKAHEAD_DELETION_NOTICE =
   "Lookahead · adds to the master schedule. Delete it on the iPhone or iPad: Delete PDF + Items there also puts the master schedule's dates back.";
@@ -6830,8 +7570,16 @@ function documentStatusLabel(document: DAVEWebReferenceDocument, allDocuments?: 
   }
   const kind = documentStatusKind(document);
   if (kind === 'current') return scheduleDocumentCurrentLabel(document, 'Current', allDocuments);
-  if (kind === 'prior') return 'Prior version';
+  if (kind === 'prior') return document.lookaheadReplaced || 'Prior version'; // "Replaced by the lookahead of …" (owner answer Q25)
   return buildECOSDocumentReadiness(document).label;
+}
+
+/**
+ * Make Current is never offered for a lookahead, replaced or not (review N1 web M1, caused by ada8ef6): it adds to
+ * the master (owner answer Q22), and the cloud's activation, which knows no lookahead, would retire the master.
+ */
+function documentOffersMakeCurrent(document: DAVEWebReferenceDocument) {
+  return !scheduleDocumentAddsToMaster(document);
 }
 
 function documentCanBeMadeCurrent(document: DAVEWebReferenceDocument) {

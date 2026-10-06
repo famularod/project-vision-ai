@@ -20,6 +20,8 @@ import {
   reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
   scheduleDocumentIsScheduleLike,
+  scheduleLookaheadReplacedFor,
+  scheduleLookaheadReplacedLabel,
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
@@ -59,6 +61,13 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
    */
   openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
   refreshedAt: string;
+  /**
+   * When this tab's last download of every task started (a full load; a
+   * refresh of some collections keeps the earlier time). Reports uses it as
+   * the phone uses its last download: the other device's send counts only
+   * once a download started after it (everyday item 3, 2 Oct 2026).
+   */
+  tasksPulledAt?: string | null;
 }>;
 
 export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtension & Readonly<{
@@ -72,6 +81,13 @@ export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtens
    * with an earlier revision included; Make Current needs at least one.
    */
   importedScheduleItemCount: number;
+  /**
+   * A lookahead newer ones replaced for every project it covers (owner answer
+   * Q25, 2 Oct 2026): "Replaced by the lookahead of <date>". It is no longer
+   * in effect, so it is listed with the prior versions and is not protected
+   * from deletion. Null otherwise; missing on a record built before.
+   */
+  lookaheadReplaced?: string | null;
 }>;
 
 export async function loadDAVEWebReadOnlySnapshot(
@@ -114,6 +130,10 @@ export async function loadDAVEWebReadOnlySnapshot(
     // Make Current counts the tasks the import contains: a revision whose
     // every task is unchanged has no task of its own (audit A5 pass 3 F5).
     importedScheduleItemCount: scheduleItemsForExactImportBatch(reconciledScheduleItems, document).length,
+    // A lookahead newer ones replaced everywhere it applied (owner answer Q25).
+    lookaheadReplaced: scheduleLookaheadReplacedFor(reconciledDocuments)(document, null)
+      ? scheduleLookaheadReplacedLabel(document, reconciledDocuments)
+      : null,
   }));
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,
@@ -452,6 +472,8 @@ export function normalizeWebReport(value: unknown): DAVEWebReportRecord | null {
     sourceDocumentIds: Array.isArray(report.sourceDocumentIds)
       ? report.sourceDocumentIds.filter((item): item is string => typeof item === 'string')
       : [],
+    // The period it was prepared on (everyday item 3); absent on reports saved before then.
+    ...(readString(report.sourcePeriodKey) ? { sourcePeriodKey: readString(report.sourcePeriodKey) } : {}),
     audit,
   };
 }

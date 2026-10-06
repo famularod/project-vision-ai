@@ -60,6 +60,8 @@ jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: () => mockAnswer([]),
   upsertDAVESyncTombstones: (tombstones: unknown[]) => mockAnswer(tombstones),
   listScheduleItems: () => mockAnswer([]),
+  // Independent review R02: a queued task the list does not hold is read by its id before it is sent as new.
+  getScheduleItem: () => mockAnswer(null),
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: () => mockAnswer([]),
   listDAVEStorageCleanupIntents: () => mockAnswer([]),
@@ -176,7 +178,8 @@ describe('a task whose project is still on its way to the cloud says so', () => 
     await uploadPendingChanges();
     await uploadPendingChanges();
     await expect(getOfflineQueue()).resolves.toEqual([]);
-    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({ projectName, projectId }));
+    // Written only if the cloud still has no row for it (independent review R02).
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({ projectName, projectId }), { onlyIfAbsent: true });
   });
 });
 

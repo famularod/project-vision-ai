@@ -22,14 +22,17 @@ import {
   type DAVEWebScheduleImportRevision,
 } from './DAVEWebOperations';
 import {
+  accessTokenIsForBrowserTabSignIn,
   browserTabSignInUserId,
   browserTabStoredSignIn,
   forgetBrowserTabSignIn,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
 import {
+  applySupabaseKeysetPage,
   chunkSupabaseFilterValues,
-  paginateSupabaseCollection,
+  paginateSupabaseCollectionByKey,
+  sortSupabaseRows,
 } from './SupabaseCollectionPagination';
 import {
   attachDAVEOperationalRealtime,
@@ -39,8 +42,11 @@ import {
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
 import { createFieldNoteCloudGateway } from './FieldNoteCloudGateway';
+import { forgetDAVEWebReportPeriods } from './DAVEWebReportSend';
 
 export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
+/** How many times one owner check is asked before it gives up, when its answers keep being overtaken (review P4 L2). */
+export const DAVE_WEB_OWNER_CHECK_ASKS = 4;
 export const DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS = 5 * 60_000;
 import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
 import { uploadWebFileResumably } from './ResumableWebStorageUpload';
@@ -64,7 +70,7 @@ import {
   loadECOSHostedIndexStatuses,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
-import { askECOSProjectQuestion } from './ECOSProjectQuestion';
+import { askECOSProjectQuestion, type ECOSProjectQuestionControl } from './ECOSProjectQuestion';
 import {
   analyzeECOSDrawingPage,
   type ECOSDrawingPageAnalysisInput,
@@ -212,7 +218,40 @@ const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
     })
   : null;
 
+/** Live-update connections already kept on their tab's own sign-in. */
+const realtimeKeptOnThisTabsSignIn = new WeakSet<object>();
+
+/**
+ * This tab's live updates keep this tab's own sign-in too (owner answer
+ * Q26, 2 Oct 2026; whole-app audit A12 pass 6). supabase-js gives the
+ * live-update connection the access token of every refresh and sign-in its
+ * auth client hears, and auth-js passes this tab every other tab's of this
+ * browser, with that tab's tokens. Another account's tab refreshing had
+ * made this tab's live updates sign in as that account until that tab
+ * signed out or David clicked back into this one: the cloud's owner check
+ * kept every row from it, so he missed live updates meanwhile.
+ *
+ * Now a token is taken only when it is for the account this tab's own
+ * stored sign-in is: his own refreshes and sign-ins (auth-js stores them
+ * before it tells of them) and another tab of his account, as before.
+ * Another account's, or any while this tab holds no sign-in, is left out
+ * and the connection keeps what it had. A sign-out still sets it back to
+ * this tab's own sign-in (none once signed out), as before.
+ */
+function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
+  const realtime = (client as Partial<Pick<SupabaseClient, 'realtime'>>).realtime;
+  if (!realtime || typeof realtime.setAuth !== 'function') return;
+  if (realtimeKeptOnThisTabsSignIn.has(realtime)) return;
+  realtimeKeptOnThisTabsSignIn.add(realtime);
+  const setAuth = realtime.setAuth.bind(realtime);
+  realtime.setAuth = async (token?: string | null) => {
+    if (token && !accessTokenIsForBrowserTabSignIn(token)) return;
+    await setAuth(token);
+  };
+}
+
 export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
+  if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
   let authorizedPhotoPaths = new Set<string>();
   let authorizedDocumentPaths = new Set<string>();
@@ -258,9 +297,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     collections.forEach(collection => realtimeSatisfiedCollections.delete(collection));
   }
 
+  /** How often this tab's sign-in has changed, or may have: every time what is kept of the owner check is cleared. */
+  let signInChanges = 0;
+
   function invalidateAuthorization() {
     authorizationCache = null;
     authorizationInFlight = null;
+    signInChanges += 1;
   }
 
   /** Nothing read for the signed-out account is kept. */
@@ -274,7 +317,53 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     authorizedDocumentPaths = new Set<string>();
   }
 
-  async function requireAuthorizedOwnerCached(): Promise<string> {
+  /**
+   * Review N2 (5 Oct 2026): when the server ended this tab's sign-in (the
+   * phone's "Sign Out of All Devices": this tab goes to the sign-in page
+   * once its hourly token has run out and its refresh is refused), the
+   * account's report periods stayed in this browser. Only the two sign-outs
+   * made here removed them (review N1). They now leave with a sign-in the
+   * server ended too, as with "Sign Out of This Computer".
+   *
+   * A sign-in the server ended is told from a server that cannot be reached
+   * by what auth-js does with this tab's stored sign-in: it takes it out of
+   * this tab's storage (and sends SIGNED_OUT) only on an answer that refuses
+   * it, or on a sign-out made here. With no answer, a 5xx, or a refresh
+   * still on its way, the stored sign-in stays, and nothing is removed.
+   * Another tab's SIGNED_OUT reaches this tab with this tab's own sign-in
+   * still stored, or with none it held just before, and removes nothing
+   * either (owner answer Q26). The account is the one this tab's own
+   * storage named when it was last looked at (as the tab started, as its
+   * page began to listen, at the event before), never one an event carried.
+   */
+  let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
+  /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
+  function lookAtTabSignIn(mayHaveEnded: boolean) {
+    const held = tabSignInSeenFor;
+    tabSignInSeenFor = browserTabSignInUserId();
+    if (mayHaveEnded && held && !tabSignInSeenFor) forgetDAVEWebReportPeriods(held);
+  }
+
+  /**
+   * Review P4 L2 (5 Oct 2026): an owner check still on its way when he
+   * clicked Sign Out of This Computer answered afterwards, and its answer
+   * was kept. For five minutes the gateway again said "the owner is signed
+   * in" without asking: a report period could be written under his id in
+   * the browser his sign-out had just cleared, and a visitor signing in on
+   * this tab in that moment was taken for the owner (the cloud still gave
+   * him no row). Clearing what was kept at the sign-out could not clear an
+   * answer that had not arrived yet.
+   *
+   * An answer is for the sign-in the tab held when its check was sent. When
+   * that has changed since, or may have (a sign-out, a sign-in, a refresh,
+   * a sign-in the server ended: everything that clears what is kept), the
+   * answer is thrown away when it arrives. Nothing is kept from it, and the
+   * caller that waited for it is not given it either: the check is asked
+   * again, for the sign-in the tab holds now. After his own refresh that is
+   * him again; after a sign-out it is refused. A check whose answers keep
+   * being overtaken gives up, as one that could not be completed.
+   */
+  async function requireAuthorizedOwnerCached(asksLeft = DAVE_WEB_OWNER_CHECK_ASKS): Promise<string> {
     if (
       authorizationCache &&
       authorizationCache.expiresAt > Date.now()
@@ -282,7 +371,12 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return authorizationCache.ownerId;
     }
     if (authorizationInFlight) return authorizationInFlight;
+    const sentAt = signInChanges;
     const request = requireAuthorizedOwner(client!).then(ownerId => {
+      if (sentAt !== signInChanges) {
+        if (asksLeft <= 1) throw ownerCheckIncomplete();
+        return requireAuthorizedOwnerCached(asksLeft - 1);
+      }
       authorizationCache = Object.freeze({
         ownerId,
         expiresAt: Date.now() + DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS,
@@ -343,7 +437,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       await requireAuthorizedOwnerCached();
       return analyzeECOSDrawingPage({ client, input });
     },
-    async askAuthorizedProjectQuestion(input: {
+    async askAuthorizedProjectQuestion(input: ECOSProjectQuestionControl & {
       projectId: string;
       projectName: string;
       question: string;
@@ -414,8 +508,11 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       callback: (event: AuthChangeEvent, session: Session | null) => void,
     ): () => void {
       if (!client) return () => undefined;
+      // A sign-in refused as the tab started, before its page listened, has ended too (review N2).
+      lookAtTabSignIn(true);
       const { data } = client.auth.onAuthStateChange((event, session) => {
         invalidateAuthorization();
+        lookAtTabSignIn(event === 'SIGNED_OUT');
         callback(event, session);
       });
       return () => data.subscription.unsubscribe();
@@ -466,12 +563,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     /** This computer only unless 'global' is asked for (owner answer Q21). */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
+      const userId = browserTabSignInUserId();
       const { error } = await client.auth.signOut({ scope });
       if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
         throw new DAVEWebSignOutNeedsConnectionError();
       }
       if (error) throw new Error('The desktop session could not be closed.');
       forgetSignedInReads();
+      // The account's report periods leave this browser with its sign-in (review N1).
+      if (userId) forgetDAVEWebReportPeriods(userId);
     },
 
     /**
@@ -541,6 +641,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (anotherSignIn) return 'kept';
       if (stored) forgetBrowserTabSignIn();
       forgetSignedInReads();
+      // This tab's own copies of that account's report periods go too (review N1).
+      forgetDAVEWebReportPeriods(userId);
       return 'ended';
     },
 
@@ -563,19 +665,19 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         shouldRead('projects')
           // Archived rows too: the snapshot needs their names to keep them
           // out of the portfolio (DAVEWebReadOnlyRepository.portfolioProjects).
-          ? readOwnerRows(client, 'projects', userId, query => query.order('created_at', { ascending: false }))
+          ? readOwnerRows(client, 'projects', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projects ?? []),
         shouldRead('schedule_items')
-          ? readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false }))
+          ? readOwnerRows(client, 'schedule_items', userId, ROW_ID_KEY, 'updated_at')
           : Promise.resolve(cachedRows?.scheduleItems ?? []),
         shouldRead('project_updates')
-          ? readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false }))
+          ? readOwnerRows(client, 'project_updates', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projectUpdates ?? []),
         shouldRead('reference_documents')
           ? readAuthorizedReferenceDocumentMetadata(client)
           : Promise.resolve(cachedRows?.referenceDocuments ?? []),
         shouldRead('sync_tombstones')
-          ? readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false }))
+          ? readOwnerRows(client, 'dave_sync_tombstones', userId, DELETION_RECORD_KEY, 'deleted_at')
           : Promise.resolve(cachedRows?.syncTombstones ?? []),
       ]);
       const shouldReadReferenceDocuments = shouldRead('reference_documents');
@@ -651,16 +753,18 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       const cacheKey = `${ownerId}:${normalizedDocumentId}:${documentRevision?.trim() || 'current'}`;
       const cached = documentCoverageSummaryCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.summary;
-      const result = await paginateSupabaseCollection<unknown>(async ({ from, to }) => {
-        const page = await client
+      // A document's pages in page order, each page after the last page number read: the table's key is the owner,
+      // the document and the page number, so a page indexed meanwhile cannot shift the rest (independent review pass
+      // 2, item 4).
+      const result = await paginateSupabaseCollectionByKey<unknown>(request => applySupabaseKeysetPage(
+        client
           .from('ecos_document_pages')
           .select('page_number,sheet_number,sheet_mapping_status,visual_coverage')
           .eq('owner_id', ownerId)
-          .eq('document_id', normalizedDocumentId)
-          .order('page_number', { ascending: true })
-          .range(from, to);
-        return page;
-      });
+          .eq('document_id', normalizedDocumentId),
+        DOCUMENT_PAGE_KEY,
+        request,
+      ), { key: DOCUMENT_PAGE_KEY });
       if (!result.ok) {
         throw new Error('ECOS page coverage could not be loaded for this document.');
       }
@@ -943,7 +1047,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           client,
           'reference_documents',
           ownerId,
-          query => query.order('updated_at', { ascending: false }),
+          ROW_ID_KEY,
+          'updated_at',
         );
         const duplicate = existingRows.some(value => {
           const row = isRecord(value) ? value : {};
@@ -1106,7 +1211,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           client,
           'reference_documents',
           ownerId,
-          query => query.order('updated_at', { ascending: false }),
+          ROW_ID_KEY,
+          'updated_at',
         );
         const duplicate = existingRows.some(value => {
           const row = isRecord(value) ? value : {};
@@ -1366,6 +1472,89 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           result.message || 'Vitruvius could not confirm background document preparation.',
         );
       }
+    },
+
+    /**
+     * The owner's shared "since the last report" period for these projects
+     * and format, as the phone and the iPad keep it (owner answer Q16): the
+     * stored snapshot, null when there is none yet, with the account it was
+     * read for. 'unavailable' before the report_snapshots table exists;
+     * throws when it could not be read. Everyday item 3 read it; since owner
+     * answer 2 Oct (web sends count) the web writes it too
+     * (saveAuthorizedReportPeriod).
+     */
+    async loadAuthorizedReportPeriod(
+      scopeKey: string,
+      format: string,
+    ): Promise<Readonly<{ ownerId: string; snapshot: unknown }> | 'unavailable'> {
+      if (!client) return 'unavailable';
+      const ownerId = await requireAuthorizedOwnerCached();
+      const { data, error } = await client
+        .from('report_snapshots')
+        .select('snapshot')
+        .eq('owner_id', ownerId)
+        .eq('scope_key', scopeKey)
+        .eq('format', format)
+        .maybeSingle();
+      if (error) {
+        const message = (error.message || '').toLowerCase();
+        // Only a missing table is quiet, as on the phone (SupabaseService.isMissingTableError).
+        if (message.includes('could not find the table') || (message.includes('relation') && message.includes('does not exist'))) {
+          return 'unavailable';
+        }
+        throw new Error('The shared report period could not be read.');
+      }
+      return Object.freeze({ ownerId, snapshot: isRecord(data) ? data.snapshot ?? null : null });
+    },
+
+    /**
+     * Owner answer 2 Oct (web sends count): a report approved or sent from
+     * this computer goes into the owner's shared period, exactly as the
+     * phone's does (SupabaseService.saveReportSnapshotCloud): one row per
+     * owner, projects and format, the later send kept by the table's own
+     * rule. With `expectedOwnerId`, nothing is written once another account
+     * is signed in. 'unavailable' before the report_snapshots table exists
+     * (this computer then keeps its own period only).
+     */
+    async saveAuthorizedReportPeriod(row: Readonly<{
+      scopeKey: string;
+      format: string;
+      snapshot: unknown;
+      approvedAt: string;
+      deliveredAt: string | null;
+      expectedOwnerId?: string;
+    }>): Promise<'saved' | 'unavailable'> {
+      if (!client) return 'unavailable';
+      const ownerId = await requireAuthorizedOwnerCached();
+      if (row.expectedOwnerId && row.expectedOwnerId !== ownerId) {
+        throw new Error('The signed-in account changed before the report period was shared.');
+      }
+      const { error } = await client
+        .from('report_snapshots')
+        .upsert(
+          {
+            owner_id: ownerId,
+            scope_key: row.scopeKey,
+            format: row.format,
+            snapshot: row.snapshot,
+            approved_at: row.approvedAt,
+            delivered_at: row.deliveredAt,
+          },
+          { onConflict: 'owner_id,scope_key,format' },
+        );
+      if (error) {
+        const message = (error.message || '').toLowerCase();
+        if (message.includes('could not find the table') || (message.includes('relation') && message.includes('does not exist'))) {
+          return 'unavailable';
+        }
+        throw new Error('The shared report period could not be saved.');
+      }
+      return 'saved';
+    },
+
+    /** The signed-in owner's id, for this computer's own copy of the report periods (owner answer 2 Oct). */
+    async authorizedOwnerId(): Promise<string> {
+      return requireAuthorizedOwnerCached();
     },
 
     async saveAuthorizedReportArtifact({
@@ -2219,22 +2408,47 @@ function staleDocumentError() {
   );
 }
 
+/** A row's own id: the key the desktop's lists are read in the order of. */
+const ROW_ID_KEY = Object.freeze(['id'] as const);
+const DOCUMENT_PAGE_KEY = Object.freeze(['page_number'] as const);
+/** A deletion record has no id of its own: what it deletes (the kind of record, and which) is its key, and the table's. */
+const DELETION_RECORD_KEY = Object.freeze(['entity_type', 'record_id'] as const);
+
+/**
+ * Independent review R02: the desktop reads these lists a page at a time too,
+ * and is never shown a workspace with a row missing.
+ *
+ * Independent review pass 2 (item 4): read by key, not by offset. Read by
+ * offset newest first, every task another device wrote moved a row, and while
+ * a phone sent an approved schedule's tasks the desktop's refresh of a
+ * workspace with more than a page of them failed until the upload stopped.
+ * Read in the order of a key no edit changes, a write elsewhere can neither
+ * repeat a row nor hide one, and nothing is read again. The rows are then put
+ * newest first, as before.
+ */
 async function readOwnerRows(
   client: SupabaseClient,
   table: string,
   ownerId: string,
-  refine: (query: any) => any,
+  key: readonly [string] | readonly [string, string],
+  newestBy: string,
 ): Promise<readonly unknown[]> {
-  const result = await paginateSupabaseCollection(({ from, to, includeExactCount }) => {
-    const baseQuery = client
+  const result = await paginateSupabaseCollectionByKey<unknown>(request => applySupabaseKeysetPage(
+    client
       .from(table)
-      .select('*', { count: includeExactCount ? 'exact' : undefined })
-      .eq('owner_id', ownerId);
-    return refine(baseQuery).range(from, to);
-  });
+      .select('*', { count: request.includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', ownerId),
+    key,
+    request,
+  ), { key, requestExactCount: true });
 
   if (!result.ok) throw new Error(`Authorized ${table.replace(/_/g, ' ')} could not be loaded.`);
-  return Object.freeze([...result.rows]);
+  const column = (name: string) => (row: unknown) => (isRecord(row) ? row[name] : undefined);
+  return Object.freeze(sortSupabaseRows(
+    result.rows,
+    { by: column(newestBy), time: true, descending: true },
+    ...key.map(name => ({ by: column(name) })),
+  ));
 }
 
 async function readAuthorizedReferenceDocumentMetadata(

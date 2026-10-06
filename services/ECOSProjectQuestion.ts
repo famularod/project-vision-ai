@@ -1,4 +1,5 @@
 import { isAuthRetryableFetchError, type SupabaseClient } from '@supabase/supabase-js';
+import { ECOS_ASK_DEADLINE_MS, ECOS_ASK_STOPPED_MESSAGE, ecosAskTimedOutMessage } from './ECOSAskProgress';
 import { parseECOSConversationReceipt, validECOSConversationRequest, type ECOSConversationReceipt, type ECOSConversationRequest } from './ECOSConversation';
 import type { DAVEAskEvidence } from './DAVEAsk';
 import { normalizeECOSSheetProvenance } from './ECOSSheetProvenance';
@@ -77,6 +78,8 @@ export class ECOSProjectQuestionError extends Error {
     public readonly code: string,
     message: string,
     public readonly traceId: string | null = null,
+    /** How long the server asked the app to wait before repeating the request, when it said. */
+    public readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = 'ECOSProjectQuestionError';
@@ -107,17 +110,18 @@ export function ecosClosedProjectNames({
   });
 }
 
-export async function askECOSProjectQuestion({
-  client,
-  projectId,
-  projectName,
-  question,
-  conversationId,
-  priorTurnId,
-  knownProjectNames,
-  closedProjectNames,
-  refusalWording = 'desktop',
-}: ECOSConversationRequest & {
+/**
+ * How a caller stops a question, and names it so a repeat can be recognised
+ * (independent review R10).
+ */
+export type ECOSProjectQuestionControl = Readonly<{
+  /** Aborting it stops the request at once; the call rejects with question_cancelled. */
+  signal?: AbortSignal;
+  /** Sent as the request id. A retry of a question that got no answer repeats it. */
+  clientRequestId?: string;
+}>;
+
+type ECOSProjectQuestionInput = ECOSConversationRequest & ECOSProjectQuestionControl & {
   client: SupabaseClient | null;
   projectId: string | null;
   projectName: string;
@@ -128,7 +132,33 @@ export async function askECOSProjectQuestion({
   closedProjectNames?: readonly string[] | null;
   /** How a wrong-project refusal tells the owner to switch (audit A9 pass 3 L3). */
   refusalWording?: ECOSProjectRefusalWording;
-}): Promise<ECOSProjectQuestionAnswer> {
+  /** The longest the whole call waits before it rejects with question_timed_out. */
+  deadlineMs?: number;
+};
+
+/**
+ * Asks one project question. The wait is bounded: the sign-in check, the
+ * request and reading its answer together end by the deadline, and the
+ * request is aborted when the deadline passes or the caller's signal fires
+ * (independent review R10: this waited for as long as the connection hung).
+ */
+export async function askECOSProjectQuestion(input: ECOSProjectQuestionInput): Promise<ECOSProjectQuestionAnswer> {
+  const wait = boundedAskWait(input.signal, input.deadlineMs ?? ECOS_ASK_DEADLINE_MS);
+  return requestECOSProjectAnswer(input, wait).finally(wait.end);
+}
+
+async function requestECOSProjectAnswer({
+  client,
+  projectId,
+  projectName,
+  question,
+  conversationId,
+  priorTurnId,
+  knownProjectNames,
+  closedProjectNames,
+  refusalWording = 'desktop',
+  clientRequestId,
+}: ECOSProjectQuestionInput, wait: ReturnType<typeof boundedAskWait>): Promise<ECOSProjectQuestionAnswer> {
   const cleanQuestion = question.replace(/\s+/g, ' ').trim();
   const cleanProjectName = projectName.trim();
   const cleanProjectId = projectId?.trim() || '';
@@ -165,7 +195,7 @@ export async function askECOSProjectQuestion({
     throw new ECOSProjectQuestionError('project_reference_mismatch', projectMismatchMessage);
   }
 
-  const { data: sessionResult, error: sessionError } = await client.auth.getSession();
+  const { data: sessionResult, error: sessionError } = await wait.until(client.auth.getSession());
   const accessToken = sessionResult.session?.access_token;
   // A sign-in refresh that got no answer (no signal) keeps the session: it is
   // not a sign-out (whole-app audit A9 #6, as owner answer Q13 reads it).
@@ -188,15 +218,17 @@ export async function askECOSProjectQuestion({
     question: cleanQuestion,
     conversationId,
     priorTurnId,
+    clientRequestId: clientRequestId || undefined,
   });
-  const { data, error, response } = await client.functions.invoke(ECOS_PROJECT_QUESTION_FUNCTION, {
+  const { data, error, response } = await wait.until(client.functions.invoke(ECOS_PROJECT_QUESTION_FUNCTION, {
     headers: { Authorization: `Bearer ${accessToken}` },
     body: requestBody,
-  });
+    signal: wait.signal,
+  }));
 
   if (error) {
     const body = response
-      ? await response.clone().json().catch(() => null) as Record<string, unknown> | null
+      ? await wait.until(response.clone().json().catch(() => null)) as Record<string, unknown> | null
       : null;
     const code = typeof body?.error === 'string' ? body.error : 'request_failed';
     const diagnostics = parseECOSQuestionDiagnostics(body?.diagnostics);
@@ -204,6 +236,7 @@ export async function askECOSProjectQuestion({
       code,
       projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, refusal, body),
       diagnostics?.traceId || null,
+      positiveIntegerOrNull(body?.retryAfterSeconds),
     );
   }
   const answer = parseECOSProjectQuestionAnswer(data);
@@ -223,6 +256,45 @@ export async function askECOSProjectQuestion({
       'ECOS received an answer for a different request. No answer was displayed. Please ask again.');
   }
   return answer;
+}
+
+/**
+ * The limit on one question's wait. Stopping rejects whatever is being waited
+ * for first, then aborts the request, so control returns even if the network
+ * layer never notices the abort.
+ */
+function boundedAskWait(callerSignal: AbortSignal | undefined, deadlineMs: number) {
+  const controller = new AbortController();
+  let stopWaiting!: (error: ECOSProjectQuestionError) => void;
+  const stopped = new Promise<never>((_resolve, reject) => { stopWaiting = reject; });
+  // A stop with nothing waiting on it (a refusal thrown before any request) is not an error of its own.
+  stopped.catch(() => undefined);
+  const stop = (code: 'question_timed_out' | 'question_cancelled', message: string) => {
+    stopWaiting(new ECOSProjectQuestionError(code, message));
+    controller.abort();
+  };
+  const cancelled = () => stop('question_cancelled', ECOS_ASK_STOPPED_MESSAGE);
+  const timer = setTimeout(() => stop('question_timed_out', ecosAskTimedOutMessage(deadlineMs)), deadlineMs);
+  if (callerSignal?.aborted) cancelled();
+  else callerSignal?.addEventListener('abort', cancelled);
+  return {
+    signal: controller.signal,
+    // Listed first: once stopped, nothing that was already answered is taken instead.
+    until: <T>(work: PromiseLike<T>): Promise<T> => Promise.race([stopped, work]),
+    end: () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', cancelled);
+    },
+  };
+}
+
+/**
+ * Whether asking the same question again could end differently. Not when the
+ * question or the selected project has to change first.
+ */
+export function ecosAskCanRetry(error: unknown): boolean {
+  const code = error instanceof ECOSProjectQuestionError ? error.code : '';
+  return !['project_reference_mismatch', 'project_required', 'question_required', 'question_too_long'].includes(code);
 }
 
 export function parseECOSProjectQuestionAnswer(value: unknown): ECOSProjectQuestionAnswer {

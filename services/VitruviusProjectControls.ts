@@ -12,6 +12,7 @@ import type {
   ProjectControlWorkflowStage,
   ScheduleItem,
 } from '../types';
+import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 export const PROJECT_CONTROL_APPROVAL_STATUSES: readonly ProjectControlApprovalStatus[] = [
@@ -333,11 +334,17 @@ export function mergeProjectControlsEdit(
   return merged;
 }
 
-/** A task edit with any Project controls laid over the task's held copy. */
+/**
+ * A task edit as the phone saves it (the first step of its task save): any
+ * Project controls laid over the task's held copy, and a single date changed
+ * by hand on a task a lookahead moved noted as David's (review N1 M1,
+ * scheduleEditWithDateChangedAlone).
+ */
 export function withProjectControlsEditMerged(
   current: ScheduleItem,
-  next: Partial<ScheduleItem>,
+  edit: Partial<ScheduleItem>,
 ): Partial<ScheduleItem> {
+  const next = scheduleEditWithDateChangedAlone(current, edit);
   return next.projectControls
     ? {
         ...next,

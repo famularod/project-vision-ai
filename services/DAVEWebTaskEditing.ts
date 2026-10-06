@@ -18,7 +18,8 @@ import {
   validateProjectItemWorkflowEdit,
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
-import { scheduleCalendarDay } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -278,6 +279,17 @@ export function buildDAVEWebScheduleItem({
     );
   }
 
+  const dependencies = normalizeScheduleDependencies(
+    draft.dependencies === undefined ? current?.dependencies : draft.dependencies,
+  );
+  const linkKeys = (links: readonly { predecessorItemId: string; lagDays?: number | null }[]) =>
+    links.map(link => `${link.predecessorItemId}+${link.lagDays ?? 0}`).sort().join('\n');
+  const linksChanged = linkKeys(dependencies) !== linkKeys(normalizeScheduleDependencies(current?.dependencies));
+  const shownDates = current?.savedLookaheadDates;
+  const keepsSavedDates = Boolean(shownDates) &&
+    sameScheduleCalendarDay(draft.startDate.trim(), shownDates!.shownStartDate) &&
+    sameScheduleCalendarDay(draft.finishDate.trim(), shownDates!.shownFinishDate);
+
   const item: DAVEWebScheduleItem = {
     id: requiredText(id, 'Task identity'),
     projectId,
@@ -287,8 +299,10 @@ export function buildDAVEWebScheduleItem({
     projectName: projectNameForRecord,
     locationName: draft.locationName.trim(),
     taskName,
-    startDate: draft.startDate.trim(),
-    finishDate: draft.finishDate.trim(),
+    // Dates left as shown on a task shown on the master's dates keep the dates saved (owner answer Q25).
+    ...(keepsSavedDates && current?.savedLookaheadDates
+      ? { startDate: current.savedLookaheadDates.startDate, finishDate: current.savedLookaheadDates.finishDate }
+      : { startDate: draft.startDate.trim(), finishDate: draft.finishDate.trim() }),
     milestone: draft.milestone.trim(),
     owner: draft.owner.trim(),
     contractor: draft.contractor.trim(),
@@ -296,9 +310,10 @@ export function buildDAVEWebScheduleItem({
     wbsCode: optionalPlanningText(draft.wbsCode, current?.wbsCode),
     parentItemId: optionalPlanningText(draft.parentItemId, current?.parentItemId),
     sortOrder: optionalPlanningNumber(draft.sortOrder, current?.sortOrder),
-    dependencies: normalizeScheduleDependencies(
-      draft.dependencies === undefined ? current?.dependencies : draft.dependencies,
-    ),
+    dependencies,
+    // When David changed the links by hand: of two rows of one task, the one changed later holds them as the
+    // task moves between rows (owner answer Q29).
+    ...(linksChanged ? { dependenciesUpdatedAt: now } : current?.dependenciesUpdatedAt ? { dependenciesUpdatedAt: current.dependenciesUpdatedAt } : {}),
     isSummary: draft.isSummary === undefined
       ? current?.isSummary === true
       : draft.isSummary === true,
@@ -343,12 +358,17 @@ export function buildDAVEWebScheduleItem({
       ...(current.managersPercentUnderFileJudgedAt !== undefined ? { managersPercentUnderFileJudgedAt: current.managersPercentUnderFileJudgedAt } : {}),
     } : {}),
     ...(current?.revisedFromTaskIds?.length ? { revisedFromTaskIds: current.revisedFromTaskIds } : {}), // the ids a new master's moves gave it (A10 pass 5 M1)
+    ...(current?.notRevisionOfTaskIds?.length ? { notRevisionOfTaskIds: current.notRevisionOfTaskIds } : {}), // tasks David said it is not (owner answer Q30)
+    // What a master's new row took from the task's earlier row (review N3 R3). Dropped by a save here, an owner cleared
+    // on this page read as a blank nobody had typed, and an edit from a device that had not heard went over it unasked.
+    ...(current?.textFromTask ? { textFromTask: current.textFromTask } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
     sourceActivityId: current?.sourceActivityId ?? null,
     sourceWbsCode: current?.sourceWbsCode ?? null,
     sourceRowNumber: current?.sourceRowNumber ?? null,
+    ...(current?.sourceUniqueId ? { sourceUniqueId: current.sourceUniqueId } : {}), // its own identity (owner answer Q30)
     completionVerification: progressEditedHere ? null : current?.completionVerification ?? null,
     createdAt: current?.createdAt || now,
     updatedAt: now,
@@ -625,7 +645,9 @@ export function scheduleItemForCloud(
   item: DAVEWebScheduleItem | ScheduleItem,
 ): ScheduleItem {
   const { cloudUpdatedAt: _cloudUpdatedAt, ...scheduleItem } = item as DAVEWebScheduleItem;
-  return scheduleItem;
+  // Every web write of a task passes here: the shown copy's marker (savedLookaheadDates) is never saved, and dates
+  // only shown go back to the saved ones (review N1 L1).
+  return scheduleItemAsSaved(scheduleItem);
 }
 
 function requiredText(value: string, label: string): string {

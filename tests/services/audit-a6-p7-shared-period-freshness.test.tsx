@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 // Whole-app audit A6 pass 7 (30 Sep 2026), on owner answer Q16 (the phone and
 // the iPad share "since the last report" through report_snapshots).
 //
@@ -300,11 +301,12 @@ const approveAndSend = async () => {
 };
 /** The written report's period section. */
 const period = async () => {
-  if (!screen.queryByText(/SINCE THE LAST APPROVED REPORT/)) {
+  // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+  if (!screen.queryByText(/SINCE THE LAST REPORT/)) {
     fireEvent.press(await screen.findByRole('button', { name: 'Full written report' }, SLOW));
   }
-  const body = (await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW)).props.children as string;
-  const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+  const body = (await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW)).props.children as string;
+  const start = body.indexOf('SINCE THE LAST REPORT');
   return body.slice(start, body.indexOf('COMPLETED WORK', start));
 };
 /** Brings the app back to the front, as after the phone was locked or another app was used. */
@@ -493,7 +495,7 @@ describe('the owner is told when the other device\'s last report could not be ch
 
     // A device with no report of its own.
     const ipad = open('ipad', tower(1));
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
     expect(screen.getByText(uncheckedWithout)).toBeTruthy();
 
     // Back online: the next return to the app checks, and the line goes.

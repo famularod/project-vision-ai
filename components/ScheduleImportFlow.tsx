@@ -18,7 +18,9 @@ import {
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
 import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
+import { scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions, type ScheduleImportPairingQuestion } from '../services/ScheduleImportMerge';
 import {
+  scheduleImportAddsToMaster,
   scheduleImportAsksRole,
   scheduleImportRoleRefusal,
   suggestScheduleImportRole,
@@ -34,6 +36,13 @@ import {
 } from '../services/DAVECompletionVerification';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { PrimaryButton, SecondaryButton } from './ProjectDetailsCard';
+import {
+  ScheduleImportPairingCheck,
+  scheduleImportPairingGuess,
+  scheduleImportPairingRefusal,
+  withScheduleImportPairingChoices,
+  type ScheduleImportPairingAnswer,
+} from './schedule-import-pairing-check';
 
 export function ScheduleImportFlow({
   screenshotImportAvailable,
@@ -45,6 +54,7 @@ export function ScheduleImportFlow({
   incomingBatch = null,
   onIncomingBatchConsumed,
   roleContext,
+  savedItems,
 }: {
   screenshotImportAvailable: boolean;
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
@@ -56,6 +66,11 @@ export function ScheduleImportFlow({
   onIncomingBatchConsumed?: () => void;
   /** The schedules and tasks saved now: the review's "Full schedule" or "Lookahead" default (owner answer Q22). */
   roleContext?: Readonly<{ documents: readonly ReferenceDocument[]; items: readonly ScheduleItem[] }>;
+  /**
+   * Every saved task, hidden rows included: the rows the approval pairs on. With them, the same-named check asks as
+   * the approval pairs, not from the tasks as shown (review N2 G1). Without, from roleContext's tasks, as before.
+   */
+  savedItems?: readonly ScheduleItem[];
 }) {
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -75,6 +90,22 @@ export function ScheduleImportFlow({
     () => scheduleImportWarnings(pendingBatch),
     [pendingBatch],
   );
+  // Same-named tasks whose pairing the dates cannot settle: David confirms which is which (owner answer Q30).
+  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id
+    ? roleReview.chosen || roleReview.role
+    : null;
+  const pairingQuestions = useMemo(() => {
+    if (!pendingBatch) return [];
+    const overlay = reviewedRole ? reviewedRole === 'lookahead' : scheduleImportAddsToMaster(pendingBatch, roleContext?.documents || []);
+    // From the rows the approval pairs on, when the phone gives them (review N2 G1).
+    return savedItems
+      ? scheduleImportReviewPairingQuestions({ saved: savedItems, documents: roleContext?.documents || [], importBatchId: pendingBatch.id, imported: pendingBatch.items, overlay })
+      : scheduleImportPairingQuestions({ existing: roleContext?.items || [], imported: pendingBatch.items, overlay });
+  }, [pendingBatch, reviewedRole, roleContext?.documents, roleContext?.items, savedItems]);
+  const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${pendingBatch?.id}|${reviewedRole}|${question.key}`;
+  const pairingAnswerOf = (question: ScheduleImportPairingQuestion) =>
+    pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
 
   function openReview(batch: PIEScheduleImportBatch) {
     setExpandedItemIds([]);
@@ -179,13 +210,13 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
-    const refusal = reviewedRoleRefusal(batchToReview);
+    const refusal = reviewedRoleRefusal(batchToReview) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withReviewedRole({ ...batchToReview, items: readyItems }));
+      await onApprove(withScheduleImportPairingChoices(withReviewedRole({ ...batchToReview, items: readyItems }), pairingQuestions, pairingAnswerOf));
 
       if (remainingItems.length) {
         setPendingBatch(current => current?.id === batchToReview.id ? {
@@ -213,12 +244,12 @@ export function ScheduleImportFlow({
     ) return;
 
     const batchToSave = pendingBatch;
-    const refusal = reviewedRoleRefusal(batchToSave);
+    const refusal = reviewedRoleRefusal(batchToSave) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withReviewedRole(batchToSave));
+      await onApprove(withScheduleImportPairingChoices(withReviewedRole(batchToSave), pairingQuestions, pairingAnswerOf));
       setPendingBatch(current => current?.id === batchToSave.id ? null : current);
       setExpandedItemIds([]);
     } catch (error) {
@@ -366,6 +397,18 @@ export function ScheduleImportFlow({
                 onChoose={chosen => setRoleReview(current => current ? { ...current, chosen } : current)}
               />
             ) : null}
+            {pairingQuestions.map(question => (
+              <ScheduleImportPairingCheck
+                key={pairingKey(question)}
+                question={question}
+                answer={pairingAnswerOf(question)}
+                disabled={saveBusy}
+                onChange={answer => {
+                  setSaveError(null);
+                  setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }));
+                }}
+              />
+            ))}
             {pendingBatch ? (
               <Text style={styles.bulkSaveText}>
                 Review Project, Area, Task, Dates, Status, and Owner. Accept only the activities you want ECOS to use.

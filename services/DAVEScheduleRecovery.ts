@@ -140,7 +140,9 @@ export function recoverDAVEScheduleRecords({
     }
     combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies, deleted));
   });
-  return progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), deletedRowsHeld(local, cloud, deleted));
+  const dropped = deletedRowsHeld(local, cloud, deleted);
+  return typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), dropped), dropped,
+    new Map(cloud.map(record => [normalized(record.id), record] as const)));
 }
 
 function rowCopiesById(records: readonly ScheduleItem[]): Map<string, ScheduleItem[]> {
@@ -447,8 +449,148 @@ export function scheduleItemsAfterCloudDeletion(items: readonly ScheduleItem[], 
   const removed = items.filter(item => normalized(item.id) === id);
   const kept = items.filter(item => normalized(item.id) !== id);
   if (removed.length === 0 || !id) return kept;
-  const lent = progressCarriedToRevisedTasks(kept, removed);
+  const lent = typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(kept, removed), removed);
   return lent.map((row, index) => scheduleTaskEarlierIds(kept[index]).some(earlier => normalized(earlier) === id) ? row : kept[index]);
+}
+
+/** What David types on a task that a schedule file may also state (next step and milestone: review N3 C). */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
+type TypedTextField = typeof TYPED_TEXT_FIELDS[number];
+
+/**
+ * The rows a recovery merge gave an owner, contractor or note from an earlier
+ * row of their task, each with the fields filled: the app sends each to the
+ * cloud as those fields alone (ScheduleProgressCarryUpload).
+ */
+const rowsTakingCarriedText = new WeakMap<ScheduleItem, readonly TypedTextField[]>();
+
+export function scheduleItemsTakingCarriedText(
+  items: readonly ScheduleItem[],
+): Array<Readonly<{ item: ScheduleItem; fields: readonly TypedTextField[] }>> {
+  return items.flatMap(item => {
+    const fields = rowsTakingCarriedText.get(item);
+    return fields ? [{ item, fields }] : [];
+  });
+}
+
+/**
+ * Review N2 P1, the carry between devices (5 Oct 2026; older, the same on
+ * Build 229; the reviewer's seed 56). The phone approved a master that moved
+ * Framing, so Framing got a new row answering to the old one. The iPad, which
+ * had not heard of that master, still showed the old row, and David assigned
+ * Mike and typed a note there. After everything synced, every device showed
+ * the new row with no owner and no note: they stayed on the hidden old row.
+ * The import's own fill (ScheduleImportMerge) cannot reach this: the new row
+ * was saved before he typed. His percent has a carry for exactly this (A6 pass
+ * 22 M1, above); his owner, contractor and note had none.
+ *
+ * The newest row of a task (it alone, as for the percent) now takes a blank
+ * owner, contractor or note from the row it answers to that was changed last,
+ * when that row was changed after the newest row last was (or the newest row
+ * never was). The rule Set Active and Make Current use
+ * (scheduleTextCarriedToShownTask), for the same reason: a row has one time
+ * for all its fields, so a blank on the row changed later is taken as one
+ * David left (a note he cleared there does not come back from the old row),
+ * and only a blank is ever filled. The row keeps its own stamp, as a carried
+ * percent's row does: the carry is no edit of David's, and must not make this
+ * device's copy read newer than the cloud's. A deleted row this sync drops
+ * lends them by the same rule, once.
+ *
+ * It also brings forward what an import before review N2 P1 left on a hidden
+ * row, for a task not changed since that row was: the same rule cannot tell
+ * the two apart, and both are wanted.
+ *
+ * Limits, by that one time per row: a task changed after he typed on the old
+ * row (a percent on it, a lookahead that restated it) keeps its blank; and a
+ * hidden old row changed by something other than David after he cleared a
+ * note on the new row (a lookahead's delete gives dates back on hidden rows
+ * too) gives the note back once. (Not since review N3 R3 when the new row
+ * says it took a note from the old row: see below.)
+ */
+function typedTextCarriedToRevisedTasks(
+  records: ScheduleItem[],
+  deleted: readonly ScheduleItem[] = [],
+  /** The cloud's rows in this merge, by id: what this device holds beyond them is its own word, waiting to go up. */
+  cloud?: ReadonlyMap<string, ScheduleItem>,
+): ScheduleItem[] {
+  const answering = new Map<string, ScheduleItem[]>();
+  records.forEach(record => scheduleTaskEarlierIds(record).forEach(id => {
+    const key = normalized(id);
+    answering.set(key, [...(answering.get(key) || []), record]);
+  }));
+  if (answering.size === 0) return records;
+  // For each newest row, the row it answers to that was changed last.
+  const from = new Map<ScheduleItem, ScheduleItem>();
+  [...records, ...deleted].forEach(earlier => {
+    const moved = timestamp(earlier.updatedAt) > 0 ? answering.get(normalized(earlier.id)) : undefined;
+    if (!moved) return;
+    const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
+    const newest = moved.filter(record => !superseded.has(normalized(record.id)));
+    if (newest.length !== 1) return;
+    const taken = from.get(newest[0]);
+    if (!taken || timestamp(earlier.updatedAt) > timestamp(taken.updatedAt)) from.set(newest[0], earlier);
+  });
+  const byId = new Map(records.map(record => [normalized(record.id), record] as const));
+  return records.map(record => {
+    // As the row was before a percent carried in this same merge stamped it (withOwnStamp).
+    const own = rowsTakingCarriedProgress.get(record) ?? record;
+    // Review P4 F1 and F4: a row that says what it took for a field from the row it replaces (textFromTask) is not
+    // carried into by the rule above. That rule goes by one time per row, so a hidden row stamped later for any reason
+    // reads as "typed later": an owner he had cleared came back after the next master, because the oldest row, stamped
+    // by the other device's percent, lent it to the newest row's blank. Such a row is kept right by weighing it from
+    // its record: when it first goes up, when an edit typed on an earlier row arrives, at Set Active and Make Current
+    // (ScheduleItemEditBase). Rows saved before rows kept the record (Build 229, which left his text behind on the
+    // hidden row) are carried as before.
+    const took = record.textFromTask ?? null;
+    const recorded = (field: TypedTextField) => Boolean(took) && Object.prototype.hasOwnProperty.call(took, field);
+    // Still as taken (and a row never changed since its import whose blank stands where it took text is no clear of his).
+    const asTaken = (field: TypedTextField) => recorded(field) &&
+      (text(record[field]) === text(took![field]) || (!text(record[field]) && !(timestamp(own.updatedAt) > 0)));
+    // A field it does record is taken only by the record: from the very row it replaces, only while this row still holds
+    // it as taken, and only in a merge that holds the cloud's copy of that row (so what this device has of it is not
+    // behind).
+    const replaced = took && cloud ? byId.get(normalized(took.taskId)) : undefined;
+    // A blank it took, where the row it took it from has text now: typed there by something that does not send its
+    // edit on (the web on a master made current again, a whole copy from a lookahead approved with no signal), or by
+    // this device with no signal, on the row he still saw, and waiting to go up (shown on the task at once). Filled,
+    // and sent as the carry is: it only fills a blank in the cloud's row. Through a row in between only while that
+    // row holds the same blank it took itself; only the newest row of the task (the rows in between are left as they
+    // are: filled, each would lend on to the next in a later merge, whatever was typed there since); and only when the
+    // row with the text was changed after this row last was. The record says what the row held, not when: a blank
+    // typed back over an owner set here reads as the blank taken (seed 9179 of the reviewer's run with two masters
+    // apart: the owner of a card still open was written over the web's later clear).
+    const lender = (field: TypedTextField): ScheduleItem | null => {
+      if (!replaced || answering.has(normalized(record.id)) || !asTaken(field) || text(record[field])) return null;
+      let row: ScheduleItem | undefined = replaced;
+      for (let hops = 0; row && cloud!.has(normalized(row.id)) && hops < records.length; hops += 1) {
+        if (text(row[field])) return timestamp(row.updatedAt) > timestamp(own.updatedAt) ? row : null;
+        const before: ScheduleItem['textFromTask'] = row.textFromTask;
+        if (!before || !Object.prototype.hasOwnProperty.call(before, field) || text(before[field])) return null;
+        row = byId.get(normalized(before.taskId));
+      }
+      return null;
+    };
+    const lent = new Map(TYPED_TEXT_FIELDS.flatMap(field => { const row = lender(field); return row ? [[field, row] as const] : []; }));
+    const filledFromEarlier = [...lent.keys()];
+    const earlier = from.get(record);
+    const carried = earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt)
+      ? TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !recorded(field))
+      : [];
+    const fields = [...new Set([...carried, ...filledFromEarlier])];
+    if (fields.length === 0) return record;
+    const fromEarlier = Object.fromEntries(filledFromEarlier.map(field => [field, lent.get(field)![field] ?? '']));
+    // What it has from the very row it replaces is again a copy of what that row has: the record follows it, so a clear
+    // he types here later reads as his. (Not what came through a row in between: the record is of that row, still blank.)
+    const fromReplaced = Object.fromEntries(filledFromEarlier.filter(field => lent.get(field) === replaced).map(field => [field, replaced![field] ?? '']));
+    const filled = {
+      ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, earlier![field]])),
+      ...(took && Object.keys(fromReplaced).length > 0 ? { textFromTask: { ...took, ...fromReplaced } } : {}),
+    } as ScheduleItem;
+    const percentBefore = rowsTakingCarriedProgress.get(record);
+    if (percentBefore) rowsTakingCarriedProgress.set(filled, percentBefore);
+    rowsTakingCarriedText.set(filled, fields);
+    return filled;
+  });
 }
 
 /**

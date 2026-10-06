@@ -3,7 +3,7 @@ import {
   type DurableLocalTransactionOperation,
   type DurableLocalTransactionStorage,
 } from './DurableLocalTransaction';
-import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
+import { assertLocalStorageKeysNotHeldForRecovery, runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
 export type FieldUpdatePersistenceKeys = Readonly<{
   journal: string;
@@ -196,6 +196,11 @@ export function createFieldUpdateLocalPersistence<TUpdate, TTombstone>({
     }>>,
   ) => runExclusiveLocalStorageMutation(lockKeys, async () => {
     try {
+      // Independent review pass 4 (the restore lock): not while a held device-backup restore waits to be finished.
+      // A field update's sync result, already on its way when the restore stopped, saved the updates list the restore
+      // had written, and the restore's recovery then failed at every start. The save is blocked, as by a pending
+      // save of its own.
+      await assertLocalStorageKeysNotHeldForRecovery(lockKeys);
       await transaction.recover();
     } catch (cause) {
       throw new FieldUpdatePersistenceBlockedError('recovery', cause);

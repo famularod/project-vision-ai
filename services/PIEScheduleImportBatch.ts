@@ -24,6 +24,12 @@ export type PIEScheduleImportBatch = {
   items: ScheduleItem[];
   documents: ReferenceDocument[];
   warnings?: string[];
+  /**
+   * David's answers at review to which saved task each same-named row is
+   * (owner answer Q30, 2 Oct 2026): an imported row's id to the saved task's
+   * id, or null for a new task (scheduleImportPairingQuestions).
+   */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 };
 
 /**

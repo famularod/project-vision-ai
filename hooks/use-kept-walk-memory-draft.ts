@@ -12,7 +12,8 @@ import { forgetKeptDrafts, keepDraft, keptDraftScopes, readKeptDraft } from '../
  * so iOS closing the app (or leaving the project) before Save lost the
  * dictation. Kept per account and project, in memory and in phone storage;
  * Confirm Memory opens with it again the next time that project does, for
- * that account only. An account change or sign-out removes it.
+ * that account only. An account change takes it off the screen; Settings'
+ * Sign Out removes it.
  */
 const drafts = new Map<string, DAVECaptureMemory>();
 const listeners = new Set<() => void>();
@@ -72,9 +73,29 @@ export async function unsavedWalkMemoryExists(ownerKey: string): Promise<boolean
   return false;
 }
 
-/** Account change or sign-out: no unconfirmed memory carries over. */
-export function forgetKeptWalkMemoryDrafts() {
-  void forgetKeptDrafts('walk-memory');
+/**
+ * A sign-out this device did not ask for (everyday item 7), or another
+ * account signing in (review N2): the memories leave the screen but stay
+ * kept on the phone for their account, and Confirm Memory opens with them
+ * again when that account opens their project.
+ */
+export function setAsideKeptWalkMemoryDrafts() {
+  if (drafts.size === 0) return;
+  drafts.clear();
+  notify();
+}
+
+/**
+ * Settings' Sign Out for this account, after its warning: its unconfirmed
+ * memories go, on the phone too, and nobody's stays on screen. Only its own
+ * on the phone (review N2): every account's went. With no account named,
+ * the ones the memories on screen are kept for.
+ */
+export function forgetKeptWalkMemoryDrafts(ownerKey?: string | null) {
+  const owners: unknown[] = ownerKey ? [ownerKey] : [...drafts.keys()].map(slotKey => JSON.parse(slotKey)[0]);
+  new Set(owners).forEach(owner => {
+    if (typeof owner === 'string') void forgetKeptDrafts('walk-memory', owner);
+  });
   if (drafts.size === 0) return;
   drafts.clear();
   notify();

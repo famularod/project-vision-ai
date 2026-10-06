@@ -169,6 +169,13 @@ jest.mock('../../services/SupabaseService', () => ({
     const cloud = await mockListScheduleItems();
     return cloud.ok ? { ...cloud, data: cloud.data.find(item => item.id === id) ?? null } : cloud;
   },
+  // Independent review R02: several queued tasks the list did not hold are
+  // read by their ids in one request; answered from the list too, as the read
+  // of one is.
+  getScheduleItemsByIds: async (ids: string[]) => {
+    const cloud = await mockListScheduleItems();
+    return cloud.ok ? { ...cloud, data: cloud.data.filter(item => ids.includes(item.id)) } : cloud;
+  },
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: (...args: unknown[]) =>
     mockListReferenceDocuments(...args),
@@ -334,10 +341,13 @@ describe('offline upload deletion barriers', () => {
     expect(mockListProjects).toHaveBeenCalledTimes(1);
     expect(mockUpsertDAVESyncTombstone).not.toHaveBeenCalled();
     expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+    // Independent review R02: a task the cloud has no row for is written only
+    // if it still has none.
     expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
       }),
+      { onlyIfAbsent: true },
     );
   });
 
@@ -392,7 +402,10 @@ describe('offline upload deletion barriers', () => {
     // field edit's row is then read by its id before anything is written.
     // This file's mock answers a by-id read from the list, so it counts here:
     // 1 list read + 2 by-id reads.
-    expect(mockListScheduleItems).toHaveBeenCalledTimes(3);
+    // Changed again on purpose (independent review R02): the queued tasks the
+    // list did not hold are read by their ids together, in one request:
+    // 1 list read + 1 read of both by id.
+    expect(mockListScheduleItems).toHaveBeenCalledTimes(2);
     expect(
       mockUpsertScheduleItem.mock.calls.map(([item]) => (item as ScheduleItem).id),
     ).toEqual([newestTask.id, olderTask.id]);
@@ -745,8 +758,10 @@ describe('offline upload deletion barriers', () => {
       'reference-document-schedule-import-document-1',
       'schedule-item-schedule-import-task-1',
     ]);
+    // Written only if the cloud still has no row for it (independent review R02).
     expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
       expect.objectContaining({ id: task.id }),
+      { onlyIfAbsent: true },
     );
     expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1214,12 +1229,14 @@ describe('offline upload deletion barriers', () => {
     });
 
     expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2);
+    // Written only if the cloud still has no row for it (independent review R02).
     expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(
       expect.objectContaining({
         id: task.id,
         notes: task.notes,
         updatedAt,
       }),
+      { onlyIfAbsent: true },
     );
     await expect(getOfflineQueue()).resolves.toEqual([]);
     expect(mockStorage.get(QUEUE_KEY)).toBe('[]');

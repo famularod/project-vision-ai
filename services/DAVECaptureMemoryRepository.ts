@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { assertLocalStorageKeysNotHeldForRecovery } from './LocalStorageMutationCoordinator';
 import {
   DAVE_CAPTURE_MEMORY_VERSION,
   isConfirmedCaptureMemory,
@@ -40,6 +41,9 @@ export function createDAVECaptureMemoryRepository(
   storage: DAVECaptureMemoryStorage = AsyncStorage,
 ): DAVECaptureMemoryRepository {
   async function write(records: readonly DAVEConfirmedCaptureMemory[]): Promise<void> {
+    // Not while a held device-backup restore waits to be finished (independent review pass 4): the stored memories
+    // are the restore's until then.
+    await assertLocalStorageKeysNotHeldForRecovery([DAVE_CAPTURE_MEMORY_STORAGE_KEY]);
     await storage.setItem(
       DAVE_CAPTURE_MEMORY_STORAGE_KEY,
       JSON.stringify(captureMemoryRepositoryStorageValue(records)),

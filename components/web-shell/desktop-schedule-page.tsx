@@ -49,6 +49,7 @@ import {
   schedulePredecessorOptions,
 } from '../../services/VitruviusScheduleWorkspace';
 import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
+import { scheduleTaskLinkTargets } from '../../services/ScheduleTaskRevisions';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
 import { useDesktopAuth } from './desktop-auth-provider';
@@ -93,6 +94,9 @@ export function DesktopSchedulePage({
   selectedProject: string | null;
 }) {
   const auth = useDesktopAuth();
+  // A link to a row a master hid reads as the row shown for its task (owner answer Q29).
+  const knownTasks = auth.snapshot?.knownScheduleItems;
+  const linkTarget = useMemo(() => scheduleTaskLinkTargets(tasks, knownTasks ?? []), [tasks, knownTasks]);
   const [editor, setEditor] = useState<ScheduleEditorState | null>(null);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('builder');
@@ -191,7 +195,7 @@ export function DesktopSchedulePage({
 
   const openEdit = (task: DAVEWebScheduleItem) => {
     setEditingTask(task);
-    setEditor(scheduleEditorStateFor(task));
+    setEditor(scheduleEditorStateFor(task, linkTarget));
     setConflict(null);
     setNotice(null);
   };
@@ -408,7 +412,7 @@ export function DesktopSchedulePage({
       return;
     }
     setEditingTask(latest);
-    setEditor(scheduleEditorStateFor(latest));
+    setEditor(scheduleEditorStateFor(latest, linkTarget));
     setConflict(null);
     setNotice({
       tone: 'good',
@@ -745,7 +749,8 @@ export function DesktopSchedulePage({
                 const dependencyLabels = (row.item.dependencies || []).map(dependency => {
                   // One in another building under the same root is not missing (set when the page grouped by root).
                   const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId) ??
-                    tasks.find(task => task.id === dependency.predecessorItemId && sameRoot(task, row.item));
+                    tasks.find(task => task.id === dependency.predecessorItemId && sameRoot(task, row.item)) ??
+                    shownLinkTarget(linkTarget, dependency.predecessorItemId, row.item);
                   const label = predecessor?.wbsCode || predecessor?.taskName || 'Missing';
                   return `${label}${dependency.lagDays ? ` +${dependency.lagDays}d` : ''}`;
                 });
@@ -2020,7 +2025,21 @@ function ancestorIsCollapsed(
   return false;
 }
 
-function scheduleEditorStateFor(task: DAVEWebScheduleItem): ScheduleEditorState {
+/** The task shown a link names, in the task's project or under its root (owner answer Q29). */
+function shownLinkTarget(
+  linkTarget: (predecessorId: string) => ScheduleItem | null,
+  predecessorId: string,
+  task: ScheduleItem,
+): ScheduleItem | undefined {
+  const target = linkTarget(predecessorId);
+  return target && (taskProjectName(target) === taskProjectName(task) || sameRoot(target, task)) ? target : undefined;
+}
+
+function scheduleEditorStateFor(
+  task: DAVEWebScheduleItem,
+  /** A link to a hidden row is the row shown for its task (owner answer Q29). */
+  linkTarget?: (predecessorId: string) => ScheduleItem | null,
+): ScheduleEditorState {
   const dependencyLag = task.dependencies?.[0]?.lagDays ?? 0;
   return {
     kind: task.isSummary ? 'phase' : task.isMilestone ? 'milestone' : 'task',
@@ -2036,9 +2055,10 @@ function scheduleEditorStateFor(task: DAVEWebScheduleItem): ScheduleEditorState 
     durationDays: task.durationDays === null || task.durationDays === undefined
       ? ''
       : String(task.durationDays),
-    predecessorItemIds: (task.dependencies || []).map(dependency =>
-      dependency.predecessorItemId,
-    ),
+    predecessorItemIds: [...new Set((task.dependencies || []).map(dependency => {
+      const shown = linkTarget && shownLinkTarget(linkTarget, dependency.predecessorItemId, task);
+      return shown && shown.id !== task.id ? shown.id : dependency.predecessorItemId;
+    }))],
     lagDays: String(dependencyLag),
     owner: task.owner,
     contractor: task.contractor,

@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 /**
  * Audit round 2, A6 pass 13 M1 (1 Oct 2026): after "Delete PDF + Items",
  * the next report told the client tasks "were updated" when nothing changed.
@@ -138,7 +139,8 @@ function sinceLines(state: State, previous: DAVEReportSnapshot | null) {
   const briefing = buildDAVEReportBriefing({ truths: [truthOf(state, NOW)], selectedProjectNames: ['Alpha'], previousSnapshot: previous });
   const [pm, executive] = (['project_manager', 'executive'] as const).map(format => {
     const body = enhanceDAVEReportDraft(draft, briefing, format).body;
-    const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+    // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+    const start = body.indexOf('SINCE THE LAST REPORT');
     return body.slice(start, body.indexOf('COMPLETED WORK', start)).split('\n').filter(line => line.startsWith('• '));
   });
   expect(executive).toEqual(pm);
@@ -319,7 +321,7 @@ describe('what still prints', () => {
 
   it('the first report (no earlier one) is unchanged', () => {
     const { deleted } = oldMasterCase();
-    expect(sinceLines(deleted, null)).toEqual(['• This approval establishes the baseline for the next reporting period.']);
+    expect(sinceLines(deleted, null)).toEqual(['• Sending this report establishes the baseline for the next reporting period.']);
   });
 });
 

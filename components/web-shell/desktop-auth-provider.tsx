@@ -34,7 +34,7 @@ import {
   type DAVEWebPreparedUpload,
   type DAVEWebReportRecord,
 } from '../../services/DAVEWebOperations';
-import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
+import type { ECOSProjectQuestionAnswer, ECOSProjectQuestionControl } from '../../services/ECOSProjectQuestion';
 import type { ECOSDrawingPageAnalysisInput } from '../../services/ECOSDrawingPageAnalysis';
 import type { ECOSDrawingPageAnalysisResult } from '../../services/ECOSDrawingPageAnalysis';
 import type { ECOSDocumentIndexJob } from '../../services/ECOSDocumentIndexJobs';
@@ -46,6 +46,7 @@ import type {
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
 import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
 import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { scheduleDocumentAddsToMaster } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemIdsDeletedWithTask } from '../../services/DAVEDeletedTaskEvidence';
 import {
   initialDAVEWebFreshnessState,
@@ -129,8 +130,14 @@ type DesktopAuthContextValue = Readonly<{
     report: DAVEWebReportRecord;
     expectedCloudUpdatedAt?: string | null;
   }) => Promise<string>;
+  /** The phone and iPad's shared "since the last report" period (everyday item 3). */
+  loadReportPeriod: (scopeKey: string, format: string) => Promise<Readonly<{ ownerId: string; snapshot: unknown }> | 'unavailable'>;
+  /** A report approved or sent here goes into that shared period (owner answer 2 Oct, web sends count). */
+  saveReportPeriod: (row: Parameters<typeof daveWebSupabaseGateway.saveAuthorizedReportPeriod>[0]) => Promise<'saved' | 'unavailable'>;
+  /** The signed-in owner, for this computer's own copy of the report periods. */
+  reportOwnerId: () => Promise<string>;
   restoreMissingTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
-  askProjectQuestion: (input: {
+  askProjectQuestion: (input: ECOSProjectQuestionControl & {
     projectId: string;
     projectName: string;
     question: string;
@@ -396,8 +403,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const nextSnapshot = await loadDAVEWebReadOnlySnapshot(options.collections);
+      // Everyday item 3 (2 Oct 2026): when this tab's last download of every
+      // task started, for Reports' "behind" check; only a full load reads them all.
+      const startedAt = new Date().toISOString();
+      const loaded = await loadDAVEWebReadOnlySnapshot(options.collections);
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
+      const tasksPulledAt = options.collections ? snapshotRef.current?.tasksPulledAt ?? null : startedAt;
+      const nextSnapshot = Object.freeze({ ...loaded, tasksPulledAt });
       snapshotRef.current = nextSnapshot;
       lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
       setSnapshot(nextSnapshot);
@@ -1036,15 +1048,20 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
   ) => {
-    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1).
+    // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1). A lookahead's delete
+    // leaves the master tasks it restated on the dates shown, with its tasks or without (review N1 web M1); without
+    // them it moves no percent, as the phone's Delete PDF Only (review N2 W1).
     const current = snapshotRef.current;
+    const revisions = current && (deleteLinkedTasks || scheduleDocumentAddsToMaster(document))
+      ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document, keepTasks: !deleteLinkedTasks })
+      : [];
     await daveWebSupabaseGateway.deleteAuthorizedReferenceDocument(
       document.id,
       document.cloudUpdatedAt,
       deleteLinkedTasks ? document.linkedScheduleItems : [],
-      deleteLinkedTasks && current ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document }) : [],
+      revisions,
     );
-    const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks
+    const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks || revisions.length > 0
       ? ['sync_tombstones', 'reference_documents', 'schedule_items']
       : ['sync_tombstones', 'reference_documents'];
     announceMutation(collections);
@@ -1068,7 +1085,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // approval does (audit A5 pass 3 F5): unchanged tasks keep their
     // progress, changed tasks carry it.
     const plan = importsTasks
-      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems })
+      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices }) // his answers at the review (Q30)
       : null;
     try {
       await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
@@ -1113,6 +1130,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   }, [announceMutation, refreshSnapshotInBackground]);
 
   const setCurrentSchedule = useCallback(async (document: DAVEWebReferenceDocument) => {
+    // A lookahead adds to the master (owner answer Q22): never made current, replaced or not (review N1 web M1).
+    if (scheduleDocumentAddsToMaster(document)) {
+      throw new DAVEWebDocumentMutationError('conflict', 'A lookahead adds to the master schedule. It is never made the current schedule.');
+    }
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );
@@ -1169,6 +1190,17 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return revision;
   }, [announceMutation, refreshSnapshotInBackground]);
 
+  const loadReportPeriod = useCallback(
+    (scopeKey: string, format: string) => daveWebSupabaseGateway.loadAuthorizedReportPeriod(scopeKey, format),
+    [],
+  );
+  const saveReportPeriod = useCallback(
+    (row: Parameters<typeof daveWebSupabaseGateway.saveAuthorizedReportPeriod>[0]) =>
+      daveWebSupabaseGateway.saveAuthorizedReportPeriod(row),
+    [],
+  );
+  const reportOwnerId = useCallback(() => daveWebSupabaseGateway.authorizedOwnerId(), []);
+
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
     const candidates = items.filter(item => !currentIds.has(item.id));
@@ -1207,7 +1239,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return restored;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);
 
-  const askProjectQuestion = useCallback((input: {
+  const askProjectQuestion = useCallback((input: ECOSProjectQuestionControl & {
     projectId: string;
     projectName: string;
     question: string;
@@ -1270,6 +1302,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     updateDocument,
     enqueueDocumentPreparation,
     saveReport,
+    loadReportPeriod,
+    saveReportPeriod,
+    reportOwnerId,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,
@@ -1300,6 +1335,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     updateDocument,
     enqueueDocumentPreparation,
     saveReport,
+    loadReportPeriod,
+    saveReportPeriod,
+    reportOwnerId,
     restoreMissingTasks,
     askProjectQuestion,
     analyzeDrawingPage,

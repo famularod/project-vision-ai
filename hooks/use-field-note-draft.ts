@@ -11,8 +11,8 @@ import { forgetKeptDrafts, keepDraft, readKeptDraft } from '../services/KeptDraf
  * screen, and the tab bar rides above the keyboard, so tapping a tab while
  * writing, or leaving before Save, dropped the note silently, a dictated one
  * included. One draft, for one owner: reading it as another owner discards
- * it, and an account change or sign-out forgets it
- * (forgetFieldNoteDraft). On the phone (keptFor: the account) it is also
+ * it, an account change takes it off the screen, and Settings' Sign Out
+ * forgets it (forgetFieldNoteDraft). On the phone (keptFor: the account) it is also
  * kept in phone storage until Save, so iOS closing the app before Save no
  * longer loses a dictated note (whole-app audit A11 pass 4 L3); it comes back
  * the next time Field Notes opens for that account, and only that account.
@@ -88,8 +88,9 @@ export function useFieldNoteDraft(
         // The kept note comes back unless something is written on screen,
         // from whichever visit's read answers first: leaving Field Notes and
         // coming back before a slow phone answered lost it (whole-app audit
-        // A2 pass 6 L1). A read overtaken by a sign-out or account change
-        // answers nothing (KeptDraftStore), so it never crosses accounts.
+        // A2 pass 6 L1). A read overtaken by its account's sign-out answers
+        // nothing (KeptDraftStore), and a note is only ever shown under its
+        // own account's key, so it never crosses accounts.
         if (kept && draft && (!slot || (slot.key === key && !hasWrittenContent(slot.draft)))) {
           slot = { key, draft: { ...draft, captureOpen: true }, keptFor, keptAt: kept.keptAt };
           notify();
@@ -180,9 +181,26 @@ export async function unsavedFieldNoteExists(ownerKey: string): Promise<boolean>
   return Boolean(keptFieldNoteDraft((await readKeptDraft('field-note', ownerKey))?.value));
 }
 
-/** Account change or sign-out: nobody's unsaved note carries over, on the phone either. */
-export function forgetFieldNoteDraft() {
-  void forgetKeptDrafts('field-note');
+/**
+ * A sign-out this device did not ask for (everyday item 7), or another
+ * account signing in (review N2): the note leaves the screen but stays kept
+ * on the phone for its account, and comes back the next time Field Notes
+ * opens for that account.
+ */
+export function setAsideFieldNoteDraft() {
+  if (!slot) return;
+  slot = null;
+  notify();
+}
+
+/**
+ * Settings' Sign Out for this account, after its warning: its unsaved note
+ * goes, on the phone too, and nobody's stays on screen. Only its own on the
+ * phone (review N2): every account's went. With no account named, the one
+ * the note on screen is kept for.
+ */
+export function forgetFieldNoteDraft(ownerKey: string | null = slot?.keptFor ?? null) {
+  if (ownerKey) void forgetKeptDrafts('field-note', ownerKey);
   if (!slot) return;
   slot = null;
   notify();

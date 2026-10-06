@@ -4,6 +4,13 @@ import type {
   ReferenceDocumentRegion,
   UpdatePhoto,
 } from '../types';
+import { planReportDrawingCrop, reportDrawingCropBounds } from './ReportDrawingCrop';
+import {
+  convertedReportImageMimeType,
+  detectReportImageSignature,
+  reportImageNotPreparedMessage,
+  type ReportImageFormat,
+} from './ReportWordImageFormat';
 import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
@@ -15,13 +22,7 @@ type ArtifactUrlResolver = (
   path: string,
 ) => Promise<string>;
 
-export type ReportImageFormat =
-  | 'jpeg'
-  | 'png'
-  | 'gif'
-  | 'webp'
-  | 'heic'
-  | 'unknown';
+export type { ReportImageFormat } from './ReportWordImageFormat';
 
 export type ResolvedReportWordMedia = Readonly<{
   media: readonly ReportWordMedia[];
@@ -144,6 +145,9 @@ async function resolveDrawing(
     };
   }
   try {
+    // Judged by the shared rule before anything is fetched. With no region
+    // at all the whole sheet was embedded as the excerpt (review pass 2 W3).
+    reportDrawingCropBounds(reference.excerpt.region);
     const mimeType = normalizedDrawingMimeType(document);
     const raster = await resolveProtectedArtifactWithRetry({
       bucket: 'project-documents',
@@ -279,7 +283,11 @@ async function rasterizeImageUrl(
   const blob = format === 'heic'
     ? await convertHeicForWordReport(sourceBlob)
     : sourceBlob;
-  const image = await loadImage(blob);
+  // A picture this browser cannot open is listed as unavailable in the same
+  // words the phone uses (independent review R07).
+  const image = await loadImage(blob).catch(() => {
+    throw new Error(reportImageNotPreparedMessage(detectReportImageSignature(bytes)));
+  });
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = image.naturalWidth;
   sourceCanvas.height = image.naturalHeight;
@@ -292,42 +300,17 @@ async function rasterizeImageUrl(
     : resizeCanvas(sourceCanvas);
 }
 
+/**
+ * What a downloaded picture is. Its own bytes decide; the type the cloud
+ * declared is only a hint for how to try opening bytes nothing recognises.
+ * Whatever is embedded is drawn again here and labelled from the result.
+ */
 export function detectReportImageFormat(
   bytes: Uint8Array,
   declaredMimeType?: string | null,
 ): ReportImageFormat {
-  if (bytes.length >= 3
-    && bytes[0] === 0xff
-    && bytes[1] === 0xd8
-    && bytes[2] === 0xff) {
-    return 'jpeg';
-  }
-  if (bytes.length >= 8
-    && bytes[0] === 0x89
-    && bytes[1] === 0x50
-    && bytes[2] === 0x4e
-    && bytes[3] === 0x47
-    && bytes[4] === 0x0d
-    && bytes[5] === 0x0a
-    && bytes[6] === 0x1a
-    && bytes[7] === 0x0a) {
-    return 'png';
-  }
-  if (bytes.length >= 6) {
-    const signature = ascii(bytes, 0, 6);
-    if (signature === 'GIF87a' || signature === 'GIF89a') return 'gif';
-  }
-  if (bytes.length >= 12
-    && ascii(bytes, 0, 4) === 'RIFF'
-    && ascii(bytes, 8, 4) === 'WEBP') {
-    return 'webp';
-  }
-  if (bytes.length >= 12 && ascii(bytes, 4, 4) === 'ftyp') {
-    const brands = ascii(bytes, 8, Math.min(40, bytes.length - 8));
-    if (/(heic|heix|hevc|hevx|heif|heim|heis|mif1|msf1)/.test(brands)) {
-      return 'heic';
-    }
-  }
+  const format = detectReportImageSignature(bytes);
+  if (format !== 'unknown') return format;
 
   const normalizedMimeType = (declaredMimeType || '').toLowerCase();
   if (normalizedMimeType.includes('heic') || normalizedMimeType.includes('heif')) {
@@ -342,10 +325,6 @@ export function detectReportImageFormat(
   return 'unknown';
 }
 
-function ascii(bytes: Uint8Array, offset: number, length: number) {
-  return String.fromCharCode(...bytes.slice(offset, offset + length));
-}
-
 function mimeTypeForReportImageFormat(
   format: ReportImageFormat,
   declaredMimeType?: string | null,
@@ -353,8 +332,10 @@ function mimeTypeForReportImageFormat(
   if (format === 'jpeg') return 'image/jpeg';
   if (format === 'png') return 'image/png';
   if (format === 'gif') return 'image/gif';
+  if (format === 'bmp') return 'image/bmp';
   if (format === 'webp') return 'image/webp';
   if (format === 'heic') return 'image/heic';
+  if (format === 'tiff') return 'image/tiff';
   return declaredMimeType?.trim() || 'application/octet-stream';
 }
 
@@ -380,27 +361,20 @@ function cropCanvas(
   sourceCanvas: HTMLCanvasElement,
   region: ReferenceDocumentRegion,
 ) {
-  const padding = 0.045;
-  const x = clamp(region.x - padding, 0, 1);
-  const y = clamp(region.y - padding, 0, 1);
-  const right = clamp(region.x + region.width + padding, 0, 1);
-  const bottom = clamp(region.y + region.height + padding, 0, 1);
-  const sourceX = Math.floor(x * sourceCanvas.width);
-  const sourceY = Math.floor(y * sourceCanvas.height);
-  const sourceWidth = Math.max(1, Math.ceil((right - x) * sourceCanvas.width));
-  const sourceHeight = Math.max(1, Math.ceil((bottom - y) * sourceCanvas.height));
-  const scale = Math.min(1, 1600 / sourceWidth, 1200 / sourceHeight);
+  // The phone and iPad report crops by the same rule (independent review R06).
+  const crop = planReportDrawingCrop(region, sourceCanvas);
   const output = document.createElement('canvas');
-  output.width = Math.max(1, Math.round(sourceWidth * scale));
-  output.height = Math.max(1, Math.round(sourceHeight * scale));
+  output.width = crop.outputWidth;
+  output.height = crop.outputHeight;
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Drawing crop renderer is unavailable.');
+  fillWhite(outputContext, output);
   outputContext.drawImage(
     sourceCanvas,
-    sourceX,
-    sourceY,
-    sourceWidth,
-    sourceHeight,
+    crop.originX,
+    crop.originY,
+    crop.width,
+    crop.height,
     0,
     0,
     output.width,
@@ -416,8 +390,20 @@ function resizeCanvas(sourceCanvas: HTMLCanvasElement) {
   output.height = Math.max(1, Math.round(sourceCanvas.height * scale));
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Image resize renderer is unavailable.');
+  fillWhite(outputContext, output);
   outputContext.drawImage(sourceCanvas, 0, 0, output.width, output.height);
   return canvasResult(output);
+}
+
+/**
+ * A JPEG has no transparency, and a canvas saved as one puts its transparent
+ * areas on black. The phone's image tool puts them on white. So a picture
+ * with a transparent background is drawn on white here too, and the two
+ * reports show the same thing (review pass 4 L5).
+ */
+function fillWhite(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
+  context.fillStyle = '#FFFFFF';
+  context.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 async function canvasResult(canvas: HTMLCanvasElement) {
@@ -428,9 +414,11 @@ async function canvasResult(canvas: HTMLCanvasElement) {
       0.84,
     );
   });
+  // The label is read from what the browser wrote, not assumed (independent review R07).
+  const data = new Uint8Array(await blob.arrayBuffer());
   return {
-    data: new Uint8Array(await blob.arrayBuffer()),
-    mimeType: 'image/jpeg',
+    data,
+    mimeType: convertedReportImageMimeType(data),
     width: canvas.width,
     height: canvas.height,
   };
@@ -454,10 +442,6 @@ function normalizedDrawingMimeType(documentRecord: ReferenceDocument) {
   return documentRecord.originalFileName.toLowerCase().endsWith('.pdf')
     ? 'application/pdf'
     : 'image/jpeg';
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function errorMessage(error: unknown, fallback: string) {

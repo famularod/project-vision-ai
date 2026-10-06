@@ -16,6 +16,7 @@ import {
   TextRun,
   WidthType,
 } from 'docx';
+import { reportWordDocxImageType } from './ReportWordImageFormat';
 
 export type ReportWordMediaKind = 'photo' | 'drawing';
 
@@ -100,9 +101,15 @@ const NO_TABLE_BORDERS = {
 
 export function buildReportWordDocument(input: ReportWordDocumentInput): Document {
   const generatedAt = normalizedDate(input.generatedAt);
-  const photos = (input.media || []).filter(item => item.kind === 'photo');
-  const drawings = (input.media || []).filter(item => item.kind === 'drawing');
-  const unavailable = input.unavailableMedia || [];
+  // An image is embedded by what its bytes are, never by its label; one that
+  // is no type Word can show is listed, not dropped (independent review R07).
+  const embeddable = (input.media || []).filter(item => reportWordDocxImageType(item.data));
+  const photos = embeddable.filter(item => item.kind === 'photo');
+  const drawings = embeddable.filter(item => item.kind === 'drawing');
+  const unavailable = [
+    ...(input.unavailableMedia || []),
+    ...(input.media || []).filter(item => !reportWordDocxImageType(item.data)).map(unembeddableMedia),
+  ];
 
   return new Document({
     creator: 'Vitruvius Project Intelligence',
@@ -632,7 +639,7 @@ function mediaSection(
 
   media.forEach((item, index) => {
     const dimensions = wordImageDimensions(item.width, item.height);
-    const type = docxImageType(item.mimeType);
+    const type = reportWordDocxImageType(item.data);
     if (!type) return;
     const mediaLabel = item.kind === 'photo'
       ? `Photo ${item.displayNumber || index + 1}`
@@ -749,15 +756,16 @@ function unavailableMediaSection(
   ];
 }
 
-function docxImageType(
-  mimeType: string,
-): 'jpg' | 'png' | 'gif' | 'bmp' | null {
-  const normalized = mimeType.toLowerCase();
-  if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
-  if (normalized.includes('png')) return 'png';
-  if (normalized.includes('gif')) return 'gif';
-  if (normalized.includes('bmp')) return 'bmp';
-  return null;
+function unembeddableMedia(item: ReportWordMedia): ReportWordUnavailableMedia {
+  const caption = item.caption.trim();
+  return {
+    id: item.id,
+    kind: item.kind,
+    label: item.kind === 'photo' && item.displayNumber
+      ? `Photo ${item.displayNumber}${caption ? ` — ${caption}` : ''}`
+      : caption || item.citation?.trim() || 'Report image',
+    reason: 'The image data is not a JPEG, PNG, GIF or BMP, so Word could not show it. It was left out.',
+  };
 }
 
 function wordImageDimensions(width: number, height: number) {

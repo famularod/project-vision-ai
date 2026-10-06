@@ -54,6 +54,7 @@ import {
   bindProjectDocumentUploadToAccount,
   projectDocumentUploadAttemptsAfterFailure,
   uploadedProjectDocumentToShare,
+  projectDocumentWaitsForSignIn,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   createOwnedLocalFileManifest,
@@ -207,6 +208,9 @@ function phone(options: Readonly<{
       alerts.push({ title, buttons });
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount, uploadedProjectDocumentToShare,
+    // Everyday item 5 (landed after this test): a document waits, untried, while the workspace is open
+    // "offline, sign-in pending"; not pending here. Deps added deliberately.
+    signInPendingRef: { current: false }, projectDocumentWaitsForSignIn,
     resendUpdatesListingDocument: jest.fn(), withoutFieldUpdateDocument, withDeviceDocumentUploadState,
     // publishUploadedProjectDocument
     parseOwnedLocalFileManifest, projectsCurrentRef: { current: [PROJECT] }, authorityProjectId: legacyProjectNameKey,
@@ -227,6 +231,8 @@ function phone(options: Readonly<{
     hiddenSharedDocuments: { hide: (id: string) => { hidden.push(id); } },
     withdrawUnsentProjectDocumentBridge, getOfflineQueue, removeOperationalRecordFromSyncQueue,
     recordDAVESyncTombstone: async (entityType: string, recordId: string) => ({ entityType, recordId, deletedAt: '2026-09-30T09:00:00.000Z' }),
+    // (Owner answer Q36: only the PDF of a lookahead in effect is refused; no document here is one.)
+    fileOnlyDeleteRefused: () => false,
   };
   const fns = compile<{
     retryProjectDocumentUpload: (documentId: string, provided?: PhoneDocument) => Promise<boolean | undefined>;

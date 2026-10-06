@@ -22,9 +22,13 @@ export function ECOSProjectAnswerSheet({
   question,
   answer,
   loading,
+  earlierAskStillRunning = false,
+  workingSince = null,
   error,
   onOpenEvidence,
   onAskAnother,
+  onStop,
+  onRetry,
   onClose,
 }: {
   visible: boolean;
@@ -32,14 +36,22 @@ export function ECOSProjectAnswerSheet({
   question: string;
   answer: ECOSProjectQuestionAnswer | null;
   loading: boolean;
+  /** The wait is for an answer the server had already started on (review pass 2 A1). */
+  earlierAskStillRunning?: boolean;
+  /** When the server took a repeat as a run of its own: the usual steps count from then (review pass 3 A1w). */
+  workingSince?: number | null;
   error: string | null;
   onOpenEvidence: (evidence: DAVEAskEvidence) => void;
   onAskAnother: (suggestedQuestion?: string) => void;
+  /** Stops waiting for the answer and keeps the question on screen (independent review R10). */
+  onStop?: () => void;
+  /** Asks the question shown again, after it was stopped or could not be completed. */
+  onRetry?: () => void;
   onClose: () => void;
 }) {
   const { width } = useWindowDimensions();
   const tablet = width >= 700;
-  const progress = useECOSAskProgress(loading);
+  const progress = useECOSAskProgress(loading, earlierAskStillRunning, workingSince);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
     ? 'COULD NOT VERIFY'
@@ -88,6 +100,16 @@ export function ECOSProjectAnswerSheet({
                 <Text style={styles.loadingTitle}>{progress.stage.title}</Text>
                 <Text style={styles.loadingText}>{progress.stage.detail}</Text>
                 <Text style={styles.loadingElapsed}>{progress.elapsedLabel}</Text>
+                {onStop ? (
+                  <TouchableOpacity
+                    style={styles.stopButton}
+                    onPress={onStop}
+                    accessibilityRole="button"
+                    accessibilityLabel="Stop waiting for this answer"
+                  >
+                    <Text style={styles.secondaryButtonText}>Stop</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             ) : null}
 
@@ -226,6 +248,18 @@ export function ECOSProjectAnswerSheet({
               </>
             ) : null}
 
+            {!loading && error && onRetry ? (
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={onRetry}
+                accessibilityRole="button"
+                accessibilityLabel="Ask this question again"
+              >
+                <Ionicons name="refresh" size={20} color={colors.primary} />
+                <Text style={styles.secondaryButtonText}>Try Again</Text>
+              </TouchableOpacity>
+            ) : null}
+
             {!loading ? (
               <TouchableOpacity
                 style={styles.primaryButton}
@@ -307,5 +341,8 @@ const styles = StyleSheet.create({
   suggestionText: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700' },
   primaryButton: { minHeight: 56, borderRadius: 15, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
   primaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
+  stopButton: { minHeight: 48, minWidth: 140, borderRadius: 14, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg, marginTop: spacing.md },
+  retryButton: { minHeight: 56, borderRadius: 15, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
+  secondaryButtonText: { color: colors.primary, fontSize: 16, fontWeight: '900' },
   providerNote: { color: colors.mutedText, fontSize: 11, lineHeight: 16, textAlign: 'center', paddingHorizontal: spacing.md },
 });

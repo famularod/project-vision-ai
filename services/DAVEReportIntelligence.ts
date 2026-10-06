@@ -12,6 +12,7 @@ import {
   compareDAVEReportSnapshots,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
+  reportTasksLeftByLookahead,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -199,6 +200,8 @@ export function buildDAVEReportBriefing({
   const comparison = compareDAVEReportSnapshots({
     current: currentSnapshot,
     previous: previousSnapshot,
+    // The detail tasks a replaced lookahead took with it are not said (owner answer 3 Oct 2026).
+    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
@@ -374,11 +377,13 @@ function projectConditionFromTruth(
     dueSoon > 0 ? `${dueSoon} due within 7 days` : '',
     accounting.waiting > 0 ? `${accounting.waiting} waiting` : '',
   ].filter(Boolean);
-  const totalWeight = truth.schedule.reduce(
+  // The master sets the scope: a lookahead's detail tasks leave % Complete alone (owner answer Q25).
+  const scope = tasksSettingScope(truth.schedule);
+  const totalWeight = scope.reduce(
     (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
     0,
   );
-  const weightedProgress = truth.schedule.reduce(
+  const weightedProgress = scope.reduce(
     (total, task) =>
       total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
     0,
@@ -500,6 +505,12 @@ function taskWord(count: number) {
   return count === 1 ? 'task' : 'tasks';
 }
 
+/** The tasks that set a % Complete: all but a lookahead's detail, unless that is every task (owner answer Q25). */
+function tasksSettingScope<T extends { lookaheadDetail?: true }>(tasks: readonly T[]): readonly T[] {
+  const scope = tasks.filter(task => task.lookaheadDetail !== true);
+  return scope.length > 0 ? scope : tasks;
+}
+
 function buildDashboardMetrics({
   truths,
   risks,
@@ -532,11 +543,12 @@ function buildDashboardMetrics({
     areaMap.set(key, [...(areaMap.get(key) || []), { ...task, areaName }]);
   }
   const workAreas = Array.from(areaMap.entries()).map(([key, areaTasks]) => {
-    const totalWeight = areaTasks.reduce(
+    const scope = tasksSettingScope(areaTasks); // owner answer Q25
+    const totalWeight = scope.reduce(
       (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
       0,
     );
-    const weightedProgress = areaTasks.reduce(
+    const weightedProgress = scope.reduce(
       (total, task) => total +
         scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
       0,
@@ -674,18 +686,7 @@ function formatReportBody(
     return `${condition.projectName}: ${condition.percentComplete}% complete; ${condition.schedule}` +
       `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
   });
-  const period = briefing.reportingPeriod;
-  const reportingMovement = period.waitingForOtherDevice
-    ? [REPORT_PERIOD_WAITING_LINE]
-    : period.basis === 'previous_approved_report'
-    ? [
-        `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
-          `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
-          `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
-        ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
-        ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
-      ]
-    : ['This approval establishes the baseline for the next reporting period.'];
+  const reportingMovement = reportPeriodMovementLines(briefing) ?? [REPORT_FIRST_PERIOD_LINE];
   const actions = (format === 'executive'
     ? briefing.nextActions.slice(0, 4)
     : briefing.nextActions)
@@ -703,7 +704,7 @@ function formatReportBody(
     'EXECUTIVE STATUS',
     briefing.executiveSnapshot,
     '',
-    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection(REPORT_PERIOD_HEADING, reportingMovement),
     ...textSection('COMPLETED WORK', briefing.completedWork.slice(0, 6), 'No completed work is recorded in the current project scope.'),
     ...textSection('PROJECT POSITION', projectPosition),
     ...textSection('MANAGEMENT ACTIONS', actions),
@@ -716,7 +717,7 @@ function formatReportBody(
     'CURRENT STATUS',
     briefing.executiveSnapshot,
     '',
-    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection(REPORT_PERIOD_HEADING, reportingMovement),
     ...textSection('COMPLETED WORK', briefing.completedWork, 'No completed work is recorded in the current project scope.'),
     ...textSection('CURRENT WORK', briefing.currentWork),
     ...textSection('ACTION PLAN', actions),
@@ -729,8 +730,45 @@ function formatReportBody(
   return lines.filter((value, index, values) => value || values[index - 1]).join('\n').trim();
 }
 
+/**
+ * The written report's "since the last report" heading, in every report the
+ * phone writes (the body copied, emailed, texted, shared in Outlook and put in
+ * the Word file). Owner answer 2 Oct (report heading): it said "SINCE THE LAST
+ * APPROVED REPORT", where the period runs from the last report sent.
+ */
+export const REPORT_PERIOD_HEADING = 'SINCE THE LAST REPORT';
+
+/**
+ * What a first report says under that heading, on the screen and in the
+ * written report. Review N1 (3 Oct 2026): it read "This approval establishes
+ * the baseline for the next reporting period.", and an approval does not: the
+ * period runs from the last report SENT, and an approval never sent starts
+ * none (whole-app audit A6 pass 2). It is the send that establishes it.
+ */
+export const REPORT_FIRST_PERIOD_LINE = 'Sending this report establishes the baseline for the next reporting period.';
+
 /** The changes the written report names; the rest are counted (A6 pass 8 L1). */
 const SINCE_LINES = 6;
+
+/**
+ * The written report's "since the last report" lines: the counts and the
+ * changes it names, or the line saying they are not counted yet while this
+ * device waits for the other device's changes (A6 pass 10 M1, M2). Null with
+ * no earlier report to count from. Everyday item 3 (2 Oct 2026): the web
+ * Reports page writes the same lines as the phone.
+ */
+export function reportPeriodMovementLines(briefing: DAVEReportBriefing): string[] | null {
+  const period = briefing.reportingPeriod;
+  if (period.waitingForOtherDevice) return [REPORT_PERIOD_WAITING_LINE];
+  if (period.basis !== 'previous_approved_report') return null;
+  return [
+    `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
+      `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
+      `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
+    ...briefing.recentChanges.slice(0, SINCE_LINES).map(change => change.summary),
+    ...moreChangesLine(Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length) - SINCE_LINES),
+  ];
+}
 
 /** "Since the last report" while this device waits for the other device's changes (A6 pass 10 M1, M2). */
 export const REPORT_PERIOD_WAITING_LINE =
@@ -1239,9 +1277,16 @@ function stableHash(value: string): string {
  * ids a task had before new masters moved it (whole-app audit A6 pass 12 L1,
  * 30 Sep 2026). Those say which task a revised row is, not what the report
  * says about it, so an approval given, or a send made on the other device,
- * before the truth carried them is still the same content.
+ * before the truth carried them is still the same content. So too the tasks
+ * David said a row is not (review N1 M3, 3 Oct 2026): which earlier task it
+ * is compared with, not what it says.
  */
-const VOLATILE_REPORT_SOURCE_FIELDS = new Set(['generatedAt', 'earlierTaskIds']);
+const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
+  'generatedAt', 'earlierTaskIds', 'notTaskIds',
+  // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced): where a task's dates come from and
+  // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
+  'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
+]);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);

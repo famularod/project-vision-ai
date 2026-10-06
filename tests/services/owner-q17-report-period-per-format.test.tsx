@@ -1,3 +1,4 @@
+// Review N1 (3 Oct 2026): a first report's line is now 'Sending this report establishes the baseline...' (was 'This approval establishes...': the send, not the approval, starts the period); pins updated deliberately.
 const mockStorage = new Map<string, string>();
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
@@ -214,7 +215,8 @@ const approveAndSend = async () => {
 const period = async () => {
   await approvable();
   fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
-  const body = await screen.findByText(/SINCE THE LAST APPROVED REPORT/, {}, SLOW);
+  // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+  const body = await screen.findByText(/SINCE THE LAST REPORT/, {}, SLOW);
   return body.props.children as string;
 };
 const stored = (key: string) => {
@@ -242,7 +244,7 @@ describe('each report format keeps its own period on the Reports screen (owner a
     // executives have not had a report: theirs establishes its own baseline,
     // not "+1 since the team's report".
     view.rerender(reportsScreen({ format: 'executive', scheduleItems: tower(1) }));
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
     await approveAndSend();
 
     // The team's report runs from the team's last report (nothing done), not the Executive Summary (one done).
@@ -312,7 +314,7 @@ describe('each report format keeps its own period on the Reports screen (owner a
     visit({ format: 'project_manager', scheduleItems: tower(1), reportType: 'combined_project_update' });
     expect(await period()).toContain('+1 completed; ');
     visit({ format: 'executive', scheduleItems: tower(1), reportType: 'combined_project_update' });
-    expect(await period()).toContain('This approval establishes the baseline for the next reporting period.');
+    expect(await period()).toContain('Sending this report establishes the baseline for the next reporting period.');
   });
 
   it('a send still open when the owner switches format marks the format that was sent, not the one on screen', async () => {

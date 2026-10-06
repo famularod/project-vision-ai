@@ -1,7 +1,7 @@
 import type { DAVESyncTombstone } from '../types';
 import { parsePersistedDAVESyncTombstones } from './DAVESyncTombstones';
 import type { DurableLocalTransactionOperation } from './DurableLocalTransaction';
-import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
+import { assertLocalStorageKeysNotHeldForRecovery, runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 import {
   createProjectDeletionTransactionRepository,
   parseProjectDeletionCloudIntents,
@@ -265,6 +265,9 @@ export function createProjectDeletionRuntime({
   ): Promise<TResult> => {
     await recoverBeforeStartupReads();
     return runExclusiveLocalStorageMutation(transactionKeys, async () => {
+      // Not while a held device-backup restore waits to be finished (independent review pass 4): the lists a project
+      // deletion rewrites are the restore's until then.
+      await assertLocalStorageKeysNotHeldForRecovery(transactionKeys);
       const support: ProjectDeletionTransactionSupport = {
         updateDeletionIntents: await readArray(
           storageKeys.updateDeletionJournal,

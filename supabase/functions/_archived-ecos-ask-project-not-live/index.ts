@@ -1,3 +1,14 @@
+// NOT LIVE. ARCHIVED COPY. DO NOT DEPLOY.
+//
+// This is the app repository's old `ecos-ask-project` function. The function of
+// that name that answers Ask ECOS today is a short forwarder to the customer
+// gateway and the agent runtime, deployed from the runtime repository. It was
+// read back on 30 Sep and 5 Oct 2026 (version 519) and shares no code with this
+// file. Deploying this file under the live name would replace that forwarder,
+// so its folder is named so that it cannot be deployed as `ecos-ask-project`.
+// The source-text checks that read this file check this copy only; they say
+// nothing about what the live service does.
+
 import {
   createClient,
   type SupabaseClient,

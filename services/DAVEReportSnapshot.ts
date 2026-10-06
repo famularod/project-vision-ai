@@ -36,6 +36,36 @@ export type DAVEReportSnapshotTask = Readonly<{
    */
   earlierTaskIds?: readonly string[];
   /**
+   * The saved tasks David said at import review this task is not (owner
+   * answer Q30, notRevisionOfTaskIds). Review N1 M3 (3 Oct 2026): a task that
+   * carries any is one he called new, and is never paired by name with an
+   * earlier report's task. Absent when there are none, and on snapshots
+   * saved before then.
+   */
+  notTaskIds?: readonly string[];
+  /**
+   * A lookahead's detail task: a row a lookahead added that no master lists
+   * (owner answer Q25; the truth's lookaheadDetail). Review N2 (5 Oct 2026):
+   * such a row is never paired by name with a task that is not one. Absent on
+   * every other task, and on snapshots saved before then.
+   */
+  lookaheadDetail?: true;
+  /**
+   * The task's start, kept only while a lookahead's dates are shown for it or
+   * it is back on the master schedule's (owner answer 3 Oct 2026, report
+   * wording after a lookahead is replaced): the next report can then say its
+   * start "is back to the master schedule's". Absent on every other task, and
+   * on snapshots saved before then.
+   */
+  startDate?: string | null;
+  /**
+   * The dates the replaced lookahead gave this task, while it is shown on the
+   * master schedule's dates again because a newer lookahead no longer lists
+   * it (owner answer Q25). Absent otherwise, and on snapshots saved before
+   * the owner answer of 3 Oct 2026.
+   */
+  replacedLookaheadDates?: Readonly<{ startDate: string; finishDate: string }>;
+  /**
    * What the task says, as one key (`reportTaskContentKey`): every field
    * David can see or edit on it, never its ids or times. Whole-app audit A6
    * pass 13 M1 (1 Oct 2026): a task whose key is the one the earlier report
@@ -94,6 +124,16 @@ export type DAVEReportSnapshot = Readonly<{
    */
   supersedes?: DAVEReportSnapshot | null;
   /**
+   * The lookaheads (by import) a newer one had replaced for these projects
+   * when this report was made (owner answer 3 Oct 2026, report wording after
+   * a lookahead is replaced). A detail task that left the list with its
+   * lookahead and was never in a report is said "completed" once: by the
+   * first report whose earlier report does not list its lookahead here.
+   * Absent when the report was made without every saved task, and on
+   * snapshots saved before then.
+   */
+  replacedLookaheads?: readonly string[];
+  /**
    * When this approved report was sent (email, text, copy or Outlook
    * completed); null while approved but not yet sent. Absent on snapshots
    * from before 30 Sep 2026, which count as sent. The reporting period runs
@@ -117,7 +157,37 @@ export type DAVEReportSnapshot = Readonly<{
    * Absent on reports sent before then, and on approvals not yet sent.
    */
   sentBy?: string;
+  /**
+   * When the owner recorded, in Reports, a report he sent another way: a
+   * Mail draft he sent later, Outlook after "Not yet", or the Word file from
+   * a laptop (everyday item 1, 2 Oct 2026). `deliveredAt` is when he says it
+   * went out; this is when he said so. Absent on a send from the app, which
+   * is recorded as it completes. Another device's download counts as having
+   * this report's changes only once it started after both (`reportSendCountsFrom`).
+   */
+  markedSentAt?: string;
 }>;
+
+/**
+ * A saved or shared snapshot of this period, or null: the right version,
+ * projects, format and a task list. Shared by the phone's repository and the
+ * web Reports page (everyday item 3, 2 Oct 2026), which read the same
+ * report_snapshots row.
+ */
+export function validReportPeriodSnapshot(
+  value: unknown,
+  scopeKey: string,
+  reportFormat: DAVEReportFormat | undefined,
+): DAVEReportSnapshot | null {
+  const parsed = value as DAVEReportSnapshot | null;
+  if (
+    parsed?.version !== DAVE_REPORT_SNAPSHOT_VERSION ||
+    parsed.scopeKey !== scopeKey ||
+    parsed.reportFormat !== reportFormat ||
+    !Array.isArray(parsed.tasks)
+  ) return null;
+  return parsed;
+}
 
 /**
  * Which reporting period a snapshot is: its projects and, since owner answer
@@ -200,14 +270,35 @@ function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
   return Object.freeze({ ...report, supersedes: Object.freeze(before) });
 }
 
-/** The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2). */
+/**
+ * The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2).
+ * `markedSentAt`: the owner recorded the send afterwards, at that time (everyday item 1).
+ */
 export function markReportSnapshotDelivered(
   snapshot: DAVEReportSnapshot,
   deliveredAt: string,
   sentBy?: string | null,
+  markedSentAt?: string | null,
 ): DAVEReportSnapshot {
-  const { sentBy: _earlierSender, ...approved } = snapshot;
-  return Object.freeze({ ...approved, deliveredAt, ...(sentBy ? { sentBy } : {}) });
+  const { sentBy: _earlierSender, markedSentAt: _earlierMark, ...approved } = snapshot;
+  return Object.freeze({
+    ...approved,
+    deliveredAt,
+    ...(sentBy ? { sentBy } : {}),
+    ...(markedSentAt ? { markedSentAt } : {}),
+  });
+}
+
+/**
+ * The time another device's download must start after to have the changes
+ * behind `send`: its send time, or, for a send the owner recorded afterwards
+ * (everyday item 1), the later of that and when he recorded it. Until then
+ * the sending device may not have uploaded them.
+ */
+export function reportSendCountsFrom(send: Pick<DAVEReportSnapshot, 'deliveredAt' | 'markedSentAt'>): number {
+  const sent = Date.parse(send.deliveredAt ?? '');
+  const marked = Date.parse(send.markedSentAt ?? '');
+  return Number.isNaN(marked) ? sent : Math.max(sent, marked);
 }
 
 /**
@@ -325,6 +416,10 @@ export function reportPeriodSend(snapshot: DAVEReportSnapshot | null | undefined
  * Keychain could not be read, or by a build before A6 pass 9) that is not one
  * of `ownSends` (this device knows its own by their send time) is now taken
  * for the other install's: at worst this device waits for a download.
+ *
+ * Everyday item 1 (2 Oct 2026): a send the owner recorded afterwards counts
+ * from when he recorded it too (`reportSendCountsFrom`), so a download made
+ * between the send he names and his record is not taken as having it.
  */
 export function otherDeviceSendNotReceived({
   period,
@@ -346,7 +441,7 @@ export function otherDeviceSendNotReceived({
   if (send.sourceFingerprint === currentFingerprint) return null;
   const pulled = Date.parse(pulledAt ?? '');
   if (Number.isNaN(pulled)) return send;
-  if (pulled > Date.parse(send.deliveredAt)) return null;
+  if (pulled > reportSendCountsFrom(send)) return null;
   const seen = Date.parse(seenAt ?? '');
   return !Number.isNaN(seen) && pulled >= seen ? null : send;
 }
@@ -376,6 +471,7 @@ export type DAVEReportPeriodChange = Readonly<{
     | 'reopened'
     | 'progress'
     | 'status'
+    | 'start_date'
     | 'finish_date'
     | 'owner'
     | 'area'
@@ -439,6 +535,26 @@ export type DAVEReportPeriodComparison = Readonly<{
   waitingForOtherDevice?: boolean;
 }>;
 
+/** A saved detail task that left the list because a newer lookahead replaced its own (DAVEProjectTruth), with its project. */
+export type DAVEReportTaskLeftByLookahead = Readonly<{
+  taskId: string;
+  earlierTaskIds?: readonly string[];
+  projectName: string;
+  taskName: string;
+  areaName: string | null;
+  status: string;
+  percentComplete: number;
+  lookahead: string;
+}>;
+
+/** The detail tasks the truths say left with a replaced lookahead (owner answer 3 Oct 2026). */
+export function reportTasksLeftByLookahead(truths: readonly DAVEProjectTruth[]): DAVEReportTaskLeftByLookahead[] {
+  return truths.flatMap(truth => (truth.lookaheadReplacement?.tasksLeft ?? []).map(task => Object.freeze({
+    ...task,
+    projectName: truth.projectName,
+  })));
+}
+
 export function buildDAVEReportSnapshot({
   truths,
   scopeKey,
@@ -458,6 +574,9 @@ export function buildDAVEReportSnapshot({
   const tasks = truths.flatMap(truth => truth.schedule.map(task => Object.freeze({
     taskId: task.taskId,
     ...withEarlierIds(task),
+    ...withNotTaskIds(task),
+    ...(task.lookaheadDetail === true ? { lookaheadDetail: true as const } : {}),
+    ...withLookaheadDates(task),
     projectName: truth.projectName,
     taskName: task.taskName,
     areaName: clean(task.areaName) || null,
@@ -483,6 +602,9 @@ export function buildDAVEReportSnapshot({
     capturedAt: validDate(capturedAt) || new Date().toISOString(),
     sourceFingerprint,
     tasks: Object.freeze(tasks),
+    ...(truths.some(truth => truth.lookaheadReplacement)
+      ? { replacedLookaheads: Object.freeze([...new Set(truths.flatMap(truth => truth.lookaheadReplacement?.replaced ?? []))].sort()) }
+      : {}),
     ...(sourceReferences
       ? {
           sourceReferences: Object.freeze(
@@ -504,9 +626,19 @@ export function buildDAVEReportSnapshot({
 export function compareDAVEReportSnapshots({
   current,
   previous,
+  tasksLeftByLookahead = [],
 }: {
   current: DAVEReportSnapshot;
   previous?: DAVEReportSnapshot | null;
+  /**
+   * The saved detail tasks not shown because a newer lookahead replaced
+   * theirs (owner answer 3 Oct 2026, "Don't mention them"): one the earlier
+   * report had is not "removed", and the completed count does not drop for
+   * it; one completed since the earlier report is still said "completed",
+   * once. Without them every task missing from the list reads as removed, as
+   * before.
+   */
+  tasksLeftByLookahead?: readonly DAVEReportTaskLeftByLookahead[];
 }): DAVEReportPeriodComparison {
   if (!previous || previous.scopeKey !== current.scopeKey) {
     return Object.freeze({
@@ -528,10 +660,44 @@ export function compareDAVEReportSnapshots({
   // previous report had, not listed as added and removed. By the ids the
   // import recorded first (A6 pass 12 L1); by name only for tasks with none.
   const linked = linkTasksById(previous.tasks, current.tasks);
-  const revisions = pairRevisedTasks(
-    previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task)),
-    current.tasks.filter(task => !previousById.has(task.taskId) && !linked.current.has(task)),
-  );
+  // Review N1 M3 (3 Oct 2026): nor a task David called new at import review
+  // (owner answer Q30). He answered "the first Pour slab was dropped and this
+  // row is a new one", the list followed him, and the report still paired the
+  // new row with the dropped task by name: "Pour slab moved from 80% to 0%
+  // complete." Such a task is added, and the dropped one removed.
+  // Review N2 (5 Oct 2026): nor a detail row a lookahead added with a task that is not one, either way round. A
+  // master dropped one Pour slab while a lookahead added a row called Pour slab; the import had made that row a
+  // new detail task, and the report still paired the two by name: "Pour slab finish changed from 10/16/2026 to
+  // 11/08/2026.", which no task did, and the dropped task was never said removed. Detail rows pair by name only
+  // with detail rows, and the others only with each other.
+  // Review N5 B (6 Oct 2026, Low, older): nor, among several tasks of one name, a task whose earlier ids are known
+  // and none of them is in the earlier report. A lookahead added a third Pour slab after the last report; the next
+  // master listed two, and David answered "this row is the one the lookahead added". The list followed him. The
+  // row's earlier ids (the lookahead's row) matched nothing in the earlier report, so it was still offered to the
+  // pairing by name, and was paired with the Pour slab the master had dropped: "Pour slab moved from 60% to 0%
+  // complete.", "schedule impact changed from 1 day to not set.", and the dropped task never said removed.
+  // Review N6 (7 Oct 2026, Low, caused by that fix, c65013a): it barred EVERY row with earlier ids from the pairing
+  // by name. Paint was left out by one master and listed again by the next as a new row; a later master re-dated
+  // that row, which gave it earlier ids, none of them in the last report: "Paint moved from 60% to 70% complete."
+  // became "Paint was removed from the current project plan." and "Paint was added to the project plan.", for a
+  // task that was in his list all along. The ids decide only where a name leaves doubt: where either report has
+  // more than one task of that name (the only place he is asked which is which), a task that carries earlier ids
+  // answers by them alone, and with none of them in the earlier report it is added. A task with a name of its own
+  // still pairs by name, whatever rows it has been through. "Of that name" as the pairing by name itself takes it:
+  // in the same project and the same area (a task with no area stated could be in any).
+  const sameNamed = (tasks: readonly DAVEReportSnapshotTask[], task: DAVEReportSnapshotTask) =>
+    tasks.filter(other => normalized(other.projectName) === normalized(task.projectName) && normalized(other.taskName) === normalized(task.taskName) &&
+      (!normalized(other.areaName) || !normalized(task.areaName) || normalized(other.areaName) === normalized(task.areaName))).length;
+  const knownByEarlierIdsAmongSameNamed = (task: DAVEReportSnapshotTask) =>
+    earlierIdsOf(task).length > 0 && (sameNamed(current.tasks, task) > 1 || sameNamed(previous.tasks, task) > 1);
+  const unpairedBefore = previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task));
+  const unpairedNow = current.tasks.filter(task =>
+    !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task) && !knownByEarlierIdsAmongSameNamed(task));
+  const isLookaheadDetail = (task: DAVEReportSnapshotTask) => task.lookaheadDetail === true;
+  const revisions = new Map([
+    ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
+    ...pairRevisedTasks(unpairedBefore.filter(isLookaheadDetail), unpairedNow.filter(isLookaheadDetail)),
+  ]);
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
   const unchangedTaskIds = new Set<string>();
@@ -573,20 +739,84 @@ export function compareDAVEReportSnapshots({
     changes.push(...changesBetween(prior, task));
   }
 
+  // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced):
+  // "Don't mention them". The detail tasks only the replaced lookahead listed
+  // left the list (owner answer Q25), and each read "was removed from the
+  // current project plan", with "-1 completed" for one that was done: 85% of
+  // weekly reports carried such a line. A task that left that way is not
+  // said, and still counts as it stood, so no count moves for it. One that
+  // was completed since the earlier report is said "was completed", once, and
+  // counts as completed in this report. A task a new master drops, or one
+  // deleted, is removed as before.
+  const leftByAnyId = new Map<string, DAVEReportTaskLeftByLookahead>();
+  tasksLeftByLookahead.forEach(left => [left.taskId, ...(left.earlierTaskIds ?? [])].forEach(id => {
+    if (!leftByAnyId.has(id)) leftByAnyId.set(id, left);
+  }));
+  const leftNow = (left: DAVEReportTaskLeftByLookahead, prior?: DAVEReportSnapshotTask): DAVEReportSnapshotTask => Object.freeze({
+    taskId: left.taskId,
+    projectName: prior?.projectName ?? left.projectName,
+    taskName: left.taskName,
+    areaName: clean(left.areaName) || null,
+    owner: prior?.owner ?? null,
+    status: clean(left.status),
+    percentComplete: boundedPercent(left.percentComplete),
+    finishDate: prior?.finishDate ?? null,
+    urgency: 'not_urgent',
+    approvalStatus: prior?.approvalStatus ?? null,
+    estimatedScheduleImpactDays: prior?.estimatedScheduleImpactDays ?? null,
+  });
+  // The tasks that left with a lookahead, as each counts in this report: as it stood, or completed.
+  const leftCounted: DAVEReportSnapshotTask[] = [];
+  const leftSeen = new Set<DAVEReportTaskLeftByLookahead>();
+  // Review N2 (5 Oct 2026): a task a master has listed is a master's task from then on. A lookahead added Rebar
+  // delivery; the next master listed it on other days, as a new row that answers to the lookahead's row (its
+  // earlier ids); a newer lookahead replaced the first; a later master dropped it. The lookahead's old saved
+  // row is then a detail row that left with its replaced lookahead, and the earlier report's MASTER row was
+  // looked up under it through its earlier ids: nothing was said and the task went on being counted, where a
+  // master's task had been dropped. A task left with its lookahead only when the row the earlier report had
+  // is that detail row itself, or an earlier row of it; a master's row that answers to it reads as removed.
+  const previousAnswersTo = new Set(previous.tasks.flatMap(task => earlierIdsOf(task)));
   for (const task of previous.tasks) {
     if (currentById.has(task.taskId) || revisedPriorIds.has(task.taskId)) continue;
+    const left = leftByAnyId.get(task.taskId);
+    if (left) {
+      leftSeen.add(left);
+      const now = leftNow(left, task);
+      if (!snapshotTaskIsComplete(task) && snapshotTaskIsComplete(now)) {
+        changes.push(changeFor(now, 'completed', `${now.taskName} was completed.`));
+        leftCounted.push(now);
+      } else {
+        leftCounted.push(task);
+      }
+      continue;
+    }
     changes.push(changeFor(task, 'removed', `${task.taskName} was removed from the current project plan.`));
+  }
+  // A detail task no report ever had (added, completed and gone with its lookahead between two reports): said by
+  // the first report whose earlier report did not know that lookahead as replaced; never without that record.
+  if (Array.isArray(previous.replacedLookaheads)) {
+    const replacedBefore = new Set(previous.replacedLookaheads);
+    for (const left of tasksLeftByLookahead) {
+      // Nor the old row of a task the earlier report had under a later row: that task is said above (review N2).
+      if (leftSeen.has(left) || replacedBefore.has(left.lookahead) || currentById.has(left.taskId) || previousAnswersTo.has(left.taskId)) continue;
+      const now = leftNow(left);
+      if (!snapshotTaskIsComplete(now)) continue;
+      leftSeen.add(left);
+      changes.push(changeFor(now, 'completed', `${now.taskName} was completed.`));
+      leftCounted.push(now);
+    }
   }
 
   const distinctChanges = dedupeChanges(changes);
+  const counted = leftCounted.length > 0 ? [...current.tasks, ...leftCounted] : current.tasks;
   return Object.freeze({
     basis: 'previous_approved_report',
-    label: `Since the report approved ${formatPeriodDate(previous.capturedAt)}`,
+    label: reportPeriodLabel(previous),
     startedAt: previous.capturedAt,
     endedAt: current.capturedAt,
-    completeDelta: completeCount(current.tasks) - completeCount(previous.tasks),
-    openDelta: openCount(current.tasks) - openCount(previous.tasks),
-    overdueDelta: overdueCount(current.tasks) - overdueCount(previous.tasks),
+    completeDelta: completeCount(counted) - completeCount(previous.tasks),
+    openDelta: openCount(counted) - openCount(previous.tasks),
+    overdueDelta: overdueCount(counted) - overdueCount(previous.tasks),
     changes: Object.freeze(distinctChanges.slice(0, 20).map(change => Object.freeze(change))),
     changeCount: distinctChanges.length,
     changedTaskIds: Object.freeze([...new Set(distinctChanges.map(change => change.taskId))]),
@@ -594,6 +824,20 @@ export function compareDAVEReportSnapshots({
     newActivityTaskIds: Object.freeze([...newActivityTaskIds]),
     sameActivityTaskIds: Object.freeze([...sameActivityTaskIds]),
   });
+}
+
+/**
+ * The period's label on the Reports screen. Everyday item 2 (2 Oct 2026): it
+ * said "Since the report approved <date>" with the date its facts were
+ * captured, where the period runs from when that report was sent. It names
+ * the send now ("Since the report sent Oct 1, 2026"); a report saved before
+ * sends were recorded counts as sent when captured, as everywhere else. An
+ * approval never sent is not a period's start, but would be named as what
+ * it is.
+ */
+function reportPeriodLabel(previous: DAVEReportSnapshot): string {
+  if (previous.deliveredAt === null) return `Since the report approved ${formatPeriodDate(previous.capturedAt)}`;
+  return `Since the report sent ${formatPeriodDate(previous.deliveredAt ?? previous.capturedAt)}`;
 }
 
 /**
@@ -639,11 +883,32 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
   if (!completionChanged && normalized(prior.status) !== normalized(task.status)) {
     changes.push(changeFor(task, 'status', `${task.taskName} changed from ${prior.status} to ${task.status}.`));
   }
+  // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced):
+  // "Explain it". A master task the replaced lookahead had moved, that the
+  // newer lookahead does not list, is shown on the master schedule's dates
+  // again (owner answer Q25), and the report said "T1 finish changed from
+  // 10/12/2026 to 10/04/2026" as if someone had moved it: 69% of weekly
+  // reports. It now says where the date comes from, for the start too. Only
+  // for a task that came back since the earlier report: that report had it on
+  // a lookahead's dates (it kept its start then), or on that lookahead's
+  // finish. Any other date change reads as before.
+  const back = task.replacedLookaheadDates && !prior.replacedLookaheadDates ? task.replacedLookaheadDates : null;
+  const backSince = Boolean(back) && (prior.startDate !== undefined || sameCalendarDate(prior.finishDate, back!.finishDate));
+  if (backSince && prior.startDate !== undefined && task.startDate !== undefined &&
+    clean(task.startDate) && !sameCalendarDate(prior.startDate, task.startDate)) {
+    changes.push(changeFor(
+      task,
+      'start_date',
+      `${task.taskName} start is back to the master schedule's ${task.startDate} (the previous lookahead showed ${back!.startDate}).`,
+    ));
+  }
   if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
     changes.push(changeFor(
       task,
       'finish_date',
-      `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
+      backSince && clean(task.finishDate)
+        ? `${task.taskName} finish is back to the master schedule's ${task.finishDate} (the previous lookahead showed ${back!.finishDate}).`
+        : `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
     ));
   }
   if (normalized(prior.owner) !== normalized(task.owner)) {
@@ -694,6 +959,38 @@ function earlierIdsOf(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTask
 function withEarlierIds(task: Pick<DAVEReportSnapshotTask, 'taskId' | 'earlierTaskIds'>) {
   const earlierTaskIds = earlierIdsOf(task);
   return earlierTaskIds.length > 0 ? { earlierTaskIds: Object.freeze(earlierTaskIds) } : {};
+}
+
+/**
+ * A task's lookahead dates, as the snapshot keeps them (owner answer 3 Oct
+ * 2026): its start while a lookahead's dates are shown for it, and the
+ * replaced lookahead's dates while it is back on the master schedule's.
+ */
+function withLookaheadDates(task: Pick<DAVEProjectTruth['schedule'][number], 'startDate' | 'onLookaheadDates' | 'replacedLookaheadDates'>) {
+  const replaced = task.replacedLookaheadDates;
+  if (!replaced && task.onLookaheadDates !== true) return {};
+  return {
+    startDate: clean(task.startDate) || null,
+    ...(replaced
+      ? { replacedLookaheadDates: Object.freeze({ startDate: clean(replaced.startDate), finishDate: clean(replaced.finishDate) }) }
+      : {}),
+  };
+}
+
+/** The tasks a snapshot task was said not to be, read as stored (owner answer Q30; none before review N1 M3). */
+function notTaskIdsOf(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>): string[] {
+  const listed: readonly unknown[] = Array.isArray(task.notTaskIds) ? task.notTaskIds : [];
+  return [...new Set(listed.map(clean).filter(Boolean))];
+}
+
+function withNotTaskIds(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>) {
+  const notTaskIds = notTaskIdsOf(task);
+  return notTaskIds.length > 0 ? { notTaskIds: Object.freeze(notTaskIds) } : {};
+}
+
+/** Whether David called this task a new one at import review: it is no earlier task under another name or date. */
+function saidNewTask(task: Pick<DAVEReportSnapshotTask, 'notTaskIds'>): boolean {
+  return notTaskIdsOf(task).length > 0;
 }
 
 /** Which fields a content key covers; a key made from another list never equals this one's. */

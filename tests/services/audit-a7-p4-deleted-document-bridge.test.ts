@@ -161,7 +161,7 @@ describe('deleting a phone document withdraws its bridge only while it has not u
     expect(body).toContain("{ text: 'Delete from This Device', style: 'destructive', onPress: () => void removeFromDevice() },");
     expect(body).toContain("{ text: 'Delete from All Devices', style: 'destructive', onPress: removeFromAllDevices },");
     expect(body).toContain('This cannot be undone.');
-    expect(body).toMatch(/if \(!sharedRecord \|\| sharedWithAnotherDocument\) return void removeFromDevice\(\);\n\s+void removeReferenceDocumentEverywhere\(sharedRecord\.id\)\n\s+\.then\(removeFromDevice\)\n\s+\.catch\(\(\) => Alert\.alert\('Delete failed'/);
+    expect(body).toMatch(/if \(!sharedRecord \|\| sharedWithAnotherDocument\) return void removeFromDevice\(\);\n\s+void removeReferenceDocumentEverywhere\(sharedRecord\.id\)\n\s+\.then\(removed => \(removed === false \? undefined : removeFromDevice\(\)\)\)\n\s+\.catch\(\(\) => Alert\.alert\('Delete failed'/);
     // A compliance-sensitive document is still only archived.
     expect(body).toMatch(/\{ text: `Archive \$\{document\.category\}`, style: 'destructive', onPress: \(\) => void removeFromDevice\(\) \}/);
     // The same durable deletion record as every other reference delete.

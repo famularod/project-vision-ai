@@ -128,7 +128,8 @@ function sinceLines(scheduleItems: ScheduleItem[], previous: DAVEReportSnapshot)
   });
   return (['project_manager', 'executive'] as const).map(format => {
     const body = enhanceDAVEReportDraft(draft, briefing, format).body;
-    const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+    // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+    const start = body.indexOf('SINCE THE LAST REPORT');
     return body.slice(start, body.indexOf('COMPLETED WORK', start)).split('\n').filter(line => line.startsWith('• '));
   });
 }

@@ -140,6 +140,7 @@ import {
   bindProjectDocumentUploadToAccount,
   projectDocumentUploadAttemptsAfterFailure,
   uploadedProjectDocumentToShare,
+  projectDocumentWaitsForSignIn,
 } from '../../services/ProjectDocumentUploadRetry';
 import {
   cloudCopyShownOnDevice,
@@ -309,6 +310,16 @@ function refresh(device: Device, own: Record<string, unknown> = {}) {
   );
   return run().then(() => device.render());
 }
+/**
+ * A refresh as builds up to 229 ran it (review N2 pass 4, 6 Oct 2026): it did not look at Review Conflicts, and put
+ * the cloud's copy, Sent, on a card whose own copy waited there. The refresh now leaves that card as it is
+ * (tests/services/review-n2-field-update-review-card.test.ts). A card an earlier build left that way is still handled
+ * as before, and the tests of that handling start from this refresh. Its one test that now holds the card is answered
+ * as it was then; the part of it for an upload of this device's own landing after the list was read does not come
+ * into these tests.
+ */
+const refreshAsBuild229 = (device: Device, own: Record<string, unknown> = {}) =>
+  refresh(device, { projectUpdateUploadedSince: () => false, ...own });
 /** The iPad's own queue and journal of removed documents: nothing of the phone's. */
 const iPadOwn = { loadRemovedFieldUpdateDocuments: async () => new Set<string>(), getOfflineQueue: async () => [] };
 
@@ -348,6 +359,9 @@ function device(documents: Doc[], saved: Update[], options: {
     } },
     projectDocumentUploadAttemptsAfterFailure, bindProjectDocumentUploadToAccount,
     uploadedProjectDocumentToShare, // audit A8 pass 4 L4: read again from the list before it is shared
+    // Everyday item 5 (landed after this test): a document waits, untried, while the workspace is open
+    // "offline, sign-in pending"; not pending here. Deps added deliberately.
+    signInPendingRef: { current: false }, projectDocumentWaitsForSignIn,
     isComplianceSensitiveProjectDocument: () => false,
     findSharedReferenceDocumentForProjectDocument: () => null,
     referenceDocumentsCurrentRef: { current: [] },
@@ -1885,7 +1899,7 @@ describe('a document change waiting for an update archived in the cloud still re
 describe('Keep Phone after a refresh shows the phone\'s copy on the card (audit A4 pass 12 L3)', () => {
   it('the refresh showed the iPad\'s copy: after Keep Phone the card reads the phone\'s note, Sent', async () => {
     const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
 
     await chooseInSettings(phone, conflict, 'keep_local');
@@ -1894,9 +1908,11 @@ describe('Keep Phone after a refresh shows the phone\'s copy on the card (audit 
     expect(A.updateNeedsAutomaticSyncRetry(phone.saved()!)).toBe(false);
   });
 
-  it('the realtime echo showed the iPad\'s copy: the same', async () => {
+  // Pin changed in review N2 pass 4: the echo used to show the iPad's copy, Sent; it now leaves the phone's copy on the card.
+  it('the realtime echo leaves the phone\'s copy on the card, and Keep Phone ends the same', async () => {
     const { phone, conflict } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
-    expect(await realtimeEcho(phone)).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(await realtimeEcho(phone)).toMatchObject({ notes: PHONE_NOTE });
+    expect(phone.saved()?.status).not.toBe('sent');
     await chooseInSettings(phone, conflict, 'keep_local');
     expect(phone.saved()).toMatchObject({ notes: PHONE_NOTE, status: 'sent' });
   });
@@ -3130,7 +3146,7 @@ describe('nothing automatic sends an update in conflict (audit A4 pass 15 H1, A7
     const { phone } = await phoneEditInConflict(() => [phoneDocument('permit', { status: 'failed', uploadAttemptCount: 1 })]);
     // Another failed upload attempt on this phone since the update was sent.
     phone.projectDocumentsCurrentRef.current = [phoneDocument('permit', { status: 'failed', uploadAttemptCount: 3 })];
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
     expect(await pressSyncNow(phone)).toBe('Cloud sync finished, but 1 saved conflict needs review.');
     await stillLeftForReview(PHONE_NOTE);
@@ -3155,7 +3171,7 @@ describe('nothing automatic sends an update in conflict (audit A4 pass 15 H1, A7
     await iPadEditsNow(IPAD_NOTE);
     await uploadPendingChanges();
     await waitingUpdateSync(phone);
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
     lateAnalysisFinishes(phone, finishedAnalysis());
     await phone.settle();
@@ -3168,7 +3184,7 @@ describe('nothing automatic sends an update in conflict (audit A4 pass 15 H1, A7
 
   it('R4: a refresh shows the iPad\'s copy, a document taken off waits; Sync Now leaves it for review, and the document still comes off the cloud\'s copy', async () => {
     const { phone, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE });
     await phone.deleteFromThisDevice('permit');
     persistDocuments();
@@ -3202,7 +3218,7 @@ describe('nothing automatic sends an update in conflict (audit A4 pass 15 H1, A7
     putInCloud({ ...withoutDocuments, notes: IPAD_NOTE } as Update, new Date().toISOString());
     await new Promise(resolve => setTimeout(resolve, 5));
     await uploadPendingChanges();
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, documents: [] });
     await pressSyncNow(phone);
     await stillLeftForReview(RETRY_SYNC_OFFLINE_EDIT);
@@ -4553,7 +4569,7 @@ describe('"Send your version?" sends David\'s version after a refresh put the iP
       await new Promise(resolve => setTimeout(resolve, 5));
       await iPadEditsNow('Pour moved to Wednesday (typed on the iPad)');
     }
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     phone.render();
     expect(phone.saved()?.notes).not.toBe(RETRY_SYNC_OFFLINE_EDIT); // the cloud's copy is on the card
     await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true });
@@ -4797,7 +4813,7 @@ describe('"Send your version?" keeps a photo analysis that finished while the qu
       await new Promise(resolve => setTimeout(resolve, 5));
       await iPadEditsNow(IPAD_SECOND_NOTE);
     }
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()?.notes).not.toBe(RETRY_SYNC_OFFLINE_EDIT); // the cloud's copy is on the card, with the result
     expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
     await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true }); // Send
@@ -5121,7 +5137,7 @@ describe('"Send your version?" keeps a document upload that finished while the q
     persistDocuments();
     await uploadPendingChanges(); // its patch goes onto the cloud's copy
     expect(inCloud().documents?.[0]).toMatchObject({ status: 'uploaded' });
-    await refresh(phone);
+    await refreshAsBuild229(phone);
     expect(phone.saved()?.notes).toBe(IPAD_NOTE); // the cloud's copy is on the card
     await appRetryQueuedUpdate(phone)(cardWhenAsked, { overConflict: true }); // Send
     phone.render();

@@ -15,6 +15,7 @@ import { AdminScreen } from '../../screens/AdminScreen';
 import { isDAVESafeCloudScheduleRecord, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { deletedDAVERecordIds } from '../../services/DAVESyncTombstones';
 import { recordScheduleCloudPull } from '../../services/ScheduleCloudPull';
+import { scheduleItemsWithPendingEditsOverCloud } from '../../services/ScheduleItemQueueRevision';
 import type { FullSyncResult } from '../../services/SyncService';
 import type { ScheduleItem } from '../../types';
 
@@ -55,6 +56,7 @@ export function appCloudRecovery(device: { scheduleItems: ScheduleItem[] }): (re
     migrateLegacyScheduleItem: (item: ScheduleItem) => item,
     isDAVESafeCloudScheduleRecord,
     recoverDAVEScheduleRecords,
+    scheduleItemsWithPendingEditsOverCloud, // a task edit waiting with its base, over the cloud's row (owner answer Q28)
     deletedDAVERecordIds,
     recordScheduleCloudPull,
     setScheduleItems: (next: (previous: ScheduleItem[]) => ScheduleItem[]) => {

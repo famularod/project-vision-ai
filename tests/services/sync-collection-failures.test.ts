@@ -48,6 +48,11 @@ jest.mock('../../services/SupabaseService', () => {
     listProjectAreas: (...args: unknown[]) => mockLists.areas(...args),
     listScheduleItems: (...args: unknown[]) => mockLists.schedules(...args),
     listReferenceDocuments: (...args: unknown[]) => mockLists.documents(...args),
+    // Independent review R02: a task or GPS area the cloud's list did not hold
+    // is read by its id before it is sent as new. The cloud has none of them.
+    getScheduleItem: async () => ({ ok: true, configured: true, stubbed: false, data: null }),
+    getScheduleItemsByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
+    getProjectAreasByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
     getSupabaseConfigurationStatus: (...args: unknown[]) =>
       mockCloudConnection.configuration(...args),
     testSupabaseConnection: (...args: unknown[]) => mockCloudConnection.test(...args),

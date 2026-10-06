@@ -16,7 +16,7 @@ import {
 } from './PIEScheduleReconciliation';
 import { scheduleItemRevisionForCloudRefresh } from './ScheduleItemQueueRevision';
 import { hasMatchingQueuedProjectUpdateRevision, withCarriedProjectUpdateEdits } from './ProjectUpdateQueueRevision';
-import { hydrateProjectUpdatePhotoPreviews } from './SyncService';
+import { fieldUpdateWaitsInReviewConflicts, hydrateProjectUpdatePhotoPreviews } from './SyncService';
 import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './ProjectPhotoTransport';
 import { cloudCopyShownOnDevice, withDeviceDocumentUploadState } from './FieldUpdateDocumentUploadState';
 import { queuedDocumentPatchesForUpdate } from './FieldUpdateDocumentPatch';
@@ -201,14 +201,19 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       // The queue too: an edit saved during the previews replaced a waiting
       // document patch, and the patch read before them put the cloud copy
       // over that edit (whole-app audit A4 pass 9 L3).
-      const latestQueue = await options.getPendingQueue();
+      // And the saved conflicts (review N2 pass 4, Low): a copy waiting in
+      // Review Conflicts holds its card too, until David chooses. Its record
+      // is off the queue, so the echo of the iPad's save put the iPad's copy
+      // on the card as Sent, with his edit still waiting for his choice. As
+      // the refresh leaves it (SyncService projectUpdateUploadedSince).
+      const [latestQueue, waitsInReview] = await Promise.all([options.getPendingQueue(), fieldUpdateWaitsInReviewConflicts(cloudUpdate.id)]);
       if (!options.isActive()) return true;
       // Re-read after the awaits: a save or another event may have landed.
       // The photo paths come from that read too, or a restore committed
       // meanwhile lost its restored files (whole-app audit A4 pass 6 F3).
       const fresh = options.snapshot();
       const freshLocal = fresh.updates.find(update => update.id === cloudUpdate.id);
-      if (freshLocal && hasMatchingQueuedProjectUpdateRevision(freshLocal, withCarriedProjectUpdateEdits(latestQueue))) return true;
+      if (freshLocal && (waitsInReview || hasMatchingQueuedProjectUpdateRevision(freshLocal, withCarriedProjectUpdateEdits(latestQueue)))) return true;
       const deviceCopy = withLatestLocalPhotoTransport(
         previewReady,
         localUpdate,

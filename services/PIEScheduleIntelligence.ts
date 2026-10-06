@@ -114,6 +114,8 @@ export type PIENormalizedScheduleTask = {
   critical: boolean;
   float: number | null;
   notes: string | null;
+  /** Microsoft Project's Unique ID, when the file has the column (owner answer Q30). */
+  uniqueId?: string | null;
   sourceItem: ScheduleItem;
   needsReview: boolean;
   reviewFields: Array<'Project' | 'Area' | 'Dates' | 'Task' | 'Owner' | 'Status'>;
@@ -722,9 +724,18 @@ function percentColumnReadsAsFractions(values: readonly string[]): boolean {
   return numbers.length > 0 && numbers.every(value => fractionValue(value) !== null);
 }
 
+/**
+ * Owner answer Q30 (2 Oct 2026): Microsoft Project's Unique ID ("Unique ID",
+ * "UID"), which no revision renumbers, read when an export has the column.
+ * Same-named tasks pair by it, and the import review asks nothing of them.
+ */
+const UNIQUE_ID_NAMES = ['unique id', 'uid', 'task uid', 'unique task id'];
+
 function normalizePercent(value: string, status: ScheduleStatus, fractions = false): number | null {
   const fraction = fractionValue(value);
-  if (fraction !== null && fractions) return clamp(Math.round(fraction * 100), 0, 100);
+  // 0.575 × 100 is 57.49999999999999 in floating point, which rounded to 57%; the percent the cell says (57.5)
+  // rounds to 58%, as a written 57.5% does (2 Oct 2026, with owner answers Q25-Q30).
+  if (fraction !== null && fractions) return clamp(Math.round(Number((fraction * 100).toPrecision(12))), 0, 100);
   const match = value.match(/(\d*\.\d+|\d+)/);
 
   if (match) return clamp(Math.round(Number(match[1])), 0, 100);
@@ -1169,6 +1180,8 @@ export function normalizeMicrosoftProjectPdfRows({
     const percentCell = cell(cells, header, percentNames, 6);
     return {
       activityId: cell(cells, header, ['id', 'activity id'], 0),
+      // Microsoft Project's Unique ID, when the export has the column: the task's own identity (owner answer Q30).
+      uniqueId: cell(cells, header, UNIQUE_ID_NAMES, -1),
       sourceWbsCode: cell(cells, header, ['wbs', 'wbs code', 'outline number'], -1),
       sourceRowNumber: index + 2,
       taskName: cell(cells, header, ['task name', 'task', 'activity'], 1),
@@ -1270,6 +1283,7 @@ export function normalizeMicrosoftProjectPdfRows({
       sourceActivityId: row.activityId || null,
       sourceWbsCode: row.sourceWbsCode || null,
       sourceRowNumber: row.sourceRowNumber,
+      ...(row.uniqueId ? { sourceUniqueId: row.uniqueId } : {}),
       createdAt: importedAt,
     });
   });
@@ -1301,6 +1315,7 @@ function scheduleItemFromNormalizedTask(
     notes: explicitScheduleNote(task.notes),
     importedFrom: sourceName,
     importedAt,
+    ...(task.uniqueId ? { sourceUniqueId: task.uniqueId } : {}),
     createdAt: importedAt,
   };
 }
@@ -1453,6 +1468,7 @@ export function normalizeScheduleImport({
       const owner = cell(cells, headers, ['owner', 'responsible'], 6);
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
+      const uniqueId = cell(cells, headers, UNIQUE_ID_NAMES, -1); // the task's own identity (owner answer Q30)
       const milestone = cell(cells, headers, ['milestone'], 5);
       const percentCell = cell(cells, headers, percentNames, 11);
       const parsedPercent = normalizePercent(percentCell, parsedStatus, percentFractions);
@@ -1505,6 +1521,7 @@ export function normalizeScheduleImport({
         critical,
         float: floatValue,
         notes: optionalText(stripScheduleDependencyMetadata(notes)),
+        ...(optionalText(uniqueId) ? { uniqueId: optionalText(uniqueId) } : {}),
         needsReview: reviewFields.length > 0,
         reviewFields,
         confidence: confidenceFromScore(confidenceScore),

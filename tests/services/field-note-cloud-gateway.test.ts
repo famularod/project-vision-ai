@@ -76,6 +76,53 @@ describe('Field Note cloud gateway', () => {
     expect(fixture.query.range).toHaveBeenCalledWith(0, 499);
   });
 
+  // Independent review pass 2 (item 4): read by offset newest first, a note saved or edited elsewhere while the
+  // list was read could repeat a note or hide one. Read by each note's id, nothing can move.
+  it('reads the notes by their id, each page after the last note read, and returns them newest first', async () => {
+    const rows: Array<Record<string, unknown>> = Array.from({ length: 620 }, (_, index) => cloudRow({
+      id: `note-${String(index).padStart(4, '0')}`,
+      // Not in id order: the newest note is not the last id.
+      created_at: new Date(Date.UTC(2026, 7, 3, 15, 0, 0) + ((index * 37) % 620) * 1000).toISOString(),
+    }));
+    const asked: Array<{ filters: unknown[][]; order: unknown[][]; range: number[] }> = [];
+    const from = jest.fn(() => {
+      const filters: unknown[][] = [];
+      const order: unknown[][] = [];
+      const query: Record<string, unknown> = {};
+      Object.assign(query, {
+        select: () => query,
+        eq: (column: string, value: unknown) => { filters.push([column, 'eq', value]); return query; },
+        gt: (column: string, value: unknown) => { filters.push([column, 'gt', value]); return query; },
+        order: (column: string, options: { ascending: boolean }) => { order.push([column, options.ascending]); return query; },
+        range: async (start: number, end: number) => {
+          asked.push({ filters, order, range: [start, end] });
+          // Another device saves a new note before every page is answered.
+          rows.push(cloudRow({ id: `note-0000-later-${asked.length}`, created_at: `2026-09-0${asked.length}T08:00:00.000Z` }));
+          const matching = rows
+            .filter(row => filters.every(([column, op, value]) => (op === 'eq' ? row[column as string] === value : String(row[column as string]) > String(value))))
+            .sort((left, right) => (String(left.id) < String(right.id) ? -1 : 1));
+          return { data: matching.slice(start, end + 1), error: null, status: 200 };
+        },
+      });
+      return query;
+    });
+    const gateway = createFieldNoteCloudGateway({ from } as any, async () => 'owner-1');
+
+    const notes = await gateway.list();
+
+    // Every note that was there when the read began, once; the one saved before the first page as well.
+    expect(new Set(notes.map(note => note.id)).size).toBe(notes.length);
+    for (let index = 0; index < 620; index += 1) expect(notes.some(note => note.id === `note-${String(index).padStart(4, '0')}`)).toBe(true);
+    expect(notes[0].id).toBe('note-0000-later-1');
+    expect(asked.map(request => request.range)).toEqual([[0, 499], [0, 499]]);
+    expect(asked.map(request => request.order)).toEqual([[['id', true]], [['id', true]]]);
+    expect(asked[0].filters).toEqual([['owner_id', 'eq', 'owner-1']]);
+    expect(asked[1].filters).toEqual([['owner_id', 'eq', 'owner-1'], ['id', 'gt', 'note-0498']]);
+    // Newest first, as the list was when the cloud sorted it.
+    const created = notes.map(note => note.createdAt);
+    expect([...created].sort().reverse()).toEqual(created);
+  });
+
   it('creates revision one with the authenticated owner id', async () => {
     const fixture = clientFixture();
     const gateway = createFieldNoteCloudGateway(fixture.client, async () => 'owner-1');

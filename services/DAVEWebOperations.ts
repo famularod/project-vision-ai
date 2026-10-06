@@ -16,6 +16,7 @@ import {
   buildDAVEReportSourceFingerprint,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
+import type { DAVEReportSnapshot } from './DAVEReportSnapshot';
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
@@ -25,13 +26,13 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
-import { mergeApprovedScheduleImportItems } from './ScheduleImportMerge';
-import { scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './ScheduleLookahead';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
@@ -96,6 +97,12 @@ export type DAVEWebReportRecord = Readonly<{
   sourceTaskIds: readonly string[];
   sourceUpdateIds: readonly string[];
   sourceDocumentIds?: readonly string[];
+  /**
+   * The "since the last report" period the report was prepared on
+   * (everyday item 3): 'sent:<time>' when it counted from a sent report.
+   * Absent on reports saved before then.
+   */
+  sourcePeriodKey?: string | null;
   audit: readonly DAVEWebReportAuditEvent[];
 }>;
 
@@ -107,6 +114,8 @@ export type DAVEWebReportSource = Readonly<{
   taskIds: readonly string[];
   updateIds: readonly string[];
   documentIds: readonly string[];
+  /** The period it was prepared on (everyday item 3); absent on reports saved before then. */
+  periodKey?: string;
 }>;
 
 export type DAVEWebDocumentExtension = Readonly<{
@@ -125,6 +134,8 @@ export type DAVEWebPreparedUpload = Readonly<{
   scheduleItems: readonly ScheduleItem[];
   reviewMessage: string;
   extractionStatus: 'not_applicable' | 'ready' | 'needs_manual_review';
+  /** David's answers at the upload review to which same-named task each row is (owner answer Q30, review N1). */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -363,15 +374,20 @@ export type DAVEWebScheduleImportPlan = Readonly<{
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
+  pairingChoices,
 }: {
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
   importedScheduleItems: readonly ScheduleItem[];
+  /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
+  pairingChoices?: Readonly<Record<string, string | null>> | null;
 }): DAVEWebScheduleImportPlan {
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
+  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
+  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
   const saved = snapshot.scheduleItems.map(item => ({
-    item: scheduleItemForCloud(item),
+    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
     cloudUpdatedAt: item.cloudUpdatedAt ?? null,
   }));
   const merged = mergeApprovedScheduleImportItems({
@@ -383,6 +399,7 @@ export function planDAVEWebScheduleImport({
     isCurrent: () => true,
     // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
     current: false,
+    pairingChoices,
   });
   const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
   const revisions = merged.next.flatMap(item => {
@@ -394,6 +411,28 @@ export function planDAVEWebScheduleImport({
   return Object.freeze({
     additions: Object.freeze([...merged.additions]),
     revisions: Object.freeze(revisions),
+  });
+}
+
+/**
+ * Review N1 (3 Oct 2026, the gap owner answer Q30 left on the web): the
+ * upload's "Review before upload" asks, as the phone's import review does,
+ * which same-named task in one area each row is when the dates cannot settle
+ * it. The questions for the rows to upload against the tasks the web shows,
+ * as planDAVEWebScheduleImport pairs them.
+ */
+export function daveWebScheduleImportPairingQuestions({
+  snapshot,
+  importedScheduleItems,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> | null | undefined;
+  importedScheduleItems: readonly ScheduleItem[];
+}): ScheduleImportPairingQuestion[] {
+  if (!snapshot || importedScheduleItems.length === 0) return [];
+  return scheduleImportPairingQuestions({
+    existing: snapshot.scheduleItems.map(item => scheduleItemForCloud(scheduleItemAsSaved(item))),
+    imported: importedScheduleItems,
+    isCurrent: () => true,
   });
 }
 
@@ -414,29 +453,84 @@ export function planDAVEWebScheduleDocumentDelete({
   snapshot,
   document,
   updatedAt = new Date().toISOString(),
+  keepTasks = false,
 }: {
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
   document: DAVEWebReferenceDocument;
   updatedAt?: string;
+  /** "Delete Document" / "Delete Document Only": no task is removed. */
+  keepTasks?: boolean;
 }): readonly DAVEWebScheduleImportRevision[] {
-  const removedIds = new Set(document.linkedScheduleItems.map(item => item.id));
-  if (removedIds.size === 0) return Object.freeze([]);
+  const removedIds = new Set(keepTasks ? [] : document.linkedScheduleItems.map(item => item.id));
+  // Review N1 web M1 (3 Oct 2026, caused by ada8ef6): a lookahead a newer one replaced (owner answer Q25) is a prior
+  // version the web may delete. Deleted with no task written, a master task it had moved jumped from the master's
+  // dates to the deleted lookahead's on the web, the phone and the iPad. Its delete with its tasks gives the master
+  // tasks it restated their dates back as the phone's Delete PDF + Items does; without them, see below.
+  if (removedIds.size === 0 && !scheduleDocumentAddsToMaster(document)) return Object.freeze([]);
   const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
   const kept = saved.filter(item => !removedIds.has(item.id));
   const keptById = new Map(kept.map(item => [item.id, item]));
-  const changed = scheduleItemsAfterScheduleDeleted({
-    items: kept,
-    removed: saved.filter(item => removedIds.has(item.id)),
-    document,
-    documents: snapshot.referenceDocuments.filter(other => other.id !== document.id),
-    updatedAt,
-  });
+  const documents = snapshot.referenceDocuments.filter(other => other.id !== document.id);
+  // Review N2 W1 (5 Oct 2026, Medium, caused by e9a3443): "Delete Document" / "Delete Document Only" on a replaced
+  // lookahead ran the whole give-back too, so a percent that lookahead's file had given a master task went back
+  // (60% to 0%) with nothing said, where the phone's "Delete PDF Only" from the same state keeps it. Keeping the
+  // tasks now does what the phone's file-only delete does, by the phone's own helper: the dates shown are saved, no
+  // percent moves, and the task's note says it left that lookahead's dates (review N2 F2). "+ Tasks" is unchanged.
+  const restored = keepTasks
+    ? scheduleItemsAfterScheduleDeleted({ items: kept, removed: [], document, documents: snapshot.referenceDocuments, updatedAt, fileOnly: true, withWhatHeSet: true })
+    : scheduleItemsAfterScheduleDeleted({
+      items: kept,
+      removed: saved.filter(item => removedIds.has(item.id)),
+      document,
+      documents,
+      updatedAt,
+    });
+  // Owner answer Q29 (2 Oct 2026): David's hand links to a removed row move to the row that answers to it, as the
+  // phone's Delete PDF + Items moves them (dropped only when none does); the web left them pointing at nothing.
+  const byId = new Map<string, ScheduleItem>(restored.map(item => [item.id, item]));
+  scheduleDependenciesAfterScheduleDeleted(kept.map(item => byId.get(item.id) || item), [...removedIds], documents)
+    .forEach(change => {
+      const item = byId.get(change.id) || keptById.get(change.id);
+      if (item) byId.set(change.id, { ...item, dependencies: change.dependencies, updatedAt });
+    });
+  const changed = [...byId.values()];
   return Object.freeze(changed.flatMap(item => {
     const before = keptById.get(item.id);
     return before
       ? [Object.freeze({ item: scheduleItemForCloud(item), previous: scheduleItemForCloud(before), cloudUpdatedAt: before.cloudUpdatedAt ?? null })]
       : [];
   }));
+}
+
+/**
+ * Review N2 W1 (5 Oct 2026): what "Delete Document + N Tasks" also does to
+ * the tasks a lookahead changed, said in the web's delete dialog as the
+ * phone's question says it of "Delete PDF + Items" (the same sentence, from
+ * the same helper, with the web's button): " Delete Document + 2 Tasks also
+ * puts back the earlier progress of 1 task this lookahead changed." The
+ * dialog said nothing, and that button lowers a percent the lookahead's file
+ * gave. Empty for a schedule that is not a lookahead, for one with no linked
+ * task (only "Delete Document" is offered, which keeps the percent), and when
+ * nothing goes back.
+ */
+export function daveWebScheduleDocumentDeleteNote({
+  snapshot,
+  document,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
+  document: DAVEWebReferenceDocument;
+}): string {
+  const count = document.linkedScheduleItems.length;
+  if (count === 0 || !scheduleDocumentAddsToMaster(document)) return '';
+  const saved = snapshot.knownScheduleItems ?? snapshot.scheduleItems;
+  const linked = new Set(document.linkedScheduleItems.map(item => item.id));
+  return scheduleLookaheadDeleteNote(
+    saved,
+    document,
+    saved.filter(item => linked.has(item.id)),
+    snapshot.referenceDocuments,
+    `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
+  );
 }
 
 function canonicalSha256(value: string): string | null {
@@ -447,14 +541,26 @@ function canonicalSha256(value: string): string | null {
 export function buildDAVEWebReportDraft(
   snapshot: DAVEWebReadOnlySnapshot,
   selectedProject: string | null,
+  /** The phone's shared period, as the web counts it (everyday item 3); none: no "since" period. */
+  period?: Readonly<{ previousSnapshot: DAVEReportSnapshot | null; waitingForOtherDevice: boolean }>,
 ): DAVEReportBriefing {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   return buildDAVEReportBriefing({
     truths,
     selectedProjectNames: truths.map(truth => truth.projectName),
+    previousSnapshot: period?.previousSnapshot ?? null,
+    waitingForOtherDevice: period?.waitingForOtherDevice ?? false,
     // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
+}
+
+/** The project facts a web report is made from, for its period's scope and fingerprint (everyday item 3). */
+export function buildDAVEWebReportTruths(
+  snapshot: DAVEWebReadOnlySnapshot,
+  selectedProject: string | null,
+): DAVEProjectTruth[] {
+  return buildDAVEWebProjectTruths(snapshot, selectedProject);
 }
 
 /**
@@ -465,6 +571,19 @@ export function buildDAVEWebReportDraft(
 export function buildDAVEWebReportSource(
   snapshot: DAVEWebReadOnlySnapshot,
   selectedProject: string | null,
+  /**
+   * The period the report counts "since the last report" from (everyday item
+   * 3): a report counted from a sent report is current only on that period.
+   */
+  periodKey?: string,
+  /**
+   * Review N2 (5 Oct 2026): the report is prepared while this tab still waits
+   * for the other device's changes, so its "since the last report" section
+   * says "Not counted yet". It is current only while the tab still waits:
+   * the fingerprint had the period but not the wait, so once the changes
+   * arrived the page called that draft current, and it was approved and sent.
+   */
+  periodNotCounted = false,
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
@@ -500,7 +619,7 @@ export function buildDAVEWebReportSource(
     version: 'dave-web-report-source/1.0',
     scopeKey,
     refreshedAt: snapshot.refreshedAt,
-    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}`,
+    fingerprint: `${truthFingerprint}:media-${mediaFingerprint}${periodNotCounted ? NOT_COUNTED_MARK : ''}${periodKey?.startsWith('sent:') ? `:period-${periodKey}` : ''}`,
     taskIds: Object.freeze(uniqueSorted(truths.flatMap(truth =>
       truth.schedule.map(task => task.taskId),
     ))),
@@ -510,6 +629,34 @@ export function buildDAVEWebReportSource(
     documentIds: Object.freeze(uniqueSorted(evidenceRecords
       .filter(record => record.kind === 'document')
       .map(record => record.sourceRecordId))),
+    ...(periodKey ? { periodKey } : {}),
+  });
+}
+
+/** In the fingerprint of a report prepared while "since the last report" was not counted (review N2); before the period, which ends it. */
+const NOT_COUNTED_MARK = ':not-counted';
+
+/**
+ * Whether a report with this source fingerprint was prepared while this tab
+ * waited for the other device's changes (review N2, 5 Oct 2026). A saved
+ * report keeps its fingerprint, so a draft saved then still says so when it
+ * is reopened.
+ */
+export function daveWebReportSourceNotCounted(sourceFingerprint: string | null | undefined): boolean {
+  return Boolean(sourceFingerprint?.replace(/:period-sent:.*$/, '').endsWith(NOT_COUNTED_MARK));
+}
+
+/**
+ * The prepared report's source on another period (owner answer 2 Oct, web
+ * sends count): this computer's own send of an approved report starts the
+ * next period, and the approval stands on it, as on the phone (A6 pass 8 M1).
+ */
+export function daveWebReportSourceOnPeriod(source: DAVEWebReportSource, periodKey: string): DAVEWebReportSource {
+  const base = source.fingerprint.replace(/:period-sent:.*$/, '');
+  return Object.freeze({
+    ...source,
+    periodKey,
+    fingerprint: periodKey.startsWith('sent:') ? `${base}:period-${periodKey}` : base,
   });
 }
 
@@ -548,6 +695,9 @@ function buildDAVEWebProjectTruths(
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
       scheduleItems: scope.scheduleItems,
       knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
+      // What a newer lookahead replaced, for "since the last report", as the phone reads it (owner answer 3 Oct 2026).
+      knownScheduleDocuments: snapshot.referenceDocuments,
+      reportLookaheadReplacement: true,
       projectAreas: scope.projectAreas,
       referenceDocuments: scope.referenceDocuments.map(document => ({
         ...document,
@@ -605,7 +755,15 @@ export function prepareDAVEWebReportEmailBody(
 export function formatDAVEWebReport(
   briefing: DAVEReportBriefing,
   audience: DAVEWebReportAudience = 'project_manager',
+  /**
+   * "Since the last report", counted as on the phone (everyday item 3): the
+   * period's label and the phone's lines. Absent: no such section.
+   */
+  since?: Readonly<{ label: string; lines: readonly string[] }> | null,
 ): string {
+  const sinceSection = since && since.lines.length > 0
+    ? ['## Since the Last Report', since.label, ...since.lines.map(line => `- ${line}`), '']
+    : [];
   if (audience === 'executive') {
     const executiveLines = [
       `# ${buildDAVEWebReportTitle(briefing, audience)}`,
@@ -616,6 +774,7 @@ export function formatDAVEWebReport(
       '## Executive Snapshot',
       briefing.executiveSnapshot,
       '',
+      ...sinceSection,
       '## Project Status',
       ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
       '',
@@ -671,6 +830,7 @@ export function formatDAVEWebReport(
     '## Executive Summary',
     briefing.executiveSnapshot,
     '',
+    ...sinceSection,
     '## Project Status',
     ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
     '',

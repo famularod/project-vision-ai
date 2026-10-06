@@ -6,7 +6,12 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import { scheduleDocumentAddsToMaster, scheduleDocumentRetiredForProject, scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import {
+  scheduleDocumentAddsToMaster,
+  scheduleDocumentRetiredForProject,
+  scheduleHasAuthoritativeProgressJudgment,
+  scheduleLookaheadReplacedFor,
+} from './PIEScheduleReconciliation';
 import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
@@ -31,6 +36,8 @@ import {
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { scheduleTaskEarlierIds, scheduleTaskLinks } from './ScheduleTaskRevisions';
+import { scheduleItemImportBatchIds, scheduleTaskAddedByLookaheadsOnly } from './ScheduleImportProvenance';
+import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -117,6 +124,27 @@ export type DAVEScheduleTruth = {
    * task by these, as field updates do, before any guess by name.
    */
   earlierTaskIds?: string[];
+  /**
+   * The saved tasks David said at import review this task is not (owner
+   * answer Q30: a same-named row he called a new task; notRevisionOfTaskIds).
+   * Absent when there are none. Review N1 M3 (3 Oct 2026): "since the last
+   * report" never pairs it by name with an earlier report's task.
+   */
+  notTaskIds?: string[];
+  /**
+   * Owner answer 3 Oct 2026 (report wording after a lookahead is replaced):
+   * true while the task is on the dates a lookahead gave it. Absent
+   * otherwise. Left out of the report's fingerprint.
+   */
+  onLookaheadDates?: true;
+  /**
+   * The dates the replaced lookahead gave this task, while it is shown on the
+   * master schedule's dates again because a newer lookahead no longer lists
+   * it (owner answer Q25; the shown copy's savedLookaheadDates). The report
+   * says "finish is back to the master schedule's …", never "finish changed".
+   * Absent otherwise. Left out of the report's fingerprint.
+   */
+  replacedLookaheadDates?: { startDate: string; finishDate: string };
   taskName: string;
   itemType: ScheduleItem['itemType'];
   areaName: string | null;
@@ -148,6 +176,12 @@ export type DAVEScheduleTruth = {
   latestActivityAt: string | null;
   latestActivitySummary: string | null;
   urgency: 'overdue' | 'due_soon' | 'upcoming' | 'not_urgent';
+  /**
+   * A lookahead's detail task (one it added that no master lists): listed,
+   * but not part of the project's % Complete, which the master's scope sets
+   * (owner answer Q25, 2 Oct 2026). Absent otherwise.
+   */
+  lookaheadDetail?: true;
   completionState:
     | 'scheduled'
     | 'reported_complete'
@@ -195,8 +229,41 @@ export type DAVEProjectTruth = {
   correlations: DAVEEvidenceCorrelationResult;
   reasoning: DAVEProjectReasoning;
   schedule: DAVEScheduleTruth[];
+  /**
+   * Only on a truth built for a report (`reportLookaheadReplacement`), from
+   * every saved task: what a newer lookahead replaced (owner answer 3 Oct
+   * 2026). Left out of the report's fingerprint.
+   */
+  lookaheadReplacement?: DAVELookaheadReplacementTruth;
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
+};
+
+/**
+ * Owner answer 3 Oct 2026 (report wording after a lookahead is replaced):
+ * "Don't mention them". The detail tasks only a replaced lookahead listed
+ * leave the task list when a newer lookahead replaces it (owner answer Q25),
+ * and the report said each "was removed from the current project plan" and
+ * counted "-1 completed" for one that was done. The report needs to know
+ * which saved tasks left that way, and how each stands, to say nothing of
+ * them except a completion made since the last report.
+ */
+export type DAVELookaheadReplacementTruth = {
+  /** The lookaheads (by import) replaced for this project. */
+  replaced: string[];
+  /** The saved detail tasks not shown because every lookahead that listed them was replaced. */
+  tasksLeft: DAVETaskLeftByLookahead[];
+};
+
+export type DAVETaskLeftByLookahead = {
+  taskId: string;
+  earlierTaskIds?: string[];
+  taskName: string;
+  areaName: string | null;
+  status: string;
+  percentComplete: number;
+  /** The newest lookahead (by import) that listed it. */
+  lookahead: string;
 };
 
 export type BuildDAVEProjectTruthInput = {
@@ -206,6 +273,19 @@ export type BuildDAVEProjectTruthInput = {
   scheduleItems: ScheduleItem[];
   /** Every saved task, hidden ones included: the name fallback checks the update's own schedule (A10 pass 6 L2). */
   knownScheduleItems?: readonly ScheduleItem[];
+  /**
+   * A truth for a report: with every saved task (`knownScheduleItems`) it
+   * also says which detail tasks left because a newer lookahead replaced
+   * theirs (owner answer 3 Oct 2026). Not asked for elsewhere: the saved
+   * Project Truth does not carry it.
+   */
+  reportLookaheadReplacement?: boolean;
+  /**
+   * Every saved schedule, as the shown task list was worked out from them
+   * (`referenceDocuments` may be this project's only, renamed to it): which
+   * lookahead a newer one replaced is read from these when given.
+   */
+  knownScheduleDocuments?: readonly ReferenceDocument[];
   projectAreas?: ProjectArea[];
   referenceDocuments?: ReferenceDocument[];
   projectDocuments?: DAVEDailyBriefDocument[];
@@ -244,11 +324,16 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const scheduleSources = new Set(
     scheduleItems.map(item => normalizedKey(item.importedFrom || '')).filter(Boolean),
   );
+  // A lookahead is in effect by its role (Q22) while it is the newest for the project (owner answer Q25).
+  const lookaheadReplaced = scheduleLookaheadReplacedFor(input.referenceDocuments ?? []);
+  const inEffect = (document: ReferenceDocument) => scheduleDocumentAddsToMaster(document)
+    ? !lookaheadReplaced(document, input.projectName)
+    : document.isCurrent;
   const referenceDocuments = (input.referenceDocuments ?? []).filter(document => {
     // Report artifacts are derived outputs. They must not participate in the
     // current-truth fingerprint that governs their own freshness.
     if (normalizedKey(document.category) === 'report') return false;
-    if (!document.isCurrent && !scheduleDocumentAddsToMaster(document)) return false; // a lookahead is in effect by its role (Q22)
+    if (!inEffect(document)) return false;
     // A combined schedule retired for this project is current only for its others (owner answer Q15).
     if (scheduleDocumentRetiredForProject(document, input.projectName)) return false;
     const explicitProjectId = clean(document.projectId);
@@ -278,7 +363,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
         status: 'reference',
         createdAt: document.importedAt,
         importedAt: document.importedAt,
-        isArchived: !document.isCurrent && !scheduleDocumentAddsToMaster(document),
+        isArchived: !inEffect(document),
       })),
     ],
     scheduleItems,
@@ -323,7 +408,11 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     correlations,
     generatedAt,
     projectTimeZone,
+    input.knownScheduleItems,
   );
+  const lookaheadReplacement = input.reportLookaheadReplacement && input.knownScheduleItems
+    ? tasksLeftByLookaheadReplacement(input, projectKey, scheduleItems)
+    : null;
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -351,9 +440,74 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     correlations,
     reasoning,
     schedule,
+    ...(lookaheadReplacement ? { lookaheadReplacement } : {}),
     verificationQueue,
     briefing,
   });
+}
+
+/**
+ * The saved detail tasks of this project that are not shown because every
+ * lookahead that listed them was replaced by a newer one (owner answer Q25),
+ * and the lookaheads replaced for it (owner answer 3 Oct 2026). A task a
+ * lookahead added (importedAsLookahead) is its detail; a task some schedule
+ * in effect still lists, or whose lookahead was deleted rather than
+ * replaced, is not one of these. Read from the saved tasks and schedules as
+ * the shown list is, with nothing written.
+ */
+function tasksLeftByLookaheadReplacement(
+  input: BuildDAVEProjectTruthInput,
+  projectKey: string,
+  shown: readonly ScheduleItem[],
+): DAVELookaheadReplacementTruth {
+  const documents = input.knownScheduleDocuments ?? input.referenceDocuments ?? [];
+  const lookaheads = documents.filter(scheduleDocumentAddsToMaster);
+  const replacedFor = scheduleLookaheadReplacedFor(documents);
+  const idKey = (value: unknown) => (clean(typeof value === 'string' ? value : '') || '').toLowerCase();
+  const keyOf = (document: ReferenceDocument) => idKey(document.importBatchId) || idKey(document.id);
+  const replaced = lookaheads.filter(document => replacedFor(document, input.projectName));
+  // A lookahead is only ever replaced by a newer one.
+  if (lookaheads.length < 2) return { replaced: [], tasksLeft: [] };
+  const shownIds = new Set(shown.flatMap(item => [item.id.trim(), ...scheduleTaskEarlierIds(item)]));
+  const candidates = (input.knownScheduleItems ?? []).filter(item =>
+    item.importedAsLookahead === true && !shownIds.has(item.id.trim()));
+  // The task's own project decides, as when the shown list is worked out (PIEScheduleReconciliation).
+  const leftWith = new Map<string, ReferenceDocument>();
+  candidates.forEach(item => {
+    const batches = scheduleItemImportBatchIds(item).map(idKey);
+    const source = idKey(item.sourceDocumentId);
+    const holding = documents.filter(document =>
+      (Boolean(source) && idKey(document.id) === source) ||
+      (Boolean(idKey(document.importBatchId)) && batches.includes(idKey(document.importBatchId))));
+    const project = item.projectName || item.scheduleProjectName || '';
+    // Every schedule that lists it is a lookahead replaced for its project: nothing else took it off the list.
+    if (holding.length === 0 || !holding.every(document => scheduleDocumentAddsToMaster(document) && replacedFor(document, project))) return;
+    leftWith.set(item.id, [...holding].sort((left, right) => (clean(right.importedAt) || '').localeCompare(clean(left.importedAt) || ''))[0]);
+  });
+  const left = candidates.filter(item => leftWith.has(item.id));
+  const ofProject = left.length === 0 ? [] : canonicalizeDAVEScheduleItems([...left], {
+    projectNames: Array.from(new Set([
+      input.projectName,
+      ...left.flatMap(item => [item.scheduleProjectName || '', item.projectName]),
+    ].filter(Boolean))),
+    projectAreas: input.projectAreas || [],
+  }).items.filter(item => scheduleMatchesProject(projectKey, item));
+  const tasksLeft = ofProject.map((item): DAVETaskLeftByLookahead => {
+    const earlierTaskIds = scheduleTaskEarlierIds(item);
+    return {
+      taskId: item.id,
+      ...(earlierTaskIds.length > 0 ? { earlierTaskIds } : {}),
+      taskName: item.taskName,
+      areaName: clean(item.locationName),
+      status: item.status,
+      percentComplete: item.percentComplete,
+      lookahead: keyOf(leftWith.get(item.id)!),
+    };
+  });
+  return {
+    replaced: uniqueText([...replaced.map(keyOf), ...tasksLeft.map(task => task.lookahead)]).sort(),
+    tasksLeft,
+  };
 }
 
 function buildEvidenceLedger(
@@ -691,8 +845,21 @@ function buildScheduleTruth(
   correlations: DAVEEvidenceCorrelationResult,
   now: string,
   projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
+  /** Every saved task, for what David said of a task's earlier rows (review N2); none: the shown tasks' own. */
+  knownScheduleItems: readonly ScheduleItem[] = scheduleItems,
 ): DAVEScheduleTruth[] {
   const today = new Date(now);
+  // A lookahead's detail task is listed but leaves % Complete to the master's scope (owner answer Q25).
+  const lookaheadDetail = scheduleTaskAddedByLookaheadsOnly(scheduleItems);
+  // Review N2 (5 Oct 2026): David's answer "this row is a new task" (owner answer Q30) stays with the task. It was
+  // kept on the row he answered for only; the next master re-dated that task as a new row, which answers to the
+  // first by its earlier ids but carried no answer, and the report paired it by name with the same-named task
+  // the master had dropped: "Pour slab was completed" and a finish change of weeks, with the dropped task never
+  // said removed. A row is none of the tasks its earlier rows were said not to be.
+  const saidNotById = new Map<string, readonly string[]>();
+  knownScheduleItems.forEach(item => {
+    if (Array.isArray(item.notRevisionOfTaskIds) && item.notRevisionOfTaskIds.length > 0) saidNotById.set(item.id.trim(), item.notRevisionOfTaskIds);
+  });
   return scheduleItems.map(item => {
     const relatedEvidenceIds = links
       .filter(link => link.targetType === 'schedule-task' && link.targetId === item.id)
@@ -713,9 +880,24 @@ function buildScheduleTruth(
         (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
       )[0];
     const earlierTaskIds = scheduleTaskEarlierIds(item);
+    const notTaskIds = uniqueText([
+      ...(Array.isArray(item.notRevisionOfTaskIds) ? item.notRevisionOfTaskIds : []),
+      ...earlierTaskIds.flatMap(id => saidNotById.get(id) ?? []),
+    ].map(id => clean(id)));
+    // Owner answer 3 Oct 2026: shown back on the master's dates (the replaced lookahead's are kept on the shown
+    // copy), or on the dates the latest lookahead in its note gave it.
+    const replacedLookaheadDates = item.savedLookaheadDates
+      ? { startDate: item.savedLookaheadDates.startDate, finishDate: item.savedLookaheadDates.finishDate }
+      : null;
+    const latestLookahead = item.lookaheadOverlay?.lookaheads?.at(-1);
+    const onLookaheadDates = !replacedLookaheadDates && Boolean(latestLookahead) &&
+      sameScheduleCalendarDay(item.startDate, latestLookahead!.startDate) && sameScheduleCalendarDay(item.finishDate, latestLookahead!.finishDate);
     return {
       taskId: item.id,
       ...(earlierTaskIds.length > 0 ? { earlierTaskIds } : {}),
+      ...(notTaskIds.length > 0 ? { notTaskIds } : {}),
+      ...(onLookaheadDates ? { onLookaheadDates: true as const } : {}),
+      ...(replacedLookaheadDates ? { replacedLookaheadDates } : {}),
       taskName: item.taskName,
       itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),
@@ -749,6 +931,7 @@ function buildScheduleTruth(
       latestActivityAt: clean(latestActivity?.createdAt),
       latestActivitySummary: clean(latestActivity?.message),
       urgency: taskUrgency(item, today, projectTimeZone),
+      ...(lookaheadDetail(item) ? { lookaheadDetail: true as const } : {}),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
       relatedEvidenceIds: uniqueText([...relatedEvidenceIds, ...correlationEvidenceIds]),
       needsVerification:

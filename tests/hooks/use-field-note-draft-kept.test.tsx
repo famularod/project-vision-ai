@@ -116,7 +116,7 @@ describe('field note kept until Save (A11 pass 4 L3)', () => {
     expect(keptKeys()).toEqual([]);
   });
 
-  it('an account change or sign-out removes every kept note, even a write still on its way', async () => {
+  it('the account\'s sign-out removes its kept note, even a write still on its way', async () => {
     const { app, screen } = await writeNote('owner-out');
     await app.rtl.act(async () => {
       app.rtl.fireEvent.changeText(screen.getByLabelText('Field note'), `${NOTE}, level 3`);
@@ -191,7 +191,7 @@ describe('Project Walk memory kept until Save (A11 pass 4 L3)', () => {
     again.hook.unmount();
   });
 
-  it('Save or Cancel clears it; an account change or sign-out removes it, on screen too', async () => {
+  it('Save or Cancel clears it; the account\'s sign-out removes it, on screen too', async () => {
     const first = walk('owner-a', 'Canopy B');
     await first.rtl.act(async () => { first.hook.result.current[1](memory('memory-cancel')); await settle(); });
     await first.rtl.act(async () => { first.hook.result.current[1](null); await settle(); });
@@ -223,6 +223,13 @@ describe('Project Walk memory kept until Save (A11 pass 4 L3)', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     expect(app).toMatch(/const \[captureDraft, setCaptureDraft\] = useKeptWalkMemoryDraft\(projectName\);/);
     expect(app).not.toContain('const [captureDraft, setCaptureDraft] = useState');
-    expect(app).toMatch(/if \(accountChanged\) \{ forgetFieldNoteDraft\(\); forgetKeptWalkMemoryDrafts\(\); \}/);
+    // Everyday item 4 (2 Oct 2026): a recording kept on the device for signal is forgotten with them;
+    // pin updated deliberately (behaviour in everyday-4-voice-kept-recording).
+    // Everyday item 7 (2 Oct 2026): one call now decides it: Settings' Sign Out and another account forget them all
+    // as before; a sign-out this phone did not ask for sets them aside for the account. Pin updated deliberately
+    // (behaviour in tests/everyday-7-unasked-sign-out-keeps-dictation).
+    // Review N2 (5 Oct 2026): the same call; Settings' Sign Out now forgets the signing-out account's only, and
+    // another account signing in forgets nothing (behaviour in tests/review-n2-dictation-*).
+    expect(app).toContain('if (accountChanged) settleUnsavedDraftsOnAccountChange(event, previousUserId, change.userId);');
   });
 });

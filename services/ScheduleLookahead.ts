@@ -3,14 +3,20 @@ import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
   scheduleDocumentAddsToMaster,
+  scheduleDocumentDayLabel,
   scheduleFullCopyLeftUnshown,
   scheduleDocumentIsScheduleLike,
+  scheduleItemAsSaved,
+  scheduleLookaheadInEffect,
+  scheduleLookaheadReplacement,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
 } from './PIEScheduleReconciliation';
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
+import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -21,6 +27,7 @@ import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import {
   scheduleTaskEarlierIds,
   scheduleTaskLinks,
+  scheduleTaskLinksFollowingShownTasks,
   scheduleTaskProjectKey,
   scheduleTasksAnsweringToRemovedTasks,
 } from './ScheduleTaskRevisions';
@@ -265,12 +272,32 @@ export function scheduleFileProgressAboveManagers(
  * earlier lookaheads gave no longer stand.
  * Progress is the caller's (fileProgressFor), and givenPercent the percent
  * it gave the task, or null when it left progress alone.
+ *
+ * Review N2 F3 (5 Oct 2026, gap in ada8ef6, owner answer Q25): "Delete PDF
+ * Only" on the lookahead in effect keeps its tasks on its dates and writes
+ * nothing, so with the file gone nothing said when the lookahead that moved
+ * a task was imported: a newer lookahead that left the task out never
+ * returned it to the master's dates, though the deleted lookahead's own
+ * detail tasks did leave (their rows say when they were imported). The entry
+ * now notes when its row was imported (importedAt), and the shown schedule
+ * reads it once the file is gone (PIEScheduleReconciliation). Noted here,
+ * with the restatement, and not by the delete: a save made by the delete
+ * stamped every task that lookahead had moved, and that stamp outranked a
+ * newer lookahead approved offline on another device (the reviewer's
+ * generator, seed 20137: Roof's 90% from the newer lookahead lost).
+ * And the entry before this one is marked kept (datesKeptAt) when the task
+ * is still on its dates and its file is known to be deleted
+ * (savedLookaheadBatches: the import batches of the lookahead files saved,
+ * when the caller knows them): deleting this lookahead with its items then
+ * goes back to those dates, as before, and not for an entry whose file is
+ * deleted later, after this one replaced it (review N2 F2, fileGoneUnkept).
  */
 export function scheduleTaskRestatedByLookahead(
   task: ScheduleItem,
   row: ScheduleItem,
   approvedAt: string,
   givenPercent: number | null = null,
+  savedLookaheadBatches: ReadonlySet<string> | null = null,
 ): ScheduleItem {
   const batchId = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
   const owned = Boolean(key(task.importBatchId) || key(task.sourceDocumentId));
@@ -286,9 +313,14 @@ export function scheduleTaskRestatedByLookahead(
       masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
     }),
     lookaheads: [
-      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)),
+      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)).map((entry, index, earlier) => (
+        savedLookaheadBatches && index === earlier.length - 1 && !entry.datesKeptAt && key(entry.batchId) &&
+        !savedLookaheadBatches.has(key(entry.batchId)) && sameDates(task, entry)
+          ? { ...entry, datesKeptAt: approvedAt }
+          : entry)),
       {
         batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent,
+        ...(typeof row.importedAt === 'string' && row.importedAt.trim() ? { importedAt: row.importedAt } : {}),
         // Its row stated a percent it did not give (at or below David's own): still a newer word (A5 pass 21 R3).
         ...(givenPercent === null && scheduleRowStatesPercent(row) ? { percentStated: true as const } : {}),
       },
@@ -423,6 +455,46 @@ export function scheduleTaskMasterRestated(
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
 
 /**
+ * Review N2 F2, the other order (5 Oct 2026, residue of 3e1b312): lookahead
+ * L1 moved Framing, L3 moved it again (so L3 replaced L1), "Delete PDF Only"
+ * on L1, then "Delete PDF + Items" on L3. L1's entry was not the note's
+ * latest, so the file-only delete had nothing shown to save and left it, and
+ * the delete of L3 put Framing on L1's dates: again a file deleted earlier,
+ * where "Delete PDF + Items" on L1 gives the master's. The web's "Delete
+ * Document Only", which now does what the phone's does (review N2 W1), had
+ * the same end.
+ *
+ * Whether an entry's lookahead file is no longer saved and its dates were
+ * not kept. A lookahead deleted alone while in effect keeps its tasks on its
+ * dates, and the next lookahead to restate such a task says so on the entry
+ * (datesKeptAt, review N2 F3): those dates are still given back when that
+ * later lookahead is deleted, as before. Any other entry whose file is gone
+ * (deleted alone after a newer lookahead replaced it) gives no dates back.
+ * With the schedules not given, as before.
+ */
+function fileGoneUnkept(entry: LookaheadEntry, documents?: readonly ReferenceDocument[]): boolean {
+  return Boolean(documents) && !entry.datesKeptAt && !documents!.some(saved => key(saved.importBatchId) === key(entry.batchId));
+}
+
+/**
+ * The lookaheads of a note whose dates a task can go back to: those after
+ * the last one it left for the master's dates (datesLeftAt).
+ *
+ * Review N2 F2 (5 Oct 2026, residue of 3e1b312): lookahead L1 moved Framing
+ * to 10/05, L2 (Roof only) replaced it, so Framing showed the master's
+ * 10/01, and "Delete PDF Only" on L1 saved those dates. L3 then moved
+ * Framing, and "Delete PDF + Items" on L3 put it on L1's 10/05: the entry of
+ * a file deleted earlier, dates David had not seen since L2. The save that
+ * takes a task from its lookahead's dates to the master's now notes it
+ * (ScheduleDateEdit), and no entry up to there gives its dates back: the
+ * task goes to the master's dates, where it was before L3.
+ */
+function entriesGivingDatesBack(entries: readonly LookaheadEntry[]): LookaheadEntry[] {
+  const left = entries.map(entry => Boolean(entry.datesLeftAt)).lastIndexOf(true);
+  return entries.slice(left + 1);
+}
+
+/**
  * Whole-app audit A5 pass 8 L3 (30 Sep 2026): after a master moved a task a
  * lookahead restated, the question promised "the earlier dates and progress
  * of 1 task" while nothing shown changed: it counted the hidden old row. The
@@ -454,7 +526,11 @@ function tasksAfterLookaheadDeleted(
     const top = index === entries.length - 1 && sameDates(item, entries[index]);
     // An earlier lookahead's dates only when no newer master replaced them (A6 pass 19 M1); else the master's.
     // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
-    const back = [...remaining].reverse().find(entry => !replaced(entry, item)) ||
+    // An earlier lookahead a newer one replaced (owner answer Q25) is saved back too: the task is shown on the master's
+    // dates while it is replaced (selectAuthoritativeScheduleItems), worked out the same on every device.
+    // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2), nor
+    // one whose file is gone unless its dates were kept when it was deleted alone while in effect (fileGoneUnkept).
+    const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item) && !fileGoneUnkept(entry, documents)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
@@ -768,6 +844,8 @@ export function scheduleItemsAfterScheduleDeleted({
   document,
   documents,
   updatedAt = new Date().toISOString(),
+  fileOnly = false,
+  withWhatHeSet = false,
 }: Readonly<{
   /** The saved tasks the delete keeps. */
   items: readonly ScheduleItem[];
@@ -777,7 +855,48 @@ export function scheduleItemsAfterScheduleDeleted({
   /** The schedules saved after the delete. */
   documents: readonly ReferenceDocument[];
   updatedAt?: string;
+  /**
+   * "Delete PDF Only" (review N1): the schedules saved before the delete are given, no task is removed or given
+   * back, and only the tasks shown on the master's dates because of this replaced lookahead are returned, on the
+   * dates shown (scheduleDatesShownUnderReplacedLookahead).
+   */
+  fileOnly?: boolean;
+  /**
+   * With `fileOnly` (review P5 R-A): also the tasks this delete shows on another row, with what he last set on them.
+   * For a caller that saves each returned task as it is given: the web, and the phone's "Delete PDF Only" too
+   * (review P6-5; until then it took only the two dates of each task returned, and the task lost its owner,
+   * approval and schedule impact there).
+   */
+  withWhatHeSet?: boolean;
 }>): ScheduleItem[] {
+  if (fileOnly) {
+    const savedById = new Map(items.map(item => [item.id, item]));
+    // Each as the phone's task save leaves it when given these two dates (the phone's delete passes only them): with
+    // the note that the task left its lookahead's dates (review N2 F2; ScheduleDateEdit).
+    // Review N3 R1 (Low, caused by the redone F3): nothing for the lookahead in effect, whatever build approved it. For
+    // one approved before review N2 the delete saved its tasks on the same dates to note when they were kept; that
+    // save stamped them, and with a newer lookahead approved with no signal on another device the stamp won: its
+    // task showed the deleted file's dates on every device (the reviewer's D19). Such a lookahead reads as it did
+    // before review N2: deleted alone while in effect, its tasks keep its dates.
+    const onDatesShown = scheduleDatesShownUnderReplacedLookahead(items, documents, document)
+      .flatMap(({ id, startDate, finishDate }) => {
+        const saved = savedById.get(id);
+        return saved ? [{ ...saved, ...scheduleEditWithDateChangedAlone(saved, { startDate, finishDate }, updatedAt), updatedAt }] : [];
+      });
+    if (!withWhatHeSet) return onDatesShown;
+    // Review P5 R-A: and a task this delete shows on another row shows what he last set on it: his own newer percent
+    // (as "Delete PDF + Items" gives it, progressOfRowsNowHidden; no file's percent moves) and the rest.
+    const saved = new Map<string, ScheduleItem>(onDatesShown.map(item => [item.id, item]));
+    const documentsAfter = documents.filter(other => other.id !== document.id);
+    const shownAfter = selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: documentsAfter });
+    progressOfRowsNowHidden(items, [], document, documentsAfter, items, shownAfter.map(item => saved.get(item.id) || savedById.get(item.id) || item))
+      .forEach(item => saved.set(item.id, { ...item, updatedAt }));
+    whatHeSetOnRowsNowHidden(
+      selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }), shownAfter,
+      items, item => saved.get(item.id) || item, updatedAt,
+    ).forEach(item => saved.set(item.id, item));
+    return [...saved.values()];
+  }
   const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
   const kept = items.map(item => changed.get(item.id) || item);
   const shown = selectAuthoritativeScheduleItems({
@@ -789,7 +908,24 @@ export function scheduleItemsAfterScheduleDeleted({
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   progressOfRowsNowHidden(items, removed, document, documents, kept, shown.map(item => changed.get(item.id) || item))
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // a row the delete hides gives David's newer progress (A6 pass 19 L2)
-  return [...changed.values()];
+  // Review P5 R-A: and what else he set on the task (its owner, note, approval, schedule impact...), as Set Active does.
+  whatHeSetOnRowsNowHidden(
+    selectAuthoritativeScheduleItems({ scheduleItems: [...items, ...removed], scheduleDocuments: [document, ...documents] }).filter(item => !removed.includes(item)),
+    shown, items, item => changed.get(item.id) || item, updatedAt,
+  ).forEach(item => changed.set(item.id, item));
+  // Owner answer Q29 (2 Oct 2026): David's hand links follow each task to the row shown for it after the delete
+  // (the row that answers to a removed one included), on the phone and the web alike. A link to a removed row
+  // nothing shown answers to is left to scheduleDependenciesAfterScheduleDeleted (the row that answers to it,
+  // shown or not; dropped only when none does).
+  const keptNow = items.map(item => changed.get(item.id) || item);
+  scheduleTaskLinksFollowingShownTasks({
+    before: selectAuthoritativeScheduleItems({ scheduleItems: [...items, ...removed], scheduleDocuments: [document, ...documents] }),
+    after: selectAuthoritativeScheduleItems({ scheduleItems: keptNow, scheduleDocuments: [...documents] }),
+    known: keptNow,
+    now: updatedAt,
+  }).forEach(item => changed.set(item.id, item));
+  // Saved from the copies as shown: on their saved dates where the dates were only shown (owner answer Q25).
+  return [...changed.values()].map(scheduleItemAsSaved);
 }
 
 /**
@@ -838,6 +974,48 @@ function progressOfRowsNowHidden(
 }
 
 /**
+ * Review P5 R-A (6 Oct 2026, Low; older, the same on Build 229; the reports
+ * reviewer's seed "plain 104" with Set Active). A schedule's delete can
+ * change the row shown for a task: master 1 was current again (Set Active)
+ * while an old lookahead still held master 2's row of Sitework on show,
+ * where he had set Dana, Pending and 2 days. Deleting that lookahead, with
+ * its tasks or alone, hid master 2's row and showed master 1's with none of
+ * them, and the next report said "owner changed from Dana to unassigned",
+ * "approval changed from Pending to Not Required", "schedule impact changed
+ * from 2 days to not set". The delete carried only his percent.
+ *
+ * Each task the delete shows on another row of it (the one row shown since
+ * that the hidden row answers to, or that answers to it: as for his percent,
+ * progressOfRowsNowHidden) now shows what he last set, by the rule Set Active
+ * and Make Current use (scheduleItemAsLastSetOnItsOtherRow). The rows changed.
+ */
+function whatHeSetOnRowsNowHidden(
+  shownBefore: readonly ScheduleItem[],
+  shownAfter: readonly ScheduleItem[],
+  /** Every saved task the delete keeps, as saved before it (the delete's own stamps are not his). */
+  kept: readonly ScheduleItem[],
+  /** A task with the delete's changes so far. */
+  withChanges: (item: ScheduleItem) => ScheduleItem,
+  now: string,
+): ScheduleItem[] {
+  const before = new Set(shownBefore.map(item => item.id));
+  const after = new Set(shownAfter.map(item => item.id));
+  const nowShown = shownAfter.filter(item => !before.has(item.id));
+  const nowHidden = kept.filter(item => before.has(item.id) && !after.has(item.id));
+  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  const set = new Map<string, ScheduleItem>();
+  nowHidden.forEach(hidden => {
+    const hiddenId = hidden.id.trim();
+    const linked = nowShown.filter(item => scheduleTaskEarlierIds(hidden).includes(item.id.trim()) || scheduleTaskEarlierIds(item).includes(hiddenId));
+    if (linked.length !== 1) return;
+    const shown = kept.find(item => item.id === linked[0].id) || linked[0];
+    const carried = scheduleItemAsLastSetOnItsOtherRow(hidden, shown, set.get(shown.id) || withChanges(shown), now, kept);
+    if (carried) set.set(shown.id, carried);
+  });
+  return [...set.values()];
+}
+
+/**
  * The links "Delete PDF + Items" changes on the tasks it keeps, each task's
  * new list of predecessors (whole-app audit A6 pass 14 L1, 1 Oct 2026).
  *
@@ -867,13 +1045,22 @@ export function scheduleDependenciesAfterScheduleDeleted(
   const hit = items.filter(item => !removed.has(item.id.trim()) && linksOf(item).some(link => removed.has(predecessorOf(link))));
   if (hit.length === 0) return [];
   const answering = scheduleTaskLinks(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }), items);
+  // Owner answer Q29 (2 Oct 2026): with no task shown answering to it (a newer master not current at the delete),
+  // the saved row that does, so the link follows the task when that row is shown again.
+  const answeringSaved = scheduleTaskLinks(items, items);
+  const answeringRow = (id: string) => {
+    const shown = answering({ scheduleItemId: id });
+    if (shown) return shown.item.id;
+    const saved = answeringSaved({ scheduleItemId: id });
+    return saved && saved.basis !== 'stored_task_name' ? saved.item.id : undefined;
+  };
   return hit.map(item => {
     const own = item.id.trim();
     const linked = new Set(linksOf(item).map(predecessorOf).filter(id => !removed.has(id)));
     const dependencies = linksOf(item).flatMap(link => {
       const id = predecessorOf(link);
       if (!removed.has(id)) return [link];
-      const now = answering({ scheduleItemId: id })?.item.id;
+      const now = answeringRow(id);
       const nowId = now?.trim() ?? '';
       if (!now || !nowId || removed.has(nowId) || nowId === own || linked.has(nowId)) return [];
       linked.add(nowId);
@@ -881,6 +1068,52 @@ export function scheduleDependenciesAfterScheduleDeleted(
     });
     return { id: item.id, dependencies };
   });
+}
+
+/**
+ * Review N1 (3 Oct 2026, caused by ada8ef6, as web M1 on the phone): "Delete
+ * PDF Only" on a lookahead a newer one replaced (owner answer Q25) removed
+ * the file and wrote no task. A master task it had moved, shown on the
+ * master's dates, jumped to the deleted lookahead's dates on the phone, the
+ * iPad and the web: its saved dates were still that lookahead's, and nothing
+ * replaces a file that is gone. The tasks shown on the master's dates
+ * because of this lookahead, with the dates shown: the delete saves them
+ * first, as a date David set, so the dates he sees do not move. None for a
+ * lookahead still in effect (its tasks keep its dates, as before) or a master.
+ * The phone asks through scheduleItemsAfterScheduleDeleted (fileOnly), which
+ * its delete already calls.
+ */
+export function scheduleDatesShownUnderReplacedLookahead(
+  items: readonly ScheduleItem[],
+  documents: readonly ReferenceDocument[],
+  document: ReferenceDocument,
+): Array<Pick<ScheduleItem, 'id' | 'startDate' | 'finishDate'>> {
+  const batch = (document.importBatchId || '').trim().toLowerCase();
+  if (!batch || !scheduleDocumentAddsToMaster(document)) return [];
+  return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
+    .filter(item => item.savedLookaheadDates &&
+      (item.lookaheadOverlay?.lookaheads?.at(-1)?.batchId || '').trim().toLowerCase() === batch)
+    .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
+}
+
+/**
+ * Owner answer Q36 (6 Oct 2026): on the phone and the iPad, the file of a
+ * lookahead that is in effect is never deleted alone. "Delete PDF Only" is
+ * not offered for it, and the delete underneath refuses: the lookahead's
+ * dates would stay on its tasks with no lookahead left to say where they
+ * came from, or to put the master's dates back. "Delete PDF + Items" stays;
+ * "Delete PDF Only" stays for a master and for a lookahead newer ones have
+ * replaced. (The web already keeps a lookahead in effect.)
+ *
+ * The sentence he is told, or null when the file may be deleted alone. In
+ * effect as everywhere else (scheduleLookaheadInEffect, owner answer Q25).
+ */
+export function scheduleFileOnlyDeleteRefusal(
+  document: ReferenceDocument | null | undefined,
+  documents: readonly ReferenceDocument[],
+): string | null {
+  if (!document || !scheduleLookaheadInEffect(document, documents)) return null;
+  return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
 }
 
 /**
@@ -901,6 +1134,8 @@ export function scheduleLookaheadDeleteNote(
    * pass 9 L1: a task shown only because of the lookahead is not).
    */
   documents?: readonly ReferenceDocument[],
+  /** The button that does it: the phone's, or the web's "Delete Document + N Tasks" (review N2 W1). */
+  button = 'Delete PDF + Items',
 ): string {
   if (!scheduleDocumentAddsToMaster(document)) return '';
   const removedIds = new Set(removed.map(item => item.id));
@@ -913,15 +1148,65 @@ export function scheduleLookaheadDeleteNote(
     }).map(item => item.id))
     : null;
   // Which master is current after the delete, as the delete reads it (A5 pass 20 P1).
-  const back = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after)
+  const given = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after);
+  // Review N2 (Low, wording; 5 Oct 2026): for a lookahead a newer one replaced (owner answer Q25) the question said
+  // "puts back the earlier dates and progress", though the task already shows the master's dates and no date David
+  // sees moves: only its saved dates go back. Dates are said only for a task whose dates shown change with the delete.
+  const datesSeenToMove = (() => {
+    if (!documents || !after) return () => true;
+    const changed = new Map(given.map(entry => [entry.item.id, entry.item]));
+    const seenOf = (tasks: ScheduleItem[], schedules: readonly ReferenceDocument[]) =>
+      new Map(selectAuthoritativeScheduleItems({ scheduleItems: tasks, scheduleDocuments: [...schedules] }).map(item => [item.id, item] as const));
+    const before = seenOf(kept, documents);
+    const now = seenOf(kept.map(item => changed.get(item.id) || item), after);
+    return (id: string) => { const was = before.get(id), is = now.get(id); return !was || !is || !sameDates(was, is); };
+  })();
+  const back = given.map(entry => ({ ...entry, datesBack: entry.datesBack && datesSeenToMove(entry.item.id) }))
     .filter(entry => entry.datesBack || entry.percentBack);
-  if (back.length === 0) return '';
+  const again = after && documents && shown ? lookaheadInEffectAgainNote(document, documents, after, kept, shown) : '';
+  if (back.length === 0) return again;
   const dates = back.filter(entry => entry.datesBack).length;
   const percents = back.filter(entry => entry.percentBack).length;
   const what = percents === 0 ? 'dates'
     : dates === 0 ? 'progress'
       : dates === back.length && percents === back.length ? 'dates and progress' : 'dates or progress';
-  return ` Delete PDF + Items also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.`;
+  return ` ${button} also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.${again}`;
+}
+
+/**
+ * " The lookahead of Oct 2, 2026 applies again.": deleting the newest
+ * lookahead puts the one before it back in effect (owner answer Q25).
+ */
+function lookaheadInEffectAgainNote(
+  document: ReferenceDocument,
+  documents: readonly ReferenceDocument[],
+  after: readonly ReferenceDocument[],
+  /** The tasks the delete keeps, and those shown after it. */
+  kept: readonly ScheduleItem[],
+  shown: ReadonlySet<string>,
+): string {
+  const replacedCount = (lookahead: ReferenceDocument, saved: readonly ReferenceDocument[]) => {
+    const replacement = scheduleLookaheadReplacement(lookahead, saved);
+    return !replacement ? 0 : replacement.whole ? Number.MAX_SAFE_INTEGER : replacement.projectNames.length;
+  };
+  const again = after
+    .filter(saved => saved.id !== document.id && scheduleDocumentAddsToMaster(saved))
+    .filter(saved => replacedCount(saved, after) < replacedCount(saved, documents))
+    .sort((left, right) => timeOf(right.importedAt) - timeOf(left.importedAt))[0];
+  if (!again) return '';
+  // Only when it changes something shown: tasks it lists show again, or take its dates again (not those the deleted
+  // lookahead restated: the question counts them above).
+  const before = new Map(selectAuthoritativeScheduleItems({ scheduleItems: [...kept], scheduleDocuments: [...documents] }).map(item => [item.id, item]));
+  const batch = key(again.importBatchId);
+  const deleted = key(document.importBatchId);
+  const changes = selectAuthoritativeScheduleItems({ scheduleItems: [...kept], scheduleDocuments: [...after] }).some(item => {
+    if (!shown.has(item.id)) return false;
+    const was = before.get(item.id);
+    if (!was) return scheduleItemImportBatchIds(item).map(key).includes(batch);
+    const restatedByDeleted = (item.lookaheadOverlay?.lookaheads || []).some(entry => key(entry.batchId) === deleted);
+    return !restatedByDeleted && !sameDates(was, item);
+  });
+  return changes ? ` The lookahead of ${scheduleDocumentDayLabel(again)} applies again.` : '';
 }
 
 /** Whether approving this import adds to the master: its document, or the one an earlier Accept Selected saved. */

@@ -28,6 +28,7 @@ import {
   scheduleItemsAfterLookaheadDeleted,
   scheduleItemsAfterScheduleDeleted,
   scheduleLookaheadDeleteNote,
+  scheduleFileOnlyDeleteRefusal,
   suggestScheduleImportRole,
   withScheduleImportRole,
 } from '../../services/ScheduleLookahead';
@@ -571,7 +572,7 @@ describe('App.tsx, compiled: approving a lookahead and deleting it (owner answer
       referenceDocuments: documents, scheduleItems: items, scheduleItemsCurrentRef, referenceDocumentsCurrentRef: { current: documents },
       scheduleItemsOnlyInImportBatch, scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleDocumentIsScheduleLike,
       // A10 pass 6 M1: the delete's other saves (lookahead give-backs, removed ids on the moved tasks) come from one service now.
-      dependencyChangesForDeletedTask, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote,
+      dependencyChangesForDeletedTask, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, scheduleFileOnlyDeleteRefusal, fileOnlyDeleteRefused: () => false,
       syncScheduleItemRevision: (item: ScheduleItem) => { synced.push(item); },
       Alert: { alert: (_title: string, message: string, buttons: typeof alert.buttons) => { alert = { message, buttons }; } },
       recordDAVESyncTombstones: async (list: unknown[]) => list, advanceScheduleItemSyncGeneration: () => 1,
@@ -602,10 +603,11 @@ describe('App.tsx, compiled: approving a lookahead and deleting it (owner answer
     const { deleteScheduleDocument } = compile<{ deleteScheduleDocument: (id: string) => void }>(['deleteScheduleDocument'], {
       referenceDocuments: withoutMaster, scheduleItems: items,
       scheduleItemsOnlyInImportBatch, scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleDocumentIsScheduleLike,
-      scheduleLookaheadDeleteNote, Alert: { alert: (_title: string, message: string) => { messages.push(message); } },
+      scheduleLookaheadDeleteNote, scheduleFileOnlyDeleteRefusal, Alert: { alert: (_title: string, message: string) => { messages.push(message); } },
     });
     deleteScheduleDocument(lookahead.id);
-    expect(messages).toEqual(['Alpha 3 Week Lookahead will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming.']);
+    // (The lookahead is in effect, so the dialog has one way to delete it: owner answer Q36. It read "...will be removed. You can also remove the 2 schedule items...".)
+    expect(messages).toEqual(['Alpha 3 Week Lookahead will be removed, with the 2 schedule items only this PDF contains.']);
   });
 
   it('the phone labels a lookahead by its role in Schedule Sources', () => {

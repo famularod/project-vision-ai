@@ -20,9 +20,13 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
+import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
+import { clearSignOutAskedHere, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
+import { scheduleItemConflictCopyOfFields, scheduleItemConflictFieldLabel, scheduleItemConflictFields } from '../services/ScheduleItemEditBase';
+import { fieldUpdateConflictChanges } from '../services/FieldUpdateEditBase';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -1040,6 +1044,31 @@ export function AdminScreen({
           : 'This update was deleted on another device, so the conflict is closed.').catch(() => undefined);
         return;
       }
+      // Independent review pass 4, follow-up 2: on a task's card of fields, another change of his to the task that
+      // was waiting goes up before the choice is made. When the choice then stops, that change was sent though nothing
+      // of the choice was: "Nothing was sent" and "Neither copy was changed" are not true then, and these three say so.
+      if (stopReason === 'conflict_closed_other_change_sent') {
+        await showConflictsAfterChoice(
+          'This task\'s conflict closed by itself when your other change to this task was sent. This choice was not applied.',
+        ).catch(() => undefined);
+        return;
+      }
+      if (stopReason === 'cloud_copy_changed_other_change_sent') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert(
+          'Cloud copy changed',
+          'The cloud copy changed — review again. Your other change to this task was sent. This choice was not applied.',
+        );
+        return;
+      }
+      if (stopReason === 'not_applied_other_change_sent') {
+        await getSyncConflicts().then(setSyncConflicts, () => undefined);
+        Alert.alert(
+          'Conflict not resolved',
+          'Your other change to this task was sent. This choice was not applied. Check the cloud connection and try again.',
+        );
+        return;
+      }
       // A task's conflict closed while Keep Phone read the cloud (whole-app
       // audit A7 pass 16 L-6): this phone's own edit, already on its way up,
       // landed. It said "The cloud copy changed — review again" over an
@@ -1192,19 +1221,22 @@ export function AdminScreen({
     // not uploaded, which now upload by themselves (whole-app audit A8 pass 1 F5),
     // and field notes waiting to sync, and an unsaved field note, which a
     // sign-out discards (whole-app audit A11 pass 4 L5); and an unsaved
-    // Project Walk memory, which it discards too (A11 pass 5 L3).
-    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview] = fieldNoteOwnerKey
+    // Project Walk memory, which it discards too (A11 pass 5 L3); and a
+    // recording kept on this device waiting for signal (everyday item 4).
+    const [waitingFieldNotes, unsavedFieldNote, unsavedWalkMemory, fieldNotesForReview, keptRecording] = fieldNoteOwnerKey
       ? await Promise.all([
           fieldNotesWaitingToSync(fieldNoteOwnerKey),
           unsavedFieldNoteExists(fieldNoteOwnerKey),
           unsavedWalkMemoryExists(fieldNoteOwnerKey),
           fieldNotesNeedingReview(fieldNoteOwnerKey),
+          keptVoiceRecordingExists(fieldNoteOwnerKey).catch(() => false),
         ])
-      : [0, false, false, 0];
+      : [0, false, false, 0, false];
     const unsyncedCount = Math.max(pendingSyncCount, updateSyncAttentionCount + failedDocumentCount);
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
     const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
-      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '');
+      (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '') +
+      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
@@ -1225,7 +1257,11 @@ export function AdminScreen({
     setSigningOut(true);
 
     try {
+      // Asked for here, after the warning: what it discards goes (everyday item 7). A sign-out
+      // this device did not ask for sets the unsaved work aside for the account instead.
+      noteSignOutAskedHere();
       const result = await signOut(scope);
+      if (!result.ok) clearSignOutAskedHere();
       if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {
         // No silent sign-out of this device alone (owner answer Q21): he is
         // told why, and this device is his to choose.
@@ -1551,6 +1587,10 @@ function SyncConflictReviewList({
         const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
         const phoneTask = conflictScheduleItem(conflict, 'keep_local');
         const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
+        // A task's fields changed on both devices (owner answer Q28): those fields, as each copy has them.
+        const askedFields = scheduleItemConflictFields(conflict.localPayload);
+        // A field update's parts changed on each side since the phone's edit began (owner answer Q28).
+        const updateChanges = conflict.entity === 'project_update' ? fieldUpdateConflictChanges(conflict.localPayload, conflict.remotePayload) : null;
         const resolving = resolvingConflictId === conflict.id;
 
         return (
@@ -1562,9 +1602,17 @@ function SyncConflictReviewList({
                 cloudUpdate?.projectName ||
                 'Project record'}
             </Text>
+            {updateChanges ? (
+              <Text style={styles.settingsRowDetail}>{updateChanges}</Text>
+            ) : null}
+            {askedFields.length > 0 ? (
+              <Text style={styles.settingsRowDetail}>
+                Changed on this phone and on another device: {askedFields.map(scheduleItemConflictFieldLabel).join(', ')}.
+              </Text>
+            ) : null}
             <Text style={styles.settingsRowDetail}>
               Phone: {phoneTask
-                ? formatTaskConflictCopy(phoneTask)
+                ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(phoneTask, askedFields) : formatTaskConflictCopy(phoneTask)
                 : formatConflictCopy(phoneUpdate)}
             </Text>
             {newerPhoneUpdate ? (
@@ -1572,7 +1620,7 @@ function SyncConflictReviewList({
             ) : null}
             <Text style={styles.settingsRowDetail}>
               Cloud: {cloudTask
-                ? formatTaskConflictCopy(cloudTask)
+                ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(cloudTask, askedFields) : formatTaskConflictCopy(cloudTask)
                 : formatConflictCopy(cloudUpdate)}
             </Text>
             <View style={styles.conflictActions}>

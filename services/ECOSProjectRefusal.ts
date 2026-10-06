@@ -4,7 +4,11 @@
  * ECOSProjectQuestion.ts in audit A9 pass 6 L6 so Talk's router can use them
  * without loading the network client. No I/O.
  */
-import { findECOSProjectReferenceMismatch } from '../supabase/functions/_shared/ecos-project-reference';
+import {
+  ecosProjectIdentifiers,
+  ecosProjectNumberMentionsAt,
+  findECOSProjectReferenceMismatch,
+} from '../supabase/functions/_shared/ecos-project-reference';
 
 /**
  * Audit A9 pass 3 L3 (30 Sep 2026): where the refusal is read. The desktop has
@@ -18,7 +22,43 @@ export type ECOSProjectRefusalContext = Readonly<{
   knownProjectNames?: readonly string[] | null;
   closedProjectNames?: readonly string[] | null;
   refusalWording?: ECOSProjectRefusalWording;
+  /**
+   * Owner answer Q27: read project numbers as digits only (see
+   * ecosDigitsOnlyQuestion). Left out, it is decided from the lists passed
+   * in; Talk passes what the whole list says when it checks a shorter one.
+   */
+  digitsOnlyProjectNumbers?: boolean;
 }>;
+
+/**
+ * Owner answer Q27 (2 Oct 2026): David has no letters in his project
+ * numbers. Whether no project here (open, closed or selected) has a number
+ * with a letter in it ("2375A", "2375-B", "480V ..."), by the same reading
+ * the check uses. Decided from the actual list, so adding a project with a
+ * lettered number brings back the full reading (audit A9 passes 7-17).
+ */
+export function ecosProjectNumbersAreDigitsOnly(projectNames: readonly string[]): boolean {
+  return projectNames.every(name => ecosProjectIdentifiers(name).every(({ letter }) => !letter));
+}
+
+/**
+ * Owner answer Q27: the question as the check reads it when project numbers
+ * are digits only. A letter the check would read as part of a project number
+ * (glued "2375A", hyphen-joined "2375-A", or a lone capital "2375 A?") is
+ * written as a word of its own, so "2375A" reads as "2375 A" does today: the
+ * number 2375, then the word A. Two spaces go in right after the number,
+ * because one space and a capital is how the check spots a letter. Nothing
+ * else changes, and only the check reads this copy of the question.
+ */
+export function ecosDigitsOnlyQuestion(
+  question: string,
+  projectNames: readonly string[],
+  selectedProjectName = '',
+): string {
+  return ecosProjectNumberMentionsAt(question, projectNames, selectedProjectName)
+    .filter(({ letter, spacedLetter }) => letter || spacedLetter)
+    .reduceRight((text, { end }) => `${text.slice(0, end)}  ${text.slice(end)}`, question);
+}
 
 /**
  * knownProjectNames: the names of the signed-in user's unarchived projects. With
@@ -32,9 +72,17 @@ export function ecosProjectReferenceMismatchMessage(
   projectName: string,
   question: string,
   knownProjectNames?: readonly string[] | null,
-  { closedProjectNames, refusalWording = 'desktop' }: Omit<ECOSProjectRefusalContext, 'knownProjectNames'> = {},
+  { closedProjectNames, refusalWording = 'desktop', digitsOnlyProjectNumbers }: Omit<ECOSProjectRefusalContext, 'knownProjectNames'> = {},
 ): string | null {
-  const mismatch = findECOSProjectReferenceMismatch(projectName, question, knownProjectNames, closedProjectNames);
+  // Owner answer Q27: only with a project list; without one the stricter
+  // pre-Q20 check applies unchanged.
+  const listed = (names: readonly string[] | null | undefined) =>
+    (Array.isArray(names) ? names : []).filter(name => typeof name === 'string' && name.trim());
+  const projects = [projectName, ...listed(knownProjectNames), ...listed(closedProjectNames)];
+  const digitsOnly = listed(knownProjectNames).length > 0 &&
+    (digitsOnlyProjectNumbers ?? ecosProjectNumbersAreDigitsOnly(projects));
+  const read = digitsOnly ? ecosDigitsOnlyQuestion(question, projects, projectName) : question;
+  const mismatch = findECOSProjectReferenceMismatch(projectName, read, knownProjectNames, closedProjectNames);
   if (mismatch?.namedProjects) return projectsNamedTogetherText(mismatch.namedProjects);
   return mismatch
     ? projectReferenceMismatchText(

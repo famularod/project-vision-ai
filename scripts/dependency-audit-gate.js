@@ -116,17 +116,56 @@ function evaluateDependencyAudit(report, now = new Date(), accepted = ACCEPTED_A
   return { excused, unexcused, expired };
 }
 
-function runDependencyAudit(cwd = path.resolve(__dirname, '..')) {
-  const audit = spawnSync('npm', ['audit', '--audit-level=low', '--json'], { cwd, encoding: 'utf8', timeout: 180_000 });
-  if (audit.error || typeof audit.stdout !== 'string' || !audit.stdout.trim()) return { reachable: false };
+const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+
+/**
+ * Why an `npm audit --json` result is not a usable audit report, or null when
+ * it is one (independent review R12). npm prints JSON for failures too: an
+ * error object when the registry refuses the audit, `{}` when it has nothing
+ * to say. Those used to read as "no vulnerabilities" and print PASS, even with
+ * --require-registry. A real report has npm's report version, a vulnerability
+ * list, and severity counts that agree with that list. npm exits 0 for a clean
+ * report and 1 when the report lists anything, so any other status is a failure.
+ */
+function auditReportProblem(report, status) {
+  if (status !== 0 && status !== 1) return `npm audit exited with status ${status === null || status === undefined ? 'unknown' : status}`;
+  if (report === null || typeof report !== 'object' || Array.isArray(report)) return 'npm audit did not print a report';
+  if (report.error) return `npm audit reported an error (${String(report.error.code || report.error.summary || 'unknown').slice(0, 80)})`;
+  if (typeof report.auditReportVersion !== 'number') return 'npm audit printed JSON that is not an audit report';
+  const vulnerabilities = report.vulnerabilities;
+  if (vulnerabilities === null || typeof vulnerabilities !== 'object' || Array.isArray(vulnerabilities)) return 'the audit report has no vulnerability list';
+  const counts = report.metadata?.vulnerabilities;
+  if (counts === null || typeof counts !== 'object') return 'the audit report has no severity counts';
+  for (const severity of SEVERITIES) {
+    if (!Number.isInteger(counts[severity]) || counts[severity] < 0) return `the audit report has no ${severity} count`;
+    const listed = Object.values(vulnerabilities).filter(entry => entry?.severity === severity).length;
+    if (listed !== counts[severity]) return `the audit report counts ${counts[severity]} ${severity} but lists ${listed}`;
+  }
+  const listedTotal = Object.keys(vulnerabilities).length;
+  if (status === 0 && listedTotal > 0) return 'npm audit exited clean but its report lists vulnerabilities';
+  if (status === 1 && listedTotal === 0) return 'npm audit exited with a failure but its report lists nothing';
+  return null;
+}
+
+/** Reads what the npm audit process returned. Anything short of a valid report is "not audited", never a pass. */
+function readDependencyAudit(audit, now = new Date()) {
+  if (!audit || audit.error) return { reachable: false, reason: 'npm audit could not run or timed out' };
+  if (typeof audit.stdout !== 'string' || !audit.stdout.trim()) return { reachable: false, reason: 'npm audit printed nothing' };
   let report;
   try {
     report = JSON.parse(audit.stdout);
   } catch {
-    return { reachable: false };
+    return { reachable: false, reason: 'npm audit did not print JSON' };
   }
-  const counts = report?.metadata?.vulnerabilities ?? {};
-  return { reachable: true, counts, ...evaluateDependencyAudit(report) };
+  const problem = auditReportProblem(report, audit.status);
+  if (problem) return { reachable: false, reason: problem };
+  return { reachable: true, counts: report.metadata.vulnerabilities, ...evaluateDependencyAudit(report, now) };
+}
+
+function runDependencyAudit(cwd = path.resolve(__dirname, '..')) {
+  return readDependencyAudit(
+    spawnSync('npm', ['audit', '--audit-level=low', '--json'], { cwd, encoding: 'utf8', timeout: 180_000 }),
+  );
 }
 
 function describe(result) {
@@ -144,7 +183,8 @@ if (require.main === module) {
   const requireRegistry = process.argv.includes('--require-registry');
   const result = runDependencyAudit();
   if (!result.reachable) {
-    console.warn('VIC_GATE_STATUS=WARN Dependency audit could not reach the registry; lock contents were not audited.');
+    console.warn(`VIC_GATE_STATUS=WARN Dependency audit could not reach the registry; lock contents were not audited (${result.reason}).`);
+    if (requireRegistry) console.error('Dependency audit FAIL: a valid audit report is required here and none was obtained.');
     process.exit(requireRegistry ? 1 : 0);
   }
   describe(result).forEach(line => console.log(line));
@@ -155,4 +195,4 @@ if (require.main === module) {
   console.log('Dependency audit PASS: no high or critical advisory beyond the owner-accepted ones.');
 }
 
-module.exports = { ACCEPTED_ADVISORIES, evaluateDependencyAudit, runDependencyAudit, describe };
+module.exports = { ACCEPTED_ADVISORIES, auditReportProblem, evaluateDependencyAudit, readDependencyAudit, runDependencyAudit, describe };

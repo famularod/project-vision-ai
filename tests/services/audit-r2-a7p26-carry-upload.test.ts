@@ -142,6 +142,10 @@ jest.mock('../../services/SupabaseService', () => {
     listReferenceDocuments: read(() => []),
     listScheduleItems: read(() => [...mockCloud.rows.values()].map(mockCopy)),
     getScheduleItem: async (id: string) => { mockTick(); return mockOnline() ? mockOk(mockCloud.rows.has(id) ? mockCopy(mockCloud.rows.get(id)) : null) : mockDown(); },
+    // Independent review R02: several tasks' rows are read by their ids in one request, and a GPS area's row by its id.
+    getScheduleItemsByIds: async (ids: string[]) => (mockOnline()
+      ? mockOk(ids.flatMap(id => (mockCloud.rows.has(id) ? [mockCopy(mockCloud.rows.get(id))] : []))) : mockDown()),
+    getProjectAreasByIds: async () => (mockOnline() ? mockOk([]) : mockDown()),
     upsertScheduleItem: async (item: { id: string }) => {
       mockTick();
       if (!mockOnline()) return mockDown();
@@ -178,13 +182,13 @@ import { reconcileCurrentScheduleDocuments, scheduleDocumentIsScheduleLike, sele
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
 import { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } from '../../services/DAVEWebOperations';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemRevisionForCloudRefresh } from '../../services/ScheduleItemQueueRevision';
+import { scheduleItemRevisionForCloudRefresh, scheduleItemsWithPendingEditsOverCloud } from '../../services/ScheduleItemQueueRevision';
 import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import {
   getOfflineQueue, getSyncConflicts, queueScheduleItemProgressCarried, queueScheduleItemRecord, runScheduleImportCloudSync, runScheduleItemCloudSync,
-  synchronizeLocalData, uploadPendingChanges,
+  synchronizeLocalData, uploadPendingChanges, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad,
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
@@ -324,8 +328,9 @@ async function edit(device: Device, itemId: string, change: Partial<ScheduleItem
     setScheduleItems: setter(device),
     scheduleItemChangeUsesDebouncedSync: () => false,
     cancelScheduleItemTextSync: () => undefined,
-    syncScheduleItemRevision: (item: ScheduleItem, _generation: number, changedFields?: readonly (keyof ScheduleItem)[]) => {
-      device.pendingEffects.push(runScheduleItemCloudSync(item, changedFields));
+    // The task the edit started from goes with it (owner answer Q28).
+    syncScheduleItemRevision: (item: ScheduleItem, _generation: number, changedFields?: readonly (keyof ScheduleItem)[], before?: ScheduleItem) => {
+      device.pendingEffects.push(runScheduleItemCloudSync(item, changedFields, before));
     },
     queueScheduleItemRecord,
     Alert: { alert: () => undefined },
@@ -348,6 +353,7 @@ async function fullSync(device: Device, upload = true) {
     normalizeScheduleItems: listCopy, isDAVESafeCloudScheduleRecord, migrateLegacyScheduleItem: identity,
     setScheduleItems: setter(device), recoverDAVEScheduleRecords, deletedDAVERecordIds,
     markScheduleItemsAuthorityReady: () => undefined, recordScheduleCloudPull: async () => undefined,
+    scheduleItemsWithPendingEditsOverCloud, // a task edit waiting with its base, over the cloud's row (owner answer Q28)
   });
   apply(recovered);
   syncDocuments(device);
@@ -388,10 +394,11 @@ async function startup(device: Device, upload = true) {
   on(device);
   if (!mockOnline()) return false;
   const tombstones = await synchronizeDAVESyncTombstones();
-  const list = await require('../../services/SupabaseService').listScheduleItems();
+  const list = await listScheduleItemsWithEditsWaiting(); // the App's loadCloud, noting the task edits waiting (owner answer Q28)
   if (!list.ok || !tombstones.cloudAuthoritative) return false;
   const holder = compiled<{ applyCloud: (items: ScheduleItem[], tombstones: unknown) => void }>(`module.exports = { ${STARTUP_APPLY_SOURCE} };`, {
     setScheduleItems: setter(device), recoverDAVEScheduleRecords, deletedDAVERecordIds,
+    scheduleItemsWithPendingEditsOverCloud, scheduleItemEditsWaitingAtLastLoad,
   });
   holder.applyCloud((list.data as ScheduleItem[]).filter(isDAVESafeCloudScheduleRecord), tombstones.tombstones);
   syncDocuments(device);

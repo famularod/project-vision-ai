@@ -136,7 +136,8 @@ describe('"since the last report" while behind (M1, M2)', () => {
       briefing,
       bodies: (['project_manager', 'executive'] as const).map(format => {
         const body = enhanceDAVEReportDraft(draft, briefing, format).body;
-        const start = body.indexOf('SINCE THE LAST APPROVED REPORT');
+        // Owner answer 2 Oct (report heading): the written report's heading is "SINCE THE LAST REPORT" (was "SINCE THE LAST APPROVED REPORT"); pin updated deliberately.
+        const start = body.indexOf('SINCE THE LAST REPORT');
         return body.slice(start, body.indexOf('COMPLETED WORK', start));
       }),
     };
@@ -149,7 +150,7 @@ describe('"since the last report" while behind (M1, M2)', () => {
     });
     expect(briefing.recentChanges).toEqual([]);
     for (const body of bodies) {
-      expect(body.trim()).toBe("SINCE THE LAST APPROVED REPORT\n• Not counted yet: this device hasn't received your other device's latest changes.");
+      expect(body.trim()).toBe("SINCE THE LAST REPORT\n• Not counted yet: this device hasn't received your other device's latest changes.");
     }
   });
 
