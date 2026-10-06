@@ -190,3 +190,32 @@ describe('Owner answer Q38: on the phone, the PDF of the master schedule in effe
     expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
   });
 });
+
+/*
+ * The delete question when the schedule has no task only it contains (Build 231, S1 item 4): it read "...will be
+ * removed, with the 0 schedule items only this PDF contains." Said plainly, with no count.
+ */
+describe('the delete question for a schedule with no tasks of its own', () => {
+  const BARE = schedule('LOOKAHEAD 3', '2026-09-11T12:00:00.000Z', 'lookahead'); // in effect; lists only the master's Framing
+  const OLD_MASTER = { ...schedule('MASTER 0', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument; // no task is only its own
+  const question = (document: ReferenceDocument, documents: ReferenceDocument[]) => {
+    const app = phone(documents);
+    app.deleteScheduleDocument(document.id);
+    return [app.alerts[0].message, app.alerts[0].buttons.map(button => button.text)];
+  };
+
+  it('a lookahead in effect, or the master in effect, that added none: no count, one choice', () => {
+    expect(question(BARE, [...ALL, BARE])).toEqual(['LOOKAHEAD 3 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
+    const lone = { ...MASTER, id: 'MASTER 9', name: 'MASTER 9', importBatchId: 'batch-MASTER 9', importedAt: '2026-09-12T12:00:00.000Z' } as ReferenceDocument;
+    expect(question(lone, [...ALL, lone])).toEqual(['MASTER 9 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
+  });
+
+  it('with both choices offered too (an older master none of whose tasks is only its own)', () => {
+    expect(question(OLD_MASTER, [OLD_MASTER, ...ALL])).toEqual(['MASTER 0 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF Only', 'Delete PDF + Items']]);
+  });
+
+  it('one or more: counted as before', () => {
+    expect(question(NEWER, ALL)[0]).toBe('LOOKAHEAD 2 will be removed, with the 1 schedule item only this PDF contains.');
+    expect(question(OLDER, ALL)[0]).toBe('LOOKAHEAD 1 will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
+  });
+});

@@ -99,7 +99,8 @@ describe('"Delete PDF + Items" on the phone\'s task-less upload copy (audit A8 p
   it('leaves the imported schedule\'s tasks, on this phone and in the deletions sent to every device', async () => {
     const h = harness(importedTasks(), [uploadCopy, imported]);
     await h.deleteWithItems('upload-copy');
-    expect(h.message()).toContain('remove the 0 schedule items only this PDF contains');
+    // (Said with no count since Build 231: it read "...remove the 0 schedule items only this PDF contains".)
+    expect(h.message()).toContain('Schedule will be removed. It has no schedule items of its own.');
     expect(h.tombstoned).toEqual([{ entityType: 'reference_document', recordId: 'upload-copy' }]);
     expect(h.scheduleItemsCurrentRef.current.map(item => item.id)).toEqual(['t1', 't2', 't3']);
   });
