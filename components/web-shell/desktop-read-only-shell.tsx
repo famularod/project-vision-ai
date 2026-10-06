@@ -5763,8 +5763,15 @@ function ReportWorkspace({
   };
   const approvedMovedByAnotherTab = reportStatus === 'approved' && !sentFromHereAt &&
     Boolean(anotherTabSentLater(periodSnapshot, reportSource.periodKey, reportSource.fingerprint.split(':media-')[0]));
+  // Review N2 follow-up (5 Oct 2026): the report stands on a send this tab has just recorded, later than the send
+  // the page last read the period from: the page has yet to catch up with its own send. No other device sent
+  // anything, yet until that read came back the panel said "Your other device sent a report <the one before>,
+  // after this one was approved…".
+  const reportOwnSendAt = reportSource.periodKey?.startsWith('sent:') ? reportSource.periodKey.slice('sent:'.length) : null;
+  const reportAheadOnOwnSend = daveWebReportSentInThisTab(reportOwnSendAt) &&
+    (periodSentAt === null || Date.parse(reportOwnSendAt as string) > Date.parse(periodSentAt));
   const approvedPeriodMoved = approvedMovedByAnotherTab || (reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
-    daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
+    !reportAheadOnOwnSend && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
   const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
     periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
   /** The report on screen as the period records it: its facts, these projects, this format. */
