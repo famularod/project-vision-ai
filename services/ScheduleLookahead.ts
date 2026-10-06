@@ -1036,6 +1036,8 @@ export function scheduleLookaheadDeleteNote(
    * pass 9 L1: a task shown only because of the lookahead is not).
    */
   documents?: readonly ReferenceDocument[],
+  /** The button that does it: the phone's, or the web's "Delete Document + N Tasks" (review N2 W1). */
+  button = 'Delete PDF + Items',
 ): string {
   if (!scheduleDocumentAddsToMaster(document)) return '';
   const removedIds = new Set(removed.map(item => item.id));
@@ -1057,7 +1059,7 @@ export function scheduleLookaheadDeleteNote(
   const what = percents === 0 ? 'dates'
     : dates === 0 ? 'progress'
       : dates === back.length && percents === back.length ? 'dates and progress' : 'dates or progress';
-  return ` Delete PDF + Items also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.${again}`;
+  return ` ${button} also puts back the earlier ${what} of ${back.length} ${back.length === 1 ? 'task' : 'tasks'} this lookahead changed.${again}`;
 }
 
 /**

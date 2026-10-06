@@ -32,7 +32,7 @@ import {
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
 import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted } from './ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './ScheduleLookahead';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
@@ -464,20 +464,27 @@ export function planDAVEWebScheduleDocumentDelete({
   const removedIds = new Set(keepTasks ? [] : document.linkedScheduleItems.map(item => item.id));
   // Review N1 web M1 (3 Oct 2026, caused by ada8ef6): a lookahead a newer one replaced (owner answer Q25) is a prior
   // version the web may delete. Deleted with no task written, a master task it had moved jumped from the master's
-  // dates to the deleted lookahead's on the web, the phone and the iPad. Its delete, with its tasks or without, now
-  // gives the master tasks it restated their dates back as the phone's Delete PDF + Items does.
+  // dates to the deleted lookahead's on the web, the phone and the iPad. Its delete with its tasks gives the master
+  // tasks it restated their dates back as the phone's Delete PDF + Items does; without them, see below.
   if (removedIds.size === 0 && !scheduleDocumentAddsToMaster(document)) return Object.freeze([]);
   const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
   const kept = saved.filter(item => !removedIds.has(item.id));
   const keptById = new Map(kept.map(item => [item.id, item]));
   const documents = snapshot.referenceDocuments.filter(other => other.id !== document.id);
-  const restored = scheduleItemsAfterScheduleDeleted({
-    items: kept,
-    removed: saved.filter(item => removedIds.has(item.id)),
-    document,
-    documents,
-    updatedAt,
-  });
+  // Review N2 W1 (5 Oct 2026, Medium, caused by e9a3443): "Delete Document" / "Delete Document Only" on a replaced
+  // lookahead ran the whole give-back too, so a percent that lookahead's file had given a master task went back
+  // (60% to 0%) with nothing said, where the phone's "Delete PDF Only" from the same state keeps it. Keeping the
+  // tasks now does what the phone's file-only delete does, by the phone's own helper: the dates shown are saved, no
+  // percent moves, and the task's note says it left that lookahead's dates (review N2 F2). "+ Tasks" is unchanged.
+  const restored = keepTasks
+    ? scheduleItemsAfterScheduleDeleted({ items: kept, removed: [], document, documents: snapshot.referenceDocuments, updatedAt, fileOnly: true })
+    : scheduleItemsAfterScheduleDeleted({
+      items: kept,
+      removed: saved.filter(item => removedIds.has(item.id)),
+      document,
+      documents,
+      updatedAt,
+    });
   // Owner answer Q29 (2 Oct 2026): David's hand links to a removed row move to the row that answers to it, as the
   // phone's Delete PDF + Items moves them (dropped only when none does); the web left them pointing at nothing.
   const byId = new Map<string, ScheduleItem>(restored.map(item => [item.id, item]));
@@ -493,6 +500,37 @@ export function planDAVEWebScheduleDocumentDelete({
       ? [Object.freeze({ item: scheduleItemForCloud(item), previous: scheduleItemForCloud(before), cloudUpdatedAt: before.cloudUpdatedAt ?? null })]
       : [];
   }));
+}
+
+/**
+ * Review N2 W1 (5 Oct 2026): what "Delete Document + N Tasks" also does to
+ * the tasks a lookahead changed, said in the web's delete dialog as the
+ * phone's question says it of "Delete PDF + Items" (the same sentence, from
+ * the same helper, with the web's button): " Delete Document + 2 Tasks also
+ * puts back the earlier progress of 1 task this lookahead changed." The
+ * dialog said nothing, and that button lowers a percent the lookahead's file
+ * gave. Empty for a schedule that is not a lookahead, for one with no linked
+ * task (only "Delete Document" is offered, which keeps the percent), and when
+ * nothing goes back.
+ */
+export function daveWebScheduleDocumentDeleteNote({
+  snapshot,
+  document,
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
+  document: DAVEWebReferenceDocument;
+}): string {
+  const count = document.linkedScheduleItems.length;
+  if (count === 0 || !scheduleDocumentAddsToMaster(document)) return '';
+  const saved = snapshot.knownScheduleItems ?? snapshot.scheduleItems;
+  const linked = new Set(document.linkedScheduleItems.map(item => item.id));
+  return scheduleLookaheadDeleteNote(
+    saved,
+    document,
+    saved.filter(item => linked.has(item.id)),
+    snapshot.referenceDocuments,
+    `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
+  );
 }
 
 function canonicalSha256(value: string): string | null {

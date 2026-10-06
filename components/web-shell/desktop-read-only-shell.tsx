@@ -100,6 +100,7 @@ import {
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
   daveWebReportSourceNotCounted,
+  daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
@@ -755,6 +756,8 @@ function DesktopPageData({
         <DocumentManagementWorkspace
           documents={documents}
           tasks={snapshot.scheduleItems}
+          knownTasks={snapshot.knownScheduleItems}
+          scheduleDocuments={snapshot.referenceDocuments}
           projects={snapshot.projects.map(project => project.name)}
           projectIdentities={projectIdentities}
           selectedProject={selectedProject}
@@ -3752,6 +3755,8 @@ type DocumentCoverageSummaryState = Readonly<{
 function DocumentManagementWorkspace({
   documents,
   tasks,
+  knownTasks,
+  scheduleDocuments,
   projects,
   projectIdentities,
   selectedProject,
@@ -3759,6 +3764,9 @@ function DocumentManagementWorkspace({
 }: {
   documents: readonly DAVEWebReferenceDocument[];
   tasks: readonly DAVEWebScheduleItem[];
+  /** Every saved task and schedule, for what a lookahead's delete with its tasks puts back (review N2 W1). */
+  knownTasks?: readonly ScheduleItem[];
+  scheduleDocuments: readonly DAVEWebReferenceDocument[];
   projects: readonly string[];
   projectIdentities: readonly ECOSProjectIdentity[];
   selectedProject: string | null;
@@ -4684,7 +4692,7 @@ function DocumentManagementWorkspace({
                   : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
-                  : ''}
+                  : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
               </Text>
             )}
           </View>

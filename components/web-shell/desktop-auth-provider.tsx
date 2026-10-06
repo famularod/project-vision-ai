@@ -1049,7 +1049,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     deleteLinkedTasks: boolean,
   ) => {
     // A task a new master moved answers to its removed row, as on the phone (A10 pass 8 M1). A lookahead's delete
-    // gives the master tasks it restated their dates back, with its tasks or without (review N1 web M1).
+    // leaves the master tasks it restated on the dates shown, with its tasks or without (review N1 web M1); without
+    // them it moves no percent, as the phone's Delete PDF Only (review N2 W1).
     const current = snapshotRef.current;
     const revisions = current && (deleteLinkedTasks || scheduleDocumentAddsToMaster(document))
       ? planDAVEWebScheduleDocumentDelete({ snapshot: current, document, keepTasks: !deleteLinkedTasks })
