@@ -4,7 +4,7 @@ import type {
   ReferenceDocumentRegion,
   UpdatePhoto,
 } from '../types';
-import { planReportDrawingCrop } from './ReportDrawingCrop';
+import { planReportDrawingCrop, reportDrawingCropBounds } from './ReportDrawingCrop';
 import {
   convertedReportImageMimeType,
   detectReportImageSignature,
@@ -145,6 +145,9 @@ async function resolveDrawing(
     };
   }
   try {
+    // Judged by the shared rule before anything is fetched. With no region
+    // at all the whole sheet was embedded as the excerpt (review pass 2 W3).
+    reportDrawingCropBounds(reference.excerpt.region);
     const mimeType = normalizedDrawingMimeType(document);
     const raster = await resolveProtectedArtifactWithRetry({
       bucket: 'project-documents',

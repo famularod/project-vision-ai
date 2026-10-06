@@ -380,6 +380,31 @@ describe('the same citation on the phone and on the desktop', () => {
     expect([phone.media[0].width, phone.media[0].height]).toEqual([web.media[0].width, web.media[0].height]);
   });
 
+  it.each<[string, unknown]>([
+    ['no region at all', undefined],
+    ['a null region', null],
+    ['an empty region', {}],
+  ])('lists the drawing on both for %s, and the desktop fetches nothing (review pass 2 W3: it embedded the whole sheet)', async (_name, region) => {
+    storeSheet(4000, 3000);
+    const fetched = jest.spyOn(globalThis as unknown as { fetch: () => unknown }, 'fetch');
+    const getArtifactUrl = jest.fn(async () => SHEET_URL);
+    const phone = await native(region as Region);
+    const web = await resolveWebReportWordMedia({
+      updates: [],
+      reportPhotoIds: [],
+      drawingReferences: [reference(region as Region)],
+      getArtifactUrl,
+    });
+    expect(phone.media).toEqual([]);
+    expect(web.media).toEqual([]);
+    expect(phone.unavailableMedia.map(item => item.reason)).toEqual([REPORT_DRAWING_INVALID_REGION_MESSAGE]);
+    expect(web.unavailableMedia).toEqual(phone.unavailableMedia);
+    expect(getArtifactUrl).not.toHaveBeenCalled();
+    expect(fetched).not.toHaveBeenCalled();
+    expect(fakeMedia.deviceCrops).toEqual([]);
+    expect(fakeMedia.browserCrops).toEqual([]);
+  });
+
   it('refuses the same invalid areas on both, in the same words', async () => {
     storeSheet(4000, 3000);
     for (const region of [
