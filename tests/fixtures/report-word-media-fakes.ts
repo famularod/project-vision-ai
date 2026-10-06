@@ -49,6 +49,10 @@ const BROWSER_DECODES: readonly FakeImageFormat[] = ['jpeg', 'png', 'gif', 'bmp'
 export const fakeMedia = {
   /** Local files on the phone, by path. */
   files: new Map<string, Uint8Array>(),
+  /** When each local file was last changed; a file not listed here reads as 0. */
+  modified: new Map<string, number>(),
+  /** Whether the phone refuses to move a file (a full disk, a folder that cannot be made). */
+  moveFails: false,
   /** Protected cloud files the desktop downloads, by URL. */
   remote: new Map<string, { bytes: Uint8Array; contentType: string | null }>(),
   pictures: new Map<string, FakePicture>(),
@@ -65,6 +69,8 @@ export const fakeMedia = {
   nextId: 0,
   reset() {
     this.files.clear();
+    this.modified.clear();
+    this.moveFails = false;
     this.remote.clear();
     this.pictures.clear();
     this.deviceCrops.length = 0;
@@ -148,18 +154,49 @@ function decoded(bytes: Uint8Array, decodes: readonly FakeImageFormat[]): FakePi
   return decodes.includes(fakeFormatOf(bytes)) ? fakePictureIn(bytes) : null;
 }
 
-/** expo-file-system: local files held in memory. */
+/** expo-file-system: local files and folders held in memory. */
 export function fakeFileSystem() {
+  const join = (parent: string | { uri: string }, name?: string) => {
+    const base = typeof parent === 'string' ? parent : parent.uri;
+    return name ? `${base.replace(/\/+$/, '')}/${name}` : base;
+  };
+  class Directory {
+    uri: string;
+    constructor(parent: string | { uri: string }, name?: string) {
+      this.uri = join(parent, name);
+    }
+    get exists() {
+      return true;
+    }
+    create() {}
+    /** The files directly inside this folder. */
+    list() {
+      const prefix = `${this.uri}/`;
+      return [...fakeMedia.files.keys()]
+        .filter(uri => uri.startsWith(prefix) && !uri.slice(prefix.length).includes('/'))
+        .map(uri => new File(uri));
+    }
+  }
   class File {
     uri: string;
-    constructor(uri: string) {
-      this.uri = uri;
+    constructor(parent: string | { uri: string }, name?: string) {
+      this.uri = join(parent, name);
     }
     get exists() {
       return fakeMedia.files.has(this.uri);
     }
     get size() {
       return fakeMedia.files.get(this.uri)?.byteLength ?? 0;
+    }
+    get modificationTime() {
+      return fakeMedia.modified.get(this.uri) ?? 0;
+    }
+    async move(destination: { uri: string }) {
+      const bytes = fakeMedia.files.get(this.uri);
+      if (!bytes || fakeMedia.moveFails) throw new Error('The file could not be moved.');
+      fakeMedia.files.delete(this.uri);
+      fakeMedia.files.set(destination.uri, bytes);
+      this.uri = destination.uri;
     }
     async bytes() {
       const bytes = fakeMedia.files.get(this.uri);
@@ -184,7 +221,7 @@ export function fakeFileSystem() {
       fakeMedia.files.delete(this.uri);
     }
   }
-  return { File };
+  return { Directory, File, Paths: { cache: new Directory('file:///cache') } };
 }
 
 /** react-native Image.getSize: the size of a local picture the device can decode. */

@@ -1,4 +1,4 @@
-import { File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Image } from 'react-native';
 import { renderPdfExcerpt } from '../modules/dave-text-recognition';
@@ -318,9 +318,93 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
   }
 }
 
+/**
+ * The on-screen preview kept for each drawing reference (review pass 2 W2:
+ * every showing of a preview wrote a new JPEG to the cache and nothing ever
+ * removed one). There is one file per reference. It is made once, reused
+ * while the drawing file and the cited area are unchanged, and removed when
+ * a new one replaces it. The Reports screen lets go of a picture before it
+ * asks for another, so a file still on screen is never removed. Files left
+ * by an earlier run of the app are cleared the first time one is made.
+ */
+const DRAWING_PREVIEW_FOLDER = 'report-drawing-previews';
+const drawingPreviews = new Map<string, Readonly<{ madeFrom: string; uri: string }>>();
+const drawingPreviewsBeingMade = new Map<string, Readonly<{ madeFrom: string; uri: Promise<string> }>>();
+let earlierDrawingPreviewsCleared = false;
+let drawingPreviewsMade = 0;
+
 export async function renderNativeReportDrawingPreview(
   reference: ReportDrawingReference,
 ) {
+  const madeFrom = drawingPreviewSource(reference);
+  const kept = drawingPreviews.get(reference.id);
+  if (kept?.madeFrom === madeFrom && new File(kept.uri).exists) return kept.uri;
+  // Asked for twice at once: one picture is made, and both get it.
+  const beingMade = drawingPreviewsBeingMade.get(reference.id);
+  if (beingMade?.madeFrom === madeFrom) return beingMade.uri;
+  const uri = makeDrawingPreview(reference, madeFrom);
+  drawingPreviewsBeingMade.set(reference.id, { madeFrom, uri });
+  try {
+    return await uri;
+  } finally {
+    if (drawingPreviewsBeingMade.get(reference.id)?.uri === uri) {
+      drawingPreviewsBeingMade.delete(reference.id);
+    }
+  }
+}
+
+/** What a preview was made from: the drawing file as it is now, the page and the cited area. */
+function drawingPreviewSource(reference: ReportDrawingReference) {
+  const { document, pageNumber, region } = reference.excerpt;
+  const file = document.uri ? new File(document.uri) : null;
+  return JSON.stringify([
+    document.uri,
+    file?.exists ? [file.size, file.modificationTime] : null,
+    pageNumber,
+    region?.x,
+    region?.y,
+    region?.width,
+    region?.height,
+  ]);
+}
+
+async function makeDrawingPreview(reference: ReportDrawingReference, madeFrom: string) {
+  const uri = await keepDrawingPreview(await renderDrawingPreviewFile(reference));
+  const replaced = drawingPreviews.get(reference.id);
+  drawingPreviews.set(reference.id, { madeFrom, uri });
+  if (replaced && replaced.uri !== uri) {
+    const earlier = new File(replaced.uri);
+    if (earlier.exists) earlier.delete();
+  }
+  return uri;
+}
+
+/**
+ * Moves a new preview out of the image tool's cache into the app's own
+ * preview folder. If that cannot be done, the preview is still shown from
+ * where it was made.
+ */
+async function keepDrawingPreview(madeUri: string) {
+  try {
+    const folder = new Directory(Paths.cache, DRAWING_PREVIEW_FOLDER);
+    folder.create({ intermediates: true, idempotent: true });
+    if (!earlierDrawingPreviewsCleared) {
+      // Nothing made in this run of the app is in the folder yet, so nothing in it is on screen.
+      earlierDrawingPreviewsCleared = true;
+      for (const entry of folder.list()) {
+        if (entry instanceof File) entry.delete();
+      }
+    }
+    drawingPreviewsMade += 1;
+    const kept = new File(folder, `preview-${Date.now()}-${drawingPreviewsMade}.jpg`);
+    await new File(madeUri).move(kept);
+    return kept.uri;
+  } catch {
+    return madeUri;
+  }
+}
+
+async function renderDrawingPreviewFile(reference: ReportDrawingReference) {
   const document = reference.excerpt.document;
   if (!drawingIsPdf(document)) {
     const file = new File(document.uri);
