@@ -557,7 +557,11 @@ describe('Q25 with two devices: the reset reads the same whatever each device ha
       row('G-2', G, '11/05/2026', '11/09/2026', { revisedFromTaskIds: ['F-2'], taskName: 'Roof deck' }),
       row('G-3', G, '11/12/2026', '11/16/2026', { revisedFromTaskIds: ['F-2'], taskName: 'Roof flashing' }),
     ];
-    expect(dates(shown({ items, documents: [F, G, LA, LB] }).find(item => item.id === 'F-2')!)).toBe('11/02/2026-11/06/2026');
+    // Changed deliberately (review N2 P-b, 5 Oct): with G current, the old "Roof" is a task the current master no
+    // longer lists (renamed and split), and the replaced lookahead no longer holds it in the list: only G's two rows
+    // show. The split is read where the row is still shown: with F the master current, which holds it.
+    expect(shown({ items, documents: [F, G, LA, LB] }).map(item => item.id).sort()).toEqual(['G-2', 'G-3']);
+    expect(dates(shown({ items, documents: [F, { ...G, isCurrent: false }, LA, LB] }).find(item => item.id === 'F-2')!)).toBe('11/02/2026-11/06/2026');
   });
 
   it('a lookahead deleted and imported again keeps the note\'s entry: the newest saved lookahead holding the task speaks', () => {

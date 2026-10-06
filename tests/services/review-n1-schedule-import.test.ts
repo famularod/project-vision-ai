@@ -711,6 +711,14 @@ describe('Review N1 (caused by 74940c6, the two-device rule of Q25): the master\
     const C = doc('MASTER C', 15);
     const unheld = [{ ...items[0], alsoImportedInBatchIds: [LA.importBatchId!, P.importBatchId!] }, items[1]];
     expect(roofDates(unheld, [{ ...MF, isCurrent: false }, P, G, C, LA, doc('LOOKAHEAD B', 16)])).toBe('11/08/2026-11/12/2026');
+    // (Review N2 P-b, 5 Oct: that is master C's file saved with none of its tasks. Once C's own tasks are here, more of
+    // them than the tasks C leaves out, and none is Roof, C has dropped Roof, and the replaced lookahead no longer
+    // holds it in the list. With one task of C's here and one left out, the rest may not have arrived: Roof is held.)
+    const documentsWithC = [{ ...MF, isCurrent: false }, P, G, C, LA, doc('LOOKAHEAD B', 16)];
+    const oneOfCs = [...unheld, row('C-1', C, '11/20/2026', '11/30/2026', { taskName: 'Framing' })];
+    expect(named({ items: oneOfCs, documents: documentsWithC }, 'Roof').map(dates)).toEqual(['11/08/2026-11/12/2026']);
+    const withCsTasks = [...oneOfCs, row('C-3', C, '12/01/2026', '12/05/2026', { taskName: 'Drywall' })];
+    expect(named({ items: withCsTasks, documents: documentsWithC }, 'Roof')).toEqual([]);
   });
 
   it('seed 982131: ...but not when the task\'s note missed a later lookahead that holds it: the newest master\'s word', () => {

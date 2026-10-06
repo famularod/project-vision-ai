@@ -226,6 +226,88 @@ export function selectAuthoritativeScheduleItems({
       (Boolean(sourceDocumentId) && normalize(document.id) === sourceDocumentId) ||
       (Boolean(normalize(document.importBatchId || '')) && batchIds.includes(normalize(document.importBatchId || ''))));
   };
+  // Review N2 P-b (5 Oct 2026, Medium; older, left in place by ada8ef6): a master's task a lookahead restated also
+  // belongs to that lookahead, and every lookahead, replaced or not, held it in the list. Master M0 listed Roof,
+  // lookahead L1 moved it, L2 (Framing only) replaced L1, and master M1 dropped Roof: Roof stayed listed for good, on
+  // M0's dates, through every later lookahead and master; with no lookahead ever listing it, it left with M1. Only the
+  // tasks a lookahead added were released when it was replaced (owner answer Q25). The schedules that hold a task in
+  // the list: for a master's task the current master of its project does not list (on any row of that name in its
+  // area: dropped, or renamed), a lookahead replaced for that project is not one of them, so the task is shown,
+  // hidden, paired by the next import and reported exactly as if that lookahead had never listed it. A lookahead in
+  // effect for the task's project still holds it, as before. As before too: a task a lookahead added (judged by its
+  // lookahead), a project with no current master, and a task the current master lists on another row, whose row a
+  // replaced lookahead holds from a device that had not heard of that master (Q25 with two devices, 74940c6).
+  // And only once this device holds the current master's own tasks: a master whose file has arrived before its tasks
+  // (approved on another device) has not been heard to drop anything, and a master approved here in that gap must
+  // still find the task to carry David's percent, note and owner (the reviewer's generator, seed 40225). Its tasks
+  // can arrive one at a time (Keep Cloud in Review Conflicts brings the one row its card is about; seeds 40225 and
+  // 40206 on 425390e: Roof and Paint were saved new at 0% by the next master), and nothing says how many it has. So
+  // it is heard only when it lists, on this device, more of its project's tasks than it leaves out of those another
+  // saved schedule holds (by name in its area; a lookahead's own detail tasks are not counted): with most of them
+  // still missing, they have more likely not arrived than been dropped, and the task is held, as before.
+  // Same-named tasks in one area (owner answer Q30): the name cannot say which of them the master still lists, so there
+  // only a row of the master's that answers to the task, that the task answers to, or that answers to the same earlier
+  // row counts as listing it (the reviewer's Q30 generator, plans 260, 1917, 2119 and 2544: Pour slab 2 of 3, moved by
+  // a lookahead since replaced and then dropped by the master, stayed listed beside the two the master kept), unless
+  // one of the master's own rows of that name answers to nothing at all.
+  let currentMasterTasks: { listed: Map<string, ScheduleItem[]>; heard: Set<string>; twinned: Set<string> } | null = null;
+  const taskKeyOf = (row: ScheduleItem) => `${scheduleTaskAppProject(row)}\n${normalize(row.locationName || '')}\n${normalize(row.taskName || '')}`;
+  const droppedByCurrentMaster = (item: ScheduleItem, current: ReferenceDocument) => {
+    if (!currentMasterTasks) {
+      const listed = new Map<string, ScheduleItem[]>();
+      const perImport = new Set<string>();
+      const twinned = new Set<string>();
+      /** Per project: the names its current master lists here. */
+      const listedNames = new Map<string, Set<string>>();
+      /** The master tasks another saved schedule holds and the current master does not, per project. */
+      const earlier = new Map<string, ScheduleItem[]>();
+      const into = <T,>(map: Map<string, T>, project: string, make: () => T) => map.get(project) ?? map.set(project, make()).get(project)!;
+      scheduleItems.forEach(row => {
+        const name = taskKeyOf(row);
+        const ownImport = normalize(row.importBatchId || '');
+        if (ownImport) {
+          if (perImport.has(`${name}\n${ownImport}`)) twinned.add(name);
+          perImport.add(`${name}\n${ownImport}`);
+        }
+        const project = scheduleTaskAppProject(row);
+        const master = currentByProject.get(project);
+        if (!master) return;
+        const containing = containingDocuments(row);
+        if (!containing.includes(master)) {
+          if (row.importedAsLookahead !== true && containing.length > 0) into(earlier, project, () => [] as ScheduleItem[]).push(row);
+          return;
+        }
+        listed.set(name, [...(listed.get(name) || []), row]);
+        into(listedNames, project, () => new Set<string>()).add(name);
+      });
+      const heard = new Set<string>();
+      listedNames.forEach((names, project) => {
+        const leftOut = new Set((earlier.get(project) || []).map(taskKeyOf).filter(name => !names.has(name)));
+        const master = currentByProject.get(project);
+        if (master && names.size > leftOut.size) heard.add(`${master.id}\n${project}`);
+      });
+      currentMasterTasks = { listed, heard, twinned };
+    }
+    if (!currentMasterTasks.heard.has(`${current.id}\n${scheduleTaskAppProject(item)}`)) return false;
+    const rows = currentMasterTasks.listed.get(taskKeyOf(item)) || [];
+    if (rows.length === 0) return true;
+    if (!currentMasterTasks.twinned.has(taskKeyOf(item))) return false;
+    const own = new Set([item.id.trim(), ...scheduleTaskEarlierIds(item)]);
+    if (rows.some(row => own.has(row.id.trim()) || scheduleTaskEarlierIds(row).some(id => own.has(id)))) return false;
+    // A row of the master's own that answers to no task may be this one saved without its ids (a device that had a
+    // duplicate shown, Q25 with two devices): no telling, so the task is held, as before.
+    const masterImport = normalize(current.importBatchId || '');
+    return !rows.some(row => normalize(row.importBatchId || '') === masterImport && scheduleTaskEarlierIds(row).length === 0);
+  };
+  const holdingDocuments = (item: ScheduleItem) => {
+    const containing = containingDocuments(item);
+    if (item.importedAsLookahead === true) return containing;
+    const project = scheduleTaskAppProject(item);
+    const current = currentByProject.get(project);
+    if (!current || containing.includes(current)) return containing;
+    const released = containing.filter(document => scheduleDocumentAddsToMaster(document) && replacedFor(document, project));
+    return released.length === 0 || !droppedByCurrentMaster(item, current) ? containing : containing.filter(document => !released.includes(document));
+  };
   // Shown when the current schedule for the task's own project contains it;
   // with none current for that project, when any current schedule does. A
   // lookahead's tasks always show: it adds to the master (Q22). The task's
@@ -237,11 +319,11 @@ export function selectAuthoritativeScheduleItems({
     return containing.some(document => activeDocumentIds.has(normalize(document.id)) && inEffectFor(document, item));
   };
   const itemHasActiveProvenance = (item: ScheduleItem) => {
-    const containing = containingDocuments(item);
+    const containing = holdingDocuments(item);
     return containing.length > 0 && containedByCurrentSchedule(item, containing);
   };
   const itemHasOrphanedProvenance = (item: ScheduleItem) => (
-    containingDocuments(item).length === 0 &&
+    holdingDocuments(item).length === 0 &&
     Boolean(normalize(item.sourceDocumentId || '') || scheduleItemImportBatchIds(item).length > 0)
   );
   const activeOccurrenceKeys = new Set(
@@ -276,7 +358,7 @@ export function selectAuthoritativeScheduleItems({
       activeOccurrenceKeys.has(occurrenceKey)
     ) return scheduleProgressHoldsManagerRank(item);
 
-    const containing = containingDocuments(item);
+    const containing = holdingDocuments(item);
     if (containing.length > 0) return containedByCurrentSchedule(item, containing);
     // A task a lookahead added whose file was deleted alone ("Delete PDF Only") is that lookahead's still: a newer
     // lookahead for its project replaces it (owner answer Q25).
