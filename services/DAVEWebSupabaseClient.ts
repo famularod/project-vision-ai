@@ -309,6 +309,33 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     authorizedDocumentPaths = new Set<string>();
   }
 
+  /**
+   * Review N2 (5 Oct 2026): when the server ended this tab's sign-in (the
+   * phone's "Sign Out of All Devices": this tab goes to the sign-in page
+   * once its hourly token has run out and its refresh is refused), the
+   * account's report periods stayed in this browser. Only the two sign-outs
+   * made here removed them (review N1). They now leave with a sign-in the
+   * server ended too, as with "Sign Out of This Computer".
+   *
+   * A sign-in the server ended is told from a server that cannot be reached
+   * by what auth-js does with this tab's stored sign-in: it takes it out of
+   * this tab's storage (and sends SIGNED_OUT) only on an answer that refuses
+   * it, or on a sign-out made here. With no answer, a 5xx, or a refresh
+   * still on its way, the stored sign-in stays, and nothing is removed.
+   * Another tab's SIGNED_OUT reaches this tab with this tab's own sign-in
+   * still stored, or with none it held just before, and removes nothing
+   * either (owner answer Q26). The account is the one this tab's own
+   * storage named when it was last looked at (as the tab started, as its
+   * page began to listen, at the event before), never one an event carried.
+   */
+  let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
+  /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
+  function lookAtTabSignIn(mayHaveEnded: boolean) {
+    const held = tabSignInSeenFor;
+    tabSignInSeenFor = browserTabSignInUserId();
+    if (mayHaveEnded && held && !tabSignInSeenFor) forgetDAVEWebReportPeriods(held);
+  }
+
   async function requireAuthorizedOwnerCached(): Promise<string> {
     if (
       authorizationCache &&
@@ -449,8 +476,11 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       callback: (event: AuthChangeEvent, session: Session | null) => void,
     ): () => void {
       if (!client) return () => undefined;
+      // A sign-in refused as the tab started, before its page listened, has ended too (review N2).
+      lookAtTabSignIn(true);
       const { data } = client.auth.onAuthStateChange((event, session) => {
         invalidateAuthorization();
+        lookAtTabSignIn(event === 'SIGNED_OUT');
         callback(event, session);
       });
       return () => data.subscription.unsubscribe();
