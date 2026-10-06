@@ -700,6 +700,7 @@ export function compareDAVEReportSnapshots({
   ]);
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
+  const addedTasks: DAVEReportSnapshotTask[] = [];
   const unchangedTaskIds = new Set<string>();
   const newActivityTaskIds = new Set<string>();
   const sameActivityTaskIds = new Set<string>();
@@ -717,6 +718,7 @@ export function compareDAVEReportSnapshots({
     const prior = previousById.get(task.taskId) ?? linked.pairs.get(task) ?? revisions.get(task);
     if (!prior) {
       changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
+      addedTasks.push(task);
       // Whole-app audit A6 pass 19 L3 (1 Oct 2026): a report went out while a master without Cleanup was
       // current, and Cleanup came back. Its note made after the report before that one ("Dumpster
       // ordered.") was older than the earlier report, so the time rule never said it. A task the earlier
@@ -768,6 +770,7 @@ export function compareDAVEReportSnapshots({
   // The tasks that left with a lookahead, as each counts in this report: as it stood, or completed.
   const leftCounted: DAVEReportSnapshotTask[] = [];
   const leftSeen = new Set<DAVEReportTaskLeftByLookahead>();
+  const removedTasks: DAVEReportSnapshotTask[] = [];
   // Review N2 (5 Oct 2026): a task a master has listed is a master's task from then on. A lookahead added Rebar
   // delivery; the next master listed it on other days, as a new row that answers to the lookahead's row (its
   // earlier ids); a newer lookahead replaced the first; a later master dropped it. The lookahead's old saved
@@ -791,6 +794,20 @@ export function compareDAVEReportSnapshots({
       continue;
     }
     changes.push(changeFor(task, 'removed', `${task.taskName} was removed from the current project plan.`));
+    removedTasks.push(task);
+  }
+  // R1 item 4 (8 Oct 2026, the owner's open items): a lookahead's own row and a master's row of one name are not
+  // paired (the decided rule: one is removed, the other added), so when he set the owner on the row now shown, no
+  // report ever said so: an added task gets no owner line, and the next report already counts from the new owner.
+  // Where exactly one task of that name was added and exactly one removed, one of them a lookahead's own row and
+  // the other a master's, the owner he set is said beside "added" and "removed". Nothing else is paired.
+  for (const task of addedTasks) {
+    if (!normalized(task.owner)) continue;
+    const removed = removedTasks.filter(earlier => sameRevisedTask(earlier, task));
+    if (removed.length !== 1 || addedTasks.filter(other => sameRevisedTask(removed[0], other)).length !== 1) continue;
+    const [earlier] = removed;
+    if (isLookaheadDetail(earlier) === isLookaheadDetail(task) || normalized(earlier.owner) === normalized(task.owner)) continue;
+    changes.push(changeFor(task, 'owner', `${task.taskName} owner changed from ${earlier.owner || 'unassigned'} to ${task.owner || 'unassigned'}.`));
   }
   // A detail task no report ever had (added, completed and gone with its lookahead between two reports): said by
   // the first report whose earlier report did not know that lookahead as replaced; never without that record.
