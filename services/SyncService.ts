@@ -5947,16 +5947,28 @@ export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConf
   return getSyncConflicts();
 }
 
-/** Takes a task's waiting edits off the queue; the edits taken. */
-function withdrawScheduleItemFromSyncQueue(itemId: string): Promise<SyncQueueItem[]> {
+/** Takes a task's waiting edits off the queue; the edits taken. One that `stays` is left waiting. */
+function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQueueItem) => boolean = () => false): Promise<SyncQueueItem[]> {
   const queueItemId = scheduleItemQueueItemId(itemId);
   return mutateOfflineQueue(queue => {
-    const withdrawn = queue.filter(item => item.id === queueItemId);
+    const withdrawn = queue.filter(item => item.id === queueItemId && !stays(item));
     return {
-      nextQueue: queue.filter(item => item.id !== queueItemId),
+      nextQueue: queue.filter(item => !withdrawn.includes(item)),
       result: withdrawn,
       persist: withdrawn.length > 0,
     };
+  });
+}
+
+/** A task's edits on the queue again, oldest first, under what waits for the task now: one record, as the queue keeps a task. */
+function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueItem[]): Promise<void> {
+  const queueItemId = scheduleItemQueueItemId(itemId);
+  return mutateOfflineQueue(queue => {
+    const existing = queue.find(item => item.id === queueItemId);
+    if (edits.length === 0 || existing?.operation === 'delete') return { nextQueue: queue, result: undefined, persist: false };
+    const together = [...edits, ...(existing ? [existing] : [])]
+      .reduce<SyncQueueItem | undefined>((merged, edit) => mergeScheduleItemQueueChangeScope(merged, edit), undefined);
+    return { nextQueue: [...queue.filter(item => item.id !== queueItemId), ...(together ? [together] : [])], result: undefined };
   });
 }
 
@@ -5989,30 +6001,33 @@ function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<stri
 }
 
 /**
- * Independent review pass 4 (2): this phone's edits of a task that wait beside its card of fields and change another
- * field go up by the ordinary upload before Keep Phone decides the card. Null when none waits. Otherwise the fields
- * that were sent; or it throws: the card closed by itself, or the card now asks about more (review again).
+ * Independent review pass 4 (2), and its follow-up for Keep Cloud: this phone's edits of a task that wait beside its
+ * card of fields and change another field go up by the ordinary upload before a choice decides the card. Null when
+ * none waits. Otherwise the card to decide and the fields that went through the upload; or it throws: the card closed
+ * by itself, or the card now asks about more (review again).
  *
- * The edits a Keep Cloud that could not finish left on the card (withdrawnEdits) wait on the queue again first, when
- * one of them changes another field: he has now chosen to keep his work.
+ * Keep Phone decides the card as it was shown: one that now holds a newer value of his is shown to him first. Keep
+ * Cloud gives up his side whatever it now is, so it goes on, on the card open now, unless that asks about more.
+ *
+ * The edits a Keep Cloud that could not finish left on the card (withdrawnEdits) wait on the queue again first for
+ * Keep Phone, when one of them changes another field: he has now chosen to keep his work. For Keep Cloud they stay
+ * on the card: an earlier Keep Cloud gave them up, and one may be in the cloud's row, for this one to undo.
  */
-async function weighTaskEditsWaitingBesideCard(conflict: SyncConflict, cardFields: ReadonlySet<string>): Promise<string[] | null> {
+async function weighTaskEditsWaitingBesideCard(
+  conflict: SyncConflict,
+  cardFields: ReadonlySet<string>,
+  resolution: 'keep_local' | 'keep_cloud',
+): Promise<{ cardId: string; fields: string[] } | null> {
   const queueItemId = scheduleItemQueueItemId(conflict.localId);
   const beyond = (edit: SyncQueueItem) => taskEditChangesBeyond(edit, cardFields);
   const waits = async () => (await getOfflineQueue()).find(item => item.id === queueItemId);
-  const held = ((conflict.localPayload as Partial<ScheduleItemRecordPayload>).withdrawnEdits ?? [])
+  const held = resolution === 'keep_cloud' ? [] : ((conflict.localPayload as Partial<ScheduleItemRecordPayload>).withdrawnEdits ?? [])
     .filter(edit => edit.entity === 'schedule_item' && edit.operation === 'update');
   const waiting = await waits();
   if (waiting?.operation === 'delete' || !(held.some(beyond) || (waiting && beyond(waiting)))) return null;
   if (held.some(beyond)) {
     // On the queue first, then off the card: at no moment are they in neither.
-    await mutateOfflineQueue(queue => {
-      const existing = queue.find(item => item.id === queueItemId);
-      if (existing?.operation === 'delete') return { nextQueue: queue, result: undefined, persist: false };
-      const together = [...held, ...(existing ? [existing] : [])]
-        .reduce<SyncQueueItem | undefined>((merged, edit) => mergeScheduleItemQueueChangeScope(merged, edit), undefined);
-      return { nextQueue: [...queue.filter(item => item.id !== queueItemId), ...(together ? [together] : [])], result: undefined };
-    });
+    await putTaskEditsBackOnSyncQueue(conflict.localId, held);
     await serializeSyncConflictMutation(async () => {
       const conflicts = await readSyncConflictsUnsafe();
       await writeSyncConflicts(conflicts.map(item => {
@@ -6023,18 +6038,20 @@ async function weighTaskEditsWaitingBesideCard(conflict: SyncConflict, cardField
       }));
     });
   }
-  const sent = (await waits())?.payload as Partial<ScheduleItemRecordPayload> | undefined;
-  const fields = Array.isArray(sent?.changedFields) ? sent.changedFields.map(String).filter(field => field !== 'updatedAt') : [];
+  const record = await waits();
+  const recordPayload = record?.payload as Partial<ScheduleItemRecordPayload> | undefined;
+  const fields = Array.isArray(recordPayload?.changedFields) ? recordPayload.changedFields.map(String).filter(field => field !== 'updatedAt') : [];
   const result = await uploadPendingChanges();
   if (!result.itemOutcomes?.[queueItemId] && await waits()) await uploadPendingChanges();
   const open = (await getSyncConflicts()).find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
   if (!open) throw new Error('sync_conflict_closed');
-  // The card now asks about more, or about a newer value of his: he is shown it before anything is decided.
-  if (open.id !== conflict.id || scheduleItemConflictFields(open.localPayload).join() !== scheduleItemConflictFields(conflict.localPayload).join()) {
+  const asked = (card: SyncConflict) => [...scheduleItemConflictFields(card.localPayload)].sort().join();
+  // The card now asks about more; or, for Keep Phone, about a newer value of his: he is shown it before anything is decided.
+  if (asked(open) !== asked(conflict) || (resolution === 'keep_local' && open.id !== conflict.id)) {
     throw new Error('sync_conflict_cloud_copy_changed');
   }
-  // An edit that could not go up now still waits: Keep Phone finds it there and decides nothing over it.
-  return fields;
+  // An edit that could not go up now still waits: the choice finds it there and decides nothing over it.
+  return { cardId: open.id, fields };
 }
 
 export async function resolveScheduleItemSyncConflict(
@@ -6050,8 +6067,8 @@ export async function resolveScheduleItemSyncConflict(
     /** Keep Phone's own count of the times its copy was refused in this choice (independent review pass 3); not for callers. */
     refusedBefore?: number;
     /**
-     * Keep Phone's own (independent review pass 4); not for callers: the fields of this phone's edits of the task that
-     * waited beside a card of fields and went up, by the ordinary upload, before this choice went on.
+     * The choice's own (independent review pass 4); not for callers: the fields of this phone's edits of the task that
+     * waited beside a card of fields and went through the ordinary upload before this choice went on.
      */
     weighedBesideCard?: readonly string[];
   } = {},
@@ -6096,7 +6113,29 @@ export async function resolveScheduleItemSyncConflict(
   const localPayload = conflict.localPayload as ScheduleItemRecordPayload;
   const localItem = localPayload.itemData;
 
+  // Independent review pass 4 (2; Low, caused by 79a5ae1): a choice on a card of fields decides those fields only.
+  // An edit of this phone's still waiting for the task that changes ANOTHER field (a note typed while the card asked
+  // about the owner) went up with Keep Phone's kept copy, unweighed: over the note another device had typed since, and
+  // no card ever asked about the note. Had the automatic upload run before his tap it would have been weighed, and the
+  // card would have asked about both. So it goes through that upload first, as any waiting edit does: it lands when
+  // only he changed that field, and Review Conflicts asks about it when another device did too. Then the choice goes
+  // on, on the card as it is.
+  // Follow-up 1: Keep Cloud too. It took every waiting edit of the task off the queue, so that note was discarded,
+  // on this phone as well, though the card had asked about the owner only (the long-recorded "Keep Cloud withdraws
+  // newer queued edits", for a task's card of fields). It gives up what the card asks about and nothing else.
+  const cardFields = askedFields.length > 0 && Array.isArray(localPayload.changedFields)
+    ? new Set(localPayload.changedFields.map(String)) : null;
+  const decidedAfterWhatWaitsBesideCard = async (): Promise<ScheduleItem | null> => {
+    if (!cardFields || weighedBesideCard !== undefined) return null;
+    const beside = await weighTaskEditsWaitingBesideCard(conflict, cardFields, resolution);
+    return beside
+      ? resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields })
+      : null;
+  };
+
   if (resolution === 'keep_cloud') {
+    const decided = await decidedAfterWhatWaitsBesideCard();
+    if (decided) return decided;
     // The cloud's row as it is now, read before this phone's waiting work is
     // withdrawn (whole-app audit A8 pass 12 L2, as for field updates, A4
     // pass 12 L1 and pass 16 L3). Keep Cloud wrote back the copy saved when
@@ -6111,9 +6150,16 @@ export async function resolveScheduleItemSyncConflict(
     }
     // Remove both the conflict-era edit and any newer queued local revision,
     // around any upload of this phone's already under way.
-    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId);
+    // On a card of fields (follow-up 1), never an edit that changes another field: it is not his to give up here. One
+    // that still waits (it could not be sent in the step above, or was saved a moment ago) stops the choice with
+    // nothing changed; chosen again, it is sent first.
+    const besideCard = (edit: SyncQueueItem) => cardFields !== null && taskEditChangesBeyond(edit, cardFields);
+    const waitsBesideCard = async () => cardFields !== null &&
+      (await getOfflineQueue()).some(item => item.id === scheduleItemQueueItemId(conflict.localId) && besideCard(item));
+    if (await waitsBesideCard()) throw new Error('sync_conflict_save_failed');
+    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard);
     await uploadPendingChanges();
-    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId));
+    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard));
     // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
     const phoneEdits = [...(localPayload.withdrawnEdits ?? []), ...waitingEdits, ...withdrawn];
     // An edit of this phone's can be in the cloud only when one landed during
@@ -6124,6 +6170,12 @@ export async function resolveScheduleItemSyncConflict(
     // status and progressSource, so the 60% went back as "Not Started".
     const closedDuringChoice =
       !(await getSyncConflicts()).some(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
+    // One of another field saved in that last moment, still waiting, with the card still open: nothing is decided
+    // over it. What was taken off the queue waits there again, with it.
+    if (!closedDuringChoice && await waitsBesideCard()) {
+      await putTaskEditsBackOnSyncQueue(conflict.localId, withdrawn);
+      throw new Error('sync_conflict_save_failed');
+    }
     const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) || closedDuringChoice;
     // Still open: only an edit waiting on the conflict can be in the row (A7
     // pass 17 L-2). Every edit was undone by value, a progress edit that
@@ -6155,7 +6207,10 @@ export async function resolveScheduleItemSyncConflict(
         // upload under way when he chose landed it, before Keep Cloud read the
         // cloud or after. It is undone, back to the copy the screen showed
         // (A7 pass 15 L-1: only a landing between the two reads was undone).
-        const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded);
+        // On a card of fields, of the fields it asks about only (follow-up 1): what an edit of his that landed put
+        // in another field is not his to give up here, and stays.
+        const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded)
+          .filter(field => !cardFields || cardFields.has(field));
         if (phoneFields.length === 0) {
           await clearResolvedConflict(conflict.id);
           return cloudNow;
@@ -6192,19 +6247,9 @@ export async function resolveScheduleItemSyncConflict(
     throw new Error('sync_conflict_local_copy_missing');
   }
 
-  // Independent review pass 4 (2; Low, caused by 79a5ae1): Keep Phone on a card of fields decides those fields only.
-  // An edit of this phone's still waiting for the task that changes ANOTHER field (a note typed while the card asked
-  // about the owner) went up with the kept copy, unweighed: over the note another device had typed since, and no
-  // card ever asked about the note. Had the automatic upload run before his tap it would have been weighed, and the
-  // card would have asked about both. So it goes through that upload first, as any waiting edit does: it lands when
-  // only he changed that field, and Review Conflicts asks about it when another device did too. Then the choice goes
-  // on, on the card as it is.
-  const cardFields = askedFields.length > 0 && Array.isArray(localPayload.changedFields)
-    ? new Set(localPayload.changedFields.map(String)) : null;
-  if (cardFields && weighedBesideCard === undefined) {
-    const wentUp = await weighTaskEditsWaitingBesideCard(conflict, cardFields);
-    if (wentUp) return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: wentUp });
-  }
+  // What waits beside a card of fields goes up first (above), for Keep Phone as for Keep Cloud.
+  const decided = await decidedAfterWhatWaitsBesideCard();
+  if (decided) return decided;
   // What the screen showed, with those fields as the cloud has them now: this phone's own, just sent.
   const shownWithOwn = (row: ScheduleItem): unknown => (weighedBesideCard?.length && isRecord(shown)
     ? { ...shown, ...Object.fromEntries(weighedBesideCard.map(field => [field, (row as unknown as Record<string, unknown>)[field]])) }
