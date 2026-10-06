@@ -909,6 +909,9 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
   // for a task that came back since the earlier report: that report had it on
   // a lookahead's dates (it kept its start then), or on that lookahead's
   // finish. Any other date change reads as before.
+  // R1 item 6 (8 Oct 2026, the owner's open items): the date in brackets is the one the EARLIER REPORT showed. It
+  // was the replaced lookahead's own date; when a second lookahead came and went between two reports, that was a
+  // date no report had ever shown ("the previous lookahead showed 10/14" where the last report said 10/12).
   const back = task.replacedLookaheadDates && !prior.replacedLookaheadDates ? task.replacedLookaheadDates : null;
   const backSince = Boolean(back) && (prior.startDate !== undefined || sameCalendarDate(prior.finishDate, back!.finishDate));
   if (backSince && prior.startDate !== undefined && task.startDate !== undefined &&
@@ -916,7 +919,7 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
     changes.push(changeFor(
       task,
       'start_date',
-      `${task.taskName} start is back to the master schedule's ${task.startDate} (the previous lookahead showed ${back!.startDate}).`,
+      `${task.taskName} start is back to the master schedule's ${task.startDate} (the previous lookahead showed ${clean(prior.startDate) || back!.startDate}).`,
     ));
   }
   if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
@@ -924,7 +927,7 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
       task,
       'finish_date',
       backSince && clean(task.finishDate)
-        ? `${task.taskName} finish is back to the master schedule's ${task.finishDate} (the previous lookahead showed ${back!.finishDate}).`
+        ? `${task.taskName} finish is back to the master schedule's ${task.finishDate} (the previous lookahead showed ${clean(prior.finishDate) || back!.finishDate}).`
         : `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
     ));
   }
