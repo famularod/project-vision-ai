@@ -162,3 +162,31 @@ describe('Review P4 P2-1: two rows that carry different Unique IDs are never the
     expect(pours(onC)).toEqual([`10/12/2026 ${NONE} id 104`, `10/26/2026 ${NONE} id 102`]);
   });
 });
+
+/*
+ * P2-2 (Low, already in Build 229): an unpaired row of a master took any saved row of its name, area and days, a
+ * hidden one too. The reviewer's QB: the task's own earlier row, which its newer row answers to.
+ */
+describe('Review P4 P2-2: a new task on the old days of a task that moved is not taken for that task\'s earlier row', () => {
+  const TWO = [P(101, '10/12/2026', '10/16/2026'), P(102, '10/26/2026', '10/30/2026'), FRAMING];
+  const FIRST_MOVES_EARLIER = [P(101, '10/05/2026', '10/09/2026'), P(102, '10/26/2026', '10/30/2026'), FRAMING];
+  const ANOTHER_ON_ITS_OLD_DAYS = [P(101, '10/05/2026', '10/09/2026'), P(104, '10/12/2026', '10/16/2026'), P(102, '10/26/2026', '10/30/2026'), FRAMING];
+
+  it.each([[false, ''], [true, ' id 101'], ] as const)('QB (Unique IDs in the files: %s): a Pour slab with his 40%% and note moves a week earlier; a later master adds another on its old days', (withIds, id) => {
+    const onB = approve(onA(withIds, TWO), B, rows(B, FIRST_MOVES_EARLIER, withIds));
+    expect(pours(onB)).toEqual([`10/05/2026 ${HIS}${id}`, `10/26/2026 ${NONE}${withIds ? ' id 102' : ''}`]);
+    const cRows = rows(C, ANOTHER_ON_ITS_OLD_DAYS, withIds);
+    expect(scheduleImportReviewPairingQuestions({ saved: onB.items, documents: onB.documents, importBatchId: C.importBatchId!, imported: cRows })).toEqual([]);
+    // (It was: "10/12/2026 40% [Forms stripped] [Mike] Pending/5" as well, with id 101 where the files carry ids: the
+    // task's own hidden old row, shown again beside the task.)
+    expect(pours(approve(onB, C, cRows))).toEqual([`10/05/2026 ${HIS}${id}`, `10/12/2026 ${NONE}${withIds ? ' id 104' : ''}`, `10/26/2026 ${NONE}${withIds ? ' id 102' : ''}`]);
+  });
+
+  it('a saved row that is no shown task\'s earlier row is still taken, as before: a file approved a second time adds nothing, and a master that only repeats the last one keeps every task on its row', () => {
+    const once = approve(onA(false, TWO), B, rows(B, FIRST_MOVES_EARLIER, false));
+    const again = approve(once, B, rows(B, FIRST_MOVES_EARLIER, false));
+    expect([again.items.length, pours(again)]).toEqual([once.items.length, pours(once)]);
+    const repeated = approve(once, C, rows(C, FIRST_MOVES_EARLIER, false));
+    expect([repeated.items.length, pours(repeated)]).toEqual([once.items.length, pours(once)]);
+  });
+});

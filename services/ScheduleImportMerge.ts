@@ -1434,6 +1434,8 @@ export function mergeApprovedScheduleImportItems({
   // What a task shown is missing that an earlier row of it still holds, from imports before review N2 P1: it goes
   // with the task to the row this master moves it to.
   const stranded = textStrandedOnEarlierRows(existing, isCurrent);
+  // The earlier rows of the tasks shown (review P4 P2-2).
+  const pastOfShownTasks = new Set(existing.filter(isCurrent).flatMap(scheduleTaskEarlierIds));
 
   imported.forEach(importedItem => {
     const match = completionMatch(importedItem, next);
@@ -1491,8 +1493,10 @@ export function mergeApprovedScheduleImportItems({
     const found = paired
       ? (unchangedTask(paired, importedItem) || repeated.dates || movedByHand ? paired : undefined)
       : answeredNew(importedItem) ? undefined
-        // (Never a saved row with another Unique ID: review P4 P2-1.)
-        : next.find(item => !claimed.has(item.id) && !differentUniqueIds(item, importedItem) && sameImportIdentity(item, importedItem));
+        // (Never a saved row with another Unique ID: review P4 P2-1. Nor the earlier row of a task that is shown on a
+        // newer row: review P4 P2-2. A Pour slab moved a week earlier; a later master added another Pour slab on exactly
+        // its old days; the new one was taken for the task's own hidden old row, and both showed his percent and note.)
+        : next.find(item => !claimed.has(item.id) && !pastOfShownTasks.has(item.id) && !differentUniqueIds(item, importedItem) && sameImportIdentity(item, importedItem));
     const duplicate = found && scheduleNoteTakesManagersProgress(found);
     // An import's task on new dates is a new row: it answers to the ids the task had before (A10 pass 5 M1), and keeps
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
