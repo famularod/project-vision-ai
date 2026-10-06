@@ -53,7 +53,7 @@ import type {
   PIEDecisionLedgerMigrationStatus,
 } from '../services/PIEDecisionLedgerStorage';
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
-import { buildDAVEProjectTruth } from '../services/DAVEProjectTruth';
+import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportBriefing,
   buildDAVEReportSourceFingerprint,
@@ -145,7 +145,6 @@ import {
   evaluateReportApprovalPolicy,
   type ReportApprovalPolicy,
 } from '../services/ReportApprovalPolicy';
-import { buildDailyReportAuthorityScope } from '../services/ReportAuthorityScope';
 import {
   reportApprovalTextKey,
   selectStableReportDraft,
@@ -338,33 +337,21 @@ export function ReportsScreen({
   });
   stableReportDraftRef.current = stableReportDraft.cache;
   const baseReportDraft = stableReportDraft.draft;
-  const reportTruths = useMemo(() => selectedProjectNames.map(selectedName => {
-    const reportProjectId = `report:${reportProjectKey(selectedName) || 'project'}`;
-    const scopedTruthInput = buildDailyReportAuthorityScope({
-      selectedProjectName: selectedName,
-      selectedProjectNames: [selectedName],
-      projectRecords: selectedProjectNames.map(name => ({ name })),
-      updates,
-      scheduleItems,
-      projectAreas,
-      referenceDocuments,
-    });
-    return buildDAVEProjectTruth({
-      projectId: reportProjectId,
-      projectName: selectedName,
-      updates: scopedTruthInput.updates.map(update => ({ ...update, projectName: selectedName })),
-      scheduleItems: scopedTruthInput.scheduleItems,
-      // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
-      ...(knownScheduleItems
-        ? { knownScheduleItems, knownScheduleDocuments: knownScheduleDocuments ?? referenceDocuments, reportLookaheadReplacement: true }
-        : {}),
-      projectAreas: scopedTruthInput.projectAreas,
-      referenceDocuments: scopedTruthInput.referenceDocuments.map(document => ({
-        ...document,
-        projectId: reportProjectId,
-        projectName: selectedName,
-      })),
-    });
+  // One recipe with the web's Reports page (open item, 6 Oct 2026): the saved
+  // tasks decide whose update it is here too, as in the app's own scope.
+  const reportTruths = useMemo(() => buildDAVEReportProjectTruths({
+    projects: selectedProjectNames.map(name => ({
+      name,
+      projectId: `report:${reportProjectKey(name) || 'project'}`,
+    })),
+    projectRecords: selectedProjectNames.map(name => ({ name })) as Parameters<typeof buildDAVEReportProjectTruths>[0]['projectRecords'],
+    updates,
+    scheduleItems,
+    // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
+    knownScheduleItems,
+    knownScheduleDocuments,
+    projectAreas,
+    referenceDocuments,
   }), [
     knownScheduleDocuments,
     knownScheduleItems,

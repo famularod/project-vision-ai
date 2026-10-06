@@ -35,7 +35,7 @@ import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type 
 import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './ScheduleLookahead';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
-import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
+import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
@@ -678,34 +678,16 @@ function buildDAVEWebProjectTruths(
     id: project.id,
     name: project.name,
   }));
-  const updates = snapshot.projectUpdates.map(update => update.updateData);
-  return projects.map(project => {
-    const projectId = project.id || normalized(project.name);
-    const scope = buildDailyReportAuthorityScope({
-      selectedProjectName: project.name,
-      selectedProjectNames: [project.name],
-      projectRecords,
-      updates,
-      scheduleItems: snapshot.scheduleItems,
-      referenceDocuments: snapshot.referenceDocuments,
-    });
-    return buildDAVEProjectTruth({
-      projectId,
-      projectName: project.name,
-      updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
-      scheduleItems: scope.scheduleItems,
-      knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
-      // What a newer lookahead replaced, for "since the last report", as the phone reads it (owner answer 3 Oct 2026).
-      knownScheduleDocuments: snapshot.referenceDocuments,
-      reportLookaheadReplacement: true,
-      projectAreas: scope.projectAreas,
-      referenceDocuments: scope.referenceDocuments.map(document => ({
-        ...document,
-        projectId,
-        projectName: project.name,
-      })),
-      now: snapshot.refreshedAt,
-    });
+  // One recipe with the phone's Reports screen (open item, 6 Oct 2026).
+  return buildDAVEReportProjectTruths({
+    projects: projects.map(project => ({ name: project.name, projectId: project.id || normalized(project.name) })),
+    projectRecords,
+    updates: snapshot.projectUpdates.map(update => update.updateData),
+    scheduleItems: snapshot.scheduleItems,
+    knownScheduleItems: snapshot.knownScheduleItems,
+    knownScheduleDocuments: snapshot.referenceDocuments,
+    referenceDocuments: snapshot.referenceDocuments,
+    now: snapshot.refreshedAt,
   });
 }
 
