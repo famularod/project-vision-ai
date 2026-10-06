@@ -1,5 +1,5 @@
 import { forgetKeptVoiceRecordings } from '../services/KeptVoiceRecording';
-import { signOutWasAskedHere } from '../services/SignOutIntent';
+import { signOutAskedHere } from '../services/SignOutIntent';
 import { forgetFieldNoteDraft, setAsideFieldNoteDraft } from './use-field-note-draft';
 import { forgetKeptWalkMemoryDrafts, setAsideKeptWalkMemoryDrafts } from './use-kept-walk-memory-draft';
 
@@ -22,6 +22,13 @@ import { forgetKeptWalkMemoryDrafts, setAsideKeptWalkMemoryDrafts } from './use-
  * warned that account about its own work only. Another account signing in
  * removes nothing either: what was set aside stays kept for its account,
  * and is still never shown or offered to anyone else.
+ *
+ * Open item W1-6 (6 Oct 2026): Settings' Sign Out with no signal right after
+ * the app opened left a kept recording on the phone though its warning had
+ * said it would be discarded. The app had not yet heard which account was
+ * signed in, so only what was on screen went. The warning is about the
+ * account Settings shows, and that account now comes with the request: its
+ * work goes, as the warning said.
  */
 let setAside: Readonly<{ userId: string | null }> | null = null;
 
@@ -30,7 +37,8 @@ export function settleUnsavedDraftsOnAccountChange(
   previousUserId: string | null | undefined,
   userId: string | null | undefined,
 ): void {
-  if (event === 'SIGNED_OUT' && !signOutWasAskedHere()) {
+  const asked = event === 'SIGNED_OUT' ? signOutAskedHere() : null;
+  if (event === 'SIGNED_OUT' && !asked) {
     // Whose they are is not needed to keep them: each is kept under its account.
     setAside = { userId: previousUserId ?? null };
     setAsideFieldNoteDraft();
@@ -43,11 +51,13 @@ export function settleUnsavedDraftsOnAccountChange(
   if (back && userId && (!back.userId || back.userId === userId)) return;
   if (event === 'SIGNED_OUT') {
     // Settings' Sign Out, after its warning: the work of the account signing out goes, on the phone too.
-    // Until the phone has heard which account that is (it opened with no signal), only what is on screen
-    // is known to be its: that goes, and the rest stays kept for it.
-    forgetFieldNoteDraft(previousUserId || undefined);
-    forgetKeptWalkMemoryDrafts(previousUserId);
-    if (previousUserId) forgetKeptVoiceRecordings(previousUserId);
+    // When the phone has not heard which account that is (it opened with no signal), it is the account
+    // the warning was about (open item W1-6). With neither known, only what is on screen is known to be
+    // its: that goes, and the rest stays kept.
+    const account = previousUserId || asked?.forAccount || undefined;
+    forgetFieldNoteDraft(account);
+    forgetKeptWalkMemoryDrafts(account);
+    if (account) forgetKeptVoiceRecordings(account);
     return;
   }
   // Another account signed in: nobody's stays on screen, and each account's stays kept on the phone for it.

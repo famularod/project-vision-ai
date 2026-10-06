@@ -21,7 +21,7 @@ import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '..
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
-import { clearSignOutAskedHere, noteSignOutAskedHere } from '../services/SignOutIntent';
+import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
@@ -1259,9 +1259,12 @@ export function AdminScreen({
     try {
       // Asked for here, after the warning: what it discards goes (everyday item 7). A sign-out
       // this device did not ask for sets the unsaved work aside for the account instead.
-      noteSignOutAskedHere();
+      // Open item W1-6: for the account the warning above was about, and for as long as the
+      // sign-out takes (it counted as asked for two minutes from the tap only).
+      noteSignOutAskedHere(fieldNoteOwnerKey);
       const result = await signOut(scope);
-      if (!result.ok) clearSignOutAskedHere();
+      if (result.ok) noteAskedSignOutAnswered();
+      else clearSignOutAskedHere();
       if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {
         // No silent sign-out of this device alone (owner answer Q21): he is
         // told why, and this device is his to choose.
