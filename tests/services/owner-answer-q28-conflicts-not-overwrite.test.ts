@@ -1893,6 +1893,84 @@ describe('Review N1 finding 3: a lookahead approved offline keeps its dates when
 
 /* ------------------------------------------------------------------------------------------------------------- */
 /**
+ * Independent review pass 2, schedule F1 (Medium, caused by d0bdf4f, the fix above; right at Build 229 and at
+ * ee705c9). A lookahead approved on a device with no signal lost its dates and percent on every device, with no card,
+ * when a master approved on another device meanwhile listed the task unchanged. Since d0bdf4f a whole copy that stands
+ * for the rest of its task is stamped just after the later of the two copies; with no stamp on either (a task never
+ * edited by hand, as most imported tasks are) that was the time of the upload. So the master, which only adds itself
+ * to an unchanged task's row, stamped the row "just now", and the lookahead's copy, stamped at its approval, then lost
+ * the merge to it. The reviewer's sequences F1a, F1b, F1g, F1h, F1i and F1j (notes/p2-sched), on this rig's Framing.
+ */
+describe('Independent review pass 2 (schedule F1): a schedule approved with no signal keeps what it gave a task when a master approved elsewhere lists the task unchanged', () => {
+  const L_ROW_30 = 'Framing,Alpha,Lot,10/18/2026,10/28/2026,30';
+  /** A master approved with no signal: Framing on its dates, stated 40%. */
+  const E = scheduleDoc('MASTER E', '2026-09-10T12:00:00.000Z');
+  type Lost = { mirror?: boolean; file?: ReferenceDocument; rows?: string[]; lookahead?: boolean; master?: string[]; back?: 'upload' | 'syncNow' };
+  /**
+   * One device loses signal and approves `file`; the other, online, then approves master G listing Framing as it
+   * was; the first gets its signal back (the automatic upload, or Sync Now); everything syncs.
+   */
+  async function approvedWithNoSignal({ mirror = false, file = L, rows = [L_ROW_30], lookahead = true, master = [F_ROW, SURVEY], back = 'upload' }: Lost = {}) {
+    const { phone, ipad } = await start();
+    const [away, home] = mirror ? [ipad, phone] : [phone, ipad];
+    setOnline(away, false);
+    at(file.importedAt!);
+    await approve(away, file, rows, lookahead);
+    at(G.importedAt!);
+    await approve(home, G, master);
+    shareDocuments(home);
+    at('2026-09-11T08:00:00.000Z');
+    setOnline(away, true);
+    shareDocuments(away);
+    if (back === 'syncNow') await fullSync(away, false);
+    await backgroundUpload(away);
+    await fullSync(home);
+    await fullSync(away);
+    await refresh(phone);
+    await refresh(ipad);
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+    return [onDevice(phone), onDevice(ipad), onWeb()];
+  }
+
+  it('the lookahead\'s dates and its 30% are shown on every device (the phone back by its automatic upload)', async () => {
+    expect(await approvedWithNoSignal()).toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 30, '', '']]));
+  });
+
+  it('the same when the phone comes back by Sync Now', async () => {
+    expect(await approvedWithNoSignal({ back: 'syncNow' })).toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 30, '', '']]));
+  });
+
+  it('the mirror: the iPad approves the lookahead with no signal, the phone the master', async () => {
+    expect(await approvedWithNoSignal({ mirror: true })).toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 30, '', '']]));
+  });
+
+  it('a lookahead that gives dates only keeps its dates', async () => {
+    expect(await approvedWithNoSignal({ rows: [L_ROW] })).toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 0, '', '']]));
+  });
+
+  it('a master approved with no signal that states 40% keeps its percent', async () => {
+    expect(await approvedWithNoSignal({ file: E, rows: [`${F_ROW}40`, SURVEY], lookahead: false }))
+      .toEqual(Array(3).fill([['10/15/2026', '10/25/2026', 40, '', '']]));
+  });
+
+  it('an ordinary weekly master that moves other tasks and lists this one unchanged', async () => {
+    expect(await approvedWithNoSignal({ master: [F_ROW, 'Survey,Alpha,Lot,10/13/2026,10/15/2026,'] }))
+      .toEqual(Array(3).fill([['10/18/2026', '10/28/2026', 30, '', '']]));
+  });
+
+  it('a master that only lists a task unchanged leaves its row without a stamp, as before d0bdf4f', async () => {
+    const { phone, ipad } = await start();
+    const id = theRow(ipad).id;
+    expect(cloudRow(id)?.updatedAt).toBeUndefined();
+    at(G.importedAt!);
+    await approve(ipad, G, [F_ROW, SURVEY]);
+    expect(cloudRow(id)?.updatedAt).toBeUndefined();
+    void phone;
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
  * Review pass 1, finding 6 (Low, caused by 79a5ae1; seed 920346). The phone, offline, holds David's 20% of the 8th.
  * He enters 10% on the iPad on the 9th. On the phone Talk then sets 40% and he taps Undo, which gives the 20% back,
  * confirmed at that moment. The upload sent nothing of it (his later 10% stands), but the phone still held the 20%

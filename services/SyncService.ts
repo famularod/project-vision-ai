@@ -6651,7 +6651,12 @@ async function uploadQueueItem(
         // stamp alone, then outranked it again in the next merge (owner answer Q28). Just after the later of the two
         // copies, not with the time of the upload (review N1 finding 3): the older of two lookaheads approved offline,
         // uploaded first, then outranked the newer one.
-        ? wholeWeighed && (restUnchanged || JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered))
+        // Independent review pass 2 (schedule F1, Medium, caused by d0bdf4f): a copy that stands whole and keeps nothing
+        // of the cloud's is stamped only to outrank a stamp there is. With no stamp on either copy (a task never edited
+        // by hand) the stamp was the time of the upload: a master that only listed the task unchanged stamped its row
+        // "just now", and a lookahead approved earlier with no signal then lost its dates and percent to that row.
+        ? wholeWeighed && (JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered) ||
+          (restUnchanged && Boolean(payload.itemData.updatedAt || remote!.updatedAt)))
           ? { ...wholeWeighed.itemData, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) }
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
