@@ -243,7 +243,9 @@ export function useECOSProjectQuestionExperience({
       }}
       onStop={() => askWait.cancel()}
       onRetry={result?.canRetry ? () => { void ask(result.question); } : undefined}
-      onClose={dismissResult}
+      // While ECOS is still working the X keeps the question, as Stop does;
+      // it closes once the wait is over (Build 231 E1 item 1).
+      onClose={result?.loading ? () => askWait.cancel() : dismissResult}
     />
   </>;
 

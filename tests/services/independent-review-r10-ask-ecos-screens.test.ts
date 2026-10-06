@@ -179,13 +179,50 @@ describe('Ask ECOS on the phone and iPad', () => {
     expect(answerSheet(result)).toMatchObject({ ...shown, loading: false, answer: null, question: QUESTION });
   });
 
-  it('stops the request when the sheet is closed, and does not reopen it for a late answer', async () => {
+  // Build 231 E1 item 1: the X used to close the sheet and discard the question.
+  it('X while ECOS is still working stops the request and keeps the question, as Stop does', async () => {
+    const { result } = open();
+    await askIn(result);
+    await advance(12_000);
+    await act(async () => { answerSheet(result).onClose(); });
+    expect(mockCloud.requests[0].signal.aborted).toBe(true);
+    expect(answerSheet(result)).toMatchObject({
+      visible: true,
+      loading: false,
+      question: QUESTION,
+      answer: null,
+      error: ECOS_ASK_STOPPED_MESSAGE,
+    });
+    expect(typeof answerSheet(result).onRetry).toBe('function');
+
+    // A late answer is not shown, and Try Again repeats the same request.
+    await act(async () => { mockCloud.requests[0].answer(); });
+    await advance(0);
+    expect(answerSheet(result)).toMatchObject({ visible: true, loading: false, answer: null, error: ECOS_ASK_STOPPED_MESSAGE });
+    await act(async () => { answerSheet(result).onRetry(); });
+    await advance(0);
+    expect(mockCloud.requests).toHaveLength(2);
+    expect(mockCloud.requests[1].body).toMatchObject({
+      question: QUESTION,
+      clientRequestId: mockCloud.requests[0].body.clientRequestId,
+    });
+  });
+
+  it('X once the question is stopped, answered or failed closes the sheet, and no late answer reopens it', async () => {
     const { result } = open();
     await askIn(result);
     await act(async () => { answerSheet(result).onClose(); });
-    expect(mockCloud.requests[0].signal.aborted).toBe(true);
+    await act(async () => { answerSheet(result).onClose(); });
+    expect(answerSheet(result)).toMatchObject({ visible: false, answer: null });
     await act(async () => { mockCloud.requests[0].answer(); });
     await advance(0);
+    expect(answerSheet(result)).toMatchObject({ visible: false, answer: null });
+
+    await askIn(result, 'Which sheet shows the canopy?');
+    await act(async () => { mockCloud.requests[1].answer(); });
+    await advance(0);
+    expect(answerSheet(result)).toMatchObject({ visible: true, loading: false, answer: expect.any(Object) });
+    await act(async () => { answerSheet(result).onClose(); });
     expect(answerSheet(result)).toMatchObject({ visible: false, answer: null });
   });
 
