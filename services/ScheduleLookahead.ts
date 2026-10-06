@@ -1050,7 +1050,20 @@ export function scheduleLookaheadDeleteNote(
     }).map(item => item.id))
     : null;
   // Which master is current after the delete, as the delete reads it (A5 pass 20 P1).
-  const back = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after)
+  const given = tasksAfterLookaheadDeleted(kept.filter(item => !shown || shown.has(item.id)), document, '', after);
+  // Review N2 (Low, wording; 5 Oct 2026): for a lookahead a newer one replaced (owner answer Q25) the question said
+  // "puts back the earlier dates and progress", though the task already shows the master's dates and no date David
+  // sees moves: only its saved dates go back. Dates are said only for a task whose dates shown change with the delete.
+  const datesSeenToMove = (() => {
+    if (!documents || !after) return () => true;
+    const changed = new Map(given.map(entry => [entry.item.id, entry.item]));
+    const seenOf = (tasks: ScheduleItem[], schedules: readonly ReferenceDocument[]) =>
+      new Map(selectAuthoritativeScheduleItems({ scheduleItems: tasks, scheduleDocuments: [...schedules] }).map(item => [item.id, item] as const));
+    const before = seenOf(kept, documents);
+    const now = seenOf(kept.map(item => changed.get(item.id) || item), after);
+    return (id: string) => { const was = before.get(id), is = now.get(id); return !was || !is || !sameDates(was, is); };
+  })();
+  const back = given.map(entry => ({ ...entry, datesBack: entry.datesBack && datesSeenToMove(entry.item.id) }))
     .filter(entry => entry.datesBack || entry.percentBack);
   const again = after && documents && shown ? lookaheadInEffectAgainNote(document, documents, after, kept, shown) : '';
   if (back.length === 0) return again;
