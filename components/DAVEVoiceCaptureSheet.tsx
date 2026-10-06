@@ -9,9 +9,10 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   Modal,
   StyleSheet,
   Text,
@@ -64,6 +65,15 @@ export type DAVEVoiceKeptCapture = Readonly<{
   recordedAt: string;
   walkArea: DAVEProjectWalkContext['recommendedArea'];
 }>;
+
+/**
+ * Review N2 follow-up (5 Oct 2026): one run of the recorder, from the tap on
+ * Start Recording until its recording is in the sheet. `letGo` once the sheet
+ * has let go of it: 'cancelled' by him (X, the system's back, Type Instead,
+ * the task button), or 'closed' (its screen hid the sheet, or took it away).
+ * A run that was let go never starts the microphone.
+ */
+type RecorderRun = { letGo: 'cancelled' | 'closed' | null };
 
 const MAX_RECORDING_SECONDS = 180;
 // The last polled duration before the 3-minute limit can trail it by a poll or two.
@@ -158,6 +168,8 @@ export function DAVEVoiceCaptureSheet({
   const recordingActiveRef = useRef(false);
   // Review N2: from the tap on Start Recording until the recorder records (or cannot start).
   const recordingStartingRef = useRef(false);
+  // Review N2 follow-up: the recorder's run under way.
+  const recorderRunRef = useRef<RecorderRun | null>(null);
   const recordingDurationRef = useRef(0);
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
@@ -233,6 +245,18 @@ export function DAVEVoiceCaptureSheet({
     setShowCompletedTasks(false);
   }, [visible]);
 
+  // Review N2 follow-up: the microphone is never left on behind a closed
+  // sheet. Its screen hiding the sheet, or taking it away (an account or
+  // screen change), lets go of the recorder as his own Cancel does. In the
+  // same step as the sheet goes (a layout effect), so a start that answers
+  // in that moment already finds itself let go.
+  useLayoutEffect(() => {
+    if (!visible) return undefined;
+    return () => { void standRecorderDownBehindClosedSheet(); };
+    // Only the sheet closing or going does this; it reads refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
   const selectedTask = candidateTasks.find(task => task.id === selectedTaskId) || null;
   const { completedCount, openCount, visibleTasks } = buildDAVEVoiceTaskPickerState({
     tasks: candidateTasks,
@@ -303,10 +327,67 @@ export function DAVEVoiceCaptureSheet({
       : RECORDING_LIMIT_NOTICE);
   }
 
+  /** The sheet lets go of the recorder's run under way; the first reason stands. */
+  function letGoOfRecorderRun(reason: NonNullable<RecorderRun['letGo']>) {
+    const run = recorderRunRef.current;
+    if (run && !run.letGo) run.letGo = reason;
+  }
+
+  /** The file the recorder is writing, or null (also when the recorder has gone with the sheet). */
+  function recorderFile(): string | null {
+    try {
+      return recorder.uri || recorder.getStatus().url || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the recorder itself says it is recording now: asked directly, not as it last reported to the sheet. */
+  function recorderIsRecording(): boolean {
+    try {
+      return Boolean(recorder.getStatus().isRecording);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The recorder is stopped and the microphone released; asking twice, or when it never started, is harmless. */
+  async function standRecorderDown() {
+    try {
+      await recorder.stop();
+    } catch {
+      // Not recording, or gone with the sheet.
+    }
+    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+  }
+
+  /**
+   * The sheet closed without his Cancel (review N2 follow-up). A start under
+   * way ends when it next looks (startRecording). A recording still going is
+   * stopped here, at once, and not kept: he had not finished it. It went on
+   * to the 3-minute limit behind the closed sheet, and was then kept on the
+   * device.
+   */
+  async function standRecorderDownBehindClosedSheet() {
+    letGoOfRecorderRun('closed');
+    // A stop under way finishes by itself (stopRecording, or a recording that a lock or the limit ended).
+    if (recordingFinishingRef.current) return;
+    // Going by the sheet's own count, or by the recorder's: a stop that failed leaves it running uncounted.
+    if (!recordingActiveRef.current && !recorderIsRecording()) return;
+    // Claimed, so a lock or the limit cannot also finish and offer it.
+    recordingActiveRef.current = false;
+    recordingFinishingRef.current = true;
+    await standRecorderDown();
+    await removeRecording(recorderFile());
+    recordingFinishingRef.current = false;
+  }
+
   async function startRecording() {
     // A second tap while the recorder is still starting is not a second start (review N2).
     if (isTranscribing || recorderState.isRecording || recordingFinishingRef.current || recordingStartingRef.current) return;
     recordingStartingRef.current = true;
+    const run: RecorderRun = { letGo: null };
+    recorderRunRef.current = run;
     recordingGenerationRef.current += 1;
     setError(null);
     setNotice(null);
@@ -317,19 +398,45 @@ export function DAVEVoiceCaptureSheet({
     setRecordingDuration(0);
     recordingDurationRef.current = 0;
 
+    // Review N2 follow-up: X, the system's back or Type Instead in the moment
+    // before the recorder had started closed the sheet, and the recorder then
+    // started anyway: the microphone went on recording behind the closed
+    // sheet. Each step now looks first. A start the sheet has let go of, or
+    // that would begin with Vitruvius no longer in front, never reaches
+    // record(); what it had already taken (the audio mode, the recorder's
+    // file) is put back before another start can begin.
+    const closed = () => run.letGo !== null;
+    const mustNotStart = () => closed() || AppState.currentState === 'background';
+    let microphoneRefused = false;
+    let recorderTaken = false;
+    let started = false;
     try {
-      const permission = await requestRecordingPermissionsAsync();
-      if (!permission.granted) {
-        setError('Microphone access is off. Enable it in Settings or type the memory instead.');
-        return;
+      const permission = closed() ? null : await requestRecordingPermissionsAsync();
+      microphoneRefused = permission !== null && !permission.granted;
+      if (permission?.granted && !mustNotStart()) {
+        recorderTaken = true;
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        if (!mustNotStart()) await recorder.prepareToRecordAsync();
+        if (!mustNotStart()) {
+          recordingActiveRef.current = true;
+          recorder.record({ forDuration: MAX_RECORDING_SECONDS });
+          started = true;
+        }
       }
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      await recorder.prepareToRecordAsync();
-      recordingActiveRef.current = true;
-      recorder.record({ forDuration: MAX_RECORDING_SECONDS });
     } catch {
       recordingActiveRef.current = false;
-      setError('Recording could not start. Try again or type the memory instead.');
+    }
+    try {
+      if (started) return;
+      if (recorderTaken && mustNotStart()) {
+        await standRecorderDown();
+        await removeRecording(recorderFile());
+      }
+      // A closed sheet is told nothing.
+      if (closed()) return;
+      setError(microphoneRefused
+        ? 'Microphone access is off. Enable it in Settings or type the memory instead.'
+        : 'Recording could not start. Try again or type the memory instead.');
     } finally {
       // Recording now (recordingActiveRef), or it could not start.
       recordingStartingRef.current = false;
@@ -503,6 +610,7 @@ export function DAVEVoiceCaptureSheet({
       recorderState.durationMillis,
       recorder.currentTime * 1_000,
     );
+    const run = recorderRunRef.current;
     recordingActiveRef.current = false;
     // Finishing until it is in the sheet, as one that ends on its own is: the kept check
     // and Start Recording leave a recorder that is still stopping alone (review N2).
@@ -521,6 +629,12 @@ export function DAVEVoiceCaptureSheet({
       if (autoSubmitOnStop) await transcribeRecording(uri, stoppedDuration);
     } catch {
       recordingActiveRef.current = false;
+      // A stop that failed after the sheet had let go of the recorder is asked again, and the
+      // microphone released: behind a closed sheet nothing else would stop it (review N2 follow-up).
+      if (run?.letGo) {
+        await standRecorderDown();
+        await removeRecording(recorderFile());
+      }
       recordingFinishingRef.current = false;
       setError('The recording could not finish. Try again.');
     }
@@ -703,9 +817,14 @@ export function DAVEVoiceCaptureSheet({
     stoppedWaitingRef.current = null;
     heldTranscriptRef.current = null;
     setIsTranscribing(false);
+    // He cancelled: a recorder that is still starting does not go on to record (review N2 follow-up).
+    letGoOfRecorderRun('cancelled');
     // Claim the recording first so a lock or call cannot also finish and offer it.
+    // Stopped whenever record() was reached: the recorder reports "recording" a moment later,
+    // and until it did, a Cancel left it running behind the closed sheet.
+    const recording = recordingActiveRef.current || recorderState.isRecording;
     recordingActiveRef.current = false;
-    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
+    if (recording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
     forgetRecordingKeptOnDevice();
