@@ -5,6 +5,7 @@ import {
   scheduleItemAsSaved,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
+  scheduleDocumentAddsToMaster,
 } from './PIEScheduleReconciliation';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
@@ -1040,6 +1041,18 @@ function statedOnlyByLookaheads(existing: readonly ScheduleItem[]): (item: Sched
 }
 
 /**
+ * The lookahead files saved when an approval's test of which tasks are shown
+ * was made (review N2 F2, the other order; 5 Oct 2026). The approval is
+ * given that test and not the saved schedules, and a lookahead that restates
+ * a task needs to know whether the file of the lookahead the task is on has
+ * been deleted (scheduleTaskRestatedByLookahead). Kept beside the test the
+ * phone's approval already passes (scheduleItemsVisibleBeforeImport), so
+ * what calls the approval is unchanged. The web's upload never restates as a
+ * lookahead and is told nothing.
+ */
+const savedLookaheadBatchesKnown = new WeakMap<(item: ScheduleItem) => boolean, ReadonlySet<string>>();
+
+/**
  * The tasks the manager saw before this import: the current schedules, with
  * this import's own documents left out so the rows a later Accept Selected
  * approves still pair with the tasks the first approval hid (A5 pass 3 F3).
@@ -1053,7 +1066,9 @@ export function scheduleItemsVisibleBeforeImport(
     scheduleItems: [...items],
     scheduleDocuments: documents.filter(document => key(document.importBatchId) !== key(importBatchId)),
   }).map(item => item.id));
-  return item => visible.has(item.id);
+  const shown = (item: ScheduleItem) => visible.has(item.id);
+  savedLookaheadBatchesKnown.set(shown, new Set(documents.filter(scheduleDocumentAddsToMaster).map(document => key(document.importBatchId)).filter(Boolean)));
+  return shown;
 }
 
 function timeOf(value: string | null | undefined): number {
@@ -1383,7 +1398,7 @@ export function mergeApprovedScheduleImportItems({
         ? (percentOf(importedItem) === endsAt || fileProgress !== statedProgress ? endsAt : null)
         : (fileProgress && statusStartsTask(target, importedItem) && endsAt === 1 ? 1 : null); // the 1% "In Progress" gave (A5 pass 10 L1)
       next = next.map(item => item.id === target.id
-        ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent), ...(fileProgress || {}) }
+        ? { ...scheduleTaskRestatedByLookahead(target, importedItem, approvedAt, givenPercent, savedLookaheadBatchesKnown.get(isCurrent) ?? null), ...(fileProgress || {}) }
         : item);
       overlaidIds.push(target.id);
       if (fileProgress) fileProgressIds.push(target.id);

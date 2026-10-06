@@ -139,6 +139,7 @@ const ROOF_L2 = 'Roof,Alpha,Lot,10/14/2026,10/22/2026,';
 const FRAMING_L3 = 'Framing,Alpha,Lot,10/08/2026,10/18/2026,';
 const DELETED_L1 = '2026-09-11T12:00:00.000Z';
 const DELETED_L3 = '2026-09-13T12:00:00.000Z';
+const keptMarks = (state: State) => (saved(state, framingId).lookaheadOverlay?.lookaheads || []).map(entry => [entry.batchId, entry.datesKeptAt ?? null]);
 const entries = (state: State) => (saved(state, framingId).lookaheadOverlay?.lookaheads || []).map(entry => [entry.batchId, entry.startDate, entry.datesLeftAt ?? null]);
 
 describe('Review N2 F2: a task does not go back to the dates of a lookahead file he deleted earlier', () => {
@@ -200,8 +201,26 @@ describe('Review N2 F2: what stays as it was', () => {
     const kept = deletePdfOnly(onL1, L1, DELETED_L1);
     expect(dates(one(kept, 'Framing'))).toBe('10/05/2026-10/15/2026');
     expect(entries(kept)).toEqual([[L1.importBatchId, '10/05/2026', null]]);
-    const after = deleteWithItems(approve(kept, L3, [FRAMING_L3]), L3, DELETED_L3);
+    // The delete writes nothing (review N2 F3). The next lookahead to move the task finds it on L1's dates with L1's
+    // file gone, and says so on L1's entry: those dates were kept.
+    expect(kept.items).toEqual(onL1.items);
+    const onL3 = approve(kept, L3, [FRAMING_L3]);
+    expect(keptMarks(onL3)).toEqual([[L1.importBatchId, L3.importedAt], [L3.importBatchId, null]]);
+    const after = deleteWithItems(onL3, L3, DELETED_L3);
     expect(dates(one(after, 'Framing'))).toBe('10/05/2026-10/15/2026');
+  });
+
+  it('the same two dates saved again on a task whose note says when its lookahead was imported note nothing', () => {
+    const again = phoneSave(onL1, framingId, { startDate: '10/05/2026', finishDate: '10/15/2026' }, DELETED_L1);
+    expect([entries(again), keptMarks(again)]).toEqual([[[L1.importBatchId, '10/05/2026', null]], [[L1.importBatchId, null]]]);
+    // So L1 deleted alone after L3 replaced it still gives no dates back when L3 is deleted (the other order, below).
+    const after = deleteWithItems(deletePdfOnly(approve(again, L3, [FRAMING_L3]), L1, DELETED_L1), L3, DELETED_L3);
+    expect(dates(one(after, 'Framing'))).toBe(MASTERS);
+  });
+
+  it('moved by hand off L1\'s dates after its file was deleted: L3 does not find the task on them, and nothing says they were kept', () => {
+    const moved = phoneSave(deletePdfOnly(onL1, L1, DELETED_L1), framingId, { startDate: '10/06/2026', finishDate: '10/16/2026' }, DELETED_L1);
+    expect(keptMarks(approve(moved, L3, [FRAMING_L3]))).toEqual([[L1.importBatchId, null], [L3.importBatchId, null]]);
   });
 
   it('with every file kept, deleting L3 with its items goes back to L1\'s dates while L1 is in effect', () => {
@@ -217,6 +236,61 @@ describe('Review N2 F2: what stays as it was', () => {
   it('a percent or a note saved on the task notes nothing', () => {
     const noted = phoneSave(phoneSave(onL1, framingId, { percentComplete: 20 }, DELETED_L1), framingId, { notes: 'Crew short' }, DELETED_L1);
     expect(entries(noted)).toEqual([[L1.importBatchId, '10/05/2026', null]]);
+  });
+});
+
+describe('Review N2 F2, the other order: the later lookahead had moved the task too', () => {
+  /** L1 moves Framing; L3 moves it again, so L3 replaces L1 and Framing is on L3's dates. */
+  const onL3 = approve(approve(onM, L1, [FRAMING_L1]), L3, [FRAMING_L3]);
+
+  it('Delete PDF Only on L1 has nothing shown to save: no task is written, L1\'s entry stays under L3\'s', () => {
+    expect(scheduleItemsAfterScheduleDeleted({ items: onL3.items, removed: [], document: L1, documents: onL3.documents, fileOnly: true })).toEqual([]);
+    const without = deletePdfOnly(onL3, L1, DELETED_L1);
+    expect(without.items).toEqual(onL3.items);
+    expect(dates(one(without, 'Framing'))).toBe('10/08/2026-10/18/2026');
+  });
+
+  it('then Delete PDF + Items on L3: the master\'s dates, not L1\'s (it went back to the file deleted earlier)', () => {
+    const after = deleteWithItems(deletePdfOnly(onL3, L1, DELETED_L1), L3, DELETED_L3);
+    expect([dates(one(after, 'Framing')), dates(saved(after, framingId))]).toEqual([MASTERS, MASTERS]);
+  });
+
+  it('with L1\'s file kept, deleting L3 puts L1 back in effect, on its dates, as before', () => {
+    expect(dates(one(deleteWithItems(onL3, L3, DELETED_L3), 'Framing'))).toBe('10/05/2026-10/15/2026');
+  });
+
+  it('L1\'s file still saved when L3 moves the task: nothing says its dates were kept', () => {
+    expect(keptMarks(onL3)).toEqual([[L1.importBatchId, null], [L3.importBatchId, null]]);
+    expect(keptMarks(deletePdfOnly(onL3, L1, DELETED_L1))).toEqual([[L1.importBatchId, null], [L3.importBatchId, null]]);
+  });
+
+  it('a lookahead deleted alone on Build 229 while in effect, then L3 approved on this build: L3 finds the task on its dates, and L3\'s delete goes back to them', () => {
+    const asBuild229: State = { items: approve(onM, L1, [FRAMING_L1]).items, documents: onM.documents };
+    expect(dates(one(asBuild229, 'Framing'))).toBe('10/05/2026-10/15/2026');
+    const after = deleteWithItems(approve(asBuild229, L3, [FRAMING_L3]), L3, DELETED_L3);
+    expect(dates(one(after, 'Framing'))).toBe('10/05/2026-10/15/2026');
+  });
+
+  it('with L3 approved before this build too, nothing says L1\'s dates were kept: L3\'s delete gives the master\'s', () => {
+    const asBuild229: State = { items: approve(onM, L1, [FRAMING_L1]).items, documents: onM.documents };
+    const onL3Then = approve(asBuild229, L3, [FRAMING_L3]);
+    const unmarked: State = {
+      ...onL3Then,
+      items: onL3Then.items.map(item => (item.lookaheadOverlay
+        ? { ...item, lookaheadOverlay: { ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(({ datesKeptAt: _kept, ...entry }) => entry) } }
+        : item)),
+    };
+    expect(dates(one(deleteWithItems(unmarked, L3, DELETED_L3), 'Framing'))).toBe(MASTERS);
+  });
+
+  it('an approval that is not told which files are saved notes nothing', () => {
+    const asBuild229: State = { items: approve(onM, L1, [FRAMING_L1]).items, documents: onM.documents };
+    const merged = mergeApprovedScheduleImportItems({
+      existing: asBuild229.items, imported: rows(L3, [FRAMING_L3]), completionMatch: () => null, mergeCompletion: item => item,
+      isCurrent: () => true, approvedAt: L3.importedAt, overlay: true,
+    });
+    const framing = merged.next.find(item => item.id === framingId)!;
+    expect((framing.lookaheadOverlay?.lookaheads || []).map(entry => [entry.batchId, entry.datesKeptAt ?? null])).toEqual([[L1.importBatchId, null], [L3.importBatchId, null]]);
   });
 });
 

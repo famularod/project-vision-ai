@@ -283,12 +283,19 @@ export function scheduleFileProgressAboveManagers(
  * stamped every task that lookahead had moved, and that stamp outranked a
  * newer lookahead approved offline on another device (the reviewer's
  * generator, seed 20137: Roof's 90% from the newer lookahead lost).
+ * And the entry before this one is marked kept (datesKeptAt) when the task
+ * is still on its dates and its file is known to be deleted
+ * (savedLookaheadBatches: the import batches of the lookahead files saved,
+ * when the caller knows them): deleting this lookahead with its items then
+ * goes back to those dates, as before, and not for an entry whose file is
+ * deleted later, after this one replaced it (review N2 F2, fileGoneUnkept).
  */
 export function scheduleTaskRestatedByLookahead(
   task: ScheduleItem,
   row: ScheduleItem,
   approvedAt: string,
   givenPercent: number | null = null,
+  savedLookaheadBatches: ReadonlySet<string> | null = null,
 ): ScheduleItem {
   const batchId = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
   const owned = Boolean(key(task.importBatchId) || key(task.sourceDocumentId));
@@ -304,7 +311,11 @@ export function scheduleTaskRestatedByLookahead(
       masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
     }),
     lookaheads: [
-      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)),
+      ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)).map((entry, index, earlier) => (
+        savedLookaheadBatches && index === earlier.length - 1 && !entry.datesKeptAt && key(entry.batchId) &&
+        !savedLookaheadBatches.has(key(entry.batchId)) && sameDates(task, entry)
+          ? { ...entry, datesKeptAt: approvedAt }
+          : entry)),
       {
         batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent,
         ...(typeof row.importedAt === 'string' && row.importedAt.trim() ? { importedAt: row.importedAt } : {}),
@@ -442,6 +453,29 @@ export function scheduleTaskMasterRestated(
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
 
 /**
+ * Review N2 F2, the other order (5 Oct 2026, residue of 3e1b312): lookahead
+ * L1 moved Framing, L3 moved it again (so L3 replaced L1), "Delete PDF Only"
+ * on L1, then "Delete PDF + Items" on L3. L1's entry was not the note's
+ * latest, so the file-only delete had nothing shown to save and left it, and
+ * the delete of L3 put Framing on L1's dates: again a file deleted earlier,
+ * where "Delete PDF + Items" on L1 gives the master's. The web's "Delete
+ * Document Only", which now does what the phone's does (review N2 W1), had
+ * the same end.
+ *
+ * Whether an entry's lookahead file is no longer saved and its dates were
+ * not kept. A lookahead deleted alone while in effect keeps its tasks on its
+ * dates, and the next lookahead to restate such a task says so on the entry
+ * (datesKeptAt, review N2 F3; for a note made before that review the delete
+ * itself says so): those dates are still given back when that later
+ * lookahead is deleted, as before. Any other entry whose file is gone
+ * (deleted alone after a newer lookahead replaced it) gives no dates back.
+ * With the schedules not given, as before.
+ */
+function fileGoneUnkept(entry: LookaheadEntry, documents?: readonly ReferenceDocument[]): boolean {
+  return Boolean(documents) && !entry.datesKeptAt && !documents!.some(saved => key(saved.importBatchId) === key(entry.batchId));
+}
+
+/**
  * The lookaheads of a note whose dates a task can go back to: those after
  * the last one it left for the master's dates (datesLeftAt).
  *
@@ -493,8 +527,9 @@ function tasksAfterLookaheadDeleted(
     // A master that is no longer current, nor any newer one, replaces nothing (A5 pass 20 P1).
     // An earlier lookahead a newer one replaced (owner answer Q25) is saved back too: the task is shown on the master's
     // dates while it is replaced (selectAuthoritativeScheduleItems), worked out the same on every device.
-    // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2).
-    const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item)) ||
+    // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2), nor
+    // one whose file is gone unless its dates were kept when it was deleted alone while in effect (fileGoneUnkept).
+    const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item) && !fileGoneUnkept(entry, documents)) ||
       { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
