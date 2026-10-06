@@ -7,6 +7,7 @@ import {
   scheduleFullCopyLeftUnshown,
   scheduleDocumentIsScheduleLike,
   scheduleItemAsSaved,
+  scheduleLookaheadInEffect,
   scheduleLookaheadReplacement,
   scheduleProjectScopeKey,
   selectAuthoritativeScheduleItems,
@@ -1093,6 +1094,26 @@ export function scheduleDatesShownUnderReplacedLookahead(
     .filter(item => item.savedLookaheadDates &&
       (item.lookaheadOverlay?.lookaheads?.at(-1)?.batchId || '').trim().toLowerCase() === batch)
     .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
+}
+
+/**
+ * Owner answer Q36 (6 Oct 2026): on the phone and the iPad, the file of a
+ * lookahead that is in effect is never deleted alone. "Delete PDF Only" is
+ * not offered for it, and the delete underneath refuses: the lookahead's
+ * dates would stay on its tasks with no lookahead left to say where they
+ * came from, or to put the master's dates back. "Delete PDF + Items" stays;
+ * "Delete PDF Only" stays for a master and for a lookahead newer ones have
+ * replaced. (The web already keeps a lookahead in effect.)
+ *
+ * The sentence he is told, or null when the file may be deleted alone. In
+ * effect as everywhere else (scheduleLookaheadInEffect, owner answer Q25).
+ */
+export function scheduleFileOnlyDeleteRefusal(
+  document: ReferenceDocument | null | undefined,
+  documents: readonly ReferenceDocument[],
+): string | null {
+  if (!document || !scheduleLookaheadInEffect(document, documents)) return null;
+  return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
 }
 
 /**

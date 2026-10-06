@@ -691,7 +691,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -11560,7 +11560,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
       if (!sharedRecord || sharedWithAnotherDocument) return void removeFromDevice();
       void removeReferenceDocumentEverywhere(sharedRecord.id)
-        .then(removeFromDevice)
+        .then(removed => (removed === false ? undefined : removeFromDevice()))
         .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
     };
 
@@ -11578,7 +11578,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   // Deleted on every device: the durable deletion record first; the cloud
   // then removes the row, its file and its ECOS index.
+  /** The PDF of a lookahead in effect is never deleted on its own (owner answer Q36): he is told why, and nothing changes. */
+  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('Lookahead in effect', refusal); return Boolean(refusal); };
   async function removeReferenceDocumentEverywhere(documentId: string) {
+    if (fileOnlyDeleteRefused(documentId)) return false; // whoever asks: a dialog left open, another screen (owner answer Q36)
     const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
     rememberOperationalTombstones([tombstone]);
     markReferenceDocumentsAuthorityReady(true);
@@ -11586,6 +11589,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     referenceDocumentsCurrentRef.current = updated;
     setReferenceDocuments(updated);
     void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+    return true;
   }
 
   function deleteReferenceDocument(documentId: string) {
@@ -11606,9 +11610,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           style: 'destructive',
           onPress: () => {
             void removeReferenceDocumentEverywhere(documentId)
-              .then(() => {
-                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
-              })
+              .then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })
               .catch(() => {
                 Alert.alert(
                   'Delete failed',
@@ -11648,27 +11650,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
+    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead in effect (owner answer Q36)
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed. You can also remove the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains so outdated dates do not confuse Upcoming.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
+      `${document.name} will be removed${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
+        ...(pdfOnly ? [{
           text: 'Delete PDF Only',
           onPress: () => {
-            scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true)); // the dates shown under a replaced lookahead stay (review N1); a task the delete shows on another row shows what he last set (review P6-5)
+            if (fileOnlyDeleteRefused(documentId)) return; scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true)); // the dates shown under a replaced lookahead stay (review N1); a task the delete shows on another row shows what he last set (review P6-5)
             void removeReferenceDocumentEverywhere(documentId)
-              .then(() => {
-                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
-              })
-              .catch(() => {
-                Alert.alert(
-                  'Delete failed',
-                  `${document.name} could not be saved as deleted. Try again.`,
-                );
-              });
+              .then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })
+              .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
           },
-        },
+        }] : []),
         {
           text: 'Delete PDF + Items',
           style: 'destructive',

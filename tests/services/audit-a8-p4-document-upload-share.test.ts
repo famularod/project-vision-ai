@@ -231,6 +231,8 @@ function phone(options: Readonly<{
     hiddenSharedDocuments: { hide: (id: string) => { hidden.push(id); } },
     withdrawUnsentProjectDocumentBridge, getOfflineQueue, removeOperationalRecordFromSyncQueue,
     recordDAVESyncTombstone: async (entityType: string, recordId: string) => ({ entityType, recordId, deletedAt: '2026-09-30T09:00:00.000Z' }),
+    // (Owner answer Q36: only the PDF of a lookahead in effect is refused; no document here is one.)
+    fileOnlyDeleteRefused: () => false,
   };
   const fns = compile<{
     retryProjectDocumentUpload: (documentId: string, provided?: PhoneDocument) => Promise<boolean | undefined>;
