@@ -156,6 +156,8 @@ export function DAVEVoiceCaptureSheet({
   const [taskSearch, setTaskSearch] = useState('');
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const recordingActiveRef = useRef(false);
+  // Review N2: from the tap on Start Recording until the recorder records (or cannot start).
+  const recordingStartingRef = useRef(false);
   const recordingDurationRef = useRef(0);
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
@@ -302,7 +304,9 @@ export function DAVEVoiceCaptureSheet({
   }
 
   async function startRecording() {
-    if (isTranscribing || recorderState.isRecording || recordingFinishingRef.current) return;
+    // A second tap while the recorder is still starting is not a second start (review N2).
+    if (isTranscribing || recorderState.isRecording || recordingFinishingRef.current || recordingStartingRef.current) return;
+    recordingStartingRef.current = true;
     recordingGenerationRef.current += 1;
     setError(null);
     setNotice(null);
@@ -326,6 +330,9 @@ export function DAVEVoiceCaptureSheet({
     } catch {
       recordingActiveRef.current = false;
       setError('Recording could not start. Try again or type the memory instead.');
+    } finally {
+      // Recording now (recordingActiveRef), or it could not start.
+      recordingStartingRef.current = false;
     }
   }
 
@@ -347,6 +354,13 @@ export function DAVEVoiceCaptureSheet({
   // One kept for another project stays kept, for when the sheet opens for
   // that project; a sheet already holding a recording leaves it kept too
   // (review N1 M1).
+  // Review N2 (5 Oct 2026): so does a sheet whose recorder is still starting
+  // or stopping when the check answers. The check looked only at "recording
+  // now", which is set after microphone permission and the recorder's own
+  // start: with Start Recording tapped first on slow phone storage, the kept
+  // recording came back under the new one, the new one was taken for
+  // already kept, and using it removed the kept one, never used. A kept
+  // recording is only ever removed with itself, whichever answers first.
   useEffect(() => {
     if (!visible || !keptOwner || !keepSlot) {
       setKeptChecked(!visible || !keepsOnDevice);
@@ -357,7 +371,8 @@ export function DAVEVoiceCaptureSheet({
     void keptVoiceRecordings().readKeptVoiceRecording(keptOwner, keepSlot, projectName).catch(() => null).then(kept => {
       if (!current) return;
       setKeptChecked(true);
-      if (!kept || recordingUriRef.current || recordingActiveRef.current || recordingFinishingRef.current) return;
+      if (!kept || recordingUriRef.current || recordingStartingRef.current || recordingActiveRef.current ||
+        recordingFinishingRef.current) return;
       if (kept.projectName.trim().toLowerCase() !== projectName.trim().toLowerCase()) return;
       keptCopyRef.current = kept.uri;
       keptStateRef.current = kept.state;
@@ -489,6 +504,9 @@ export function DAVEVoiceCaptureSheet({
       recorder.currentTime * 1_000,
     );
     recordingActiveRef.current = false;
+    // Finishing until it is in the sheet, as one that ends on its own is: the kept check
+    // and Start Recording leave a recorder that is still stopping alone (review N2).
+    recordingFinishingRef.current = true;
     try {
       await recorder.stop();
       const status = recorder.getStatus();
@@ -499,9 +517,11 @@ export function DAVEVoiceCaptureSheet({
       setRecordingUri(uri);
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      recordingFinishingRef.current = false;
       if (autoSubmitOnStop) await transcribeRecording(uri, stoppedDuration);
     } catch {
       recordingActiveRef.current = false;
+      recordingFinishingRef.current = false;
       setError('The recording could not finish. Try again.');
     }
   }
