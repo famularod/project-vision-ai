@@ -915,6 +915,31 @@ export function scheduleItemConflictCopyOnRow(copy: ConflictCopy | null | undefi
   };
 }
 
+/**
+ * Review P5 S-P5-3 (6 Oct 2026, Low; older in its root, ee705c9, made worse
+ * by the one-rule commit): this device's copy in the one card of a task that
+ * had two, one on the row the task lives on now (`onRow`) and one moved to it
+ * from a row a master replaced (`moved`, already as a copy of that row:
+ * scheduleItemConflictCopyOnRow). Of a field both ask about, the value he set
+ * later stands (when each card's edit was made); every other field of either
+ * is kept. Before, the moved card always won: he typed a note with no
+ * signal, approved a master and typed the note again on the task's new row;
+ * the two cards became one holding the FIRST note, and the note he typed
+ * last was on no card and, after his choice, on no device.
+ */
+export function scheduleItemConflictCopyOfBoth(
+  moved: ConflictCopy,
+  movedChangedAt: string | null | undefined,
+  onRow: ConflictCopy,
+  onRowChangedAt: string | null | undefined,
+  row: ScheduleItem,
+): ConflictCopy {
+  const at = (when: string | null | undefined) => { const time = Date.parse(when || ''); return Number.isFinite(time) ? time : 0; };
+  return at(onRowChangedAt) >= at(movedChangedAt)
+    ? scheduleItemConflictCopyKeeping(moved, onRow, null, row)
+    : scheduleItemConflictCopyKeeping(onRow, moved, null, row);
+}
+
 /** The fields a task conflict found changed on both, for Review Conflicts; empty for a conflict of whole copies. */
 export function scheduleItemConflictFields(localPayload: unknown): string[] {
   const asked = localPayload && typeof localPayload === 'object' ? (localPayload as { askedFields?: unknown }).askedFields : undefined;

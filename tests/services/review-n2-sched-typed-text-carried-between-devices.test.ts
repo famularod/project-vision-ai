@@ -227,7 +227,7 @@ import { PROJECT_DOCUMENT_CATEGORIES } from '../../services/ProjectDocumentClass
 import { cloudPhotoPreviewIsFresh } from '../../services/ProjectPhotoTransport';
 import { isResumableFieldUpdateStatus } from '../../services/FieldUpdateLifecycle';
 import { fieldUpdateConflictChanges } from '../../services/FieldUpdateEditBase';
-import { scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyBase, scheduleItemWholeCopyRestUnchanged } from '../../services/ScheduleItemEditBase';
+import { scheduleItemConflictCopyOfBoth, scheduleItemConflictCopyOnRow, scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemWholeCopyBase, scheduleItemWholeCopyRestUnchanged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, scheduleItemConflictFields, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBasesMerged } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
@@ -3197,5 +3197,132 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
     await allSynced(phone, ipad);
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Mike'));
     await noCards(phone, ipad);
+  });
+
+  /** A master's new row for Framing as an approval with no signal saves it: nothing set on it, and it says what it took. */
+  const theRowAsApproved = (): ScheduleItem => ({
+    id: 'MASTER G-1', taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/20/2026', finishDate: '10/30/2026', status: 'Not Started',
+    percentComplete: 0, priority: 'Medium', notes: '', owner: '', contractor: '', milestone: '', createdAt: G.importedAt, importedAt: G.importedAt,
+    importBatchId: 'batch-MASTER G', sourceDocumentId: 'MASTER G', revisedFromTaskIds: ['MASTER F-1'],
+    textFromTask: { taskId: 'MASTER F-1', owner: '', contractor: '', notes: '', nextAction: '', milestone: '' },
+  } as ScheduleItem);
+
+  describe('Review P5 S-P5-3: one task never has two cards, and the one card holds what he typed last', () => {
+    /** The iPad types a note. The phone, with no signal, types its own, approves the master, and types the note again on the task's new row. */
+    async function twoNotesOfHisAroundAMaster() {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-09T09:00:00.000Z');
+      await edit(ipad, 'MASTER F-1', { notes: 'iPad note' });
+      await backgroundUpload(ipad);
+      await edit(phone, 'MASTER F-1', { notes: 'First' });
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, newId, { notes: 'Second, typed last' });
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      return { phone, ipad, newId };
+    }
+    const LAST = (id: string) => [{ row: id, fields: ['notes'], here: ['Second, typed last'], cloud: ['iPad note'] }];
+
+    it.each([['keep_local', 'Second, typed last'], ['keep_cloud', 'iPad note']] as const)('one card as soon as the upload has run, his last note against the iPad\'s; %s ends on "%s"', async (choice, ends) => {
+      const { phone, ipad, newId } = await twoNotesOfHisAroundAMaster();
+      await backgroundUpload(phone);
+      // (It was: two cards, "Second" on the new row and "First" on the old one; when Review Conflicts opened they
+      // became one holding "First", and "Second, typed last" was on no card and, after his choice, on no device.)
+      expect(await cards(phone)).toEqual(LAST(newId));
+      on(phone);
+      await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+      expect(await cards(phone)).toEqual(LAST(newId));
+      const [card] = await conflictsOf(phone);
+      await chooseInSettings(phone, card.id, choice);
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, ends, ''));
+      await noCards(phone, ipad);
+    });
+
+    it('the other order: the old row\'s edit cannot go up in the first pass and is asked about after the new row\'s card exists: still one card, with his last note', async () => {
+      const { phone, newId } = await twoNotesOfHisAroundAMaster();
+      const store = mockStores.get('phone')!;
+      const queueKey = 'projectVisionAI.syncQueue.v1';
+      const queued = JSON.parse(store.get(queueKey) || '[]') as Array<{ payload?: { id?: string } }>;
+      const oldRowEdit = queued.filter(item => item.payload?.id === 'MASTER F-1');
+      expect(oldRowEdit).toHaveLength(1);
+      // The old row's edit is held back for one pass: only the new row goes up, and asks.
+      store.set(queueKey, JSON.stringify(queued.filter(item => item.payload?.id !== 'MASTER F-1')));
+      await backgroundUpload(phone);
+      expect(await cards(phone)).toEqual(LAST(newId));
+      store.set(queueKey, JSON.stringify([...JSON.parse(store.get(queueKey) || '[]'), ...oldRowEdit]));
+      await backgroundUpload(phone);
+      expect(await cards(phone)).toEqual(LAST(newId));
+      on(phone);
+      await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+      expect(await cards(phone)).toEqual(LAST(newId));
+    });
+
+    it('two cards saved by a build before this one become one when Review Conflicts opens, and it holds his last note', async () => {
+      const { phone, newId } = await twoNotesOfHisAroundAMaster();
+      await backgroundUpload(phone);
+      const [onTheNewRow] = await conflictsOf(phone);
+      // The card that build left on the row the master replaced: "First" against the iPad's note.
+      const oldRow = cloudRow('MASTER F-1')!;
+      const onTheOldRow = {
+        ...onTheNewRow, id: 'schedule_item_conflict:older', localId: 'MASTER F-1', localChangedAt: '2026-09-09T09:00:00.000Z', remotePayload: oldRow,
+        localPayload: { id: 'MASTER F-1', itemData: { ...oldRow, notes: 'First' }, changedFields: ['notes', 'updatedAt'], askedFields: ['notes'], base: { updatedAt: null, fields: { notes: '' } } },
+      };
+      const store = mockStores.get('phone')!;
+      const key = 'projectVisionAI.syncConflicts.v1';
+      store.set(key, JSON.stringify([...JSON.parse(store.get(key) || '[]'), onTheOldRow]));
+      expect((await cards(phone)).map(card => card.row).sort()).toEqual(['MASTER F-1', newId]);
+      on(phone);
+      await phone.m.sync.refreshScheduleItemConflictCloudCopies();
+      // (It was: the moved card over the card on the task's row, so "First".)
+      expect(await cards(phone)).toEqual(LAST(newId));
+    });
+
+    it('the rule on the two cards alone: of a field both ask about, the value he set later, whichever card it is on (after Set Active back he can type on the older row last)', () => {
+      const row = theRowAsApproved();
+      const card = (notes: string, extra: Record<string, unknown> = {}) => ({
+        id: row.id, itemData: { ...row, notes, ...extra }, changedFields: ['notes', ...Object.keys(extra), 'updatedAt'], askedFields: ['notes', ...Object.keys(extra)],
+        base: { updatedAt: null, fields: { notes: '', ...Object.fromEntries(Object.keys(extra).map(field => [field, ''])) } },
+      });
+      const notesOf = (copy: { itemData?: unknown }) => (copy.itemData as ScheduleItem).notes;
+      const [earlier, later] = ['2026-09-09T09:00:00.000Z', '2026-09-11T09:00:00.000Z'];
+      expect(notesOf(scheduleItemConflictCopyOfBoth(card('Moved'), earlier, card('On the row'), later, row))).toBe('On the row');
+      expect(notesOf(scheduleItemConflictCopyOfBoth(card('Moved'), later, card('On the row'), earlier, row))).toBe('Moved');
+      // A field only one of them asks about is kept either way.
+      const both = scheduleItemConflictCopyOfBoth(card('Moved', { owner: 'Mike' }), earlier, card('On the row'), later, row) as { askedFields?: string[]; itemData?: unknown };
+      expect([[...(both.askedFields ?? [])].sort(), (both.itemData as ScheduleItem).owner, notesOf(both)]).toEqual([['notes', 'owner'], 'Mike', 'On the row']);
+    });
+
+    it('a field only the older card asks about is kept in the one card, beside the newer card\'s field', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-09T09:00:00.000Z');
+      await edit(ipad, 'MASTER F-1', { notes: 'iPad note', owner: 'Ana' });
+      await backgroundUpload(ipad);
+      await edit(phone, 'MASTER F-1', { notes: 'First', owner: 'Mike' });
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, newId, { notes: 'Second, typed last' });
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      await backgroundUpload(phone);
+      const asked = await cards(phone);
+      expect(asked).toHaveLength(1);
+      expect(asked[0].row).toBe(newId);
+      expect(Object.fromEntries(asked[0].fields.map((field, index) => [field, [asked[0].here[index], asked[0].cloud[index]]]))).toEqual({
+        notes: ['Second, typed last', 'iPad note'], owner: ['Mike', 'Ana'],
+      });
+      const [card] = await conflictsOf(phone);
+      await chooseInSettings(phone, card.id, 'keep_local');
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Second, typed last', 'Mike'));
+      await noCards(phone, ipad);
+    });
   });
 });

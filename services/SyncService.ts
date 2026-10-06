@@ -72,7 +72,7 @@ import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
-  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemConflictCopyOfBoth, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -3918,11 +3918,36 @@ async function recordScheduleItemConflict(sent: readonly string[] | null, confli
     const open = conflicts.find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
     const localPayload = scheduleItemConflictCopyKeeping(
       open?.localPayload as Record<string, unknown> | undefined, conflict.localPayload as Record<string, unknown>, sent, conflict.remotePayload);
-    await writeSyncConflicts([
+    await writeSyncConflicts(scheduleItemConflictsOneCardPerTask([
       ...conflicts.filter(item => item.entity !== conflict.entity || item.localId !== conflict.localId),
       localPayload === conflict.localPayload ? conflict : { ...conflict, localPayload },
-    ]);
+    ]));
   });
+}
+
+/**
+ * Review P5 S-P5-3 (6 Oct 2026, Low): one task never has two cards. A card of fields on a row a master has replaced
+ * is folded, as it is recorded, into the card on the row that answers to it (the cloud's row saved with that card
+ * names the rows it answers to), whichever of the two arose first; of a field both ask about, the value he set later
+ * stands (scheduleItemConflictCopyOfBoth). Before, both stayed until Review Conflicts opened and moved the older one
+ * over the newer: the note he had typed last was then on no card.
+ */
+function scheduleItemConflictsOneCardPerTask(conflicts: SyncConflict[]): SyncConflict[] {
+  const cards = conflicts.filter(item => item.entity === 'schedule_item' && scheduleItemConflictFields(item.localPayload).length > 0);
+  for (const onRow of cards) {
+    const row = onRow.remotePayload as ScheduleItem | null;
+    const earlier = row && typeof row === 'object' && typeof row.id === 'string' && row.id === onRow.localId ? scheduleTaskEarlierIds(row) : [];
+    const older = cards.find(item => item !== onRow && earlier.includes(item.localId));
+    if (!older || !row) continue;
+    const moved = scheduleItemConflictCopyOnRow(older.localPayload as Record<string, unknown>, row);
+    const rest = conflicts.filter(item => item !== older && item !== onRow);
+    return scheduleItemConflictsOneCardPerTask([...rest, moved ? {
+      ...onRow,
+      localChangedAt: Date.parse(older.localChangedAt || '') > Date.parse(onRow.localChangedAt || '') ? older.localChangedAt : onRow.localChangedAt,
+      localPayload: scheduleItemConflictCopyOfBoth(moved, older.localChangedAt, onRow.localPayload as Record<string, unknown>, onRow.localChangedAt, row),
+    } : onRow]);
+  }
+  return conflicts;
 }
 
 /** A task's queued edit whose earlier part landed meanwhile: its fields' base is what landed (owner answer Q28). */
@@ -5934,7 +5959,8 @@ async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, st
         id: createQueueId('schedule_item_conflict', new Date().toISOString()),
         localId: row.id,
         remoteChangedAt: row.updatedAt || null,
-        localPayload: onRow ? scheduleItemConflictCopyKeeping(onRow.localPayload as Record<string, unknown>, copy, null, row) : copy,
+        // (Of a field both ask about, the value he set later: review P5 S-P5-3.)
+        localPayload: onRow ? scheduleItemConflictCopyOfBoth(copy, conflict.localChangedAt, onRow.localPayload as Record<string, unknown>, onRow.localChangedAt, row) : copy,
         remotePayload: row,
       };
       conflicts = [...others.filter(item => item !== onRow), next];
