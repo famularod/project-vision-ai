@@ -350,6 +350,32 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
   return { updatedAt: earlier?.updatedAt ?? later?.updatedAt ?? null, fields, ...(Object.keys(own).length > 0 ? { own } : {}) };
 }
 
+/**
+ * Review P6-2 (6 Oct 2026, Low; older): what he has changed on a master's new
+ * row since the approval made it, kept beside the row's whole copy while it
+ * waits to go up for the first time. The approval queues the row with this
+ * record empty; each edit of his that joins the waiting copy adds the fields
+ * it changed, each as the row was made (the copy his first edit of it
+ * started from) and the values he has held for it since (as any waiting edit
+ * keeps them). The retry of a first upload whose answer was lost reads it
+ * (scheduleItemNewRowMetAgain).
+ *
+ * Kept only while every change to the waiting copy is such an edit. A whole
+ * copy saved over it (a lookahead approved on the task) or a change of the
+ * sync's own (a carry) may have changed anything: the record is dropped, and
+ * the copy goes on as it did before there was one.
+ */
+export const SCHEDULE_ITEM_AS_MADE: ScheduleItemEditBase = { updatedAt: null, fields: {} };
+
+export function scheduleItemChangedSinceMade(existing: EditScope & Readonly<{ sinceMade?: unknown }>, incoming: EditScope): ScheduleItemEditBase | undefined {
+  const known = existing.sinceMade;
+  const base = incoming.base;
+  if (!isEditBase(known) || Array.isArray(existing.changedFields) || !Array.isArray(incoming.changedFields) || !isEditBase(base)) return undefined;
+  const fields = incoming.changedFields.map(String).filter(field => field !== 'updatedAt');
+  if (!fields.every(field => Object.prototype.hasOwnProperty.call(base.fields, field))) return undefined;
+  return scheduleItemEditBasesMerged({ changedFields: Object.keys(known.fields), base: known, itemData: existing.itemData }, incoming) ?? known;
+}
+
 export function isEditBase(value: unknown): value is ScheduleItemEditBase {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
     Boolean((value as { fields?: unknown }).fields) && typeof (value as { fields?: unknown }).fields === 'object';
@@ -787,32 +813,62 @@ export function scheduleItemAsOwnWaitingEditLeavesIt(
  * tasks they name), as an edit that started from what it took; and his
  * project controls where his are the later, merged as ever. Null when he has
  * set nothing: the cloud's row stands as it is, whatever else it holds by
- * now. Undefined when the copy has been changed here since it was made AND
- * differs from the cloud's row in more than that (a percent, a date): not
- * this case, and the copy goes on as a whole copy does.
+ * now.
+ *
+ * Review P6-2 and P6-3 (6 Oct 2026, Low; older): and everything else he has
+ * changed on the row since it was made (his percent, a date, a field its
+ * file stated), from the record the waiting copy keeps of that (`sinceMade`,
+ * scheduleItemChangedSinceMade), each as an edit that started from the row
+ * as made. The retry then weighs field by field like any edit: his percent
+ * goes up, an owner and a note set on another device or typed on the web
+ * since stay, and a field changed on both sides is asked about. Before, a
+ * copy he had changed in more than his text went up whole: with 30% entered
+ * after the lost answer, the note and owner the other device had set were
+ * gone from the task, with no card; with an owner typed before the first
+ * upload and a note typed on the web after it, a card for the whole task.
+ *
+ * Without that record (a copy queued by a build before it, or one a whole
+ * copy has been saved over since): undefined when the copy has been changed
+ * here since it was made AND differs from the cloud's row in more than what
+ * he sets. Not this case, and the copy goes on as a whole copy does.
  */
 export function scheduleItemNewRowMetAgain(
   waiting: ScheduleItem,
   remote: ScheduleItem,
   taskOf: () => (rowId: string) => string,
+  sinceMade?: unknown,
 ): Readonly<{ changedFields: string[]; base: ScheduleItemEditBase }> | null | undefined {
   const taken = waiting.textFromTask;
   if (!taken?.taskId) return undefined;
+  const tracked = isEditBase(sinceMade) ? sinceMade : null;
   // (A row is saved unstamped by the approval; every edit of his stamps it.)
   const changedHere = Boolean(waiting.updatedAt) && waiting.updatedAt !== (waiting.importedAt || waiting.createdAt);
   const rest = (item: ScheduleItem) => restMark({ ...item, projectControls: undefined });
-  if (changedHere && rest(waiting) !== rest(remote)) return undefined;
-  const text = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field) && !scheduleItemHoldsAsTaken(waiting, field));
-  const links = Object.prototype.hasOwnProperty.call(taken, 'dependencies') &&
-    scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(taken, taskOf()) ? scheduleItemFieldsWithCompanions(['dependencies']) : [];
+  if (!tracked && changedHere && rest(waiting) !== rest(remote)) return undefined;
+  const recorded = (field: string) => Object.prototype.hasOwnProperty.call(taken, field);
+  // (With the record, a value of his the cloud's row already holds is left out: his first write put it there, and
+  // nothing more is written for it.)
+  const toSend = (field: string) => !tracked || fieldValue(waiting, field) !== fieldValue(remote, field);
+  const text = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => recorded(field) && !scheduleItemHoldsAsTaken(waiting, field) && toSend(field));
+  const links = recorded('dependencies') && scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(taken, taskOf()) &&
+    (!tracked || scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(remote, taskOf())) ? scheduleItemFieldsWithCompanions(['dependencies']) : [];
   const merged = waiting.projectControls && remote.projectControls ? mergeProjectControlsRevisions(waiting.projectControls, remote.projectControls) : waiting.projectControls ?? remote.projectControls;
   const controls = fieldValue({ projectControls: merged }, 'projectControls') !== fieldValue(remote, 'projectControls') ? ['projectControls'] : [];
-  if (text.length + links.length + controls.length === 0) return null;
+  // (What the record above and the controls' own merge already answer for is left to them.)
+  const answered = (field: string) => field === 'projectControls' || recorded(field) || (recorded('dependencies') && field === 'dependenciesUpdatedAt');
+  const others = Object.keys(tracked?.fields ?? {}).filter(field => !answered(field) && fieldValue(waiting, field) !== fieldValue(tracked!.fields, field) && toSend(field));
+  if (text.length + links.length + controls.length + others.length === 0) return null;
+  const own = Object.fromEntries(Object.entries(tracked?.own ?? {}).filter(([field]) => (text as string[]).includes(field) || others.includes(field)));
   return {
-    changedFields: [...text, ...links, ...controls, 'updatedAt'],
+    changedFields: [...text, ...links, ...controls, ...others, 'updatedAt'],
     base: {
       updatedAt: null,
-      fields: { ...Object.fromEntries([...text, ...links].map(field => [field, (taken as Record<string, unknown>)[field] ?? null])), ...(controls.length > 0 ? { projectControls: remote.projectControls ?? null } : {}) },
+      fields: {
+        ...Object.fromEntries([...text, ...links].map(field => [field, (taken as Record<string, unknown>)[field] ?? null])),
+        ...Object.fromEntries(others.map(field => [field, tracked!.fields[field]])),
+        ...(controls.length > 0 ? { projectControls: remote.projectControls ?? null } : {}),
+      },
+      ...(Object.keys(own).length > 0 ? { own } : {}),
     },
   };
 }

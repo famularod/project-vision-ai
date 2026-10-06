@@ -236,6 +236,7 @@ import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItem
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemNewRowMetAgain, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
+import { scheduleItemChangedSinceMade, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -3949,6 +3950,169 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
         expect(scheduleItemConflictCopyOnRow(card, newRow, taskOf)).toBeNull();
         expect(scheduleItemConflictCopyOnRow(card, newRow)).toMatchObject({ askedFields: ['dependencies'] });
       });
+    });
+  });
+
+  describe('Review P6-2 and P6-3: the retry of a new row\'s first upload after its answer was lost, when he has changed more than his text on the row', () => {
+    const waitingFor = async (device: Device, id: string) => (await queueOf(device)).map(item => item.payload as { id?: string; changedFields?: string[]; base?: unknown; sinceMade?: { fields: Record<string, unknown>; own?: Record<string, string[]> } }).find(payload => payload.id === id);
+    const writesOf = (id: string, since: number) => mockCloud.writes.slice(since).filter(write => write.endsWith(`:${id}`));
+    type Step = (phone: Device, newId: string) => Promise<unknown> | unknown;
+    /**
+     * The iPad sets Pending, 5 days and a note on the task. The phone, with no signal, approves master G (`before`: what
+     * he does on its new row then). Signal back: the new row's first write reaches the cloud, its answer is lost.
+     * `between`: what happens before the next pass, which is the retry.
+     */
+    async function lostAnswer(before: Step | null, between: Step | null) {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at('2026-09-09T09:00:00.000Z');
+      await setControls(ipad, theRow(ipad).id, { approvalStatus: 'Pending', estimatedScheduleImpactDays: 5 });
+      await edit(ipad, theRow(ipad).id, { notes: NOTE });
+      await backgroundUpload(ipad);
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-11T09:00:00.000Z');
+      if (before) await before(phone, newId);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      mockCloud.lostAnswers = 1;
+      await backgroundUpload(phone);
+      expect([cloudRow(newId)!.notes, (await waitingFor(phone, newId))?.changedFields]).toEqual([NOTE, undefined]);
+      at('2026-09-12T08:30:00.000Z');
+      if (between) await between(phone, newId);
+      const writes = mockCloud.writes.length;
+      at('2026-09-12T09:00:00.000Z');
+      await backgroundUpload(phone);
+      return { phone, ipad, newId, writes };
+    }
+    const offline = (step: Step): Step => async (phone, newId) => { setOnline(phone, false); await step(phone, newId); setOnline(phone, true); };
+
+    it('the schedule reviewer\'s LA2: 30% entered after the lost answer goes up, and the note and approval the iPad set stay on the task', async () => {
+      const { phone, ipad, newId } = await lostAnswer(null, offline((phone, id) => edit(phone, id, { percentComplete: 30 })));
+      // (It was: his whole waiting copy, blank note and all, over the row. "Crew short Tuesday" gone everywhere, no card.)
+      expect(cloudRow(newId)).toMatchObject({ percentComplete: 30, notes: NOTE });
+      expect([await cards(phone), await waitingFor(phone, newId)]).toEqual([[], undefined]);
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(30, NOTE, ''));
+      expect(controlsEverywhere(phone, ipad)).toEqual(Array(3).fill(['Pending', 5]));
+      await noCards(phone, ipad);
+    });
+
+    it('the schedule reviewer\'s LA4: dates he moved after the lost answer go up, and the note stays', async () => {
+      const { phone, ipad } = await lostAnswer(null, offline((phone, id) => edit(phone, id, { startDate: '10/21/2026', finishDate: '10/31/2026' })));
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(Array(3).fill([['10/21/2026', '10/31/2026', 0, NOTE, '']]));
+      await noCards(phone, ipad);
+    });
+
+    it('the sync reviewer\'s case: 40% after the lost answer AND an owner typed on the web meanwhile: the percent, the web\'s owner and the iPad\'s note are all on the task', async () => {
+      const { phone, ipad } = await lostAnswer(null, async (phone, id) => {
+        webWrite(webEdited(cloudRow(id)!, { owner: 'Web owner' }));
+        await offline((device, row) => edit(device, row, { percentComplete: 40 }))(phone, id);
+      });
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(40, NOTE, 'Web owner'));
+      await noCards(phone, ipad);
+    });
+
+    it('P6-3: an owner typed on the new row before it first went up, and a note typed on the web after: no card, both stand, and nothing more is written for the row', async () => {
+      const { phone, ipad, newId, writes } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Ana' }), (_phone, id) => { webWrite(webEdited(cloudRow(id)!, { notes: 'Web note' })); });
+      // (It was: a card for the whole task, phone "Ana | (blank)" against cloud "Ana | Web note"; Keep Phone would blank the note.)
+      expect([await cards(phone), await waitingFor(phone, newId), writesOf(newId, writes)]).toEqual([[], undefined, []]);
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Web note', 'Ana'));
+      await noCards(phone, ipad);
+    });
+
+    it('30% entered before the first upload: the retry finds it in the cloud already and writes nothing', async () => {
+      const { phone, newId, writes } = await lostAnswer((phone, id) => edit(phone, id, { percentComplete: 30 }), null);
+      expect([await cards(phone), await waitingFor(phone, newId), writesOf(newId, writes), cloudRow(newId)!.percentComplete]).toEqual([[], undefined, [], 30]);
+    });
+
+    it('an owner he typed before the first upload and typed again after the lost answer goes up: the cloud\'s "Ana" is his own first write', async () => {
+      const { phone, ipad } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Ana' }), offline((phone, id) => edit(phone, id, { owner: 'Ana, corrected' })));
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Ana, corrected'));
+      await noCards(phone, ipad);
+    });
+
+    it('...and when the web has changed that owner too, he is asked about the owner, and the web\'s stands until he chooses (it was overwritten, with no card)', async () => {
+      const { phone, newId } = await lostAnswer((phone, id) => edit(phone, id, { owner: 'Ana' }), async (phone, id) => {
+        webWrite(webEdited(cloudRow(id)!, { owner: 'Web' }));
+        await offline((device, row) => edit(device, row, { owner: 'Ana, corrected' }))(phone, id);
+      });
+      expect(await cards(phone)).toEqual([{ row: newId, fields: ['owner'], here: ['Ana, corrected'], cloud: ['Web'] }]);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Web', notes: NOTE });
+    });
+
+    it('the same field changed on both sides is asked about: he moves the dates after the lost answer and the web has moved them too', async () => {
+      const { phone, newId } = await lostAnswer(null, async (phone, id) => {
+        webWrite(webEdited(cloudRow(id)!, { startDate: '10/22/2026', finishDate: '11/01/2026' }));
+        await offline((device, row) => edit(device, row, { startDate: '10/21/2026', finishDate: '10/31/2026', percentComplete: 30 }))(phone, id);
+      });
+      const [card] = await cards(phone);
+      expect([card.row, card.fields, card.here, card.cloud]).toEqual([newId, ['startDate', 'finishDate'], ['10/21/2026', '10/31/2026'], ['10/22/2026', '11/01/2026']]);
+      // His percent, which nobody else changed, is up; the web's dates and the iPad's note stand until he chooses.
+      expect(cloudRow(newId)).toMatchObject({ startDate: '10/22/2026', finishDate: '11/01/2026', percentComplete: 30, notes: NOTE });
+    });
+
+    it('the record is the approval\'s: on a master\'s new row only, and it gathers what his edits change while the row waits', async () => {
+      const { phone } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY, 'Paint,Alpha,Lot,11/02/2026,11/06/2026,']);
+      const [newId, paintId] = [theRow(phone).id, deviceShown(phone).find(item => item.taskName === 'Paint')!.id];
+      // Framing's new row keeps one; Paint, a task the master adds, replaces no row and keeps none.
+      expect([(await waitingFor(phone, newId))?.sinceMade, (await waitingFor(phone, paintId))?.sinceMade]).toEqual([{ updatedAt: null, fields: {} }, undefined]);
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, newId, { owner: 'Ana' });
+      await edit(phone, newId, { percentComplete: 30 });
+      await edit(phone, newId, { owner: 'Ana, corrected' });
+      const record = (await waitingFor(phone, newId))!.sinceMade!;
+      // Each field as the row was made, and what he held for it before its latest value.
+      expect([record.fields.owner, record.fields.percentComplete, record.own]).toEqual(['', 0, { owner: ['"Ana"'] }]);
+      // A lookahead approved on the task saves a whole copy over the waiting one: no telling what changed, the record goes.
+      at('2026-09-11T13:00:00.000Z');
+      await approve(phone, scheduleDoc('LOOKAHEAD P6', '2026-09-11T13:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+      expect([(await waitingFor(phone, newId))?.changedFields, (await waitingFor(phone, newId))?.sinceMade]).toEqual([undefined, undefined]);
+      // And a row staged by a caller that does not say which tasks the device had before keeps none: it may be a row the cloud has.
+      on(phone);
+      await phone.m.sync.runScheduleImportCloudSync({ scheduleItems: [{ ...theRowAsApproved(), id: 'MASTER X-1' }], referenceDocuments: [] } as never);
+      expect([(await waitingFor(phone, 'MASTER X-1'))?.id, (await waitingFor(phone, 'MASTER X-1'))?.sinceMade]).toEqual(['MASTER X-1', undefined]);
+    });
+
+    it('the rule on the records alone', () => {
+      const taskOf = () => (rowId: string) => rowId;
+      const made = theRowAsApproved();
+      const inTheCloud = { ...made, owner: 'Bob', notes: NOTE, textFromTask: { ...made.textFromTask!, owner: 'Bob', notes: NOTE }, updatedAt: '2026-09-12T08:00:01.000Z' } as ScheduleItem;
+      const withPercent = { ...made, percentComplete: 40, status: 'In Progress', updatedAt: '2026-09-12T08:30:00.000Z' } as ScheduleItem;
+      const record = { updatedAt: null, fields: { percentComplete: 0, status: 'Not Started' } };
+      // His percent, as an edit that started from the row as made; the owner and note the cloud's row holds are not his to send.
+      expect(scheduleItemNewRowMetAgain(withPercent, inTheCloud, taskOf, record))
+        .toEqual({ changedFields: ['percentComplete', 'status', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 0, status: 'Not Started' } } });
+      // (Without the record: not this case, as before.)
+      expect(scheduleItemNewRowMetAgain(withPercent, inTheCloud, taskOf)).toBeUndefined();
+      // A field he changed and put back as the row was made is no change of his; one the cloud already holds as he has it needs nothing.
+      expect(scheduleItemNewRowMetAgain({ ...withPercent, percentComplete: 0, status: 'Not Started' } as ScheduleItem, inTheCloud, taskOf, record)).toBeNull();
+      expect(scheduleItemNewRowMetAgain({ ...withPercent, percentComplete: 0, status: 'Not Started' } as ScheduleItem, { ...inTheCloud, percentComplete: 20, status: 'In Progress' } as ScheduleItem, taskOf, record)).toBeNull();
+      expect(scheduleItemNewRowMetAgain(withPercent, { ...inTheCloud, percentComplete: 40, status: 'In Progress' } as ScheduleItem, taskOf, record)).toBeNull();
+      // His text is still read from what the row took, with the values he held for it since.
+      expect(scheduleItemNewRowMetAgain({ ...made, owner: 'Ana, corrected', updatedAt: '2026-09-12T08:30:00.000Z' }, inTheCloud, taskOf, { updatedAt: null, fields: { owner: '' }, own: { owner: ['"Ana"'] } }))
+        .toEqual({ changedFields: ['owner', 'updatedAt'], base: { updatedAt: null, fields: { owner: '' }, own: { owner: ['"Ana"'] } } });
+      // The record itself: only on a whole copy that has one, only for an edit of fields with the copy it started from.
+      const edit = { changedFields: ['percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 0 } }, itemData: withPercent };
+      expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: SCHEDULE_ITEM_AS_MADE }, edit)).toEqual({ updatedAt: null, fields: { percentComplete: 0 } });
+      expect(scheduleItemChangedSinceMade({ itemData: made }, edit)).toBeUndefined();
+      expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: SCHEDULE_ITEM_AS_MADE }, { itemData: withPercent })).toBeUndefined();
+      expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: SCHEDULE_ITEM_AS_MADE }, { changedFields: ['percentComplete', 'updatedAt'], itemData: withPercent })).toBeUndefined();
+      expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: SCHEDULE_ITEM_AS_MADE, changedFields: ['owner'] }, edit)).toBeUndefined();
+      expect(scheduleItemChangedSinceMade({ itemData: made, sinceMade: SCHEDULE_ITEM_AS_MADE }, { ...edit, changedFields: ['percentComplete', 'status', 'updatedAt'] })).toBeUndefined();
+      // A second edit of a field keeps the first copy it started from.
+      expect(scheduleItemChangedSinceMade({ itemData: withPercent, sinceMade: { updatedAt: null, fields: { percentComplete: 0 } } },
+        { changedFields: ['percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { percentComplete: 40 } }, itemData: { ...withPercent, percentComplete: 60 } }))
+        .toEqual({ updatedAt: null, fields: { percentComplete: 0 }, own: { percentComplete: ['40'] } });
     });
   });
 });

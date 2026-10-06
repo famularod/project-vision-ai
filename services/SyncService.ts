@@ -74,6 +74,7 @@ import {
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemChangedSinceMade, SCHEDULE_ITEM_AS_MADE,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -769,6 +770,12 @@ type ScheduleItemRecordPayload = {
    * queued by Build 229 or earlier, which goes up as before.
    */
   base?: ScheduleItemEditBase;
+  /**
+   * On a master's new row waiting whole for its first upload (review P6-2): what he has changed on the row since the
+   * approval made it, each field as the row was made (ScheduleItemEditBase, scheduleItemChangedSinceMade). Read by
+   * the retry of a first upload whose answer was lost.
+   */
+  sinceMade?: ScheduleItemEditBase;
   /** On a task's conflict only (owner answer Q28): the fields changed here and on another device, which Review Conflicts shows. */
   askedFields?: string[];
   /**
@@ -1672,7 +1679,9 @@ function mergeScheduleItemQueueChangeScope(
     const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload);
     return {
       ...incoming,
-      payload: wholeBase ? { ...fullRecordPayload, base: wholeBase } : fullRecordPayload,
+      // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
+      // made, review P6-2. None after anything else joins it.)
+      payload: { ...fullRecordPayload, ...(wholeBase ? { base: wholeBase } : {}), sinceMade: scheduleItemChangedSinceMade(existingPayload, incomingPayload) },
     };
   }
 
@@ -2391,6 +2400,8 @@ async function stageScheduleImportQueue(input: {
     ...input.scheduleItems.map(item => {
       // The copy the approved row started from (owner answer Q28); a row new to this device has none.
       const base = scheduleItemWholeCopyBase(before.get(item.id));
+      // A master's new row, made by this approval (review P6-2): it keeps what he changes on it while it waits.
+      const madeNow = Boolean(input.scheduleItemsBefore) && !before.has(item.id) && Boolean(item.textFromTask?.taskId);
       return {
         id: scheduleItemQueueItemId(item.id),
         entity: 'schedule_item' as const,
@@ -2399,6 +2410,7 @@ async function stageScheduleImportQueue(input: {
           id: item.id,
           itemData: item,
           ...(base ? { base } : {}),
+          ...(madeNow ? { sinceMade: SCHEDULE_ITEM_AS_MADE } : {}),
         } satisfies ScheduleItemRecordPayload,
         createdAt,
         changedAt: validSyncTimestampOrFallback(
@@ -7028,7 +7040,7 @@ async function uploadQueueItem(
     // upload (an edit, a whole copy, an edit sent on to the task's row), not only where a new row first goes up.
     const taskOfRow = (rowId: string) => tasksOfRows()(rowId);
     const setSinceMade = remote && !queuedFields && !payload.forceLocal && !isEditBase(payload.base)
-      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows) : undefined;
+      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows, payload.sinceMade) : undefined;
     if (setSinceMade === null) {
       await settleScheduleItemConflicts(payload.id, null);
       return 'uploaded';
