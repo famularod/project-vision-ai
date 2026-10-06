@@ -980,7 +980,15 @@ export async function recordDAVEWebReportSend(
     // The approval waiting in the shared period is of exactly these facts: the report going out now is that
     // approved report, and its send is recorded, where it was dropped with "no approval… on this computer".
     const waiting = merged?.snapshot;
-    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || !sameReportSource(waiting.sourceFingerprint, approvedFingerprint)) return null;
+    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || !sameReportSource(waiting.sourceFingerprint, approvedFingerprint)) {
+      // R4 (the coordinator's decision): the report another device already sent, unchanged since, approved here to send a
+      // second time. It is that same report, already recorded as sent: not another send, and nothing is wrong. It
+      // read "This computer could not record that this report was sent ..." once the fingerprints agreed.
+      const sent = reportPeriodSend(waiting ?? own);
+      return approvedFingerprint !== null && typeof sent?.deliveredAt === 'string' && sameReportSource(sent.sourceFingerprint, approvedFingerprint)
+        ? { status: 'already_sent', sentAt: sent.deliveredAt }
+        : null;
+    }
     approval = waiting;
   }
   if (!approval) return null;

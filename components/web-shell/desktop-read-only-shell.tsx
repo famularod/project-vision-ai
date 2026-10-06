@@ -218,6 +218,8 @@ import {
   daveWebReportWordWaitsMessage,
   readDAVEWebReportPeriod,
   type DAVEWebReportPeriodRead,
+  daveWebReportAlreadySentElsewhereAt,
+  daveWebReportAlreadySentElsewhereNote,
 } from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
@@ -5905,6 +5907,12 @@ function ReportWorkspace({
     periodSendFromThisBrowser: periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt),
   })) || (notice?.text ?? '');
   const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
+  // R4 (the coordinator's decision): the report on this page is the one another device already sent, unchanged since. The
+  // "since" lines read as that report was sent (the same fingerprint on every device now), and the page says so in
+  // the phone's words until he approves it to send a second time.
+  const alreadySentElsewhereAt = currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
+    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends())
+    : null;
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
   // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
   // the other tab's send is this browser's own, and own sends never stopped a share (review N1 M2). Only
@@ -6593,6 +6601,9 @@ function ReportWorkspace({
         ) : null}
         {daveWebReportPeriodNote(currentPeriodRead) ? (
           <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
+        ) : null}
+        {alreadySentElsewhereAt ? (
+          <Text style={styles.reportFactEmpty}>{daveWebReportAlreadySentElsewhereNote(alreadySentElsewhereAt)}</Text>
         ) : null}
         {daveWebReportPeriodKeptInTabOnly() ? (
           <Text style={styles.reportFactEmpty}>

@@ -2,6 +2,7 @@ import {
   describeReportSendTime,
   otherDeviceSendNotReceived,
   reportBaselineSnapshot,
+  sameReportSource,
   reportPeriodSend,
   reportPeriodSentAt,
   validReportPeriodSnapshot,
@@ -375,6 +376,30 @@ export function daveWebReportAlreadyMarkedSentMessage(sentAt: string): string {
 /** The same, after the share menu or an email draft: nothing is asked, since nothing more is recorded (review N1 M2). */
 export function daveWebReportAlreadySentNote(sentAt: string): string {
   return `This report was already recorded as sent ${describeReportSendTime(sentAt)}, so sending it again is not counted as another send.`;
+}
+
+/**
+ * Under "Since the last report", when the report on this page is the one
+ * another device already sent, unchanged since (R4, the coordinator's decision: the
+ * web reads it as the phone and iPad do). The phone's own sentence.
+ */
+export function daveWebReportAlreadySentElsewhereNote(sentAt: string): string {
+  return `Your other device already sent this report ${describeReportSendTime(sentAt)}. Approve it only if you want to send it a second time.`;
+}
+
+/**
+ * When another device sent the very report this page shows (the same facts
+ * as the last report the period runs from), or null: not sent, not the same
+ * facts, or this browser's own send (`ownSends`), which the review panel
+ * speaks of in its own words.
+ */
+export function daveWebReportAlreadySentElsewhereAt(
+  period: DAVEReportSnapshot | null | undefined,
+  fingerprint: string,
+  ownSends: ReadonlySet<string>,
+): string | null {
+  if (!period || typeof period.deliveredAt !== 'string' || ownSends.has(period.deliveredAt)) return null;
+  return sameReportSource(period.sourceFingerprint, fingerprint) ? reportPeriodSentAt(period) : null;
 }
 
 /** What the review panel says of an approved report this computer sent (review N1 M2). */
