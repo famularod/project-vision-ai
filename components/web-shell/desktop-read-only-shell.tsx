@@ -188,6 +188,7 @@ import {
   daveWebReportKeptInTabOnlyNote,
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
+  daveWebReportNotYetMessage,
   daveWebReportRecordedMessage,
   daveWebReportSendsNotSharedWarning,
   daveWebReportPeriodMoved,
@@ -5831,12 +5832,20 @@ function ReportWorkspace({
   const sharedReportOnScreen = sendQuestion && reportStatus === 'approved' && sameSharedReport(sendQuestion, reportAsShared())
     ? sendQuestion
     : null;
+  // Review N2 follow-up (5 Oct 2026): what is true of the report the question is about. Mark as Sent is offered
+  // for it only while its own approval is the one waiting here; once another device's (or another tab's) later
+  // report has overtaken it, the page says so. The question and its "Not yet" promised Mark as Sent either way.
+  const sharedCanBeMarkedSent = Boolean(sharedReportOnScreen && approvalToMarkSent &&
+    approvalToMarkSent.sourceFingerprint === sharedReportOnScreen.fingerprint);
+  const sharedOvertaken = sharedReportOnScreen && approvedPeriodMoved
+    ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
+    : null;
   const answerSendQuestion = (sent: boolean) => {
     const shared = sharedReportOnScreen;
     setSendQuestion(null);
     if (!shared) return;
     if (!sent) {
-      setNotice({ tone: 'good', text: 'Nothing was recorded. Once you send it, use Mark as Sent.' });
+      setNotice({ tone: 'good', text: daveWebReportNotYetMessage(sharedCanBeMarkedSent, sharedOvertaken) });
       return;
     }
     // The report that was shared, by its own facts and period: never whatever is on screen by now.
@@ -6629,7 +6638,13 @@ function ReportWorkspace({
               </View>
             </View>
             {sharedReportOnScreen ? (
-              <DesktopReportSentQuestion pending={pending} onAnswer={answerSendQuestion} sharedBetweenDevices={reportsSharedBetweenDevices} />
+              <DesktopReportSentQuestion
+                pending={pending}
+                onAnswer={answerSendQuestion}
+                sharedBetweenDevices={reportsSharedBetweenDevices}
+                markAsSentOffered={sharedCanBeMarkedSent}
+                overtaken={sharedOvertaken}
+              />
             ) : null}
             {unsentApprovalWarningUp && approvalToMarkSent && approvalReplacesUnsentApproval(approvalToMarkSent, reportFingerprint) ? (
               <DesktopReportUnsentApprovalWarning

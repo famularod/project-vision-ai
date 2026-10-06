@@ -276,6 +276,19 @@ export function daveWebReportSendsNotSharedWarning(sentAts: readonly string[]): 
 export const DAVE_WEB_REPORT_SEND_NOT_RECORDED =
   'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 
+/**
+ * "Not yet", to "Was the report sent?" (owner answer 2 Oct). Review N2
+ * follow-up (5 Oct 2026): it always ended "Once you send it, use Mark as
+ * Sent.", also when Mark as Sent was no longer offered for that report:
+ * another device's later report had overtaken it (`overtaken`: what the page
+ * says of that, with the way out), or this computer holds no approval of it
+ * to mark. It says only what is true.
+ */
+export function daveWebReportNotYetMessage(markAsSentOffered: boolean, overtaken: string | null = null): string {
+  if (overtaken) return `Nothing was recorded. ${overtaken}`;
+  return markAsSentOffered ? 'Nothing was recorded. Once you send it, use Mark as Sent.' : 'Nothing was recorded.';
+}
+
 /** Shared again after this computer had recorded it as sent (review N1): said plainly, never as an error. */
 export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
   return `Shared again. This report was already recorded as sent ${describeReportSendTime(sentAt)}, so this is not counted as another send.`;

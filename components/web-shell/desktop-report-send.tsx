@@ -57,17 +57,29 @@ export function DesktopReportSentQuestion({
   pending,
   onAnswer,
   sharedBetweenDevices = true,
+  markAsSentOffered = true,
+  overtaken = null,
 }: {
   pending: boolean;
   onAnswer: (sent: boolean) => void;
   /** False before the shared record exists: a send from here is this computer's own period. */
   sharedBetweenDevices?: boolean;
+  /**
+   * Review N2 follow-up (5 Oct 2026): whether Mark as Sent is offered for this report. The panel promised "once
+   * you send it, use Mark as Sent" also when it was not: another device's later report had replaced this one's
+   * approval, or this computer holds no approval of it to mark.
+   */
+  markAsSentOffered?: boolean;
+  /** A later report has overtaken this one since it was shared: what the page says of that, in place of the promise. */
+  overtaken?: string | null;
 }) {
   return (
     <View style={styles.panel} accessibilityLabel="Was the report sent?">
       <Text style={styles.title}>Was the report sent?</Text>
       <Text style={styles.detail}>
-        {`If you sent it, the next report ${nextReportRunsOn(sharedBetweenDevices)} runs from this one. If not, nothing is recorded: once you send it, use Mark as Sent.`}
+        {overtaken
+          ? overtaken
+          : `If you sent it, the next report ${nextReportRunsOn(sharedBetweenDevices)} runs from this one. If not, nothing is recorded${markAsSentOffered ? ': once you send it, use Mark as Sent.' : '.'}`}
       </Text>
       <View style={styles.actions}>
         <Pressable
