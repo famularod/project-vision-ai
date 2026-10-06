@@ -7141,13 +7141,17 @@ async function uploadProjectUpdateQueueItem(
   // and different, it goes to Review Conflicts, as an older edit does (above), and nothing automatic sends it until
   // David chooses. Changed only here: sent as before. Where the two differ only by the cloud's changes (this device's
   // own are in the cloud already, or it made none): nothing of this device's is sent over them, and the card takes the
-  // cloud's copy. David's own choices (Keep Phone, Keep Cloud, a Retry he confirmed) and the cloud newer by this
-  // device's own patches alone go as before.
+  // cloud's copy. David's own choices (Keep Phone, Keep Cloud, a Retry he confirmed) go as before.
+  // Review N2 M1 (Medium, a gap in 79a5ae1): an edit over a cloud copy newer by this device's own patches alone was
+  // not weighed. The copy the phone's late photo result went onto already held the iPad's note, and the phone's edit
+  // of the area then went over that note with no card. It is weighed like any other: what its own patches changed is
+  // its own change (fieldUpdateEditBaseWithOwnWrites), and it still goes up with them, as before (below).
   const cloudUpdateData = remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data?.updateData : undefined;
-  const againstCloud = !patchedCloudCopy && !ownPatchesSinceEdit && cloudUpdateData && isFieldUpdateEditBase(payload.base) &&
+  const weighedBase = !patchedCloudCopy && cloudUpdateData && isFieldUpdateEditBase(payload.base) &&
     !payload.overConflict && !payload.keepCloudChoice
-    ? fieldUpdateEditAgainstCloud(payload.base, payload.updateData, cloudUpdateData)
-    : 'as-before';
+    ? fieldUpdateEditBaseWithOwnWrites(payload.base, cloudUpdateData, { patchedFrom: ownPatchesSinceEdit?.ontoParts })
+    : null;
+  const againstCloud = weighedBase ? fieldUpdateEditAgainstCloud(weighedBase, payload.updateData, cloudUpdateData) : 'as-before';
   if (againstCloud !== 'as-before') {
     if (againstCloud === 'conflict') {
       await recordConflict({
@@ -7158,7 +7162,7 @@ async function uploadProjectUpdateQueueItem(
         remoteChangedAt: remoteMetadata.data?.updatedAt || null,
         reason: 'This update changed on this device and on another device since this edit began.',
         detectedAt: new Date().toISOString(),
-        localPayload: withoutKeepCloudMarks(payload),
+        localPayload: { ...withoutKeepCloudMarks(payload), base: weighedBase! }, // Review Conflicts names the other device's changes only
         remotePayload: cloudUpdateData,
       });
       return 'conflict';
@@ -7199,7 +7203,7 @@ async function uploadProjectUpdateQueueItem(
     // Keep Cloud's copy leaves it to Keep Cloud (A7 pass 17 L-1).
     if (!documentPatches && !payload.keepCloudChoice) await clearConflictsForLocalRecord('project_update', payload.id);
     if (cloudCopy && patchedCloudCopy) {
-      noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || []);
+      noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || [], cloudCopy.updateData);
     }
     else projectUpdatePatchesLanded.delete(payload.id);
     recordProjectUpdateUpload(payload.id);
@@ -7209,6 +7213,41 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/**
+ * The base for weighing an edit against a cloud copy that holds this device's
+ * own writes (review N2, 5 Oct 2026), beside the earlier values of the queued
+ * copy itself (FieldUpdateEditBase `own`): a part the cloud holds as one of
+ * them left it is this device's own change, not another device's.
+ * - `patchedFrom` (M1, a gap in 79a5ae1): the parts of the copy this device's
+ *   own patches went onto (a document taken off, a finished document upload,
+ *   a late photo result), while the cloud's copy is still the one they left.
+ *   "Newer only by this device's own patches" skipped the weighing, and the
+ *   copy the patch went onto already held the iPad's note: the phone's edit
+ *   of the area went over it with no card. The edit is weighed all the same,
+ *   and only a part that copy held as the base has it, and the cloud holds
+ *   differently now, is the patches' doing.
+ */
+function fieldUpdateEditBaseWithOwnWrites(
+  base: FieldUpdateEditBase,
+  cloud: unknown,
+  { patchedFrom }: { patchedFrom?: Readonly<Record<string, string>> | null },
+): FieldUpdateEditBase {
+  if (!patchedFrom) return base;
+  const theirs = fieldUpdateMeaningParts(cloud);
+  const own: Record<string, readonly string[]> = { ...(base.own ?? {}) };
+  let added = false;
+  [...new Set([...Object.keys(theirs), ...Object.keys(base.fields)])].forEach(part => {
+    const mark = theirs[part] ?? '';
+    const started = base.fields[part] ?? '';
+    if (mark === started || (own[part] ?? []).includes(mark)) return;
+    const patched = (patchedFrom[part] ?? '') === started;
+    if (!patched) return;
+    own[part] = [...(own[part] ?? []), mark];
+    added = true;
+  });
+  return added ? { ...base, own } : base;
 }
 
 /**
@@ -7223,9 +7262,14 @@ async function uploadProjectUpdateQueueItem(
  * onto is no newer than the edit, the edit goes up with them. Held in
  * memory: after a relaunch such an edit shows the conflict, as before;
  * nothing is lost.
+ *
+ * `ontoParts`: the parts of the copy they went onto (review N2 M1). An edit
+ * that keeps the copy it started from is weighed against the cloud's copy
+ * all the same (owner answer Q28): the copy they went onto may hold another
+ * device's change, which this device's own patches do not excuse.
  */
 const projectUpdatePatchesLanded = new Map<string, {
-  onto: string; at: string; copy: unknown; patches: FieldUpdateDocumentPatch[];
+  onto: string; ontoParts: Record<string, string>; at: string; copy: unknown; patches: FieldUpdateDocumentPatch[];
 }>();
 
 function noteProjectUpdatePatchesLanded(
@@ -7233,6 +7277,7 @@ function noteProjectUpdatePatchesLanded(
   onto: string | null | undefined,
   left: { updatedAt: string; updateData: unknown },
   patches: readonly FieldUpdateDocumentPatch[],
+  ontoCopy: unknown,
 ): void {
   const earlier = projectUpdatePatchesLanded.get(updateId);
   if (!onto || !Number.isFinite(Date.parse(onto))) {
@@ -7242,7 +7287,8 @@ function noteProjectUpdatePatchesLanded(
   // One after another: the first went onto the copy before them all.
   const chained = earlier && sameCloudTime(earlier.at, onto);
   projectUpdatePatchesLanded.set(updateId, {
-    onto: chained ? earlier.onto : onto, at: left.updatedAt, copy: left.updateData,
+    onto: chained ? earlier.onto : onto, ontoParts: chained ? earlier.ontoParts : fieldUpdateMeaningParts(ontoCopy),
+    at: left.updatedAt, copy: left.updateData,
     patches: [...(chained ? earlier.patches : []), ...patches],
   });
 }
