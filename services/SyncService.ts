@@ -7394,9 +7394,18 @@ async function uploadProjectUpdateQueueItem(
  * cloud's copy, now the one his choice wrote, by the copy it started from.
  * When it had not started from the card's own copy (he had saved more than
  * once and a late photo result came in between, so the last save started
- * from the card showing his earlier unsent save; or a refresh had put the
- * cloud's copy on the card), each part his choice wrote read as changed on
- * another device, and a second card came up at once.
+ * from the card showing his earlier unsent save), each part his choice wrote
+ * read as changed on another device, and a second card came up at once.
+ *
+ * Review N2 pass 4 (observation): this is right only of an edit begun from a
+ * copy of his own, which holds everything his choice keeps or his own later
+ * word for it. An edit begun from the cloud's copy would go up the same way,
+ * with no card, and put the cloud's older parts over the ones Keep Phone had
+ * just kept. No such edit can begin. While his copy waits in Review
+ * Conflicts its card keeps his copy (projectUpdateUploadedSince: a refresh
+ * used to put the cloud's copy there), and a card that does show the cloud's
+ * copy reads Sent, which opens read-only and is never retried by itself
+ * (App.tsx openSavedUpdate; review-n2-field-update-review-card-reopened.test.ts).
  */
 const fieldUpdateChoiceKey = (updateId: string) => `${updateId}\nchoice`;
 
@@ -7501,10 +7510,11 @@ function projectUpdateRecordOnCloudCopy(
  *   David's put in the cloud after this edit began (Keep Phone's, a Retry he
  *   confirmed). Keep Phone sends the card's copy and then the newer edit he
  *   saved while the card waited; that edit had started from another copy
- *   (the card showing an earlier unsent save, or the cloud's copy a refresh
- *   put on it), so every part his choice had just written read as another
- *   device's change, and a second card came up at once. A part the cloud
- *   still holds as his choice wrote it is his own write.
+ *   of his own (the card showing an earlier unsent save), so every part his
+ *   choice had just written read as another device's change, and a second
+ *   card came up at once. A part the cloud still holds as his choice wrote
+ *   it is his own write (of an edit begun from a copy of his own, the only
+ *   kind there is while his copy waits: noteFieldUpdateChoiceWritten).
  */
 function fieldUpdateEditBaseWithOwnWrites(
   base: FieldUpdateEditBase,

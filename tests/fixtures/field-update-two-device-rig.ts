@@ -47,6 +47,8 @@ export type FieldUpdateTwoDeviceRig = {
   openAndSave(device: RigDevice, change: (card: RigUpdate) => Partial<RigUpdate>): Promise<void>;
   backgroundUpload(device: RigDevice): Promise<void>;
   waitingUpdateSync(device: RigDevice): Promise<void>;
+  /** The App's own retryQueuedUpdate on this device: a card's Retry, or an automatic one. */
+  appRetry(device: RigDevice): (update: RigUpdate, sync?: { automatic?: boolean; overConflict?: boolean }) => Promise<RigUpdate>;
   /** `upload` false: without the upload pass the App runs after it. */
   refresh(device: RigDevice, upload?: boolean): Promise<boolean>;
   fullSync(device: RigDevice): Promise<unknown>;
@@ -66,7 +68,7 @@ export type FieldUpdateTwoDeviceRig = {
 const RIG_FILE = path.resolve(__dirname, '../services/owner-answer-q28-conflicts-not-overwrite.test.ts');
 const RIG_NAMES: ReadonlyArray<keyof FieldUpdateTwoDeviceRig> = [
   'UPDATE_ID', 'MOCK_PROJECT_ID', 'IPAD_NOTE', 'PHONE_NOTE', 'mockCloud', 'mockStores', 'A', 'start', 'at', 'on', 'setOnline', 'cardFails',
-  'openOnly', 'saveOpened', 'openAndSave', 'backgroundUpload', 'waitingUpdateSync', 'refresh', 'fullSync', 'startup',
+  'openOnly', 'saveOpened', 'openAndSave', 'backgroundUpload', 'waitingUpdateSync', 'appRetry', 'refresh', 'fullSync', 'startup',
   'relaunchModules', 'chooseInSettings', 'conflictsOf', 'queueOf', 'cloudUpdate', 'theUpdate', 'updatesSetter', 'newPhoto',
   'asBuild229',
 ];
