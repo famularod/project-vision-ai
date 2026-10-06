@@ -19792,7 +19792,7 @@ function ScheduleScreen({
               onCancel={onCancelImport}
               incomingBatch={incomingImportBatch}
               onIncomingBatchConsumed={onIncomingImportConsumed}
-              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }}
+              roleContext={{ documents: reviewDocuments, items: scheduleItems as unknown as import('./types').ScheduleItem[] }} savedItems={knownScheduleItems as unknown as import('./types').ScheduleItem[] | undefined} // the rows the approval pairs on (review N2 G1)
             />
           ) : null}
 

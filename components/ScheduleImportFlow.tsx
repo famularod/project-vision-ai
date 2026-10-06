@@ -18,7 +18,7 @@ import {
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
 import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
-import { scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from '../services/ScheduleImportMerge';
+import { scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions, type ScheduleImportPairingQuestion } from '../services/ScheduleImportMerge';
 import {
   scheduleImportAddsToMaster,
   scheduleImportAsksRole,
@@ -54,6 +54,7 @@ export function ScheduleImportFlow({
   incomingBatch = null,
   onIncomingBatchConsumed,
   roleContext,
+  savedItems,
 }: {
   screenshotImportAvailable: boolean;
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
@@ -65,6 +66,11 @@ export function ScheduleImportFlow({
   onIncomingBatchConsumed?: () => void;
   /** The schedules and tasks saved now: the review's "Full schedule" or "Lookahead" default (owner answer Q22). */
   roleContext?: Readonly<{ documents: readonly ReferenceDocument[]; items: readonly ScheduleItem[] }>;
+  /**
+   * Every saved task, hidden rows included: the rows the approval pairs on. With them, the same-named check asks as
+   * the approval pairs, not from the tasks as shown (review N2 G1). Without, from roleContext's tasks, as before.
+   */
+  savedItems?: readonly ScheduleItem[];
 }) {
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -88,11 +94,14 @@ export function ScheduleImportFlow({
   const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id
     ? roleReview.chosen || roleReview.role
     : null;
-  const pairingQuestions = useMemo(() => pendingBatch ? scheduleImportPairingQuestions({
-    existing: roleContext?.items || [],
-    imported: pendingBatch.items,
-    overlay: reviewedRole ? reviewedRole === 'lookahead' : scheduleImportAddsToMaster(pendingBatch, roleContext?.documents || []),
-  }) : [], [pendingBatch, reviewedRole, roleContext?.documents, roleContext?.items]);
+  const pairingQuestions = useMemo(() => {
+    if (!pendingBatch) return [];
+    const overlay = reviewedRole ? reviewedRole === 'lookahead' : scheduleImportAddsToMaster(pendingBatch, roleContext?.documents || []);
+    // From the rows the approval pairs on, when the phone gives them (review N2 G1).
+    return savedItems
+      ? scheduleImportReviewPairingQuestions({ saved: savedItems, documents: roleContext?.documents || [], importBatchId: pendingBatch.id, imported: pendingBatch.items, overlay })
+      : scheduleImportPairingQuestions({ existing: roleContext?.items || [], imported: pendingBatch.items, overlay });
+  }, [pendingBatch, reviewedRole, roleContext?.documents, roleContext?.items, savedItems]);
   const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
   const pairingKey = (question: ScheduleImportPairingQuestion) => `${pendingBatch?.id}|${reviewedRole}|${question.key}`;
   const pairingAnswerOf = (question: ScheduleImportPairingQuestion) =>

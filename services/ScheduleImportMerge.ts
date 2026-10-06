@@ -911,11 +911,14 @@ export function scheduleImportPairingQuestions({
   imported,
   isCurrent = () => true,
   overlay = false,
+  alsoAsk,
 }: {
   existing: readonly ScheduleItem[];
   imported: readonly ScheduleItem[];
   isCurrent?: (item: ScheduleItem) => boolean;
   overlay?: boolean;
+  /** Groups (by key) to ask about although these rows' dates settle them: unsettled from what David sees (review N2 G1). */
+  alsoAsk?: ReadonlySet<string>;
 }): ScheduleImportPairingQuestion[] {
   const rule: TwinRule = { lookahead: overlay, inFile: true, addedByLookahead: statedOnlyByLookaheads(existing) };
   return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap(group => {
@@ -930,14 +933,15 @@ export function scheduleImportPairingQuestions({
     const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
     // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
     const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
-    if (!disagrees && !tiedBetweenTwins(rows, saved, guess)) return [];
     const first = rows[0];
+    const groupKey = [first.taskName, projectKey(first), first.locationName].map(key).join('|');
+    if (!disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
     const areaName = (saved.find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
     const projectName = (first.projectName || first.scheduleProjectName || '').trim();
     const count = Math.max(saved.length, rows.length);
     const byStart = (items: readonly ScheduleItem[], inFile: boolean) => inStableOrder(items, inFile);
     return [{
-      key: [first.taskName, projectKey(first), first.locationName].map(key).join('|'),
+      key: groupKey,
       taskName: first.taskName.trim(),
       projectName,
       areaName,
@@ -947,6 +951,59 @@ export function scheduleImportPairingQuestions({
       guess: Object.fromEntries(rows.map(row => [row.id, guess.get(row)?.id ?? null])),
     }];
   });
+}
+
+/**
+ * Review N2 G1 (5 Oct 2026, Low; owner answer Q25's shown and saved dates,
+ * ada8ef6, meeting owner answer Q30, 9a1c22d). The phone's import review
+ * asked from the tasks as shown, while the approval pairs on the saved rows:
+ * a task a replaced lookahead moved is shown on the master's dates and saved
+ * on the lookahead's. Two Pour slabs, 10/01 (his 40%) and 10/15 (his 70%);
+ * lookahead L1 moves the second to 10/11; L2 lists neither, so it shows
+ * 10/15 again; L3 lists 10/15 and 10/06. From what he sees this is plain,
+ * and the review asked nothing; the approval found the 10/06 row as near to
+ * the second task's saved 10/11 as to the first, and saved it as a third
+ * Pour slab (or put his percent and note on the other task).
+ *
+ * The questions the phone's review asks, worked out as the approval pairs:
+ * on every saved task, with the tasks shown before this import as the ones
+ * a row may revise (scheduleItemsVisibleBeforeImport). The guess shown is
+ * then what the approval would do unasked. Each saved task of a question is
+ * given as David sees it (the dates shown), since he is asked about the
+ * tasks in his list; his answer names the task, so the approval pairs it
+ * whatever its saved dates.
+ *
+ * And still whatever the tasks as shown leave unsettled, as before: the
+ * saved dates he cannot see can also settle a pairing that is a toss-up
+ * from what he sees (the same two tasks, then one row on 10/08: as near to
+ * 10/01 as to 10/15 in his list, but on two days of the second task's saved
+ * 10/11-10/15, so the approval takes the second, unasked). Either way of
+ * reading the dates that leaves a doubt is a question, with the approval's
+ * guess selected.
+ */
+export function scheduleImportReviewPairingQuestions({
+  saved,
+  documents,
+  importBatchId,
+  imported,
+  overlay = false,
+}: {
+  /** Every saved task, hidden rows included. */
+  saved: readonly ScheduleItem[];
+  /** The schedules saved now. */
+  documents: readonly ReferenceDocument[];
+  /** The import under review. */
+  importBatchId: string;
+  imported: readonly ScheduleItem[];
+  overlay?: boolean;
+}): ScheduleImportPairingQuestion[] {
+  const shown = new Map(selectAuthoritativeScheduleItems({
+    scheduleItems: [...saved],
+    scheduleDocuments: documents.filter(document => key(document.importBatchId) !== key(importBatchId)),
+  }).map(item => [item.id, item] as const));
+  const unsettledAsShown = new Set(scheduleImportPairingQuestions({ existing: [...shown.values()], imported, overlay }).map(question => question.key));
+  return scheduleImportPairingQuestions({ existing: saved, imported, isCurrent: item => shown.has(item.id), overlay, alsoAsk: unsettledAsShown })
+    .map(question => ({ ...question, saved: question.saved.map(item => shown.get(item.id) || item) }));
 }
 
 /**
