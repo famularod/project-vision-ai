@@ -39,6 +39,7 @@ import {
   fileNameOf,
 } from '../../services/RestoredMediaLedger';
 import { importProjectDocumentIntoOwnedStorage } from '../../services/ProjectDocumentLifecycle';
+import { runExclusiveLocalStorageMutation } from '../../services/LocalStorageMutationCoordinator';
 import type { OwnedLocalFileStoreDependencies } from '../../services/OwnedLocalFileStore';
 
 const APP = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
@@ -661,6 +662,155 @@ describe('independent review R01: restored files are kept while a restore can st
   });
 });
 
+/**
+ * Independent review pass 2, L8 (Low, ca6053d; the reviewer's check R5). The stored list of placed files held a value
+ * that could not be read (half written, `null`, `{}`, a wrong-shaped entry, an empty string). The app started
+ * normally, but every restore then ended "Restore failed ... Free some storage and try again", again after a
+ * restart, and the list was never repaired: that device could not restore a backup until its storage was cleared.
+ */
+describe('independent review pass 2 (L8): a list of placed files that cannot be read never stops a restore and never removes a file', () => {
+  /** A file an unreadable list may have named: nothing can say, so it must stay. */
+  const MAYBE_NAMED = `${DOCUMENTS}elsewhere/earlier0-may-have-been-listed.jpg`;
+  const UNREADABLE = [
+    ['half written', `[{"id":"earlier","uris":["${MAYBE_NAMED.slice(0, 40)}`],
+    ['null', 'null'],
+    ['an object, not a list', '{}'],
+    ['an empty string', ''],
+    ['one wrong-shaped entry', `[{"id":7,"uris":"${MAYBE_NAMED}"}]`],
+  ] as const;
+
+  it.each(UNREADABLE)('%s: the app starts, the list is cleared, the next restore goes through, and nothing is removed for it', async (_label, value) => {
+    const device = newDevice();
+    device.files.set(MAYBE_NAMED, bytesOf(5));
+    device.values.set(RESTORED_MEDIA_LEDGER_KEY, value);
+
+    const session = await restart(device);
+    expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    expect(device.files.has(MAYBE_NAMED)).toBe(true);
+
+    await session.restore();
+    expect(session.alerts).toEqual(['Device backup restored']);
+    expect(session.progress).toEqual(['Restore finished.']);
+    expect(isRestored(device)).toBe(true);
+    expectSettledDevice(device, 'unreadable list');
+    expect(device.files.has(MAYBE_NAMED)).toBe(true);
+  });
+
+  it.each(UNREADABLE)('%s, found while the app is running: the restore replaces it with its own list and goes through', async (_label, value) => {
+    const device = newDevice();
+    device.files.set(MAYBE_NAMED, bytesOf(5));
+    const session = startApp(device);
+    device.values.set(RESTORED_MEDIA_LEDGER_KEY, value);
+
+    await session.restore();
+
+    expect(session.alerts).toEqual(['Device backup restored']);
+    expect(isRestored(device)).toBe(true);
+    expectSettledDevice(device, 'unreadable list, app running');
+    expect(device.files.has(MAYBE_NAMED)).toBe(true);
+  });
+
+  it('a list that is partly readable: what can be read is settled as always, the rest is dropped and its files stay', async () => {
+    const device = newDevice();
+    const listed = `${PHOTO_DIR}earlier1-left-behind.jpg`;
+    device.files.set(listed, bytesOf(5));
+    device.files.set(MAYBE_NAMED, bytesOf(6));
+    device.values.set(RESTORED_MEDIA_LEDGER_KEY, JSON.stringify([{ id: 'earlier', uris: [listed] }, { uris: 5 }, { id: '', uris: [MAYBE_NAMED] }]));
+
+    await restart(device);
+
+    // The readable entry's file is named by nothing: removed. The unreadable entries name nothing that may be removed.
+    expect(device.files.has(listed)).toBe(false);
+    expect(device.files.has(MAYBE_NAMED)).toBe(true);
+    expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+  });
+
+  it('when the device really cannot keep the list, the restore is refused and what he is told is true', async () => {
+    const device = newDevice();
+    const session = startApp(device);
+    device.mutations = 0;
+    device.fault = { at: 0, mode: 'writes_fail_until_restart', tripped: false };
+
+    await session.restore();
+
+    expect(session.alerts).toEqual(['Restore failed']);
+    expect(session.messages[0]).toBe(
+      'The restore could not record the files it placed on this device, so nothing was changed. Try again. If it keeps happening, free some storage on this device.',
+    );
+    expect(isRestored(device)).toBe(false);
+    expect(restoredFilesOn(device)).toEqual([]);
+  });
+});
+
+/**
+ * Independent review pass 2, L9b (Low). A restore is held for recovery; storage works again; without a restart he
+ * restores again, and that restore succeeds. Its own startup recovery finished the first restore's journal, found the
+ * first attempt's files named, and forgot them; a moment later its records replaced the first attempt's, and those
+ * files, named by nothing any more, stayed on the device for good (a leak, never a loss).
+ */
+describe('independent review pass 2 (L9b): a second restore straight after "Restore recovery required", with no restart', () => {
+  /** A restore held for recovery (its journal half applied), then storage working again in the same run of the app. */
+  async function heldThenStorageWorks() {
+    const device = newDevice();
+    const session = startApp(device);
+    device.mutations = 0;
+    device.fault = { at: 7, mode: 'writes_fail_until_restart', tripped: false };
+    await session.restore();
+    expect(session.alerts).toEqual(['Restore recovery required']);
+    const first = restoredFilesOn(device).sort();
+    expect(first).toHaveLength(6);
+    device.fault = null;
+    return { device, session, first };
+  }
+
+  it('ends with its own files only: the first attempt\'s, which nothing names any more, are removed when it has ended', async () => {
+    const { device, session, first } = await heldThenStorageWorks();
+
+    await session.restore();
+
+    expect(session.alerts).toEqual(['Restore recovery required', 'Device backup restored']);
+    expect(first.filter(uri => device.files.has(uri))).toEqual([]);
+    expectSettledDevice(device, 'second restore');
+    // The same after a restart.
+    await restart(device);
+    expectSettledDevice(device, 'second restore, restarted');
+  });
+
+  it('a file of the first attempt that a saved value still names stays', async () => {
+    const { device, session, first } = await heldThenStorageWorks();
+    // A kept draft made in between names one of the first attempt's photos (under the app's folder as it then was).
+    const kept = first.find(uri => uri.startsWith(PHOTO_DIR))!;
+    device.values.set('kept-drafts', JSON.stringify([{ photos: [{ uri: `file:///moved/Documents/project-photos/${fileNameOf(kept)}` }] }]));
+
+    await session.restore();
+
+    expect(first.filter(uri => device.files.has(uri))).toEqual([kept]);
+    expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    // Every attachment the saved records name opens its bytes.
+    storedAttachments(device).forEach(attachment => expect(Array.from(device.files.get(attachment.uri) as Uint8Array)).toEqual(Array.from(EXPECTED_BYTES[attachment.id])));
+  });
+
+  it('nothing waiting is settled while the second restore is under way: its commit begins with the first one\'s recovery', async () => {
+    const { device, session, first } = await heldThenStorageWorks();
+    // The second restore is held too (storage fails again partway through its own records).
+    device.mutations = 0;
+    device.fault = { at: 30, mode: 'writes_fail_until_restart', tripped: false };
+
+    await session.restore();
+
+    expect(session.alerts).toEqual(['Restore recovery required', 'Restore recovery required']);
+    // Both attempts' files are still there, and both are still written down.
+    expect(first.filter(uri => device.files.has(uri))).toEqual(first);
+    expect(restoredFilesOn(device)).toHaveLength(12);
+    expect(JSON.parse(device.values.get(RESTORED_MEDIA_LEDGER_KEY) as string)).toHaveLength(2);
+    // The restart finishes the second restore; what its records name stays, the rest goes.
+    await restart(device);
+    expect(isRestored(device)).toBe(true);
+    expectSettledDevice(device, 'both held');
+    expect(first.filter(uri => device.files.has(uri))).toEqual([]);
+  });
+});
+
 describe('independent review R01: the restored-file ledger', () => {
   const memory = () => {
     const values = new Map<string, string>();
@@ -756,6 +906,46 @@ describe('independent review R01: the restored-file ledger', () => {
     expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(true);
     await device.ledger().settlePending();
     expect([...device.files]).toEqual([A]);
+    expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+  });
+
+  // Independent review pass 2 (L9b): the settle that follows a committed restore runs while the app is in use, so it
+  // waits for the saved records to be held still, as the one at the start of the app is.
+  it('after a committed restore, what waited is settled only once no other write of the records is under way', async () => {
+    const device = memory();
+    device.files.add(A).add(B);
+    let next = 0;
+    const ledger = createRestoredMediaLedger({
+      storage: device.storage, removeFile: async uri => { device.files.delete(uri); }, createId: () => `held-${(next += 1)}`, priorityKeys: ['records'],
+    });
+    // A is left from a restore held for recovery, and nothing names it. B is the restore that now ends committed.
+    await (await ledger.track([A])).settle('recovery_required');
+    const claim = await ledger.track([B]);
+    // Another part of the app is writing the records at that moment.
+    let finish: () => void = () => undefined;
+    const writing = runExclusiveLocalStorageMutation(['records'], () => new Promise<void>(resolve => { finish = resolve; }));
+    const settling = claim.settle('committed');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect([...device.files].sort()).toEqual([A, B]);
+    finish();
+    await writing;
+    await settling;
+    expect([...device.files]).toEqual([B]);
+    expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+  });
+
+  it('a restore that is rolled back settles nothing that waits: that is left for the next start, as before', async () => {
+    const device = memory();
+    device.files.add(A).add(B);
+    const ledger = device.ledger();
+    // A is left from a restore held for recovery, and nothing names it. B's restore is then rolled back.
+    await (await ledger.track([A])).settle('recovery_required');
+    await (await ledger.track([B])).settle('aborted');
+    expect([...device.files]).toEqual([A]);
+    expect(JSON.parse(device.values.get(RESTORED_MEDIA_LEDGER_KEY) as string)).toEqual([{ id: 'attempt-1', uris: [A] }]);
+    // The next start settles it by what the saved values name.
+    await device.ledger().settlePending();
+    expect([...device.files]).toEqual([]);
     expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
   });
 

@@ -19,7 +19,18 @@
  * restore that finishes later keeps its files, and one that never happened
  * does not leave them behind for good. The same settles a restore the app was
  * closed in the middle of.
+ *
+ * Independent review pass 2 (L8, L9b):
+ * - A list that cannot be read never stops a restore and never removes a
+ *   file. What of it can be read is kept; the rest is dropped, and the files
+ *   it named simply stay (left behind, never lost). The next write of the
+ *   list puts a readable one in its place.
+ * - Nothing waiting is settled while a restore is under way: its records are
+ *   about to replace the ones the files are checked against. When that
+ *   restore has been committed, what waited is settled then, so the files of
+ *   an earlier restore that it replaced are not left behind for good.
  */
+import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
 export const RESTORED_MEDIA_LEDGER_KEY = 'projectPhotoUpdate.restoredMediaLedger.v1';
 
@@ -73,11 +84,12 @@ export function createRestoredMediaLedger({
     return run;
   };
 
-  const readEntries = async (): Promise<LedgerEntry[]> => {
+  /** The list as far as it can be read; `damaged` when some of the stored value could not be. */
+  const readList = async (): Promise<{ entries: LedgerEntry[]; damaged: boolean }> => {
     const raw = await storage.getItem(RESTORED_MEDIA_LEDGER_KEY);
-    if (raw === null) return [];
-    return parseEntries(raw);
+    return raw === null ? { entries: [], damaged: false } : readableEntries(raw);
   };
+  const readEntries = async (): Promise<LedgerEntry[]> => (await readList()).entries;
 
   const writeEntries = async (entries: readonly LedgerEntry[]) => {
     if (entries.length === 0) {
@@ -125,8 +137,9 @@ export function createRestoredMediaLedger({
       await serialize(async () => writeEntries([...(await readEntries()), { id, uris: files }]));
     } catch (cause) {
       active.delete(id);
+      // Only when this device's storage would not read or keep the list (a list that is merely unreadable is replaced).
       const error = new Error(
-        'The restore could not record the files it placed on this device, so nothing was changed. Free some storage and try again.',
+        'The restore could not record the files it placed on this device, so nothing was changed. Try again. If it keeps happening, free some storage on this device.',
       );
       (error as Error & { cause?: unknown }).cause = cause;
       throw error;
@@ -145,17 +158,30 @@ export function createRestoredMediaLedger({
         } finally {
           active.delete(id);
         }
+        // This restore's records are on the device and its journal is finished: what waited from an earlier restore
+        // (one held for recovery, then replaced by this one without a restart) is settled now (review pass 2, L9b).
+        // The records are held still while the saved values are read, as they are when the app starts.
+        if (outcome === 'committed') {
+          await runExclusiveLocalStorageMutation([RESTORED_MEDIA_LEDGER_KEY, ...priorityKeys], settlePending).catch(() => undefined);
+        }
       },
     });
   };
 
   const settlePending = () => serialize(async () => {
     try {
-      // A restore under way settles its own files when it ends: its records are not written yet.
+      // While a restore is under way nothing is settled (review pass 2, L9b): its own files are not named by any
+      // record yet, and the records the waiting files would be checked against are about to be replaced by it.
+      if (active.size > 0) return;
+      const { entries, damaged } = await readList();
       const underWay: LedgerEntry[] = [];
       const waiting: LedgerEntry[] = [];
-      (await readEntries()).forEach(entry => (active.has(entry.id) ? underWay : waiting).push(entry));
-      if (waiting.length === 0) return;
+      entries.forEach(entry => (active.has(entry.id) ? underWay : waiting).push(entry));
+      // A stored value that could not be read (wholly or in part) is replaced by what could (review pass 2, L8).
+      if (waiting.length === 0) {
+        if (damaged) await writeEntries(underWay);
+        return;
+      }
 
       const named = await fileNamesInStorage(
         storage,
@@ -180,19 +206,28 @@ export function createRestoredMediaLedger({
   return Object.freeze({ track, settlePending });
 }
 
-function parseEntries(raw: string): LedgerEntry[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error('The restored file list is not readable.');
-  return parsed.map(value => {
+/**
+ * The entries of a stored list that can be read (independent review pass 2,
+ * L8). A value that is not a list at all (half written, `null`, `{}`, empty)
+ * has none; an entry of the wrong shape is left out. Nothing is ever removed
+ * for what could not be read: the files it named stay on the device.
+ */
+function readableEntries(raw: string): { entries: LedgerEntry[]; damaged: boolean } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { entries: [], damaged: true };
+  }
+  if (!Array.isArray(parsed)) return { entries: [], damaged: true };
+  const entries = parsed.flatMap(value => {
     const entry = value as Partial<LedgerEntry> | null;
-    if (
-      !entry || typeof entry.id !== 'string' || !entry.id ||
-      !Array.isArray(entry.uris) || !entry.uris.every(uri => typeof uri === 'string')
-    ) {
-      throw new Error('The restored file list is not readable.');
-    }
-    return { id: entry.id, uris: [...entry.uris] };
+    return entry && typeof entry.id === 'string' && entry.id &&
+      Array.isArray(entry.uris) && entry.uris.every(uri => typeof uri === 'string')
+      ? [{ id: entry.id, uris: [...entry.uris] }]
+      : [];
   });
+  return { entries, damaged: entries.length !== parsed.length };
 }
 
 /** The file's own name: the part of its address that stays the same when the app's folder moves. */
