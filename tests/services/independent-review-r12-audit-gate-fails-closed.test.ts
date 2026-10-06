@@ -88,4 +88,20 @@ describe('independent review R12: only a valid npm audit report is an audit', ()
     expect(`${optional.stdout}${optional.stderr}`).not.toContain('Dependency audit PASS');
     expect(optional.stderr).toContain('lock contents were not audited (npm audit reported an error (ENOAUDIT))');
   });
+
+  // Review pass 2, C1: the contract script's last line said "the lock was audited here" right after
+  // warning that it had not been.
+  it('the contract script does not say the lock was audited when no valid report was read', () => {
+    const fakeBin = path.join(__dirname, '..', 'fixtures', 'npm-audit-refused');
+    const contract = path.join(__dirname, '..', '..', 'scripts', 'dependency-security-contract-test.js');
+    const run = spawnSync(process.execPath, [contract], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+    });
+    const output = `${run.stdout}${run.stderr}`;
+    expect(run.status).toBe(0);
+    expect(output).toContain('lock contents were not audited');
+    expect(output).toContain('but the lock was NOT audited here');
+    expect(output).not.toContain('and the lock was audited here');
+  });
 });

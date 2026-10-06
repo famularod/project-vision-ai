@@ -91,6 +91,8 @@ if (!audit.reachable) {
   }
 }
 
+// Review pass 2, C1: say "audited here" only when a real audit report was read.
 console.log(
-  'Dependency security contract PASS: vulnerable tunnel tooling stays removed, safe transitive fixes stay pinned, CI audits the exact lock, and the lock was audited here.',
+  'Dependency security contract PASS: vulnerable tunnel tooling stays removed, safe transitive fixes stay pinned, CI audits the exact lock, ' +
+  (audit.reachable ? 'and the lock was audited here.' : 'but the lock was NOT audited here (see the warning above).'),
 );
