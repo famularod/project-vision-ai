@@ -290,9 +290,19 @@ export function sweepKeptVoiceRecordings(): Promise<void> {
   }).catch(() => undefined);
 }
 
-/** Account change or sign-out, as for the other unsaved drafts: every kept recording goes. */
-export function forgetKeptVoiceRecordings(): void {
-  void forgetKeptDrafts(KIND);
-  const folder = keptFolder();
-  if (folder) void FileSystem.deleteAsync(folder, { idempotent: true }).catch(() => undefined);
+/**
+ * Settings' Sign Out for this account, as for its other unsaved drafts: its
+ * kept recordings go. Only its own (review N2, 5 Oct 2026): every account's
+ * entries went, and the whole folder with them, so a recording set aside for
+ * an account whose sign-in had ended unasked was deleted when another
+ * account signed out of this phone. Its entries and the audio they name go
+ * (after a keep under way, so that one goes too); audio left with no entry
+ * is then swept. Audio another account's entry points at is never touched.
+ */
+export function forgetKeptVoiceRecordings(ownerKey: string): void {
+  void oneAtATime(async () => {
+    const audio = (await storedKeptVoiceRecordings(ownerKey)).map(stored => stored.recording.uri);
+    await forgetKeptDrafts(KIND, ownerKey);
+    for (const uri of audio) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+  }).then(sweepKeptVoiceRecordings, () => undefined);
 }

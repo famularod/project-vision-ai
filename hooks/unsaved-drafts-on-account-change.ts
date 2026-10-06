@@ -13,8 +13,15 @@ import { forgetKeptWalkMemoryDrafts, setAsideKeptWalkMemoryDrafts } from './use-
  * warning. They are now set aside for that account: off the screen, kept on
  * the phone under that account (no other account reads them), and offered
  * again, each where it was made, once that account signs in. Settings' Sign
- * Out, which warns first, still removes them; so does another account
- * signing in while the app stays open.
+ * Out, which warns first, still removes them.
+ *
+ * Review N2 (5 Oct 2026): Settings' Sign Out removes the work of the account
+ * that is signing out, and no other account's. It removed every account's,
+ * so work set aside for David after his sign-in had ended unasked was
+ * deleted when a second account signed out through Settings, which had
+ * warned that account about its own work only. Another account signing in
+ * removes nothing either: what was set aside stays kept for its account,
+ * and is still never shown or offered to anyone else.
  */
 let setAside: Readonly<{ userId: string | null }> | null = null;
 
@@ -34,9 +41,18 @@ export function settleUnsavedDraftsOnAccountChange(
   setAside = null;
   // The account they were set aside for (or, not known, whichever signs in: another account cannot read them).
   if (back && userId && (!back.userId || back.userId === userId)) return;
-  forgetFieldNoteDraft();
-  forgetKeptWalkMemoryDrafts();
-  forgetKeptVoiceRecordings();
+  if (event === 'SIGNED_OUT') {
+    // Settings' Sign Out, after its warning: the work of the account signing out goes, on the phone too.
+    // Until the phone has heard which account that is (it opened with no signal), only what is on screen
+    // is known to be its: that goes, and the rest stays kept for it.
+    forgetFieldNoteDraft(previousUserId || undefined);
+    forgetKeptWalkMemoryDrafts(previousUserId);
+    if (previousUserId) forgetKeptVoiceRecordings(previousUserId);
+    return;
+  }
+  // Another account signed in: nobody's stays on screen, and each account's stays kept on the phone for it.
+  setAsideFieldNoteDraft();
+  setAsideKeptWalkMemoryDrafts();
 }
 
 /** Test seam: a new app session has set nothing aside. */

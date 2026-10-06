@@ -252,7 +252,7 @@ describe('a recording waiting for signal survives iOS closing the app (everyday 
     expect(keptFiles()).toHaveLength(1);
   });
 
-  it('Record Again, or an account change or sign-out, removes it; without a keep slot nothing is kept', async () => {
+  it('Record Again, or its account\'s Settings sign-out, removes it; without a keep slot nothing is kept', async () => {
     openSheet();
     await recordAndWaitForSignal();
     fireEvent.press(screen.getByText('Record Again'));
@@ -272,7 +272,11 @@ describe('a recording waiting for signal survives iOS closing the app (everyday 
     transcription.transcribeDAVECaptureMemoryAudio.mockRejectedValueOnce(daveVoiceWaitingForSignalError());
     fireEvent.press(screen.getByText('Continue'));
     await waitFor(() => expect(keptFiles()).toHaveLength(1));
-    forgetKeptVoiceRecordings();
+    // Review N2 (5 Oct 2026): the sign-out names its account; another account's sign-out leaves it (review-n2-dictation-*).
+    forgetKeptVoiceRecordings('owner-b');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(keptFiles()).toHaveLength(1);
+    forgetKeptVoiceRecordings('owner-a');
     await waitFor(() => expect(keptFiles()).toHaveLength(0));
     await expect(keptVoiceRecordingExists('owner-a')).resolves.toBe(false);
     closeApp();

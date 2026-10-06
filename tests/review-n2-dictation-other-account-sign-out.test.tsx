@@ -1,29 +1,32 @@
 /**
- * Everyday item 7 (2 Oct 2026): a sign-out this phone did not ask for (the
- * sign-in ended elsewhere, e.g. the iPad's "Sign Out of All Devices", while
- * the app was closed or open) discarded the field note being dictated, with
- * no warning. It is now set aside for that account, kept on the phone, and
- * offered again in Field Notes once the same account signs in. Settings'
- * Sign Out, which warns first, still discards it. Another account signing
- * in no longer does (review N2, 5 Oct 2026): it stays kept for its own
- * account. The real app shell (harness from
- * tests/app-same-account-auth-events.test.tsx).
+ * Review N2 (5 Oct 2026; caused by 16efe4e), in the real app shell (harness
+ * from tests/everyday-7-unasked-sign-out-keeps-dictation.test.tsx).
+ *
+ * David's sign-in ends unasked while he has a field note unsaved; it is set
+ * aside for him (everyday item 7). A second account signs in on the phone
+ * and sees none of his words. That account then uses Settings' Sign Out,
+ * which warned it about its own unsaved work only, and David's note was
+ * deleted with it: every account's kept work went. A sign-out now removes
+ * only the work of the account that is signing out, so David's note is still
+ * there, in Field Notes, when he signs back in.
+ *
+ * Sign-in events reach the app as auth-js sends them: each listener is told
+ * who is signed in as it starts to listen, and a screen that has closed no
+ * longer listens. (The older harness kept calling closed screens' listeners,
+ * which hid where the note was removed.)
  */
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
 import {
-  awaitSavedSignInRefresh,
   getCurrentSessionUser,
   getCurrentUser,
-  readSavedSignIn,
   subscribeToAuthStateChange,
-  subscribeToDAVEOperationalChanges,
 } from '../services/SupabaseService';
 import { forgetFieldNoteDraft } from '../hooks/use-field-note-draft';
 import { readKeptDraft } from '../services/KeptDraftStore';
-import { noteSignOutAskedHere } from '../services/SignOutIntent';
+import { clearSignOutAskedHere, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { forgetSetAsideAccount } from '../hooks/unsaved-drafts-on-account-change';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -174,98 +177,98 @@ const currentUser = jest.mocked(getCurrentUser);
 jest.setTimeout(240_000);
 const COLD = { timeout: 90_000 } as const;
 const PHONE = { width: 390, height: 844, scale: 3, fontScale: 1 } as const;
-const OWNER = 'owner-q13';
-const NOTE = 'Guardrail missing at the north slab edge, level 3';
+const DAVID = 'owner-david';
+const OTHER = 'owner-other';
+const DAVIDS_NOTE = 'Guardrail missing at the north slab edge, level 3';
+const OTHERS_NOTE = 'Deliveries moved to the east gate';
 const originalError = console.error;
 beforeAll(() => { console.error = () => undefined; });
 afterAll(() => { console.error = originalError; });
 
+type AuthListener = Parameters<typeof subscribeToAuthStateChange>[0];
+/** The screens listening for sign-in events now, and the ones already told who is signed in. */
+const listening = new Set<AuthListener>();
+const toldWhoIsSignedIn = new WeakSet<AuthListener>();
+const sessionOf = (userId: string | null) => (userId ? { user: { id: userId } } : null) as never;
+
 const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
-/** Every auth subscriber (NativeRoot, the app, Settings) hears the event, as with auth-js. */
+/** Every screen listening now hears the event, as with auth-js. */
 async function authEvent(event: string, userId: string | null) {
-  const listeners = jest.mocked(subscribeToAuthStateChange).mock.calls.map(call => call[0]);
-  await act(async () => {
-    listeners.forEach(listener => listener(event as never, (userId ? { user: { id: userId } } : null) as never));
-  });
+  const listeners = [...listening];
+  await act(async () => { listeners.forEach(listener => listener(event as never, sessionOf(userId))); });
+}
+/** auth-js tells each new listener who is signed in as it starts to listen. */
+async function newListenersHearWhoIsSignedIn(userId: string) {
+  const fresh = [...listening].filter(listener => !toldWhoIsSignedIn.has(listener));
+  fresh.forEach(listener => toldWhoIsSignedIn.add(listener));
+  await act(async () => { fresh.forEach(listener => listener('INITIAL_SESSION' as never, sessionOf(userId))); });
 }
 
 beforeEach(async () => {
   act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
   await AsyncStorage.clear();
-  session.mockResolvedValue({ ok: true, data: { id: OWNER } } as never);
-  currentUser.mockResolvedValue({ ok: true, data: { id: OWNER } } as never);
-});
-afterEach(() => { forgetFieldNoteDraft(); forgetSetAsideAccount(); });
-
-/** No signal, the hourly token expired: the saved sign-in cannot refresh. */
-async function offlineStartOnSavedSignIn() {
-  await AsyncStorage.setItem('@vitruvius/owner-storage-sandbox/metadata/v1', JSON.stringify({
-    version: 1, activeOwnerId: OWNER, legacyAssignedOwnerId: null, updatedAt: '2026-09-30T06:00:00.000Z',
-  }));
-  session.mockResolvedValue({ ok: false, error: 'Network request failed', status: 401 } as never);
-  jest.mocked(awaitSavedSignInRefresh).mockResolvedValue({ status: 'network_unavailable' });
-  jest.mocked(readSavedSignIn).mockResolvedValue({
-    ownerId: OWNER, lastRefreshedAtMs: Date.now() - 14 * 3_600_000, expiresAtMs: Date.now() - 13 * 3_600_000,
+  listening.clear();
+  jest.mocked(subscribeToAuthStateChange).mockImplementation(listener => {
+    listening.add(listener);
+    return () => { listening.delete(listener); };
   });
+  session.mockResolvedValue({ ok: true, data: { id: DAVID } } as never);
+  currentUser.mockResolvedValue({ ok: true, data: { id: DAVID } } as never);
+});
+afterEach(() => { forgetFieldNoteDraft(); forgetSetAsideAccount(); clearSignOutAskedHere(); });
+
+/** The workspace is open for `userId`, and its screens know who is signed in. */
+async function workspaceOpenFor(tree: ReturnType<typeof render>, userId: string) {
+  await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+  await newListenersHearWhoIsSignedIn(userId);
 }
 
-
-async function writeFieldNote(tree: ReturnType<typeof render>) {
-  await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+async function writeFieldNote(tree: ReturnType<typeof render>, userId: string, text: string) {
   await act(async () => { fireEvent.press(tree.getByLabelText('Open Field Notes')); });
   await act(async () => { fireEvent.press(await tree.findByLabelText('Type field note', {}, COLD)); });
-  await act(async () => { fireEvent.changeText(tree.getByLabelText('Field note'), NOTE); });
-  await waitFor(async () => expect((await readKeptDraft('field-note', OWNER))?.value).toMatchObject({ text: NOTE }), COLD);
+  await act(async () => { fireEvent.changeText(tree.getByLabelText('Field note'), text); });
+  await waitFor(async () => expect((await readKeptDraft('field-note', userId))?.value).toMatchObject({ text }), COLD);
 }
 
-/** The workspace closes on a sign-out and opens again on this account's sign-in, as NativeRoot does. */
-async function signOutThenBackIn(tree: ReturnType<typeof render>, signInAs: string) {
+/** The sign-in ends (the workspace closes), then `signInAs` signs in on this phone. */
+async function signOutThen(tree: ReturnType<typeof render>, signInAs: string) {
   await authEvent('SIGNED_OUT', null);
   await wait(300);
   session.mockResolvedValue({ ok: true, data: { id: signInAs } } as never);
   currentUser.mockResolvedValue({ ok: true, data: { id: signInAs } } as never);
   await authEvent('SIGNED_IN', signInAs);
-  await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+  await workspaceOpenFor(tree, signInAs);
 }
 
-describe('a sign-out this phone did not ask for keeps the dictation for the account (everyday item 7)', () => {
-  it('the note being written is set aside, and offered again in Field Notes after the same account signs in', async () => {
+describe('review N2: work set aside for David survives another account\'s Settings sign-out', () => {
+  it('his note is not shown to the other account, is still kept after that account signs out, and is back in Field Notes when he signs in', async () => {
     const tree = render(<NativeRoot />);
-    await writeFieldNote(tree);
-    await signOutThenBackIn(tree, OWNER);
-    // Kept on the phone for this account all along.
-    expect((await readKeptDraft('field-note', OWNER))?.value).toMatchObject({ text: NOTE });
+    await workspaceOpenFor(tree, DAVID);
+    await writeFieldNote(tree, DAVID, DAVIDS_NOTE);
+
+    // David's sign-in ends elsewhere (not asked for on this phone); the other account signs in here.
+    await signOutThen(tree, OTHER);
+    expect((await readKeptDraft('field-note', DAVID))?.value).toMatchObject({ text: DAVIDS_NOTE });
+    expect(await readKeptDraft('field-note', OTHER)).toBeNull();
+    // It sees none of David's words, in Field Notes or anywhere on screen.
     await act(async () => { fireEvent.press(tree.getByLabelText('Open Field Notes')); });
-    await waitFor(() => expect(tree.getByLabelText('Field note').props.value).toBe(NOTE), COLD);
-    tree.unmount();
-  });
+    await wait(500);
+    expect(tree.queryByLabelText('Field note')).toBeNull();
+    expect(JSON.stringify(tree.toJSON())).not.toContain(DAVIDS_NOTE);
 
-  it('Settings\' Sign Out (asked here, after its warning) still discards it', async () => {
-    const tree = render(<NativeRoot />);
-    await writeFieldNote(tree);
+    // It writes a note of its own, then signs out through Settings (asked for here, after its warning).
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Type field note', {}, COLD)); });
+    await act(async () => { fireEvent.changeText(tree.getByLabelText('Field note'), OTHERS_NOTE); });
+    await waitFor(async () => expect((await readKeptDraft('field-note', OTHER))?.value).toMatchObject({ text: OTHERS_NOTE }), COLD);
     noteSignOutAskedHere();
-    await signOutThenBackIn(tree, OWNER);
-    await waitFor(async () => expect(await readKeptDraft('field-note', OWNER)).toBeNull(), COLD);
-    tree.unmount();
-  });
+    await signOutThen(tree, DAVID);
 
-  it('another account never reads it, and the same account still gets it (the rule, as the app calls it)', async () => {
-    const { settleUnsavedDraftsOnAccountChange } = require('../hooks/unsaved-drafts-on-account-change');
-    const { keepDraft } = require('../services/KeptDraftStore');
-    await keepDraft('field-note', OWNER, '', { text: NOTE, source: 'voice', projectName: '', locationName: '', actionKind: 'none', actionText: '', captureOpen: true });
-    // Signed out elsewhere while the app was closed: the launch's first event is the sign-out.
-    settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null);
-    expect(await readKeptDraft('field-note', 'owner-other')).toBeNull();
-    // The app stays open and the same account signs in: kept.
-    settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, OWNER);
-    expect((await readKeptDraft('field-note', OWNER))?.value).toMatchObject({ text: NOTE });
-    // Set aside for OWNER, then another account signs in in the same app. Review N2 (5 Oct 2026): it was
-    // removed here; it now stays kept for OWNER, and the other account still reads none of it
-    // (tests/review-n2-dictation-* have the rest).
-    settleUnsavedDraftsOnAccountChange('SIGNED_OUT', OWNER, null);
-    settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, 'owner-other');
-    await wait(50);
-    expect((await readKeptDraft('field-note', OWNER))?.value).toMatchObject({ text: NOTE });
-    expect(await readKeptDraft('field-note', 'owner-other')).toBeNull();
+    // The other account's own note is gone, as its warning said. David's is still kept for him.
+    await waitFor(async () => expect(await readKeptDraft('field-note', OTHER)).toBeNull(), COLD);
+    expect((await readKeptDraft('field-note', DAVID))?.value).toMatchObject({ text: DAVIDS_NOTE });
+    await act(async () => { fireEvent.press(tree.getByLabelText('Open Field Notes')); });
+    await waitFor(() => expect(tree.getByLabelText('Field note').props.value).toBe(DAVIDS_NOTE), COLD);
+    expect(JSON.stringify(tree.toJSON())).not.toContain(OTHERS_NOTE);
+    tree.unmount();
   });
 });
