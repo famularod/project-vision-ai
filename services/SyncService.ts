@@ -73,7 +73,7 @@ import {
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
-  scheduleItemIsOwnFirstWrite, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
@@ -7012,24 +7012,30 @@ async function uploadQueueItem(
     // row is read by its id when the list did not hold it; when it cannot be read the new row waits here, as any task
     // whose cloud copy cannot be checked does. (This device's own waiting edits of that row have gone up before it:
     // pendingUploadOrder.)
-    // Review P5-1 / S-P5-2: or the cloud's row is this device's own first write of it, whose answer was lost on weak
-    // signal (a whole copy with no copy it started from, of a row that says which row it replaces: only an approval
-    // queues one). It is weighed again as at the first upload; when the cloud's row is what that gives, there is
-    // nothing more to write, and a field changed on both rows is asked about now. (It was: a card for the whole task
-    // between this device's own two copies, with nothing to choose, in the place of that question.)
-    const firstUploadAgain = Boolean(remote) && !queuedFields && !payload.forceLocal && !isEditBase(payload.base);
-    const takenFromId = newToCloud || firstUploadAgain ? payload.itemData.textFromTask?.taskId : undefined;
+    // Review P5-1 / S-P5-2: a row that says which row it replaces, waiting whole with no copy it started from (only an
+    // approval queues one), and the cloud has it already: this device's own first write of it reached the cloud and
+    // the answer was lost on weak signal. That write went up weighed, so the copy still waiting differs from it, and
+    // the retry recorded a card for the whole task between this device's own two copies, with nothing to choose; in
+    // the place of the real question, when there was one. The waiting copy is now sent as what it is by then: an edit
+    // of the fields he has set on the row since it was made, started from what the row took (so the cloud's row
+    // stands wherever he set nothing, whatever it holds now, and a field changed on both is asked about). Only when
+    // nothing else of the row differs; a row that differs in more goes on as before.
+    const tasksOfRows = () => scheduleTaskOfRowId([...context.scheduleItemsById!.values(), ...[...(context.queuedScheduleItemEdits?.values() ?? [])].map(waiting => waiting.itemData)]);
+    const setSinceMade = remote && !queuedFields && !payload.forceLocal && !isEditBase(payload.base)
+      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows) : undefined;
+    if (setSinceMade === null) {
+      await settleScheduleItemConflicts(payload.id, null);
+      return 'uploaded';
+    }
+    if (setSinceMade) return uploadQueueItem({ ...item, payload: { id: payload.id, itemData: payload.itemData, ...setSinceMade } as ScheduleItemRecordPayload }, context);
+    const takenFromId = newToCloud ? payload.itemData.textFromTask?.taskId : undefined;
     const takenFromRow = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
     if (typeof takenFromRow === 'string') return takenFromRow;
     // (As this device's own waiting edit of that row will leave it: review P5 S-P5-4.)
     const takenFrom = takenFromRow && scheduleItemAsOwnWaitingEditLeavesIt(takenFromRow, context.queuedScheduleItemEdits?.get(takenFromId!));
     // (His hand links with the rest, review P5-2; two links are the same when they name rows of one task, among the
     // cloud's rows and the rows waiting here.)
-    const weighedAsFirst = newToCloud || takenFromId ? scheduleItemAgainstItsTask(payload.itemData, takenFrom, 'ask', takenFrom
-      ? scheduleTaskOfRowId([...context.scheduleItemsById.values(), ...[...(context.queuedScheduleItemEdits?.values() ?? [])].map(waiting => waiting.itemData)])
-      : undefined) : null;
-    const ownFirstWrite = Boolean(remote && weighedAsFirst && takenFromId && scheduleItemIsOwnFirstWrite(weighedAsFirst.row, remote));
-    const firstSent = newToCloud || ownFirstWrite ? weighedAsFirst : null;
+    const firstSent = newToCloud ? scheduleItemAgainstItsTask(payload.itemData, takenFrom, 'ask', takenFrom ? tasksOfRows() : undefined) : null;
     // His own percent goes up with who stated it when the cloud's row shows a file's percent over his earlier one
     // (schedule review N1 M3): sent as the percent alone, it read as the file's, and the next lookahead lowered it.
     // On a row a newer master has replaced as well: the sync's merge then carries it to the task's newest row as his.
@@ -7192,7 +7198,6 @@ async function uploadQueueItem(
       if (
         changedFields ||
         payload.forceLocal ||
-        ownFirstWrite ||
         JSON.stringify(payload.itemData) === JSON.stringify(remote) ||
         // A whole copy that differs from the cloud's row only where it is the copy it started from has nothing to ask
         // about (owner answer Q28): the cloud's row stands, as its other device left it.

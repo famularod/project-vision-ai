@@ -723,19 +723,45 @@ export function scheduleItemAsOwnWaitingEditLeavesIt(
 
 /**
  * Review P5-1 / S-P5-2 (6 Oct 2026, Low; from the first-upload weighing,
- * reached more often since the one-rule commit): whether the cloud's row is
- * the row this device's own first upload of it wrote. That upload may go up
- * corrected (scheduleItemAgainstItsTask). When its write reached the cloud
- * and the answer was lost on weak signal, the next pass met a row that
- * differed from the copy still waiting here and, with no copy it started
- * from, recorded a card for the whole task between this device's own two
- * copies, with nothing to choose; in the place of a real question about a
- * field, when there was one. `sent`: the waiting copy weighed again as at a
- * first upload. The same in everything but its stamps.
+ * reached more often since the one-rule commit): a master's new row still
+ * waiting to go up for the first time, when the cloud already has the row.
+ * Its first write reached the cloud and the answer was lost on weak signal.
+ * That write may have gone up corrected (scheduleItemAgainstItsTask), and the
+ * web or another device may have typed on the row since.
+ *
+ * What is left to send is what he has set on the row since it was made: each
+ * field the row says it took and no longer holds as taken (his links by the
+ * tasks they name), as an edit that started from what it took; and his
+ * project controls where his are the later, merged as ever. Null when he has
+ * set nothing: the cloud's row stands as it is, whatever else it holds by
+ * now. Undefined when the copy has been changed here since it was made AND
+ * differs from the cloud's row in more than that (a percent, a date): not
+ * this case, and the copy goes on as a whole copy does.
  */
-export function scheduleItemIsOwnFirstWrite(sent: ScheduleItem, remote: ScheduleItem): boolean {
-  return restMark(sent) === restMark(remote) && WHOLE_COPY_FIELDS_WEIGHED.every(field => fieldValue(sent, field) === fieldValue(remote, field)) &&
-    canonicalScheduleItemJson(sent.textFromTask ?? null) === canonicalScheduleItemJson(remote.textFromTask ?? null);
+export function scheduleItemNewRowMetAgain(
+  waiting: ScheduleItem,
+  remote: ScheduleItem,
+  taskOf: () => (rowId: string) => string,
+): Readonly<{ changedFields: string[]; base: ScheduleItemEditBase }> | null | undefined {
+  const taken = waiting.textFromTask;
+  if (!taken?.taskId) return undefined;
+  // (A row is saved unstamped by the approval; every edit of his stamps it.)
+  const changedHere = Boolean(waiting.updatedAt) && waiting.updatedAt !== (waiting.importedAt || waiting.createdAt);
+  const rest = (item: ScheduleItem) => restMark({ ...item, projectControls: undefined });
+  if (changedHere && rest(waiting) !== rest(remote)) return undefined;
+  const text = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field) && !scheduleItemHoldsAsTaken(waiting, field));
+  const links = Object.prototype.hasOwnProperty.call(taken, 'dependencies') &&
+    scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(taken, taskOf()) ? scheduleItemFieldsWithCompanions(['dependencies']) : [];
+  const merged = waiting.projectControls && remote.projectControls ? mergeProjectControlsRevisions(waiting.projectControls, remote.projectControls) : waiting.projectControls ?? remote.projectControls;
+  const controls = fieldValue({ projectControls: merged }, 'projectControls') !== fieldValue(remote, 'projectControls') ? ['projectControls'] : [];
+  if (text.length + links.length + controls.length === 0) return null;
+  return {
+    changedFields: [...text, ...links, ...controls, 'updatedAt'],
+    base: {
+      updatedAt: null,
+      fields: { ...Object.fromEntries([...text, ...links].map(field => [field, (taken as Record<string, unknown>)[field] ?? null])), ...(controls.length > 0 ? { projectControls: remote.projectControls ?? null } : {}) },
+    },
+  };
 }
 
 /**

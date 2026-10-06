@@ -235,7 +235,7 @@ import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, sche
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
-import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemIsOwnFirstWrite, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemNewRowMetAgain, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -3293,16 +3293,79 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       await noCards(phone, ipad);
     });
 
-    it('the rule on the records alone: the cloud\'s row is this device\'s own first write when it is the waiting copy weighed again, stamps aside; not when anything else differs', () => {
-      const waiting = { ...theRowAsApproved(), owner: '', notes: '' } as ScheduleItem;
-      const task = { ...waiting, id: 'MASTER F-1', owner: 'Bob', notes: NOTE, textFromTask: undefined, updatedAt: '2026-09-11T09:00:00.000Z' } as ScheduleItem;
-      const sent = scheduleItemAgainstItsTask(waiting, task, 'ask').row;
-      expect(sent).toMatchObject({ owner: 'Bob', notes: NOTE });
-      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, updatedAt: '2026-09-12T08:00:01.000Z' })).toBe(true);
-      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, owner: 'Ana' })).toBe(false);
-      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, percentComplete: 40 })).toBe(false);
-      expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, textFromTask: { ...sent.textFromTask!, owner: '' } })).toBe(false);
-      expect(scheduleItemIsOwnFirstWrite(waiting, sent)).toBe(false);
+    it('the web types an owner on the new row between that write and the retry (the sync reviewer\'s seed 74 as its generator runs it): still no card, and the web\'s owner stands', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(ipad, G, [G_ROW, SURVEY]);
+      const newId = theRow(ipad).id;
+      at('2026-09-11T09:00:00.000Z');
+      await edit(phone, 'MASTER F-1', { notes: NOTE });
+      await backgroundUpload(phone);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      shareDocuments(ipad);
+      mockCloud.lostAnswers = 1;
+      await backgroundUpload(ipad);
+      webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+      await backgroundUpload(ipad);
+      // (It was, also with a first form of this fix that knew only the untouched write: the whole-task card.)
+      expect([await cards(ipad), await queuedIds(ipad)]).toEqual([[], []]);
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Ana'));
+      await noCards(phone, ipad);
+    });
+
+    it('Keep Phone\'s kept copy of a master\'s new row is not taken for a first upload met again: it is written as he chose', async () => {
+      const { phone } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(phone, false);
+      const newId = await phoneApprovesWithNoSignal(phone);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(phone, true);
+      shareDocuments(phone);
+      await backgroundUpload(phone);
+      webWrite(webEdited(cloudRow(newId)!, { owner: 'Ana' }));
+      // A card for the whole task on that row, as a build before this one could leave: the phone's copy, with an owner
+      // he typed, against the cloud's.
+      on(phone);
+      const detectedAt = new Date().toISOString();
+      mockStores.get('phone')!.set('projectVisionAI.syncConflicts.v1', JSON.stringify([{
+        id: 'conflict-new-row', entity: 'schedule_item', localId: newId, localChangedAt: detectedAt, remoteChangedAt: null,
+        reason: 'This task changed on another device before the local edit finished syncing.', detectedAt,
+        localPayload: { id: newId, itemData: { ...theRow(phone), owner: 'Mike' } }, remotePayload: cloudRow(newId),
+      }]));
+      await chooseInSettings(phone, 'conflict-new-row', 'keep_local');
+      await backgroundUpload(phone);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Mike' });
+      expect(await cards(phone)).toEqual([]);
+    });
+
+    it('the rule on the records alone: what is left to send is what he has set on the row since it was made, started from what it took', () => {
+      const taskOf = () => (rowId: string) => rowId;
+      const waiting = theRowAsApproved();
+      const inTheCloud = { ...waiting, owner: 'Bob', notes: NOTE, textFromTask: { ...waiting.textFromTask!, owner: 'Bob', notes: NOTE }, updatedAt: '2026-09-12T08:00:01.000Z' } as ScheduleItem;
+      // Nothing set on it here: nothing to send, whatever the cloud's row holds by now.
+      expect(scheduleItemNewRowMetAgain(waiting, inTheCloud, taskOf)).toBeNull();
+      expect(scheduleItemNewRowMetAgain(waiting, { ...inTheCloud, owner: 'Typed on the web since' }, taskOf)).toBeNull();
+      // An owner he set on it: an edit of the owner that started from the blank it took.
+      expect(scheduleItemNewRowMetAgain({ ...waiting, owner: 'Mike', updatedAt: '2026-09-11T09:00:00.000Z' }, inTheCloud, taskOf))
+        .toEqual({ changedFields: ['owner', 'updatedAt'], base: { updatedAt: null, fields: { owner: '' } } });
+      // A link he made on it: with when he made it, started from the links it was made with.
+      const linked = { ...waiting, dependencies: [{ predecessorItemId: 'MASTER F-2', type: 'FS' as const, lagDays: 0 }], dependenciesUpdatedAt: '2026-09-11T09:00:00.000Z', updatedAt: '2026-09-11T09:00:00.000Z',
+        textFromTask: { ...waiting.textFromTask!, dependencies: [] } } as ScheduleItem;
+      expect(scheduleItemNewRowMetAgain(linked, { ...inTheCloud, textFromTask: { ...inTheCloud.textFromTask!, dependencies: [] } }, taskOf))
+        .toEqual({ changedFields: ['dependencies', 'dependenciesUpdatedAt', 'updatedAt'], base: { updatedAt: null, fields: { dependencies: [], dependenciesUpdatedAt: null } } });
+      // His controls where his entry is the later, to be merged as ever; not where the cloud's row holds more (the first write took the task's).
+      const controls = reviseProjectControls({ current: undefined, patch: { approvalStatus: 'Pending' }, actor: 'David', now: '2026-09-11T09:00:00.000Z' });
+      expect(scheduleItemNewRowMetAgain({ ...waiting, projectControls: controls, updatedAt: '2026-09-11T09:00:00.000Z' }, inTheCloud, taskOf)).toMatchObject({ changedFields: ['projectControls', 'updatedAt'] });
+      expect(scheduleItemNewRowMetAgain(waiting, { ...inTheCloud, projectControls: controls }, taskOf)).toBeNull();
+      // Something else on the cloud's row by now (a percent entered on another device) is no change of this copy's: still nothing to send.
+      expect(scheduleItemNewRowMetAgain(waiting, { ...inTheCloud, percentComplete: 40 }, taskOf)).toBeNull();
+      // Not this case: the copy was changed here since it was made and differs in more than what he sets (his percent typed since); or the row keeps no record.
+      expect(scheduleItemNewRowMetAgain({ ...waiting, percentComplete: 40, updatedAt: '2026-09-11T09:00:00.000Z' }, inTheCloud, taskOf)).toBeUndefined();
+      expect(scheduleItemNewRowMetAgain({ ...waiting, textFromTask: undefined }, inTheCloud, taskOf)).toBeUndefined();
     });
   });
 
