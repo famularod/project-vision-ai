@@ -167,7 +167,8 @@ describe('A5 p6 M2 / A10 p4 M1: the lookahead notes whether the progress before 
       masterStartDate: '10/01/2026', masterFinishDate: '10/03/2026', masterPercentComplete: 40, masterStatus: 'In Progress',
       masterProgressSource: 'project_manager', masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: DAVID_AT,
       masterFilePercentComplete: null,
-      lookaheads: [{ batchId: lookahead.importBatchId, startDate: '09/28/2026', finishDate: '09/30/2026', percentComplete: 60 }],
+      // (And when the lookahead's row was imported: review N2 F3, 5 Oct. Added deliberately.)
+      lookaheads: [{ batchId: lookahead.importBatchId, startDate: '09/28/2026', finishDate: '09/30/2026', percentComplete: 60, importedAt: lookahead.importedAt }],
     });
     // A task the master file set notes the file's percent as the master file's own.
     const fileOnly = approve({ items: masterItems(20), documents: [master] }, lookahead, pourRow(lookahead, 60));

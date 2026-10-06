@@ -390,7 +390,15 @@ describe('Review N1 web M1 (caused by ada8ef6, Q25): the web\'s delete of a repl
     expect(dates(one(onWk2, 'Framing'))).toBe('10/15/2026-10/25/2026');
     expect(dates(one(deleteWithItems(onWk2, WK1, AT), 'Framing'))).toBe('10/15/2026-10/25/2026');
     // The file gone with no task written was the jump: the deleted lookahead's dates.
-    expect(dates(one({ items: onWk2.items, documents: onWk2.documents.filter(document => document.id !== WK1.id) }, 'Framing'))).toBe('10/20/2026-10/30/2026');
+    // Changed deliberately (review N2 F3, 5 Oct): the task's note now says when week 1 was imported, so with its file
+    // gone the newer week 2 still replaces it and the master's dates stay shown. A note made before that review (no
+    // import time) jumps as it did, which is why the delete writes the dates shown.
+    const fileGone = { items: onWk2.items, documents: onWk2.documents.filter(document => document.id !== WK1.id) };
+    expect(dates(one(fileGone, 'Framing'))).toBe('10/15/2026-10/25/2026');
+    const notedBefore = fileGone.items.map(item => (item.lookaheadOverlay
+      ? { ...item, lookaheadOverlay: { ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(({ importedAt: _importedAt, ...entry }) => entry) } }
+      : item));
+    expect(dates(one({ items: notedBefore, documents: fileGone.documents }, 'Framing'))).toBe('10/20/2026-10/30/2026');
   });
 
   it('"Delete Document Only" and "Delete Document + Tasks" both leave the master\'s dates', () => {

@@ -787,6 +787,14 @@ export type ScheduleLookaheadOverlay = {
    * dates set so by hand read the same). The task has left the lookaheads'
    * dates: deleting a later lookahead gives the master's back, never this
    * one's or an earlier one's. Missing otherwise.
+   * importedAt: when this lookahead's row was imported (review N2 F3, 5 Oct
+   * 2026), noted when it restates the task. Once this lookahead's file is
+   * deleted alone it stands for the file: a lookahead for the task's project
+   * imported after it is newer and replaces it (owner answer Q25), as it does
+   * while the file is saved. Missing on a note made before that review.
+   * datesKeptAt: for a note with no importedAt, when "Delete PDF Only" on
+   * the lookahead in effect kept the task on this lookahead's dates (review
+   * N2 F3): it stands for the import time. Missing otherwise.
    */
   lookaheads: {
     batchId: string;
@@ -796,7 +804,9 @@ export type ScheduleLookaheadOverlay = {
     datesReplacedByMaster?: boolean | string;
     percentStated?: true;
     dateByHand?: { field: 'startDate' | 'finishDate'; at: string };
+    importedAt?: string;
     datesLeftAt?: string;
+    datesKeptAt?: string;
   }[];
 };
 

@@ -270,6 +270,19 @@ export function scheduleFileProgressAboveManagers(
  * earlier lookaheads gave no longer stand.
  * Progress is the caller's (fileProgressFor), and givenPercent the percent
  * it gave the task, or null when it left progress alone.
+ *
+ * Review N2 F3 (5 Oct 2026, gap in ada8ef6, owner answer Q25): "Delete PDF
+ * Only" on the lookahead in effect keeps its tasks on its dates and writes
+ * nothing, so with the file gone nothing said when the lookahead that moved
+ * a task was imported: a newer lookahead that left the task out never
+ * returned it to the master's dates, though the deleted lookahead's own
+ * detail tasks did leave (their rows say when they were imported). The entry
+ * now notes when its row was imported (importedAt), and the shown schedule
+ * reads it once the file is gone (PIEScheduleReconciliation). Noted here,
+ * with the restatement, and not by the delete: a save made by the delete
+ * stamped every task that lookahead had moved, and that stamp outranked a
+ * newer lookahead approved offline on another device (the reviewer's
+ * generator, seed 20137: Roof's 90% from the newer lookahead lost).
  */
 export function scheduleTaskRestatedByLookahead(
   task: ScheduleItem,
@@ -294,6 +307,7 @@ export function scheduleTaskRestatedByLookahead(
       ...(previous?.lookaheads || []).filter(entry => key(entry.batchId) !== key(batchId)),
       {
         batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent,
+        ...(typeof row.importedAt === 'string' && row.importedAt.trim() ? { importedAt: row.importedAt } : {}),
         // Its row stated a percent it did not give (at or below David's own): still a newer word (A5 pass 21 R3).
         ...(givenPercent === null && scheduleRowStatesPercent(row) ? { percentStated: true as const } : {}),
       },
@@ -814,8 +828,8 @@ export function scheduleItemsAfterScheduleDeleted({
   if (fileOnly) {
     const savedById = new Map(items.map(item => [item.id, item]));
     // Each as the phone's task save leaves it when given these two dates (the phone's delete passes only them): with
-    // the note that the task left its lookahead's dates (review N2 F2; ScheduleDateEdit).
-    return scheduleDatesShownUnderReplacedLookahead(items, documents, document)
+    // the note that the task left its lookahead's dates, or was kept on them (review N2 F2, F3; ScheduleDateEdit).
+    return [...scheduleDatesShownUnderReplacedLookahead(items, documents, document), ...scheduleDatesKeptUnderDeletedLookahead(items, documents, document)]
       .flatMap(({ id, startDate, finishDate }) => {
         const saved = savedById.get(id);
         return saved ? [{ ...saved, ...scheduleEditWithDateChangedAlone(saved, { startDate, finishDate }, updatedAt), updatedAt }] : [];
@@ -970,6 +984,37 @@ export function scheduleDatesShownUnderReplacedLookahead(
   return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
     .filter(item => item.savedLookaheadDates &&
       (item.lookaheadOverlay?.lookaheads?.at(-1)?.batchId || '').trim().toLowerCase() === batch)
+    .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
+}
+
+/**
+ * Review N2 F3 (5 Oct 2026, gap in ada8ef6, owner answer Q25), for a note
+ * made before that review: "Delete PDF Only" on the lookahead in effect
+ * keeps its tasks on its dates and wrote nothing. A newer lookahead that
+ * then left a master task out never returned it to the master's dates,
+ * though the deleted lookahead's own detail tasks did leave: with the file
+ * gone, nothing said when the lookahead that moved the task was imported. A
+ * note now says so itself (importedAt, scheduleTaskRestatedByLookahead) and
+ * the delete writes nothing, as before. For a note with no import time (a
+ * lookahead approved on Build 229 or earlier): the tasks shown on this
+ * lookahead's dates, whose note names it last, with those same dates. The
+ * delete saves them as kept (the same task save notes when,
+ * ScheduleDateEdit), and the shown schedule reads a lookahead imported after
+ * that as the newer one (PIEScheduleReconciliation). None for a replaced
+ * lookahead (its tasks are saved on the dates shown, above) or a master.
+ */
+export function scheduleDatesKeptUnderDeletedLookahead(
+  items: readonly ScheduleItem[],
+  documents: readonly ReferenceDocument[],
+  document: ReferenceDocument,
+): Array<Pick<ScheduleItem, 'id' | 'startDate' | 'finishDate'>> {
+  const batch = (document.importBatchId || '').trim().toLowerCase();
+  if (!batch || !scheduleDocumentAddsToMaster(document)) return [];
+  return selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] })
+    .filter(item => {
+      const latest = item.lookaheadOverlay?.lookaheads?.at(-1);
+      return !item.savedLookaheadDates && Boolean(latest) && !latest!.importedAt && (latest!.batchId || '').trim().toLowerCase() === batch && sameDates(item, latest!);
+    })
     .map(item => ({ id: item.id, startDate: item.startDate, finishDate: item.finishDate }));
 }
 

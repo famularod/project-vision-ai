@@ -28,11 +28,12 @@ import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendar
  * The same edit when it changes neither date, when the task has no lookahead
  * note, or when it is not on the dates its latest lookahead gave.
  *
- * Review N2 F2 (5 Oct 2026; residue of 3e1b312). The phone's "Delete PDF
- * Only" saves dates through this same task save, and passes the two dates
- * only (scheduleItemsAfterScheduleDeleted, fileOnly), so what such a save
- * means is noted here, as for a date changed alone, and the web's delete,
- * which saves the whole task, reads the same note from the same rule:
+ * Review N2 F2 and F3 (5 Oct 2026; residue of 3e1b312, gap in ada8ef6). The
+ * phone's "Delete PDF Only" saves dates through this same task save, and
+ * passes the two dates only (scheduleItemsAfterScheduleDeleted, fileOnly),
+ * so what such a save means is noted here, as for a date changed alone, and
+ * the web's delete, which saves the whole task, reads the same note from the
+ * same rule:
  * - F2. Both dates set to the master's dates the note keeps, on a task saved
  *   on its latest lookahead's dates (the dates shown under a replaced
  *   lookahead, saved when its file is deleted alone; or typed so by hand).
@@ -41,6 +42,16 @@ import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendar
  *   lookahead's dates: a file deleted earlier, dates David had not seen
  *   since it was replaced. The entry now notes when the task left
  *   (datesLeftAt), and that delete gives the master's dates back.
+ * - F3. Both dates set to the dates the task is already on, its latest
+ *   lookahead's (the lookahead in effect deleted alone keeps its tasks on
+ *   its dates). With the file gone nothing said when that lookahead was
+ *   imported, so a newer lookahead that left the task out never returned it
+ *   to the master's dates, while that lookahead's own detail tasks did
+ *   leave. An entry says when its lookahead was imported (importedAt,
+ *   scheduleTaskRestatedByLookahead) and such a save notes nothing. One
+ *   made before that review does not: it notes when the dates were kept
+ *   (datesKeptAt), and a lookahead imported after that is newer than the
+ *   one deleted.
  * Both dates set to anything else is a hand move, as before.
  */
 export function scheduleEditWithDateChangedAlone(
@@ -59,8 +70,10 @@ export function scheduleEditWithDateChangedAlone(
   if (typeof edit.startDate === 'string' && typeof edit.finishDate === 'string') {
     const setTo = (days: Pick<ScheduleItem, 'startDate' | 'finishDate'>) =>
       sameScheduleCalendarDay(edit.startDate, days.startDate) && sameScheduleCalendarDay(edit.finishDate, days.finishDate);
-    if (setTo(latest) || !setTo({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate })) return edit;
-    return { ...edit, lookaheadOverlay: { ...overlay, lookaheads: [...entries.slice(0, -1), { ...latest, datesLeftAt: at }] } };
+    const kept = setTo(latest);
+    if (kept ? Boolean(latest.importedAt) : !setTo({ startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate })) return edit;
+    const noted = kept ? { datesKeptAt: at } : { datesLeftAt: at };
+    return { ...edit, lookaheadOverlay: { ...overlay, lookaheads: [...entries.slice(0, -1), { ...latest, ...noted }] } };
   }
   if (startAlone === finishAlone) return edit;
   const field = startAlone ? 'startDate' as const : 'finishDate' as const;

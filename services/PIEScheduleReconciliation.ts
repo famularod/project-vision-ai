@@ -458,8 +458,21 @@ function withReplacedLookaheadDates(
       sameScheduleCalendarDay(item.startDate, days.startDate) && sameScheduleCalendarDay(item.finishDate, days.finishDate);
     // On the dates the latest lookahead in its note gave it, that lookahead replaced.
     // (A file deleted and imported again keeps the note's entry: a saved lookahead holding the task speaks for it.)
-    const lookahead = lookaheadByBatch.get(normalize(latest.batchId || '')) ?? holding[holding.length - 1];
-    if (!lookahead || !replacedFor(lookahead, project)) return item;
+    const saved = lookaheadByBatch.get(normalize(latest.batchId || '')) ?? holding[holding.length - 1];
+    // Review N2 F3 (5 Oct 2026, gap in ada8ef6): that lookahead's file was deleted alone ("Delete PDF Only") while it
+    // was in effect, so its tasks kept its dates and no saved lookahead speaks for them. It is that lookahead's task
+    // still: a lookahead for its project imported after it is newer and replaces it, as it does that lookahead's own
+    // detail tasks (above, by when their rows were imported). The note says when its lookahead's row was imported
+    // (importedAt), so the phone, the iPad and the web judge it alike with nothing written by the delete. A note made
+    // before that review does not: there the delete notes when the dates were kept (datesKeptAt), which stands for
+    // the import (no lookahead in between was newer, or it would have replaced it then).
+    const goneSince = saved ? '' : latest.importedAt || latest.datesKeptAt || '';
+    const replacedSinceGone = timestamp(goneSince) > 0 && scheduleSources.some(document => scheduleDocumentAddsToMaster(document) &&
+      timestamp(document.importedAt) > timestamp(goneSince) && scheduleLookaheadCoversTask(document, item));
+    const lookahead = saved ?? (replacedSinceGone
+      ? { id: '', name: '', importBatchId: latest.batchId, importedAt: goneSince, scheduleRole: 'lookahead' } as ReferenceDocument
+      : undefined);
+    if (!lookahead || !(saved ? replacedFor(lookahead, project) : replacedSinceGone)) return item;
     // Review N1 M1 (3 Oct 2026): one date David changed alone on a task on that lookahead's dates (its note says
     // which, and when) after the lookahead was replaced. He was shown the master's dates then: his date stands and
     // the other shows the master's. Changed while the lookahead was in effect it is a hand move: as saved.

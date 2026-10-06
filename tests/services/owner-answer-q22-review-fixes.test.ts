@@ -170,7 +170,8 @@ describe('H1: a schedule file with no % Complete never zeroes progress (audit A5
     ]);
     // The lookahead noted no percent of its own; the flag describes the file's row, not the task.
     expect(items.find(item => item.id === 'm-pour')?.lookaheadOverlay?.lookaheads).toEqual([
-      { batchId: lookahead.importBatchId, startDate: '09/28/2026', finishDate: '09/30/2026', percentComplete: null },
+      // (And when the lookahead's row was imported: review N2 F3, 5 Oct. Added deliberately.)
+      { batchId: lookahead.importBatchId, startDate: '09/28/2026', finishDate: '09/30/2026', percentComplete: null, importedAt: lookahead.importedAt },
     ]);
     expect(items.some(item => 'percentCompleteStated' in item)).toBe(false);
     // Deleting it gives the master's dates back, and the 60% stays.
