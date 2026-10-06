@@ -3744,4 +3744,211 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       });
     });
   });
+
+  describe('Review P6-1: his hand links are compared by the tasks they name wherever two copies of a task are weighed', () => {
+    const PAINT = 'Paint,Alpha,Lot,11/02/2026,11/06/2026,';
+    const SURVEY_MOVED = 'Survey,Alpha,Lot,10/19/2026,10/21/2026,';
+    const start3 = () => { at('2026-09-07T12:00:00.000Z'); return startBoth(F, [F_ROW, SURVEY, PAINT]); };
+    const named = (items: readonly ScheduleItem[], name: string) => items.find(item => item.taskName === name)!;
+    /** Framing after these tasks, as the device shows them. */
+    const setLinks = (device: Device, predecessors: string[]) => {
+      const shown = deviceShown(device);
+      return edit(device, named(shown, 'Framing').id, { dependencies: predecessors.map(name => ({ predecessorItemId: named(shown, name).id, type: 'FS', lagDays: 0 })) } as Partial<ScheduleItem>);
+    };
+    /** In each of the three places: the tasks shown that Framing's links name. */
+    const framingAfter = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()].map(items =>
+      (named(items, 'Framing').dependencies || []).map(link => items.find(item => item.id === link.predecessorItemId)?.taskName ?? `NOT SHOWN ${link.predecessorItemId}`));
+    const linkTo = (...ids: string[]) => ids.map(id => ({ predecessorItemId: id, type: 'FS' as const, lagDays: 0 }));
+
+    it('the schedule reviewer\'s LK4: the same link made on both sides of a master that moved both tasks is one link and no question', async () => {
+      const { phone, ipad } = await start3();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY_MOVED, PAINT]);
+      shareDocuments(phone); await backgroundUpload(phone);
+      at('2026-09-11T09:00:00.000Z');
+      await setLinks(phone, ['Survey']);
+      await backgroundUpload(phone);
+      at('2026-09-11T12:00:00.000Z');
+      await setLinks(ipad, ['Survey']); // on the rows it still shows: MASTER F-1 after MASTER F-2
+      at('2026-09-12T08:00:00.000Z');
+      const asThePhoneWroteIt = cloudRow('MASTER G-1')!.updatedAt;
+      await allSynced(phone, ipad);
+      // (It was: a card on the iPad, "Predecessors: 1 item" on both sides.)
+      await noCards(phone, ipad);
+      expect(framingAfter(phone, ipad)).toEqual(Array(3).fill(['Survey']));
+      // The task's row keeps the link as the phone wrote it there, and is not written again for the iPad's copy of it.
+      expect([cloudRow('MASTER G-1')!.dependencies, cloudRow('MASTER G-1')!.updatedAt]).toEqual([linkTo('MASTER G-2'), asThePhoneWroteIt]);
+    });
+
+    it('the schedule reviewer\'s LK5: a second link added by a device that had not heard that a master moved the first link\'s task simply stands', async () => {
+      const { phone, ipad } = await start3();
+      at('2026-09-08T08:00:00.000Z');
+      await setLinks(phone, ['Survey']);
+      await backgroundUpload(phone); await refresh(ipad);
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(phone, G, [F_ROW, SURVEY_MOVED, PAINT]);
+      shareDocuments(phone); await backgroundUpload(phone);
+      // The approval points Framing's link at Survey's new row (App.tsx saves that after an approval; here, as an edit).
+      await edit(phone, 'MASTER F-1', { dependencies: linkTo('MASTER G-2') } as Partial<ScheduleItem>);
+      await backgroundUpload(phone);
+      expect(cloudRow('MASTER F-1')!.dependencies).toEqual(linkTo('MASTER G-2'));
+      at('2026-09-11T12:00:00.000Z');
+      await setLinks(ipad, ['Survey', 'Paint']); // MASTER F-2 (the Survey it still shows) and MASTER F-3
+      at('2026-09-12T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      // (It was: the added link held in a card, "2 items" / "1 item", and only Survey on the task until Keep Phone.)
+      await noCards(phone, ipad);
+      expect(framingAfter(phone, ipad)).toEqual(Array(3).fill(['Survey', 'Paint']));
+      // Saved naming Survey's row as the cloud's copy named it, and the link he added.
+      expect(cloudRow('MASTER F-1')!.dependencies).toEqual(linkTo('MASTER G-2', 'MASTER F-3'));
+    });
+
+    /** Framing after Survey in the cloud; the iPad loses signal; the phone's master G moves Survey, and Framing's link is pointed at Survey's new row. */
+    async function surveyMovedBehindTheIPadsBack() {
+      const { phone, ipad } = await start3();
+      at('2026-09-08T08:00:00.000Z');
+      await setLinks(phone, ['Survey']);
+      await backgroundUpload(phone); await refresh(ipad);
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(phone, G, [F_ROW, SURVEY_MOVED, PAINT]);
+      shareDocuments(phone); await backgroundUpload(phone);
+      await edit(phone, 'MASTER F-1', { dependencies: linkTo('MASTER G-2') } as Partial<ScheduleItem>);
+      await backgroundUpload(phone);
+      return { phone, ipad };
+    }
+
+    it('...and when a second master has moved Framing meanwhile, the link he added reaches the task\'s new row', async () => {
+      const { phone, ipad } = await surveyMovedBehindTheIPadsBack();
+      at(H.importedAt!);
+      await approve(phone, H, [H_ROW, SURVEY_MOVED, PAINT]);
+      shareDocuments(phone); await backgroundUpload(phone);
+      at('2026-09-18T12:00:00.000Z');
+      await setLinks(ipad, ['Survey', 'Paint']);
+      at('2026-09-19T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      await noCards(phone, ipad);
+      // (Weighed by row ids on the row he typed on, it was asked about there and never sent on.)
+      expect([named(webShown(), 'Framing').id, framingAfter(phone, ipad)]).toEqual(['MASTER H-1', Array(3).fill(['Survey', 'Paint'])]);
+    });
+
+    it('...and when a lookahead approved on the iPad before it has signal sends the task whole, the whole copy\'s links are weighed the same way', async () => {
+      const { phone, ipad } = await surveyMovedBehindTheIPadsBack();
+      at('2026-09-11T12:00:00.000Z');
+      await setLinks(ipad, ['Survey', 'Paint']);
+      at('2026-09-11T13:00:00.000Z');
+      await approve(ipad, scheduleDoc('LOOKAHEAD P6', '2026-09-11T13:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/16/2026,10/26/2026,'], true);
+      expect((await queueOf(ipad)).map(item => Array.isArray((item.payload as { changedFields?: unknown }).changedFields))).toEqual([false]);
+      at('2026-09-12T08:00:00.000Z');
+      await allSynced(phone, ipad);
+      await noCards(phone, ipad);
+      expect(framingAfter(phone, ipad)).toEqual(Array(3).fill(['Survey', 'Paint']));
+    });
+
+    it('...and a master approved on the iPad that moves Framing goes up with the link he added though the old row\'s write fails in that pass (the cloud names Survey by its new row)', async () => {
+      const { ipad } = await surveyMovedBehindTheIPadsBack();
+      at('2026-09-11T12:00:00.000Z');
+      await setLinks(ipad, ['Survey', 'Paint']);
+      at(H.importedAt!);
+      await approve(ipad, H, [H_ROW, SURVEY, PAINT]);
+      at('2026-09-18T08:00:00.000Z');
+      setOnline(ipad, true); shareDocuments(ipad);
+      mockCloud.failNextWriteOf = 'MASTER F-1';
+      await backgroundUpload(ipad);
+      // (It was: weighed against the cloud's old row alone, whose link "had changed on another device", the new row
+      // went up with Survey only; and the old row's edit was never sent on to a row made from it.)
+      expect(cloudRow('MASTER H-1')!.dependencies).toEqual(linkTo('MASTER F-2', 'MASTER F-3'));
+    });
+
+    it('a card about the links left on a row a master has replaced closes when Review Conflicts opens, where the task\'s row holds the same links by task', async () => {
+      const { phone, ipad } = await start3();
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY_MOVED, PAINT]);
+      shareDocuments(phone); await backgroundUpload(phone);
+      at('2026-09-11T09:00:00.000Z');
+      await setLinks(phone, ['Survey']);
+      await backgroundUpload(phone);
+      // A card as a build before this one left it on the iPad: the same link, made on the rows the iPad then showed.
+      const oldRow = cloudRow('MASTER F-1')!;
+      const detectedAt = new Date().toISOString();
+      mockStores.get('ipad')!.set('projectVisionAI.syncConflicts.v1', JSON.stringify([{
+        id: 'schedule_item_conflict:links', entity: 'schedule_item', localId: 'MASTER F-1', localChangedAt: detectedAt, remoteChangedAt: null,
+        reason: 'This task changed on this device and on another device in the same place.', detectedAt,
+        localPayload: { id: 'MASTER F-1', itemData: { ...oldRow, dependencies: linkTo('MASTER F-2') }, changedFields: ['dependencies', 'updatedAt'], askedFields: ['dependencies'], base: { updatedAt: null, fields: { dependencies: [] } } },
+        remotePayload: oldRow,
+      }]));
+      expect((await cards(ipad)).map(card => [card.row, card.fields])).toEqual([['MASTER F-1', ['dependencies']]]);
+      on(ipad);
+      await ipad.m.sync.refreshScheduleItemConflictCloudCopies();
+      // (It was: moved to the task's row and still asked, "1 item" against "1 item".)
+      expect(await cards(ipad)).toEqual([]);
+    });
+
+    describe('the rule on the records alone', () => {
+      // Survey moved from MASTER F-2 to MASTER G-2; Paint is MASTER F-3; Roofing is MASTER F-4.
+      const taskOf = scheduleTaskOfRowId([{ id: 'MASTER G-2', revisedFromTaskIds: ['MASTER F-2'] }]);
+      const framing = (dependencies: unknown, extra: Partial<ScheduleItem> = {}) => ({ id: 'MASTER F-1', taskName: 'Framing', dependencies, ...extra } as ScheduleItem);
+      const editOf = (links: unknown, from: unknown) => ({ itemData: framing(links, { dependenciesUpdatedAt: '2026-09-11T12:00:00.000Z' }), fields: ['dependencies', 'dependenciesUpdatedAt', 'updatedAt'], base: { updatedAt: null, fields: { dependencies: from, dependenciesUpdatedAt: null } } });
+
+      it('an edit of the links against the cloud\'s row', () => {
+        const cloud = framing(linkTo('MASTER G-2'));
+        // A link only pointed at its task's new row here (the approval does that), the cloud's still as it started: it goes up, as before.
+        const pointed = editOf(linkTo('MASTER G-2'), linkTo('MASTER F-2'));
+        expect(scheduleItemEditAgainstCloud(pointed.itemData, pointed.fields, pointed.base, framing(linkTo('MASTER F-2')), taskOf)).toMatchObject({ asked: [], keptFromCloud: [], itemData: { dependencies: linkTo('MASTER G-2') } });
+        // The same links by task, named by other rows: the cloud's stay as written; nothing asked, nothing sent.
+        const same = editOf(linkTo('MASTER F-2'), []);
+        expect(scheduleItemEditAgainstCloud(same.itemData, same.fields, same.base, cloud, taskOf)).toMatchObject({ asked: [], keptFromCloud: ['dependencies', 'dependenciesUpdatedAt'] });
+        // (By row ids, as it was weighed: changed on both.)
+        expect(scheduleItemEditAgainstCloud(same.itemData, same.fields, same.base, cloud).asked).toEqual(['dependencies']);
+        // A link added here while the cloud's are, by task, the links this edit started from: his go up, naming Survey's row as the cloud does.
+        const added = editOf(linkTo('MASTER F-2', 'MASTER F-3'), linkTo('MASTER F-2'));
+        const weighed = scheduleItemEditAgainstCloud(added.itemData, added.fields, added.base, cloud, taskOf);
+        expect([weighed.asked, weighed.keptFromCloud, weighed.itemData.dependencies]).toEqual([[], [], linkTo('MASTER G-2', 'MASTER F-3')]);
+        expect(scheduleItemEditAgainstCloud(added.itemData, added.fields, added.base, cloud).asked).toEqual(['dependencies']);
+        // Changed on both to different tasks: asked, as before.
+        const other = editOf(linkTo('MASTER F-4'), linkTo('MASTER F-2'));
+        expect(scheduleItemEditAgainstCloud(other.itemData, other.fields, other.base, framing(linkTo('MASTER F-3')), taskOf)).toMatchObject({ asked: ['dependencies'], held: ['dependenciesUpdatedAt'] });
+        // Only pointed at the new row here, and a link added in the cloud: the cloud's stay (by row ids it was "changed on both").
+        const onlyPointed = editOf(linkTo('MASTER G-2'), linkTo('MASTER F-2'));
+        expect(scheduleItemEditAgainstCloud(onlyPointed.itemData, onlyPointed.fields, onlyPointed.base, framing(linkTo('MASTER F-2', 'MASTER F-3')), taskOf)).toMatchObject({ asked: [], keptFromCloud: ['dependencies', 'dependenciesUpdatedAt'] });
+        expect(scheduleItemEditAgainstCloud(onlyPointed.itemData, onlyPointed.fields, onlyPointed.base, framing(linkTo('MASTER F-2', 'MASTER F-3'))).asked).toEqual(['dependencies']);
+      });
+
+      it('a whole copy of the task (a lookahead approved with no signal) against the cloud\'s row', () => {
+        const cloud = framing(linkTo('MASTER G-2'), { updatedAt: '2026-09-10T18:00:01.000Z' });
+        const base = scheduleItemWholeCopyBase(framing(linkTo('MASTER F-2')))!;
+        // His copy added Paint; the cloud's links are, by task, the ones his copy started from: his stand, named as the cloud names Survey.
+        const added = framing(linkTo('MASTER F-2', 'MASTER F-3'));
+        expect(scheduleItemWholeCopyAgainstCloud(added, added, base, cloud, taskOf)).toMatchObject({ asked: [], sentHere: ['dependencies'], itemData: { dependencies: linkTo('MASTER G-2', 'MASTER F-3') } });
+        expect(scheduleItemWholeCopyAgainstCloud(added, added, base, cloud).asked).toEqual(['dependencies']); // by row ids, as it was
+        // The same links by task on both, each changed from none: the cloud's, as written there; nothing of his to send.
+        const same = framing(linkTo('MASTER F-2'));
+        expect(scheduleItemWholeCopyAgainstCloud(same, same, scheduleItemWholeCopyBase(framing([]))!, cloud, taskOf)).toMatchObject({ asked: [], sentHere: [], itemData: { dependencies: linkTo('MASTER G-2') } });
+        // A link the approval only pointed at its task's new row, over a cloud's row still as it was: it goes up, as before.
+        const pointed = framing(linkTo('MASTER G-2'));
+        expect(scheduleItemWholeCopyAgainstCloud(pointed, pointed, base, framing(linkTo('MASTER F-2')), taskOf)).toMatchObject({ asked: [], sentHere: ['dependencies'], itemData: { dependencies: linkTo('MASTER G-2') } });
+      });
+
+      it('this device\'s own waiting edit of the links of the row a master\'s new row replaces counts though the cloud names the task by its new row', () => {
+        const waiting = editOf(linkTo('MASTER F-2', 'MASTER F-3'), linkTo('MASTER F-2'));
+        const cloud = framing(linkTo('MASTER G-2'));
+        const edit = { itemData: waiting.itemData, changedFields: waiting.fields, base: waiting.base };
+        expect(scheduleItemAsOwnWaitingEditLeavesIt(cloud, edit, taskOf).dependencies).toEqual(linkTo('MASTER F-2', 'MASTER F-3'));
+        expect(scheduleItemAsOwnWaitingEditLeavesIt(cloud, edit)).toBe(cloud); // by row ids, as it was: "changed on another device", left out
+      });
+
+      it('an edit of the links typed on a replaced row is not sent on to the task\'s row when that row already has the same links by task; and a card moved there asks no more', () => {
+        const typed = { id: 'MASTER F-1', itemData: framing(linkTo('MASTER F-2'), { updatedAt: '2026-09-11T12:00:00.000Z' }), changedFields: ['dependencies', 'updatedAt'], base: { updatedAt: null, fields: { dependencies: [] } } };
+        const newRow = { id: 'MASTER G-1', taskName: 'Framing', dependencies: linkTo('MASTER G-2'), revisedFromTaskIds: ['MASTER F-1'], importedAt: G.importedAt } as ScheduleItem;
+        expect(scheduleItemTextEditOnRow(typed, typed.changedFields, newRow, [], taskOf)).toBeNull();
+        expect(scheduleItemTextEditOnRow(typed, typed.changedFields, newRow)).not.toBeNull(); // by row ids, as it was
+        const card = { id: 'MASTER F-1', itemData: typed.itemData, changedFields: typed.changedFields, askedFields: ['dependencies'], base: typed.base };
+        expect(scheduleItemConflictCopyOnRow(card, newRow, taskOf)).toBeNull();
+        expect(scheduleItemConflictCopyOnRow(card, newRow)).toMatchObject({ askedFields: ['dependencies'] });
+      });
+    });
+  });
 });

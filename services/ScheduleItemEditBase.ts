@@ -162,17 +162,26 @@ export function scheduleItemWholeCopyAgainstCloud(
   local: ScheduleItem,
   base: ScheduleItemEditBase | null | undefined,
   remote: ScheduleItem,
+  /** The task of a row id, for his hand links (review P6-1). */
+  taskOf?: (rowId: string) => string,
 ): Readonly<{ itemData: ScheduleItem; asked: string[]; sentHere: string[] }> {
   if (!isEditBase(base)) return { itemData: merged, asked: [], sentHere: [] };
   const next = { ...merged } as unknown as Record<string, unknown>;
   const asked: string[] = [];
   const sentHere: string[] = [];
+  const byTask = comparedBy(taskOf);
   WHOLE_COPY_FIELDS_WEIGHED.forEach(field => {
     if (!Object.prototype.hasOwnProperty.call(base.fields, field)) return;
     const was = fieldValue(base.fields, field);
     const here = fieldValue(local, field);
     const cloud = fieldValue(remote, field);
-    const source = here === was ? remote : cloud === was || cloud === here ? local : null;
+    const byIds = here === was ? remote : cloud === was || cloud === here ? local : null;
+    // Review P6-1: links that would be asked about for the rows they name are weighed by the tasks they name. His
+    // unchanged by task, or the same by task on both sides: the cloud's, as written there. The cloud's unchanged by
+    // task: his, each naming the row the cloud's copy names for its task.
+    const [wasBy, hereBy, cloudBy] = !byIds && field === 'dependencies' && taskOf ? [base.fields, local, remote].map(source => byTask(source, field)) : [];
+    const hisByTask = !byIds && wasBy !== undefined && cloudBy === wasBy && hereBy !== wasBy;
+    const source = byIds ?? (wasBy === undefined ? null : hereBy === wasBy || cloudBy === hereBy ? remote : hisByTask ? local : null);
     const companions = FIELD_COMPANIONS[field] ?? [];
     if (!source) {
       asked.push(field);
@@ -180,8 +189,9 @@ export function scheduleItemWholeCopyAgainstCloud(
       setRecordEntry(next, field, remote);
       return;
     }
-    if (here !== was) sentHere.push(field);
+    if (here !== was && source === local) sentHere.push(field);
     [field, ...companions].forEach(name => setField(next, name, source));
+    if (hisByTask) next.dependencies = scheduleItemLinksAsNamedIn(local, remote, taskOf!);
     setRecordEntry(next, field, source);
   });
   return { itemData: next as unknown as ScheduleItem, asked, sentHere };
@@ -400,6 +410,33 @@ function fieldValue(source: unknown, field: string): string {
   return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
 }
 
+/**
+ * Review P6-1 (6 Oct 2026, Low; half caused by the hand-link commit, 12ab6a3,
+ * half older): one field as two copies of a task are weighed against each
+ * other, wherever they are weighed. His hand links are compared by the tasks
+ * they name when the rows' tasks are known (`taskOf`, scheduleTaskOfRowId):
+ * a link names its predecessor by a row's id, and a master gives a task a
+ * new row. That was done only where a master's new row first goes up
+ * (scheduleItemAgainstItsTask); an EDIT of the links was still weighed by
+ * row ids. So the very same link made on both sides of a master was "changed
+ * on both" (a card whose two sides both read "Predecessors: 1 item"), and a
+ * second link added by a device that had not heard of the master, over a
+ * link the approval had only re-pointed, was held in a card too.
+ */
+const comparedBy = (taskOf?: (rowId: string) => string) => (source: unknown, field: string): string =>
+  (field === 'dependencies' && taskOf ? scheduleItemLinksKey(source, taskOf) : fieldValue(source, field));
+
+/**
+ * Review P6-1: this device's links, each naming the row the cloud's copy
+ * names for the same task where it names one (the approval's re-pointing, or
+ * the other device's link, stays as it is written there).
+ */
+function scheduleItemLinksAsNamedIn(source: unknown, cloud: unknown, taskOf: (rowId: string) => string): ReturnType<typeof normalizeScheduleDependencies> {
+  const linksOf = (copy: unknown) => normalizeScheduleDependencies(copy && typeof copy === 'object' ? (copy as { dependencies?: unknown }).dependencies : undefined);
+  const named = new Map(linksOf(cloud).map(link => [taskOf(String(link.predecessorItemId ?? '').trim()), link.predecessorItemId] as const));
+  return linksOf(source).map(link => ({ ...link, predecessorItemId: named.get(taskOf(String(link.predecessorItemId ?? '').trim())) ?? link.predecessorItemId }));
+}
+
 export type ScheduleItemEditAgainstCloud = Readonly<{
   /** The device's copy to send, with both devices' activity entries. */
   itemData: ScheduleItem;
@@ -423,11 +460,14 @@ export function scheduleItemEditAgainstCloud(
   changedFields: readonly string[],
   base: ScheduleItemEditBase | null | undefined,
   remote: ScheduleItem,
+  /** The task of a row id, for his hand links (review P6-1). */
+  taskOf?: (rowId: string) => string,
 ): ScheduleItemEditAgainstCloud {
   if (!isEditBase(base)) return { itemData, asked: [], keptFromCloud: [], held: [] };
   const asked: string[] = [];
   const keptFromCloud: string[] = [];
   let next = itemData;
+  const byTask = comparedBy(taskOf);
   changedFields.forEach(field => {
     if (!Object.prototype.hasOwnProperty.call(base.fields, field)) return;
     const was = fieldValue(base.fields, field);
@@ -436,6 +476,15 @@ export function scheduleItemEditAgainstCloud(
     // The cloud holds what this edit started from, what it has now, or what it held earlier and may have sent itself
     // (review N1 finding 4): nobody else changed the field, and this device's value goes up.
     if (cloud === was || cloud === here || isOwnEarlierValue(base, field, cloud)) return;
+    if (field === 'dependencies' && taskOf) {
+      // Review P6-1: links that differ in the rows they name are weighed by the tasks they name. The cloud's are, by
+      // task, the links this edit started from (the approval only pointed one at its task's new row): his go up,
+      // each naming the row the cloud's copy names for its task. The same links by task on both sides (the same link
+      // made twice), or his unchanged by task: the cloud's stand as written there. Nothing is asked in either case.
+      const [wasBy, hereBy, cloudBy] = [base.fields, itemData, remote].map(source => byTask(source, field));
+      if (cloudBy === wasBy && hereBy !== wasBy) { next = { ...next, dependencies: scheduleItemLinksAsNamedIn(itemData, remote, taskOf) }; return; }
+      if (cloudBy === hereBy || hereBy === wasBy) { keptFromCloud.push(field); return; }
+    }
     if (field === 'activity') {
       next = { ...next, activity: scheduleItemActivityOfBoth(itemData.activity, remote.activity) };
       return;
@@ -712,12 +761,16 @@ export function scheduleItemAgainstItsTask(
 export function scheduleItemAsOwnWaitingEditLeavesIt(
   remote: ScheduleItem,
   edit: Readonly<{ itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }> | null | undefined,
+  /** The task of a row id, for his hand links (review P6-1). */
+  taskOf?: (rowId: string) => string,
 ): ScheduleItem {
   const base = edit?.base;
   if (!edit || !isEditBase(base)) return remote;
   const fields = (Array.isArray(edit.changedFields) ? edit.changedFields : Object.keys(base.fields));
+  const byTask = comparedBy(taskOf);
   const mine = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
-    fieldValue(remote, field) === fieldValue(base.fields, field) && fieldValue(remote, field) !== fieldValue(edit.itemData, field));
+    (fieldValue(remote, field) === fieldValue(base.fields, field) || byTask(remote, field) === byTask(base.fields, field)) &&
+    fieldValue(remote, field) !== fieldValue(edit.itemData, field));
   return mine.length === 0 ? remote : { ...remote, ...Object.fromEntries(mine.map(field => [field, edit.itemData[field]])) } as ScheduleItem;
 }
 
@@ -894,21 +947,25 @@ export function scheduleItemTextEditOnRow(
   fields: readonly string[],
   row: ScheduleItem,
   between: readonly ScheduleItem[] = [],
+  /** The task of a row id, for his hand links (review P6-1): links that name the same tasks are not a change to send on. */
+  taskOf?: (rowId: string) => string,
 ): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase; sentOn: string[] } | null {
   const base = edit.base;
   if (!isEditBase(base)) return null;
+  const value = comparedBy(taskOf);
   // (Made after it: a row saved before he typed can say it took the same value, a blank most of all. The note typed
   // and cleared again on a row made current in between was not sent on to the newest row, which had taken a blank.)
   const typedAt = Date.parse(edit.itemData.updatedAt || '');
   const madeFromThisEdit = (field: string) => Boolean(edit.id) && [row, ...between].some(held => Boolean(held.textFromTask) &&
     held.textFromTask!.taskId === edit.id && Object.prototype.hasOwnProperty.call(held.textFromTask, field) &&
-    fieldValue(held.textFromTask, field) === fieldValue(edit.itemData, field) && Date.parse(held.importedAt || held.createdAt || '') > typedAt);
+    value(held.textFromTask, field) === value(edit.itemData, field) && Date.parse(held.importedAt || held.createdAt || '') > typedAt);
   const typed = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
-    fieldValue(edit.itemData, field) !== fieldValue(row, field) && fieldValue(edit.itemData, field) !== fieldValue(base.fields, field) &&
+    value(edit.itemData, field) !== value(row, field) && value(edit.itemData, field) !== value(base.fields, field) &&
     !madeFromThisEdit(field));
   if (typed.length === 0) return null;
   const asTaken = (held: ScheduleItem, field: string) => (held.textFromTask && Object.prototype.hasOwnProperty.call(held.textFromTask, field)
-    ? scheduleItemHoldsAsTaken(held, field) : isBlank(fieldValue(held, field)));
+    ? scheduleItemHoldsAsTaken(held, field) || (field === 'dependencies' && Boolean(taskOf) && value(held, field) === value(held.textFromTask, field))
+    : isBlank(fieldValue(held, field)));
   const stillAsTaken = (field: string) => [row, ...between].every(held => asTaken(held, field));
   return {
     id: row.id,
@@ -1094,10 +1151,16 @@ export function scheduleItemRowAnsweringTo(taskId: string, rows: readonly Schedu
  * Keep Phone wrote the note there and closed the card, and every device went
  * on showing the cloud's note.
  */
-export function scheduleItemConflictCopyOnRow(copy: ConflictCopy | null | undefined, row: ScheduleItem): ConflictCopy | null {
+export function scheduleItemConflictCopyOnRow(
+  copy: ConflictCopy | null | undefined,
+  row: ScheduleItem,
+  /** The task of a row id, for his hand links (review P6-1): the same links under other row ids are asked about no more. */
+  taskOf?: (rowId: string) => string,
+): ConflictCopy | null {
   const data = copy?.itemData && typeof copy.itemData === 'object' ? copy.itemData as Record<string, unknown> : null;
   if (!copy || !data) return null;
-  const asked = scheduleItemConflictFields(copy).filter(field => fieldValue(data, field) !== fieldValue(row, field));
+  const value = comparedBy(taskOf);
+  const asked = scheduleItemConflictFields(copy).filter(field => value(data, field) !== value(row, field));
   if (asked.length === 0) return null;
   const fields = scheduleItemFieldsWithCompanions(asked);
   const base = isEditBase(copy.base) ? copy.base : undefined;

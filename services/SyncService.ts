@@ -5944,6 +5944,7 @@ async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, st
     const answering = scheduleItemAnsweringToTaskId(shown, taskId, {}, rows);
     return (answering && rows.find(row => row.id === answering.id && row.id !== taskId)) || null;
   };
+  const tasksOfRows = scheduleTaskOfRowId(rows);
   await serializeSyncConflictMutation(async () => {
     let conflicts = await readSyncConflictsUnsafe();
     const before = conflicts;
@@ -5951,7 +5952,8 @@ async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, st
       if (conflict.entity !== 'schedule_item' || scheduleItemConflictFields(conflict.localPayload).length === 0) continue;
       const row = rowNow(conflict.localId);
       if (!row || !conflicts.includes(conflict)) continue;
-      const copy = scheduleItemConflictCopyOnRow(conflict.localPayload as Record<string, unknown>, row);
+      // (His links by the tasks they name: review P6-1.)
+      const copy = scheduleItemConflictCopyOnRow(conflict.localPayload as Record<string, unknown>, row, tasksOfRows);
       const others = conflicts.filter(item => item !== conflict);
       if (!copy) {
         conflicts = others;
@@ -7020,7 +7022,11 @@ async function uploadQueueItem(
     // of the fields he has set on the row since it was made, started from what the row took (so the cloud's row
     // stands wherever he set nothing, whatever it holds now, and a field changed on both is asked about). Only when
     // nothing else of the row differs; a row that differs in more goes on as before.
-    const tasksOfRows = () => scheduleTaskOfRowId([...context.scheduleItemsById!.values(), ...[...(context.queuedScheduleItemEdits?.values() ?? [])].map(waiting => waiting.itemData)]);
+    let tasksKnown: ((rowId: string) => string) | undefined;
+    const tasksOfRows = () => (tasksKnown ??= scheduleTaskOfRowId([...context.scheduleItemsById!.values(), ...[...(context.queuedScheduleItemEdits?.values() ?? [])].map(waiting => waiting.itemData)]));
+    // Review P6-1: his hand links are compared by the tasks they name wherever two copies of a task are weighed in this
+    // upload (an edit, a whole copy, an edit sent on to the task's row), not only where a new row first goes up.
+    const taskOfRow = (rowId: string) => tasksOfRows()(rowId);
     const setSinceMade = remote && !queuedFields && !payload.forceLocal && !isEditBase(payload.base)
       ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows) : undefined;
     if (setSinceMade === null) {
@@ -7032,7 +7038,7 @@ async function uploadQueueItem(
     const takenFromRow = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
     if (typeof takenFromRow === 'string') return takenFromRow;
     // (As this device's own waiting edit of that row will leave it: review P5 S-P5-4.)
-    const takenFrom = takenFromRow && scheduleItemAsOwnWaitingEditLeavesIt(takenFromRow, context.queuedScheduleItemEdits?.get(takenFromId!));
+    const takenFrom = takenFromRow && scheduleItemAsOwnWaitingEditLeavesIt(takenFromRow, context.queuedScheduleItemEdits?.get(takenFromId!), taskOfRow);
     // (His hand links with the rest, review P5-2; two links are the same when they name rows of one task, among the
     // cloud's rows and the rows waiting here.)
     const firstSent = newToCloud ? scheduleItemAgainstItsTask(payload.itemData, takenFrom, 'ask', takenFrom ? tasksOfRows() : undefined) : null;
@@ -7060,10 +7066,10 @@ async function uploadQueueItem(
     if (remote && changedFields) {
       const answering = [...context.scheduleItemsById.values()].filter(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id));
       const rowsNow = answering.filter(row => !answering.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id)));
-      const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote).asked : [];
+      const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote, taskOfRow).asked : [];
       for (const rowNow of rowsNow) {
         const onRowNow = scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow,
-          answering.filter(row => row !== rowNow && scheduleTaskEarlierIds(rowNow).includes(row.id)));
+          answering.filter(row => row !== rowNow && scheduleTaskEarlierIds(rowNow).includes(row.id)), taskOfRow);
         if (!onRowNow) continue;
         const followed = await uploadQueueItem({ ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload }, context);
         if (followed !== 'uploaded' && followed !== 'conflict') return followed;
@@ -7079,7 +7085,7 @@ async function uploadQueueItem(
     // (Text the carry brought forward to the cloud's row since he typed over a blank is not another edit: review N3 R2.)
     const weighed = remote && changedFields && !payload.forceLocal && isEditBase(payload.base)
       ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, scheduleItemEditBaseOverTextBroughtForward(payload.base, changedFields, remote,
-        scheduleTaskEarlierIds(remote).flatMap(id => context.scheduleItemsById!.get(id) ?? [])), remote)
+        scheduleTaskEarlierIds(remote).flatMap(id => context.scheduleItemsById!.get(id) ?? [])), remote, taskOfRow)
       : null;
     // A later percent of David's own in the cloud stands over the edit's older one (owner answer Q28): the progress is
     // not sent. Otherwise it goes as before.
@@ -7104,7 +7110,7 @@ async function uploadQueueItem(
         }).find(candidate => candidate.id === payload.id) || payload.itemData
       : null;
     const wholeWeighed = recovered && remote && isEditBase(payload.base)
-      ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote)
+      ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
     const asked = weighed?.asked ?? wholeWeighed?.asked ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
