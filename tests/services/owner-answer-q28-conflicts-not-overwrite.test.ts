@@ -1766,14 +1766,20 @@ describe('Review N1 finding 2: a card follows its task to the row a newer master
     expect(await conflictsOf(phone)).toEqual([]);
   });
 
-  it('the new row does not hold what the card showed (the master carried no note): David reviews the card again, on that row', async () => {
+  // Changed deliberately (review N2 P1, 5 Oct): the master now carries the note to the task's new row without a percent
+  // of David's too, so the new row holds what the card showed. The case this test keeps (the new row does not hold it)
+  // is now made by the note being retyped on that row after the master, before he chooses.
+  it('the new row does not hold what the card showed (the note on it was retyped since): David reviews the card again, on that row', async () => {
     const { phone, ipad, card, newId } = await movedTask({ percentFirst: false });
-    expect(cloudRow(newId)?.notes || '').toBe('');
+    expect(cloudRow(newId)?.notes || '').toBe(IPAD_NOTE);
+    const RETYPED = 'Pour moved to Thursday (retyped on the iPad)';
+    at('2026-09-10T19:00:00.000Z');
+    await edit(ipad, newId, { notes: RETYPED });
     on(phone);
     await expect(phone.m.sync.resolveScheduleItemSyncConflict(card.id, 'keep_local', { cloudCopyShown: card.remotePayload }))
       .rejects.toThrow('sync_conflict_cloud_copy_changed');
     const [again] = await conflictsOf(phone);
-    expect([again.localId, scheduleItemConflictFields(again.localPayload), (again.remotePayload as ScheduleItem).notes || '']).toEqual([newId, ['notes'], '']);
+    expect([again.localId, scheduleItemConflictFields(again.localPayload), (again.remotePayload as ScheduleItem).notes || '']).toEqual([newId, ['notes'], RETYPED]);
     await chooseInSettings(phone, again.id, 'keep_local');
     expect((await everywhere(phone, ipad)).map(rows => rows.map(row => row[3]))).toEqual(Array(3).fill([PHONE_NOTE]));
     expect(await conflictsOf(phone)).toEqual([]);

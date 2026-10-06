@@ -146,6 +146,19 @@ import {
  * paired none. Twins now pair by one rule per schedule role
  * (pairSameNamedTasks). A schedule uploaded on the web restates a task
  * entered by hand only when it is made current (scheduleRowsAwaitingCurrent).
+ *
+ * Review N2 P1 (5 Oct 2026, older: the same on Build 229): the row a master
+ * moves a task to filled its blank owner, contractor and notes from the
+ * task only when David had also entered a percent on it (the fill above, A5
+ * pass 3 F3, sat in the branch for his own progress). An owner he assigned
+ * or a note he typed on a task he had not started stayed on the hidden old
+ * row when next week's master slipped the task, and the report said "Framing
+ * owner changed from Mike to unassigned." Every row a master moves a task to
+ * now fills them, by the same rule: the file's value wins, the task's fills
+ * a blank (withBlanksFilledFrom), on the phone's approval and the web's
+ * upload alike. A lookahead restates the task in place, so nothing moves.
+ * Set Active and Make Current fill the row they show from the row they hide
+ * when that row was changed later (scheduleTextCarriedToShownTask).
  */
 export type ScheduleImportMergeResult = Readonly<{
   /** The saved tasks, with re-homed and completion-merged rows replaced. */
@@ -221,6 +234,20 @@ function withManagersPercentUnderFile(row: ScheduleItem, paired: ScheduleItem): 
   // With when David judged it (A6 pass 24 L1).
   const judgedAt = paired.managersPercentUnderFileJudgedAt;
   return { ...row, managersPercentUnderFile: under, ...(judgedAt !== undefined ? { managersPercentUnderFileJudgedAt: judgedAt } : {}) };
+}
+
+/** The fields David types on a task that a schedule file may also state. */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+
+/**
+ * A row with its blank owner, contractor and notes filled from the task it
+ * is a row of: the file's value wins, the task's fills a blank (A5 pass 3
+ * F3; for every moved row since review N2 P1). The same row when nothing is
+ * filled.
+ */
+function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>): T {
+  const filled = TYPED_TEXT_FIELDS.filter(field => !key(row[field]) && key(task[field]));
+  return filled.length === 0 ? row : { ...row, ...Object.fromEntries(filled.map(field => [field, task[field]])) };
 }
 
 /**
@@ -933,6 +960,11 @@ export function scheduleProgressCarriedToShownTasks({
   const carriedIds = new Set(carried.map(item => item.id));
   const saved = [...carried, ...restated.filter(item => !carriedIds.has(item.id))];
   const changed = new Map(saved.map(item => [item.id, item]));
+  // An owner or a note typed on the row now hidden, after the row now shown was last changed, follows the task (review N2 P1).
+  pairs.forEach((hidden, shown) => {
+    const filled = scheduleTextCarriedToShownTask(hidden, shown, changed.get(shown.id) || shown, now);
+    if (filled) changed.set(shown.id, filled);
+  });
   // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
   if (documentsBefore && documentsAfter) {
     scheduleTasksOnNotedDatesWhenCurrent({
@@ -1038,6 +1070,25 @@ function handTasksRestatedWhenCurrent(
     });
     return [next[0]];
   });
+}
+
+/**
+ * Review N2 P1 (5 Oct 2026, older): Set Active and Make Current carried only
+ * progress and links to the row they show. A schedule uploaded on the web
+ * saves a moved task's new row at the upload; an owner David assigned or a
+ * note he typed on the task before he made that schedule current (on the row
+ * he still saw) stayed on the row Make Current hid. The row now shown takes
+ * them by the import's rule: its own value stands, the hidden row's fills a
+ * blank. Only when the hidden row was changed after the shown row last was
+ * (or the shown row never was): a blank David left on the row he edited
+ * later stands, so a note he cleared does not come back when he switches
+ * masters back and forth. `row` is the shown task with the activation's
+ * other changes; null when nothing is filled.
+ */
+function scheduleTextCarriedToShownTask(hidden: ScheduleItem, shown: ScheduleItem, row: ScheduleItem, now: string): ScheduleItem | null {
+  if (!(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt))) return null;
+  const filled = withBlanksFilledFrom(row, hidden);
+  return filled === row ? null : { ...filled, updatedAt: now };
 }
 
 function progressCarried(
@@ -1263,19 +1314,16 @@ export function mergeApprovedScheduleImportItems({
       if (fileProgress) fileProgressIds.push(duplicate.id);
       return;
     }
+    // The task on new dates, on its new row: the file's owner, contractor and notes win, the task's fill a blank,
+    // whether or not David entered a percent on it (review N2 P1; at first only beside his own progress, below).
+    const filled = paired && key(paired.importBatchId) !== key(importedItem.importBatchId)
+      ? withBlanksFilledFrom(importedItem, paired)
+      : importedItem;
     if (
       paired &&
       paired.progressSource === 'project_manager' &&
       key(paired.importBatchId) !== key(importedItem.importBatchId)
     ) {
-      // The file's owner, contractor and notes win; the manager's fill a blank.
-      const kept = (value: string, saved: string) => key(value) || !key(saved) ? value : saved;
-      const filled = {
-        ...importedItem,
-        owner: kept(importedItem.owner, paired.owner),
-        contractor: kept(importedItem.contractor, paired.contractor),
-        notes: kept(importedItem.notes, paired.notes),
-      };
       // The manager's progress, unless the file's is higher or the saved progress was a file's (A5 pass 4 #1),
       // never below the manager's own percent a lookahead's note shows (A5 pass 6 M2).
       const fileProgress = fileProgressFor(paired, importedItem, approvedAt);
@@ -1310,14 +1358,14 @@ export function mergeApprovedScheduleImportItems({
     }
     if (paired && statusStartsTask(paired, importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
       // "In Progress" with no percent over Not Started 0%: the task on its new dates starts at 1% (A5 pass 10 L1).
-      additions.push(revision({ ...importedItem, percentComplete: 1, status: 'In Progress' }));
+      additions.push(revision({ ...filled, percentComplete: 1, status: 'In Progress' }));
       fileProgressIds.push(importedItem.id);
       return;
     }
     if (paired && !scheduleRowStatesPercent(importedItem) && key(paired.importBatchId) !== key(importedItem.importBatchId)) {
       // The file states no percent: the task on its new dates keeps the progress it had (A5 pass 5 H1).
       additions.push(revision({
-        ...importedItem,
+        ...filled,
         percentComplete: paired.percentComplete,
         status: paired.status,
         progressSource: paired.progressSource ?? null,
@@ -1329,7 +1377,7 @@ export function mergeApprovedScheduleImportItems({
       carriedProgressIds.push(importedItem.id);
       return;
     }
-    additions.push({ ...revision(importedItem), ...twinsSaidNotOf(importedItem) });
+    additions.push({ ...revision(filled), ...twinsSaidNotOf(importedItem) });
   });
 
   if (current && [...next, ...additions].some(item => scheduleTaskLinksOf(item).length > 0)) {
