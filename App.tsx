@@ -11578,8 +11578,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   // Deleted on every device: the durable deletion record first; the cloud
   // then removes the row, its file and its ECOS index.
-  /** The PDF of a lookahead in effect is never deleted on its own (owner answer Q36): he is told why, and nothing changes. */
-  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('Lookahead in effect', refusal); return Boolean(refusal); };
+  /** The PDF of a lookahead in effect, or of the master in effect, is never deleted on its own (owner answers Q36, Q38): he is told why, and nothing changes. */
+  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('PDF not deleted', refusal); return Boolean(refusal); };
   async function removeReferenceDocumentEverywhere(documentId: string) {
     if (fileOnlyDeleteRefused(documentId)) return false; // whoever asks: a dialog left open, another screen (owner answer Q36)
     const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
@@ -11650,7 +11650,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
-    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead in effect (owner answer Q36)
+    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead or the master in effect (owner answers Q36, Q38)
     Alert.alert(
       'Delete uploaded schedule?',
       `${document.name} will be removed${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,

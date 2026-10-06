@@ -2,6 +2,7 @@ import type { ReferenceDocument, ScheduleDependency, ScheduleItem, ScheduleLooka
 import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
+  currentScheduleDocumentWinners,
   scheduleDocumentAddsToMaster,
   scheduleDocumentDayLabel,
   scheduleFullCopyLeftUnshown,
@@ -1097,8 +1098,9 @@ export function scheduleDatesShownUnderReplacedLookahead(
 }
 
 /**
- * Owner answer Q36 (6 Oct 2026): on the phone and the iPad, the file of a
- * lookahead that is in effect is never deleted alone. "Delete PDF Only" is
+ * Owner answers Q36 and Q38 (6 Oct 2026): on the phone and the iPad, the
+ * file of a lookahead that is in effect, and of the master schedule in
+ * effect, is never deleted alone. "Delete PDF Only" is
  * not offered for it, and the delete underneath refuses: the lookahead's
  * dates would stay on its tasks with no lookahead left to say where they
  * came from, or to put the master's dates back. "Delete PDF + Items" stays;
@@ -1112,8 +1114,21 @@ export function scheduleFileOnlyDeleteRefusal(
   document: ReferenceDocument | null | undefined,
   documents: readonly ReferenceDocument[],
 ): string | null {
-  if (!document || !scheduleLookaheadInEffect(document, documents)) return null;
-  return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
+  if (!document) return null;
+  if (scheduleLookaheadInEffect(document, documents)) {
+    return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
+  }
+  // Owner answer Q38 (6 Oct 2026; the schedule reviewer's P7-1, the same on Build 229): nor the PDF of the master
+  // schedule in effect. Deleted alone, it left no schedule in effect: the list was empty on every device, and Set
+  // Active on the older master then showed a task the deleted master had moved twice (that master's row with his
+  // percent, note and owner beside the older master's at 0%), with the deleted master's own tasks. In effect as the
+  // list itself has it: the newest schedule marked current for one of its projects (currentScheduleDocumentWinners).
+  // An older master keeps both choices.
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  if (currentScheduleDocumentWinners(listed).some(winner => winner.id === document.id)) {
+    return `${document.name} is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.`;
+  }
+  return null;
 }
 
 /**

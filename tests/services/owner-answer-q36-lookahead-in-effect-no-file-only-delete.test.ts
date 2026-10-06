@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
-import { scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect } from '../../services/PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleFileOnlyDeleteRefusal, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
@@ -58,7 +58,7 @@ function phone(documents: ReferenceDocument[], overrides: Record<string, unknown
     ...overrides,
   };
   const source = `module.exports = (() => {
-    ${between('\n  /** The PDF of a lookahead in effect is never deleted on its own', '\n  function deleteReferenceDocument(')}
+    ${between('\n  /** The PDF of a lookahead in effect, or of the master in effect, is never deleted on its own', '\n  function deleteReferenceDocument(')}
     ${between('\n  function deleteScheduleDocument(', '\n  function addScheduleItem(')}
     return { deleteScheduleDocument, removeReferenceDocumentEverywhere };
   })();`;
@@ -70,20 +70,21 @@ function phone(documents: ReferenceDocument[], overrides: Record<string, unknown
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
 describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is not deleted on its own', () => {
-  it('what "in effect" is here is what it is everywhere: the newest lookahead of its project; not a master, not a lookahead a newer one replaced', () => {
+  it('what "in effect" is here is what it is everywhere: the newest lookahead of its project; not a lookahead a newer one replaced', () => {
     expect([MASTER, OLDER, NEWER].map(document => scheduleLookaheadInEffect(document, ALL))).toEqual([false, false, true]);
-    expect([MASTER, OLDER, NEWER].map(document => scheduleFileOnlyDeleteRefusal(document, ALL))).toEqual([null, null,
+    // (The master here is the one in effect: refused too since owner answer Q38, with its own sentence; below.)
+    expect([MASTER, OLDER, NEWER].map(document => scheduleFileOnlyDeleteRefusal(document, ALL))).toEqual([expect.stringContaining('MASTER is the active schedule'), null,
       'LOOKAHEAD 2 is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule\'s dates back.']);
     // The older one is in effect again once the newer one is gone.
     expect(scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])).toContain('LOOKAHEAD 1 is the lookahead in effect');
     expect(scheduleFileOnlyDeleteRefusal(undefined, ALL)).toBeNull();
   });
 
-  it('(a) the dialog offers "Delete PDF Only" for a master and for a replaced lookahead, and not for the lookahead in effect; its words read true with one choice', () => {
+  it('(a) the dialog offers "Delete PDF Only" for a replaced lookahead, and not for the lookahead in effect; its words read true with one choice', () => {
     const app = phone(ALL);
     [MASTER, OLDER, NEWER].forEach(document => app.deleteScheduleDocument(document.id));
     expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
-      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'], // the master in effect: owner answer Q38, below
       ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
       ['Cancel', 'Delete PDF + Items'],
     ]);
@@ -92,16 +93,13 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(app.alerts[2].message).not.toContain('You can also');
   });
 
-  it('(b) the delete underneath the button refuses for the lookahead in effect: he is told why and nothing changes; a master\'s file and a replaced lookahead\'s go as before', async () => {
+  it('(b) the delete underneath the button refuses for the lookahead in effect: he is told why and nothing changes; a replaced lookahead\'s file goes as before', async () => {
     const app = phone(ALL);
     expect(await app.removeReferenceDocumentEverywhere(NEWER.id)).toBe(false);
-    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['Lookahead in effect', scheduleFileOnlyDeleteRefusal(NEWER, ALL)]]);
+    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', scheduleFileOnlyDeleteRefusal(NEWER, ALL)]]);
     expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id)]).toEqual([[], ['MASTER', 'LOOKAHEAD 1', 'LOOKAHEAD 2']]);
     expect(await app.removeReferenceDocumentEverywhere(OLDER.id)).toBe(true);
     expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id), app.alerts.length]).toEqual([['LOOKAHEAD 1'], ['MASTER', 'LOOKAHEAD 2'], 1]);
-    const other = phone(ALL);
-    expect(await other.removeReferenceDocumentEverywhere(MASTER.id)).toBe(true);
-    expect(other.did.tombstones).toEqual(['MASTER']);
   });
 
   it('"Delete PDF Only" on a replaced lookahead still saves its tasks first, removes the record and then the stored file', async () => {
@@ -122,7 +120,7 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     app.referenceDocumentsCurrentRef.current = [MASTER, OLDER];
     pdfOnly.onPress!();
     await settled();
-    expect(app.alerts.slice(1).map(alert => [alert.title, alert.message])).toEqual([['Lookahead in effect', scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])]]);
+    expect(app.alerts.slice(1).map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])]]);
     expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
     expect(app.referenceDocumentsCurrentRef.current.map(document => document.id)).toEqual(['MASTER', 'LOOKAHEAD 1']);
   });
@@ -131,5 +129,64 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(3);
     expect(APP).toContain('void removeReferenceDocumentEverywhere(sharedRecord.id)\n        .then(removed => (removed === false ? undefined : removeFromDevice()))');
     expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(5); // the function and its three callers
+  });
+});
+
+/*
+ * Owner answer Q38 (6 Oct 2026; the schedule reviewer's P7-1, Medium, the same on Build 229): the same for the MASTER
+ * schedule in effect. Its PDF deleted alone left no schedule in effect: the list was empty on every device, and Set
+ * Active on the older master then showed a task the deleted master had moved twice (the older master's row at 0%,
+ * blank, and the deleted master's row with his percent, note and owner) beside that master's own tasks.
+ */
+describe('Owner answer Q38: on the phone, the PDF of the master schedule in effect is not deleted on its own', () => {
+  const F = { ...schedule('MASTER F', '2026-09-07T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+  /** An older master, the master in effect, and a lookahead a newer one replaced. */
+  const SAVED = [F, G, OLDER, NEWER];
+  const REFUSED = 'MASTER G is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.';
+
+  it('the master in effect is the one the list shows: the app\'s own test, not a second one; an older master is not refused', () => {
+    expect(currentScheduleDocumentWinners(SAVED).map(document => document.id)).toEqual(['MASTER G']);
+    expect([F, G, OLDER].map(document => scheduleFileOnlyDeleteRefusal(document, SAVED))).toEqual([null, REFUSED, null]);
+    // Two masters still marked current for one project (a device that has not reconciled them yet): only the one shown.
+    const bothMarked = [{ ...F, isCurrent: true } as ReferenceDocument, G];
+    expect(bothMarked.map(document => scheduleFileOnlyDeleteRefusal(document, bothMarked))).toEqual([null, REFUSED]);
+    // A combined master a newer one replaced for Alpha is still the one in effect for Beta.
+    const combined = { ...F, isCurrent: true, projectNames: ['Alpha', 'Beta'] } as ReferenceDocument;
+    expect(scheduleFileOnlyDeleteRefusal(combined, [combined, G])).toContain('MASTER F is the active schedule');
+    // After Set Active on the older master the newer one's PDF may go on its own.
+    const afterSetActive = [{ ...F, isCurrent: true } as ReferenceDocument, { ...G, isCurrent: false } as ReferenceDocument];
+    expect(afterSetActive.map(document => scheduleFileOnlyDeleteRefusal(document, afterSetActive))).toEqual([expect.stringContaining('MASTER F is the active schedule'), null]);
+  });
+
+  it('(a) the dialog offers "Delete PDF Only" for an older master and not for the master in effect; its words read true with one choice', () => {
+    const app = phone(SAVED);
+    [F, G].forEach(document => app.deleteScheduleDocument(document.id));
+    expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
+      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'],
+    ]);
+    expect(app.alerts[1].message).not.toContain('You can also');
+  });
+
+  it('(b) the delete underneath the button refuses for the master in effect: he is told why and nothing changes; the older master\'s file goes as before', async () => {
+    const app = phone(SAVED);
+    expect(await app.removeReferenceDocumentEverywhere(G.id)).toBe(false);
+    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', REFUSED]]);
+    expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id)]).toEqual([[], SAVED.map(document => document.id)]);
+    expect(await app.removeReferenceDocumentEverywhere(F.id)).toBe(true);
+    expect(app.did.tombstones).toEqual(['MASTER F']);
+  });
+
+  it('(c) a dialog opened on an older master checks again at the tap: set active meanwhile, nothing is saved and nothing is removed', async () => {
+    const app = phone(SAVED, { scheduleItemsAfterScheduleDeleted: () => [TASKS[0]] });
+    app.deleteScheduleDocument(F.id);
+    const pdfOnly = app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!;
+    // Set Active on master F, on this device or another, while the dialog is open.
+    app.referenceDocumentsCurrentRef.current = [{ ...F, isCurrent: true } as ReferenceDocument, { ...G, isCurrent: false } as ReferenceDocument, OLDER, NEWER];
+    pdfOnly.onPress!();
+    await settled();
+    expect(app.alerts.slice(1).map(alert => alert.message)).toEqual(['MASTER F is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.']);
+    expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
   });
 });
