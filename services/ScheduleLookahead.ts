@@ -15,6 +15,7 @@ import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
+import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -843,6 +844,7 @@ export function scheduleItemsAfterScheduleDeleted({
   documents,
   updatedAt = new Date().toISOString(),
   fileOnly = false,
+  withWhatHeSet = false,
 }: Readonly<{
   /** The saved tasks the delete keeps. */
   items: readonly ScheduleItem[];
@@ -858,6 +860,12 @@ export function scheduleItemsAfterScheduleDeleted({
    * dates shown (scheduleDatesShownUnderReplacedLookahead).
    */
   fileOnly?: boolean;
+  /**
+   * With `fileOnly` (review P5 R-A): also the tasks this delete shows on another row, with what he last set on them.
+   * For a caller that saves each returned task whole (the web). The phone's "Delete PDF Only" takes only the two
+   * dates of each task returned, so it does not ask for these.
+   */
+  withWhatHeSet?: boolean;
 }>): ScheduleItem[] {
   if (fileOnly) {
     const savedById = new Map(items.map(item => [item.id, item]));
@@ -868,11 +876,24 @@ export function scheduleItemsAfterScheduleDeleted({
     // save stamped them, and with a newer lookahead approved with no signal on another device the stamp won: its
     // task showed the deleted file's dates on every device (the reviewer's D19). Such a lookahead reads as it did
     // before review N2: deleted alone while in effect, its tasks keep its dates.
-    return scheduleDatesShownUnderReplacedLookahead(items, documents, document)
+    const onDatesShown = scheduleDatesShownUnderReplacedLookahead(items, documents, document)
       .flatMap(({ id, startDate, finishDate }) => {
         const saved = savedById.get(id);
         return saved ? [{ ...saved, ...scheduleEditWithDateChangedAlone(saved, { startDate, finishDate }, updatedAt), updatedAt }] : [];
       });
+    if (!withWhatHeSet) return onDatesShown;
+    // Review P5 R-A: and a task this delete shows on another row shows what he last set on it: his own newer percent
+    // (as "Delete PDF + Items" gives it, progressOfRowsNowHidden; no file's percent moves) and the rest.
+    const saved = new Map<string, ScheduleItem>(onDatesShown.map(item => [item.id, item]));
+    const documentsAfter = documents.filter(other => other.id !== document.id);
+    const shownAfter = selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: documentsAfter });
+    progressOfRowsNowHidden(items, [], document, documentsAfter, items, shownAfter.map(item => saved.get(item.id) || savedById.get(item.id) || item))
+      .forEach(item => saved.set(item.id, { ...item, updatedAt }));
+    whatHeSetOnRowsNowHidden(
+      selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }), shownAfter,
+      items, item => saved.get(item.id) || item, updatedAt,
+    ).forEach(item => saved.set(item.id, item));
+    return [...saved.values()];
   }
   const changed = new Map(scheduleItemsAfterLookaheadDeleted(items, document, updatedAt, documents).map(item => [item.id, item])); // hidden rows too (A5 pass 9 L1)
   const kept = items.map(item => changed.get(item.id) || item);
@@ -885,6 +906,11 @@ export function scheduleItemsAfterScheduleDeleted({
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // never a sibling (A8 pass 8 L1); David's newer progress (A5 pass 11 M-b, A5 pass 12 L)
   progressOfRowsNowHidden(items, removed, document, documents, kept, shown.map(item => changed.get(item.id) || item))
     .forEach(item => changed.set(item.id, { ...item, updatedAt })); // a row the delete hides gives David's newer progress (A6 pass 19 L2)
+  // Review P5 R-A: and what else he set on the task (its owner, note, approval, schedule impact...), as Set Active does.
+  whatHeSetOnRowsNowHidden(
+    selectAuthoritativeScheduleItems({ scheduleItems: [...items, ...removed], scheduleDocuments: [document, ...documents] }).filter(item => !removed.includes(item)),
+    shown, items, item => changed.get(item.id) || item, updatedAt,
+  ).forEach(item => changed.set(item.id, item));
   // Owner answer Q29 (2 Oct 2026): David's hand links follow each task to the row shown for it after the delete
   // (the row that answers to a removed one included), on the phone and the web alike. A link to a removed row
   // nothing shown answers to is left to scheduleDependenciesAfterScheduleDeleted (the row that answers to it,
@@ -943,6 +969,48 @@ function progressOfRowsNowHidden(
     if (progress) given.set(target.id, { ...target, ...progress });
   });
   return [...given.values()];
+}
+
+/**
+ * Review P5 R-A (6 Oct 2026, Low; older, the same on Build 229; the reports
+ * reviewer's seed "plain 104" with Set Active). A schedule's delete can
+ * change the row shown for a task: master 1 was current again (Set Active)
+ * while an old lookahead still held master 2's row of Sitework on show,
+ * where he had set Dana, Pending and 2 days. Deleting that lookahead, with
+ * its tasks or alone, hid master 2's row and showed master 1's with none of
+ * them, and the next report said "owner changed from Dana to unassigned",
+ * "approval changed from Pending to Not Required", "schedule impact changed
+ * from 2 days to not set". The delete carried only his percent.
+ *
+ * Each task the delete shows on another row of it (the one row shown since
+ * that the hidden row answers to, or that answers to it: as for his percent,
+ * progressOfRowsNowHidden) now shows what he last set, by the rule Set Active
+ * and Make Current use (scheduleItemAsLastSetOnItsOtherRow). The rows changed.
+ */
+function whatHeSetOnRowsNowHidden(
+  shownBefore: readonly ScheduleItem[],
+  shownAfter: readonly ScheduleItem[],
+  /** Every saved task the delete keeps, as saved before it (the delete's own stamps are not his). */
+  kept: readonly ScheduleItem[],
+  /** A task with the delete's changes so far. */
+  withChanges: (item: ScheduleItem) => ScheduleItem,
+  now: string,
+): ScheduleItem[] {
+  const before = new Set(shownBefore.map(item => item.id));
+  const after = new Set(shownAfter.map(item => item.id));
+  const nowShown = shownAfter.filter(item => !before.has(item.id));
+  const nowHidden = kept.filter(item => before.has(item.id) && !after.has(item.id));
+  if (nowShown.length === 0 || nowHidden.length === 0) return [];
+  const set = new Map<string, ScheduleItem>();
+  nowHidden.forEach(hidden => {
+    const hiddenId = hidden.id.trim();
+    const linked = nowShown.filter(item => scheduleTaskEarlierIds(hidden).includes(item.id.trim()) || scheduleTaskEarlierIds(item).includes(hiddenId));
+    if (linked.length !== 1) return;
+    const shown = kept.find(item => item.id === linked[0].id) || linked[0];
+    const carried = scheduleItemAsLastSetOnItsOtherRow(hidden, shown, set.get(shown.id) || withChanges(shown), now, kept);
+    if (carried) set.set(shown.id, carried);
+  });
+  return [...set.values()];
 }
 
 /**

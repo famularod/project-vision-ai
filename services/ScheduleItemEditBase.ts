@@ -764,6 +764,80 @@ export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleIte
 }
 
 /**
+ * Review N2 P1, N3 R3, N3 C, review P4 F1 and L1, review P5 R-A: the row now
+ * shown for a task (`row`: `shown` with the change's other edits) with what
+ * David has set on the task, when the change hid another row of it
+ * (`hidden`). His owner, contractor, note, next step and milestone, weighed
+ * from what one row took of the other (below); his project controls, each
+ * field by its own time. Null when nothing differs; else stamped `now`.
+ *
+ * For every change that makes another row the one shown: Set Active and Make
+ * Current (ScheduleImportMerge), and a schedule's delete, with its tasks or
+ * alone (ScheduleLookahead; review P5 R-A: after Set Active to an older
+ * master, deleting an old lookahead showed the older master's row without
+ * the owner, approval and schedule impact he had set, and the report said
+ * they had changed. The delete carried only his percent).
+ */
+export function scheduleItemAsLastSetOnItsOtherRow(
+  hidden: ScheduleItem,
+  shown: ScheduleItem,
+  row: ScheduleItem,
+  now: string,
+  /** Every saved task, when known: the rows between the two (Set Active across two masters or more). */
+  known?: readonly ScheduleItem[],
+): ScheduleItem | null {
+  const timeOf = (when: string | null | undefined) => { const time = Date.parse(when || ''); return Number.isFinite(time) ? time : 0; };
+  const hiddenLater = timeOf(hidden.updatedAt) > timeOf(shown.updatedAt);
+  // Review N3 R3, review P4 F1 and L1: one of the two rows replaced the other, and a row says what it took of his text
+  // from the row it replaced (textFromTask). That record is the copy both rows are weighed from, field by field: one
+  // only the hidden row has changed since shows on this row (he typed over it on the task, or cleared it, since the
+  // upload or under the other master); one only the shown row has changed keeps its own, a clear too, whichever row
+  // was changed later (a percent recorded on the older row while it was shown brought a cleared note back); one
+  // changed on both is the later row's, as nothing is asked here.
+  // The shown row is the newer one (Make Current, Set Active forward), or the older one (review P4 L1: Set Active to an
+  // older master showed the owner that master's row had, not the one he had set on the task since).
+  const [older, newer] = scheduleTaskEarlierIds(shown).includes(hidden.id) ? [hidden, shown]
+    : scheduleTaskEarlierIds(hidden).includes(shown.id) ? [shown, hidden] : [null, null];
+  const base = older && newer ? recordOfWhatWasTaken(older, newer, known) : null;
+  // (Two masters apart, the newer row's blank may be a clear he typed on the row in between, which that row passed
+  // on: the newer row is then weighed as a row that has been changed, though nothing was typed on it. "A row never
+  // changed since its import holds no clear of his" is said of a row against its own record only.)
+  const apart = base && base !== newer!.textFromTask ? { updatedAt: newer!.updatedAt || now } : {};
+  const weighed = !base ? row
+    : newer === shown ? { ...scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt, ...apart, textFromTask: base }, hidden, hiddenLater ? 'task' : 'row').row,
+        // (And the shown row's own record is of the row in between: it stays as it is.)
+        ...(row.textFromTask?.taskId === hidden.id ? {} : { textFromTask: row.textFromTask }) }
+    : scheduleItemWithItsNewRow(row, { ...hidden, ...apart, textFromTask: base }, hiddenLater);
+  const changed = base && JSON.stringify({ ...weighed, updatedAt: row.updatedAt }) !== JSON.stringify(row) ? weighed : row;
+  // A field with no such record (a row saved before rows kept one): the hidden row's fills a blank when it was the row
+  // changed later, as before.
+  const recorded = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(base ?? {}, field));
+  const lender = recorded.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(recorded.map(field => [field, ''])) };
+  // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
+  // and the later entry stands.
+  const blanks = hiddenLater ? SCHEDULE_TYPED_TEXT_FIELDS.filter(field => isBlank(fieldValue(changed, field)) && !isBlank(fieldValue(lender, field))) : [];
+  const withText = blanks.length === 0 ? changed : { ...changed, ...Object.fromEntries(blanks.map(field => [field, lender[field]])) } as ScheduleItem;
+  const controls = !hidden.projectControls ? withText.projectControls
+    : withText.projectControls ? mergeProjectControlsRevisions(withText.projectControls, hidden.projectControls) : hidden.projectControls;
+  const filled = JSON.stringify(controls ?? null) === JSON.stringify(withText.projectControls ?? null) ? withText : { ...withText, projectControls: controls } as ScheduleItem;
+  return filled === row || JSON.stringify({ ...filled, updatedAt: row.updatedAt }) === JSON.stringify(row) ? null : { ...filled, updatedAt: now };
+}
+
+/**
+ * What the newer of two rows of one task took from the older one: the record of the row that replaced the older row.
+ * That is the newer row itself, or, two masters or more apart (review P4 L1), a row in between, when every saved task
+ * is known; then only the fields the newer row's own record names too (one its file stated is the file's, not his).
+ */
+function recordOfWhatWasTaken(older: ScheduleItem, newer: ScheduleItem, known?: readonly ScheduleItem[]): ScheduleItem['textFromTask'] | null {
+  if (newer.textFromTask?.taskId === older.id) return newer.textFromTask;
+  const own = newer.textFromTask;
+  const chain = scheduleTaskEarlierIds(newer);
+  const between = own ? (known ?? []).find(item => item.textFromTask?.taskId === older.id && chain.includes(item.id)) : undefined;
+  if (!own || !between) return null;
+  return { ...Object.fromEntries(Object.entries(between.textFromTask!).filter(([field]) => Object.prototype.hasOwnProperty.call(own, field))), taskId: older.id };
+}
+
+/**
  * Review N3 R3: an edit of what David sets on a task, typed on a row a newer
  * master has since replaced (by a device that had not heard of that master),
  * as an edit of the row the task lives on now: that row with his values,

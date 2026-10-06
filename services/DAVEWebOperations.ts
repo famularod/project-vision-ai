@@ -477,7 +477,7 @@ export function planDAVEWebScheduleDocumentDelete({
   // tasks now does what the phone's file-only delete does, by the phone's own helper: the dates shown are saved, no
   // percent moves, and the task's note says it left that lookahead's dates (review N2 F2). "+ Tasks" is unchanged.
   const restored = keepTasks
-    ? scheduleItemsAfterScheduleDeleted({ items: kept, removed: [], document, documents: snapshot.referenceDocuments, updatedAt, fileOnly: true })
+    ? scheduleItemsAfterScheduleDeleted({ items: kept, removed: [], document, documents: snapshot.referenceDocuments, updatedAt, fileOnly: true, withWhatHeSet: true })
     : scheduleItemsAfterScheduleDeleted({
       items: kept,
       removed: saved.filter(item => removedIds.has(item.id)),
