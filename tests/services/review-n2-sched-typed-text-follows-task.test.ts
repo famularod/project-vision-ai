@@ -30,7 +30,8 @@ import {
   scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
-import type { ReferenceDocument, ScheduleItem } from '../../types';
+import type { ProjectControls, ReferenceDocument, ScheduleItem } from '../../types';
+import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(async () => null),
@@ -116,6 +117,61 @@ const framingF = one(onF, 'Framing').id;
 /** He assigns Mike and types a note on Framing, a task he has not started: no percent of his own on it. */
 const withNote = patch(patch(onF, framingF, { notes: 'Crew short Tuesday' }, '2026-09-08T09:00:00.000Z'), framingF, { owner: 'Mike', contractor: 'Acme Framing' }, '2026-09-08T09:05:00.000Z');
 const MIKE = ['Mike', 'Acme Framing', 'Crew short Tuesday'];
+
+/** A change to a task's project controls as the app's editor makes it (reviseProjectControls): each changed field with its own time. */
+function setControls(state: State, id: string, change: Partial<ProjectControls>, at: string): State {
+  const current = state.items.find(item => item.id === id)!;
+  return patch(state, id, { projectControls: reviseProjectControls({ current: current.projectControls, patch: change, actor: 'David', now: at }) }, at);
+}
+const controlsOf = (item: ScheduleItem) => {
+  const controls = normalizeProjectControls(item.projectControls);
+  return [controls.approvalStatus, controls.estimatedScheduleImpactDays, controls.assignee];
+};
+/** His approval status, schedule impact and assignee on Framing, and a next step and a milestone, set while F is the master. */
+const withControls = patch(setControls(setControls(onF, framingF, { approvalStatus: 'Pending' }, '2026-09-08T10:00:00.000Z'), framingF,
+  { estimatedScheduleImpactDays: 5, assignee: 'Lee' }, '2026-09-08T10:05:00.000Z'), framingF, { nextAction: 'Order rebar', milestone: 'Slab pour' }, '2026-09-08T10:10:00.000Z');
+
+/**
+ * Review N3 C (pass 3, reports; MEDIUM, older, already in Build 229). What he set on a task besides its owner and
+ * note stayed on the hidden old row when a master moved the task: the new row started with no approval status and no
+ * schedule impact, and the report said they had changed.
+ */
+describe('Review N3 C: what else he sets on a task goes with it to the row a master moves it to', () => {
+  it('its approval status, schedule impact and assignee (all of its project controls), its next step and its milestone', () => {
+    const onG = approve(withControls, G, [FRAMING_G, ROOF]);
+    const framing = one(onG, 'Framing');
+    expect(framing.id).not.toBe(framingF);
+    expect([dates(framing), ...controlsOf(framing), framing.nextAction, framing.milestone]).toEqual(['10/05/2026-10/15/2026', 'Pending', 5, 'Lee', 'Order rebar', 'Slab pour']);
+    // The row says which task's row it took them from (review N3 R3), with the text it took.
+    expect(framing.textFromTask).toEqual({ taskId: framingF, nextAction: 'Order rebar', milestone: 'Slab pour' });
+  });
+
+  it('with only controls to take, the row still says which row it took from; a task with none set gives none', () => {
+    const onlyControls = setControls(onF, framingF, { approvalStatus: 'Approved' }, '2026-09-08T10:00:00.000Z');
+    expect(one(approve(onlyControls, G, [FRAMING_G, ROOF]), 'Framing')).toMatchObject({ textFromTask: { taskId: framingF } });
+    const plain = one(approve(onF, G, [FRAMING_G, ROOF]), 'Framing');
+    expect([plain.projectControls ?? null, plain.textFromTask ?? null]).toEqual([one(onF, 'Framing').projectControls ?? null, null]);
+  });
+
+  it('a file states no controls: a row that arrives with the blank set every task starts with takes the task\'s as they are', () => {
+    // (Controls set without each field's own time, as Build 229 and the web's first builds saved them, lose to a blank
+    // set when the two are merged as two copies of his: the row from the file is not a copy of his.)
+    const plain = patch(onF, framingF, { projectControls: { ...normalizeProjectControls(null), approvalStatus: 'Pending', estimatedScheduleImpactDays: 5 } }, '2026-09-08T10:00:00.000Z');
+    const merged = mergeApprovedScheduleImportItems({
+      existing: plain.items, imported: rows(G, [FRAMING_G, ROOF]).map(item => ({ ...item, projectControls: normalizeProjectControls(null) })),
+      completionMatch: () => null, mergeCompletion: item => item, approvedAt: G.importedAt,
+      isCurrent: scheduleItemsVisibleBeforeImport(plain.items, [...plain.documents, G], G.importBatchId || ''),
+    });
+    expect(controlsOf(merged.additions.find(item => item.taskName === 'Framing')!).slice(0, 2)).toEqual(['Pending', 5]);
+  });
+
+  it('a second master moves it again: they are on the newest row, and what he changed in between is what goes', () => {
+    const onG = approve(withControls, G, [FRAMING_G, ROOF]);
+    const changed = setControls(onG, one(onG, 'Framing').id, { approvalStatus: 'Approved' }, '2026-09-16T09:00:00.000Z');
+    const onH = approve(changed, H, ['Framing,Alpha,Lot,10/08/2026,10/18/2026,', ROOF]);
+    expect([dates(one(onH, 'Framing')), ...controlsOf(one(onH, 'Framing'))]).toEqual(['10/08/2026-10/18/2026', 'Approved', 5, 'Lee']);
+  });
+});
 
 describe('Review N2 P1: the phone\'s master approval moves a task, and what David typed on it goes with it', () => {
   it('the task on its new dates shows his owner, contractor and note, with no percent of his on it', () => {
@@ -256,6 +312,24 @@ describe('Review N2 P1: the web\'s upload and Make Current, and the phone\'s Set
     expect([dates(one(current, 'Framing')), ...typed(one(current, 'Framing'))]).toEqual(['10/05/2026-10/15/2026', ...MIKE]);
   });
 
+  it('review N3 C: the web\'s upload saves the new row with his approval status and schedule impact; set after the upload, they come at Make Current', () => {
+    const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webItems(withControls) }, importedScheduleItems: rows(W, [FRAMING_G, ROOF]) });
+    expect(controlsOf(plan.additions.find(item => item.taskName === 'Framing')!)).toEqual(['Pending', 5, 'Lee']);
+    const uploaded = upload(onF, [FRAMING_G, ROOF]);
+    const setAfter = setControls(uploaded, framingF, { approvalStatus: 'Changes Requested', estimatedScheduleImpactDays: 2 }, '2026-09-14T15:00:00.000Z');
+    const current = makeCurrent(setAfter, '2026-09-15T12:00:00.000Z');
+    expect([dates(one(current, 'Framing')), ...controlsOf(one(current, 'Framing'))]).toEqual(['10/05/2026-10/15/2026', 'Changes Requested', 2, '']);
+  });
+
+  it('review N3 C: Set Active back to the older master and forward again: the later entry of each field stands on the row shown', () => {
+    const onG = approve(withControls, G, [FRAMING_G, ROOF]);
+    const onNew = setControls(onG, one(onG, 'Framing').id, { approvalStatus: 'Approved' }, '2026-09-16T09:00:00.000Z');
+    const backOnF = setActive(onNew, F, '2026-09-17T09:00:00.000Z');
+    expect([one(backOnF, 'Framing').id, ...controlsOf(one(backOnF, 'Framing'))]).toEqual([framingF, 'Approved', 5, 'Lee']);
+    const onOld = setControls(backOnF, framingF, { estimatedScheduleImpactDays: 1 }, '2026-09-18T09:00:00.000Z');
+    expect(controlsOf(one(setActive(onOld, G, '2026-09-19T09:00:00.000Z'), 'Framing'))).toEqual(['Approved', 1, 'Lee']);
+  });
+
   it('a note and an owner typed after the upload, before Make Current, follow the task to the row Make Current shows', () => {
     const uploaded = upload(onF, [FRAMING_G, ROOF]);
     // Not current yet: he still sees F's row, and types on it.
@@ -311,6 +385,18 @@ describe('Review N2 P1: the report no longer says the owner changed to unassigne
       snapshot: buildDAVEReportSnapshot({ truths: [truth], scopeKey: daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: now, reportFormat: 'project_manager' }),
     };
   }
+
+  it('review N3 C: after a master moves a task with an approval status and a schedule impact: the date change, and nothing about either', () => {
+    const before = report(withControls, null, '2026-09-10T12:00:00.000Z');
+    const onG = approve(withControls, G, [FRAMING_G, ROOF]);
+    const after = report(onG, before.snapshot, '2026-09-15T12:00:00.000Z');
+    // (It was, since Build 229: also "Framing approval changed from Pending to Not Required." and "Framing schedule
+    // impact changed from 5 days to not set.")
+    expect(after.lines).toEqual(['Framing finish changed from 10/11/2026 to 10/15/2026.']);
+    // One he does change afterwards is still reported.
+    const approved = setControls(onG, one(onG, 'Framing').id, { approvalStatus: 'Approved' }, '2026-09-16T09:00:00.000Z');
+    expect(report(approved, after.snapshot, '2026-09-17T12:00:00.000Z').lines).toEqual(['Framing approval changed from Pending to Approved.']);
+  });
 
   it('after a master moves the task he assigned to Mike: the date change, and nothing about its owner', () => {
     const before = report(withNote, null, '2026-09-10T12:00:00.000Z');

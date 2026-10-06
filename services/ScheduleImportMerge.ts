@@ -35,6 +35,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
+import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
  * How an approved schedule import joins the tasks already saved.
@@ -240,8 +241,28 @@ function withManagersPercentUnderFile(row: ScheduleItem, paired: ScheduleItem): 
   return { ...row, managersPercentUnderFile: under, ...(judgedAt !== undefined ? { managersPercentUnderFileJudgedAt: judgedAt } : {}) };
 }
 
-/** The fields David types on a task that a schedule file may also state. */
-const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+/** The fields David types on a task that a schedule file may also state (next step and milestone: review N3 C). */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
+
+/**
+ * Review N3 C (5 Oct 2026, Medium; older, already in Build 229): what else
+ * David sets on a task stayed on the hidden old row when a master moved the
+ * task. He set Paint's approval to Pending, or a schedule impact of 5 days;
+ * a new master listed Paint on other dates; the new row started with none,
+ * and the next report said "Paint approval changed from Pending to Not
+ * Required." or "Survey schedule impact changed from 1 day to not set.",
+ * though nobody had changed either. A row with the task's project controls
+ * (approval status, schedule impact, assignee, checklist and the rest). No
+ * schedule file states them, so a row from a file takes the task's as they
+ * are; between two rows that both hold his (Set Active, Make Current), the
+ * later entry of each field stands, as two copies of one task's are merged.
+ * The same row when the task has none, or the row already holds them.
+ */
+function withControlsOf(row: ScheduleItem, task: Pick<ScheduleItem, 'projectControls'>, fromFile: boolean): ScheduleItem {
+  if (!task.projectControls) return row;
+  const controls = fromFile || !row.projectControls ? task.projectControls : mergeProjectControlsRevisions(row.projectControls, task.projectControls);
+  return JSON.stringify(controls) === JSON.stringify(row.projectControls ?? null) ? row : { ...row, projectControls: controls };
+}
 
 /**
  * A row with its blank owner, contractor and notes filled from the task it
@@ -1263,8 +1284,9 @@ function handTasksRestatedWhenCurrent(
  * other changes; null when nothing is filled.
  */
 function scheduleTextCarriedToShownTask(hidden: ScheduleItem, shown: ScheduleItem, row: ScheduleItem, now: string): ScheduleItem | null {
-  if (!(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt))) return null;
-  const filled = withBlanksFilledFrom(row, hidden);
+  // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
+  // and the later entry stands.
+  const filled = withControlsOf(timeOf(hidden.updatedAt) > timeOf(shown.updatedAt) ? withBlanksFilledFrom(row, hidden) : row, hidden, false);
   return filled === row ? null : { ...filled, updatedAt: now };
 }
 
@@ -1443,9 +1465,14 @@ export function mergeApprovedScheduleImportItems({
     // its lookahead note, brought up to what this master says, as the task left on its dates does (A5 pass 8 L3).
     const note = paired?.lookaheadOverlay ? scheduleTaskMasterRestated(paired, importedItem, approvedAt).lookaheadOverlay : undefined;
     // David's hand links go with the task to its new row (owner answer Q29).
-    const revision = (row: ScheduleItem): ScheduleItem => paired && paired.id !== row.id
-      ? withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired)
-      : row;
+    // And his project controls (review N3 C); the row says which task's row it took them from, as for his owner and
+    // note (review N3 R3).
+    const revision = (row: ScheduleItem): ScheduleItem => {
+      if (!paired || paired.id === row.id) return row;
+      const moved = withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired);
+      const withHis = withControlsOf(moved, paired, true);
+      return withHis === moved || withHis.textFromTask ? withHis : { ...withHis, textFromTask: { taskId: paired.id } };
+    };
     if (duplicate) {
       claimed.add(duplicate.id);
       // An unchanged task an earlier import owns now belongs to this import

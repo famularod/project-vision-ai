@@ -233,6 +233,8 @@ import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItem
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 import { scheduleItemTextAsItsTaskHasIt, scheduleItemTextEditOnRow } from '../../services/ScheduleItemEditBase';
+import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
+import type { ProjectControls } from '../../types';
 
 /* Per-device module sets --------------------------------------------------- */
 type SyncModule = typeof import('../../services/SyncService');
@@ -1494,6 +1496,14 @@ describe('Review N2 P1: the merge\'s rule, on the records alone', () => {
     expect(textOf(out, 'B')).toEqual(['', '', 'newer', T2]);
   });
 
+  it('review N3 C: a next step and a milestone he typed are carried as the note is; a blank only', () => {
+    const out = merged([
+      row('A', { nextAction: 'Order rebar', milestone: 'Slab pour', updatedAt: T1 }),
+      row('B', { revisedFromTaskIds: ['A'], milestone: 'Topping out' }),
+    ]);
+    expect([out.find(item => item.id === 'B')!.nextAction, out.find(item => item.id === 'B')!.milestone]).toEqual(['Order rebar', 'Topping out']);
+  });
+
   it('the newest row keeps its own stamp, and a second merge changes nothing', () => {
     const rows = [row('A', { notes: 'typed', updatedAt: T2 }), row('B', { revisedFromTaskIds: ['A'], updatedAt: T1 })];
     const once = merged(rows);
@@ -1836,6 +1846,80 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
     await settle(phone, ipad);
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Typed on the phone', ''));
     await noCards(phone, ipad);
+  });
+
+  describe('review N3 C: his approval status and schedule impact, between two devices', () => {
+    const controlsNow = (row: ScheduleItem | undefined) => {
+      const controls = normalizeProjectControls(row?.projectControls);
+      return [controls.approvalStatus, controls.estimatedScheduleImpactDays];
+    };
+    const setOn = (device: Device, id: string, change: Partial<ProjectControls>) => edit(device, id, {
+      projectControls: reviseProjectControls({ current: device.state.find(item => item.id === id)!.projectControls, patch: change, actor: 'David', now: new Date().toISOString() }),
+    });
+    async function pendingOnBoth() {
+      const { phone, ipad } = await start();
+      const oldId = theRow(phone).id;
+      at('2026-09-08T08:00:00.000Z');
+      await setOn(phone, oldId, { approvalStatus: 'Pending' });
+      await backgroundUpload(phone);
+      await echoes(ipad);
+      expect(controlsNow(theRow(ipad))).toEqual(['Pending', null]);
+      return { phone, ipad, oldId };
+    }
+
+    it('changed on the iPad (Approved, and an impact of 5 days) and unheard by the phone that approves the master: the later entries are on the new row everywhere', async () => {
+      const { phone, ipad, oldId } = await pendingOnBoth();
+      setOnline(phone, false);
+      at('2026-09-09T08:00:00.000Z');
+      await setOn(ipad, oldId, { approvalStatus: 'Approved', estimatedScheduleImpactDays: 5 });
+      await backgroundUpload(ipad);
+      await phoneApprovesOffline(phone);
+      expect(controlsNow(cloudRow(theRow(phone).id))).toEqual(['Approved', 5]);
+      await settle(phone, ipad);
+      expect([controlsNow(theRow(phone)), controlsNow(theRow(ipad)), controlsNow(framingOf(webShown())[0])]).toEqual(Array(3).fill(['Approved', 5]));
+      await noCards(phone, ipad);
+    });
+
+    it('the master first; then the iPad, which has not heard of it, sets them on the row it still sees: they reach the task\'s new row, and nothing is asked', async () => {
+      const { phone, ipad, oldId } = await pendingOnBoth();
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY]);
+      shareDocuments(phone);
+      await backgroundUpload(phone);
+      const newId = theRow(phone).id;
+      expect(controlsNow(cloudRow(newId))).toEqual(['Pending', null]);
+      at('2026-09-11T09:00:00.000Z');
+      await setOn(ipad, oldId, { approvalStatus: 'Approved', estimatedScheduleImpactDays: 5 });
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      expect(controlsNow(cloudRow(newId))).toEqual(['Approved', 5]);
+      await settle(phone, ipad);
+      expect([controlsNow(theRow(phone)), controlsNow(theRow(ipad))]).toEqual(Array(2).fill(['Approved', 5]));
+      await noCards(phone, ipad);
+    });
+
+    it('set on both rows: of each field the later entry stands, with nothing asked (as on one row)', async () => {
+      const { phone, ipad, oldId } = await pendingOnBoth();
+      setOnline(ipad, false);
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY]);
+      shareDocuments(phone);
+      await backgroundUpload(phone);
+      const newId = theRow(phone).id;
+      at('2026-09-11T08:00:00.000Z');
+      await setOn(ipad, oldId, { approvalStatus: 'Approved', estimatedScheduleImpactDays: 5 });
+      at('2026-09-11T10:00:00.000Z');
+      await setOn(phone, newId, { approvalStatus: 'Changes Requested' });
+      await backgroundUpload(phone);
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      expect([controlsNow(theRow(phone)), controlsNow(theRow(ipad))]).toEqual(Array(2).fill(['Changes Requested', 5]));
+      await noCards(phone, ipad);
+    });
   });
 
   it('changed on the old row itself by two of them after the master (Ana on a web page still open on it, Lee on the iPad): asked about there, and nothing goes on to the new row unasked', async () => {

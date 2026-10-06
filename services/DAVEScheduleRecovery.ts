@@ -452,8 +452,8 @@ export function scheduleItemsAfterCloudDeletion(items: readonly ScheduleItem[], 
   return lent.map((row, index) => scheduleTaskEarlierIds(kept[index]).some(earlier => normalized(earlier) === id) ? row : kept[index]);
 }
 
-/** What David types on a task that a schedule file may also state. */
-const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+/** What David types on a task that a schedule file may also state (next step and milestone: review N3 C). */
+const TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
 type TypedTextField = typeof TYPED_TEXT_FIELDS[number];
 
 /**

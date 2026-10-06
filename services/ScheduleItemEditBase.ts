@@ -1,6 +1,7 @@
 import type { ProjectItemActivity, ScheduleItem } from '../types';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
+import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS, scheduleEntryUndone, scheduleManagersOwnPercent, scheduleProgressIsManagers, scheduleProgressJudgedAt,
 } from './ScheduleProgressSource';
@@ -471,8 +472,14 @@ export function scheduleItemEditBaseAfterLanding(
   };
 }
 
-/** What David types about a task that follows it from row to row (review N2 P1). */
-export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes'] as const;
+/** What David types about a task that follows it from row to row (review N2 P1; next step and milestone: review N3 C). */
+export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
+/**
+ * And what else he sets on a task that an edit typed on a replaced row takes on to the task's row (review N3 C): its
+ * project controls (approval status, schedule impact, assignee, checklist and the rest). Never asked about: two
+ * copies are merged field by field, the later entry of each field standing.
+ */
+const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectControls'] as const;
 
 /**
  * Review N3 R3 (5 Oct 2026, Medium): a master's new row for a task, as it
@@ -493,10 +500,18 @@ export function scheduleItemTextAsItsTaskHasIt(row: ScheduleItem, task: Schedule
   if (!taken || !task || task.id !== taken.taskId) return row;
   const behind = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field) &&
     fieldValue(row, field) === fieldValue(taken, field) && fieldValue(task, field) !== fieldValue(taken, field));
-  if (behind.length === 0) return row;
-  const now = Object.fromEntries(behind.map(field => [field, task[field] ?? '']));
+  const now: Partial<ScheduleItem> = Object.fromEntries(behind.map(field => [field, task[field] ?? '']));
+  // Review N3 C: his project controls came the same way. The cloud's row of the task may hold an approval or a
+  // schedule impact set on another device since: of the two, the later entry of each field (as two copies of one
+  // task's are merged).
+  const controls = task.projectControls ? mergeProjectControlsRevisions(row.projectControls, task.projectControls) : row.projectControls;
+  if (fieldValue({ controls }, 'controls') !== fieldValue({ controls: row.projectControls && normalizeProjectControls(row.projectControls) }, 'controls')) now.projectControls = controls;
+  if (Object.keys(now).length === 0) return row;
   // (After the row's own import time too: a row is ranked by the latest of its times.)
-  return { ...row, ...now, textFromTask: { ...taken, ...now }, updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt) };
+  return {
+    ...row, ...now, textFromTask: { ...taken, ...Object.fromEntries(behind.map(field => [field, task[field] ?? ''])) },
+    updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
+  };
 }
 
 /**
@@ -514,7 +529,7 @@ export function scheduleItemTextEditOnRow(
 ): { id: string; itemData: ScheduleItem; changedFields: string[]; base: ScheduleItemEditBase } | null {
   const base = edit.base;
   if (!isEditBase(base)) return null;
-  const typed = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
+  const typed = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
     fieldValue(edit.itemData, field) !== fieldValue(row, field));
   if (typed.length === 0) return null;
   return {
