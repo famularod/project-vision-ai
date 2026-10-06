@@ -243,6 +243,17 @@ export function daveWebReportAlreadyRecordedMessage(sentAt: string): string {
   return `Shared again. This report was already recorded as sent ${describeReportSendTime(sentAt)}, so this is not counted as another send.`;
 }
 
+/**
+ * Mark as Sent on a report this browser has already recorded as sent (another
+ * tab did, since this tab last read the period): nothing more is recorded.
+ * Review N2 (5 Oct 2026): it said "Shared again. ...", and he had shared
+ * nothing; that line was only ever seen with the workspace open, and Mark as
+ * Sent now says what happened in its own card.
+ */
+export function daveWebReportAlreadyMarkedSentMessage(sentAt: string): string {
+  return `This report was already recorded as sent ${describeReportSendTime(sentAt)}, so nothing more was recorded.`;
+}
+
 /** The same, after the share menu or an email draft: nothing is asked, since nothing more is recorded (review N1 M2). */
 export function daveWebReportAlreadySentNote(sentAt: string): string {
   return `This report was already recorded as sent ${describeReportSendTime(sentAt)}, so sending it again is not counted as another send.`;

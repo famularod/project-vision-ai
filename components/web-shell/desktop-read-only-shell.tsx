@@ -169,6 +169,7 @@ import {
   DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
+  daveWebReportAlreadyMarkedSentMessage,
   daveWebReportAlreadyRecordedMessage,
   daveWebReportAlreadySentNote,
   daveWebReportCheckedPressAgain,
@@ -5627,7 +5628,10 @@ function ReportWorkspace({
   const [pending, setPending] = useState(false);
   const [editingReportBody, setEditingReportBody] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  // Review N2 (5 Oct 2026): `byPeriodCard`: said in the "Since the last report" card, where Mark as Sent is, in
+  // place of the report workspace. Mark as Sent can be pressed with the workspace closed, and its outcome was
+  // shown only inside it: recorded or refused, the panel just went away.
+  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string; byPeriodCard?: true } | null>(null);
   // What the generator last put in the draft: a draft still reading so, never
   // saved, follows the period when it loads or moves (everyday item 3).
   // Review N2 (5 Oct 2026): and when a wait for the other device's changes ends. It followed the period only
@@ -5713,7 +5717,10 @@ function ReportWorkspace({
     approvedFingerprint: string | null,
     /** The period of the report that went out, when it is not the one on screen now (review N1 M1). */
     sentPeriod: Readonly<{ scopeKey: string; reportFormat: DAVEWebReportAudience }> = { scopeKey: periodScopeKey, reportFormat: reportAudience },
+    /** Mark as Sent: what happened is said by its own card, open workspace or not (review N2). */
+    byPeriodCard = false,
   ) => {
+    const say = (tone: 'good' | 'danger', text: string) => setNotice(byPeriodCard ? { tone, text, byPeriodCard: true } : { tone, text });
     let outcome: DAVEWebSendOutcome | null = null;
     try {
       outcome = await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
@@ -5730,22 +5737,22 @@ function ReportWorkspace({
           : await recordDAVEWebReportSend(periodStore, sentPeriod, approvedFingerprint, sentAt, markedSentAt);
       }
     } catch {
-      setNotice({ tone: 'danger', text: "The report couldn't be recorded as sent on this computer. Try again." });
+      say('danger', "The report couldn't be recorded as sent on this computer. Try again.");
       return false;
     }
     setPeriodReload(count => count + 1);
     if (outcome?.status === 'already_sent') {
       // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
-      setNotice({ tone: 'good', text: daveWebReportAlreadyRecordedMessage(outcome.sentAt) });
+      say('good', byPeriodCard ? daveWebReportAlreadyMarkedSentMessage(outcome.sentAt) : daveWebReportAlreadyRecordedMessage(outcome.sentAt));
       return true;
     }
     if (!outcome) {
       // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
-      setNotice({ tone: 'danger', text: DAVE_WEB_REPORT_SEND_NOT_RECORDED });
+      say('danger', DAVE_WEB_REPORT_SEND_NOT_RECORDED);
       return false;
     }
     if (outcome.status === 'later_send') {
-      setNotice({ tone: 'danger', text: daveWebReportLaterSendMessage(outcome.later, 'record', outcome.fromThisBrowser) });
+      say('danger', daveWebReportLaterSendMessage(outcome.later, 'record', outcome.fromThisBrowser));
       return false;
     }
     // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
@@ -5753,7 +5760,7 @@ function ReportWorkspace({
     setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
       ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
       : source);
-    setNotice({ tone: 'good', text: daveWebReportRecordedMessage(sentAt, currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'unchecked') });
+    say('good', daveWebReportRecordedMessage(sentAt, currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'unchecked'));
     return true;
   };
   /** The approved report on screen, as a share or an email draft takes it (review N1 M1). */
@@ -5788,8 +5795,13 @@ function ReportWorkspace({
     }
     setMarkSentRecording(true);
     setMarkSentMessage('');
-    void recordSend(checked.sentAt, manualReportMarkTime(checked.sentAt), approvalToMarkSent.sourceFingerprint)
-      .finally(() => setMarkSentRecording(false));
+    void recordSend(
+      checked.sentAt,
+      manualReportMarkTime(checked.sentAt),
+      approvalToMarkSent.sourceFingerprint,
+      { scopeKey: periodScopeKey, reportFormat: reportAudience },
+      true,
+    ).finally(() => setMarkSentRecording(false));
   };
   const selectedProjectNames = useMemo(
     () => selectedProject
@@ -6286,6 +6298,11 @@ function ReportWorkspace({
             onRecord={markReportSentManually}
           />
         ) : null}
+        {notice?.byPeriodCard ? (
+          <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
+            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.reportPMGrid}>
@@ -6548,7 +6565,7 @@ function ReportWorkspace({
                 <Text style={styles.errorText}>{draftNotCountedProblem ?? 'Project facts changed after this draft was prepared. Regenerate from current facts before approval.'}</Text>
               </View>
             ) : null}
-            {notice ? (
+            {notice && !notice.byPeriodCard ? (
               <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
                 <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
               </View>
