@@ -7240,6 +7240,14 @@ async function uploadProjectUpdateQueueItem(
     else projectUpdatePatchesLanded.delete(payload.id);
     // The copy a choice of his put in the cloud is his own write, to the edits he saved before it (review N2 L7).
     if (!documentPatches && payload.overConflict && !payload.keepCloudChoice) await noteFieldUpdateChoiceWritten(payload.id, record.updateData);
+    // Review N2 (found explaining seed 298; older than owner answer Q28): the copy now in the cloud is the copy its
+    // card starts from, as a Sent card's is. When a pass other than the card's own sync lands it (the upload retry,
+    // after the card's own write failed), the card goes on reading "Waiting to Sync"; the waiting-update sync then
+    // staged it again with no copy to start from, and it went up whole, stamped now, over an edit the iPad had made
+    // since, with no card. Kept as a settled copy's is, the copy staged again is weighed.
+    if (!cloudCopy && !payload.keepCloudChoice) {
+      await keepSettledFieldUpdateBase(payload.id, fieldUpdateEditBaseOf(record.updateData, new Date().toISOString()), record.updateData);
+    }
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
