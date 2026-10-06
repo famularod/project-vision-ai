@@ -388,6 +388,10 @@ export function scheduleTalkUndo(
   if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
   const { lookaheadOverlay: _noteBeforeTalk, ...restored } = scheduleProgressRestored(before, at);
   // The entry the Undo takes back, so a copy or a floor still holding it is not his word (A5 pass 26 L1).
-  const edit = { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } };
+  // Build 231, S2 item 4: none when Talk changed nothing (it was asked for the percent the task already showed, and
+  // wrote nothing). The entry noted was then David's own, at its own time: his word read as undone, and a master that
+  // moved the task later could bring back an older percent of his.
+  const talkWrote = WRITTEN_FIELDS.some(field => (before[field] ?? null) !== (written[field] ?? null));
+  const edit = talkWrote ? { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } } : restored;
   return { ok: true, taskId: now.id, edit };
 }
