@@ -129,6 +129,67 @@ export function photoAnalysisFinishedAfterPatch(update: object, patch: FieldUpda
   return photoAnalysisResultStands(held, patch.photoIntelligence);
 }
 
+/**
+ * A whole copy of a field update as it goes up, with the photo results of the
+ * cloud's copy that sending it would otherwise take off (review N2, recorded
+ * in pass 2 as L9a). A whole copy went up exactly as its device held it:
+ * photo analysis is left out of the comparison of the two copies (owner
+ * answer Q28), so nothing stopped it, and a device that had not yet heard
+ * the other device's late result sent its copy without it. The result was
+ * then on one device only, or on none.
+ *
+ * For each photo this copy still lists:
+ * - no result here, a finished one in the cloud: the cloud's is kept;
+ * - a result on both: the cloud's is kept only when it stands over this
+ *   copy's (photoAnalysisResultStands): the later one stands, so a newer
+ *   result is never replaced by an older one; a finished one stands over a
+ *   failed run, whichever is later; the same one stands with his review;
+ * - a photo this copy is analysing again goes up with the cloud's finished
+ *   result, as a sync attempt already sends the standing result and not
+ *   "analyzing" (A4 pass 28 L1); its card keeps "Analyzing", and the new
+ *   result goes up as its own patch when it lands;
+ * - two results that carry no time cannot be put in order, nor a result with
+ *   no time against a photo being analysed again. That is left as it was:
+ *   this copy's goes up, as a whole copy's always did; except where the
+ *   caller says the cloud's stays (`unorderedStaysClouds`), as review N2 L6
+ *   already had it for a copy that is otherwise the cloud's own and for an
+ *   edit older than the cloud's copy.
+ * A photo this copy no longer lists is not added back, and its result goes
+ * with it. The update's own summary of its photos' analysis is the cloud's
+ * when a result of the cloud's is kept and this copy holds no finished
+ * result itself, or an earlier summary; else it stays this copy's. The same
+ * object when nothing is kept.
+ */
+export function withCloudPhotoAnalysisResults<TUpdate>(
+  copy: TUpdate,
+  cloud: unknown,
+  { unorderedStaysClouds = false }: { unorderedStaysClouds?: boolean } = {},
+): TUpdate {
+  const photos = (copy as UpdateWithPhotos | null | undefined)?.photos;
+  const cloudPhotos = (cloud as UpdateWithPhotos | null | undefined)?.photos;
+  if (!copy || typeof copy !== 'object' || !Array.isArray(photos) || !Array.isArray(cloudPhotos)) return copy;
+  const holdsFinished = photos.some(photo => Boolean(photoAnalysisOutcome(photo?.photoIntelligence)));
+  let kept = false;
+  const nextPhotos = photos.map(photo => {
+    const theirs = photo && typeof photo === 'object'
+      ? cloudPhotos.find(candidate => candidate?.id === photo.id)?.photoIntelligence : undefined;
+    if (!photoAnalysisOutcome(theirs)) return photo;
+    const own = photo.photoIntelligence as { status?: unknown } | null | undefined;
+    const none = !own || typeof own !== 'object' || typeof own.status !== 'string';
+    const stands = none || photoAnalysisResultStands(theirs, own) || (unorderedStaysClouds && !photoAnalysisResultStands(own, theirs));
+    if (!stands || sameValue(own, theirs)) return photo;
+    kept = true;
+    return { ...photo, photoIntelligence: theirs };
+  });
+  if (!kept) return copy;
+  const mine = copy as Record<string, unknown>;
+  const theirs = cloud as Record<string, unknown>;
+  const completed = (update: Record<string, unknown>) => Date.parse(typeof update.pieCompletedAt === 'string' ? update.pieCompletedAt : '') || 0;
+  const summary = !holdsFinished || completed(theirs) > completed(mine)
+    ? Object.fromEntries(ANALYSIS_SUMMARY_FIELDS.map(field => [field, theirs[field] ?? null])) : {};
+  return { ...copy, ...summary, photos: nextPhotos };
+}
+
 /** A later result for the same photo: its own, with what the earlier one cleared. */
 export function mergeFieldUpdatePhotoAnalysisPatches(
   earlier: FieldUpdatePhotoAnalysisPatch,

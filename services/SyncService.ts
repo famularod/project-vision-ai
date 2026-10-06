@@ -119,6 +119,7 @@ import {
   fieldUpdatePhotoAnalysisPatchFor,
   isFieldUpdatePhotoAnalysisPatch,
   photoAnalysisResultStands,
+  withCloudPhotoAnalysisResults,
   withoutPhotoAnalysis,
   type FieldUpdatePhotoAnalysisPatch,
 } from './FieldUpdatePhotoAnalysisPatch';
@@ -7200,16 +7201,15 @@ async function uploadProjectUpdateQueueItem(
   // stand over its own: two copies that read the same, which the older check made a card of. Sent whole, it took the
   // other device's late result off the cloud's copy. David's choices go as they are.
   if (!patchedCloudCopy && !settledCopy && !ownPatchesSinceEdit && cloudUpdateData && !payload.overConflict && !payload.keepCloudChoice &&
-    daveProjectUpdateMatchesCloudReceipt(withPhoneAnalysisResults(payload.updateData, [cloudUpdateData]), cloudUpdateData)) {
+    daveProjectUpdateMatchesCloudReceipt(withCloudPhotoAnalysisResults(payload.updateData, cloudUpdateData, { unorderedStaysClouds: true }), cloudUpdateData)) {
     await clearConflictsForLocalRecord('project_update', payload.id);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
 
   // Review N2 L6: an edit the older check used to stop goes up over a cloud copy stamped later than it is. It goes
-  // with that copy's photo results that stand over its own (the other device's late result, often all that copy had
-  // gained), and stamped as that copy is: the cloud's copy does not read older than it was to an edit still judged by
-  // the two times.
+  // stamped as that copy is: the cloud's copy does not read older than it was to an edit still judged by the two
+  // times.
   const newerCloudStamp = judgedByStartingCopy && !ownPatchesSinceEdit && remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt) ? remoteMetadata.data.updatedAt : null;
   const record = settledCopy ? projectUpdateRecordOnCloudCopy(remoteMetadata.data!, payload, settledCopy)
@@ -7218,10 +7218,15 @@ async function uploadProjectUpdateQueueItem(
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
-    updateData: ownPatchesSinceEdit
+    // Review N2 (recorded in pass 2 as L9a): every whole copy goes up with the cloud's photo results that sending it
+    // would take off (withCloudPhotoAnalysisResults). A device that had not heard the other device's late result sent
+    // its copy without it, and the result was gone from the cloud's copy. A copy David chose goes the same way. Two
+    // results that cannot be put in order stay as they went before: the cloud's for an edit older than the cloud's
+    // copy (review N2 L6), else this copy's.
+    updateData: withCloudPhotoAnalysisResults(ownPatchesSinceEdit
       ? applyFieldUpdateDocumentPatches(payload.updateData as object,
         fieldUpdatePatchesNotSuperseded(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
-      : newerCloudStamp ? withPhoneAnalysisResults(payload.updateData, [cloudUpdateData]) : payload.updateData,
+      : payload.updateData, cloudUpdateData, { unorderedStaysClouds: Boolean(newerCloudStamp) }),
     // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
     // copy and a confirmed Retry's are stamped now, after the patches, and
     // went up stamped back to the last patch's time; an iPad edit saved
