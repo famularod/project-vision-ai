@@ -73,6 +73,7 @@ import {
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemTextAsItsTaskHasIt, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
+  scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -98,7 +99,7 @@ import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository'
 import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
-import { scheduleItemAnsweringToTaskId, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
+import { scheduleItemAnsweringToTaskId, scheduleTaskEarlierIds, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -6702,8 +6703,10 @@ async function uploadQueueItem(
     // a percent carried) is merged as before, then weighed so on what David types about a task (its note, owner...):
     // the iPad's master, approved offline, put its old note over the phone's newer one. An edit queued without it
     // (Build 229 and earlier) and Keep Phone's chosen copy go up as before.
+    // (Text the carry brought forward to the cloud's row since he typed over a blank is not another edit: review N3 R2.)
     const weighed = remote && changedFields && !payload.forceLocal && isEditBase(payload.base)
-      ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote)
+      ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, scheduleItemEditBaseOverTextBroughtForward(payload.base, changedFields, remote,
+        scheduleTaskEarlierIds(remote).flatMap(id => context.scheduleItemsById!.get(id) ?? [])), remote)
       : null;
     // A later percent of David's own in the cloud stands over the edit's older one (owner answer Q28): the progress is
     // not sent. Otherwise it goes as before.

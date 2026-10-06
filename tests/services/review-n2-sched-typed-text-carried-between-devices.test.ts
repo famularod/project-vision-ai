@@ -1356,14 +1356,14 @@ describe('Review N2 P1: what an import on Build 229 left on a hidden row comes f
     await approve(phone, G, [G_ROW, SURVEY]);
     const newId = theRow(phone).id;
     // Build 229's approval left the new row blank; put that back on the phone's copy and in what it sends.
-    setter(phone)(phone.state.map(item => (item.id === newId ? { ...item, notes: '', owner: '' } : item)));
+    setter(phone)(phone.state.map(item => (item.id === newId ? { ...item, notes: '', owner: '', textFromTask: undefined } : item)));
     phone.ref.current = phone.state;
     on(phone);
     const queueKey = 'projectVisionAI.syncQueue.v1';
     const store = mockStores.get('phone')!;
     store.set(queueKey, JSON.stringify((JSON.parse(store.get(queueKey) || '[]') as Array<{ payload?: { id?: string; itemData?: ScheduleItem } }>)
-      .map(queued => (queued.payload?.id === newId && queued.payload.itemData ? { ...queued, payload: { ...queued.payload, itemData: { ...queued.payload.itemData, notes: '', owner: '' } } } : queued))));
-    if (cloudRow(newId)) mockCloud.rows.set(newId, { ...cloudRow(newId)!, notes: '', owner: '' });
+      .map(queued => (queued.payload?.id === newId && queued.payload.itemData ? { ...queued, payload: { ...queued.payload, itemData: { ...queued.payload.itemData, notes: '', owner: '', textFromTask: undefined } } } : queued))));
+    if (cloudRow(newId)) mockCloud.rows.set(newId, mockCopy({ ...cloudRow(newId)!, notes: '', owner: '', textFromTask: undefined }));
     shareDocuments(phone);
     return { phone, ipad, oldId, newId };
   }
@@ -1378,6 +1378,83 @@ describe('Review N2 P1: what an import on Build 229 left on a hidden row comes f
     expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Mike'));
     expect(cloudRow(oldId)).toMatchObject({ notes: NOTE, owner: 'Mike' });
     expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  });
+
+  /**
+   * Review N3 R2 (pass 3, schedule; Low, caused by 5360700 / c3899ef; the reviewer's N21, right at 06e7b1c). The iPad,
+   * with no signal, types a NEW note on such a task. The phone refreshes: the old note comes forward and is sent up.
+   * The iPad comes back: its note, typed over a blank, met the old one in the cloud's row, and every device showed the
+   * OLD note with a card on the iPad for the one he had just typed. What the carry put there is the task's earlier
+   * text, not typed on this row by anyone: his note goes up over it, and nothing is asked.
+   */
+  describe('Review N3 R2: a note he types is not put behind one brought forward', () => {
+    /** The iPad holds the cloud's rows as they are (the new row blank), and loses signal. */
+    async function ipadOfflineOnTheBlankRow() {
+      const rig = await strandedOnBuild229();
+      await backgroundUpload(rig.phone);
+      setter(rig.ipad)([...mockCloud.rows.values()].map(row => mockCopy(row) as ScheduleItem));
+      rig.ipad.ref.current = rig.ipad.state;
+      rig.ipad.documents = [...rig.phone.documents];
+      heard.set('ipad', mockCloud.events.length);
+      expect(theRow(rig.ipad)).toMatchObject({ id: rig.newId, notes: '', owner: '' });
+      at('2026-09-11T09:00:00.000Z');
+      setOnline(rig.ipad, false);
+      return rig;
+    }
+
+    it('N21: his new note, on every device, and no card', async () => {
+      const { phone, ipad, newId } = await ipadOfflineOnTheBlankRow();
+      await edit(ipad, newId, { notes: 'Typed now' });
+      at('2026-09-12T08:00:00.000Z');
+      await refresh(phone);
+      expect(cloudRow(newId)).toMatchObject({ notes: NOTE, owner: 'Mike' });
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      // (It was: the old note stayed, and the iPad held a card "Typed now / the old note".)
+      expect(cloudRow(newId)).toMatchObject({ notes: 'Typed now', owner: 'Mike' });
+      await settle(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, 'Typed now', 'Mike'));
+      expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+    });
+
+    it('but a note someone typed on the new row itself meanwhile is still asked about', async () => {
+      const { phone, ipad, newId } = await ipadOfflineOnTheBlankRow();
+      await edit(ipad, newId, { notes: 'Typed now' });
+      at('2026-09-12T08:00:00.000Z');
+      await edit(phone, newId, { notes: 'Typed on the phone' });
+      await backgroundUpload(phone);
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      expect(cloudRow(newId)).toMatchObject({ notes: 'Typed on the phone' });
+      expect((await conflictsOf(ipad)).map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields)).toEqual([['notes']]);
+    });
+
+    it('and only over a blank: a note he typed over one he could see, while the same new text reached both rows from elsewhere, is asked about', async () => {
+      const { ipad, oldId, newId } = await ipadOfflineOnTheBlankRow();
+      // (The iPad's row shows a note here, not a blank.)
+      setter(ipad)(ipad.state.map(item => (item.id === newId ? { ...item, notes: 'Seen on the iPad' } : item)));
+      ipad.ref.current = ipad.state;
+      await edit(ipad, newId, { notes: 'Typed now' });
+      at('2026-09-12T08:00:00.000Z');
+      webWrite(webEdited(cloudRow(oldId)!, { notes: 'Typed elsewhere' }));
+      webWrite(webEdited(cloudRow(newId)!, { notes: 'Typed elsewhere' }));
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      expect(cloudRow(newId)).toMatchObject({ notes: 'Typed elsewhere' });
+      expect((await conflictsOf(ipad)).map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields)).toEqual([['notes']]);
+    });
+
+    it('and a field he did not type takes what was brought forward', async () => {
+      const { phone, ipad, newId } = await ipadOfflineOnTheBlankRow();
+      await edit(ipad, newId, { percentComplete: 30 });
+      at('2026-09-12T08:00:00.000Z');
+      await refresh(phone);
+      setOnline(ipad, true);
+      await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(30, NOTE, 'Mike'));
+      expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+    });
   });
 
   it('a task he has changed since the master moved it keeps its blank: his old note stays on the hidden row', async () => {

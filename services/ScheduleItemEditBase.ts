@@ -525,6 +525,30 @@ export function scheduleItemTextEditOnRow(
   };
 }
 
+/**
+ * Review N3 R2 (5 Oct 2026, Low; caused by the carry of review N2 P1): the
+ * copy an edit is weighed from, where David typed an owner, a contractor or
+ * a note over a blank and the cloud's row has that field filled since with
+ * the very text a row it answers to holds (`earlier`: the cloud's rows of
+ * the task before this one). That is the carry bringing the task's earlier
+ * text forward on another device, not anything typed on this row: it counts
+ * as the copy his edit started from, so his goes up over it and nothing is
+ * asked. Text typed on this row itself reads otherwise and is asked about as
+ * before. The same copy when no field is so.
+ */
+export function scheduleItemEditBaseOverTextBroughtForward(
+  base: ScheduleItemEditBase,
+  changedFields: readonly string[],
+  remote: ScheduleItem,
+  earlier: readonly ScheduleItem[],
+): ScheduleItemEditBase {
+  const blank = (value: string) => value === 'null' || /^"\s*"$/.test(value);
+  const brought = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => changedFields.includes(field) &&
+    Object.prototype.hasOwnProperty.call(base.fields, field) && blank(fieldValue(base.fields, field)) && !blank(fieldValue(remote, field)) &&
+    earlier.some(row => fieldValue(row, field) === fieldValue(remote, field)));
+  return brought.length === 0 ? base : { ...base, fields: { ...base.fields, ...Object.fromEntries(brought.map(field => [field, remote[field]])) } };
+}
+
 /** A task conflict's copy of this device's, as far as these rules read it. */
 type ConflictCopy = Readonly<{
   itemData?: unknown;
