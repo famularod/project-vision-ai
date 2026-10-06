@@ -16,7 +16,7 @@ import * as ts from 'typescript';
 export type RigUpdate = Record<string, any> & { id: string; status: string };
 export type RigDevice = {
   name: 'phone' | 'ipad';
-  m: { sync: typeof import('../../services/SyncService') };
+  m: { sync: typeof import('../../services/SyncService'); realtime: typeof import('../../services/DAVEOperationalRealtimeApplication') };
   updates: RigUpdate[];
   updatesRef: { current: RigUpdate[] };
   draftRef: { current: RigUpdate };
@@ -47,7 +47,8 @@ export type FieldUpdateTwoDeviceRig = {
   openAndSave(device: RigDevice, change: (card: RigUpdate) => Partial<RigUpdate>): Promise<void>;
   backgroundUpload(device: RigDevice): Promise<void>;
   waitingUpdateSync(device: RigDevice): Promise<void>;
-  refresh(device: RigDevice): Promise<boolean>;
+  /** `upload` false: without the upload pass the App runs after it. */
+  refresh(device: RigDevice, upload?: boolean): Promise<boolean>;
   fullSync(device: RigDevice): Promise<unknown>;
   startup(device: RigDevice): Promise<boolean>;
   relaunchModules(device: RigDevice): void;
@@ -83,4 +84,34 @@ export function loadFieldUpdateTwoDeviceRig(scope: { require: NodeJS.Require; je
   return run(scope.require, scope.jest, scope.dirname, {}, (name: string) => {
     throw new Error(`The Q28 rig no longer has: ${name}`);
   }) as FieldUpdateTwoDeviceRig;
+}
+
+/**
+ * A realtime event for the update's row as the cloud holds it now, on this device, through the app's own applier
+ * wired for field updates as App.tsx wires it: its own normaliser, merge and "still owes its sync" test, compiled
+ * from App.tsx (review N2 pass 4). The rig's own applier is wired for tasks and holds no field updates.
+ */
+export async function fieldUpdateEcho(rig: FieldUpdateTwoDeviceRig, device: RigDevice): Promise<void> {
+  const { A } = rig;
+  rig.on(device);
+  const apply = device.m.realtime.createDAVEOperationalRealtimeApplier({
+    isActive: () => true,
+    snapshot: () => ({ projects: ['Alpha'], projectRecords: [], archivedProjects: [], deletedProjectNames: [], updates: device.updatesRef.current,
+      deletedUpdates: [], tombstones: [], areas: [], scheduleItems: [], documents: [] }) as never,
+    getPendingQueue: device.m.sync.getOfflineQueue,
+    normalizeUpdate: A.normalizeStoredUpdateRecord as never, normalizeAreas: () => [], normalizeSchedule: () => [],
+    normalizeDocuments: () => [], migrateSchedule: item => item, localPhotoUri: A.resolveProjectPhotoUri,
+    mergeProjectNames: (names: string[]) => names, updateHasPendingLocalWork: A.updateNeedsAutomaticSyncRetry as never,
+    deviceDocuments: () => [],
+    mergeUpdates: A.mergeSavedUpdatesWithTombstones as never, buildUpdateTombstone: A.buildUpdateTombstone as never,
+    buildCloudDeletionBarrier: A.buildCloudUpdateDeletionBarrier as never, upsertDeletedUpdate: A.upsertDeletedUpdateTombstone as never,
+    commitProjects: () => undefined, commitDeletedProjects: () => undefined,
+    commitUpdates: updates => { rig.updatesSetter(device)(updates as unknown as RigUpdate[]); },
+    commitDeletedUpdates: () => undefined, commitTombstones: () => undefined, commitAreas: () => undefined,
+    commitSchedule: () => undefined, commitDocuments: () => undefined,
+  });
+  const row = rig.mockCloud.updates.get(rig.UPDATE_ID)!;
+  await apply('project_update', {
+    eventType: 'UPDATE', newRow: { id: rig.UPDATE_ID, update_data: JSON.parse(JSON.stringify(row.updateData)), updated_at: row.updatedAt }, oldRow: null, raw: null,
+  } as never);
 }

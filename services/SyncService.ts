@@ -1249,9 +1249,14 @@ export function subscribeToOfflineQueue(listener: (queue: readonly SyncQueueItem
 }
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
-  return serializeOfflineQueueMutation(async () =>
+  const queue = await serializeOfflineQueueMutation(async () =>
     (await readOfflineQueueUnsafe()).queue,
   );
+  // The saved conflicts are read with it (review N2 pass 4): the refresh
+  // that reads this queue to learn which cards the device still owes then
+  // knows which wait for David's choice (projectUpdateUploadedSince).
+  await readSyncConflictsWithQueue();
+  return queue;
 }
 
 export async function listOfflineQueueQuarantines(): Promise<string[]> {
@@ -7715,6 +7720,7 @@ function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retrySt
 export function resetFieldUpdateSyncMemoryForTests(): void {
   projectUpdateLastVersionInCloud.clear();
   projectUpdateUploadedAt.clear();
+  syncConflictsAsOfQueueRead = [];
   projectUpdatePatchesLanded.clear();
   removedDocumentsRequeuedThisLaunch.clear();
   resetDocumentsResentThisLaunchForTests();
@@ -7724,8 +7730,53 @@ function recordProjectUpdateUpload(updateId: string) {
   projectUpdateUploadedAt.set(updateId, Date.now());
 }
 
+/**
+ * Whether the refresh leaves this device's card of a field update as it is,
+ * though no copy of it is queued: its own upload landed after the list was
+ * read (audit A7 M5), or a copy of it waits in Review Conflicts (review N2
+ * pass 4, Low; in Build 229, the rule unchanged since 80f5eb6).
+ *
+ * A conflict takes the update's record off the queue, and the refresh keeps
+ * a card over the cloud's copy only while a copy of it is queued
+ * (refreshKeepsLocalProjectUpdate). At the next refresh or relaunch the card
+ * showed the iPad's copy and was Sent underneath, with David's edit still
+ * waiting for his choice in Settings: his own copy was nowhere on the card,
+ * its Retry and its way back into the editor were gone, and anything saved
+ * on it later started from the iPad's copy. The card now stays as it was,
+ * "Needs Review" with his copy, through a refresh and a relaunch, until he
+ * chooses; a realtime echo leaves it too (fieldUpdateWaitsInReviewConflicts).
+ * Whatever its status: a card an earlier build had already turned to the
+ * cloud's copy stays so, and Keep Phone puts his copy back on it.
+ */
 export function projectUpdateUploadedSince(updateId: string, since: number): boolean {
-  return (projectUpdateUploadedAt.get(updateId) ?? Number.NEGATIVE_INFINITY) >= since;
+  return (projectUpdateUploadedAt.get(updateId) ?? Number.NEGATIVE_INFINITY) >= since ||
+    Boolean(openFieldUpdateConflict(syncConflictsAsOfQueueRead, updateId));
+}
+
+/**
+ * The saved conflicts as of this device's last read of its queue (review N2
+ * pass 4). The refresh reads the queue and then decides card by card without
+ * waiting again, so they are read with the queue (getOfflineQueue) and held
+ * here for that decision: after a relaunch nothing else has read them yet.
+ * Read as they are stored, not behind a conflict write under way: the queue
+ * is read from many places, and none of them waits on those. A conflict is
+ * saved before its record leaves the queue, so a queue read that no longer
+ * holds the record is followed by a read that holds its conflict. When they
+ * cannot be read, as last read.
+ */
+let syncConflictsAsOfQueueRead: readonly SyncConflict[] = [];
+
+async function readSyncConflictsWithQueue(): Promise<void> {
+  syncConflictsAsOfQueueRead = await readSyncConflictsUnsafe().catch(() => syncConflictsAsOfQueueRead);
+}
+
+/**
+ * Whether a copy of this field update waits in Review Conflicts on this
+ * device now, read from its saved conflicts (review N2 pass 4): a realtime
+ * echo of the iPad's save leaves its card as the refresh does.
+ */
+export async function fieldUpdateWaitsInReviewConflicts(updateId: string): Promise<boolean> {
+  return Boolean(openFieldUpdateConflict(await getSyncConflicts(), updateId));
 }
 
 async function projectUpdateAlreadyHasCloudReceipt(

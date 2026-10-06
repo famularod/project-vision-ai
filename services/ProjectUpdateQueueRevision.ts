@@ -66,6 +66,12 @@ export function hasMatchingQueuedProjectUpdateRevision(
  * edit (A7 pass 14 L-2). A refresh before that patch went up put the iPad's
  * copy on the card as Sent; after Keep Phone, Settings never sent the edit,
  * and it waited in the queue for good on a photo check nothing ran.
+ *
+ * A copy waiting in Review Conflicts is in no queue: its conflict took its
+ * record off, and this rule sees only the queue. The refresh's other test
+ * holds that card until David chooses (review N2 pass 4: SyncService
+ * projectUpdateUploadedSince), and the realtime applier asks the saved
+ * conflicts itself (fieldUpdateWaitsInReviewConflicts).
  */
 export function refreshKeepsLocalProjectUpdate(
   update: ProjectUpdate,

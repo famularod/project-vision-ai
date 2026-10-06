@@ -5,11 +5,14 @@
  * The cause. Keep Phone sends the copy the card was raised with, then the newer edit David saved while the card
  * waited. That newer edit is weighed against the cloud's copy by the copy it started from, and the cloud's copy is
  * now the one his choice wrote. When the newer edit did not start from that very copy, every part his choice wrote
- * read as changed by another device:
- * - he had saved again more than once while the card waited, and a late photo result came in between: the last
- *   save started from the card showing his own earlier, unsent save;
- * - or a refresh had put the cloud's copy on the card while it waited, and his later edit started from that.
- * With one later edit and nothing in between, the edit started from the card's own copy, and it was right.
+ * read as changed by another device: he had saved again more than once while the card waited, and a late photo
+ * result came in between, so the last save started from the card showing his own earlier, unsent save. With one
+ * later edit and nothing in between, the edit started from the card's own copy, and it was right.
+ *
+ * Until review N2 pass 4 a refresh could also put the cloud's copy on the waiting card, and four of these cases
+ * began from that. A waiting card now keeps his copy (review-n2-field-update-review-card.test.ts), so no edit
+ * begins from the cloud's copy while his own waits, and those cases begin from his two later saves instead; what
+ * a refresh then leaves is in review-n2-field-update-review-card-reopened.test.ts.
  *
  * The copy a choice of his puts in the cloud is now remembered on the device (for the account, through a relaunch).
  * To an edit that began before it, a part the cloud holds as his choice wrote it is his own write. A change another
@@ -62,55 +65,44 @@ async function lateResultArrives(phone: RigDevice) {
   await phone.m.sync.queueProjectUpdatePhotoAnalysis(withResult as never, 'p0', saved);
 }
 
+/**
+ * While the card waits he saves twice more, a late photo result in between: the second of them starts from the card
+ * showing the first, not from the copy the card was raised with.
+ */
+async function savesTwiceMoreWhileItWaits(phone: RigDevice, first: Partial<RigUpdate> = area('Area 7')) {
+  at('2026-09-08T09:00:00.000Z');
+  setOnline(phone, false);
+  cardFails(phone);
+  await openAndSave(phone, () => first);
+  await lateResultArrives(phone);
+  at('2026-09-08T09:30:00.000Z');
+  setOnline(phone, true);
+  cardFails(phone);
+  await openAndSave(phone, () => TASK);
+  expect(await conflictsOf(phone)).toHaveLength(1); // nothing automatic sent it
+  at('2026-09-08T10:00:00.000Z');
+}
+const LATEST = { notes: PHONE_NOTE, area: 'Area 7', task: 'task-9' };
+
 describe('Review N2 L7: Keep Phone does not come back as a new question about his own write', () => {
-  it('he saved twice more while the card waited, a late photo result in between: Keep Phone ends with his latest copy and no second card', async () => {
-    const { phone, ipad } = await cardWaits();
-    at('2026-09-08T09:00:00.000Z');
-    setOnline(phone, false);
-    cardFails(phone);
-    await openAndSave(phone, () => area('Area 7'));
-    await lateResultArrives(phone);
-    at('2026-09-08T09:30:00.000Z');
-    setOnline(phone, true);
-    cardFails(phone);
-    await openAndSave(phone, () => TASK);
-    expect(await conflictsOf(phone)).toHaveLength(1); // nothing automatic sent it
-    at('2026-09-08T10:00:00.000Z');
-    await keepPhone(phone);
-    await refresh(ipad);
-
-    expect(await cardsSay(phone)).toEqual([]);
-    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill({ notes: PHONE_NOTE, area: 'Area 7', task: 'task-9' }));
-    expect([theUpdate(phone)!.status, await queueOf(phone)]).toEqual(['sent', []]);
-  });
-
   it.each([
-    ['he had typed a note', PHONE_NOTE],
-    ['he had cleared the note: a part his choice leaves empty', ''],
-  ] as const)('a refresh put the cloud\'s copy on the card while it waited, and he edited that (%s): Keep Phone ends with that edit and no second card', async (_label, note) => {
+    ['the first of them moved the area his choice then wrote', PHONE_NOTE, area('Area 7'), LATEST],
+    ['the first of them typed a note where his choice wrote none: a part his choice leaves empty', '', { notes: 'Later note' },
+      { notes: 'Later note', area: 'Area 0', task: 'task-9' }],
+  ] as const)('he saved twice more while the card waited, a late photo result in between (%s): Keep Phone ends with his latest copy and no second card', async (_label, note, first, latest) => {
     const { phone, ipad } = await cardWaits(note);
-    at('2026-09-08T09:00:00.000Z');
-    await refresh(phone);
-    expect(shows(theUpdate(phone))).toEqual({ notes: 'Pour', area: 'Area 1', task: '' }); // the iPad's copy, as the refresh shows it
-    cardFails(phone);
-    await openAndSave(phone, () => TASK);
-    expect(await conflictsOf(phone)).toHaveLength(1);
-    at('2026-09-08T10:00:00.000Z');
+    await savesTwiceMoreWhileItWaits(phone, first);
     await keepPhone(phone);
     await refresh(ipad);
 
     expect(await cardsSay(phone)).toEqual([]);
-    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill({ notes: 'Pour', area: 'Area 1', task: 'task-9' }));
+    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill(latest));
     expect([theUpdate(phone)!.status, await queueOf(phone)]).toEqual(['sent', []]);
   });
 
   it('the same after a relaunch between his choice and the later edit going up', async () => {
     const { phone } = await cardWaits();
-    at('2026-09-08T09:00:00.000Z');
-    await refresh(phone);
-    cardFails(phone);
-    await openAndSave(phone, () => TASK);
-    at('2026-09-08T10:00:00.000Z');
+    await savesTwiceMoreWhileItWaits(phone);
     // Keep Phone's own copy lands; the signal drops before the later edit goes up, and the app is closed.
     await chooseInSettingsThenOffline(phone);
     expect(shows(cloudUpdate())).toEqual({ notes: PHONE_NOTE, area: 'Area 0', task: '' });
@@ -121,17 +113,13 @@ describe('Review N2 L7: Keep Phone does not come back as a new question about hi
     await waitingUpdateSync(phone);
 
     expect(await cardsSay(phone)).toEqual([]);
-    expect(shows(cloudUpdate())).toEqual({ notes: 'Pour', area: 'Area 1', task: 'task-9' });
+    expect(shows(cloudUpdate())).toEqual(LATEST);
     expect(await queueOf(phone)).toEqual([]);
   });
 
   it('Keep Phone whose own write lands with its answer lost says it was not resolved; Keep Phone again ends with his latest copy and no second card', async () => {
     const { phone, ipad } = await cardWaits();
-    at('2026-09-08T09:00:00.000Z');
-    await refresh(phone);
-    cardFails(phone);
-    await openAndSave(phone, () => TASK);
-    at('2026-09-08T10:00:00.000Z');
+    await savesTwiceMoreWhileItWaits(phone);
     rig.mockCloud.lostAnswers = 1; // weak signal at the choice: its write lands, the answer does not come back
     const conflict = (await conflictsOf(phone)).find(item => item.entity === 'project_update')!;
     await expect(chooseInSettings(phone, conflict.id, 'keep_local')).rejects.toThrow(); // Settings: "Conflict not resolved"
@@ -142,17 +130,13 @@ describe('Review N2 L7: Keep Phone does not come back as a new question about hi
     await refresh(ipad);
 
     expect(await cardsSay(phone)).toEqual([]);
-    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill({ notes: 'Pour', area: 'Area 1', task: 'task-9' }));
+    expect([shows(cloudUpdate()), shows(theUpdate(phone)), shows(theUpdate(ipad))]).toEqual(Array(3).fill(LATEST));
     expect([theUpdate(phone)!.status, await queueOf(phone)]).toEqual(['sent', []]);
   });
 
   it('a change the iPad makes after his choice, before the later edit goes up, is asked about, and the card names that change alone', async () => {
     const { phone, ipad } = await cardWaits();
-    at('2026-09-08T09:00:00.000Z');
-    await refresh(phone);
-    cardFails(phone);
-    await openAndSave(phone, () => TASK);
-    at('2026-09-08T10:00:00.000Z');
+    await savesTwiceMoreWhileItWaits(phone);
     await chooseInSettingsThenOffline(phone); // his choice is in the cloud: his note, Area 0; the later edit still waits
     await refresh(ipad);
     at('2026-09-08T11:00:00.000Z');
