@@ -131,6 +131,8 @@ const RECORDING_LIMIT_NOTICE = 'Stopped at the 3-minute limit. Anything after 3:
 const RECORDING_LIMIT_WARNING = 'Less than 15 seconds left. Recording stops at 3:00.';
 const RECORDING_LIMIT_WARNING_MS = (MAX_RECORDING_SECONDS - 15) * 1_000;
 const CLOSE_AND_KEEP = 'Close and Keep on This Device';
+// Open item W1-4: said while Start Recording waits for the recording before to be kept or removed.
+const START_IS_WAITING = 'Finishing with the last recording first. This one starts as soon as that is done.';
 
 export function DAVEVoiceCaptureSheet({
   visible,
@@ -263,6 +265,14 @@ export function DAVEVoiceCaptureSheet({
   // Review P5 N1: a recording the sheet let go of (it was shown for another project) that the phone
   // would not keep. The sheet still holds it, for its own project and account only.
   const heldAsideRef = useRef<RecordingHeldAside | null>(null);
+  // Open item W1-4: Start Recording is waiting for those keeps and deletes (the sheet says so).
+  const [startIsWaiting, setStartIsWaiting] = useState(false);
+  // Open item W1-4: whether the sheet is still in place (hidden or shown), not taken away with its screen.
+  const sheetInPlaceRef = useRef(true);
+  useEffect(() => {
+    sheetInPlaceRef.current = true;
+    return () => { sheetInPlaceRef.current = false; };
+  }, []);
   // Review P5 N2: the keeps and deletes of this sheet's recording files that are still under way.
   const filesSettlingRef = useRef<{ underWay: number; settled: Promise<unknown> }>({ underWay: 0, settled: Promise.resolve() });
 
@@ -552,7 +562,13 @@ export function DAVEVoiceCaptureSheet({
     recorderRunRef.current = run;
     // Review P5 N2: held back until every keep and delete of the recording before has finished. The
     // recorder would write this recording into the same file (untilItsFileIsSettled).
+    // Open item W1-4 (6 Oct 2026): the sheet showed nothing while it waited, so with a slow phone
+    // his tap seemed lost. It now says so, and Continue waits too: tapped in that wait, it sent the
+    // recording on screen and the start then recorded over it.
+    const waits = filesSettlingRef.current.underWay > 0;
+    if (waits) setStartIsWaiting(true);
     await filesSettlingRef.current.settled;
+    if (waits) setStartIsWaiting(false);
     // Let go of while it waited (his Cancel, or the sheet hidden): it does nothing, and whatever
     // recording the sheet holds stays as it is.
     if (run.letGo) {
@@ -791,6 +807,15 @@ export function DAVEVoiceCaptureSheet({
    * account and project the sheet was open for, so it is offered to no other
    * account and for no other project. A sheet that keeps nothing on the
    * device has nowhere to keep it, and it goes; so does one too short to use.
+   *
+   * Open item W1-4 (6 Oct 2026): when the phone REFUSES to keep it (its
+   * storage is full) it was deleted here, though the sheet shown for another
+   * project already held such a recording aside (review P5 N1). Every path
+   * now does the same: a sheet that is still in place (it was only hidden)
+   * holds it aside, in its file, for its own project and account, and it is
+   * back in the sheet the next time the sheet is shown for that project. A
+   * sheet that was taken away with its screen can hold nothing, and there
+   * the file still goes, so nothing is left in the phone's cache (P4 L1).
    */
   function keepStoppedRecordingForNextTime(
     uri: string | null | undefined,
@@ -800,8 +825,9 @@ export function DAVEVoiceCaptureSheet({
     // The copy, and the delete that follows it, are one piece of work on the recorder's file: no
     // start on this sheet begins until both are done, whoever asked for them (review P5 N2).
     return untilItsFileIsSettled((async () => {
-      await keptForNextTime(uri, duration, under);
-      await deleteRecordingFile(uri ?? null);
+      const kept = await keptForNextTime(uri, duration, under);
+      if (kept === 'refused' && uri && sheetInPlaceRef.current) heldAsideRef.current = { uri, durationMs: duration, madeFor: under };
+      else await deleteRecordingFile(uri ?? null);
     })());
   }
 
@@ -859,10 +885,7 @@ export function DAVEVoiceCaptureSheet({
       if (uri !== copy) void removeRecording(uri);
       return;
     }
-    void untilItsFileIsSettled((async () => {
-      if (await keptForNextTime(uri, duration, madeFor) === 'refused') heldAsideRef.current = { uri, durationMs: duration, madeFor };
-      else await deleteRecordingFile(uri);
-    })());
+    void keepStoppedRecordingForNextTime(uri, duration, madeFor);
   }
 
   /** The recording held aside is back in the sheet, shown for its own project again, as it was when he stopped it (review P5 N1). */
@@ -1416,6 +1439,7 @@ export function DAVEVoiceCaptureSheet({
             {recordingUri && !recorderState.isRecording ? <DAVERecordingPlayback uri={recordingUri} /> : null}
           </View>
 
+          {startIsWaiting ? <Text style={styles.notice} accessibilityLiveRegion="polite">{START_IS_WAITING}</Text> : null}
           {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -1426,7 +1450,7 @@ export function DAVEVoiceCaptureSheet({
             </TouchableOpacity>
           ) : recordingUri ? (
             <>
-              <TouchableOpacity style={styles.continueButton} disabled={isTranscribing} onPress={() => { void transcribe(); }} accessibilityRole="button">
+              <TouchableOpacity style={styles.continueButton} disabled={isTranscribing || startIsWaiting} onPress={() => { void transcribe(); }} accessibilityRole="button">
                 <Ionicons name="sparkles-outline" size={20} color="#FFF" />
                 <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
               </TouchableOpacity>
