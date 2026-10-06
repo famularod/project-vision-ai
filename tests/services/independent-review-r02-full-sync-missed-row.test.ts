@@ -219,7 +219,7 @@ import { scheduleItemsWithPendingEditsOverCloud } from '../../services/ScheduleI
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { scheduleItemConflictFields } from '../../services/ScheduleItemEditBase';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
-import { SUPABASE_COLLECTION_CHANGED_WHILE_READ, SUPABASE_COLLECTION_KEY_OUT_OF_ORDER } from '../../services/SupabaseCollectionPagination';
+import { SUPABASE_COLLECTION_ANSWER_CAPPED, SUPABASE_COLLECTION_CHANGED_WHILE_READ, SUPABASE_COLLECTION_KEY_OUT_OF_ORDER } from '../../services/SupabaseCollectionPagination';
 import {
   cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectUpdateRecord,
   queueScheduleItemRecord, refreshFieldUpdateConflictCloudCopies, runScheduleItemCloudSync, sanitizeUserFacingSyncMessage, synchronizeLocalData,
@@ -1151,6 +1151,8 @@ describe('independent review pass 2 (item 4): another device sending task after 
     expect(sanitizeUserFacingSyncMessage(`${SUPABASE_COLLECTION_CHANGED_WHILE_READ} (2000 rows where 2001 were counted)`))
       .toBe(`${SUPABASE_COLLECTION_CHANGED_WHILE_READ} (2000 rows where 2001 were counted)`);
     expect(sanitizeUserFacingSyncMessage(SUPABASE_COLLECTION_KEY_OUT_OF_ORDER)).toBe(SUPABASE_COLLECTION_KEY_OUT_OF_ORDER);
+    // And what a cloud that caps its answers below the page size is refused with (independent review pass 3, P3-3).
+    expect(sanitizeUserFacingSyncMessage(SUPABASE_COLLECTION_ANSWER_CAPPED)).toBe(SUPABASE_COLLECTION_ANSWER_CAPPED);
   });
 
   it('the literal the photo-path script pins is still in SyncService', () => {

@@ -42,7 +42,7 @@ export type SupabaseCollectionResult<T> =
       rows: readonly [];
       exactCount: number | null;
       status?: number;
-      code: 'query_failed' | 'count_mismatch' | 'page_limit_exceeded' | 'unstable_pages' | 'key_out_of_order';
+      code: 'query_failed' | 'count_mismatch' | 'page_limit_exceeded' | 'unstable_pages' | 'key_out_of_order' | 'answer_capped';
       error: string;
     }>;
 
@@ -226,6 +226,15 @@ export const SUPABASE_COLLECTION_KEY_OUT_OF_ORDER =
   'The cloud list could not be read in order, so nothing was decided from it. It will be read again at the next sync.';
 
 /**
+ * What a counted list says when the cloud answers its first page with fewer
+ * rows than were asked for although it counted more: the cloud's own limit on
+ * rows per answer is below the page this app reads. Plain words: the sync
+ * shows this sentence to the owner as it is.
+ */
+export const SUPABASE_COLLECTION_ANSWER_CAPPED =
+  'The cloud returned only part of a list, so nothing was decided from it. Its limit on rows per answer is lower than this app needs. Raise that limit, then sync again.';
+
+/**
  * Reads a whole list a page at a time by its key: each page asks for the rows
  * AFTER the last row of the page before, in the order of a key that is one
  * row's alone and that no edit changes.
@@ -247,10 +256,19 @@ export const SUPABASE_COLLECTION_KEY_OUT_OF_ORDER =
  * first page, in the same statement. If the first page holds that many rows,
  * the list is whole and nothing more is asked. Later it only decides whether
  * a short page is the end: with fewer rows read than were counted (rows
- * deleted meanwhile, or a cloud that returns fewer rows to a request than it
- * was asked for), the next page is asked for all the same, and the read ends
- * on an empty page. So a cloud that caps its answers below the page size
- * cannot make a list look complete.
+ * deleted meanwhile), the next page is asked for all the same, and the read
+ * ends on an empty page.
+ *
+ * A cloud that caps its answers below the page size is refused, not read
+ * (independent review pass 3, P3-3). Under such a cap a short page is not the
+ * end of the list, and the count, taken once, cannot say where the end is:
+ * with rows added on another device during the read, the count was reached
+ * before the last rows were, and rows that had been there throughout were
+ * left out. The cap shows on the first page, which is one statement with the
+ * count: fewer rows than were asked for, and fewer than were counted. Nothing
+ * is decided from such a list (SUPABASE_COLLECTION_ANSWER_CAPPED). A list read
+ * without its count cannot tell a capped answer from the end of the list and
+ * ends on the first short page, as it always has.
  *
  * With two key columns (deletion records: what kind of record, and which) the
  * pages use plain filters only: first the rest of the rows that share the
@@ -322,6 +340,10 @@ export async function paginateSupabaseCollectionByKey<T>(
     // The first page and the count are one statement: that many rows is the whole list.
     if (page === 0 && exactCount !== null && rows.length === exactCount) {
       return { ok: true, rows, exactCount, status: lastStatus };
+    }
+    // And fewer rows than were asked for while more were counted is a cloud that caps its answers (see above).
+    if (page === 0 && exactCount !== null && pageRows.length < pageSize && pageRows.length < exactCount) {
+      return { ok: false, rows: [], exactCount, status: lastStatus, code: 'answer_capped', error: SUPABASE_COLLECTION_ANSWER_CAPPED };
     }
     const more = pageRows.length > 0 && (pageRows.length >= pageSize || (exactCount !== null && rows.length < exactCount));
     // Another page is placed after this page's last row: without that row's key it cannot be asked for.

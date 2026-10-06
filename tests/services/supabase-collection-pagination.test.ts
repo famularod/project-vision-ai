@@ -1,5 +1,6 @@
 import {
   SUPABASE_COLLECTION_CHANGED_WHILE_READ,
+  SUPABASE_COLLECTION_ANSWER_CAPPED,
   SUPABASE_COLLECTION_KEY_OUT_OF_ORDER,
   applySupabaseKeysetPage,
   paginateSupabaseCollection,
@@ -317,14 +318,40 @@ describe('independent review pass 2: a list read by key is not disturbed by edit
     expect(uncounted.requests).toHaveLength(2);
   });
 
-  it('a cloud that returns fewer rows to a request than it was asked for cannot make a counted list look complete', async () => {
+  // Independent review pass 3 (P3-3). The count was to keep a capped cloud from making a list look complete: with
+  // fewer rows read than were counted, another page was asked for. That holds only while no row is added. The count
+  // is taken once; rows added on another device during the read are read too, so the count is reached before the
+  // end of the list is, and rows that were there throughout are left out (the reviewer: 36 of 1,000 reads).
+  it('a cloud that caps its answers below the page size is noticed on the first page, and the list is refused in plain words', async () => {
+    // 450 rows, a cloud that returns at most 100 to a request, and another device adding a row before every later page.
     const capped = table(450, 100);
+    capped.hooks.beforeAny = (_request, index) => { if (index > 1) capped.add(`task-0000-added-${index}`); };
     const result = await paginateSupabaseCollectionByKey(capped.fetchPage(ID), { key: ID, requestExactCount: true }, 500);
-    expect(result.ok && ids(result.rows)).toEqual(ids(capped.rows));
-    // Five answers of at most 100 rows; with all 450 read, the last short answer ends it.
-    expect(capped.requests).toHaveLength(5);
+    expect(result).toEqual({ ok: false, rows: [], exactCount: 450, status: 200, code: 'answer_capped', error: SUPABASE_COLLECTION_ANSWER_CAPPED });
+    // Known from the first answer (100 rows where 500 were asked for and 450 counted): nothing more is asked.
+    expect(capped.requests).toHaveLength(1);
+    expect(SUPABASE_COLLECTION_ANSWER_CAPPED).toMatch(/^[\w .,'“”'!?()-]{1,180}$/);
+    expect(SUPABASE_COLLECTION_ANSWER_CAPPED).not.toMatch(/error|exception|failed|failure|supabase|postgres/i);
 
-    // Without the count the first short answer is taken as the end: why this account's lists ask for it.
+    // No first answer at all though rows were counted is the same thing, not an empty list.
+    const nothing = await paginateSupabaseCollectionByKey(table(450, 0).fetchPage(ID), { key: ID, requestExactCount: true }, 500);
+    expect(nothing).toMatchObject({ ok: false, code: 'answer_capped', rows: [] });
+  });
+
+  it('a list the cap does not cut is read as always: shorter than the cap, or a cap no lower than the page', async () => {
+    const short = table(80, 100);
+    const whole = await paginateSupabaseCollectionByKey(short.fetchPage(ID), { key: ID, requestExactCount: true }, 500);
+    expect(whole.ok && ids(whole.rows)).toEqual(ids(short.rows));
+    expect(short.requests).toHaveLength(1);
+
+    // A limit above the page (1,000 rows an answer, pages of 500): 1,200 rows in three full answers.
+    const usual = table(1_200, 1_000);
+    const read = await paginateSupabaseCollectionByKey(usual.fetchPage(ID), { key: ID, requestExactCount: true }, 500);
+    expect(read.ok && ids(read.rows)).toEqual(ids(usual.rows));
+    expect(usual.requests).toHaveLength(3);
+  });
+
+  it('a list read without its count cannot tell a capped answer from the end: the first short answer ends it, as before', async () => {
     const blind = table(450, 100);
     const short = await paginateSupabaseCollectionByKey(blind.fetchPage(ID), { key: ID }, 500);
     expect(short.ok && short.rows.length).toBe(100);
