@@ -35,7 +35,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
-import { scheduleItemAgainstItsTask } from './ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask, scheduleItemWithItsNewRow } from './ScheduleItemEditBase';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
@@ -1179,7 +1179,7 @@ export function scheduleProgressCarriedToShownTasks({
   const changed = new Map(saved.map(item => [item.id, item]));
   // An owner or a note typed on the row now hidden, after the row now shown was last changed, follows the task (review N2 P1).
   pairs.forEach((hidden, shown) => {
-    const filled = scheduleTextCarriedToShownTask(hidden, shown, changed.get(shown.id) || shown, now);
+    const filled = scheduleTextCarriedToShownTask(hidden, shown, changed.get(shown.id) || shown, now, known);
     if (filled) changed.set(shown.id, filled);
   });
   // A task back on the dates its lookahead note gives under the master made current (A5 pass 21 R1).
@@ -1302,23 +1302,58 @@ function handTasksRestatedWhenCurrent(
  * masters back and forth. `row` is the shown task with the activation's
  * other changes; null when nothing is filled.
  */
-function scheduleTextCarriedToShownTask(hidden: ScheduleItem, shown: ScheduleItem, row: ScheduleItem, now: string): ScheduleItem | null {
+function scheduleTextCarriedToShownTask(
+  hidden: ScheduleItem,
+  shown: ScheduleItem,
+  row: ScheduleItem,
+  now: string,
+  /** Every saved task, when known: the rows between the two (Set Active across two masters or more). */
+  known?: readonly ScheduleItem[],
+): ScheduleItem | null {
   const hiddenLater = timeOf(hidden.updatedAt) > timeOf(shown.updatedAt);
-  // Review N3 R3, review P4 F1: the shown row took his text from the hidden row (the web's upload saved it then, or a
-  // master on the phone). Each field is weighed from what it took: one only the hidden row has changed since (he typed
-  // over it on the task, or cleared it, before Make Current) takes the hidden row's; one only the shown row has changed
-  // keeps its own, a clear too, whichever row was changed later (a percent recorded on the older row while it was shown
-  // brought a cleared note back); one changed on both is the later row's, as nothing is asked here.
-  const taken = row.textFromTask?.taskId === hidden.id ? row.textFromTask : null;
-  const weighed = taken ? scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt }, hidden, hiddenLater ? 'task' : 'row').row : row;
-  // A field with no such record (a row saved before rows kept one; the older master's row shown again): the hidden
-  // row's fills a blank when it was the row changed later, as before.
-  const recorded = TYPED_TEXT_FIELDS.filter(field => taken && Object.prototype.hasOwnProperty.call(taken, field));
+  // Review N3 R3, review P4 F1 and L1: one of the two rows replaced the other, and a row says what it took of his text
+  // from the row it replaced (textFromTask). That record is the copy both rows are weighed from, field by field: one
+  // only the hidden row has changed since shows on this row (he typed over it on the task, or cleared it, since the
+  // upload or under the other master); one only the shown row has changed keeps its own, a clear too, whichever row
+  // was changed later (a percent recorded on the older row while it was shown brought a cleared note back); one
+  // changed on both is the later row's, as nothing is asked here.
+  // The shown row is the newer one (Make Current, Set Active forward), or the older one (review P4 L1: Set Active to an
+  // older master showed the owner that master's row had, not the one he had set on the task since).
+  const [older, newer] = scheduleTaskEarlierIds(shown).includes(hidden.id) ? [hidden, shown]
+    : scheduleTaskEarlierIds(hidden).includes(shown.id) ? [shown, hidden] : [null, null];
+  const base = older && newer ? recordOfWhatWasTaken(older, newer, known) : null;
+  // (Two masters apart, the newer row's blank may be a clear he typed on the row in between, which that row passed
+  // on: the newer row is then weighed as a row that has been changed, though nothing was typed on it. "A row never
+  // changed since its import holds no clear of his" is said of a row against its own record only.)
+  const apart = base && base !== newer!.textFromTask ? { updatedAt: newer!.updatedAt || now } : {};
+  const weighed = !base ? row
+    : newer === shown ? { ...scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt, ...apart, textFromTask: base }, hidden, hiddenLater ? 'task' : 'row').row,
+        // (And the shown row's own record is of the row in between: it stays as it is.)
+        ...(row.textFromTask?.taskId === hidden.id ? {} : { textFromTask: row.textFromTask }) }
+    : scheduleItemWithItsNewRow(row, { ...hidden, ...apart, textFromTask: base }, hiddenLater);
+  const changed = base && JSON.stringify({ ...weighed, updatedAt: row.updatedAt }) !== JSON.stringify(row) ? weighed : row;
+  // A field with no such record (a row saved before rows kept one): the hidden row's fills a blank when it was the row
+  // changed later, as before.
+  const recorded = TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(base ?? {}, field));
   const lender = recorded.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(recorded.map(field => [field, ''])) };
   // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
   // and the later entry stands.
-  const filled = withControlsOf(hiddenLater ? withBlanksFilledFrom(weighed, lender) : weighed, hidden, false);
+  const filled = withControlsOf(hiddenLater ? withBlanksFilledFrom(changed, lender) : changed, hidden, false);
   return filled === row || JSON.stringify({ ...filled, updatedAt: row.updatedAt }) === JSON.stringify(row) ? null : { ...filled, updatedAt: now };
+}
+
+/**
+ * What the newer of two rows of one task took from the older one: the record of the row that replaced the older row.
+ * That is the newer row itself, or, two masters or more apart (review P4 L1), a row in between, when every saved task
+ * is known; then only the fields the newer row's own record names too (one its file stated is the file's, not his).
+ */
+function recordOfWhatWasTaken(older: ScheduleItem, newer: ScheduleItem, known?: readonly ScheduleItem[]): ScheduleItem['textFromTask'] | null {
+  if (newer.textFromTask?.taskId === older.id) return newer.textFromTask;
+  const own = newer.textFromTask;
+  const chain = scheduleTaskEarlierIds(newer);
+  const between = own ? (known ?? []).find(item => item.textFromTask?.taskId === older.id && chain.includes(item.id)) : undefined;
+  if (!own || !between) return null;
+  return { ...Object.fromEntries(Object.entries(between.textFromTask!).filter(([field]) => Object.prototype.hasOwnProperty.call(own, field))), taskId: older.id };
 }
 
 function progressCarried(

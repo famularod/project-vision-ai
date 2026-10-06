@@ -645,6 +645,31 @@ export function scheduleItemAgainstItsTask(
 }
 
 /**
+ * Review P4 L1 (6 Oct 2026, Low; older, the same on Build 229; the reports
+ * reviewer's seed "plain 46"): the same weighing the other way round. An
+ * older row of a task, shown again (Set Active to an older master), with
+ * what has been set since on the newer row that replaced it (`newRow`, which
+ * says what it took from this row). A field changed only on the newer row
+ * takes that row's value, a clear too; one changed only here, or on neither,
+ * stays; one changed on both is the row's changed later, as nothing is asked
+ * at Set Active. Before, only a blank here was filled: the owner he had
+ * changed from Dana to Sam on the task showed as Dana again, and the report
+ * said "owner changed from Sam to Dana". The same row when nothing differs.
+ */
+export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleItem, newRowLater: boolean): ScheduleItem {
+  const taken = newRow.textFromTask;
+  if (!taken || taken.taskId !== row.id) return row;
+  const next: Record<string, unknown> = {};
+  SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
+    const here = fieldValue(row, field);
+    if (scheduleItemHoldsAsTaken(newRow, field) || fieldValue(newRow, field) === here) return;
+    if (here !== fieldValue(taken, field) && !newRowLater) return;
+    next[field] = newRow[field] ?? '';
+  });
+  return Object.keys(next).length === 0 ? row : { ...row, ...next } as ScheduleItem;
+}
+
+/**
  * Review N3 R3: an edit of what David sets on a task, typed on a row a newer
  * master has since replaced (by a device that had not heard of that master),
  * as an edit of the row the task lives on now: that row with his values,

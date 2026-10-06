@@ -29,6 +29,7 @@ import {
   scheduleProgressCarriedOnActivation,
   scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
+import { scheduleItemWithItsNewRow } from '../../services/ScheduleItemEditBase';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import type { ProjectControls, ReferenceDocument, ScheduleItem } from '../../types';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
@@ -359,7 +360,10 @@ describe('Review N2 P1: the web\'s upload and Make Current, and the phone\'s Set
     // He clears the note on the task he sees (G's row); F's hidden row still holds the old one.
     const cleared = patch(onG, framingG, { notes: '' }, '2026-09-16T09:00:00.000Z');
     const backOnF = setActive(cleared, F, '2026-09-17T12:00:00.000Z');
-    expect(one(backOnF, 'Framing').notes).toBe('Crew short Tuesday');
+    // Changed deliberately (review P4 L1). This line pinned "the older row shows what it had": 'Crew short Tuesday'
+    // again while master F was in use. Set Active to another master now shows what he last set on the task, and he
+    // cleared this note; the owner and contractor he left alone are as they were.
+    expect(typed(one(backOnF, 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
     const onGAgain = setActive(backOnF, G, '2026-09-18T12:00:00.000Z');
     expect(one(onGAgain, 'Framing').id).toBe(framingG);
     expect(typed(one(onGAgain, 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
@@ -409,6 +413,121 @@ describe('Review N2 P1: the web\'s upload and Make Current, and the phone\'s Set
     expect([one(back, 'Framing').id, ...typed(one(back, 'Framing'))]).toEqual([framingG, ...MIKE]);
   });
 
+  describe('review P4 L1: Set Active to an older master shows what he last set on the task', () => {
+    // Master G moves Framing; its new row takes Mike, Acme Framing and the note from F's row, and says so.
+    const onG = approve(withNote, G, [FRAMING_G, ROOF]);
+    const framingG = one(onG, 'Framing').id;
+
+    it('an owner he changed on the task since (Mike to Sam) shows on the older row, on that master\'s dates; the rest as he left it', () => {
+      const sam = patch(onG, framingG, { owner: 'Sam' }, '2026-09-16T09:00:00.000Z');
+      const backOnF = setActive(sam, F, '2026-09-17T12:00:00.000Z');
+      // (It was: Mike again, and the next report said the owner had changed from Sam to Mike.)
+      expect([one(backOnF, 'Framing').id, dates(one(backOnF, 'Framing')), ...typed(one(backOnF, 'Framing'))]).toEqual([framingF, '10/01/2026-10/11/2026', 'Sam', 'Acme Framing', 'Crew short Tuesday']);
+      // And forward again: still Sam, on the newer row.
+      const onGAgain = setActive(backOnF, G, '2026-09-18T12:00:00.000Z');
+      expect([one(onGAgain, 'Framing').id, ...typed(one(onGAgain, 'Framing'))]).toEqual([framingG, 'Sam', 'Acme Framing', 'Crew short Tuesday']);
+    });
+
+    it('his next step and milestone too', () => {
+      const more = patch(onG, framingG, { nextAction: 'Order rebar', milestone: 'Slab pour' }, '2026-09-16T09:00:00.000Z');
+      const back = one(setActive(more, F, '2026-09-17T12:00:00.000Z'), 'Framing');
+      expect([back.id, back.nextAction, back.milestone]).toEqual([framingF, 'Order rebar', 'Slab pour']);
+    });
+
+    it('changed on both rows: the one changed later stands; changed only on the older row, that stays', () => {
+      const sam = patch(onG, framingG, { owner: 'Sam' }, '2026-09-16T09:00:00.000Z');
+      // The older row's owner and note are changed after that (a device that still showed it): the later of the two owners.
+      const leeLater = patch(sam, framingF, { owner: 'Lee', notes: 'Typed on the older row' }, '2026-09-16T15:00:00.000Z');
+      expect(typed(one(setActive(leeLater, F, '2026-09-17T12:00:00.000Z'), 'Framing'))).toEqual(['Lee', 'Acme Framing', 'Typed on the older row']);
+      // Changed on the older row first, and on the newer row after it: the newer row's owner; the note, changed only there, stays.
+      const leeFirst = patch(patch(onG, framingF, { owner: 'Lee', notes: 'Typed on the older row' }, '2026-09-16T09:00:00.000Z'), framingG, { owner: 'Sam' }, '2026-09-16T15:00:00.000Z');
+      expect(typed(one(setActive(leeFirst, F, '2026-09-17T12:00:00.000Z'), 'Framing'))).toEqual(['Sam', 'Acme Framing', 'Typed on the older row']);
+    });
+
+    it('a blank on the older row that he cleared there is not filled again from the newer row, though that row was changed later (a percent)', () => {
+      const clearedOnF = patch(onG, framingF, { notes: '' }, '2026-09-16T09:00:00.000Z');
+      const percentOnG = patch(clearedOnF, framingG, { percentComplete: 20 }, '2026-09-16T15:00:00.000Z');
+      // (It was: 'Crew short Tuesday' again, lent by the row changed later.)
+      expect(typed(one(setActive(percentOnG, F, '2026-09-17T12:00:00.000Z'), 'Framing'))).toEqual(['Mike', 'Acme Framing', '']);
+    });
+
+    describe('two masters apart (the newest row\'s record is of the row in between)', () => {
+      const FRAMING_H = 'Framing,Alpha,Lot,10/07/2026,10/17/2026,';
+      const idOnH = (state: State) => one(state, 'Framing').id;
+
+      it('back two masters in one step: the owner he changed on the way, and the note he cleared on the newest row, show so on the oldest row', () => {
+        const sam = patch(onG, framingG, { owner: 'Sam' }, '2026-09-16T09:00:00.000Z');
+        const onH = approve(sam, H, [FRAMING_H, ROOF]);
+        const cleared = patch(onH, idOnH(onH), { notes: '' }, '2026-09-22T09:00:00.000Z');
+        const backOnF = setActive(cleared, F, '2026-09-23T12:00:00.000Z');
+        // (It was: Mike and the old note, as master F's row had them. The reports reviewer's seeds "plain 390" and "plain 506".)
+        expect([one(backOnF, 'Framing').id, ...typed(one(backOnF, 'Framing'))]).toEqual([framingF, 'Sam', 'Acme Framing', '']);
+      });
+
+      it('an owner he cleared on the row in between, which the newest row then took as a blank: cleared on the oldest row too, and not given back to the newest', () => {
+        const cleared = patch(onG, framingG, { owner: '' }, '2026-09-16T09:00:00.000Z');
+        const onH = approve(cleared, H, [FRAMING_H, ROOF]);
+        const newest = idOnH(onH);
+        // The newest row has never been edited: its blank is the clear, passed on.
+        expect([one(onH, 'Framing').owner, one(onH, 'Framing').updatedAt ?? null]).toEqual(['', null]);
+        const backOnF = setActive(onH, F, '2026-09-23T12:00:00.000Z');
+        // (It was: Mike. The reports reviewer's seed "plain 506".)
+        expect([one(backOnF, 'Framing').id, ...typed(one(backOnF, 'Framing'))]).toEqual([framingF, '', 'Acme Framing', 'Crew short Tuesday']);
+        // Forward again from a state where the oldest row still has Mike (as a build before this one left it): the
+        // newest row keeps its blank.
+        const mikeStillOnF: State = { ...onH, documents: setActive(onH, F, '2026-09-23T12:00:00.000Z').documents };
+        const forward = setActive(mikeStillOnF, H, '2026-09-24T12:00:00.000Z');
+        expect([one(forward, 'Framing').id, ...typed(one(forward, 'Framing'))]).toEqual([newest, '', 'Acme Framing', 'Crew short Tuesday']);
+      });
+
+      it('forward two masters in one step: what he typed on the oldest row while it was shown is on the newest row; changed on both, the later', () => {
+        const onH = approve(onG, H, [FRAMING_H, ROOF]);
+        const newest = idOnH(onH);
+        const backOnF = setActive(onH, F, '2026-09-23T12:00:00.000Z');
+        const lee = patch(backOnF, framingF, { owner: 'Lee' }, '2026-09-23T15:00:00.000Z');
+        const forward = setActive(lee, H, '2026-09-24T12:00:00.000Z');
+        // (It was: Mike, the copy the newest row still held.)
+        expect([one(forward, 'Framing').id, ...typed(one(forward, 'Framing'))]).toEqual([newest, 'Lee', 'Acme Framing', 'Crew short Tuesday']);
+        // The newest row's own record is still of the row in between.
+        expect(one(forward, 'Framing').textFromTask).toMatchObject({ taskId: framingG });
+        // An owner set on the newest row after that one stands over it.
+        const samLater = patch(lee, newest, { owner: 'Sam' }, '2026-09-23T18:00:00.000Z');
+        expect(typed(one(setActive(samLater, H, '2026-09-24T12:00:00.000Z'), 'Framing'))).toEqual(['Sam', 'Acme Framing', 'Crew short Tuesday']);
+      });
+
+      it('an owner the newest master\'s file states is the file\'s: it does not go back to the oldest row', () => {
+        const header = 'Task,Project,Area,Start,Finish,Owner,Percent Complete,Notes';
+        const onH = approve(onG, H, ['Framing,Alpha,Lot,10/07/2026,10/17/2026,Dana,,', 'Roof,Alpha,Lot,10/13/2026,10/21/2026,,,'], header);
+        expect(typed(one(onH, 'Framing'))).toEqual(['Dana', 'Dana', 'Crew short Tuesday']);
+        expect(typed(one(setActive(onH, F, '2026-09-23T12:00:00.000Z'), 'Framing'))).toEqual(MIKE);
+      });
+    });
+
+    it('the rule on the two rows alone: only from a row that says it took its text from this very row, and never a value that row merely copied', () => {
+      const older = one(onF, 'Framing');
+      const newer = { ...one(onG, 'Framing'), owner: 'Sam' };
+      expect(scheduleItemWithItsNewRow({ ...older, owner: 'Mike' }, newer, false)).toMatchObject({ id: framingF, owner: 'Sam' });
+      // A row that took its text from another row says nothing about this one.
+      const tookElsewhere = { ...newer, textFromTask: { ...newer.textFromTask!, taskId: 'another row' } };
+      const mike = { ...older, owner: 'Mike' };
+      expect(scheduleItemWithItsNewRow(mike, tookElsewhere, true)).toBe(mike);
+      // The contractor and the note the newer row still holds as taken are copies: this row's own stand, whichever was changed later.
+      const changedHere = { ...older, owner: 'Mike', contractor: 'Other Framing', notes: '' };
+      expect(scheduleItemWithItsNewRow(changedHere, newer, true)).toMatchObject({ owner: 'Sam', contractor: 'Other Framing', notes: '' });
+    });
+
+    it('a newer row saved before rows said what they took (Build 229): as before, its text only fills a blank on the older row when it was changed later', () => {
+      const asBuild229 = (state: State): State => ({ ...state, items: state.items.map(item => {
+        if (item.id !== framingG) return item;
+        const { textFromTask: _record, ...rest } = item;
+        return rest as ScheduleItem;
+      }) });
+      const sam = asBuild229(patch(onG, framingG, { owner: 'Sam', nextAction: 'Order rebar' }, '2026-09-16T09:00:00.000Z'));
+      const back = one(setActive(sam, F, '2026-09-17T12:00:00.000Z'), 'Framing');
+      expect([...typed(back), back.nextAction]).toEqual(['Mike', 'Acme Framing', 'Crew short Tuesday', 'Order rebar']);
+    });
+  });
+
   it('review N3 R3: what he typed over them on the task after the upload, before Make Current, is what the row then shown has', () => {
     const uploaded = upload(withNote, [FRAMING_G, ROOF]);
     const edited = patch(uploaded, framingF, { notes: 'Crew back Wednesday', owner: 'Ana' }, '2026-09-14T15:00:00.000Z');
@@ -448,6 +567,15 @@ describe('Review N2 P1: the report no longer says the owner changed to unassigne
     // One he does change afterwards is still reported.
     const approved = setControls(onG, one(onG, 'Framing').id, { approvalStatus: 'Approved' }, '2026-09-16T09:00:00.000Z');
     expect(report(approved, after.snapshot, '2026-09-17T12:00:00.000Z').lines).toEqual(['Framing approval changed from Pending to Approved.']);
+  });
+
+  it('review P4 L1: after Set Active back to the older master, nothing about an owner he changed on the task before (the reports reviewer\'s seed "plain 46")', () => {
+    const onG = approve(withNote, G, [FRAMING_G, ROOF]);
+    const sam = patch(onG, one(onG, 'Framing').id, { owner: 'Sam' }, '2026-09-16T09:00:00.000Z');
+    const sent = report(sam, null, '2026-09-16T12:00:00.000Z');
+    const backOnF = setActive(sam, F, '2026-09-17T12:00:00.000Z');
+    // (It was, since Build 229: also "Framing owner changed from Sam to Mike.")
+    expect(report(backOnF, sent.snapshot, '2026-09-18T12:00:00.000Z').lines).toEqual(['Framing finish changed from 10/15/2026 to 10/11/2026.']);
   });
 
   it('after a master moves the task he assigned to Mike: the date change, and nothing about its owner', () => {
