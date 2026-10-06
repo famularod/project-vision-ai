@@ -26,6 +26,13 @@ import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
 } from './ReportWordDocument';
+import {
+  REPORT_PHOTO_AS_IS_MAX_BYTES,
+  reportDrawingScanTooLarge,
+  reportDrawingScanTooLargeMessage,
+  reportPictureFit,
+  reportPictureFits,
+} from './ReportWordMediaLimits';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
 
 /**
@@ -40,10 +47,27 @@ export type ResolvedNativeReportWordMedia = Readonly<{
 }>;
 
 /**
+ * Runs `work` for each item in order, starting one only when the one before
+ * it has finished (independent review F04: a large report fetched every
+ * cited photo and every drawing at once).
+ */
+export async function oneAtATime<T, R>(
+  items: readonly T[],
+  work: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (const item of items) results.push(await work(item));
+  return results;
+}
+
+/**
  * Resolves report media that can be embedded directly on iPhone and iPad.
  * Field photos and current drawing excerpts are embedded from app-owned
  * storage. PDF excerpts are rendered locally with Apple PDFKit so the source
  * bytes never leave the device.
+ *
+ * One picture is opened at a time, and each goes in no larger than
+ * services/ReportWordMediaLimits allows (independent review F04).
  */
 export async function resolveNativeReportWordMedia(args: {
   updates: readonly ProjectUpdate[];
@@ -198,27 +222,36 @@ async function localRaster(uri: string | null | undefined) {
   if (!file.exists) throw new Error('The local image file is missing.');
   const format = localFileFormat(normalizedUri);
   const mimeType = reportWordEmbedMimeType(format);
-  if (!mimeType) return convertedRaster(normalizedUri, format);
-  const [data, dimensions] = await Promise.all([
-    file.bytes(),
-    imageDimensions(normalizedUri),
-  ]);
-  return {
-    data,
-    mimeType,
-    width: dimensions.width,
-    height: dimensions.height,
-  };
+  // As it is only when Word takes its type, its file is small enough and it
+  // is no larger than a report picture may be (independent review F04: a
+  // 12-megapixel photo went in at 4032 x 3024 px and several megabytes).
+  if (mimeType && file.size <= REPORT_PHOTO_AS_IS_MAX_BYTES) {
+    const dimensions = await imageDimensions(normalizedUri);
+    if (reportPictureFits(dimensions.width, dimensions.height)) {
+      return {
+        data: await file.bytes(),
+        mimeType,
+        width: dimensions.width,
+        height: dimensions.height,
+      };
+    }
+  }
+  return convertedRaster(normalizedUri, format);
 }
 
 /**
- * Converts a picture Word cannot take as it is (HEIC, WebP, TIFF and the
- * rest) to JPEG, and labels the result by reading it back.
+ * Saves a picture again as a JPEG no larger than a report picture may be,
+ * and labels the result by reading it back: a picture Word cannot take as
+ * it is (HEIC, WebP, TIFF and the rest), and one that is too large to go in
+ * as it is. It is always redrawn, so what is saved is an ordinary 8-bit
+ * colour picture.
  */
 async function convertedRaster(uri: string, format: ReportImageFormat) {
   let renderedFile: File | null = null;
   try {
     const context = ImageManipulator.manipulate(uri);
+    const upright = await context.renderAsync();
+    context.resize(reportPictureFit(upright.width, upright.height));
     const imageRef = await context.renderAsync();
     const rendered = await imageRef.saveAsync({
       compress: 0.88,
@@ -266,6 +299,11 @@ async function renderDrawingImageExcerpt(
   const upright = await context.renderAsync().catch(() => {
     throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
   });
+  // Cropping needs the scan decoded; a very large one is left out with the
+  // reason rather than risk iOS closing the app (independent review F04).
+  if (reportDrawingScanTooLarge(upright.width, upright.height)) {
+    throw new Error(reportDrawingScanTooLargeMessage(upright.width, upright.height));
+  }
   const crop = planReportDrawingCrop(region, upright);
   context.crop({
     originX: crop.originX,
@@ -311,11 +349,11 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
   // One rule decides whether the cited area is usable, for a PDF as for a picture.
   reportDrawingCropBounds(reference.excerpt.region);
 
-  const rendered = await renderPdfExcerpt(
+  const rendered = await boundedExcerpt(await renderPdfExcerpt(
     documentUri,
     reference.excerpt.pageNumber,
     reference.excerpt.region,
-  );
+  ));
   const renderedFile = new File(rendered.uri);
   try {
     if (!renderedFile.exists) {
@@ -330,6 +368,25 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
     };
   } finally {
     if (renderedFile.exists) renderedFile.delete();
+  }
+}
+
+/**
+ * A PDF excerpt no larger than a report picture may be (independent review
+ * F04: it went in at whatever size the page rendered, several times the
+ * 1600 x 1200 a picture drawing's excerpt is held to). A larger one is saved
+ * again smaller, and the file the renderer made is removed.
+ */
+async function boundedExcerpt(rendered: Readonly<{ uri: string; width: number; height: number }>) {
+  if (reportPictureFits(rendered.width, rendered.height)) return rendered;
+  const larger = new File(rendered.uri);
+  try {
+    const context = ImageManipulator.manipulate(rendered.uri);
+    context.resize(reportPictureFit(rendered.width, rendered.height));
+    const smaller = await context.renderAsync();
+    return await smaller.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  } finally {
+    if (larger.exists) larger.delete();
   }
 }
 
@@ -442,11 +499,11 @@ async function renderDrawingPreviewFile(reference: ReportDrawingReference) {
   const source = new File(document.uri);
   if (!source.exists) throw new Error('The current drawing PDF is missing on this device.');
   reportDrawingCropBounds(reference.excerpt.region);
-  const rendered = await renderPdfExcerpt(
+  const rendered = await boundedExcerpt(await renderPdfExcerpt(
     document.uri,
     reference.excerpt.pageNumber,
     reference.excerpt.region,
-  );
+  ));
   return rendered.uri;
 }
 

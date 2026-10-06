@@ -71,7 +71,8 @@ describe('what a report is built from and sends (audit A6)', () => {
 
   it('numbers Word photos as the text does and fetches only the cited photos', () => {
     expect(app).toMatch(/const reportPhotoIds = \[\.\.\.reportPhotoNumbers\.keys\(\)\]\.sort\(\n\s+\(left, right\) => \(reportPhotoNumbers\.get\(left\) \?\? 0\) - \(reportPhotoNumbers\.get\(right\) \?\? 0\),\n\s+\);/);
-    expect(app).toMatch(/relevantUpdates\.map\(update => hydrateRecoveredProjectUpdatePhotos\(\{\n\s+\.\.\.update,\n\s+photos: update\.photos\.filter\(photo => reportPhotoIdSet\.has\(photo\.id\)\),\n\s+\}\)\)/);
+    // Independent review F04 (Build 231 E1 item 6): still only the cited photos, now fetched one at a time.
+    expect(app).toMatch(/oneAtATime\(\n\s+update\.photos\.filter\(photo => reportPhotoIdSet\.has\(photo\.id\)\),\n\s+async photo => \(await hydrateRecoveredProjectUpdatePhotos\(\{ \.\.\.update, photos: \[photo\] \}\)\)\.photos\[0\],\n\s+\)/);
   });
 
   it('lists period changes only against a previous approved report, as the body does', () => {

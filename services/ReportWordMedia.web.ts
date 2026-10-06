@@ -15,6 +15,7 @@ import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
 } from './ReportWordDocument';
+import { reportPictureFit } from './ReportWordMediaLimits';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
 
 type ArtifactUrlResolver = (
@@ -418,10 +419,11 @@ function cropCanvas(
 }
 
 function resizeCanvas(sourceCanvas: HTMLCanvasElement) {
-  const scale = Math.min(1, 1600 / sourceCanvas.width, 1200 / sourceCanvas.height);
+  // The phone and iPad report makes a photo the same size (independent review F04).
+  const fit = reportPictureFit(sourceCanvas.width, sourceCanvas.height);
   const output = document.createElement('canvas');
-  output.width = Math.max(1, Math.round(sourceCanvas.width * scale));
-  output.height = Math.max(1, Math.round(sourceCanvas.height * scale));
+  output.width = fit.width;
+  output.height = fit.height;
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Image resize renderer is unavailable.');
   fillWhite(outputContext, output);

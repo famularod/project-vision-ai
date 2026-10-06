@@ -28,7 +28,9 @@ describe('A4 pass 4 lows', () => {
 
 describe('A6 pass 4 lows', () => {
   it('the Word "prepared" notice is read before the Outlook question; the citation check ignores case', () => {
-    expect(app).toMatch(/await new Promise<void>\(resolve => Alert\.alert\(\n\s+'Word report prepared',[\s\S]*?\[\{ text: 'OK', onPress: \(\) => resolve\(\) \}\],\n\s+\{ cancelable: true, onDismiss: \(\) => resolve\(\) \},\n\s+\)\);\n\s+\}\n\s+return true;/);
+    // Independent review F04 (Build 231 E1 item 6): the notice is now read before the share sheet too, so the
+    // share sits between it and the return; both are still waited for before the caller asks anything.
+    expect(app).toMatch(/await new Promise<void>\(resolve => Alert\.alert\(\n\s+'Word report prepared',[\s\S]*?\[\{ text: 'OK', onPress: \(\) => resolve\(\) \}\],\n\s+\{ cancelable: true, onDismiss: \(\) => resolve\(\) \},\n\s+\)\);\n\s+\}\n\s+await Sharing\.shareAsync\(fileUri, \{[^}]*\}\);\n\s+return true;/);
     expect(app).toContain("return reportFormat !== 'executive' && /\\bSee Images?\\s+\\d/i.test(report.body);");
   });
 

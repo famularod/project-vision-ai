@@ -55,6 +55,11 @@ export const fakeMedia = {
   modified: new Map<string, number>(),
   /** Whether the phone refuses to move a file (a full disk, a folder that cannot be made). */
   moveFails: false,
+  /** The size the phone reports for a local file, when a test needs a large one; otherwise its fake bytes' length. */
+  fileSizes: new Map<string, number>(),
+  /** How many pictures the phone's image tool holds open now, and the most it held at once. */
+  deviceOpenNow: 0,
+  deviceOpenAtOnce: 0,
   /**
    * Local pictures the phone's image tool cannot open although their type is an
    * ordinary one: a CMYK JPEG, a 16-bit grey PNG (its first step cannot make a
@@ -90,6 +95,9 @@ export const fakeMedia = {
     this.files.clear();
     this.modified.clear();
     this.moveFails = false;
+    this.fileSizes.clear();
+    this.deviceOpenNow = 0;
+    this.deviceOpenAtOnce = 0;
     this.deviceCannotOpen.clear();
     this.devicePrintForm.clear();
     this.savedAsCmyk.clear();
@@ -262,7 +270,7 @@ export function fakeFileSystem() {
       return fakeMedia.files.has(this.uri);
     }
     get size() {
-      return fakeMedia.files.get(this.uri)?.byteLength ?? 0;
+      return fakeMedia.fileSizes.get(this.uri) ?? fakeMedia.files.get(this.uri)?.byteLength ?? 0;
     }
     get modificationTime() {
       return fakeMedia.modified.get(this.uri) ?? 0;
@@ -322,6 +330,16 @@ export function fakeImageManipulator() {
       let picture = source && !fakeMedia.deviceCannotOpen.has(uri) ? decoded(source, DEVICE_DECODES) : null;
       let printForm = fakeMedia.devicePrintForm.get(uri) ?? null;
       let pendingCrop: FakeCrop | null = null;
+      // Held open from here until it is saved (or found unreadable).
+      let open = Boolean(picture);
+      if (open) {
+        fakeMedia.deviceOpenNow += 1;
+        fakeMedia.deviceOpenAtOnce = Math.max(fakeMedia.deviceOpenAtOnce, fakeMedia.deviceOpenNow);
+      }
+      const letGo = () => {
+        if (open) fakeMedia.deviceOpenNow -= 1;
+        open = false;
+      };
       const context = {
         crop(rect: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>) {
           pendingCrop = { ...rect, outputWidth: rect.width, outputHeight: rect.height };
@@ -357,6 +375,9 @@ export function fakeImageManipulator() {
               if (printForm === 'CMYK' && format === 'jpeg') fakeMedia.savedAsCmyk.add(`picture-${fakeMedia.nextId}`);
               const savedUri = `file:///cache/ImageManipulator/${fakeMedia.nextId}.${format}`;
               fakeMedia.files.set(savedUri, bytes);
+              // Writing takes a moment: work started meanwhile would overlap this picture.
+              await Promise.resolve();
+              letGo();
               return { uri: savedUri, width: rendered.width, height: rendered.height };
             },
           };

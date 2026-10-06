@@ -610,6 +610,7 @@ import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDec
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
+  oneAtATime,
   renderNativeReportDrawingPreview,
   resolveNativeReportWordMedia,
 } from './services/ReportWordMedia.native';
@@ -10287,30 +10288,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const relevantUpdates = activeSavedUpdates.filter(update =>
       update.photos.some(photo => reportPhotoIdSet.has(photo.id)));
     // Only the cited photos are fetched, not every cloud-only photo of their
-    // updates, as the email path already does (audit A6).
-    const hydratedUpdates = await Promise.all(
-      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos({
-        ...update,
-        photos: update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
-      })),
-    );
-    const readableDrawingReferences = await Promise.all(
-      drawingReferences.map(async reference => {
-        try {
-          const readableDocument =
-            await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
-          return {
-            ...reference,
-            excerpt: {
-              ...reference.excerpt,
-              document: readableDocument,
-            },
-          };
-        } catch {
-          return reference;
-        }
-      }),
-    );
+    // updates, as the email path already does (audit A6); one photo and one
+    // drawing at a time, not all at once (independent review F04).
+    const hydratedUpdates = await oneAtATime(relevantUpdates, async update => ({
+      ...update,
+      photos: await oneAtATime(
+        update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
+        async photo => (await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: [photo] })).photos[0],
+      ),
+    }));
+    const readableDrawingReferences = await oneAtATime(drawingReferences, async reference => {
+      try {
+        const readableDocument =
+          await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
+        return {
+          ...reference,
+          excerpt: {
+            ...reference.excerpt,
+            document: readableDocument,
+          },
+        };
+      } catch {
+        return reference;
+      }
+    });
     const resolvedMedia = await resolveNativeReportWordMedia({
       updates: hydratedUpdates as unknown as Parameters<
         typeof resolveNativeReportWordMedia
@@ -10341,20 +10342,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       await FileSystem.writeAsStringAsync(fileUri, base64, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      await Sharing.shareAsync(fileUri, {
-        dialogTitle: shareTitle,
-        mimeType:
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        UTI: 'org.openxmlformats.wordprocessingml.document',
-      });
-
       const unavailable = resolvedMedia.unavailableMedia.length;
       if (unavailable > 0) {
         const unavailableDetail = unavailable === 1
           ? `\n\n${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
           : '';
-        // Read before anything else is asked (audit A6 pass 4: the Outlook
-        // question opened on top of this notice).
+        // Read before the file is shared (independent review F04: it came
+        // after the share sheet) and before anything else is asked (audit
+        // A6 pass 4: the Outlook question opened on top of this notice).
         await new Promise<void>(resolve => Alert.alert(
           'Word report prepared',
           `${summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia)}` +
@@ -10363,6 +10358,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           { cancelable: true, onDismiss: () => resolve() },
         ));
       }
+      await Sharing.shareAsync(fileUri, {
+        dialogTitle: shareTitle,
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        UTI: 'org.openxmlformats.wordprocessingml.document',
+      });
       return true;
     } catch (error) {
       Alert.alert(
