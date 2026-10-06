@@ -53,6 +53,12 @@ export const fakeMedia = {
   modified: new Map<string, number>(),
   /** Whether the phone refuses to move a file (a full disk, a folder that cannot be made). */
   moveFails: false,
+  /**
+   * Local pictures the phone's image tool cannot open although their type is an
+   * ordinary one: a CMYK JPEG, a 16-bit grey PNG (its first step cannot make a
+   * bitmap for them).
+   */
+  deviceCannotOpen: new Set<string>(),
   /** Protected cloud files the desktop downloads, by URL. */
   remote: new Map<string, { bytes: Uint8Array; contentType: string | null }>(),
   pictures: new Map<string, FakePicture>(),
@@ -71,6 +77,7 @@ export const fakeMedia = {
     this.files.clear();
     this.modified.clear();
     this.moveFails = false;
+    this.deviceCannotOpen.clear();
     this.remote.clear();
     this.pictures.clear();
     this.deviceCrops.length = 0;
@@ -243,7 +250,7 @@ export function fakeImageManipulator() {
     manipulate(uri: string) {
       fakeMedia.deviceOpened.push(uri);
       const source = fakeMedia.files.get(uri);
-      let picture = source ? decoded(source, DEVICE_DECODES) : null;
+      let picture = source && !fakeMedia.deviceCannotOpen.has(uri) ? decoded(source, DEVICE_DECODES) : null;
       let pendingCrop: FakeCrop | null = null;
       const context = {
         crop(rect: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>) {

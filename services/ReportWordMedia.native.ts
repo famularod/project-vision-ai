@@ -16,6 +16,7 @@ import {
   convertedReportImageMimeType,
   detectReportImageSignature,
   REPORT_IMAGE_SIGNATURE_BYTES,
+  reportDrawingNotCroppedMessage,
   reportImageNotPreparedMessage,
   reportWordEmbedMimeType,
   type ReportImageFormat,
@@ -247,7 +248,7 @@ async function renderDrawingImageExcerpt(
 ) {
   const context = ImageManipulator.manipulate(uri);
   const upright = await context.renderAsync().catch(() => {
-    throw new Error(reportImageNotPreparedMessage(localFileFormat(uri)));
+    throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
   });
   const crop = planReportDrawingCrop(region, upright);
   context.crop({

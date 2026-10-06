@@ -17,6 +17,8 @@ import {
   reportDrawingCropBounds,
 } from '../../services/ReportDrawingCrop';
 import type { ReportDrawingReference } from '../../services/ReportDrawingReferences';
+import { summarizeReportWordUnavailableMedia } from '../../services/ReportWordDocument';
+import { reportDrawingNotCroppedMessage } from '../../services/ReportWordImageFormat';
 import {
   renderNativeReportDrawingPreview,
   resolveNativeReportWordMedia,
@@ -259,6 +261,46 @@ describe('a drawing kept as a picture, in the phone and iPad Word report', () =>
     const shown = await native(TOP_RIGHT, pdf);
     expect(shown.media).toHaveLength(1);
     expect(renderPdfExcerpt).toHaveBeenCalledWith(pdf.uri, 1, TOP_RIGHT);
+  });
+});
+
+describe('a picture drawing the phone\'s image tool cannot open (review pass 2 W1: a CMYK JPEG, a 16-bit grey PNG)', () => {
+  const NOT_CROPPED = 'The JPEG drawing could not be cropped on this device. ' +
+    'If it was saved for print (CMYK) or as 16-bit grey, save it again as an ordinary colour picture.';
+
+  it('is listed with a reason that says what to do, and the whole sheet is never embedded instead', async () => {
+    storeSheet(4000, 3000);
+    fakeMedia.deviceCannotOpen.add(SHEET_URI);
+    const result = await native(TOP_RIGHT);
+    expect(result.media).toEqual([]);
+    expect(result.unavailableMedia).toEqual([{
+      id: 'ref-1',
+      kind: 'drawing',
+      label: '2321 Compliance Project · North Lot · Site Plan · Rev 2 · Sheet C1.0',
+      reason: NOT_CROPPED,
+    }]);
+    // One attempt, nothing cropped, and nothing written.
+    expect(fakeMedia.deviceOpened).toEqual([SHEET_URI]);
+    expect(fakeMedia.deviceCrops).toEqual([]);
+    expect([...fakeMedia.files.keys()]).toEqual([SHEET_URI]);
+    expect(summarizeReportWordUnavailableMedia(result.unavailableMedia))
+      .toBe('1 report source image could not be prepared.');
+  });
+
+  it('has no on-screen preview either, rather than the whole sheet', async () => {
+    storeSheet(4000, 3000);
+    fakeMedia.deviceCannotOpen.add(SHEET_URI);
+    await expect(renderNativeReportDrawingPreview(reference(TOP_RIGHT))).rejects.toThrow(NOT_CROPPED);
+    expect([...fakeMedia.files.keys()]).toEqual([SHEET_URI]);
+  });
+
+  it('names the type, and keeps the plain "not a picture" words for a file that is no picture at all', () => {
+    expect(reportDrawingNotCroppedMessage('png')).toBe(
+      'The PNG drawing could not be cropped on this device. ' +
+      'If it was saved for print (CMYK) or as 16-bit grey, save it again as an ordinary colour picture.',
+    );
+    expect(reportDrawingNotCroppedMessage('webp')).toBe('The WebP image could not be prepared for the Word report.');
+    expect(reportDrawingNotCroppedMessage('unknown')).toBe('This file is not a picture the Word report can use. It was left out.');
   });
 });
 

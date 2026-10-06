@@ -118,6 +118,19 @@ export function reportImageNotPreparedMessage(format: ReportImageFormat): string
   return `The ${FORMAT_NAMES[format]} image could not be prepared for the Word report.`;
 }
 
+/**
+ * Why a picture drawing has no excerpt when the phone's image tool cannot
+ * open a picture of an ordinary type (review pass 2 W1). Its first step
+ * fails for a CMYK JPEG and for a 16-bit grey PNG, whatever is asked of it
+ * next, so there is nothing to crop and no second way to try on the phone.
+ * The whole sheet is not shown instead; the reason says what can be done.
+ */
+export function reportDrawingNotCroppedMessage(format: ReportImageFormat): string {
+  if (!isWordEmbedded(format)) return reportImageNotPreparedMessage(format);
+  return `The ${FORMAT_NAMES[format]} drawing could not be cropped on this device. ` +
+    'If it was saved for print (CMYK) or as 16-bit grey, save it again as an ordinary colour picture.';
+}
+
 function isWordEmbedded(format: ReportImageFormat): format is WordEmbeddedFormat {
   return Object.prototype.hasOwnProperty.call(WORD_EMBEDS, format);
 }
