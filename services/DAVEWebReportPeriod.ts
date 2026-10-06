@@ -269,6 +269,33 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
 }
 
 /**
+ * R1 item 1 (8 Oct 2026): what the "Recorded as sent" line becomes once a later report stands. It went on saying
+ * "The next report on every device runs from this one" after another device had sent a newer report.
+ */
+export function daveWebReportRecordedThenOvertakenMessage(
+  sentAt: string,
+  laterSentAt: string,
+  /** The later report was sent from this browser (another tab or window): never called "your other device". */
+  fromThisBrowser = false,
+): string {
+  const who = fromThisBrowser ? 'Another tab of this browser' : 'Your other device';
+  return `Recorded as sent ${describeReportSendTime(sentAt)}. ${who} sent a later report ${describeReportSendTime(laterSentAt)}, so the next report counts from that one.`;
+}
+
+/**
+ * R1 item 1: what a "Recorded as sent" line reads once the period on the page (the same projects and format the
+ * line speaks of) runs from a later send; null while the line still stands as it was written.
+ */
+export function daveWebReportRecordedLineNow(
+  recorded: Readonly<{ sentAt: string; scopeKey: string; reportFormat: string }>,
+  page: Readonly<{ scopeKey: string; reportFormat: string; periodSentAt: string | null; periodSendFromThisBrowser: boolean }>,
+): string | null {
+  if (recorded.scopeKey !== page.scopeKey || recorded.reportFormat !== page.reportFormat) return null;
+  if (!page.periodSentAt || !(Date.parse(page.periodSentAt) > Date.parse(recorded.sentAt))) return null;
+  return daveWebReportRecordedThenOvertakenMessage(recorded.sentAt, page.periodSentAt, page.periodSendFromThisBrowser);
+}
+
+/**
  * Review N2 (5 Oct 2026): what Sign Out says before it goes ahead when a
  * report sent from this computer could not be confirmed in the shared record
  * (it was sent while the record could not be reached, and one more try at

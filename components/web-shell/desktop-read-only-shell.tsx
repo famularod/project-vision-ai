@@ -192,6 +192,7 @@ import {
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportNotYetMessage,
+  daveWebReportRecordedLineNow,
   daveWebReportRecordedMessage,
   daveWebReportSendsNotSharedWarning,
   daveWebReportPeriodMoved,
@@ -5665,6 +5666,8 @@ function ReportWorkspace({
     text: string;
     byPeriodCard?: true;
     awaitingShared?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
+    /** R1 item 1 (8 Oct 2026): the send a "Recorded as sent" line speaks of, so the line can stop promising once a later report stands. */
+    recordedSend?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
   } | null>(null);
   useEffect(() => onDAVEWebReportSharedRecordSeen(seen => {
     setNotice(current => current?.awaitingShared && seen.sentAt === current.awaitingShared.sentAt &&
@@ -5673,6 +5676,7 @@ function ReportWorkspace({
         tone: 'good',
         text: daveWebReportRecordedMessage(current.awaitingShared.sentAt, 'checked'),
         ...(current.byPeriodCard ? { byPeriodCard: true as const } : {}),
+        recordedSend: current.awaitingShared,
       }
       : current);
   }), []);
@@ -5737,6 +5741,15 @@ function ReportWorkspace({
     ? daveWebReportSentHereAt(periodSnapshot, reportSource.fingerprint.split(':media-')[0])
     : null;
   const periodSentAt = reportPeriodSentAt(periodSnapshot);
+  // R1 item 1 (8 Oct 2026, the owner's open items): "Recorded as sent ... The next report on every device runs
+  // from this one." stayed on screen after another device (or another tab) sent a newer report, when the next
+  // report no longer runs from this one. Once the period on this page runs from a later send, the line says so.
+  const noticeText = (notice?.recordedSend && daveWebReportRecordedLineNow(notice.recordedSend, {
+    scopeKey: periodScopeKey,
+    reportFormat: reportAudience,
+    periodSentAt,
+    periodSendFromThisBrowser: periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt),
+  })) || (notice?.text ?? '');
   const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
   // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
@@ -5853,6 +5866,7 @@ function ReportWorkspace({
       text: daveWebReportRecordedMessage(sentAt, reached),
       ...(byPeriodCard ? { byPeriodCard: true as const } : {}),
       ...(reached === 'unchecked' ? { awaitingShared: { sentAt, ...sentPeriod } } : {}),
+      recordedSend: { sentAt, ...sentPeriod },
     });
     return true;
   };
@@ -6424,7 +6438,7 @@ function ReportWorkspace({
         ) : null}
         {notice?.byPeriodCard ? (
           <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
-            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{noticeText}</Text>
           </View>
         ) : null}
       </View>
@@ -6697,7 +6711,7 @@ function ReportWorkspace({
             ) : null}
             {notice && !notice.byPeriodCard ? (
               <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
-                <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+                <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{noticeText}</Text>
               </View>
             ) : null}
           </View>
