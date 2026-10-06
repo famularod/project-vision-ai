@@ -330,6 +330,13 @@ export function daveWebReportSendsNotSharedWarning(sentAts: readonly string[]): 
  * sent and would be lost (review N1 L5). Said plainly: what was not
  * recorded, and what follows.
  */
+/**
+ * R1 item 3 (8 Oct 2026): an older report shared again, from before the last three this computer remembers sending.
+ * Nothing is wrong and nothing new is recorded; the page said it "could not record that this report was sent".
+ */
+export const DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED =
+  'This is an older report. This computer remembers the last three reports it sent, and this one is from before them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+
 export const DAVE_WEB_REPORT_SEND_NOT_RECORDED =
   'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 

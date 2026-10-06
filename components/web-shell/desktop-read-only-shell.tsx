@@ -158,6 +158,7 @@ import {
   daveWebReportOlderPeriodLeftInBrowser,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
+  daveWebReportFromBeforeRememberedSends,
   daveWebReportSendReachedShared,
   daveWebReportSentHereAt,
   daveWebReportSentInThisTab,
@@ -181,6 +182,7 @@ import {
   DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
   DAVE_WEB_REPORT_PREPARED_WHILE_WAITING,
   DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
+  DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyMarkedSentMessage,
@@ -5854,6 +5856,14 @@ function ReportWorkspace({
       return true;
     }
     if (!outcome) {
+      // R1 item 3 (8 Oct 2026): the report on screen is from before the three sent reports this computer remembers
+      // (an older one opened from Report history). Nothing is wrong, and the page says what the limit is.
+      if (approvedFingerprint !== null && approvedFingerprint === reportSource.fingerprint.split(':media-')[0] &&
+        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience &&
+        daveWebReportFromBeforeRememberedSends(periodSnapshot, reportSource.periodKey)) {
+        say('good', DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED);
+        return false;
+      }
       // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
       say('danger', DAVE_WEB_REPORT_SEND_NOT_RECORDED);
       return false;

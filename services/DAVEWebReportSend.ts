@@ -712,16 +712,42 @@ export function forgetDAVEWebOwnReportSends(): void {
 }
 
 /**
- * The sent reports a period remembers, newest first: the one it runs from
- * and the two before it (each saved report keeps the one it replaced, and
- * that one's own: A6 pass 16 L1).
+ * How many sent reports a saved period remembers: the one it runs from and the two before it (each saved report
+ * keeps the one it replaced, and that one's own: A6 pass 16 L1). R1 item 3 (8 Oct 2026): the limit is what the
+ * period itself carries. Each remembered report is a full list of the tasks as they stood, kept in this browser
+ * and in the one shared row per period, so that the next report can be compared with the last and the one before
+ * can still be told apart; three keeps that row bounded. It is not a limit on purpose for Mark as Sent or for
+ * sharing again: those simply cannot recognise a report from before the three, and the page now says so.
  */
+const MOST_SENDS_A_PERIOD_REMEMBERS = 3;
+
+/** The sent reports a period remembers, newest first. */
 function periodSends(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportSnapshot[] {
   const sends: DAVEReportSnapshot[] = [];
-  for (let send = reportPeriodSend(snapshot); send && sends.length < 3; send = reportPeriodSend(send.supersedes)) {
+  for (let send = reportPeriodSend(snapshot); send && sends.length < MOST_SENDS_A_PERIOD_REMEMBERS; send = reportPeriodSend(send.supersedes)) {
     sends.push(send);
   }
   return sends;
+}
+
+/**
+ * R1 item 3 (8 Oct 2026, the owner's open items): whether a report that counted from `preparedKey` is from before
+ * the sent reports `period` remembers. Sharing such a report again (opened from Report history) could not be told
+ * from a report never sent, and the page said "This computer could not record that this report was sent ... The
+ * next report ... may repeat what this one covered", which is not what happened.
+ */
+export function daveWebReportFromBeforeRememberedSends(
+  period: DAVEReportSnapshot | null | undefined,
+  preparedKey: string | null | undefined,
+): boolean {
+  const sends = periodSends(period);
+  // Fewer than it can hold: it remembers every report sent, and this is none of them.
+  if (sends.length < MOST_SENDS_A_PERIOD_REMEMBERS) return false;
+  // A report saved before reports kept their period: not known.
+  const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+  if (countedFrom === undefined) return false;
+  const oldest = sendTime(sends[sends.length - 1].deliveredAt);
+  return countedFrom === null || sendTime(countedFrom) < oldest;
 }
 
 /**
