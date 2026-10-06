@@ -47,7 +47,17 @@ export const DAVE_WEB_NO_KEYCHAIN: SenderIdKeychain = Object.freeze({
   available: async () => false,
   read: async () => null,
   write: async () => undefined,
+  // R2 item 2: the id a tab of this browser sent under before it took the browser's (see settleSenderId).
+  readFormerWithoutKeychain: async () => {
+    try {
+      return browserLocalStorage()?.getItem(FORMER_SENDER_ID_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  },
 });
+/** The id this browser's sends carried before it took another: it names the browser, never an account, as the sender id does. */
+const FORMER_SENDER_ID_KEY = '@vitruvius/report-sender-id/former/v1';
 
 type BrowserStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'key' | 'length'>>;
 
@@ -396,12 +406,41 @@ function settleSenderId(local: BrowserStorage | null): void {
   try {
     if (local.getItem(REPORT_SENDER_ID_KEY) === null) local.setItem(REPORT_SENDER_ID_KEY, mine);
     // A storage that takes it in silence and keeps nothing has not taken it.
-    if (local.getItem(REPORT_SENDER_ID_KEY) === null) return;
+    const kept = local.getItem(REPORT_SENDER_ID_KEY);
+    if (kept === null) return;
+    // R2 item 2 (9 Oct 2026; pass 6, seen): another tab gave the browser an id first, so this tab moves to it, and
+    // the one report it had sent under its own id stayed under that id: later tabs took that report for another
+    // device's. The tab's id is kept as the browser's former id, and its list of own sends is written with what
+    // the browser has, so that report is known as this browser's by the same rule the phone uses for a former id.
+    if (kept !== mine) {
+      if (local.getItem(FORMER_SENDER_ID_KEY) === null) local.setItem(FORMER_SENDER_ID_KEY, mine);
+      keepTabOwnSends(local);
+    }
     tabOnly.delete(REPORT_SENDER_ID_KEY);
   } catch {
     // Still refused: the tab keeps its own.
   }
 }
+
+/** Writes each account's list of own send times that only this tab holds, together with the times the browser already has. */
+function keepTabOwnSends(local: BrowserStorage): void {
+  for (const [key, value] of [...tabOnly]) {
+    if (value === null || !key.startsWith(`${WEB_PREFIX}/`) || !key.endsWith(OWN_SEND_TIMES_KEY)) continue;
+    const times = (raw: string | null): string[] => {
+      try {
+        const parsed: unknown = JSON.parse(raw ?? '[]');
+        return Array.isArray(parsed) ? parsed.filter((time): time is string => typeof time === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+    local.setItem(key, JSON.stringify([...new Set([...times(local.getItem(key)), ...times(value)])].sort().slice(-50)));
+    profileStorages.get(local)?.add(key);
+    tabOnly.delete(key);
+  }
+}
+/** The store's key for an account's list of its own send times (DAVEReportSnapshotStore OWN_SENDS_KEY). */
+const OWN_SEND_TIMES_KEY = '@vitruvius/report-snapshots/own-sends/v1';
 
 /**
  * This browser profile's storage for report periods: each account's own
