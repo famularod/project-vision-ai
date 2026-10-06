@@ -5962,7 +5962,11 @@ export async function resolveScheduleItemSyncConflict(
    * A7 pass 15, as for field updates, A4 pass 17 L1); without it, the copy
    * saved with the conflict.
    */
-  { cloudCopyShown }: { cloudCopyShown?: unknown } = {},
+  { cloudCopyShown, refusedBefore = 0 }: {
+    cloudCopyShown?: unknown;
+    /** Keep Phone's own count of the times its copy was refused in this choice (independent review pass 3); not for callers. */
+    refusedBefore?: number;
+  } = {},
 ): Promise<ScheduleItem> {
   // This phone's waiting edits of the task, before anything else: an upload
   // already under way takes one off the queue once it has landed it.
@@ -5984,7 +5988,7 @@ export async function resolveScheduleItemSyncConflict(
     if (!now) throw new Error('sync_conflict_closed');
     const value = (copy: unknown, field: string) => JSON.stringify(isRecord(copy) ? copy[field] ?? null : null);
     if (!askedFields.every(field => value(shown, field) === value(now.remotePayload, field))) throw new Error('sync_conflict_cloud_copy_changed');
-    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload });
+    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload, refusedBefore });
   }
   const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
@@ -6176,6 +6180,7 @@ export async function resolveScheduleItemSyncConflict(
     };
     return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: { keptItem, before: existing } };
   });
+  keptTaskCopiesRefused.delete(localItem.id);
   let result = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
   let exactItemStillQueued = remainingQueue.some(item => item.id === queueItemId);
@@ -6209,6 +6214,24 @@ export async function resolveScheduleItemSyncConflict(
       const others = queue.filter(item => item.id !== queueItemId);
       return { nextQueue: before ? [...others, before] : others, result: undefined };
     });
+    // Independent review pass 3: the kept copy is written only over the row Keep Phone checked. Refused (another
+    // device wrote the task in the moment after that check), nothing was sent: the row is read once more and, as when
+    // it had changed before the choice, the conflict is saved with it and David reviews again. A task deleted in that
+    // moment is not written back, and its conflict is closed. A row written again that still says what the screen
+    // showed has the choice made on it again, here, twice at most. Any other failure is reported as before.
+    if (keptTaskCopiesRefused.delete(localItem.id)) {
+      const rowAfter = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+      if (rowAfter === null) {
+        await clearScheduleItemSyncConflicts(conflict.localId);
+        throw new Error('sync_conflict_record_deleted');
+      }
+      if (rowAfter && await recordTaskCloudCopyIfChanged(conflict, rowAfter, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shown)) {
+        throw new Error('sync_conflict_cloud_copy_changed');
+      }
+      if (rowAfter && refusedBefore < QUEUED_RECORD_WEIGH_AGAIN_LIMIT) {
+        return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1 });
+      }
+    }
     throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 
@@ -6521,6 +6544,12 @@ async function cloudScheduleItemMissedByList(
 const QUEUED_RECORD_WEIGH_AGAIN_LIMIT = 2;
 
 /**
+ * The tasks whose Keep Phone copy the cloud refused in the upload just run, because the row was no longer the one it
+ * was to be written over (independent review pass 3). Keep Phone reads it there, and looks at the row again.
+ */
+const keptTaskCopiesRefused = new Set<string>();
+
+/**
  * After a write was refused because the cloud's row was no longer the one weighed (independent review pass 2, item
  * 1): the row as it is now, read by its id, to weigh the queued record against once more. Null when the record
  * should wait for the next pass instead: the row is gone (deleted on another device: its deletion record retires the
@@ -6807,7 +6836,12 @@ async function uploadQueueItem(
       return 'uploaded';
     }
     if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD || result.code === CLOUD_ROW_CHANGED_SINCE_READ) {
-      const rowNow = await cloudRowToWeighAgain(context, `schedule_item:${payload.id}`, payload.id, cloudScheduleItemsByIds);
+      // Keep Phone's copy is not read again and sent (independent review pass 3): it is not weighed, it stands, so it
+      // went whole over what another device wrote in the moment after Keep Phone had checked the row. It is left
+      // unsent, and Keep Phone looks at the row as it is now (resolveScheduleItemSyncConflict).
+      if (payload.forceLocal) keptTaskCopiesRefused.add(payload.id);
+      const rowNow = payload.forceLocal ? null
+        : await cloudRowToWeighAgain(context, `schedule_item:${payload.id}`, payload.id, cloudScheduleItemsByIds);
       if (rowNow) {
         context.scheduleItemsById.set(payload.id, rowNow);
         return uploadQueueItem(item, context);
