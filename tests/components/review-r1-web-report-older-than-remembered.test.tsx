@@ -186,6 +186,8 @@ const historyOf = (saved: SavedReport) => [{
 }] as unknown as DAVEWebReadOnlySnapshot['referenceDocuments'];
 
 
+// R2 item 1 (9 Oct 2026): the limit is lifted on the web by this browser's own list of the last 50 reports it
+// sent. The sentence below is what is said when the browser's storage would not keep that list.
 const OLDER_THAN_REMEMBERED = 'This is an older report. This computer remembers the last three reports it sent, and this one is from before them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
 /** He approves the report on screen and shares it (copied to be pasted and sent). */
 async function shareIt() {
@@ -218,37 +220,78 @@ async function openFromHistory(saved: SavedReport, facts: DAVEWebReadOnlySnapsho
   copied().mockClear();
 }
 
-describe('R1 item 3: a report from before the last three sent says so when it is shared again', () => {
-  it('four reports sent from here, the first opened from Report history and shared: copied, and told plainly why nothing is recorded', async () => {
-    const view = await approveHereAt50();
-    await shareIt();
-    const first = lastSaved();
-    await nextReport(view, 60, 10);
-    await nextReport(view, 70, 20);
-    await nextReport(view, 80, 30);
-    const lastSend = sharedRow()?.deliveredAt;
-    view.unmount();
-    await openFromHistory(first, webSnapshot(100, '2026-10-01T12:30:00.000Z', 80));
+const OLDER_THAN_THE_LIST = 'This is an older report. This computer remembers the last 50 reports it sent, and this one is not among them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+const ALREADY_RECORDED = /^Shared again\. This report was already recorded as sent /;
+const LIST_KEY = '@vitruvius/web/owner-1/@vitruvius/report-snapshots/own-send-facts/v1';
+/** Four reports go out from this computer; the first is kept to be opened from Report history later. */
+async function fourReportsSent() {
+  const view = await approveHereAt50();
+  await shareIt();
+  const first = lastSaved();
+  await nextReport(view, 60, 10);
+  await nextReport(view, 70, 20);
+  await nextReport(view, 80, 30);
+  const lastSend = sharedRow()?.deliveredAt;
+  view.unmount();
+  return { first, lastSend };
+}
+const AT_80 = () => webSnapshot(100, '2026-10-01T12:30:00.000Z', 80);
+
+describe('R2 item 1: on the web, a report from before the last three is still known as sent from here', () => {
+  it('four reports sent from here, the first opened from Report history and shared: copied, and "already recorded"', async () => {
+    const { first, lastSend } = await fourReportsSent();
+    // What this browser keeps of them: when, which projects and format, and the facts' fingerprint. No report text.
+    const list = JSON.parse(profile.get(LIST_KEY) ?? '[]') as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(4);
+    expect(Object.keys(list[0]).sort()).toEqual(['fingerprint', 'reportFormat', 'scopeKey', 'sentAt']);
+    await openFromHistory(first, AT_80());
+    // The page knows it before he presses anything.
+    expect(screen.getByText(/^This report was sent from this computer .*\. Sharing it again is not counted as another send\.$/)).toBeTruthy();
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
+    await settle();
+    expect(copied()).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(OLDER_THAN_REMEMBERED)).toBeNull();
+    expect(screen.queryByText(NOT_RECORDED)).toBeNull();
+    expect(sharedRow()?.deliveredAt).toBe(lastSend);
+  }, 30000);
+
+  it('the browser would not keep the list: the three the period remembers are what is known, and the page says so', async () => {
+    const { first, lastSend } = await fourReportsSent();
+    // As after a browser whose storage refused the list: it lasted as long as the tab.
+    profile.delete(LIST_KEY);
+    await openFromHistory(first, AT_80());
     fireEvent.press(screen.getByText('Share Approved Report'));
     expect(await screen.findByText(OLDER_THAN_REMEMBERED)).toBeTruthy();
     await settle();
     expect(copied()).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(NOT_RECORDED)).toBeNull();
-    // Nothing new is recorded: the period still runs from the last report sent.
     expect(sharedRow()?.deliveredAt).toBe(lastSend);
-  });
+  }, 30000);
 
-  it('guard: the third report back is still remembered: shared again, "already recorded"', async () => {
+  it('the list is kept but this report is not on it (sent before the list was): the page says "the last 50"', async () => {
+    const { first } = await fourReportsSent();
+    const list = JSON.parse(profile.get(LIST_KEY) ?? '[]') as unknown[];
+    profile.set(LIST_KEY, JSON.stringify(list.slice(1)));
+    await openFromHistory(first, AT_80());
+    fireEvent.press(screen.getByText('Share Approved Report'));
+    expect(await screen.findByText(OLDER_THAN_THE_LIST)).toBeTruthy();
+    await settle();
+    expect(screen.queryByText(OLDER_THAN_REMEMBERED)).toBeNull();
+  }, 30000);
+
+  it('guard: the third report back is remembered by the period itself, list or no list', async () => {
     const view = await approveHereAt50();
     await shareIt();
     const first = lastSaved();
     await nextReport(view, 60, 10);
     await nextReport(view, 70, 20);
     view.unmount();
+    profile.delete(LIST_KEY);
     await openFromHistory(first, webSnapshot(100, '2026-10-01T12:20:00.000Z', 70));
     fireEvent.press(screen.getByText('Share Approved Report'));
-    expect(await screen.findByText(/^Shared again\. This report was already recorded as sent /)).toBeTruthy();
+    expect(await screen.findByText(ALREADY_RECORDED)).toBeTruthy();
     await settle();
     expect(screen.queryByText(OLDER_THAN_REMEMBERED)).toBeNull();
-  });
+  }, 30000);
 });

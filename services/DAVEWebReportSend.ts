@@ -131,6 +131,7 @@ export function forgetDAVEWebReportPeriods(ownerId: string): void {
   }
   // The signed-out account's send times are no other account's own sends.
   ownSends.clear();
+  ownSendFacts.clear();
   sentInThisTab.clear();
   // Nor is anything noted for it by an answer from the shared record that arrives after this (review N2 follow-up).
   sharedForgottenAt.set(prefix, ++sharedSeq);
@@ -709,6 +710,7 @@ export function daveWebReportSentInThisTab(sentAt: string | null | undefined): b
 export function forgetDAVEWebOwnReportSends(): void {
   ownSends.clear();
   sentInThisTab.clear();
+  ownSendFacts.clear();
 }
 
 /**
@@ -763,7 +765,55 @@ export function daveWebReportSentHereAt(
   if (!fingerprint) return null;
   const sent = periodSends(period).find(send =>
     send.sourceFingerprint === fingerprint && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
-  return sent?.deliveredAt ?? null;
+  if (sent?.deliveredAt) return sent.deliveredAt;
+  // R2 item 1: a report from before the three the period remembers, by this browser's own list of what it sent.
+  return period?.reportFormat ? ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, fingerprint)) ?? null : null;
+}
+
+/**
+ * R2 item 1 (9 Oct 2026, the owner's answer to R1 item 3: lift the limit on the web). A saved period remembers
+ * three sent reports, so sharing again (and "already recorded") recognised only this computer's last three. This
+ * browser now also keeps, for each account, a short list of the reports it sent: when, for which projects and
+ * format, and the fingerprint of their facts. No report text, no tasks. The last 50; kept under the account's
+ * own prefix, so Sign Out of This Computer and a sign-in the server ended remove it with the report periods
+ * (owner answer Q26). When the browser's storage will not take it, it lasts as long as the tab, and after that
+ * the three the period remembers are what is known, with the sentence R1 wrote for a report older than them.
+ */
+const OWN_SEND_FACTS_KEY = '@vitruvius/report-snapshots/own-send-facts/v1';
+const MOST_OWN_SEND_FACTS_KEPT = 50;
+type OwnSendFacts = Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEReportFormat; fingerprint: string }>;
+/** The signed-in account's list as this tab last read it: projects, format and facts to when it was sent. */
+const ownSendFacts = new Map<string, string>();
+const ownSendFactsKey = (scopeKey: string, reportFormat: string, fingerprint: string) => JSON.stringify([scopeKey, reportFormat, fingerprint]);
+
+async function ownSendFactsKept(storage: SnapshotStorage): Promise<OwnSendFacts[]> {
+  try {
+    const parsed: unknown = JSON.parse(await storage.getItem(OWN_SEND_FACTS_KEY) ?? '[]');
+    return (Array.isArray(parsed) ? parsed : []).filter((entry): entry is OwnSendFacts => isRecord(entry) &&
+      typeof entry.sentAt === 'string' && typeof entry.scopeKey === 'string' && typeof entry.fingerprint === 'string' &&
+      (entry.reportFormat === 'project_manager' || entry.reportFormat === 'executive'));
+  } catch {
+    return [];
+  }
+}
+
+/** Reads the account's list into this tab (only that account's: the tab's copy is replaced, not added to). */
+async function recallOwnSendFacts(storage: SnapshotStorage): Promise<void> {
+  const kept = await ownSendFactsKept(storage);
+  ownSendFacts.clear();
+  kept.forEach(entry => ownSendFacts.set(ownSendFactsKey(entry.scopeKey, entry.reportFormat, entry.fingerprint), entry.sentAt));
+}
+
+async function rememberOwnSendFacts(storage: SnapshotStorage, sent: OwnSendFacts): Promise<void> {
+  const key = ownSendFactsKey(sent.scopeKey, sent.reportFormat, sent.fingerprint);
+  const others = (await ownSendFactsKept(storage)).filter(entry => ownSendFactsKey(entry.scopeKey, entry.reportFormat, entry.fingerprint) !== key);
+  await storage.setItem(OWN_SEND_FACTS_KEY, JSON.stringify([...others, sent].slice(-MOST_OWN_SEND_FACTS_KEPT))).catch(() => undefined);
+  ownSendFacts.set(key, sent.sentAt);
+}
+
+/** Whether this browser has its list of sent reports for the signed-in account (it says "the last 50", not "three"). */
+export function daveWebOwnSendFactsKept(): boolean {
+  return ownSendFacts.size > 0;
 }
 
 export type DAVEWebReportPeriodLoad = Readonly<{
@@ -784,6 +834,7 @@ export async function loadDAVEWebReportPeriod(
   format: DAVEReportFormat,
 ): Promise<DAVEWebReportPeriodLoad> {
   const loaded = await loadDAVEReportPeriod(scopeKey, format, store.storage, store.cloud);
+  await recallOwnSendFacts(store.storage);
   // The sends before the one the period runs from too: one of them may be the report now on screen (review N1).
   for (const sent of new Set([loaded.snapshot, ...periodSends(loaded.snapshot)])) {
     if (sent && await reportSnapshotSentHere(sent, store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false)) {
@@ -895,6 +946,7 @@ export async function recordDAVEWebReportSend(
   const sentBy = await reportSenderId(store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => null);
   const delivered = markReportSnapshotDelivered(approval, deliveredAt, sentBy, markedSentAt);
   await saveDAVEReportSnapshot(delivered, store.storage, store.cloud);
+  await rememberOwnSendFacts(store.storage, { sentAt: deliveredAt, scopeKey: period.scopeKey, reportFormat: period.reportFormat, fingerprint: delivered.sourceFingerprint });
   return { status: 'saved', snapshot: delivered };
 }
 

@@ -231,7 +231,12 @@ describe('review N2 follow-up: after a send from this computer the panel does no
     expect(screen.getByText(/^This report was sent from this computer .*\. Sharing it again is not counted as another send\.$/)).toBeTruthy();
   });
 
-  it('guard: a report the phone really sent later, after this computer\'s send, is still said', async () => {
+  // R2 item 1 (9 Oct 2026): this computer now knows the report on screen as one it sent even when the period no
+  // longer carries it (the phone's report here is a bare one, with no reports before it). The panel then says it
+  // was sent from here, as it always did when the phone's report carried it; the newer report is said by the
+  // "Recorded as sent" line (R1 item 1). Before, this bare case read "Your other device sent a report ..., after
+  // this one was approved".
+  it('guard: after the phone really sends a later report, the report this computer sent is still known as sent from here', async () => {
     table = PHONE_AT_10();
     const reports = await approveOnWeb();
     fireEvent.press(screen.getByText('Share Approved Report'));
@@ -244,6 +249,8 @@ describe('review N2 follow-up: after a send from this computer the panel does no
     mockAuth.snapshot = webSnapshot(100, new Date(Date.parse(later) + 60_000).toISOString());
     reports.rerender(<DesktopReadOnlyShell page="reports" />);
     await settle();
-    expect(await screen.findByText(/^Your other device sent a report .*, after this one was approved/)).toBeTruthy();
+    expect(await screen.findByText(/^This report was sent from this computer .*\. Sharing it again is not counted as another send\.$/)).toBeTruthy();
+    expect(screen.queryByText(/after this one was approved/)).toBeNull();
+    expect(screen.getByText(/^Recorded as sent .*\. Your other device sent a later report .*, so the next report counts from that one\.$/)).toBeTruthy();
   });
 });

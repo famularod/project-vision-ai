@@ -155,6 +155,7 @@ import {
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
+  daveWebOwnSendFactsKept,
   daveWebReportOlderPeriodLeftInBrowser,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
@@ -183,6 +184,7 @@ import {
   DAVE_WEB_REPORT_PREPARED_WHILE_WAITING,
   DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
   DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED,
+  DAVE_WEB_REPORT_OLDER_THAN_THE_LIST,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyMarkedSentMessage,
@@ -5861,7 +5863,7 @@ function ReportWorkspace({
       if (approvedFingerprint !== null && approvedFingerprint === reportSource.fingerprint.split(':media-')[0] &&
         sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience &&
         daveWebReportFromBeforeRememberedSends(periodSnapshot, reportSource.periodKey)) {
-        say('good', DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED);
+        say('good', daveWebOwnSendFactsKept() ? DAVE_WEB_REPORT_OLDER_THAN_THE_LIST : DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED);
         return false;
       }
       // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
