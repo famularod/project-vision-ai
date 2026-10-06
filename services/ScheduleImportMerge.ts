@@ -569,6 +569,16 @@ function daysApart(row: ScheduleItem, twin: ScheduleItem): number | null {
  * leaves a row new that two of the saved twins it leaves unpaired are equally
  * nearest to, or leaves a saved twin unpaired that two such rows are equally
  * nearest to.
+ *
+ * Review N2 G2 (5 Oct 2026, Low, older: the same on Build 229): Pour slabs on
+ * 10/01, 10/15 and 10/29; a lookahead lists the second one week later
+ * (10/22) and the third two days later (10/31). The 10/22 row is as near to
+ * the second as to the third, so it pairs with neither, but the third was
+ * taken by the 10/31 row and no longer counted: no question, and 10/22 came
+ * in as a new task (listed alone, it was asked). A row the guess leaves new
+ * is also tied when two of all the saved twins are equally nearest to it,
+ * whichever rows took them. Only a question more: confirmed as guessed, the
+ * approval does what it did.
  */
 function tiedBetweenTwins(
   rows: readonly ScheduleItem[],
@@ -583,7 +593,7 @@ function tiedBetweenTwins(
     const lowest = Math.min(...scores);
     return scores.filter(score => score === lowest).length > 1;
   };
-  return rowsLeft.some(row => tied(savedLeft, twin => daysApart(row, twin))) ||
+  return rowsLeft.some(row => tied(savedLeft, twin => daysApart(row, twin)) || tied(saved, twin => daysApart(row, twin))) ||
     savedLeft.some(twin => tied(rowsLeft, row => daysApart(row, twin)));
 }
 
