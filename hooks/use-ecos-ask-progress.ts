@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ecosAskElapsedLabel, ecosAskProgressStage, type ECOSAskProgressStage } from '../services/ECOSAskProgress';
 
 /** Elapsed seconds and a plain-language stage while an Ask ECOS request is in flight. */
-export function useECOSAskProgress(loading: boolean): Readonly<{
+export function useECOSAskProgress(loading: boolean, earlierAskStillRunning = false): Readonly<{
   elapsedSeconds: number;
   elapsedLabel: string;
   stage: ECOSAskProgressStage;
@@ -23,6 +23,6 @@ export function useECOSAskProgress(loading: boolean): Readonly<{
   return {
     elapsedSeconds,
     elapsedLabel: ecosAskElapsedLabel(elapsedSeconds),
-    stage: ecosAskProgressStage(elapsedSeconds),
+    stage: ecosAskProgressStage(elapsedSeconds, earlierAskStillRunning),
   };
 }

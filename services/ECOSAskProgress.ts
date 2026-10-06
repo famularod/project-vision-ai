@@ -26,13 +26,49 @@ export function ecosAskTimedOutMessage(deadlineMs: number = ECOS_ASK_DEADLINE_MS
     'No answer has been verified. Your question is still here — try again.';
 }
 
+/**
+ * How long the app waits before it asks again when the server says it is
+ * still working on this same question (review pass 2 A1: Stop then Try Again
+ * was refused with "already reviewing that question"). A refused repeat
+ * starts no work and is not counted toward the question limit:
+ * ecos_begin_project_question answers "in progress" before it counts or
+ * records anything. So the wait only has to be kind to the server, and 5 s
+ * shows a finished answer within about that long. When the server names its
+ * own wait (the classic route sends 15 s), that is used instead.
+ */
+export const ECOS_ASK_IN_PROGRESS_RETRY_MS = 5_000;
+
+export function ecosAskInProgressRetryMs(serverRetryAfterSeconds?: unknown): number {
+  const seconds = Number(serverRetryAfterSeconds);
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.min(60, Math.max(2, seconds)) * 1000
+    : ECOS_ASK_IN_PROGRESS_RETRY_MS;
+}
+
 export type ECOSAskProgressStage = Readonly<{
-  key: 'finding' | 'reading' | 'writing' | 'checking' | 'longer';
+  key: 'finding' | 'reading' | 'writing' | 'checking' | 'longer' | 'earlier';
   title: string;
   detail: string;
 }>;
 
-export function ecosAskProgressStage(elapsedSeconds: number): ECOSAskProgressStage {
+/**
+ * `earlierAskStillRunning`: the server said it was already working on this
+ * question (from the ask that was just stopped or timed out, or one made on
+ * another device), so the stages by elapsed time would describe steps that
+ * are not starting now.
+ */
+export function ecosAskProgressStage(
+  elapsedSeconds: number,
+  earlierAskStillRunning = false,
+): ECOSAskProgressStage {
+  if (earlierAskStillRunning) {
+    return {
+      key: 'earlier',
+      title: 'Still working on this question…',
+      detail: 'ECOS had already started on this question when you asked again. The app is waiting for that answer and shows it as soon as it is ready. ' +
+        `If there is none by ${ecosAskElapsedLabel(ECOS_ASK_DEADLINE_MS / 1000)}, the app stops waiting and keeps your question. You can also stop now.`,
+    };
+  }
   const seconds = Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : 0;
   if (seconds < 8) {
     return {

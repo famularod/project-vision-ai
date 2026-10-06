@@ -327,6 +327,17 @@ describe('the phone and iPad answer sheet', () => {
     expect(screen.getByText('Ask Another Question')).toBeTruthy();
   });
 
+  it('says the earlier ask is still being worked on when the wait is for that answer', async () => {
+    const screen = sheet({ loading: true, earlierAskStillRunning: true, onStop: jest.fn() });
+    expect(screen.getByText('Still working on this question…')).toBeTruthy();
+    expect(screen.getByText(/ECOS had already started on this question when you asked again\. The app is waiting for that answer/)).toBeTruthy();
+    // The wording does not move on to steps that are not starting now.
+    await advance(40_000);
+    expect(screen.getByText('Still working on this question…')).toBeTruthy();
+    expect(screen.queryByText('Writing the answer…')).toBeNull();
+    expect(screen.getByLabelText('Stop waiting for this answer')).toBeTruthy();
+  });
+
   it('shows no Try Again when a retry is not offered', () => {
     const screen = sheet({ error: 'This question names a different project.' });
     expect(screen.queryByText('Try Again')).toBeNull();
@@ -448,6 +459,21 @@ describe('Ask ECOS on the desktop', () => {
     expect(mockCloud.requests[0].signal.aborted).toBe(false);
     screen.unmount();
     expect(mockCloud.requests[0].signal.aborted).toBe(true);
+  });
+
+  it('Stop returns control at once even when a step before the request ignores it', async () => {
+    // The owner check is not part of the request code and cannot be aborted. Only the
+    // shared wait stands between it and a spinner that will not go away.
+    const hung = jest.fn(() => new Promise<never>(() => undefined));
+    const screen = render(createElement(DesktopAskECOSWorkspace, {
+      ownerKey: 'owner', projectId: PROJECTS[1].id, projectName: PROJECTS[1].name, onAsk: hung,
+    }));
+    await ask(screen);
+    await advance(4_000);
+    await act(async () => { fireEvent.press(screen.getByLabelText('Stop waiting for this answer')); });
+    expect(screen.queryByText('Checking evidence…')).toBeNull();
+    expect(screen.getByText(ECOS_ASK_STOPPED_MESSAGE)).toBeTruthy();
+    expect(screen.getByLabelText(INPUT).props.value).toBe(QUESTION);
   });
 
   it('regains control at the limit even when a step before the request hangs', async () => {

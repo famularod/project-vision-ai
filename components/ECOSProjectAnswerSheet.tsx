@@ -22,6 +22,7 @@ export function ECOSProjectAnswerSheet({
   question,
   answer,
   loading,
+  earlierAskStillRunning = false,
   error,
   onOpenEvidence,
   onAskAnother,
@@ -34,6 +35,8 @@ export function ECOSProjectAnswerSheet({
   question: string;
   answer: ECOSProjectQuestionAnswer | null;
   loading: boolean;
+  /** The wait is for an answer the server had already started on (review pass 2 A1). */
+  earlierAskStillRunning?: boolean;
   error: string | null;
   onOpenEvidence: (evidence: DAVEAskEvidence) => void;
   onAskAnother: (suggestedQuestion?: string) => void;
@@ -45,7 +48,7 @@ export function ECOSProjectAnswerSheet({
 }) {
   const { width } = useWindowDimensions();
   const tablet = width >= 700;
-  const progress = useECOSAskProgress(loading);
+  const progress = useECOSAskProgress(loading, earlierAskStillRunning);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
     ? 'COULD NOT VERIFY'

@@ -8,12 +8,20 @@
  */
 import {
   ECOS_ASK_DEADLINE_MS,
+  ECOS_ASK_IN_PROGRESS_RETRY_MS,
   ECOS_ASK_SERVER_LONGEST_WAIT_MS,
   ECOS_ASK_STOPPED_MESSAGE,
+  ecosAskInProgressRetryMs,
   ecosAskProgressStage,
   ecosAskTimedOutMessage,
 } from '../../services/ECOSAskProgress';
-import { createECOSAskWait, ECOSAskStoppedError, isECOSAskStopped, type ECOSAskControl } from '../../services/ECOSAskWait';
+import {
+  createECOSAskWait,
+  ECOSAskStoppedError,
+  isECOSAskStillInProgress,
+  isECOSAskStopped,
+  type ECOSAskControl,
+} from '../../services/ECOSAskWait';
 import {
   askECOSProjectQuestion,
   ecosAskCanRetry,
@@ -254,6 +262,23 @@ describe('an Ask ECOS request', () => {
     expect(unhandled).not.toHaveBeenCalled();
   });
 
+  it('passes on the wait the server names in an "in progress" refusal, when it names one', async () => {
+    const refusal = (body: Record<string, unknown>) => jest.fn(async () => ({
+      data: null,
+      error: new Error('Edge Function returned a non-2xx status code'),
+      response: { status: 409, clone: () => ({ json: async () => body }) },
+    }));
+    await expect(ask({ client: client(refusal({ error: 'question_in_progress', retryAfterSeconds: 15 })) })).rejects.toMatchObject({
+      code: 'question_in_progress',
+      message: 'ECOS is already reviewing that question. Wait a moment, then retry.',
+      retryAfterSeconds: 15,
+    });
+    await expect(ask({ client: client(refusal({ error: 'question_in_progress' })) }))
+      .rejects.toMatchObject({ code: 'question_in_progress', retryAfterSeconds: null });
+    await expect(ask({ client: client(refusal({ error: 'question_in_progress', retryAfterSeconds: 'soon' })) }))
+      .rejects.toMatchObject({ retryAfterSeconds: null });
+  });
+
   it('offers a retry unless the question or the project has to change first', () => {
     expect(ecosAskCanRetry(new ECOSProjectQuestionError('question_timed_out', 'x'))).toBe(true);
     expect(ecosAskCanRetry(new ECOSAskStoppedError('question_cancelled'))).toBe(true);
@@ -384,7 +409,7 @@ describe('the wait both screens share', () => {
     const retry = watch(wait.run(IDENTITY, request));
     expect(controls[1].clientRequestId).toBe(controls[0].clientRequestId);
     if (kind === 'answered') answers[1]('Answer');
-    else failures[1](new ECOSProjectQuestionError('question_in_progress', 'ECOS is already reviewing that question.'));
+    else failures[1](new ECOSProjectQuestionError('answer_provider_unavailable', 'Try again shortly.'));
     await jest.advanceTimersByTimeAsync(0);
     expect(retry.settled).toBe(true);
 
@@ -407,6 +432,139 @@ describe('the wait both screens share', () => {
     expect(controls[1].signal.aborted).toBe(true);
     watch(wait.run(IDENTITY, request));
     expect(controls[2].clientRequestId).not.toBe(controls[1].clientRequestId);
+  });
+
+  describe('when the server says it is still working on this same question (review pass 2 A1)', () => {
+    const inProgress = (retryAfterSeconds: number | null = null) =>
+      new ECOSProjectQuestionError('question_in_progress', 'ECOS is already reviewing that question.', null, retryAfterSeconds);
+
+    it('waits 5 s unless the server names its own wait, which is held between 2 s and a minute', () => {
+      expect(ECOS_ASK_IN_PROGRESS_RETRY_MS).toBe(5_000);
+      expect([undefined, null, 0, -3, Number.NaN, 'soon'].map(ecosAskInProgressRetryMs)).toEqual(Array(6).fill(5_000));
+      expect([15, 2, 1, 60, 600, '15'].map(ecosAskInProgressRetryMs)).toEqual([15_000, 2_000, 2_000, 60_000, 60_000, 15_000]);
+      expect(isECOSAskStillInProgress(inProgress())).toBe(true);
+      expect(isECOSAskStillInProgress(new ECOSProjectQuestionError('answer_provider_unavailable', 'x'))).toBe(false);
+      expect(isECOSAskStillInProgress(new ECOSAskStoppedError('question_cancelled'))).toBe(false);
+    });
+
+    it('does not hand the refusal back: it tells the screen, waits, and sends the same request again until the answer comes', async () => {
+      const wait = createECOSAskWait();
+      const { controls, answers, failures, request } = recorder();
+      const stillInProgress = jest.fn();
+      const state = watch(wait.run(IDENTITY, request, stillInProgress));
+
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(0);
+      expect(state.settled).toBe(false);
+      expect(stillInProgress).toHaveBeenCalledTimes(1);
+      expect(controls).toHaveLength(1);
+
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS - 1);
+      expect(controls).toHaveLength(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(controls).toHaveLength(2);
+
+      failures[1](inProgress());
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS);
+      expect(controls).toHaveLength(3);
+      expect(stillInProgress).toHaveBeenCalledTimes(2);
+      expect(state.settled).toBe(false);
+
+      answers[2]('The answer to the first ask');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(state.value).toBe('The answer to the first ask');
+      // The identical request each time, and one stop switch for the whole wait.
+      expect(new Set(controls.map(control => control.clientRequestId)).size).toBe(1);
+      expect(new Set(controls.map(control => control.signal)).size).toBe(1);
+      expect(controls[0].signal.aborted).toBe(false);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('waits as long as the server asks', async () => {
+      const wait = createECOSAskWait();
+      const { controls, failures, request } = recorder();
+      watch(wait.run(IDENTITY, request));
+      failures[0](inProgress(15));
+      await jest.advanceTimersByTimeAsync(14_999);
+      expect(controls).toHaveLength(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(controls).toHaveLength(2);
+      wait.reset();
+    });
+
+    it('Stop returns control at once between two tries, sends nothing more, and keeps the request id', async () => {
+      const wait = createECOSAskWait();
+      const { controls, failures, request } = recorder();
+      const state = watch(wait.run(IDENTITY, request));
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(2_000);
+      wait.cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(state.error).toMatchObject({ code: 'question_cancelled', message: ECOS_ASK_STOPPED_MESSAGE });
+      expect(controls[0].signal.aborted).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(controls).toHaveLength(1);
+
+      watch(wait.run(IDENTITY, request));
+      expect(controls[1].clientRequestId).toBe(controls[0].clientRequestId);
+      wait.reset();
+    });
+
+    it('counts the 2 min 30 s once, from the start of the wait, however many times it asks again', async () => {
+      const wait = createECOSAskWait();
+      const controls: ECOSAskControl[] = [];
+      // Each try is refused after 1 s, for ever.
+      const request = (control: ECOSAskControl) => {
+        controls.push(control);
+        return new Promise<string>((_resolve, reject) => { setTimeout(() => reject(inProgress()), 1_000); });
+      };
+      const state = watch(wait.run(IDENTITY, request));
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_DEADLINE_MS - 1);
+      expect(state.settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(state.error).toMatchObject({ code: 'question_timed_out', message: ecosAskTimedOutMessage() });
+      // One try every 6 s.
+      expect(controls).toHaveLength(25);
+      expect(controls[0].signal.aborted).toBe(true);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(controls).toHaveLength(25);
+      expect(jest.getTimerCount()).toBe(0);
+
+      // Timed out with nothing shown: Try Again is the same request again.
+      watch(wait.run(IDENTITY, request));
+      expect(controls[25].clientRequestId).toBe(controls[0].clientRequestId);
+      wait.reset();
+    });
+
+    it('hands back any other refusal that follows, and then forgets the request id', async () => {
+      const wait = createECOSAskWait();
+      const { controls, failures, request } = recorder();
+      const state = watch(wait.run(IDENTITY, request));
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(ECOS_ASK_IN_PROGRESS_RETRY_MS);
+      const refusal = new ECOSProjectQuestionError('question_rate_limited', 'Wait a few minutes, then retry.');
+      failures[1](refusal);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(state.error).toBe(refusal);
+      expect(jest.getTimerCount()).toBe(0);
+      watch(wait.run(IDENTITY, request));
+      expect(controls[2].clientRequestId).not.toBe(controls[0].clientRequestId);
+      wait.reset();
+    });
+
+    it('a project or account change ends that wait and sends nothing more', async () => {
+      const wait = createECOSAskWait();
+      const { controls, failures, request } = recorder();
+      const state = watch(wait.run(IDENTITY, request));
+      failures[0](inProgress());
+      await jest.advanceTimersByTimeAsync(1_000);
+      wait.reset();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(isECOSAskStopped(state.error)).toBe(true);
+      expect(controls).toHaveLength(1);
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 
   it('stops the earlier question when another is asked, without keeping its request id', async () => {

@@ -2,6 +2,7 @@ import * as Crypto from 'expo-crypto';
 import {
   ECOS_ASK_DEADLINE_MS,
   ECOS_ASK_STOPPED_MESSAGE,
+  ecosAskInProgressRetryMs,
   ecosAskTimedOutMessage,
 } from './ECOSAskProgress';
 
@@ -24,6 +25,11 @@ export function isECOSAskStopped(error: unknown): boolean {
   return code === 'question_timed_out' || code === 'question_cancelled';
 }
 
+/** Whether the server refused because it is still working on this same question from an earlier ask. */
+export function isECOSAskStillInProgress(error: unknown): boolean {
+  return (error as { code?: unknown } | null | undefined)?.code === 'question_in_progress';
+}
+
 /**
  * One Ask ECOS question at a time for one screen (independent review R10).
  * The phone and iPad sheet and the desktop page both wait through this.
@@ -40,6 +46,11 @@ export function isECOSAskStopped(error: unknown): boolean {
  *   it replays a finished answer and refuses one still in progress. The id
  *   ties the two tries together in its records. Once the server answers
  *   anything for it, or reset() is called, the id is forgotten.
+ * - "Still in progress" is not an answer to show (review pass 2 A1: Stop then
+ *   Try Again was refused while the server finished the first ask). run()
+ *   tells the screen through onStillInProgress, waits, and sends the same
+ *   request again, until the answer comes, it is stopped, or the time limit
+ *   that began with this run() passes.
  */
 export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
   let current: { stop(code: ECOSAskStopCode, keepRequestId: boolean): void } | null = null;
@@ -50,6 +61,7 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
     async run<T>(
       identity: readonly unknown[],
       request: (control: ECOSAskControl) => Promise<T>,
+      onStillInProgress?: () => void,
     ): Promise<T> {
       current?.stop('question_cancelled', false);
       const key = JSON.stringify(identity);
@@ -71,8 +83,18 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
       };
       current = attempt;
       const timer = setTimeout(() => attempt.stop('question_timed_out', true), deadlineMs);
+      let pause: ReturnType<typeof setTimeout> | undefined;
       try {
-        return await Promise.race([stopped, request({ signal: controller.signal, clientRequestId })]);
+        for (;;) {
+          try {
+            return await Promise.race([stopped, request({ signal: controller.signal, clientRequestId })]);
+          } catch (error) {
+            if (!isECOSAskStillInProgress(error)) throw error;
+            onStillInProgress?.();
+            const retryMs = ecosAskInProgressRetryMs((error as { retryAfterSeconds?: unknown }).retryAfterSeconds);
+            await Promise.race([stopped, new Promise<void>(resolve => { pause = setTimeout(resolve, retryMs); })]);
+          }
+        }
       } catch (error) {
         // Nothing came back, so asking again is the same request, not a new one.
         if (isECOSAskStopped(error) && keepRequestId && startedAfterResets === resets) {
@@ -81,6 +103,7 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
         throw error;
       } finally {
         clearTimeout(timer);
+        clearTimeout(pause);
         if (current === attempt) current = null;
       }
     },

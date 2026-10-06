@@ -25,6 +25,8 @@ type QuestionState = Readonly<{
   error: string | null;
   /** Whether Try Again is offered: the same question could end differently. */
   canRetry: boolean;
+  /** The server was already working on this question; the wait is for that answer (review pass 2 A1). */
+  earlierAskStillRunning: boolean;
 }>;
 
 function projectIdFor(projectRecords: readonly ProjectRecord[], name: string): string | null {
@@ -109,7 +111,7 @@ export function useECOSProjectQuestionExperience({
     setTypedOpen(false);
     const generation = ++requestGeneration.current;
     const turn = conversation.begin();
-    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null, canRetry: false });
+    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null, canRetry: false, earlierAskStillRunning: false });
     try {
       const answer = await askWait.run(
         [projectId, cleanQuestion, turn.request.conversationId, turn.request.priorTurnId],
@@ -125,6 +127,9 @@ export function useECOSProjectQuestionExperience({
           ...turn.request,
           ...control,
         }),
+        () => setResult(current => current?.requestGeneration === generation
+          ? { ...current, earlierAskStillRunning: true }
+          : current),
       );
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
       turn.accept(answer.conversation);
@@ -216,6 +221,7 @@ export function useECOSProjectQuestionExperience({
       question={result?.question || ''}
       answer={result?.answer || null}
       loading={result?.loading || false}
+      earlierAskStillRunning={result?.earlierAskStillRunning || false}
       error={result?.error || null}
       onOpenEvidence={evidence => {
         const answerProject = result?.projectName || projectName;
