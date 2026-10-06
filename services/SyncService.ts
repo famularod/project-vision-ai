@@ -5742,21 +5742,33 @@ function taskFieldsHoldingPhoneEdits(
     const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
     if (edit.entity !== 'schedule_item' || edit.operation === 'delete' || !isRecord(payload.itemData)) return [];
     const fields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : Object.keys(payload.itemData);
-    return fields.filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) &&
+    // The record of what the row took from its task is undone with the text it describes (TASK_TEXT_TAKEN_RECORD).
+    return fields.filter(field => (field === TASK_TEXT_TAKEN_RECORD || !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field)) &&
       taskFieldValue(row, field) === taskFieldValue(payload.itemData, field) &&
       taskFieldValue(row, field) !== taskFieldValue(shown, field));
   }))];
 }
 
 /**
+ * The record of what a task's new row took from the task, and from which row (review N3 R3): bookkeeping, never an
+ * edit of David's and never shown on a card. Independent review pass 4: a write that changed it alone between the
+ * screen's read and his tap made Keep Phone say "The cloud copy changed" with nothing different to see. It is no
+ * longer a change of the cloud's copy. Keep Cloud's undo still takes it back with a whole copy of this phone's that
+ * landed: it describes the owner, contractor and note that copy put in the row, and left behind it would say the row
+ * took this phone's values while the row holds the cloud's again.
+ */
+const TASK_TEXT_TAKEN_RECORD = 'textFromTask';
+
+/**
  * Identity, stamps, and the ids Keep Phone keeps from both copies: no edit of
  * David's (whole-app audit A7 pass 15). With the row a later import gave the
  * task, which Keep Phone keeps from the copy that knows that import (32a2187):
  * a re-homing revision on another device made Keep Phone ask David to review
- * again (A5 pass 20 P3).
+ * again (A5 pass 20 P3). And the record of what the row took from its task.
  */
 const TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK: ReadonlySet<string> = new Set([
   'id', 'projectId', 'updatedAt', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds', 'alsoImportedSourceRow',
+  TASK_TEXT_TAKEN_RECORD,
 ]);
 
 /** One field of a task copy, as compared: key order aside, and a missing field reads as null. */
@@ -5797,7 +5809,7 @@ function withNewerPhoneTaskEdits(copy: ScheduleItem, edits: readonly SyncQueueIt
   }, copy);
 }
 
-/** Two copies of a task alike in every field but identity, stamps, earlier task ids and import memberships. */
+/** Two copies of a task alike in every field but identity, stamps, earlier task ids, import memberships and the record of what the row took. */
 function sameTaskContent(left: unknown, right: unknown): boolean {
   if (!isRecord(left) || !isRecord(right)) return false;
   return [...new Set([...Object.keys(left), ...Object.keys(right)])].every(field =>

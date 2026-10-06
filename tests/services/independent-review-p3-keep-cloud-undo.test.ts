@@ -455,3 +455,96 @@ describe('independent review pass 3: Keep Phone\'s copy is not sent over a row t
     await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 });
+
+/* Independent review pass 4 ------------------------------------------------------------------------------------- */
+
+const keepPhoneOn = (conflictId: string, shown: unknown) => resolveScheduleItemSyncConflict(conflictId, 'keep_local', { cloudCopyShown: shown });
+
+/** A card about one field: the web typed a note; the phone, which had not heard, typed its own. */
+async function cardAboutTheNote() {
+  const start: ScheduleItem = { ...phoneTask, notes: '' };
+  mockPut({ ...start, notes: 'Web note.', updatedAt: '2026-09-29T12:00:00.000Z' });
+  await queueScheduleItemRecord({ ...start, notes: 'Phone note.', updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['notes', 'updatedAt'], start);
+  await uploadPendingChanges();
+  const [conflict] = await getSyncConflicts();
+  expect(scheduleItemConflictFields(conflict.localPayload)).toEqual(['notes']);
+  expect(cloudTask()).toMatchObject({ notes: 'Web note.' });
+  mockUpsertScheduleItem.mockClear();
+  mockGetScheduleItem.mockClear();
+  return { start, conflict, shown: conflict.remotePayload as ScheduleItem };
+}
+
+/**
+ * The record of what a task's new row took from the task (textFromTask) is bookkeeping: never an edit of his, never
+ * on a card. A write that changed it alone between the screen's read and his tap made Keep Phone answer "The cloud
+ * copy changed — review again" with nothing different to see (the pass-4 reviewer, by a forced run).
+ */
+describe('independent review pass 4: the record of what a row took from its task is not a change of the cloud copy', () => {
+  const TOOK = { taskId: 'row-a', owner: '' };
+  const TOOK_SINCE = { taskId: 'row-a', owner: '', contractor: 'noted since' };
+
+  it('a whole-task card: the record alone changes between the screen\'s read and his tap; Keep Phone goes through the first time', async () => {
+    mockPut({ ...phoneTask, notes: '', revisedFromTaskIds: ['row-x', 'row-a'], textFromTask: TOOK, updatedAt: '2026-09-29T12:00:00.000Z' });
+    await runScheduleItemCloudSync(phoneTask);
+    const [conflict] = await getSyncConflicts();
+    const shown = conflict.remotePayload as ScheduleItem;
+    expect(shown.textFromTask).toEqual(TOOK);
+    ipadSets({ textFromTask: TOOK_SINCE });
+
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.' });
+
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('a card about one field: the same; his note goes up and the row keeps the record as the cloud has it', async () => {
+    const { conflict, shown } = await cardAboutTheNote();
+    ipadSets({ textFromTask: TOOK_SINCE });
+
+    await expect(keepPhoneOn(conflict.id, shown)).resolves.toMatchObject({ notes: 'Phone note.' });
+
+    expect(cloudTask()).toMatchObject({ notes: 'Phone note.', textFromTask: TOOK_SINCE });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('a change of the record together with the text it describes is still a change: he reviews again', async () => {
+    const { conflict, shown } = await cardAboutTheNote();
+    ipadSets({ owner: MIKE, textFromTask: { taskId: 'row-a', owner: MIKE } });
+
+    const error = await keepPhoneOn(conflict.id, shown).catch((caught: unknown) => caught);
+
+    expect(syncConflictChoiceStopReason(error)).toBe('cloud_copy_changed');
+    expect(cloudTask()).toMatchObject({ notes: 'Web note.', owner: MIKE });
+  });
+
+  it('Keep Cloud\'s undo still takes the record back with a whole copy of this phone\'s that landed: it describes the text being put back', async () => {
+    const { conflict, shown } = await conflictWithWebCopy();
+    // A whole copy of the task from this phone is on its way up when he chooses: its own owner, and its record of it.
+    const whole: ScheduleItem = { ...phoneTask, owner: 'Ana', textFromTask: { taskId: 'row-a', owner: 'Ana' }, updatedAt: '2026-09-30T10:00:00.000Z' };
+    await queueScheduleItemRecord(whole, false);
+    let land!: () => void;
+    const landing = new Promise<void>(resolve => { land = resolve; });
+    let sending!: () => void;
+    const sent = new Promise<void>(resolve => { sending = resolve; });
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      sending();
+      await landing;
+      return mockCloud.upsert(item, options);
+    });
+    const inFlight = uploadPendingChanges();
+    await sent;
+    mockGetScheduleItem.mockImplementationOnce(async (id: string) => {
+      land();
+      await inFlight;
+      return mockCloud.get(id);
+    });
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown })).resolves.toMatchObject({ owner: '', notes: '' });
+
+    // The copy landed (the cloud held "Ana" and the record of it) and is undone: the owner and note the screen showed.
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(2);
+    expect(cloudTask()).toMatchObject({ owner: shown.owner, notes: shown.notes, updatedAt: shown.updatedAt });
+    // Left behind, the row would say it took "Ana" while holding no owner again.
+    expect(cloudTask()).not.toHaveProperty('textFromTask');
+  });
+});
