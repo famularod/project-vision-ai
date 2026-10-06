@@ -51,6 +51,7 @@ import {
   type SupabaseRowOrder,
 } from './SupabaseCollectionPagination';
 import { SCHEDULE_ITEM_ALREADY_IN_CLOUD } from './CloudListAbsenceCheck';
+import { CLOUD_ROW_CHANGED_SINCE_READ, withCloudRowVersion } from './CloudRowVersion';
 import {
   verifyPIERealityHistoryRows,
   type PIERealityHistoryCloudRow,
@@ -2176,21 +2177,54 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
   );
 }
 
+/**
+ * Independent review pass 2 (item 1), as upsertScheduleItem: `onlyIfAbsent`
+ * writes the area only if the cloud has no row for it; `ifUnchangedSince`
+ * writes it only if the cloud's row is still that version. Refused, the answer
+ * says so (CLOUD_ROW_CHANGED_SINCE_READ) and the row is as it was.
+ */
 export async function upsertProjectArea(
   area: ProjectArea,
+  options: CloudRowWriteCondition = {},
 ): Promise<SupabaseServiceResult<ProjectArea>> {
-  return upsertJsonRecord<ProjectArea>({
-    table: PROJECT_AREAS_TABLE,
-    ownerScoped: true,
-    payload: {
-      id: area.id,
-      name: area.name,
-      area_data: toJsonValue(area),
-      updated_at: new Date().toISOString(),
-    },
-    data: area,
-  });
+  const payload = {
+    id: area.id,
+    name: area.name,
+    area_data: toJsonValue(area),
+    updated_at: new Date().toISOString(),
+  };
+  if (!options.onlyIfAbsent && !options.ifUnchangedSince) {
+    return upsertJsonRecord<ProjectArea>({ table: PROJECT_AREAS_TABLE, ownerScoped: true, payload, data: area });
+  }
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<ProjectArea>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  const row = { ...payload, owner_id: owner.data };
+  const written = options.ifUnchangedSince
+    ? await client.from(PROJECT_AREAS_TABLE).update(row)
+      .eq('owner_id', owner.data).eq('id', area.id).eq('updated_at', options.ifUnchangedSince).select('id, updated_at')
+    : await client.from(PROJECT_AREAS_TABLE).upsert(row, { ignoreDuplicates: true }).select('id, updated_at');
+  if (written.error) return tableAwareErrorResult<ProjectArea>(written.error.message, written.status);
+  if (!Array.isArray(written.data) || written.data.length === 0) {
+    return errorResult<ProjectArea>(
+      'This GPS area changed in the cloud while the sync was running. This copy was not sent over it.',
+      409,
+      CLOUD_ROW_CHANGED_SINCE_READ,
+    );
+  }
+  return okResult(withCloudRowVersion(area, toRecord(written.data[0]).updated_at ?? payload.updated_at), written.status);
 }
+
+/** When a task or GPS area row may be written (independent review R02 and pass 2). */
+export type CloudRowWriteCondition = Readonly<{
+  /** Only if the cloud has no row for it. */
+  onlyIfAbsent?: boolean;
+  /** Only if the cloud's row is still this version (cloudRowVersionOf of the row it was weighed against). */
+  ifUnchangedSince?: string | null;
+}>;
 
 /**
  * `onlyIfAbsent` (independent review R02): for a task this device believes the
@@ -2198,10 +2232,17 @@ export async function upsertProjectArea(
  * appeared since it was checked is left exactly as it is, and the answer says
  * so (SCHEDULE_ITEM_ALREADY_IN_CLOUD). A row another device wrote can then
  * never be replaced by a copy sent as new.
+ *
+ * `ifUnchangedSince` (independent review pass 2, item 1): for a task weighed
+ * against the cloud's row. The row is written only if it is still the version
+ * that was weighed (its `updated_at` as read, which every writer sets): the
+ * same conditional write the desktop makes. A row another device has written
+ * since is left exactly as it is, and the answer says so
+ * (CLOUD_ROW_CHANGED_SINCE_READ): the caller reads it again and weighs again.
  */
 export async function upsertScheduleItem(
   item: ScheduleItem,
-  { onlyIfAbsent = false }: Readonly<{ onlyIfAbsent?: boolean }> = {},
+  { onlyIfAbsent = false, ifUnchangedSince = null }: CloudRowWriteCondition = {},
 ): Promise<SupabaseServiceResult<ScheduleItem>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<ScheduleItem>();
@@ -2240,7 +2281,7 @@ export async function upsertScheduleItem(
     const inserted = await client
       .from(SCHEDULE_ITEMS_TABLE)
       .upsert(row, { ignoreDuplicates: true })
-      .select('id, item_data');
+      .select('id, item_data, updated_at');
     if (!inserted.error && (!Array.isArray(inserted.data) || inserted.data.length === 0)) {
       return errorResult<ScheduleItem>(
         'This task changed in the cloud while the sync was running. This copy was not sent over it.',
@@ -2249,11 +2290,28 @@ export async function upsertScheduleItem(
       );
     }
     written = { data: inserted.data?.[0] ?? null, error: inserted.error, status: inserted.status };
+  } else if (ifUnchangedSince) {
+    // No row is changed unless it is still the version that was weighed.
+    const updated = await client
+      .from(SCHEDULE_ITEMS_TABLE)
+      .update(row)
+      .eq('owner_id', owner.data)
+      .eq('id', item.id)
+      .eq('updated_at', ifUnchangedSince)
+      .select('id, item_data, updated_at');
+    if (!updated.error && (!Array.isArray(updated.data) || updated.data.length === 0)) {
+      return errorResult<ScheduleItem>(
+        'This task changed in the cloud while the sync was running. This copy was not sent over it.',
+        409,
+        CLOUD_ROW_CHANGED_SINCE_READ,
+      );
+    }
+    written = { data: updated.data?.[0] ?? null, error: updated.error, status: updated.status };
   } else {
     written = await client
       .from(SCHEDULE_ITEMS_TABLE)
       .upsert(row)
-      .select('id, item_data')
+      .select('id, item_data, updated_at')
       .single();
   }
   const { data, error, status } = written;
@@ -2302,7 +2360,8 @@ export async function upsertScheduleItem(
     );
   }
 
-  return okResult(boundItem, status);
+  // The version the row now is: a later write in the same pass is made against it.
+  return okResult(withCloudRowVersion(boundItem, toRecord(data).updated_at ?? row.updated_at), status);
 }
 
 export async function upsertReferenceDocument(
@@ -2376,7 +2435,7 @@ export async function getScheduleItem(
 
   const { data, error, status } = await client
     .from(SCHEDULE_ITEMS_TABLE)
-    .select('id, item_data')
+    .select('id, updated_at, item_data')
     .eq('owner_id', owner.data)
     .eq('id', id)
     .maybeSingle();
@@ -2388,7 +2447,7 @@ export async function getScheduleItem(
   const item = toRecord(row.item_data);
   // A row with no task in it is left out of the list too.
   if (Object.keys(item).length === 0) return okResult<ScheduleItem | null>(null, status);
-  return okResult(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, status);
+  return okResult(withCloudRowVersion(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, row.updated_at), status);
 }
 
 /**
@@ -2399,11 +2458,11 @@ export async function getScheduleItem(
 export async function getScheduleItemsByIds(
   ids: readonly string[],
 ): Promise<SupabaseServiceResult<ScheduleItem[]>> {
-  const result = await readOwnedRowsByIds(SCHEDULE_ITEMS_TABLE, 'id, item_data', ids);
+  const result = await readOwnedRowsByIds(SCHEDULE_ITEMS_TABLE, 'id, updated_at, item_data', ids);
   if (!result.ok || !result.data) return { ...result, data: null };
   return okResult(result.data.flatMap(row => {
     const item = toRecord(row.item_data);
-    return Object.keys(item).length === 0 ? [] : [bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem];
+    return Object.keys(item).length === 0 ? [] : [withCloudRowVersion(bindDAVECloudDatabaseIdentity(item, row.id) as ScheduleItem, row.updated_at)];
   }), result.status);
 }
 
@@ -2411,11 +2470,11 @@ export async function getScheduleItemsByIds(
 export async function getProjectAreasByIds(
   ids: readonly string[],
 ): Promise<SupabaseServiceResult<ProjectArea[]>> {
-  const result = await readOwnedRowsByIds(PROJECT_AREAS_TABLE, 'id, area_data', ids);
+  const result = await readOwnedRowsByIds(PROJECT_AREAS_TABLE, 'id, updated_at, area_data', ids);
   if (!result.ok || !result.data) return { ...result, data: null };
   return okResult(result.data.flatMap(row => {
     const area = toRecord(row.area_data);
-    return Object.keys(area).length === 0 ? [] : [bindDAVECloudDatabaseIdentity(area, row.id) as ProjectArea];
+    return Object.keys(area).length === 0 ? [] : [withCloudRowVersion(bindDAVECloudDatabaseIdentity(area, row.id) as ProjectArea, row.updated_at)];
   }), result.status);
 }
 
@@ -4053,7 +4112,8 @@ async function listOwnedJsonRecords<T>({
       // or contain an old conflicting id; using the row id prevents a later
       // upload from manufacturing a second cloud record.
       const record = bindDAVECloudDatabaseIdentity(jsonRecord, databaseRow.id);
-      return (includeCloudUpdatedAt
+      // The row's version goes beside the record, never in it (independent review pass 2, item 1).
+      return withCloudRowVersion((includeCloudUpdatedAt
         ? {
             ...record,
             cloudUpdatedAt:
@@ -4061,7 +4121,7 @@ async function listOwnedJsonRecords<T>({
                 ? databaseRow.updated_at
                 : null,
           }
-        : record) as T;
+        : record) as T, databaseRow.updated_at);
     })
     .filter((value): value is T => Boolean(value));
 

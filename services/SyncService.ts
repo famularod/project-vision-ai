@@ -29,6 +29,7 @@ import {
   verifyDAVEAppOwner,
   type CloudProject,
   type CloudProjectUpdate,
+  type CloudRowWriteCondition,
   type JsonValue,
   type SupabaseConfigurationStatus,
 } from './SupabaseService';
@@ -64,6 +65,7 @@ import {
   type CloudRecordsByIdReader,
 } from './CloudListAbsenceCheck';
 import { chunkSupabaseFilterValues } from './SupabaseCollectionPagination';
+import { CLOUD_ROW_CHANGED_SINCE_READ, cloudRowVersionOf, withCloudRowVersion } from './CloudRowVersion';
 import { scheduleItemCarriedProgressWaiting, type PendingScheduleItemEdit } from './ScheduleItemQueueRevision';
 import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditBaseKeepingOwn, fieldUpdateEditBaseOf, fieldUpdateMeaningParts, isFieldUpdateEditBase, type FieldUpdateEditBase } from './FieldUpdateEditBase';
 import {
@@ -4249,6 +4251,18 @@ function recordsNotCheckedByIdMessage(kind: 'task' | 'GPS area', count: number, 
     cloudWriteFailureReason({ error: reason || undefined });
 }
 
+/**
+ * How a record may be written once it has been weighed against `row`, the cloud's copy of it (independent review
+ * pass 2, item 1): only if the cloud still has no row for it; or only if the row is still the version that was
+ * weighed. The condition is part of the write itself, so there is no moment between the check and the write. A row
+ * whose version is not known is written as before.
+ */
+function cloudRowWriteConditionFor(row: unknown): [] | [CloudRowWriteCondition] {
+  if (!row) return [{ onlyIfAbsent: true }];
+  const version = cloudRowVersionOf(row);
+  return version ? [{ ifUnchangedSince: version }] : [];
+}
+
 /** The cloud's rows of these records right now, by id; the reason when they could not be read. */
 async function cloudRecordsNow<T extends { id: string }>(
   records: readonly T[],
@@ -4447,8 +4461,8 @@ export async function synchronizeLocalData(
   let cloudAreasAtReconciliation = new Map<string, ProjectArea>();
   let localSchedulesAtReconciliation: readonly ScheduleItem[] = [];
   let cloudSchedulesAtReconciliation = new Map<string, ScheduleItem>();
-  /** Tasks the cloud gained a row for in the moment before this device's copy was to be written as new. */
-  let addedInCloudDuringSync = 0;
+  /** Tasks whose cloud row another device wrote, or added, in the moment before this device's copy was to be written. */
+  let changedInCloudDuringSync = 0;
 
   if (
     cloudUpdatesBeforeUpload.ok &&
@@ -4673,10 +4687,12 @@ export async function synchronizeLocalData(
         progress(`GPS area already current: ${weighed.name}`);
         continue;
       }
-      const result = await upsertProjectArea(area);
+      const result = await upsertProjectArea(area, ...cloudRowWriteConditionFor(rowNow));
 
       if (result.ok && !result.stubbed) {
         details.areasUploaded += 1;
+      } else if (result.code === CLOUD_ROW_CHANGED_SINCE_READ) {
+        errors.push(`GPS area “${area.name}” changed in the cloud while this sync was running. This device's copy was not sent over it. Sync again to compare the two.`);
       } else {
         errors.push(
           `GPS area “${area.name}” could not sync.${cloudWriteFailureReason(result)}`,
@@ -4748,13 +4764,14 @@ export async function synchronizeLocalData(
       }
       // A task the cloud has no row for is written only if it still has none: a row another device adds in this
       // moment is never replaced by a copy sent as new.
+      // And a task the cloud has a row for is written only if the row is still the one just read (pass 2, item 1).
       const bound = { ...item, projectId: binding.identity.id };
-      const result = rowNow ? await upsertScheduleItem(bound) : await upsertScheduleItem(bound, { onlyIfAbsent: true });
+      const result = await upsertScheduleItem(bound, ...cloudRowWriteConditionFor(rowNow));
 
       if (result.ok && !result.stubbed) {
         details.schedulesUploaded += 1;
-      } else if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD) {
-        addedInCloudDuringSync += 1;
+      } else if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD || result.code === CLOUD_ROW_CHANGED_SINCE_READ) {
+        changedInCloudDuringSync += 1;
         progress(`Schedule left for the next sync: ${item.taskName}`);
         continue;
       } else {
@@ -4766,10 +4783,10 @@ export async function synchronizeLocalData(
       progress(`Schedule synced: ${item.taskName}`);
     }
   }
-  if (addedInCloudDuringSync > 0) {
+  if (changedInCloudDuringSync > 0) {
     errors.push(
-      `${addedInCloudDuringSync} ${addedInCloudDuringSync === 1 ? 'task' : 'tasks'} changed in the cloud while this sync was running. ` +
-      `This device's copy was not sent over ${addedInCloudDuringSync === 1 ? 'it' : 'them'}. Sync again to compare the two.`,
+      `${changedInCloudDuringSync} ${changedInCloudDuringSync === 1 ? 'task' : 'tasks'} changed in the cloud while this sync was running. ` +
+      `This device's copy was not sent over ${changedInCloudDuringSync === 1 ? 'it' : 'them'}. Sync again to compare the two.`,
     );
   }
 
@@ -6180,6 +6197,8 @@ type QueueUploadContext = {
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
   scheduleItemsReadByIdError?: string;
+  /** Queued records read again and weighed again after a refused write, and how many times (pass 2, item 1). */
+  recordsWeighedAgain?: Map<string, number>;
   referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
   referenceDocumentsById?: Map<string, ReferenceDocument>;
   projectUpdateMetadataPromises?: Map<
@@ -6458,6 +6477,32 @@ async function cloudScheduleItemMissedByList(
   return row.data ?? null;
 }
 
+/** How many times one queued record is read again and weighed again in a pass after its write was refused. */
+const QUEUED_RECORD_WEIGH_AGAIN_LIMIT = 2;
+
+/**
+ * After a write was refused because the cloud's row was no longer the one weighed (independent review pass 2, item
+ * 1): the row as it is now, read by its id, to weigh the queued record against once more. Null when the record
+ * should wait for the next pass instead: the row is gone (deleted on another device: its deletion record retires the
+ * queued record at the next pass, and it is not sent back as new), the read failed, or it has been weighed again
+ * twice already in this pass.
+ */
+async function cloudRowToWeighAgain<T extends { id: string }>(
+  context: QueueUploadContext,
+  key: string,
+  id: string,
+  readByIds: CloudRecordsByIdReader<T>,
+): Promise<T | null> {
+  const weighedAgain = (context.recordsWeighedAgain ??= new Map<string, number>());
+  const times = weighedAgain.get(key) ?? 0;
+  if (times >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) return null;
+  const rows = await cloudRecordsNow<Pick<T, 'id'>>([{ id }], readByIds);
+  const row = typeof rows === 'string' ? undefined : cloudRecordOf(rows, id) as T | undefined;
+  if (!row) return null;
+  weighedAgain.set(key, times + 1);
+  return row;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
@@ -6498,10 +6543,20 @@ async function uploadQueueItem(
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
       return 'uploaded';
     }
-    const result = await upsertProjectArea(authoritative);
+    // Independent review pass 2 (item 1): written only if the cloud's row is still the one this was weighed against
+    // (or there is still none). The list is read once for the whole pass; a point another device captured since
+    // then was written over. Refused, the row is read again by its id and the area weighed again.
+    const result = await upsertProjectArea(authoritative, ...cloudRowWriteConditionFor(remote));
     if (result.ok && !result.stubbed) {
-      context.projectAreasById.set(payload.id, authoritative);
+      context.projectAreasById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       return 'uploaded';
+    }
+    if (result.code === CLOUD_ROW_CHANGED_SINCE_READ) {
+      const rowNow = await cloudRowToWeighAgain(context, `project_area:${payload.id}`, payload.id, cloudProjectAreasByIds);
+      if (rowNow) {
+        context.projectAreasById.set(payload.id, rowNow);
+        return uploadQueueItem(item, context);
+      }
     }
     return result.error || result.message || 'GPS area sync is waiting for Supabase.';
   }
@@ -6691,15 +6746,26 @@ async function uploadQueueItem(
       return 'conflict';
     }
     // A task the cloud has no row for is written only if it still has none (independent review R02): a row another
-    // device adds meanwhile is left as it is, and the edit stays queued to be weighed against it.
-    const result = newToCloud ? await upsertScheduleItem(authoritative, { onlyIfAbsent: true }) : await upsertScheduleItem(authoritative);
+    // device adds meanwhile is left as it is.
+    // Independent review pass 2 (item 1): and a task the cloud has a row for is written only if that row is still
+    // the one this edit was weighed against. The list is read once for the whole pass: while this device wrote one
+    // queued task, another device set the next one's owner, and that task then went up as "the row as listed, with
+    // this device's note": the owner was erased everywhere, with no card. Refused either way, nothing is written; the
+    // row is read again by its id and the edit weighed again against it, by the same rules.
+    const result = await upsertScheduleItem(authoritative, ...(newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
     if (result.ok && !result.stubbed) {
-      context.scheduleItemsById.set(payload.id, authoritative);
+      context.scheduleItemsById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       if (asked.length > 0) return askAbout(authoritative);
       if (!carryOnly) await settleScheduleItemConflicts(payload.id, settles, authoritative);
       return 'uploaded';
     }
-    if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD) context.scheduleItemsReadById?.delete(payload.id);
+    if (result.code === SCHEDULE_ITEM_ALREADY_IN_CLOUD || result.code === CLOUD_ROW_CHANGED_SINCE_READ) {
+      const rowNow = await cloudRowToWeighAgain(context, `schedule_item:${payload.id}`, payload.id, cloudScheduleItemsByIds);
+      if (rowNow) {
+        context.scheduleItemsById.set(payload.id, rowNow);
+        return uploadQueueItem(item, context);
+      }
+    }
     return result.error || result.message || 'Task sync is waiting for Supabase.';
   }
 

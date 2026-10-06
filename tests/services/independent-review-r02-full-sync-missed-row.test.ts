@@ -78,31 +78,60 @@ const mockRequest = async (name: string) => {
 
 jest.mock('../../services/SupabaseService', () => {
   const actual = jest.requireActual('../../services/SupabaseService');
-  const { paginateSupabaseCollection } = jest.requireActual('../../services/SupabaseCollectionPagination');
+  const { paginateSupabaseCollectionByKey } = jest.requireActual('../../services/SupabaseCollectionPagination');
   const { SCHEDULE_ITEM_ALREADY_IN_CLOUD } = jest.requireActual('../../services/CloudListAbsenceCheck');
-  /** A list read a page at a time, each page from the rows as they are when it is asked for. */
-  const paged = async (name: string, ordered: () => Array<{ id: string }>) => {
-    const fetchPage = async ({ from, to, includeExactCount }: { from: number; to: number; includeExactCount: boolean }) => {
-      await mockRequest(`${name}:page:${from}`);
-      const rows = ordered().filter(row => !mockCloud.leftOutOfLists.has(row.id));
-      return { data: rows.slice(from, to + 1).map(mockCopy), count: includeExactCount ? rows.length : null, error: null, status: 200 };
-    };
+  const { CLOUD_ROW_CHANGED_SINCE_READ, withCloudRowVersion } = jest.requireActual('../../services/CloudRowVersion');
+  /**
+   * A list read a page at a time, each page from the rows as they are when it is asked for: by key, as the app reads
+   * its lists since review pass 2 (the rows after the last id read, in the order of their ids, through the real
+   * pager), or as Build 229 read them (by offset, newest first, the pages put end to end and nothing compared). A
+   * page's request is named by how many rows the read already has. The answer is newest first either way, and each
+   * row comes with the version of the cloud row it is (independent review pass 2, item 1).
+   */
+  const paged = async (name: string, now: () => Array<{ row: { id: string }; stamp: number; version?: string }>) => {
+    const listed = () => now().filter(entry => !mockCloud.leftOutOfLists.has(entry.row.id));
+    const copy = (entry: { row: { id: string }; version?: string }) => withCloudRowVersion(mockCopy(entry.row), entry.version) as { id: string };
     if (mockCloud.listsReadAsBuild229) {
       const rows: Array<{ id: string }> = [];
       for (let from = 0; ; from += 500) {
-        const page = await fetchPage({ from, to: from + 499, includeExactCount: false });
-        rows.push(...page.data);
-        if (page.data.length < 500) return mockOk(rows);
+        await mockRequest(`${name}:page:${from}`);
+        const page = listed().sort((left, right) => right.stamp - left.stamp || left.row.id.localeCompare(right.row.id)).slice(from, from + 500);
+        rows.push(...page.map(copy));
+        if (page.length < 500) return mockOk(rows);
       }
     }
-    const result = await paginateSupabaseCollection(fetchPage, 500, { requestExactCount: true });
-    return result.ok ? mockOk([...result.rows]) : { ok: false, configured: true, stubbed: false, data: null, error: result.error };
+    let read = 0;
+    const stamps = new Map<string, number>();
+    const result = await paginateSupabaseCollectionByKey(async ({ after, limit, includeExactCount }: {
+      after: ReadonlyArray<{ op: string; value: string | number }>; limit: number; includeExactCount: boolean;
+    }) => {
+      await mockRequest(`${name}:page:${read}`);
+      const all = listed();
+      const cursor = after.find(filter => filter.op === 'gt')?.value;
+      const page = all.filter(entry => cursor === undefined || entry.row.id > cursor)
+        .sort((left, right) => (left.row.id < right.row.id ? -1 : 1)).slice(0, limit);
+      read += page.length;
+      page.forEach(entry => stamps.set(entry.row.id, entry.stamp));
+      return { data: page.map(copy), count: includeExactCount ? all.length : null, error: null, status: 200 };
+    }, { key: ['id'], requestExactCount: true }, 500);
+    if (!result.ok) return { ok: false, configured: true, stubbed: false, data: null, error: result.error };
+    return mockOk([...(result.rows as Array<{ id: string }>)]
+      .sort((left, right) => (stamps.get(right.id) ?? 0) - (stamps.get(left.id) ?? 0) || left.id.localeCompare(right.id)));
   };
-  const newestFirst = (table: Map<string, { record: any; stamp: number }>) => () => [...table.values()]
-    .sort((left, right) => right.stamp - left.stamp || String(left.record.id).localeCompare(String(right.record.id)))
-    .map(row => row.record);
+  const rowsOf = (table: Map<string, { record: any; stamp: number }>) => () => [...table.values()].map(entry => ({ row: entry.record as { id: string }, stamp: entry.stamp, version: String(entry.stamp) }));
   const byIds = (table: Map<string, { record: any; stamp: number }>, ids: readonly string[]) =>
-    ids.flatMap(id => (table.has(id) ? [mockCopy(table.get(id)!.record)] : []));
+    ids.flatMap(id => (table.has(id) ? [withCloudRowVersion(mockCopy(table.get(id)!.record), String(table.get(id)!.stamp))] : []));
+  /** A write made only under its condition, as the cloud makes it: in one step. */
+  const write = (table: Map<string, { record: any; stamp: number }>, kind: string, record: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
+    const current = table.get(record.id);
+    const refused = (code: string) => ({ ok: false, configured: true, stubbed: false, data: null, status: 409, code,
+      error: `This ${kind === 'task' ? 'task' : 'GPS area'} changed in the cloud while the sync was running. This copy was not sent over it.` });
+    if (options?.onlyIfAbsent && current) return refused(kind === 'task' ? SCHEDULE_ITEM_ALREADY_IN_CLOUD : CLOUD_ROW_CHANGED_SINCE_READ);
+    if (options?.ifUnchangedSince && String(current?.stamp) !== options.ifUnchangedSince) return refused(CLOUD_ROW_CHANGED_SINCE_READ);
+    table.set(record.id, { record: mockCopy(record), stamp: (mockCloud.stamp += 1) });
+    mockCloud.writes.push(`${mockDevice}:${kind}:${record.id}`);
+    return mockOk(withCloudRowVersion(mockCopy(record), String(mockCloud.stamp)));
+  };
   const updateRow = (id: string, current: { created: number; updatedAt: string; updateData: any }) => ({
     id, projectId: MOCK_PROJECT_ID, projectName: 'Alpha', areaName: '', idempotencyKey: id,
     createdAt: new Date(Date.parse('2026-09-01T00:00:00.000Z') + current.created * 60_000).toISOString(),
@@ -132,7 +161,7 @@ jest.mock('../../services/SupabaseService', () => {
     upsertDAVESyncTombstone: async (tombstone: { entityType: string; recordId: string; deletedAt: string }) => { addTombstones([tombstone]); return mockOk(tombstone); },
     upsertDAVESyncTombstones: async (list: Array<{ entityType: string; recordId: string; deletedAt: string }>) => { addTombstones(list); return mockOk(list); },
 
-    listScheduleItems: () => paged('tasks', newestFirst(mockCloud.tasks)),
+    listScheduleItems: () => paged('tasks', rowsOf(mockCloud.tasks)),
     getScheduleItem: async (id: string) => {
       await mockRequest(`task:id:${id}`);
       return mockCloud.readsByIdFail ? mockDown() : mockOk(byIds(mockCloud.tasks, [id])[0] ?? null);
@@ -141,33 +170,24 @@ jest.mock('../../services/SupabaseService', () => {
       await mockRequest(`tasks:ids:${ids.length}`);
       return mockCloud.readsByIdFail ? mockDown() : mockOk(byIds(mockCloud.tasks, ids));
     },
-    upsertScheduleItem: async (item: { id: string }, options?: { onlyIfAbsent?: boolean }) => {
+    upsertScheduleItem: async (item: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
       await mockRequest(`task:write:${item.id}`);
-      if (options?.onlyIfAbsent && mockCloud.tasks.has(item.id)) {
-        return { ok: false, configured: true, stubbed: false, data: null, status: 409, code: SCHEDULE_ITEM_ALREADY_IN_CLOUD,
-          error: 'This task changed in the cloud while the sync was running. This copy was not sent over it.' };
-      }
-      mockCloud.tasks.set(item.id, { record: mockCopy(item), stamp: (mockCloud.stamp += 1) });
-      mockCloud.writes.push(`${mockDevice}:task:${item.id}`);
-      return mockOk(mockCopy(item));
+      return write(mockCloud.tasks, 'task', item, options);
     },
 
-    listProjectAreas: () => paged('areas', newestFirst(mockCloud.areas)),
+    listProjectAreas: () => paged('areas', rowsOf(mockCloud.areas)),
     getProjectAreasByIds: async (ids: string[]) => {
       await mockRequest(`areas:ids:${ids.length}`);
       return mockCloud.readsByIdFail ? mockDown() : mockOk(byIds(mockCloud.areas, ids));
     },
-    upsertProjectArea: async (area: { id: string }) => {
+    upsertProjectArea: async (area: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
       await mockRequest(`area:write:${area.id}`);
-      mockCloud.areas.set(area.id, { record: mockCopy(area), stamp: (mockCloud.stamp += 1) });
-      mockCloud.writes.push(`${mockDevice}:area:${area.id}`);
-      return mockOk(mockCopy(area));
+      return write(mockCloud.areas, 'area', area, options);
     },
 
-    // Field updates are listed oldest-created last; an edit does not move a row.
+    // Field updates are listed newest created first; an edit does not move a row.
     listProjectUpdates: () => paged('updates', () => [...mockCloud.updates.entries()]
-      .sort(([leftId, left], [rightId, right]) => right.created - left.created || leftId.localeCompare(rightId))
-      .map(([id, current]) => updateRow(id, current))),
+      .map(([id, current]) => ({ row: updateRow(id, current), stamp: current.created }))),
     getProjectUpdateSyncMetadata: async (id: string) => {
       await mockRequest(`update:id:${id}`);
       const current = mockCloud.updates.get(id);
@@ -199,7 +219,7 @@ import { scheduleItemsWithPendingEditsOverCloud } from '../../services/ScheduleI
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { scheduleItemConflictFields } from '../../services/ScheduleItemEditBase';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
-import { SUPABASE_COLLECTION_CHANGED_WHILE_READ } from '../../services/SupabaseCollectionPagination';
+import { SUPABASE_COLLECTION_CHANGED_WHILE_READ, SUPABASE_COLLECTION_KEY_OUT_OF_ORDER } from '../../services/SupabaseCollectionPagination';
 import {
   cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectUpdateRecord,
   queueScheduleItemRecord, refreshFieldUpdateConflictCloudCopies, runScheduleItemCloudSync, sanitizeUserFacingSyncMessage, synchronizeLocalData,
@@ -385,8 +405,9 @@ describe('independent review R02: a task the paged download missed is not overwr
       // The list said ok with 502 rows, one of them twice and the edited task missing: the task was asked for by its id.
       expect(requests('task:id:')).toEqual([`task:id:${LATE}`]);
     } else {
-      // The read saw the repeated row and read the list again: no task had to be asked for one by one.
-      expect(requests('tasks:page:0').length).toBeGreaterThanOrEqual(2);
+      // Read by key, the edited task could not move: it is on the second page, with the iPad's edit. Each read of the
+      // list is its two pages, once; nothing is read again, and no task had to be asked for one by one.
+      expect(requests('tasks:page:').length).toBe(2 * requests('tasks:page:0').length);
       expect(requests('task:id:')).toEqual([]);
       expect(requests('tasks:ids:')).toEqual([]);
     }
@@ -554,8 +575,8 @@ describe('independent review R02: the reads by id are batched', () => {
     expect(requests('task:id:')).toEqual([]);
     expect(requests('tasks:ids:')).toEqual([]);
     expect(mockCloud.writes).toEqual([]);
-    // Each read of the list is its four pages, once.
-    expect(requests('tasks:page:').length % 4).toBe(0);
+    // Each read of the list is its four pages, once, and the empty page that ends a list whose last page was full.
+    expect(requests('tasks:page:').length).toBe(5 * requests('tasks:page:0').length);
   });
 
   it('2,000 tasks the cloud does not have: one batched read confirms that, 20 more go before the writes, none one by one', async () => {
@@ -657,6 +678,201 @@ describe('independent review R02: a queued whole copy is weighed against the row
   });
 });
 
+/* A write only over the row that was weighed --------------------------------------- */
+/**
+ * Independent review pass 2, item 1 (Low, already in Build 229; the reviewer's directed check D3 and seeds 54, 107,
+ * 168, 181, 203). The automatic upload read the task list once and weighed every queued edit of the pass against it.
+ * While the phone wrote one queued task, the iPad set the next one's owner; the phone then wrote that task as "the
+ * row as listed, with my note": the owner was erased on every device, with no card. A queued edit is now written only
+ * if the cloud's row is still the one it was weighed against; refused, the row is read again and the edit weighed
+ * again. (Where these tests say the iPad writes, the row is written as the iPad's upload writes it: a second
+ * SyncService upload inside the phone's own pass would only wait for it.)
+ */
+describe('independent review pass 2 (item 1): a queued edit is written only over the row it was weighed against', () => {
+  const REFUSED = 'This task changed in the cloud while the sync was running. This copy was not sent over it.';
+  /** The phone, with no signal, types a note on two tasks; both wait in its queue. */
+  async function twoNotesWaiting() {
+    seedTasks(6);
+    const phone = newDevice('phone');
+    synced(phone);
+    at('2026-09-10T09:00:00.000Z');
+    await edit(phone, taskId(1), { notes: 'phone note on task 1' }, false);
+    await edit(phone, taskId(2), { notes: 'phone note on task 2' }, false);
+    expect(await queueOf(phone)).toHaveLength(2);
+    at('2026-09-10T12:00:00.000Z');
+    mockCloud.log.length = 0;
+    on(phone);
+    return phone;
+  }
+  /** Runs `act` on the other queued task while the phone's first task write is on its way; answers which task that was. */
+  function duringTheFirstWrite(act: (other: string) => void): { other: string | null } {
+    const seen: { other: string | null } = { other: null };
+    mockCloud.before = (request, device) => {
+      if (seen.other || device !== 'phone' || !request.startsWith('task:write:')) return;
+      seen.other = request.endsWith(taskId(1)) ? taskId(2) : taskId(1);
+      act(seen.other);
+    };
+    return seen;
+  }
+
+  it('the reviewed case: the iPad sets the second task\'s owner while the phone writes the first: the owner stays, with the phone\'s note, and no card', async () => {
+    const phone = await twoNotesWaiting();
+    const seen = duringTheFirstWrite(other => ipadWrites(other, { owner: 'Mike (set on the iPad)' }));
+
+    const result = await uploadPendingChanges();
+
+    const other = seen.other!;
+    expect(result.errors).toEqual([]);
+    expect(shows(cloudTask(other))).toEqual([0, `phone note on task ${other === taskId(1) ? 1 : 2}`, 'Mike (set on the iPad)']);
+    expect(await conflictsOf(phone)).toEqual([]);
+    expect(await queueOf(phone)).toEqual([]);
+    // The write over the listed row was refused; the row was read once more by its id; the second write landed.
+    expect(requests(`task:write:${other}`)).toHaveLength(2);
+    expect(requests('task:id:')).toEqual([`task:id:${other}`]);
+    expect(writesBy(phone)).toHaveLength(2);
+  });
+
+  it('the iPad types its own note on that task meanwhile: Review Conflicts asks about the note, and the iPad\'s note is not written over', async () => {
+    const phone = await twoNotesWaiting();
+    const seen = duringTheFirstWrite(other => ipadWrites(other, { notes: 'iPad note', owner: 'Mike' }));
+
+    await uploadPendingChanges();
+
+    const other = seen.other!;
+    expect(shows(cloudTask(other))).toEqual([0, 'iPad note', 'Mike']);
+    const conflicts = await conflictsOf(phone);
+    expect(conflicts).toEqual([expect.objectContaining({ entity: 'schedule_item', localId: other })]);
+    expect(scheduleItemConflictFields(conflicts[0].localPayload)).toEqual(['notes']);
+    expect((conflicts[0].remotePayload as ScheduleItem).notes).toBe('iPad note');
+  });
+
+  it('a task another device keeps writing is weighed again twice, then waits with a true sentence; the next pass sends it', async () => {
+    const phone = await twoNotesWaiting();
+    let writes = 0;
+    // Before every attempt of the phone to write task 2, the iPad writes it again.
+    mockCloud.before = (request, device) => {
+      if (device === 'phone' && request === `task:write:${taskId(2)}`) ipadWrites(taskId(2), { owner: `Mike ${writes += 1}` });
+    };
+
+    const result = await uploadPendingChanges();
+
+    expect(requests(`task:write:${taskId(2)}`)).toHaveLength(3);
+    expect(requests(`task:id:${taskId(2)}`)).toHaveLength(2);
+    expect(shows(cloudTask(taskId(2)))).toEqual([0, '', 'Mike 3']);
+    const waiting = await queueOf(phone);
+    expect(waiting.map(item => [(item.payload as { id: string }).id, item.lastError])).toEqual([[taskId(2), REFUSED]]);
+    expect(result.errors.join(' ')).toContain(REFUSED);
+    expect(sanitizeUserFacingSyncMessage(REFUSED)).toBe(REFUSED);
+    // The iPad stops; the phone's next pass weighs the edit against the row as it is, and it lands with the owner.
+    mockCloud.before = null;
+    await uploadPendingChanges();
+    expect(shows(cloudTask(taskId(2)))).toEqual([0, 'phone note on task 2', 'Mike 3']);
+    expect(await queueOf(phone)).toEqual([]);
+    expect(await conflictsOf(phone)).toEqual([]);
+  });
+
+  it('a task deleted on another device while the pass ran is not sent back as new', async () => {
+    const phone = await twoNotesWaiting();
+    const seen = duringTheFirstWrite(other => {
+      mockCloud.tasks.delete(other);
+      mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: other, deletedAt: new Date().toISOString() });
+    });
+
+    await uploadPendingChanges();
+
+    const other = seen.other!;
+    expect(cloudTask(other)).toBeUndefined();
+    expect((await queueOf(phone)).map(item => (item.payload as { id: string }).id)).toEqual([other]);
+    // At the next pass its deletion record retires the waiting edit.
+    mockCloud.before = null;
+    await uploadPendingChanges();
+    expect(cloudTask(other)).toBeUndefined();
+    expect(await queueOf(phone)).toEqual([]);
+  });
+
+  it('it costs nothing when nothing changed: 250 queued edits are 250 writes and no read by id', async () => {
+    seedTasks(260);
+    const phone = newDevice('phone');
+    synced(phone);
+    at('2026-09-10T09:00:00.000Z');
+    for (let index = 0; index < 250; index += 1) await edit(phone, taskId(index), { notes: `note ${index}` }, false);
+    at('2026-09-10T12:00:00.000Z');
+    mockCloud.log.length = 0;
+    on(phone);
+
+    const result = await uploadPendingChanges();
+
+    expect(result.errors).toEqual([]);
+    expect(requests('task:write:')).toHaveLength(250);
+    expect(requests('task:id:')).toEqual([]);
+    expect(requests('tasks:ids:')).toEqual([]);
+    expect(requests('tasks:page:')).toEqual(['tasks:page:0']);
+    expect(cloudTask(taskId(249))?.notes).toBe('note 249');
+  });
+
+  it('a queued GPS area: a point another device captures while the pass runs is not written over', async () => {
+    const listed = { id: 'area-1', name: 'North Lot', projectName: 'Alpha', latitude: 33.5, longitude: -117.9, radiusFeet: 250,
+      locationCapturedAt: '2026-09-08T12:00:00.000Z', updatedAt: '2026-09-08T12:00:00.000Z' } as ProjectArea;
+    const mine = { ...listed, latitude: 33.9, locationCapturedAt: '2026-09-09T12:00:00.000Z', updatedAt: '2026-09-09T12:00:00.000Z' } as ProjectArea;
+    const theirs = { ...listed, latitude: 35.1, locationCapturedAt: '2026-09-10T11:59:00.000Z', updatedAt: '2026-09-10T11:59:00.000Z' } as ProjectArea;
+    mockCloud.areas.set('area-1', { record: listed, stamp: (mockCloud.stamp += 1) });
+    const phone = newDevice('phone');
+    on(phone);
+    await queueProjectAreaRecord(mine);
+    mockCloud.log.length = 0;
+    // The phone's point is newer than the listed row's; before it is written the iPad captures a newer one.
+    beforeRequest('area:write:area-1', 1, () => { mockCloud.areas.set('area-1', { record: theirs, stamp: (mockCloud.stamp += 1) }); });
+
+    const result = await uploadPendingChanges();
+
+    expect(result.errors).toEqual([]);
+    expect(mockCloud.areas.get('area-1')!.record).toEqual(theirs);
+    expect(writesBy(phone)).toEqual([]);
+    expect(requests('areas:ids:')).toEqual(['areas:ids:1']);
+    expect(await queueOf(phone)).toEqual([]);
+    // What a GPS area that keeps changing would wait with reaches the owner as it is.
+    const waits = 'This GPS area changed in the cloud while the sync was running. This copy was not sent over it.';
+    expect(sanitizeUserFacingSyncMessage(waits)).toBe(waits);
+  });
+
+  it('a queued GPS area the cloud has no row for: one another device adds while the pass runs is weighed against, not replaced', async () => {
+    const mine = { id: 'area-1', name: 'North Lot', projectName: 'Alpha', latitude: 33.9, longitude: -117.9, radiusFeet: 250,
+      locationCapturedAt: '2026-09-09T12:00:00.000Z', updatedAt: '2026-09-09T12:00:00.000Z' } as ProjectArea;
+    const theirs = { ...mine, latitude: 35.1, locationCapturedAt: '2026-09-10T11:59:00.000Z', updatedAt: '2026-09-10T11:59:00.000Z' } as ProjectArea;
+    const phone = newDevice('phone');
+    on(phone);
+    await queueProjectAreaRecord(mine);
+    mockCloud.log.length = 0;
+    beforeRequest('area:write:area-1', 1, () => { mockCloud.areas.set('area-1', { record: theirs, stamp: (mockCloud.stamp += 1) }); });
+
+    const result = await uploadPendingChanges();
+
+    expect(result.errors).toEqual([]);
+    expect(mockCloud.areas.get('area-1')!.record).toEqual(theirs);
+    expect(writesBy(phone)).toEqual([]);
+    expect(await queueOf(phone)).toEqual([]);
+  });
+
+  it('Sync Now\'s own write is made the same way: a row written in the moment before it is not replaced, and the sync says so', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    const id = taskId(2);
+    // The phone's copy is newer and in no queue, so Full Sync sends it.
+    setter(phone)(phone.state.map(item => item.id !== id ? item : { ...item, owner: 'Mike', updatedAt: '2026-09-10T07:59:00.000Z' }));
+    // After Full Sync read the row again and just as it writes, the iPad writes it.
+    beforeRequest(`task:write:${id}`, 1, () => ipadWrites(id, { notes: 'iPad note' }));
+
+    const result = await fullSync(phone);
+
+    expect(shows(cloudTask(id))).toEqual([0, 'iPad note', '']);
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([
+      '1 task changed in the cloud while this sync was running. This device\'s copy was not sent over it. Sync again to compare the two.',
+    ]);
+  });
+});
+
 /* GPS areas -------------------------------------------------------------------- */
 describe('independent review R02: a GPS area the list missed', () => {
   const captured: ProjectArea = { id: 'area-1', name: 'North Lot', projectName: 'Alpha', latitude: 33.9, longitude: -117.9, radiusFeet: 250,
@@ -717,6 +933,43 @@ describe('independent review R02: a GPS area the list missed', () => {
     const result = await fullSync(phone, { areas: [captured] });
     expect(result.errors).toEqual([]);
     expect(mockCloud.areas.get('area-1')!.record).toEqual(captured);
+  });
+
+  // Independent review pass 2 (item 1): Sync Now's own GPS area write is made only over the row it just read, or only
+  // if there is still none.
+  const AREA_CHANGED = 'GPS area “North Lot” changed in the cloud while this sync was running. This device\'s copy was not sent over it. Sync again to compare the two.';
+
+  it('a point another device captures in the moment Sync Now writes its own is not replaced, and the sync says so', async () => {
+    const earlier = { ...captured, latitude: 33.5, locationCapturedAt: '2026-09-08T12:00:00.000Z', updatedAt: '2026-09-08T12:00:00.000Z' } as ProjectArea;
+    const latest = { ...captured, latitude: 35.1, locationCapturedAt: '2026-09-10T07:30:00.000Z', updatedAt: '2026-09-10T07:30:00.000Z' } as ProjectArea;
+    mockCloud.areas.set('area-1', { record: earlier, stamp: (mockCloud.stamp += 1) });
+    const phone = newDevice('phone');
+    // The phone's point is newer than the row it read again; just as it writes, the iPad captures a newer one.
+    beforeRequest('area:write:area-1', 1, () => { mockCloud.areas.set('area-1', { record: latest, stamp: (mockCloud.stamp += 1) }); });
+
+    const result = await fullSync(phone, { areas: [captured] });
+
+    expect(mockCloud.areas.get('area-1')!.record).toEqual(latest);
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([AREA_CHANGED]);
+    expect(sanitizeUserFacingSyncMessage(AREA_CHANGED)).toBe(AREA_CHANGED);
+    // The next sync weighs the two: the iPad's point is the newer, so nothing is sent and nothing is reported.
+    mockCloud.before = null;
+    const again = await fullSync(phone, { areas: [captured] });
+    expect(again.errors).toEqual([]);
+    expect(mockCloud.areas.get('area-1')!.record).toEqual(latest);
+  });
+
+  it('an area another device adds in the moment before the phone sends its own as new is left as it is', async () => {
+    const theirs = { ...captured, latitude: 35.1, locationCapturedAt: '2026-09-10T07:30:00.000Z', updatedAt: '2026-09-10T07:30:00.000Z' } as ProjectArea;
+    const phone = newDevice('phone');
+    beforeRequest('area:write:area-1', 1, () => { mockCloud.areas.set('area-1', { record: theirs, stamp: (mockCloud.stamp += 1) }); });
+
+    const result = await fullSync(phone, { areas: [captured] });
+
+    expect(mockCloud.areas.get('area-1')!.record).toEqual(theirs);
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([AREA_CHANGED]);
   });
 });
 
@@ -864,34 +1117,40 @@ describe('independent review R02: a project neither cloud list returned', () => 
   });
 });
 
-/* What the owner is told -------------------------------------------------------- */
-describe('independent review R02: a list that keeps changing', () => {
-  it('Full Sync sends no task, keeps the phone\'s tasks, and says the list will be read again', async () => {
-    seedTasks(502);
+/* The everyday trigger ------------------------------------------------------------ */
+describe('independent review pass 2 (item 4): another device sending task after task does not stop this device\'s reads', () => {
+  it('Full Sync reads its lists whole while every page is preceded by another device\'s write, and sends the phone\'s change', async () => {
+    seedTasks(1200);
     const phone = newDevice('phone');
     synced(phone);
     setter(phone)(phone.state.map(item => item.id !== LATE ? item : { ...item, owner: 'Mike', updatedAt: '2026-09-10T07:59:00.000Z' }));
-    // Every read of the task list is disturbed: the last task on the second page is edited after the first page.
-    let disturbed = 0;
-    mockCloud.before = request => {
-      if (request !== 'tasks:page:500') return;
-      const last = [...mockCloud.tasks.values()].sort((left, right) => left.stamp - right.stamp)[0];
-      last.stamp = (mockCloud.stamp += 1);
-      disturbed += 1;
+    // An approved schedule going up from the iPad: before each page the phone asks for, one more of its tasks is
+    // written, the oldest row first (read by offset, newest first, that row and its neighbours slid every time, and
+    // the read failed three times and gave up).
+    let written = 0;
+    mockCloud.before = (request, device) => {
+      if (device !== 'phone' || !request.startsWith('tasks:page:')) return;
+      const oldest = [...mockCloud.tasks.values()].filter(row => row.record.id !== LATE).sort((left, right) => left.stamp - right.stamp)[0];
+      mockCloud.tasks.set(oldest.record.id, { record: { ...oldest.record, notes: `row ${written += 1} of the new master`, updatedAt: new Date().toISOString() }, stamp: (mockCloud.stamp += 1) });
     };
 
     const result = await fullSync(phone);
 
-    expect(disturbed).toBeGreaterThanOrEqual(3);
-    expect(writesBy(phone)).toEqual([]);
-    expect(result.errors).toContain('Cloud tasks could not be checked before upload. Local tasks were preserved and will retry.');
-    expect(result.downloadStatus).toBe('partial');
-    expect(result.recovered.collectionErrors.scheduleItems).toBe(SUPABASE_COLLECTION_CHANGED_WHILE_READ);
-    expect(onDevice(phone, LATE)?.owner).toBe('Mike');
-    // The sentence reaches the owner as it is.
+    expect(written).toBeGreaterThanOrEqual(6);
+    expect(result.errors).toEqual([]);
+    expect(result.downloadStatus).toBe('complete');
+    expect(result.recovered.scheduleItems).toHaveLength(1200);
+    expect(cloudTask(LATE)?.owner).toBe('Mike');
+    expect(phone.state).toHaveLength(1200);
+    // Every row the iPad wrote is on the phone, as it wrote it.
+    expect(phone.state.filter(item => /of the new master$/.test(item.notes || ''))).toHaveLength(written);
+  });
+
+  it('what a list that could not be read says reaches the owner as it is', () => {
     expect(sanitizeUserFacingSyncMessage(SUPABASE_COLLECTION_CHANGED_WHILE_READ)).toBe(SUPABASE_COLLECTION_CHANGED_WHILE_READ);
     expect(sanitizeUserFacingSyncMessage(`${SUPABASE_COLLECTION_CHANGED_WHILE_READ} (2000 rows where 2001 were counted)`))
       .toBe(`${SUPABASE_COLLECTION_CHANGED_WHILE_READ} (2000 rows where 2001 were counted)`);
+    expect(sanitizeUserFacingSyncMessage(SUPABASE_COLLECTION_KEY_OUT_OF_ORDER)).toBe(SUPABASE_COLLECTION_KEY_OUT_OF_ORDER);
   });
 
   it('the literal the photo-path script pins is still in SyncService', () => {

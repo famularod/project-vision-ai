@@ -1,16 +1,17 @@
 /**
- * Independent review R02 (Build 229) and pass 2 (item 4), at the cloud's
- * edge: the real SupabaseService reads and writes, run against a stand-in for
- * the database that answers each request from its rows as they are at that
- * moment (filters, order, count, row window), so another device can write
- * between two pages of one read.
+ * Independent review R02 (Build 229) and pass 2 (items 1 and 4), at the
+ * cloud's edge: the real SupabaseService reads and writes, run against a
+ * stand-in for the database that answers each request from its rows as they
+ * are at that moment (filters, order, count, row window), so another device
+ * can write between two pages of one read, or between a read and a write.
  *
  * - this account's lists are read by key (each page asks for the rows after
  *   the last id of the page before): an edit elsewhere can neither repeat a
  *   row nor hide one, and nothing is read again; they come back newest first
  *   as before; the count asked for with the first page never fails the read;
  * - records are read by their ids a hundred to a request;
- * - a task can be written only if the cloud has no row for it.
+ * - a task or GPS area can be written only if the cloud has no row for it, or
+ *   only if the cloud's row is still the version that was read.
  * Synthetic data only.
  */
 import type { ScheduleItem } from '../../types';
@@ -130,12 +131,14 @@ describe('independent review R02 and pass 2: the cloud reads and writes behind t
   const originalAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   let service: typeof import('../../services/SupabaseService');
   let absence: typeof import('../../services/CloudListAbsenceCheck');
+  let versions: typeof import('../../services/CloudRowVersion');
 
   beforeAll(() => {
     process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
     process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = 'test-anon-key';
     service = require('../../services/SupabaseService');
     absence = require('../../services/CloudListAbsenceCheck');
+    versions = require('../../services/CloudRowVersion');
   });
   afterAll(() => {
     process.env.EXPO_PUBLIC_SUPABASE_URL = originalUrl;
@@ -352,5 +355,75 @@ describe('independent review R02 and pass 2: the cloud reads and writes behind t
     expect(result.ok).toBe(true);
     expect(mockRequests.filter(request => request.op === 'upsert').map(request => request.options)).toEqual([null]);
     expect(mockTables.schedule_items[0].item_data).toMatchObject({ notes: 'Edited' });
+  });
+
+  it('every way of reading a task gives its row\'s version, beside the record and never in it', async () => {
+    mockTables.schedule_items = [taskRow(7), taskRow(8)];
+    const stamp = (index: number) => mockTables.schedule_items.find(row => row.id === taskId(index))!.updated_at;
+
+    const listed = (await service.listScheduleItems()).data!.find(item => item.id === taskId(7))!;
+    const one = (await service.getScheduleItem(taskId(7))).data!;
+    const several = (await service.getScheduleItemsByIds([taskId(7), taskId(8)])).data!;
+
+    expect([listed, one, several[0]].map(versions.cloudRowVersionOf)).toEqual([stamp(7), stamp(7), stamp(7)]);
+    expect(versions.cloudRowVersionOf(several[1])).toBe(stamp(8));
+    // The record is the task as the cloud holds it, nothing added: it is compared and saved as that.
+    expect(listed).toEqual(task(7));
+    expect(JSON.stringify(one)).toBe(JSON.stringify(task(7)));
+    // A copy of a record is a new record: its version is not known, and it is written as before.
+    expect(versions.cloudRowVersionOf({ ...listed })).toBeNull();
+  });
+
+  it('a task written only if its row is still the one that was read: another device\'s write since is left exactly as it is', async () => {
+    mockTables.schedule_items = [taskRow(7)];
+    const read = (await service.getScheduleItem(taskId(7))).data!;
+    const asRead = versions.cloudRowVersionOf(read)!;
+    // The other device sets the owner after this device read the row.
+    anotherDeviceWrites(7, { owner: 'Mike' }, NOW);
+    const theirs = JSON.parse(JSON.stringify(mockTables.schedule_items[0]));
+    mockRequests.length = 0;
+
+    const refused = await service.upsertScheduleItem({ ...read, notes: 'Typed on this device' }, { ifUnchangedSince: asRead });
+
+    expect(refused).toMatchObject({ ok: false, code: versions.CLOUD_ROW_CHANGED_SINCE_READ, status: 409 });
+    expect(mockTables.schedule_items).toEqual([theirs]);
+    // One request, an update that names the version it expects: there is no moment between a check and the write.
+    expect(mockRequests.map(request => [request.op, request.filters])).toEqual([
+      ['update', ['owner_id eq owner-1', `id eq ${taskId(7)}`, `updated_at eq ${asRead}`]],
+    ]);
+
+    // Read again and weighed against the row as it is, the write lands, and says which version the row now is.
+    const again = (await service.getScheduleItem(taskId(7))).data!;
+    const written = await service.upsertScheduleItem({ ...again, notes: 'Typed on this device' }, { ifUnchangedSince: versions.cloudRowVersionOf(again) });
+    expect(written.ok).toBe(true);
+    expect(mockTables.schedule_items[0].item_data).toMatchObject({ owner: 'Mike', notes: 'Typed on this device' });
+    expect(versions.cloudRowVersionOf(written.data)).toBe(mockTables.schedule_items[0].updated_at);
+    // The version it was read as is spent.
+    expect((await service.upsertScheduleItem({ ...again, notes: 'again' }, { ifUnchangedSince: versions.cloudRowVersionOf(again) })).code)
+      .toBe(versions.CLOUD_ROW_CHANGED_SINCE_READ);
+  });
+
+  it('a GPS area is written under the same two conditions, and plainly without them', async () => {
+    const areaRow = (latitude: number, at: string) => ({ id: 'area-1', owner_id: 'owner-1', name: 'North Lot', area_data: { id: 'area-1', name: 'North Lot', latitude }, updated_at: at });
+    mockTables.project_areas = [areaRow(33.9, '2026-09-09T12:00:00+00:00')];
+    const read = (await service.getProjectAreasByIds(['area-1'])).data![0];
+    expect(versions.cloudRowVersionOf(read)).toBe('2026-09-09T12:00:00+00:00');
+    mockTables.project_areas[0] = areaRow(35.1, NOW); // another device captures a point
+
+    const mine = { ...read, latitude: 34 } as typeof read;
+    expect((await service.upsertProjectArea(mine, { ifUnchangedSince: versions.cloudRowVersionOf(read) })).code).toBe(versions.CLOUD_ROW_CHANGED_SINCE_READ);
+    expect((await service.upsertProjectArea(mine, { onlyIfAbsent: true })).code).toBe(versions.CLOUD_ROW_CHANGED_SINCE_READ);
+    expect(mockTables.project_areas[0].area_data.latitude).toBe(35.1);
+
+    const written = await service.upsertProjectArea(mine, { ifUnchangedSince: NOW });
+    expect(written.ok).toBe(true);
+    expect(mockTables.project_areas[0].area_data.latitude).toBe(34);
+    expect(versions.cloudRowVersionOf(written.data)).toBe(mockTables.project_areas[0].updated_at);
+
+    // A new area written only if there is none; and the plain write, as before: one upsert, no options.
+    expect((await service.upsertProjectArea({ ...mine, id: 'area-2' }, { onlyIfAbsent: true })).ok).toBe(true);
+    mockRequests.length = 0;
+    expect((await service.upsertProjectArea({ ...mine, latitude: 36 })).ok).toBe(true);
+    expect(mockRequests.map(request => [request.op, request.options])).toEqual([['upsert', null]]);
   });
 });
