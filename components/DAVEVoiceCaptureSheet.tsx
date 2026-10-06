@@ -257,6 +257,8 @@ export function DAVEVoiceCaptureSheet({
   const captureRef = useRef<(DAVEVoiceKeptCapture & { restored: boolean }) | null>(null);
   const recordingUriRef = useRef<string | null>(null);
   recordingUriRef.current = recordingUri;
+  // Review P5 N2: the keeps and deletes of this sheet's recording files that are still under way.
+  const filesSettlingRef = useRef<{ underWay: number; settled: Promise<unknown> }>({ underWay: 0, settled: Promise.resolve() });
 
   useEffect(() => () => {
     // A closed/unmounted sheet or different project must not start an upload retry,
@@ -407,6 +409,34 @@ export function DAVEVoiceCaptureSheet({
       : RECORDING_LIMIT_NOTICE);
   }
 
+  /**
+   * Review P5 N2 (6 Oct 2026): on an iPhone a sheet's recorder writes EVERY
+   * recording to the same file (expo-audio picks the file once, when the
+   * recorder is made; Android makes a new one each time). A recording kept
+   * or deleted a moment later was kept or deleted by that address: with the
+   * copy of one recording still under way and a new dictation begun on the
+   * sheet, the copy kept for the first held the second, the first was gone,
+   * and the delete that followed took the file from under the dictation in
+   * progress. Every keep and delete of a recording's file is counted here
+   * while it is under way, and Start Recording waits until none is.
+   */
+  function untilItsFileIsSettled<T>(work: Promise<T>): Promise<T> {
+    const files = filesSettlingRef.current;
+    const before = files.settled;
+    files.underWay += 1;
+    const done = () => {
+      files.underWay -= 1;
+      return before;
+    };
+    files.settled = work.then(done, done);
+    return work;
+  }
+
+  /** Deletes a recording's file. The next start waits for it (review P5 N2). */
+  function removeRecording(uri: string | null | undefined): Promise<void> {
+    return untilItsFileIsSettled(deleteRecordingFile(uri ?? null));
+  }
+
   /** The sheet lets go of the recorder's run under way; the first reason stands. */
   function letGoOfRecorderRun(reason: NonNullable<RecorderRun['letGo']>) {
     const run = recorderRunRef.current;
@@ -506,6 +536,15 @@ export function DAVEVoiceCaptureSheet({
     recordingStartingRef.current = true;
     const run: RecorderRun = { letGo: null };
     recorderRunRef.current = run;
+    // Review P5 N2: held back until every keep and delete of the recording before has finished. The
+    // recorder would write this recording into the same file (untilItsFileIsSettled).
+    await filesSettlingRef.current.settled;
+    // Let go of while it waited (his Cancel, or the sheet hidden): it does nothing, and whatever
+    // recording the sheet holds stays as it is.
+    if (run.letGo) {
+      recordingStartingRef.current = false;
+      return;
+    }
     recordingGenerationRef.current += 1;
     setError(null);
     setNotice(null);
@@ -731,22 +770,26 @@ export function DAVEVoiceCaptureSheet({
    * account and for no other project. A sheet that keeps nothing on the
    * device has nowhere to keep it, and it goes; so does one too short to use.
    */
-  async function keepStoppedRecordingForNextTime(
+  function keepStoppedRecordingForNextTime(
     uri: string | null | undefined,
     duration: number,
     under: KeepsUnder = keepsUnder,
-  ) {
-    if (uri && under.owner && under.slot && daveRecordingIsLongEnough(duration)) {
-      await keptVoiceRecordings().keepVoiceRecording(under.owner, under.slot, {
-        uri,
-        durationMs: duration,
-        projectId: under.projectId,
-        projectName: under.projectName,
-        walkArea: under.walkArea,
-        state: 'ready',
-      }).catch(() => undefined);
-    }
-    await removeRecording(uri ?? null);
+  ): Promise<void> {
+    // The copy, and the delete that follows it, are one piece of work on the recorder's file: no
+    // start on this sheet begins until both are done, whoever asked for them (review P5 N2).
+    return untilItsFileIsSettled((async () => {
+      if (uri && under.owner && under.slot && daveRecordingIsLongEnough(duration)) {
+        await keptVoiceRecordings().keepVoiceRecording(under.owner, under.slot, {
+          uri,
+          durationMs: duration,
+          projectId: under.projectId,
+          projectName: under.projectName,
+          walkArea: under.walkArea,
+          state: 'ready',
+        }).catch(() => undefined);
+      }
+      await deleteRecordingFile(uri ?? null);
+    })());
   }
 
   /**
@@ -1016,7 +1059,10 @@ export function DAVEVoiceCaptureSheet({
     recordingActiveRef.current = false;
     // The recorder's file, read before the stop: the recorder may have gone with its screen by the
     // time it answers, and the file he discarded stayed in the phone's cache (review P4 L1).
-    const file = recordingUri || recorderFile();
+    // With no recording in the sheet, the recorder's own file is deleted too (a recording still
+    // going, or a file a start had made ready). Not while an earlier recording at that address is
+    // still being kept: his Cancel of nothing took it from under the copy (review P5 N2).
+    const file = recordingUri || (filesSettlingRef.current.underWay > 0 ? null : recorderFile());
     if (recording) await recorder.stop().catch(() => undefined);
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(file);
@@ -1356,7 +1402,7 @@ function keptTimeLabel(value: string): string {
   return `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${time}`;
 }
 
-async function removeRecording(uri: string | null) {
+async function deleteRecordingFile(uri: string | null) {
   if (!uri) return;
   await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
 }

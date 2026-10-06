@@ -21,6 +21,11 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
  * when the release got there first (the recorder is found only when the stop
  * runs, and its file is then never finished). `phone.goneRecorderRefusesStop`
  * is the second.
+ *
+ * Review pass 5 (6 Oct 2026): the phone also says WHICH TAKE a file holds
+ * (`whatIsIn`). A stand-in recorder writes every recording to the same file,
+ * as expo-audio's does on an iPhone (the file is picked once, when the
+ * recorder is made); on Android each recording gets a new file.
  */
 
 export type StandInRecorderStatus = {
@@ -70,12 +75,16 @@ function makeRecorder(number: number) {
       mustBeThere();
       recorder.file = `file:///cache/Audio/recording-${number}.m4a`;
       phone.files.add(recorder.file);
+      // Made ready again, the file starts over: what it held is gone.
+      phone.contents.set(recorder.file, 'made ready, nothing recorded yet');
       // The sheet learns of it when it next asks; here at once, unless the test says later.
       if (!phone.reportsLate) recorder.set({ canRecord: true, url: recorder.file });
     },
     records: (): void => {
       mustBeThere();
       recorder.microphoneOn = true;
+      phone.takes += 1;
+      if (recorder.file) phone.contents.set(recorder.file, `take-${phone.takes}`);
       if (!phone.reportsLate) recorder.set({ isRecording: true, durationMillis: 0 });
     },
     stops: async (): Promise<void> => {
@@ -128,11 +137,16 @@ const audioModeSet = async (mode: { allowsRecording?: boolean }) => {
   if (!phone.allowsRecording && phone.audioModeOffStopsEveryRecorder) phone.recorders.forEach(recorder => recorder.stoppedByThePhone());
 };
 const deleteFile = async (uri: string) => {
-  [...phone.files].filter(file => file === uri || file.startsWith(uri.endsWith('/') ? uri : `${uri}/`)).forEach(file => phone.files.delete(file));
+  [...phone.files].filter(file => file === uri || file.startsWith(uri.endsWith('/') ? uri : `${uri}/`)).forEach(file => {
+    phone.files.delete(file);
+    phone.contents.delete(file);
+  });
 };
 const copyFile = async ({ from, to }: { from: string; to: string }) => {
   if (!phone.files.has(from)) throw new Error('missing');
   phone.files.add(to);
+  // The copy holds what the file held when it was copied.
+  phone.contents.set(to, phone.contents.get(from) ?? 'unknown');
 };
 const listKeys = async () => [...phone.storage.keys()];
 
@@ -148,6 +162,10 @@ export const phone = {
   recorders: [] as StandInRecorder[],
   /** The phone's files: the recorders' cache and the app's documents folder. */
   files: new Set<string>(),
+  /** Which take each file holds (review pass 5). */
+  contents: new Map<string, string>(),
+  /** How many recordings have been started on this phone. */
+  takes: 0,
   storage: new Map<string, string>(),
   requestRecordingPermissionsAsync: jest.fn(),
   setAudioModeAsync: jest.fn(),
@@ -157,6 +175,7 @@ export const phone = {
   microphoneAllowed,
   audioModeSet,
   deleteFile,
+  copyFile,
   /** The recorder of the voice sheet put up last. */
   get recorder(): StandInRecorder {
     const last = phone.recorders[phone.recorders.length - 1];
@@ -176,6 +195,8 @@ export const phone = {
     phone.goneRecorderRefusesStop = false;
     phone.recorders = [];
     phone.files.clear();
+    phone.contents.clear();
+    phone.takes = 0;
     phone.storage.clear();
     phone.requestRecordingPermissionsAsync.mockReset();
     phone.requestRecordingPermissionsAsync.mockImplementation(microphoneAllowed);
@@ -247,6 +268,8 @@ export const KEPT_RECORDINGS_FOLDER = 'file:///documents/kept-recordings/';
 /** The recordings kept on the phone, and their entries. */
 export const keptFiles = () => [...phone.files].filter(file => file.startsWith(KEPT_RECORDINGS_FOLDER));
 export const keptEntryKeys = () => [...phone.storage.keys()].filter(key => key.includes('/voice-recording/'));
+/** Which take the file at `uri` holds; 'no file' when there is none. */
+export const whatIsIn = (uri: string | null | undefined) => (uri && phone.files.has(uri) ? phone.contents.get(uri) ?? 'unknown' : 'no file');
 /** The recorders' own files still in the phone's cache. */
 export const cacheFiles = () => [...phone.files].filter(file => file.startsWith('file:///cache/'));
 
