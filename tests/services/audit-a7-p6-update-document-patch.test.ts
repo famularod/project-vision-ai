@@ -4781,6 +4781,99 @@ describe('a Keep Cloud that cannot finish leaves the phone\'s work as it was, wi
     expect(await getSyncConflicts()).toEqual([]);
     expect(await getOfflineQueue()).toEqual([]);
   });
+
+  /**
+   * Sync batch Y1 (item 4): Keep Cloud takes the phone's waiting work off the queue, uploads, reads the cloud again,
+   * and only then queues the copy it chose, with that work's late results in it. Between those two writes the work it
+   * took back is held in memory only. The app is killed there: this phone's storage is as it was at Keep Cloud's
+   * second read of the cloud, and nothing of the choice is still running.
+   */
+  async function keepCloudKilledBetweenItsTwoWrites(phone: Device) {
+    let reads = 0;
+    let disk: Map<string, string> | null = null;
+    cloudRead().mockImplementation(async (id: string) => {
+      reads += 1;
+      if (reads === 1) return throughSignal(id);
+      if (!disk) disk = new Map(mockStorage); // killed here
+      return noSignal;
+    });
+    expect(await chooseInSettingsExpectingFailure(phone, (await getSyncConflicts())[0], 'keep_cloud')).toEqual(['Conflict not resolved']);
+    expect(disk).not.toBeNull();
+    mockStorage.clear();
+    disk!.forEach((value, key) => mockStorage.set(key, value));
+    resetFieldUpdateSyncMemoryForTests();
+    signalReturns();
+    // At the kill: the phone's work was off the queue, and Keep Cloud's own copy not on it yet.
+    expect(await keepCloudCopyQueued()).toBe(false);
+    expect(await getSyncConflicts()).toHaveLength(1);
+  }
+  /** In conflict, a photo result finished and waiting to go up (its patch on the queue, the signal not back yet). */
+  async function inConflictWithAPhotoResultWaiting() {
+    const phone = await offlineEditInConflictWhileAnalysing();
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    expect((await queuedFor())?.payload.documentPatches).toEqual([expect.objectContaining({ photoId: analyzingPhoto.id })]);
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analyzing' });
+    return { phone, result };
+  }
+
+  it('killed between its two writes with a photo result waiting: the result is still on the card and in the conflict\'s own copy, and nothing goes over the open conflict', async () => {
+    const { phone, result } = await inConflictWithAPhotoResultWaiting();
+    await keepCloudKilledBetweenItsTwoWrites(phone);
+
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(firstPhotoAnalysis(((await getSyncConflicts())[0].localPayload as { updateData: Update }).updateData)).toEqual(result);
+    expect(await phoneSide()).toBe(RETRY_SYNC_OFFLINE_EDIT);
+    await automaticSyncsLeaveItForReview(phone);
+    // What the kill did cost: the result's own patch, which waited on the queue, is not sent again by itself. The
+    // cloud's copy shows "Analyzing" until he chooses (the next two tests), as after a kill a moment later (A4 pass 21 F1).
+    expect(await queuedFor()).toBeUndefined();
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analyzing' });
+  });
+
+  it('killed there, then Keep Cloud again: the cloud keeps the iPad\'s note and gets the phone\'s result', async () => {
+    const { phone, result } = await inConflictWithAPhotoResultWaiting();
+    await keepCloudKilledBetweenItsTwoWrites(phone);
+
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('killed there, then Keep Phone: David\'s edit goes up, with the result', async () => {
+    const { phone, result } = await inConflictWithAPhotoResultWaiting();
+    await keepCloudKilledBetweenItsTwoWrites(phone);
+
+    await keepPhone(phone);
+
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+  });
+
+  it('killed there with a newer edit held for review and a result in it: Keep Phone ends with that edit and the result', async () => {
+    const phone = await offlineEditInConflictWhileAnalysing();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: NEWER });
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    await keepCloudKilledBetweenItsTwoWrites(phone);
+
+    expect(phone.saved()).toMatchObject({ notes: NEWER });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    await keepPhone(phone);
+    expect(inCloud()).toMatchObject({ notes: NEWER, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: NEWER, status: 'sent' });
+  });
 });
 
 /**
