@@ -7155,8 +7155,14 @@ async function uploadProjectUpdateQueueItem(
   // not weighed. The copy the phone's late photo result went onto already held the iPad's note, and the phone's edit
   // of the area then went over that note with no card. It is weighed like any other: what its own patches changed is
   // its own change (fieldUpdateEditBaseWithOwnWrites), and it still goes up with them, as before (below).
+  // Review N2 L7 (Low, a gap in 79a5ae1): nor is what a choice of his wrote another device's change, to an edit begun
+  // before that choice. After Keep Phone, the newer edit it sends next came back at once as a second card, naming
+  // "another device" for the parts his choice had just written (fieldUpdateChoiceWrittenAfter).
   const weighedBase = judgedByStartingCopy
-    ? fieldUpdateEditBaseWithOwnWrites(payload.base as FieldUpdateEditBase, cloudUpdateData, { patchedFrom: ownPatchesSinceEdit?.ontoParts })
+    ? fieldUpdateEditBaseWithOwnWrites(payload.base as FieldUpdateEditBase, cloudUpdateData, {
+        patchedFrom: ownPatchesSinceEdit?.ontoParts,
+        chosen: await fieldUpdateChoiceWrittenAfter(payload.id, payload.base as FieldUpdateEditBase),
+      })
     : null;
   const againstCloud = weighedBase ? fieldUpdateEditAgainstCloud(weighedBase, payload.updateData, cloudUpdateData) : 'as-before';
   // Review N2 L6: the older check had been stopping these sends, so what the weighing decides must lose no photo
@@ -7232,6 +7238,8 @@ async function uploadProjectUpdateQueueItem(
       noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || [], cloudCopy.updateData);
     }
     else projectUpdatePatchesLanded.delete(payload.id);
+    // The copy a choice of his put in the cloud is his own write, to the edits he saved before it (review N2 L7).
+    if (!documentPatches && payload.overConflict && !payload.keepCloudChoice) await noteFieldUpdateChoiceWritten(payload.id, record.updateData);
     recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
@@ -7239,6 +7247,48 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/**
+ * Review N2 L7 (Low, a gap in 79a5ae1, owner answer Q28): the copy of a field
+ * update a choice of David's put in the cloud (Keep Phone's, or a Retry he
+ * confirmed over the conflict), as its parts and when: kept beside the copies
+ * he opened, on this device, for the signed-in account, through a relaunch.
+ * Keep Cloud's copy is the other device's work, and is not kept.
+ *
+ * Keep Phone sends the card's own copy and then the newer edit he saved while
+ * the card waited (newerEditQueuedAfter). That edit is weighed against the
+ * cloud's copy, now the one his choice wrote, by the copy it started from.
+ * When it had not started from the card's own copy (he had saved more than
+ * once and a late photo result came in between, so the last save started
+ * from the card showing his earlier unsent save; or a refresh had put the
+ * cloud's copy on the card), each part his choice wrote read as changed on
+ * another device, and a second card came up at once.
+ */
+const fieldUpdateChoiceKey = (updateId: string) => `${updateId}\nchoice`;
+
+async function noteFieldUpdateChoiceWritten(updateId: string, written: unknown): Promise<void> {
+  try {
+    const choice = fieldUpdateEditBaseOf(written, new Date().toISOString());
+    await mutateFieldUpdateEditBases(bases => { bases[fieldUpdateChoiceKey(updateId)] = choice; });
+  } catch {
+    // Not kept: a later edit is weighed as before.
+  }
+}
+
+/**
+ * The parts of the copy his choice put in the cloud, for an edit that began
+ * before it (its base is no later). An edit begun afterwards started from
+ * what the device showed then, and is weighed by that alone: a part another
+ * device has since put back to what his choice wrote is that device's change.
+ */
+async function fieldUpdateChoiceWrittenAfter(updateId: string, base: FieldUpdateEditBase): Promise<Readonly<Record<string, string>> | null> {
+  try {
+    const choice = await mutateFieldUpdateEditBases(bases => bases[fieldUpdateChoiceKey(updateId)]);
+    return isFieldUpdateEditBase(choice) && Date.parse(base.takenAt) <= Date.parse(choice.takenAt) ? choice.fields : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The record that puts a changed copy of the cloud's own copy of a field update in its place, stamped now (a patch on it). */
@@ -7270,13 +7320,24 @@ function projectUpdateRecordOnCloudCopy(
  *   of the area went over it with no card. The edit is weighed all the same,
  *   and only a part that copy held as the base has it, and the cloud holds
  *   differently now, is the patches' doing.
+ * - `chosen` (L7, a gap in 79a5ae1): the parts of the copy a choice of
+ *   David's put in the cloud after this edit began (Keep Phone's, a Retry he
+ *   confirmed). Keep Phone sends the card's copy and then the newer edit he
+ *   saved while the card waited; that edit had started from another copy
+ *   (the card showing an earlier unsent save, or the cloud's copy a refresh
+ *   put on it), so every part his choice had just written read as another
+ *   device's change, and a second card came up at once. A part the cloud
+ *   still holds as his choice wrote it is his own write.
  */
 function fieldUpdateEditBaseWithOwnWrites(
   base: FieldUpdateEditBase,
   cloud: unknown,
-  { patchedFrom }: { patchedFrom?: Readonly<Record<string, string>> | null },
+  { patchedFrom, chosen }: {
+    patchedFrom?: Readonly<Record<string, string>> | null;
+    chosen?: Readonly<Record<string, string>> | null;
+  },
 ): FieldUpdateEditBase {
-  if (!patchedFrom) return base;
+  if (!patchedFrom && !chosen) return base;
   const theirs = fieldUpdateMeaningParts(cloud);
   const own: Record<string, readonly string[]> = { ...(base.own ?? {}) };
   let added = false;
@@ -7284,8 +7345,9 @@ function fieldUpdateEditBaseWithOwnWrites(
     const mark = theirs[part] ?? '';
     const started = base.fields[part] ?? '';
     if (mark === started || (own[part] ?? []).includes(mark)) return;
-    const patched = (patchedFrom[part] ?? '') === started;
-    if (!patched) return;
+    const patched = Boolean(patchedFrom) && (patchedFrom![part] ?? '') === started;
+    const chose = Boolean(chosen) && (chosen![part] ?? '') === mark;
+    if (!patched && !chose) return;
     own[part] = [...(own[part] ?? []), mark];
     added = true;
   });
