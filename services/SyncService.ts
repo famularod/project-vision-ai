@@ -7098,9 +7098,18 @@ async function uploadProjectUpdateQueueItem(
   const ownPatchesSinceEdit = !patchedCloudCopy && remoteMetadata.ok && remoteMetadata.data?.updatedAt
     ? ownProjectUpdatePatchesSince(payload.id, remoteMetadata.data, item.changedAt)
     : null;
+  // Review N2 L6 (Low, an older rule, in Build 229): an edit that keeps the copy it started from is judged by owner
+  // answer Q28's weighing alone (below). The check here ran first, by the two times alone, and raised cards Q28 says
+  // should not exist: two copies that read the same in every part, a card when the other device had only added a
+  // late photo result (Keep Cloud there dropped David's edit), a card when the cloud already held all he had changed.
+  // It stays for an edit with no such copy (one queued by Build 229), where it is all there is, and for his choices.
+  const cloudUpdateData = remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data?.updateData : undefined;
+  const judgedByStartingCopy = !patchedCloudCopy && Boolean(cloudUpdateData) && isFieldUpdateEditBase(payload.base) &&
+    !payload.overConflict && !payload.keepCloudChoice;
   if (
     !patchedCloudCopy &&
     !ownPatchesSinceEdit &&
+    !judgedByStartingCopy &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
@@ -7146,12 +7155,20 @@ async function uploadProjectUpdateQueueItem(
   // not weighed. The copy the phone's late photo result went onto already held the iPad's note, and the phone's edit
   // of the area then went over that note with no card. It is weighed like any other: what its own patches changed is
   // its own change (fieldUpdateEditBaseWithOwnWrites), and it still goes up with them, as before (below).
-  const cloudUpdateData = remoteMetadata.ok && !remoteMetadata.stubbed ? remoteMetadata.data?.updateData : undefined;
-  const weighedBase = !patchedCloudCopy && cloudUpdateData && isFieldUpdateEditBase(payload.base) &&
-    !payload.overConflict && !payload.keepCloudChoice
-    ? fieldUpdateEditBaseWithOwnWrites(payload.base, cloudUpdateData, { patchedFrom: ownPatchesSinceEdit?.ontoParts })
+  const weighedBase = judgedByStartingCopy
+    ? fieldUpdateEditBaseWithOwnWrites(payload.base as FieldUpdateEditBase, cloudUpdateData, { patchedFrom: ownPatchesSinceEdit?.ontoParts })
     : null;
   const againstCloud = weighedBase ? fieldUpdateEditAgainstCloud(weighedBase, payload.updateData, cloudUpdateData) : 'as-before';
+  // Review N2 L6: the older check had been stopping these sends, so what the weighing decides must lose no photo
+  // result. A copy the cloud's newer copy settles still puts a photo result of its own that stands over the cloud's
+  // (a late result it took in while it waited) onto the cloud's copy, as that result's own patch would have: settled
+  // and never sent, the result was on no device.
+  const settledCopy = againstCloud === 'cloud' ? withPhoneAnalysisResults(cloudUpdateData, [payload.updateData]) : null;
+  const settledByCloud = async (): Promise<'uploaded'> => {
+    projectUpdateQueueItemsSettledByCloud.add(item.id);
+    await keepSettledFieldUpdateBase(payload.id, payload.base as FieldUpdateEditBase, payload.updateData);
+    return 'uploaded';
+  };
   if (againstCloud !== 'as-before') {
     if (againstCloud === 'conflict') {
       await recordConflict({
@@ -7167,19 +7184,27 @@ async function uploadProjectUpdateQueueItem(
       });
       return 'conflict';
     }
-    projectUpdateQueueItemsSettledByCloud.add(item.id);
-    await keepSettledFieldUpdateBase(payload.id, payload.base as FieldUpdateEditBase, payload.updateData);
+    if (settledCopy === cloudUpdateData) return settledByCloud();
+  }
+
+  // Review N2 L6: nothing of this copy is left to send when the cloud's copy is this copy with photo results that
+  // stand over its own: two copies that read the same, which the older check made a card of. Sent whole, it took the
+  // other device's late result off the cloud's copy. David's choices go as they are.
+  if (!patchedCloudCopy && !settledCopy && !ownPatchesSinceEdit && cloudUpdateData && !payload.overConflict && !payload.keepCloudChoice &&
+    daveProjectUpdateMatchesCloudReceipt(withPhoneAnalysisResults(payload.updateData, [cloudUpdateData]), cloudUpdateData)) {
+    await clearConflictsForLocalRecord('project_update', payload.id);
+    recordProjectUpdateUpload(payload.id);
     return 'uploaded';
   }
 
-  const record = cloudCopy && patchedCloudCopy ? {
-    projectId: cloudCopy.projectId || payload.projectId || '',
-    projectName: cloudCopy.projectName || payload.projectName || 'Unassigned Project',
-    areaName: cloudCopy.areaName ?? payload.selectedAreaName ?? '',
-    idempotencyKey: projectUpdateIdempotencyKey(cloudCopy.updateData, payload.id),
-    updateData: patchedCloudCopy as unknown,
-    updatedAt: new Date().toISOString(),
-  } : {
+  // Review N2 L6: an edit the older check used to stop goes up over a cloud copy stamped later than it is. It goes
+  // with that copy's photo results that stand over its own (the other device's late result, often all that copy had
+  // gained), and stamped as that copy is: the cloud's copy does not read older than it was to an edit still judged by
+  // the two times.
+  const newerCloudStamp = judgedByStartingCopy && !ownPatchesSinceEdit && remoteMetadata.data?.updatedAt &&
+    isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt) ? remoteMetadata.data.updatedAt : null;
+  const record = settledCopy ? projectUpdateRecordOnCloudCopy(remoteMetadata.data!, payload, settledCopy)
+    : cloudCopy && patchedCloudCopy ? projectUpdateRecordOnCloudCopy(cloudCopy, payload, patchedCloudCopy) : {
     projectId: payload.projectId || '',
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
@@ -7187,17 +7212,18 @@ async function uploadProjectUpdateQueueItem(
     updateData: ownPatchesSinceEdit
       ? applyFieldUpdateDocumentPatches(payload.updateData as object,
         fieldUpdatePatchesNotSuperseded(payload.updateData as object, ownPatchesSinceEdit.patches)) as unknown
-      : payload.updateData,
+      : newerCloudStamp ? withPhoneAnalysisResults(payload.updateData, [cloudUpdateData]) : payload.updateData,
     // The later of the two (whole-app audit A7 pass 13 L-1): Keep Phone's
     // copy and a confirmed Retry's are stamped now, after the patches, and
     // went up stamped back to the last patch's time; an iPad edit saved
     // offline in between then read newer, and went over the chosen copy.
     updatedAt: ownPatchesSinceEdit && isRemoteNewer(ownPatchesSinceEdit.at, item.changedAt)
-      ? ownPatchesSinceEdit.at : item.changedAt,
+      ? ownPatchesSinceEdit.at : newerCloudStamp ?? item.changedAt,
   };
   const result = await saveProjectUpdate({ id: payload.id, ...record });
 
   if (result.ok && !result.stubbed) {
+    if (settledCopy) return settledByCloud(); // only its own photo result went up, onto the cloud's copy
     // A retry after a conflict put the phone's copy in the cloud: that
     // conflict is settled, as when the cloud already matched (audit A4 pass 5).
     // Keep Cloud's copy leaves it to Keep Cloud (A7 pass 17 L-1).
@@ -7213,6 +7239,22 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+/** The record that puts a changed copy of the cloud's own copy of a field update in its place, stamped now (a patch on it). */
+function projectUpdateRecordOnCloudCopy(
+  cloud: { projectId?: string | null; projectName?: string | null; areaName?: string | null; updateData?: unknown },
+  payload: ProjectUpdateRecordPayload,
+  updateData: unknown,
+) {
+  return {
+    projectId: cloud.projectId || payload.projectId || '',
+    projectName: cloud.projectName || payload.projectName || 'Unassigned Project',
+    areaName: cloud.areaName ?? payload.selectedAreaName ?? '',
+    idempotencyKey: projectUpdateIdempotencyKey(cloud.updateData, payload.id),
+    updateData,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /**
