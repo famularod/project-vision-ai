@@ -645,6 +645,33 @@ export function scheduleItemAgainstItsTask(
 }
 
 /**
+ * Review P5 S-P5-4 (6 Oct 2026, Low, brief; caused by the one-rule commit):
+ * the cloud's row of a task as this device's own waiting edit of it will
+ * leave it. A master's new row is weighed against the row it replaces when
+ * it first goes up. This device's own edit of that row goes up before it,
+ * but its write can fail in that pass (weak signal), or land with its answer
+ * lost: the new row was then weighed against a row that did not hold this
+ * device's own word yet, took the blank, and the task showed no owner and no
+ * note on the web and the other device until the next upload.
+ *
+ * Only what the weighing reads (what he sets on a task), and only a field
+ * the cloud still has as the waiting edit's copy started: one another device
+ * has changed since is asked about when that edit goes up, and stays the
+ * cloud's here. The same row with no such edit.
+ */
+export function scheduleItemAsOwnWaitingEditLeavesIt(
+  remote: ScheduleItem,
+  edit: Readonly<{ itemData: ScheduleItem; changedFields?: readonly string[] | null; base?: unknown }> | null | undefined,
+): ScheduleItem {
+  const base = edit?.base;
+  if (!edit || !isEditBase(base)) return remote;
+  const fields = (Array.isArray(edit.changedFields) ? edit.changedFields : Object.keys(base.fields));
+  const mine = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
+    fieldValue(edit.itemData, field) !== fieldValue(base.fields, field) && fieldValue(remote, field) === fieldValue(base.fields, field));
+  return mine.length === 0 ? remote : { ...remote, ...Object.fromEntries(mine.map(field => [field, edit.itemData[field]])) } as ScheduleItem;
+}
+
+/**
  * Review P5-1 / S-P5-2 (6 Oct 2026, Low; from the first-upload weighing,
  * reached more often since the one-rule commit): whether the cloud's row is
  * the row this device's own first upload of it wrote. That upload may go up

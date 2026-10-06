@@ -69,6 +69,8 @@ const mockCloud = {
   offline: new Set<string>(),
   /** Writes that reach the cloud while their answer does not come back (weak signal): how many more. */
   lostAnswers: 0,
+  /** The next write of this task's row does not reach the cloud (weak signal), once. */
+  failNextWriteOf: null as string | null,
   /** The cloud's schedule documents (what the web desktop works the shown tasks out from). */
   documents: [] as unknown[],
   /**
@@ -162,6 +164,7 @@ jest.mock('../../services/SupabaseService', () => {
     upsertScheduleItem: async (item: { id: string }, options?: { onlyIfAbsent?: boolean; ifUnchangedSince?: string | null }) => {
       mockTick();
       if (!mockOnline()) return mockDown();
+      if (mockCloud.failNextWriteOf === item.id) { mockCloud.failNextWriteOf = null; return mockDown(); }
       if (mockCloud.versioned) {
         const meanwhile = mockCloud.beforeNextTaskWrite;
         mockCloud.beforeNextTaskWrite = null;
@@ -232,7 +235,7 @@ import { scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOfFields, sche
 import { scheduleItemChangeUsesDebouncedSync } from '../../services/ScheduleItemTextSyncLifecycle';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
-import { scheduleItemAgainstItsTask, scheduleItemIsOwnFirstWrite, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
+import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemIsOwnFirstWrite, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -881,6 +884,7 @@ function resetRig() {
   mockCloud.events.length = 0;
   mockCloud.offline.clear();
   mockCloud.lostAnswers = 0;
+  mockCloud.failNextWriteOf = null;
   mockCloud.versioned = false;
   mockCloud.versions.clear();
   mockCloud.beforeNextTaskWrite = null;
@@ -3299,6 +3303,70 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, percentComplete: 40 })).toBe(false);
       expect(scheduleItemIsOwnFirstWrite(sent, { ...sent, textFromTask: { ...sent.textFromTask!, owner: '' } })).toBe(false);
       expect(scheduleItemIsOwnFirstWrite(waiting, sent)).toBe(false);
+    });
+  });
+
+  describe('Review P5 S-P5-4: the old row\'s write does not go through in the pass where the master\'s new row first goes up', () => {
+    it.each([['fails once (weak signal)', 'fails'], ['reaches the cloud and its answer is lost', 'lost']] as const)('the old row\'s write %s: the new row goes up with his owner and note all the same', async (_what, how) => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(ipad, false);
+      at('2026-09-09T09:00:00.000Z');
+      await edit(ipad, 'MASTER F-1', { owner: 'Ana', notes: NOTE });
+      at(G.importedAt!);
+      await approve(ipad, G, [G_ROW, SURVEY]);
+      const newId = theRow(ipad).id;
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      shareDocuments(ipad);
+      // The old row's edit goes first (rows go up after the rows they answer to).
+      if (how === 'fails') mockCloud.failNextWriteOf = 'MASTER F-1'; else mockCloud.lostAnswers = 1;
+      await backgroundUpload(ipad);
+      // (It was: the new row weighed against a cloud row, or a listed copy of it, without this device's own waiting
+      // word; it took the blank, and the web and the phone showed no owner and no note until the iPad's next upload.)
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Ana', notes: NOTE });
+      expect(framingOf(webShown())[0]).toMatchObject({ id: newId, owner: 'Ana', notes: NOTE });
+      await allSynced(phone, ipad);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Ana'));
+      expect(cloudRow('MASTER F-1')).toMatchObject({ owner: 'Ana', notes: NOTE });
+      await noCards(phone, ipad);
+    });
+
+    it('a field another device changed on the old row meanwhile is not this device\'s to assume: it stays the cloud\'s on the new row, and the old row\'s edit asks', async () => {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      setOnline(ipad, false);
+      at('2026-09-09T09:00:00.000Z');
+      await edit(ipad, 'MASTER F-1', { owner: 'Ana', notes: NOTE });
+      await edit(phone, 'MASTER F-1', { owner: 'Bob' });
+      await backgroundUpload(phone);
+      at(G.importedAt!);
+      await approve(ipad, G, [G_ROW, SURVEY]);
+      const newId = theRow(ipad).id;
+      at('2026-09-12T08:00:00.000Z');
+      setOnline(ipad, true);
+      shareDocuments(ipad);
+      mockCloud.failNextWriteOf = 'MASTER F-1';
+      await backgroundUpload(ipad);
+      expect(cloudRow(newId)).toMatchObject({ owner: 'Bob', notes: NOTE });
+      await allSynced(phone, ipad);
+      // (The card is raised on the row he typed on; it is on the task's row when Review Conflicts opens.)
+      on(ipad);
+      await ipad.m.sync.refreshScheduleItemConflictCloudCopies();
+      expect([await cards(phone), await cards(ipad)]).toEqual([[], [{ row: newId, fields: ['owner'], here: ['Ana'], cloud: ['Bob'] }]]);
+      expect(await everywhere(phone, ipad)).toEqual(ON_G(0, NOTE, 'Bob'));
+    });
+
+    it('the rule on the records alone', () => {
+      const cloud = { ...theRowAsApproved(), id: 'MASTER F-1', owner: '', notes: 'Typed elsewhere', textFromTask: undefined } as ScheduleItem;
+      const waiting = { itemData: { ...cloud, owner: 'Ana', notes: NOTE, percentComplete: 40 } as ScheduleItem, changedFields: ['owner', 'notes', 'percentComplete', 'updatedAt'], base: { updatedAt: null, fields: { owner: '', notes: '', percentComplete: 0 } } };
+      // The owner the cloud still has as his edit started: his. The note another device has typed since: the cloud's. His percent is not weighed here.
+      expect(scheduleItemAsOwnWaitingEditLeavesIt(cloud, waiting)).toEqual({ ...cloud, owner: 'Ana' });
+      expect(scheduleItemAsOwnWaitingEditLeavesIt(cloud, undefined)).toBe(cloud);
+      expect(scheduleItemAsOwnWaitingEditLeavesIt(cloud, { ...waiting, base: undefined })).toBe(cloud);
+      // A whole copy waiting (a lookahead approved there): the fields it changed from its copy.
+      expect(scheduleItemAsOwnWaitingEditLeavesIt({ ...cloud, notes: '' }, { itemData: waiting.itemData, base: { updatedAt: null, fields: { owner: '', notes: '', contractor: '' } } }))
+        .toEqual({ ...cloud, owner: 'Ana', notes: NOTE });
     });
   });
 

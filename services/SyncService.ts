@@ -72,7 +72,7 @@ import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
   scheduleItemLaterPercentInCloud,
-  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemConflictCopyOfBoth,
+  scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemIsOwnFirstWrite, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemEditBaseOverTextBroughtForward,
   scheduleItemWholeCopyBase,
@@ -3617,6 +3617,10 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     settledQueueItemIds: resolvedIds,
     queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
       typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
+    // This device's own waiting edits of tasks in this pass, by task (review P5 S-P5-4): a master's new row is weighed
+    // against the row it replaces as that edit will leave it, whether or not its write has gone through yet.
+    queuedScheduleItemEdits: new Map(uploadBatch.flatMap(item => (item.entity === 'schedule_item' && item.operation !== 'delete' &&
+      isEditBase((item.payload as Partial<ScheduleItemRecordPayload>).base) ? [[(item.payload as ScheduleItemRecordPayload).id, item.payload as ScheduleItemRecordPayload] as const] : []))),
   };
   // Still queued, with no error: no retry is owed until David chooses.
   heldForReview.forEach(item => { itemOutcomes[item.id] = 'blocked'; });
@@ -6568,6 +6572,7 @@ type QueueUploadContext = {
   scheduleItemsById?: Map<string, ScheduleItem>;
   /** The ids of the tasks this pass has queued (independent review R02): the ones the list did not hold are read together. */
   queuedScheduleItemIds?: readonly string[];
+  queuedScheduleItemEdits?: ReadonlyMap<string, ScheduleItemRecordPayload>;
   /** Those tasks' rows as read by id: the row, or null when the cloud has none. */
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
@@ -7013,8 +7018,10 @@ async function uploadQueueItem(
     // between this device's own two copies, with nothing to choose, in the place of that question.)
     const firstUploadAgain = Boolean(remote) && !queuedFields && !payload.forceLocal && !isEditBase(payload.base);
     const takenFromId = newToCloud || firstUploadAgain ? payload.itemData.textFromTask?.taskId : undefined;
-    const takenFrom = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
-    if (typeof takenFrom === 'string') return takenFrom;
+    const takenFromRow = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
+    if (typeof takenFromRow === 'string') return takenFromRow;
+    // (As this device's own waiting edit of that row will leave it: review P5 S-P5-4.)
+    const takenFrom = takenFromRow && scheduleItemAsOwnWaitingEditLeavesIt(takenFromRow, context.queuedScheduleItemEdits?.get(takenFromId!));
     const weighedAsFirst = newToCloud || takenFromId ? scheduleItemAgainstItsTask(payload.itemData, takenFrom, 'ask') : null;
     const ownFirstWrite = Boolean(remote && weighedAsFirst && takenFromId && scheduleItemIsOwnFirstWrite(weighedAsFirst.row, remote));
     const firstSent = newToCloud || ownFirstWrite ? weighedAsFirst : null;
