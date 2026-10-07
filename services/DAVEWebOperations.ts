@@ -43,6 +43,8 @@ import {
 } from './ScheduleLookahead';
 import { scheduleDocumentsAfterApproval } from './ScheduleDocumentLabels';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
+import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
@@ -720,6 +722,52 @@ export function daveWebScheduleDocumentDeleteNote({
     snapshot.referenceDocuments,
     count === 0 ? DAVE_WEB_DELETE_WITH_CHANGES_LABEL : `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
   );
+}
+
+/**
+ * Open item, web batch WS1 item 8 (6 Oct 2026): deleting a task on the web's
+ * Tasks page recorded the task (and the hidden rows of its revision chain)
+ * as deleted and wrote nothing else, so every task that listed it as a
+ * predecessor went on naming a row that no longer exists: "Missing" on the
+ * web's Schedule, "Map predecessor" on the phone, and a finish-to-start
+ * calculation that is unsafe to apply. The phone drops those links when it
+ * deletes a task (dropDeletedPredecessors); "Delete Document + N Tasks"
+ * already moves or drops them (planDAVEWebScheduleDocumentDelete).
+ *
+ * The rows a task's delete takes, by the phone's own helper, as the web's
+ * delete itself works them out.
+ */
+export function daveWebTaskDeleteRowIds(
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>,
+  task: ScheduleItem,
+): string[] {
+  return scheduleItemIdsDeletedWithTask(snapshot.knownScheduleItems ?? snapshot.scheduleItems, task, snapshot.referenceDocuments);
+}
+
+/**
+ * The saved tasks that still list a deleted row as a predecessor, each
+ * without those links (the phone's helper, dependencyChangesForDeletedTask,
+ * over every saved row, hidden ones included), to be saved while its cloud
+ * revision is the one read. The links are stamped as changed now, as a link
+ * he unticks is, so they stay removed when the task moves between rows.
+ */
+export function planDAVEWebLinksRemovedWithTasks({
+  snapshot,
+  deletedIds,
+  updatedAt = new Date().toISOString(),
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems'>;
+  deletedIds: readonly string[];
+  updatedAt?: string;
+}): readonly DAVEWebScheduleItem[] {
+  const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
+  const byId = new Map(saved.map(item => [item.id, item] as const));
+  return Object.freeze(dependencyChangesForDeletedTask(saved, deletedIds).flatMap(change => {
+    const before = byId.get(change.id);
+    return before
+      ? [{ ...scheduleItemForCloud(before), dependencies: change.dependencies, dependenciesUpdatedAt: updatedAt, updatedAt, cloudUpdatedAt: before.cloudUpdatedAt ?? null } as DAVEWebScheduleItem]
+      : [];
+  }));
 }
 
 function canonicalSha256(value: string): string | null {

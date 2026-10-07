@@ -39,7 +39,7 @@ import {
   DAVEWebTaskMutationError,
   type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
-import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
+import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
   daveWebDocumentInEffect,
@@ -103,6 +103,8 @@ import {
   daveWebReportSourceIsCurrent,
   daveWebReportSourceNotCounted,
   DAVE_WEB_DELETE_WITH_CHANGES_LABEL,
+  daveWebTaskDeleteRowIds,
+  planDAVEWebLinksRemovedWithTasks,
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
@@ -1394,10 +1396,19 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
+      // The rows this delete takes, worked out before it, as the delete itself works them out (WS1 item 8).
+      const deletedIds = auth.snapshot ? daveWebTaskDeleteRowIds(auth.snapshot, deleteCandidate) : [deleteCandidate.id];
       await auth.deleteTask(deleteCandidate);
+      // The tasks that listed it as a predecessor drop that link, as on the phone: they named a row that is gone.
+      const stillLinked = await removeLinksToDeletedRows(deletedIds);
       if (selectedTaskId === deleteCandidate.id) setSelectedTaskId(null);
       setDeleteCandidate(null);
-      setNotice({ tone: 'good', text: 'Task deleted and protected from returning on another device.' });
+      setNotice({
+        tone: 'good',
+        text: stillLinked === 0
+          ? 'Task deleted and protected from returning on another device.'
+          : `Task deleted and protected from returning on another device. ${stillLinked} other task${stillLinked === 1 ? ' still lists' : 's still list'} it as a predecessor, because ${stillLinked === 1 ? 'it was' : 'they were'} being changed on another device at that moment. Open ${stillLinked === 1 ? 'that task' : 'those tasks'} in Schedule and untick the deleted task.`,
+      });
     } catch (error) {
       if (error instanceof DAVEWebTaskMutationError) {
         await auth.refreshSnapshot().catch(() => undefined);
@@ -1406,6 +1417,30 @@ function TaskEditingWorkspace({
     } finally {
       setPending(false);
     }
+  };
+
+  /**
+   * WS1 item 8: after a task's delete, the links other tasks had to its rows are removed. Each task is saved only
+   * while nobody else changed it; when one was changed elsewhere just then, the cloud is read once more and the rest
+   * tried again. Returns how many tasks still list a deleted row (0 almost always).
+   */
+  const removeLinksToDeletedRows = async (deletedIds: readonly string[]): Promise<number> => {
+    let remaining = 0;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let latest: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems'> | null = auth.snapshot;
+      if (attempt > 0) latest = await loadDAVEWebReadOnlySnapshot().catch(() => null);
+      if (!latest) return remaining;
+      const removals = planDAVEWebLinksRemovedWithTasks({ snapshot: latest, deletedIds });
+      remaining = removals.length;
+      if (remaining === 0) return 0;
+      try {
+        await auth.updateTasks(removals);
+        return 0;
+      } catch {
+        // Another device changed one of those tasks: read the cloud and try once more.
+      }
+    }
+    return remaining;
   };
 
   const addPhotoToTask = async (task: DAVEWebScheduleItem, file: File | null) => {

@@ -157,6 +157,12 @@ export function DesktopSchedulePage({
     () => (editingTask ? scheduleEditorStateFor(editingTask, linkTarget).predecessorItemIds : []),
     [editingTask, linkTarget],
   );
+  // A predecessor the item still names that is no task shown now: its task was deleted (a delete on the web used to
+  // leave the link behind), or its schedule is not the current one. Listed so that he can untick it (WS1 item 8).
+  const editorMissingPredecessorIds = useMemo(
+    () => editorOpenedPredecessorIds.filter(id => !tasks.some(task => task.id === id)),
+    [editorOpenedPredecessorIds, tasks],
+  );
   const editorScenario = useMemo(() => {
     if (!editor || !editingTask || editor.kind === 'phase') return null;
     return buildVitruviusScheduleChangeScenario({
@@ -742,6 +748,7 @@ export function DesktopSchedulePage({
           projectTasks={editorProjectTasks}
           linksElsewhere={editorLinksElsewhere}
           openedPredecessorIds={editorOpenedPredecessorIds}
+          missingPredecessorIds={editorMissingPredecessorIds}
           scenario={editorScenario}
           pending={pending}
           awaitingConflictChoice={Boolean(conflict)}
@@ -1541,6 +1548,7 @@ function ScheduleEditor({
   projectTasks,
   linksElsewhere = [],
   openedPredecessorIds = [],
+  missingPredecessorIds = [],
   scenario,
   pending,
   awaitingConflictChoice = false,
@@ -1556,6 +1564,8 @@ function ScheduleEditor({
   linksElsewhere?: readonly DAVEWebScheduleItem[];
   /** The predecessors the item had when the editor opened, as the rows shown (WS1 item 7). */
   openedPredecessorIds?: readonly string[];
+  /** Predecessors the item still names that are no task shown now (WS1 item 8). */
+  missingPredecessorIds?: readonly string[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
   /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
@@ -1710,9 +1720,37 @@ function ScheduleEditor({
               {`${circlePredecessors.map(item => `“${item.taskName}”`).join(' and ')} ${circlePredecessors.length === 1 ? 'is' : 'are'} set to finish before this item and also to start after it. That is a circle, and the schedule cannot place it. Untick ${circlePredecessors.length === 1 ? 'it' : 'one'} below, then save.`}
             </Text>
           ) : null}
+          {missingPredecessorIds.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`This item is set to start after ${missingPredecessorIds.length === 1 ? 'a task that is' : `${missingPredecessorIds.length} tasks that are`} no longer in the schedule (deleted, or on a schedule that is not the current one). The schedule cannot place it until ${missingPredecessorIds.length === 1 ? 'that link is' : 'those links are'} removed. Untick ${missingPredecessorIds.length === 1 ? 'it' : 'them'} below, then save.`}
+            </Text>
+          ) : null}
           <View style={styles.choiceWrap}>
+            {missingPredecessorIds.map(id => {
+              const selected = state.predecessorItemIds.includes(id);
+              return (
+                <Pressable
+                  key={`missing-${id}`}
+                  style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+                  onPress={() => update(
+                    'predecessorItemIds',
+                    selected ? state.predecessorItemIds.filter(other => other !== id) : [...state.predecessorItemIds, id],
+                  )}
+                  accessibilityRole="checkbox"
+                  accessibilityLabel="A task no longer in the schedule"
+                  accessibilityState={{ checked: selected }}
+                >
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={17}
+                    color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
+                  />
+                  <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>A task no longer in the schedule</Text>
+                </Pressable>
+              );
+            })}
             {predecessorOptions.length === 0 ? (
-              <Text style={styles.helpText}>No eligible predecessor tasks yet.</Text>
+              missingPredecessorIds.length === 0 ? <Text style={styles.helpText}>No eligible predecessor tasks yet.</Text> : null
             ) : predecessorOptions.map(item => {
               const selected = state.predecessorItemIds.includes(item.id);
               return (
