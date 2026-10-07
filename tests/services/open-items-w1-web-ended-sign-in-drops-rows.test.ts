@@ -98,7 +98,7 @@ async function tabWithEverythingLoaded(storage: TabStorage = (() => { const made
   tabStorage = storage;
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: tabStorage });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: profile });
-  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile });
+  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile, tab: () => tabStorage });
   client = createTabClient(supabaseSecureAuthStorage, { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
   gateway = createDAVEWebSupabaseGateway(client, guard);
   await client.auth.initialize();
@@ -110,7 +110,7 @@ async function tabWithEverythingLoaded(storage: TabStorage = (() => { const made
 
 /** Another tab of this browser over its own storage. */
 async function openAnotherTab(storage: TabStorage) {
-  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile });
+  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile, tab: () => storage });
   const tab = createTabClient(tabAuthStorage(storage), { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
   others.push(tab);
   await tab.auth.initialize();

@@ -1,10 +1,12 @@
 /**
  * @jest-environment node
  */
+import { createHmac } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { forgetDAVEWebOwnReportSends, forgetDAVEWebReportTabMemory } from '../../services/DAVEWebReportSend';
 import {
+  DAVE_WEB_SIGN_IN_TAB_KEY,
   DAVE_WEB_SIGN_IN_TURNS_KEY,
   createDAVEWebSignInRefreshGuard,
   type DAVEWebSignInRefreshGuard,
@@ -118,6 +120,8 @@ function openTab(storage: TabStorage): Tab {
   const guard = createDAVEWebSignInRefreshGuard({
     fetch: cloud.fetch as never,
     shared: () => (profileStorageWorks ? profile : null),
+    // The tab's own storage, where the key of its fingerprints is kept (review pass 1, web L2).
+    tab: () => storage,
   });
   const heard: string[] = [];
   const client = createTabClient(tabAuthStorage(storage), { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
@@ -138,6 +142,8 @@ function openTheAppsTab(storage: TabStorage, { listening = true }: { listening?:
   const guard = createDAVEWebSignInRefreshGuard({
     fetch: cloud.fetch as never,
     shared: () => (profileStorageWorks ? profile : null),
+    // The tab's own storage, where the key of its fingerprints is kept (review pass 1, web L2).
+    tab: () => storage,
   });
   const heard: string[] = [];
   const client = createTabClient(supabaseSecureAuthStorage, { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
@@ -183,6 +189,11 @@ const accessTokenOf = (storage: TabStorage) =>
   (JSON.parse(String(storage.getItem(`dave.web.auth.${TAB_STORAGE_KEY}`) ?? 'null')) as { access_token?: string } | null)?.access_token ?? null;
 const outcomes = () => cloud.refreshes.map(refresh => refresh.outcome);
 const note = () => JSON.parse(String(profile.getItem(DAVE_WEB_SIGN_IN_TURNS_KEY) ?? '{}')) as Record<string, { tokens: string[] }>;
+/** The name a tab's sign-in has in the note: made with the tab's own key, never the session id itself (review pass 1, web L2). */
+const nameInNote = (storage: TabStorage) => {
+  const key = (JSON.parse(String(storage.getItem(DAVE_WEB_SIGN_IN_TAB_KEY))) as { key: string }).key;
+  return createHmac('sha256', Buffer.from(key, 'base64url')).update(`sign-in:${tabSignIn(storage)?.sessionId}`).digest('hex').slice(0, 16);
+};
 
 /** He is signed in, in a tab he works in, and has just duplicated it. */
 async function workingTabAndItsCopy() {
@@ -365,10 +376,12 @@ describe('what the note in the shared storage is', () => {
     expect(written).not.toContain(String(accessTokenOf(working.storage)));
     expect(written).not.toContain('owner-1');
     expect(written).not.toContain(TAB_ACCOUNTS['owner-1'].email);
-    const [sessionId] = Object.keys(note());
-    expect(sessionId).toBe(tabSignIn(working.storage)?.sessionId);
-    expect(note()[sessionId].tokens).toHaveLength(3);
-    note()[sessionId].tokens.forEach(token => expect(token).toMatch(/^[0-9a-f]{16}$/));
+    // Review pass 1, web L2: the sign-in is named by a keyed fingerprint too, not by its session id.
+    expect(written).not.toContain(String(tabSignIn(working.storage)?.sessionId));
+    const [name] = Object.keys(note());
+    expect(name).toBe(nameInNote(working.storage));
+    expect(note()[name].tokens).toHaveLength(3);
+    note()[name].tokens.forEach(token => expect(token).toMatch(/^[0-9a-f]{16}$/));
     // And it is not among the account's report periods.
     expect(periodKeys()).toEqual([PERIOD_KEY]);
   });
@@ -380,10 +393,10 @@ describe('what the note in the shared storage is', () => {
       await tab.client.auth.signInWithPassword({ email: TAB_ACCOUNTS['owner-1'].email, password: TAB_TEST_PASSWORD });
     }
     expect(Object.keys(note())).toHaveLength(8);
-    expect(Object.keys(note())).toContain(tabSignIn(storage)?.sessionId);
+    expect(Object.keys(note())).toContain(nameInNote(storage));
 
     for (let hour = 0; hour < 205; hour += 1) await tab.client.auth.refreshSession();
-    expect(note()[String(tabSignIn(storage)?.sessionId)].tokens).toHaveLength(200);
+    expect(note()[nameInNote(storage)].tokens).toHaveLength(200);
     expect(outcomes()).not.toContain('ended-the-sign-in');
   });
 });
@@ -412,7 +425,7 @@ describe('owner answer Q26 stands: another account’s tab is another sign-in', 
     // Each tab still holds its own account's sign-in, and the note keeps them apart by session.
     expect(tabSignIn(ownerStorage)?.userId).toBe('owner-1');
     expect(tabSignIn(visitorStorage)?.userId).toBe('visitor-1');
-    expect(Object.keys(note()).sort()).toEqual([tabSignIn(ownerStorage)?.sessionId, tabSignIn(visitorStorage)?.sessionId].sort());
+    expect(Object.keys(note()).sort()).toEqual([nameInNote(ownerStorage), nameInNote(visitorStorage)].sort());
     expect(gateway.storedSignInUserId()).toBe('owner-1');
     expect(await gateway.authorizedOwnerId()).toBe('owner-1');
     expect(periodKeys()).toEqual([PERIOD_KEY]);

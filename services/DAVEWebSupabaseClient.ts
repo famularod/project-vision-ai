@@ -25,6 +25,7 @@ import {
   accessTokenIsForBrowserTabSignIn,
   browserTabSignInUserId,
   browserTabStoredSignIn,
+  type BrowserTabStoredSignIn,
   forgetBrowserTabSignIn,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
@@ -227,6 +228,14 @@ const browserSignInGuard = SUPABASE_URL && SUPABASE_ANON_KEY
           return null;
         }
       },
+      // The key the note's fingerprints are made with stays in this tab's own storage, with its sign-in (review pass 1, web L2).
+      tab: () => {
+        try {
+          return typeof window === 'undefined' ? null : window.sessionStorage;
+        } catch {
+          return null;
+        }
+      },
     })
   : null;
 
@@ -277,7 +286,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
@@ -378,14 +387,17 @@ export function createDAVEWebSupabaseGateway(
    * was reloaded. Nothing showed them. They are dropped with the sign-in,
    * as the two sign-outs made here already drop them.
    */
-  let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
+  let tabSignInSeen: BrowserTabStoredSignIn | null = client ? browserTabStoredSignIn() : null;
   /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
   function lookAtTabSignIn(mayHaveEnded: boolean) {
-    const held = tabSignInSeenFor;
-    tabSignInSeenFor = browserTabSignInUserId();
-    if (!mayHaveEnded || !held || tabSignInSeenFor) return;
+    const held = tabSignInSeen;
+    tabSignInSeen = browserTabStoredSignIn();
+    if (!mayHaveEnded || !held || tabSignInSeen) return;
     forgetSignedInReads();
-    if (!signInGuard?.gaveWay()) forgetDAVEWebReportPeriods(held);
+    if (signInGuard?.gaveWay()) return;
+    forgetDAVEWebReportPeriods(held.userId);
+    // The note the Duplicate Tab guard keeps for that sign-in leaves this browser with it (review pass 1, web L2).
+    void signInGuard?.signInOver?.(held.sessionId);
   }
 
   /**
@@ -636,7 +648,7 @@ export function createDAVEWebSupabaseGateway(
     /** This computer only unless 'global' is asked for (owner answer Q21). */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
-      const userId = browserTabSignInUserId();
+      const ending = browserTabStoredSignIn();
       const { error } = await client.auth.signOut({ scope });
       if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
         throw new DAVEWebSignOutNeedsConnectionError();
@@ -644,7 +656,9 @@ export function createDAVEWebSupabaseGateway(
       if (error) throw new Error('The desktop session could not be closed.');
       forgetSignedInReads();
       // The account's report periods leave this browser with its sign-in (review N1).
-      if (userId) forgetDAVEWebReportPeriods(userId);
+      if (ending) forgetDAVEWebReportPeriods(ending.userId);
+      // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
+      if (ending) await signInGuard?.signInOver?.(ending.sessionId);
     },
 
     /**
@@ -716,6 +730,8 @@ export function createDAVEWebSupabaseGateway(
       forgetSignedInReads();
       // This tab's own copies of that account's report periods go too (review N1).
       forgetDAVEWebReportPeriods(userId);
+      // And the note the Duplicate Tab guard keeps for that sign-in (review pass 1, web L2).
+      await signInGuard?.signInOver?.(ending.sessionId);
       return 'ended';
     },
 

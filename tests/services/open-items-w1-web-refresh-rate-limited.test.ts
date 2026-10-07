@@ -145,7 +145,7 @@ async function openTab({ asLeft = false, listening = true }: { asLeft?: boolean;
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: tabStorage });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: profile });
   storeTabSignIn(tabStorage, 'owner-1', { expired: asLeft });
-  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile });
+  const guard = createDAVEWebSignInRefreshGuard({ fetch: cloud.fetch as never, shared: () => profile, tab: () => tabStorage });
   client = createTabClient(supabaseSecureAuthStorage, { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
   gateway = createDAVEWebSupabaseGateway(client, guard);
   heard = [];
