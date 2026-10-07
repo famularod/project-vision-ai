@@ -836,6 +836,28 @@ describe('independent review pass 4 (2): Keep Phone decides only what the card a
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
+  it('an edit on the card marked as never sent: the mark goes with it to the queue, and none is left on the card for an edit that is no longer there (sync batch Y4, item 2)', async () => {
+    const { mine, conflict, shown } = await cardAboutTheOwner();
+    await aNoteOfHisWaits(mine);
+    await anUnfinishedKeepCloudLeftItOnTheCard(conflict.id);
+    // As a Keep Cloud that took the note off the queue while the card stayed open leaves it: marked.
+    const conflictsKey = [...mockStorage.keys()].find(name => JSON.stringify(mockStorage.get(name)).includes(conflict.id))!;
+    mockStorage.set(conflictsKey, JSON.stringify((JSON.parse(mockStorage.get(conflictsKey)!) as Array<{ id: string; localPayload: { withdrawnEdits: unknown[] } }>)
+      .map(item => (item.id === conflict.id
+        ? { ...item, localPayload: { ...item.localPayload, withdrawnEditsNeverSent: item.localPayload.withdrawnEdits.map(edit => JSON.stringify(edit)) } }
+        : item))));
+    expect((await getSyncConflicts())[0].localPayload).toHaveProperty('withdrawnEditsNeverSent');
+    mockUpsertScheduleItem.mockImplementation(async () => mockUnreadable());
+
+    await keepPhoneOn(conflict.id, shown).catch(() => undefined);
+
+    // A mark left behind would be read, later, for an edit of the same text that had been sent.
+    const payload = (await getSyncConflicts())[0].localPayload;
+    expect(payload).not.toHaveProperty('withdrawnEdits');
+    expect(payload).not.toHaveProperty('withdrawnEditsNeverSent');
+    expect((await getOfflineQueue()).map(item => (item.payload as { changedFields?: string[] }).changedFields)).toEqual([['notes', 'updatedAt']]);
+  });
+
   it('the waiting edit also puts the cloud\'s own value in the field the card asks about: the card closes by itself, and he is told so', async () => {
     const { mine, conflict, shown } = await cardAboutTheOwner();
     await queueScheduleItemRecord({ ...mine, owner: 'Bob', notes: 'Crew short (typed on this phone).', updatedAt: '2026-09-30T12:00:00.000Z' }, false, ['owner', 'notes', 'updatedAt'], mine);

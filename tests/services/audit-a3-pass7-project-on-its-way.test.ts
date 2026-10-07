@@ -371,5 +371,8 @@ describe('offline, the save still says "still retrying"', () => {
     const app = compileApp({ projects: ['Lot 9', 'Lot 5'], closedProjects: [] });
     await app.addTask('Lot 9');
     expect(app.alert).toHaveBeenCalledWith('Task saved on this device', STILL_RETRYING);
+    // Refused for want of signal, not as "project not open": nothing more is asked of the cloud (sync batch Y4, item 3).
+    expect(mockClosedListReads).toBe(0);
+    await expect(projectQueue()).resolves.toEqual([['create', 0]]);
   });
 });
