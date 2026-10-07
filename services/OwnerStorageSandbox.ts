@@ -228,6 +228,33 @@ export function createOwnerStorageSandbox({
   });
 }
 
+/**
+ * Review pass 1, sync G5 (owner answer Q45, 6 Oct 2026). Whether this phone's account boundary has any record of an
+ * account other than `ownerId`, or of account data that was set aside while nobody was signed in. Reads only.
+ *
+ * Asked once per account by the deletion history, about the records an earlier build left on the phone: those
+ * carry nothing that says whose they are, and that build could save one account's records into another's list
+ * when the account changed in the middle of a sync. With one account only on the phone nothing can have been
+ * mixed. A boundary record that cannot be read counts as "yes".
+ */
+export async function anotherAccountHasUsedThisPhone(
+  storage: Pick<OwnerScopedStorage, 'getItem'> & Readonly<{ getAllKeys?: () => Promise<readonly string[]> }>,
+  ownerId: string,
+): Promise<boolean> {
+  try {
+    const metadata = parseMetadata(await storage.getItem(OWNER_STORAGE_SANDBOX_METADATA_KEY), '');
+    if ([metadata.activeOwnerId, metadata.legacyAssignedOwnerId, metadata.lastOwnerId]
+      .some(known => known !== null && known !== ownerId)) return true;
+    if (typeof storage.getAllKeys !== 'function') return false;
+    const own = `${OWNER_STORAGE_NAMESPACE_PREFIX}${encodeURIComponent(ownerId)}/`;
+    return (await storage.getAllKeys()).some(key =>
+      key.startsWith(OWNER_STORAGE_QUARANTINE_PREFIX) ||
+      (key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX) && !key.startsWith(own)));
+  } catch {
+    return true;
+  }
+}
+
 export function isOwnerSensitiveCanonicalStorageKey(key: string): boolean {
   return (
     key.startsWith('projectPhotoUpdate.') ||
