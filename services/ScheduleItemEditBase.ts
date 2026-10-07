@@ -75,6 +75,8 @@ const FIELDS_NEVER_ASKED: ReadonlySet<string> = new Set<string>([
   'lookaheadOverlay', 'importBatchId', 'importedFrom', 'importedAt', 'importedAsLookahead', 'sourceDocumentId',
   'sourceActivityId', 'sourceWbsCode', 'sourceRowNumber', 'scheduleRowsAwaitingCurrent', 'percentCompleteStated',
   'sourceUniqueId', 'notRevisionOfTaskIds', 'savedLookaheadDates',
+  // What the row held before he first set its priority (schedule batch S6, item 1): written beside that edit, no edit of his.
+  'priorityAsImported',
   // Goes with its field (FIELD_COMPANIONS).
   'dependenciesUpdatedAt',
 ]);

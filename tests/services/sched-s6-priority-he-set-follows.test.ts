@@ -24,15 +24,18 @@ import { reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords, scheduleItems
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from '../../services/ScheduleImportMerge';
+import { scheduleEditWithPriorityNoted } from '../../services/ScheduleDateEdit';
 import {
   scheduleItemAgainstItsTask,
   scheduleItemCarriedFieldsToSend,
+  scheduleItemEditAgainstCloud,
   scheduleItemEditBase,
   scheduleItemRecordAfterTheSyncWrote,
   scheduleItemTextEditOnRow,
 } from '../../services/ScheduleItemEditBase';
 import { schedulePriorityIsHis, schedulePriorityIsItsImports, schedulePriorityItsImportGave } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
+import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -365,5 +368,70 @@ describe('S6 item 1: the sync\'s own merge (a refresh, Full Sync)', () => {
     // And not once the task's row has been changed after the old one.
     const later = before.items.map(item => (item.id === framingG ? { ...item, updatedAt: '2026-10-11T15:00:00.000Z' } as ScheduleItem : item));
     expect(merge(later, [cloudOld(before, { priority: 'Low' }), later.find(item => item.id === framingG)!]).find(item => item.id === framingG)!.priority).toBe('High');
+  });
+});
+
+/**
+ * Schedule batch S6, item 1, second part. A row saved before this build keeps no word of what its import gave it, so
+ * a Medium or a High he set there could not be told from the file's, even when he set it after installing this
+ * build. An edit that changes the priority of such a row now writes that word beside it.
+ */
+describe('S6 item 1, second part: a priority he sets from this build on, on a task saved before it', () => {
+  const before = allSavedBefore(onF);
+  const old = (priority: ScheduleItem['priority']) => ({ ...before.items.find(item => item.id === framingF)!, priority }) as ScheduleItem;
+  /** His edit as the phone saves it (App.tsx hands every task edit to this helper first). */
+  const edited = (state: State, id: string, priority: ScheduleItem['priority'], at: string): State => {
+    const current = state.items.find(item => item.id === id)!;
+    return patch(state, id, withProjectControlsEditMerged(current, { priority }), at);
+  };
+
+  it('the edit writes what the row held before he first changed it, once; from then on what he sets reads as his', () => {
+    expect(scheduleEditWithPriorityNoted(old('High'), { priority: 'Medium' })).toEqual({ priority: 'Medium', priorityAsImported: 'High' });
+    expect(scheduleEditWithPriorityNoted(old('Medium'), { priority: 'High' })).toEqual({ priority: 'High', priorityAsImported: 'Medium' });
+    // Under a Low (his already: no import gives one), the other of the two an import gives.
+    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'Medium' })).toEqual({ priority: 'Medium', priorityAsImported: 'High' });
+    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'High' })).toEqual({ priority: 'High', priorityAsImported: 'Medium' });
+    expect((['Medium', 'High'] as const).map(priority => schedulePriorityIsHis({ ...old('Low'), ...scheduleEditWithPriorityNoted(old('Low'), { priority }) }))).toEqual([true, true]);
+    // Nothing for an edit that leaves the priority, or names none; and the phone's edit goes through it.
+    const same = { priority: 'High' as const, notes: 'x' };
+    const other = { owner: 'Mike' };
+    expect([scheduleEditWithPriorityNoted(old('High'), same), scheduleEditWithPriorityNoted(old('High'), other)]).toEqual([same, other]);
+    expect(scheduleEditWithPriorityNoted(old('High'), same)).toBe(same);
+    expect(withProjectControlsEditMerged(old('High'), { priority: 'Low' })).toEqual({ priority: 'Low', priorityAsImported: 'High' });
+  });
+
+  it('a row that keeps its import\'s word, or says it took its priority, is left as it is: the word is written once', () => {
+    const made = one(onF, 'Framing');
+    const edit = { priority: 'High' as const };
+    expect(scheduleEditWithPriorityNoted(made, edit)).toBe(edit);
+    const took = { ...old('Low'), textFromTask: { taskId: 'earlier', priority: 'Low' as const } } as ScheduleItem;
+    expect(scheduleEditWithPriorityNoted(took, edit)).toBe(edit);
+    // Nor an edit that brings the word itself (a whole row saved over this one, as Set Active saves the row it shows).
+    const whole = { priority: 'Low' as const, priorityAsImported: 'High' as const };
+    expect(scheduleEditWithPriorityNoted(old('Medium'), whole)).toBe(whole);
+    // Changed twice: the word stays what the row held before the first change; set back to it, untouched again.
+    const once = { ...old('High'), ...scheduleEditWithPriorityNoted(old('High'), { priority: 'Medium' }) } as ScheduleItem;
+    const twice = { ...once, ...scheduleEditWithPriorityNoted(once, { priority: 'Low' }) } as ScheduleItem;
+    const back = { ...twice, ...scheduleEditWithPriorityNoted(twice, { priority: 'High' }) } as ScheduleItem;
+    expect([once, twice, back].map(row => [row.priority, row.priorityAsImported, schedulePriorityIsHis(row)])).toEqual([['Medium', 'High', true], ['Low', 'High', true], ['High', 'High', false]]);
+  });
+
+  it('he lowers a High to Medium on a task saved before this build; the next master lists it within the week: it stays Medium', () => {
+    const high = { ...before, items: before.items.map(item => (item.id === framingF ? old('High') : item)) };
+    // Without the word (an edit by a device still on the older build): it cannot be told, and takes the new row's High.
+    expect(one(approve(patch(high, framingF, { priority: 'Medium' }, '2026-10-01T09:00:00.000Z'), G, [FRAMING_G, ROOF]), 'Framing').priority).toBe('High');
+    const onG = approve(edited(high, framingF, 'Medium', '2026-10-01T09:00:00.000Z'), G, [FRAMING_G, ROOF]);
+    expect([one(onG, 'Framing').priority, one(onG, 'Framing').textFromTask?.priority, one(onG, 'Framing').priorityAsImported]).toEqual(['Medium', 'Medium', 'High']);
+    // And he raises a far-off Medium to High: it stays High when a master moves it, still far off.
+    const raised = approve(edited(before, roofF, 'High', '2026-10-01T09:00:00.000Z'), G, [FRAMING_F, ROOF_MOVED]);
+    expect(one(raised, 'Roof').priority).toBe('High');
+  });
+
+  it('the word is no edit of his: two devices that each set the priority of such a row are asked about the priority only', () => {
+    const mine = { ...old('High'), ...scheduleEditWithPriorityNoted(old('High'), { priority: 'Low' }), updatedAt: '2026-10-01T09:00:00.000Z' } as ScheduleItem;
+    // The other device's copy had been set to Medium earlier, by a build that wrote no word; it then set High, from Medium.
+    const cloud = { ...old('High'), priorityAsImported: 'Medium', updatedAt: '2026-10-01T08:00:00.000Z' } as ScheduleItem;
+    const weighed = scheduleItemEditAgainstCloud(mine, ['priority', 'priorityAsImported', 'updatedAt'], scheduleItemEditBase(old('Medium'), ['priority', 'priorityAsImported']), cloud);
+    expect(weighed.asked).toEqual(['priority']);
   });
 });

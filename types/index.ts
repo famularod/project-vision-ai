@@ -976,7 +976,9 @@ export type ScheduleItem = {
    * import adds, and never changed: a priority that reads otherwise is one
    * David set, and only that follows the task to the row a newer master
    * moves it to. Kept in the task's JSON record. Missing on a row saved
-   * before, where only a Low is known to be his (no import gives one).
+   * before, where only a Low is known to be his (no import gives one), until
+   * he changes its priority: that edit writes what the row held before it
+   * (scheduleEditWithPriorityNoted), so what he sets from then on is known.
    */
   priorityAsImported?: SchedulePriority | null;
   status: ScheduleStatus;

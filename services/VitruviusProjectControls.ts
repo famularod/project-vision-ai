@@ -12,7 +12,7 @@ import type {
   ProjectControlWorkflowStage,
   ScheduleItem,
 } from '../types';
-import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
+import { scheduleEditWithDateChangedAlone, scheduleEditWithPriorityNoted } from './ScheduleDateEdit';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 export const PROJECT_CONTROL_APPROVAL_STATUSES: readonly ProjectControlApprovalStatus[] = [
@@ -344,7 +344,8 @@ export function withProjectControlsEditMerged(
   current: ScheduleItem,
   edit: Partial<ScheduleItem>,
 ): Partial<ScheduleItem> {
-  const next = scheduleEditWithDateChangedAlone(current, edit);
+  // (And a priority he sets is known as his from then on, on a row saved before rows kept their import's: S6 item 1.)
+  const next = scheduleEditWithPriorityNoted(current, scheduleEditWithDateChangedAlone(current, edit));
   return next.projectControls
     ? {
         ...next,

@@ -19,6 +19,7 @@ import {
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleEditWithPriorityNoted } from './ScheduleDateEdit';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import { scheduleProgressIsManagers } from './ScheduleProgressSource';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -502,7 +503,9 @@ export function buildDAVEWebScheduleItem({
     // latest entry under a file's percent, and a lookahead that stated less showed it.
     ...(current?.progressUndone ? { progressUndone: current.progressUndone } : {}),
     // And the priority the row's own import gave it (schedule batch S6, item 1): without it a priority set here reads as not his.
-    ...(current?.priorityAsImported ? { priorityAsImported: current.priorityAsImported } : {}),
+    // On a row saved before rows kept it, a priority changed here writes it, as the phone's edit does.
+    ...(current?.priorityAsImported ? { priorityAsImported: current.priorityAsImported }
+      : current ? (noted => (noted ? { priorityAsImported: noted } : {}))(scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }).priorityAsImported) : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,

@@ -96,3 +96,27 @@ export function scheduleEditWithDateChangedAlone(
     },
   };
 }
+
+/**
+ * Schedule batch S6, item 1, second part (7 Oct 2026). Only a priority David
+ * set follows a task a newer master moves, and the app tells by comparing the
+ * priority with what the row's own import gave it (priorityAsImported). A
+ * row saved before this build keeps no such word, so a Medium or a High he
+ * set on a task he already had could not be told from the file's, even when
+ * he set it after installing this build: it was lost at the task's next move.
+ *
+ * An edit that changes the priority of such a row now writes that word
+ * beside it: what the row held before he first changed it. (Under a Low,
+ * which no import gives and was his already, the other of the two an import
+ * gives.) Written once: a row that has the word, or says it took its
+ * priority from the task, is left as it is. Set back to that value later,
+ * the priority reads as untouched again, as on a row an import made.
+ */
+export function scheduleEditWithPriorityNoted(current: ScheduleItem, edit: Partial<ScheduleItem>): Partial<ScheduleItem> {
+  const read = (value: unknown) => (value === 'Low' || value === 'High' ? value : 'Medium');
+  if (edit.priority === undefined || 'priorityAsImported' in edit || read(edit.priority) === read(current.priority)) return edit;
+  const known = current.priorityAsImported === 'Low' || current.priorityAsImported === 'Medium' || current.priorityAsImported === 'High';
+  if (known || (current.textFromTask && Object.prototype.hasOwnProperty.call(current.textFromTask, 'priority'))) return edit;
+  const held = read(current.priority);
+  return { ...edit, priorityAsImported: held !== 'Low' ? held : read(edit.priority) === 'Medium' ? 'High' : 'Medium' };
+}

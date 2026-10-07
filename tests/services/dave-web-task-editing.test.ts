@@ -124,6 +124,13 @@ describe('DAVE desktop task editing model', () => {
     expect([edit({ priority: 'Low' }).priority, edit({ priority: 'Low' }).priorityAsImported]).toEqual(['Low', 'High']);
     // A task typed in on the web has no import, and gets no such word.
     expect(buildDAVEWebScheduleItem({ draft: BASE_DRAFT, id: 'task-by-hand', now: '2026-07-18T18:00:00.000Z', actor: 'pm@example.com' }).priorityAsImported).toBeUndefined();
+    // S6 item 1, second part: on a task saved before rows kept that word, a priority changed on the web writes what the
+    // task held before, so what he set reads as his; an edit that leaves the priority writes nothing.
+    const { priorityAsImported: _own, ...savedBefore } = current;
+    const editOld = (draft: Partial<typeof BASE_DRAFT>) => buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, priority: 'High', ...draft }, current: savedBefore, id: current.id, now: '2026-07-19T18:00:00.000Z', actor: 'pm@example.com',
+    });
+    expect([editOld({ priority: 'Medium' }).priority, editOld({ priority: 'Medium' }).priorityAsImported, editOld({ notes: 'Walls up' }).priorityAsImported]).toEqual(['Medium', 'High', undefined]);
   });
 
   test('reopens a completed task when only its status is changed', () => {

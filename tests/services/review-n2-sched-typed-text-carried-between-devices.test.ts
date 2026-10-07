@@ -4853,6 +4853,49 @@ describe('S6 item 1: only a priority he set follows a task a master moved, betwe
     await nothingWaits(phone, ipad);
   });
 
+  /** Framing as a build before this one saved it, on both devices and in the cloud: no word of what its import gave it. */
+  function framingAsSavedBeforeThisBuild(devices: Device[], priority: ScheduleItem['priority']) {
+    const plain = (row: ScheduleItem) => { const { priorityAsImported: _own, ...rest } = row; return (row.taskName === 'Framing' ? { ...rest, priority } : row) as ScheduleItem; };
+    devices.forEach(device => { setter(device)(device.state.map(plain)); device.ref.current = device.state; });
+    [...mockCloud.rows.keys()].forEach(id => mockCloud.rows.set(id, plain(mockCloud.rows.get(id) as ScheduleItem)));
+  }
+
+  it('second part: a task saved before this build, High; he lowers it to Medium on the iPad; the phone\'s next master lists it within the week: Medium on the phone, the iPad and the web', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    framingAsSavedBeforeThisBuild([phone, ipad], 'High');
+    at('2026-09-08T07:05:00.000Z');
+    await edit(ipad, oldId, { priority: 'Medium' });
+    await backgroundUpload(ipad);
+    // The edit wrote, beside the priority, what the task held before it; both went up together.
+    expect([cloudRow(oldId)!.priority, cloudRow(oldId)!.priorityAsImported]).toEqual(['Medium', 'High']);
+    await refresh(phone);
+    await approveN(phone);
+    await backgroundUpload(phone);
+    expect([theRow(phone).id === oldId, theRow(phone).priority]).toEqual([false, 'Medium']);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Medium', 'Medium', 'Medium']);
+    await nothingWaits(phone, ipad);
+  });
+
+  it('second part: both devices set the priority of such a task apart, to different values: asked once about the priority, never about the word beside it', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    framingAsSavedBeforeThisBuild([phone, ipad], 'High');
+    at('2026-09-08T07:00:00.000Z');
+    setOnline(ipad, false);
+    await edit(phone, oldId, { priority: 'Medium' });
+    await backgroundUpload(phone);
+    at('2026-09-08T08:00:00.000Z');
+    await edit(ipad, oldId, { priority: 'Low' });
+    at('2026-09-08T09:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    const cards = (await conflictsOf(ipad)).map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields);
+    expect([cards, await conflictsOf(phone), cloudRow(oldId)!.priority, cloudRow(oldId)!.priorityAsImported]).toEqual([[['priority']], [], 'Medium', 'High']);
+  });
+
   it('set on both rows apart (Low on the old row by the iPad that had not heard, Medium on the new row on the phone): Review Conflicts asks once', async () => {
     const { phone, ipad } = await start();
     const oldId = theRow(phone).id;
@@ -4959,4 +5002,5 @@ describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after i
     await refresh(phone); await refresh(ipad);
     expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad)), framingDates(webShown())]).toEqual(Array(3).fill([['10/15/2026', '10/25/2026']]));
   });
+
 });
