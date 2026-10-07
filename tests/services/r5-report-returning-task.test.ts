@@ -233,6 +233,33 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     sameOnTheWeb(state, whileOut.sent, '2026-09-10T17:00:00.000Z', back);
   });
 
+  it('back on its own row after two reports, a row that itself answers to an older row: "added", never compared with that older row (found by the taught text driver)', () => {
+    // Master 1 lists Paint; master 2 moves it, on a new row that answers to master 1's; he sets 60% and Sam; a report goes out.
+    let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-05T12:00:00.000Z'), [...OTHERS, PAINT]);
+    state = approve(state, schedule('MASTER 2', '2026-09-07T12:00:00.000Z'), [...OTHERS, PAINT_MOVED]);
+    state = set(state, 'Paint', { percentComplete: 60, owner: 'Sam' }, '2026-09-08T08:00:00.000Z');
+    expect(one(state, 'Paint').map(item => [item.id, item.revisedFromTaskIds])).toEqual([['MASTER 2-4', ['MASTER 1-4']]]);
+    const first = report(state, null, '2026-09-08T15:00:00.000Z');
+    // Master 3 leaves it out, and two reports go out.
+    state = approve(state, schedule('MASTER 3', '2026-09-09T12:00:00.000Z'), [...OTHERS]);
+    const whileOut = report(state, first.sent, '2026-09-09T15:00:00.000Z');
+    expect(whileOut.paint).toEqual([REMOVED]);
+    state = set(state, 'Tile', { percentComplete: 20 }, '2026-09-12T08:00:00.000Z');
+    const secondWhileOut = report(state, whileOut.sent, '2026-09-12T15:00:00.000Z');
+    expect(secondWhileOut.paint).toEqual([]);
+    // Master 4 lists it on the days it had and he confirms "The same task": the row it had is shown again.
+    state = approve(state, schedule('MASTER 4', '2026-09-20T12:00:00.000Z'), [...OTHERS, PAINT_MOVED]);
+    expect(one(state, 'Paint').map(item => [item.id, item.percentComplete, item.owner])).toEqual([['MASTER 2-4', 60, 'Sam']]);
+    state = set(state, 'Paint', { percentComplete: 70 }, '2026-09-20T16:00:00.000Z');
+    const back = report(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z');
+    // The row it left on is the row shown: nothing saved tells how it stood in the last report that listed it. Master
+    // 1's row is older than that report, and what it holds was never what a report said. (It read: back, "moved from
+    // 0% to 70% complete", "finish changed from 10/05/2026 to 10/07/2026", "owner changed from unassigned to Sam".)
+    expect(back.paint).toEqual([ADDED]);
+    expect(back.onceApproved.paint).toEqual([ADDED]);
+    sameOnTheWeb(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z', back);
+  });
+
   it('reads the same once approved as it did as a draft, in every case above', () => {
     const { state: out, first } = paintLeftOut();
     const whileOut = report(out, first.sent, '2026-09-09T15:00:00.000Z');
@@ -424,22 +451,25 @@ describe('R5 item 1: the earlier rows the report\'s Project Truth hands over', (
   const rowsOf = (shownItems: ScheduleItem[], saved: ScheduleItem[]) => (buildDAVEReportProjectTruths({
     projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }, { name: 'Beta' }] as never, updates: [], scheduleItems: shownItems,
     knownScheduleItems: saved, knownScheduleDocuments: [], projectAreas: [], referenceDocuments: [], now: NOW,
-  })[0].earlierRows ?? []).map(row => [row.taskId, row.earlierTaskId, row.savedAt, row.percentComplete, row.owner, row.addedByLookahead ?? false]);
+  })[0].earlierRows ?? []).map(row => [row.taskId, row.earlierTaskId, row.savedAt, row.percentComplete, row.owner, row.addedByLookahead ?? false, row.taskSavedAt]);
 
-  it('each saved row a task shown answers to, oldest first, with when it came in and how it stood; a row a lookahead added says so', () => {
-    const shownNow = item('now', { revisedFromTaskIds: ['first', 'second', 'gone'], percentComplete: 70 });
+  it('each saved row a task shown answers to, oldest first, with when it came in and how it stood; a row a lookahead added says so; and when the row shown came in', () => {
+    const shownNow = item('now', { revisedFromTaskIds: ['first', 'second', 'gone'], percentComplete: 70, importedAt: '2026-09-10T12:00:00.000Z' });
     const first = item('first', { percentComplete: 20, owner: 'Lee', importedAt: '2026-08-03T12:00:00.000Z' });
     const second = item('second', { percentComplete: 40, importedAsLookahead: true, importedAt: '2026-08-17T12:00:00.000Z' });
     expect(rowsOf([shownNow], [shownNow, second, first])).toEqual([
-      ['now', 'first', '2026-08-03T12:00:00.000Z', 20, 'Lee', false],
-      ['now', 'second', '2026-08-17T12:00:00.000Z', 40, 'Sam', true],
+      ['now', 'first', '2026-08-03T12:00:00.000Z', 20, 'Lee', false, '2026-09-10T12:00:00.000Z'],
+      ['now', 'second', '2026-08-17T12:00:00.000Z', 40, 'Sam', true, '2026-09-10T12:00:00.000Z'],
     ]);
   });
 
   it('a row entered by hand has no import: when it was made stands for when it came in', () => {
     const shownNow = item('now', { revisedFromTaskIds: ['by-hand'] });
     const byHand = item('by-hand', { importedAt: null, importBatchId: null, createdAt: '2026-08-20T09:00:00.000Z' });
-    expect(rowsOf([shownNow], [shownNow, byHand])).toEqual([['now', 'by-hand', '2026-08-20T09:00:00.000Z', 60, 'Sam', false]]);
+    expect(rowsOf([shownNow], [shownNow, byHand])).toEqual([['now', 'by-hand', '2026-08-20T09:00:00.000Z', 60, 'Sam', false, '2026-09-07T12:00:00.000Z']]);
+    // The same for the row shown.
+    const shownByHand = item('now', { revisedFromTaskIds: ['by-hand'], importedAt: null, importBatchId: null, createdAt: '2026-09-02T09:00:00.000Z' });
+    expect(rowsOf([shownByHand], [shownByHand, byHand]).map(row => row[6])).toEqual(['2026-09-02T09:00:00.000Z']);
   });
 
   it('never another project\'s row, and never a row that is itself shown', () => {
@@ -463,8 +493,9 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
   const whileOut = saved('2026-09-09T15:00:00.000Z', [other], before);
   const linesOf = (current: DAVEReportSnapshotTask[], previous = whileOut, earlierRows: Parameters<typeof compareDAVEReportSnapshots>[0]['earlierRows'] = []) =>
     compareDAVEReportSnapshots({ current: saved('2026-09-10T15:00:00.000Z', [other, ...current]), previous, earlierRows }).changes.map(change => change.summary);
+  /** An earlier row of a task shown; the row shown was made after the last report (2026-09-09T15:00) unless said. */
   const row = (taskId: string, earlierTaskId: string, savedAt: string, change: object = {}) => ({
-    taskId, earlierTaskId, savedAt, projectName: 'Alpha', taskName: 'Paint', areaName: 'Lot', owner: 'Sam', status: 'In Progress', percentComplete: 60,
+    taskId, earlierTaskId, savedAt, taskSavedAt: '2026-09-09T18:00:00.000Z', projectName: 'Alpha', taskName: 'Paint', areaName: 'Lot', owner: 'Sam', status: 'In Progress', percentComplete: 60,
     finishDate: '10/05/2026', approvalStatus: null, estimatedScheduleImpactDays: null, ...change,
   });
 
@@ -520,6 +551,10 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
     // Never by a row a lookahead added, and never with no time on the row.
     expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { addedByLookahead: true })])).toEqual([ADDED]);
     expect(linesOf(current, lastReport, [{ ...row('new', 'old', ''), savedAt: null }])).toEqual([ADDED]);
+    // Nor when the row SHOWN was already saved when that report was made: it is the task's own row shown again, the
+    // row it left on, and an older row of it is not how it last stood. Nor with no time on the row shown.
+    expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { taskSavedAt: '2026-09-08T12:00:00.000Z' })])).toEqual([ADDED]);
+    expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { taskSavedAt: null })])).toEqual([ADDED]);
   });
 
   it('a task that began as a lookahead\'s own row and a master\'s task of the last report: apart only where he would be said to have lost what he set', () => {

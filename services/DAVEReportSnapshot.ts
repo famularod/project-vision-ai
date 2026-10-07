@@ -624,6 +624,8 @@ export type DAVEReportTaskEarlierRow = Readonly<{
   earlierTaskId: string;
   /** When the row came in. */
   savedAt: string | null;
+  /** When the row shown came in. */
+  taskSavedAt: string | null;
   /** A row a lookahead added: the task began as a lookahead's own row. */
   addedByLookahead?: true;
   projectName: string;
@@ -850,8 +852,15 @@ export function compareDAVEReportSnapshots({
   //    this project's, that was already saved when the earlier report was made. That report had no row of the
   //    task, so the task was out of the list then. A row saved since is the same task moved inside this period,
   //    and the task is new to the reader: "added".
+  //    Fourth part (found by the text driver taught this rule): only when the row SHOWN is newer than the earlier
+  //    report, the row a master made for the task on its return. A row shown that was already saved then is the
+  //    task's own row shown again (he confirmed "The same task" on the days it had, or Set Active went back): it
+  //    IS the row it left on, and holds what was set since. An older row it answers to is not how it last stood:
+  //    Paint, moved by master 2 and at 60% in the last report that listed it, came back after two reports and
+  //    read "Paint moved from 0% to 70% complete." and "owner changed from unassigned to Sam" against master 1's
+  //    row, which no report had ever shown that way. It reads "added", as it did before this batch.
   // A task that comes back on its own row after more than one report (he answered "The same task" for a row on the
-  // days it had, or Set Active went back) has no earlier row to tell it by, and still reads "added".
+  // days it had, or Set Active went back) has nothing saved to tell how it last stood, and still reads "added".
   // Third part (found by the text driver taught this rule, 1 of 1,600 sequences): never a task that is a lookahead's
   // detail row NOW. No master has listed it, so no report said it was removed: it can only have left with a replaced
   // lookahead. A report saved by a build before detail rows were marked has the row without the mark, and a later
@@ -866,7 +875,9 @@ export function compareDAVEReportSnapshots({
     if (before) return isLookaheadDetail(before) ? null : before;
     const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
       const saved = Date.parse(row.savedAt ?? '');
-      return row.addedByLookahead !== true && !Number.isNaN(saved) && !Number.isNaN(earlierReportMade) && saved < earlierReportMade;
+      const shownSaved = Date.parse(row.taskSavedAt ?? '');
+      return row.addedByLookahead !== true && !Number.isNaN(saved) && !Number.isNaN(earlierReportMade) && saved < earlierReportMade &&
+        !Number.isNaN(shownSaved) && shownSaved >= earlierReportMade;
     });
     const row = rows.at(-1);
     return row ? Object.freeze({

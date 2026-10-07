@@ -270,6 +270,12 @@ export type DAVETaskEarlierRowTruth = {
   earlierTaskId: string;
   /** When the row came in: its import, or else when it was made. */
   savedAt: string | null;
+  /**
+   * When the row SHOWN came in, told the same way. A row shown that is older
+   * than the last report is the task's own row shown again: the row it left
+   * on, so no earlier row of it says how it last stood (R5 item 1, fourth part).
+   */
+  taskSavedAt: string | null;
   /** A row a lookahead added (no master had listed it): the task began as a lookahead's own row. */
   addedByLookahead?: true;
   taskName: string;
@@ -726,6 +732,7 @@ function earlierRowsOfTasksShown(
       taskId: task.id,
       earlierTaskId: id,
       savedAt: validDate(clean(row.importedAt) || clean(row.createdAt) || undefined),
+      taskSavedAt: validDate(clean(task.importedAt) || clean(task.createdAt) || undefined),
       ...(row.importedAsLookahead === true ? { addedByLookahead: true as const } : {}),
       taskName: row.taskName,
       areaName: clean(row.locationName),
