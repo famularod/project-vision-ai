@@ -2,6 +2,7 @@ import { PROJECT_ITEM_TYPES, SCHEDULE_PRIORITIES, type ProjectItemActivity, type
 import { projectTimeZoneOrDefault } from './ProjectDateTime';
 import { scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
+import { scheduleLookaheadNoteWithLaterOwnPercentOf } from './DAVEScheduleRecovery';
 import { scheduleItemActivityWithOtherRows, schedulePriorityIsHis, schedulePriorityIsItsImports, schedulePriorityItsImportGave, scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
@@ -282,6 +283,11 @@ export function scheduleItemWholeCopyFieldByField(
   }
   // The progress goes together: this copy's when only it changed it, the sync merge's when both did.
   if (progress.some(changedHere)) progress.forEach(field => setField(next, field, progress.some(changedThere) ? merged : local));
+  // Review pass 1, P1-11: the lookahead note this copy puts on the cloud's row says what the task's percent was before
+  // the lookahead, as this device knew it. A later percent of his own on the cloud's row, which this device had not
+  // heard, is the one to give back when that lookahead is deleted: the note is brought up to it by the sync merge's
+  // own rule, as it was while such a copy was merged whole.
+  if (local.lookaheadOverlay && next.lookaheadOverlay === local.lookaheadOverlay) next.lookaheadOverlay = scheduleLookaheadNoteWithLaterOwnPercentOf(local, remote);
   const controls = local.projectControls && remote.projectControls ? mergeProjectControlsRevisions(local.projectControls, remote.projectControls) : local.projectControls ?? remote.projectControls;
   if (controls) next.projectControls = controls;
   if (changedHere('activity')) next.activity = scheduleItemActivityOfBoth(local.activity, remote.activity);

@@ -4591,6 +4591,207 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       await noCards(phone, ipad);
     });
   });
+
+  /**
+   * Review pass 1 of Build 231's schedule round, P1-11 (7 Oct 2026; Medium; caused by "Review P7-2 ...: a whole copy
+   * of a task is weighed field by field", found by bisect; the reviewer's generator seed 5067). He has 50% on Framing.
+   * On the phone he enters 65%. The iPad, which has not heard that yet, approves a lookahead that states 60%: its
+   * lookahead note records 50% as "the percent before the lookahead". That lookahead is later deleted with its items.
+   * Build 230 gave back 65%, his latest entry; this round gave back 50%, the percent he had already replaced, in all
+   * three places and with no card. The sync merge has always brought such a note up to his later percent on the
+   * other copy; weighed field by field, the lookahead's copy put its note on the cloud's row as it was.
+   */
+  describe('Review pass 1, P1-11 (caused by Review P7-2): a lookahead approved on a device that had not heard his latest percent, and deleted or replaced later', () => {
+    const LOOK = scheduleDoc('LOOKAHEAD P11', '2026-09-09T12:00:00.000Z', 'lookahead');
+    const LOOK_ROW = 'Framing,Alpha,Lot,10/22/2026,11/01/2026,60';
+    /** In each of the three places: Framing's start and percent. */
+    const framing = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()].map(items => [framingOf(items)[0]?.startDate, framingOf(items)[0]?.percentComplete]);
+    const starts = (phone: Device, ipad: Device) => framing(phone, ipad).map(row => row[0]);
+    /** He has 50% on Framing, heard in all three places. */
+    async function fiftyEverywhere() {
+      const { phone, ipad } = await start();
+      at('2026-09-08T08:00:00.000Z');
+      await edit(phone, theRow(phone).id, { percentComplete: 50 });
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 50]));
+      return { phone, ipad };
+    }
+    /**
+     * He enters 65% (`enters`: on the phone and sent, or on the web). The iPad, with signal but not yet refreshed,
+     * approves the lookahead stating 60%. Then everything syncs.
+     */
+    async function lookaheadBeforeHearing(enters: 'phone' | 'web' = 'phone') {
+      const { phone, ipad } = await fiftyEverywhere();
+      at('2026-09-09T09:00:00.000Z');
+      if (enters === 'web') webWrite(webEdited(cloudRow('MASTER F-1')!, { percentComplete: '65' }));
+      else { await edit(phone, theRow(phone).id, { percentComplete: 65 }); await backgroundUpload(phone); }
+      expect([cloudRow('MASTER F-1')!.percentComplete, theRow(ipad).percentComplete]).toEqual([65, 50]);
+      at(LOOK.importedAt!);
+      await approve(ipad, LOOK, [LOOK_ROW], true);
+      shareDocuments(ipad);
+      await backgroundUpload(ipad);
+      at('2026-09-09T18:00:00.000Z');
+      await allSynced(phone, ipad);
+      // (The percent shown under the lookahead is review P1-16's, older and not this finding's: not pinned here.)
+      expect(starts(phone, ipad)).toEqual(Array(3).fill('10/22/2026'));
+      return { phone, ipad };
+    }
+
+    it.each([['phone'], ['ipad']] as const)('entered on the phone, the lookahead deleted with its items on the %s: his 65% comes back in all three places, not the 50% he had replaced', async where => {
+      const { phone, ipad } = await lookaheadBeforeHearing();
+      at('2026-09-10T12:00:00.000Z');
+      const device = where === 'phone' ? phone : ipad;
+      await deleteWithItems(device, LOOK);
+      shareDocuments(device);
+      await allSynced(phone, ipad);
+      // (It was: 10/15 at 50% in all three places.)
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+      expect([await queueOf(phone), await queueOf(ipad)]).toEqual([[], []]);
+    });
+
+    it('entered on the web: the same', async () => {
+      const { phone, ipad } = await lookaheadBeforeHearing('web');
+      at('2026-09-10T12:00:00.000Z');
+      await deleteWithItems(phone, LOOK);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('a newer lookahead that leaves the task out replaces it, and the replaced lookahead is then deleted with its items: his 65%', async () => {
+      const { phone, ipad } = await lookaheadBeforeHearing();
+      at('2026-09-16T12:00:00.000Z');
+      await approve(phone, scheduleDoc('LOOKAHEAD P11 B', '2026-09-16T12:00:00.000Z', 'lookahead'), ['Survey,Alpha,Lot,10/13/2026,10/15/2026,'], true);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(starts(phone, ipad)).toEqual(Array(3).fill('10/15/2026'));
+      at('2026-09-17T12:00:00.000Z');
+      await deleteWithItems(ipad, LOOK);
+      shareDocuments(ipad);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('the next master moves the task, and the lookahead is deleted with its items after that: his 65% on the master\'s dates', async () => {
+      const { phone, ipad } = await lookaheadBeforeHearing();
+      at('2026-09-10T18:00:00.000Z');
+      await approve(phone, scheduleDoc('MASTER G', '2026-09-10T18:00:00.000Z'), ['Framing,Alpha,Lot,10/26/2026,11/05/2026,', SURVEY]);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      at('2026-09-11T18:00:00.000Z');
+      await deleteWithItems(ipad, LOOK);
+      shareDocuments(ipad);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/26/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('with a note typed on the phone after the lookahead was approved with no signal (the cloud\'s row is then the later stamped): the lookahead\'s dates, the note, and his 65% when the lookahead is deleted', async () => {
+      const { phone, ipad } = await fiftyEverywhere();
+      at('2026-09-09T09:00:00.000Z');
+      await edit(phone, theRow(phone).id, { percentComplete: 65 });
+      await backgroundUpload(phone);
+      setOnline(ipad, false);
+      at(LOOK.importedAt!);
+      await approve(ipad, LOOK, [LOOK_ROW], true);
+      at('2026-09-09T13:00:00.000Z');
+      await edit(phone, theRow(phone).id, { notes: NOTE });
+      await backgroundUpload(phone);
+      at('2026-09-09T18:00:00.000Z');
+      // The iPad's signal comes back and its waiting approval goes up at once; the phone hears of it after that.
+      setOnline(ipad, true); shareDocuments(ipad);
+      await backgroundUpload(ipad);
+      await allSynced(phone, ipad);
+      expect([deviceShown(phone), deviceShown(ipad), webShown()].map(items => [framingOf(items)[0]?.startDate, framingOf(items)[0]?.notes])).toEqual(Array(3).fill(['10/22/2026', NOTE]));
+      at('2026-09-10T12:00:00.000Z');
+      await deleteWithItems(phone, LOOK);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('the other order (the lookahead approved with no signal first, his 65% entered elsewhere after it): 65% under the lookahead and 65% when it is deleted, as before', async () => {
+      const { phone, ipad } = await fiftyEverywhere();
+      setOnline(ipad, false);
+      at(LOOK.importedAt!);
+      await approve(ipad, LOOK, [LOOK_ROW], true);
+      at('2026-09-09T15:00:00.000Z');
+      await edit(phone, theRow(phone).id, { percentComplete: 65 });
+      await backgroundUpload(phone);
+      at('2026-09-09T18:00:00.000Z');
+      setOnline(ipad, true); shareDocuments(ipad);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/22/2026', 65]));
+      at('2026-09-10T12:00:00.000Z');
+      await deleteWithItems(ipad, LOOK);
+      shareDocuments(ipad);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('his 65% entered with no signal and sent only after the other device\'s lookahead went up: 65% when the lookahead is deleted', async () => {
+      const { phone, ipad } = await fiftyEverywhere();
+      setOnline(phone, false);
+      at('2026-09-09T09:00:00.000Z');
+      await edit(phone, theRow(phone).id, { percentComplete: 65 });
+      at(LOOK.importedAt!);
+      await approve(ipad, LOOK, [LOOK_ROW], true);
+      shareDocuments(ipad);
+      await backgroundUpload(ipad);
+      at('2026-09-09T18:00:00.000Z');
+      await allSynced(phone, ipad);
+      expect(starts(phone, ipad)).toEqual(Array(3).fill('10/22/2026'));
+      at('2026-09-10T12:00:00.000Z');
+      await deleteWithItems(phone, LOOK);
+      shareDocuments(phone);
+      await allSynced(phone, ipad);
+      expect(framing(phone, ipad)).toEqual(Array(3).fill(['10/15/2026', 65]));
+      await noCards(phone, ipad);
+    });
+
+    it('the rule on the records alone: the note this copy puts on the cloud\'s row is brought up to his later percent there, by the sync merge\'s own rule', () => {
+      const T50 = '2026-09-08T08:00:00.000Z';
+      const T65 = '2026-09-09T09:00:00.000Z';
+      const TL = '2026-09-09T12:00:00.000Z';
+      const was = {
+        id: 'MASTER F-1', taskName: 'Framing', startDate: '10/15/2026', finishDate: '10/25/2026', percentComplete: 50, status: 'In Progress', notes: '', owner: '',
+        importBatchId: 'batch-MASTER F', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: T50, updatedAt: T50,
+      } as ScheduleItem;
+      const note = {
+        masterStartDate: '10/15/2026', masterFinishDate: '10/25/2026', masterPercentComplete: 50, masterStatus: 'In Progress', masterProgressSource: 'project_manager',
+        masterProgressConfirmedBy: 'David', masterProgressConfirmedAt: T50, masterFilePercentComplete: null,
+        lookaheads: [{ batchId: 'batch-L', startDate: '10/22/2026', finishDate: '11/01/2026', percentComplete: 60 }],
+      } as unknown as NonNullable<ScheduleItem['lookaheadOverlay']>;
+      /** The lookahead's copy: its dates, its 60% over his 50%, and its note of what the task said before it. */
+      const mine = {
+        ...was, startDate: '10/22/2026', finishDate: '11/01/2026', lookaheadOverlay: note, percentComplete: 60, progressConfirmedBy: 'Schedule update', progressConfirmedAt: TL,
+        managersPercentUnderFile: 50, managersPercentUnderFileJudgedAt: T50, alsoImportedInBatchIds: ['batch-L'], updatedAt: TL,
+      } as ScheduleItem;
+      const base = scheduleItemWholeCopyBase(was)!;
+      const weigh = (cloud: ScheduleItem, copy: ScheduleItem = mine) => scheduleItemWholeCopyFieldByField(copy, base, cloud,
+        recoverDAVEScheduleRecords({ local: [copy], cloud: [cloud], allowCloudOnly: true }).find(row => row.id === was.id)!)!.itemData;
+      // His later 65% on the cloud's row, which this copy had not heard: the note says 65%, his, and when he judged it.
+      const his65 = { ...was, percentComplete: 65, progressConfirmedAt: T65, updatedAt: T65 } as ScheduleItem;
+      expect(weigh(his65).lookaheadOverlay).toEqual({ ...note, masterPercentComplete: 65, masterProgressConfirmedAt: T65 });
+      expect(weigh(his65)).toMatchObject({ startDate: '10/22/2026', alsoImportedInBatchIds: ['batch-L'] });
+      // The same when something else stamped the cloud's row later than this copy (a note typed on the web).
+      expect(weigh({ ...his65, notes: 'Web note', updatedAt: '2026-09-09T13:00:00.000Z' } as ScheduleItem).lookaheadOverlay).toMatchObject({ masterPercentComplete: 65, masterProgressConfirmedAt: T65 });
+      // Nothing of his entered since on the cloud's row (an approval status set there): the note as this copy made it.
+      const pending = { ...was, projectControls: reviseProjectControls({ current: undefined, patch: { approvalStatus: 'Pending' }, actor: 'David', now: T65 }), updatedAt: T65 } as ScheduleItem;
+      expect(weigh(pending).lookaheadOverlay).toBe(note);
+      // A file's percent on the cloud's row is no entry of his: the note as it is.
+      expect(weigh({ ...was, percentComplete: 70, progressSource: 'schedule_import', progressConfirmedBy: null, progressConfirmedAt: T65, updatedAt: T65 } as ScheduleItem).lookaheadOverlay).toBe(note);
+      // This copy took the note off (the lookahead deleted here): nothing to bring up, and no note comes back.
+      const { lookaheadOverlay: _gone, ...deleted } = { ...mine, startDate: '10/15/2026', finishDate: '10/25/2026', percentComplete: 50, progressConfirmedBy: 'David' } as ScheduleItem;
+      const noted = scheduleItemWholeCopyBase({ ...was, lookaheadOverlay: note } as ScheduleItem)!;
+      expect(scheduleItemWholeCopyFieldByField(deleted as ScheduleItem, noted, { ...his65, lookaheadOverlay: note } as ScheduleItem, his65)!.itemData).not.toHaveProperty('lookaheadOverlay');
+    });
+  });
 });
 
 /* ------------------------------------------------------------------------------------------------------------- */

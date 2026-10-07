@@ -1215,6 +1215,19 @@ function lookaheadNoteWithPercentOf(
   return { ...note, ...latest };
 }
 
+/**
+ * Review pass 1 of Build 231's schedule round, P1-11 (7 Oct 2026, Medium; caused by review P7-2's field-by-field
+ * weighing): the rule above for a whole copy that is weighed field by field instead of merged whole
+ * (scheduleItemWholeCopyFieldByField). David had 50% on Framing and entered 65% on the phone; the iPad, which had not
+ * heard, approved a lookahead stating 60%, and its note recorded 50% as the percent before the lookahead. Weighed
+ * field by field, that note went on the cloud's row as it was, so deleting the lookahead gave back 50%, the percent
+ * he had already replaced; merged whole (Build 230) the note was brought up to his 65% here. The copy's own note,
+ * with his later percent on the other copy of the task: one rule, this merge's.
+ */
+export function scheduleLookaheadNoteWithLaterOwnPercentOf(copy: ScheduleItem, other: ScheduleItem): ScheduleItem['lookaheadOverlay'] {
+  return lookaheadNoteWithPercentOf(copy.lookaheadOverlay, copy, other);
+}
+
 function stableMeaning(value: ScheduleItem) {
   return JSON.stringify(sortRecord(value));
 }
