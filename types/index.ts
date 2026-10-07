@@ -936,6 +936,18 @@ export type ScheduleItem = {
    */
   fileProgressPeak?: { percentComplete: number; statedAt: string } | null;
   /**
+   * The percent the LAST master schedule's file stated on this row and when
+   * it was approved, whether or not that percent stood (Build 231, S4 item
+   * 3; owner answer Q32, option b, when two masters are approved apart on
+   * two devices and both restate the row). A file's percent below the one
+   * David holds stands for nothing on that device and left no trace; the
+   * other device's file had meanwhile taken his percent over, and one device
+   * would end on the newest master's percent. With fileProgressPeak it lets
+   * the sync's merge replay the two statements in order. Kept in the task's
+   * JSON record; missing on a task saved before, which is merged as before.
+   */
+  fileProgressLast?: { percentComplete: number; statedAt: string } | null;
+  /**
    * The dates each master that shares this row gives it, kept with the row
    * once its lookahead note is gone (Build 231, S4 item 1): the newest
    * master's dates, and the dates held before each master replaced them

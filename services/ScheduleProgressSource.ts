@@ -306,6 +306,35 @@ export function scheduleFileTookHisPercentOver(his: ScheduleItem, files: Schedul
   return percentOf({ percentComplete: peak.percentComplete }) > percentOf(his) && timeOf(peak.statedAt) > timeOf(scheduleProgressJudgedAt(his));
 }
 
+/**
+ * Build 231, S4 item 3 (owner answer Q32, option b; two masters approved
+ * apart that both restate one row): the percent the newest master stated,
+ * as the task's, when the two copies of the row together say what one
+ * device would have seen in order: after David judged his percent a master's
+ * file stated MORE (fileProgressPeak: it took the task over), and a master
+ * approved after that one stated the percent in fileProgressLast (the
+ * newest master's replaces a file's, below his too). His percent is kept
+ * under it (owner answer Q22). Null when the two records do not say that:
+ * no such records (a task saved before), his percent judged after the
+ * file's, or his percent at or above every file's.
+ */
+export function scheduleNewestMastersPercentOverHis(
+  row: Pick<ScheduleItem, 'status'>,
+  his: Readonly<{ percent: number; judgedAt: string | null }> | null,
+  peak: ScheduleItem['fileProgressPeak'],
+  last: ScheduleItem['fileProgressLast'],
+): Partial<ScheduleItem> | null {
+  if (!his || !his.judgedAt || !peak || !last || typeof peak.statedAt !== 'string' || typeof last.statedAt !== 'string') return null;
+  const tookOver = percentOf({ percentComplete: peak.percentComplete }) > his.percent && timeOf(peak.statedAt) > timeOf(his.judgedAt);
+  if (!tookOver || timeOf(last.statedAt) < timeOf(peak.statedAt)) return null;
+  const stated = reconcileScheduleProgress(row.status, percentOf({ percentComplete: last.percentComplete }));
+  return {
+    percentComplete: stated.percentComplete, status: stated.status,
+    progressSource: 'project_manager', progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, progressConfirmedAt: last.statedAt,
+    managersPercentUnderFile: his.percent, managersPercentUnderFileJudgedAt: his.judgedAt,
+  };
+}
+
 export function scheduleManagersOwnPercent(item: ScheduleItem): Readonly<{ percent: number; judgedAt: string | null }> | null {
   if (scheduleProgressIsManagers(item)) return { percent: percentOf(item), judgedAt: scheduleProgressJudgedAt(item) };
   const floor = item.managersPercentUnderFile;

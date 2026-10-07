@@ -9,6 +9,7 @@ import {
   scheduleFileTookHisPercentOver,
   scheduleManagersOwnPercent,
   scheduleManagersPercentUnderFileOfBoth,
+  scheduleNewestMastersPercentOverHis,
   scheduleProgressCarriedFrom,
   scheduleProgressFlooredAtManagers,
   scheduleProgressIsManagers,
@@ -977,6 +978,17 @@ function mergeScheduleRevisions(
   const filesOverHis = scheduleFileTookHisPercentOver(local, cloud) ? cloud : scheduleFileTookHisPercentOver(cloud, local) ? local : null;
   const progressSource = filesOverHis ?? (compareProgressAuthority(local, cloud) >= 0 ? local : cloud);
 
+  // The last percent a master's file stated on the row, from whichever copy knows the later (Build 231, S4 item 3), and,
+  // where the copies' percents differ from it, the newest master's percent over his once a file had taken his over.
+  // Not while a lookahead restates the row: its percent has its own rules.
+  const lastStated = [local.fileProgressLast, cloud.fileProgressLast].filter((stated): stated is NonNullable<ScheduleItem['fileProgressLast']> => Boolean(stated) && typeof stated!.statedAt === 'string')
+    .sort((a, b) => timestamp(b.statedAt) - timestamp(a.statedAt))[0];
+  const hisLatest = [scheduleManagersOwnPercent(local), scheduleManagersOwnPercent(cloud)].filter((own): own is NonNullable<ReturnType<typeof scheduleManagersOwnPercent>> => Boolean(own))
+    .sort((a, b) => timestamp(b.judgedAt) - timestamp(a.judgedAt))[0] ?? null;
+  const replayed = lastStated && !local.lookaheadOverlay && !cloud.lookaheadOverlay
+    ? scheduleNewestMastersPercentOverHis(progressSource, hisLatest, fileProgressPeakOfBoth(local, cloud).fileProgressPeak, lastStated) : null;
+  const newestMasters = replayed && boundedPercent(Number(replayed.percentComplete)) !== boundedPercent(Number(progressSource.percentComplete)) ? replayed : null;
+
   const alsoImportedInBatchIds = [...new Set([
     ...(local.alsoImportedInBatchIds || []),
     ...(cloud.alsoImportedInBatchIds || []),
@@ -987,7 +999,7 @@ function mergeScheduleRevisions(
   const revisedFromTaskIds = scheduleTaskEarlierIdsOfBoth(base, base === local ? cloud : local);
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   // The row a carried percent came from goes with that percent, last, as the carry adds it (A7 pass 28 L).
-  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, progressStandsSince: _baseStandsSince, fileProgressPeak: _basePeak, ...baseRecord } = base;
+  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, progressStandsSince: _baseStandsSince, fileProgressPeak: _basePeak, fileProgressLast: _baseLast, ...baseRecord } = base;
   // What a master said under a lookahead, from the copy that has it (A7 pass 24 L-3).
   // With David's own later percent on the other copy's task (A6 pass 22 L1).
   const lookaheadOverlay = lookaheadNoteWithPercentOf(lookaheadNoteOfBoth(base, base === local ? cloud : local), base, base === local ? cloud : local);
@@ -1018,6 +1030,9 @@ function mergeScheduleRevisions(
     ...progressStandsSinceOfBoth(progressSource, progressSource === local ? cloud : local),
     // The highest percent a master's file stated on the row, from whichever copy knows the higher (the later, of equals).
     ...fileProgressPeakOfBoth(local, cloud),
+    ...(lastStated ? { fileProgressLast: lastStated } : {}),
+    // Two masters approved apart that both restated this row: what one device would show, replayed (Build 231, S4 item 3).
+    ...(newestMasters || {}),
     // Each master's dates kept with the row, from the copy that knows more of them (Build 231, S4 item 1).
     ...(masterDates => (masterDates ? { masterDatesOfRow: masterDates } : {}))([base, base === local ? cloud : local]
       .map(copy => copy.masterDatesOfRow).filter(Boolean).sort((a, b) => (b!.before?.length ?? 0) - (a!.before?.length ?? 0))[0]),

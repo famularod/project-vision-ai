@@ -1644,6 +1644,9 @@ export function mergeApprovedScheduleImportItems({
           ? {
               ...restated,
               ...(fileProgress || {}),
+              // What this master's file states for the row, standing or not (Build 231, S4 item 3; fileProgressLast).
+              // On a task an import owns: one he entered by hand is weighed against a master by its own rules.
+              ...(owned && scheduleRowStatesPercent(importedItem) ? { fileProgressLast: { percentComplete: percentOf(importedItem), statedAt: approvedAt } } : {}),
               ...(rehome ? {
                 locationName: key(restated.locationName) ? restated.locationName : importedItem.locationName,
                 alsoImportedInBatchIds: [...(restated.alsoImportedInBatchIds || []), newBatchId],
