@@ -809,6 +809,107 @@ describe('P2-L4: an Archive waiting for a document that is gone from the cloud',
   });
 });
 
+describe('two accounts on one phone, on this batch\'s code', () => {
+  // The reviewer's case, as he wrote it, with the one name this batch changed: when the next try is due is asked of
+  // sharedDocumentArchiveNextTryInMs() (running time), where it was read from the view's "nextTryAt" (the clock).
+  it('sound: B never sends A\'s waiting tap, never sees A\'s list, lines or waiting Restore; A\'s tap goes up when A is back', async () => {
+    cloud.add('doc-b', 'owner-b');
+    cloud.add('doc-a2');
+    cloud.row('doc-a2')!.archived_at = T('08:00:00.000');
+    const asA = await start('phone', 'owner-a');
+    await sync(asA, cloud, 'phone');
+    cloud.state.offline.phone = true;
+    await asA.requestSharedDocumentArchive(PERMIT, true, T('18:00:00.000'), 'Grading permit');
+    await asA.requestSharedDocumentArchive('doc-a2', false, T('18:00:10.000'), 'Site contract');
+    await sync(asA, cloud, 'phone');
+    expect(asA.sharedDocumentArchiveView().waitingRestores).toHaveLength(1);
+    await asA.sharedDocumentArchiveSettled();
+    cloud.state.offline.phone = false;
+
+    // B signs in. Worst case: the saved copy was NOT swapped for B's.
+    cloud.state.signedIn.phone = 'owner-b';
+    const asB = await start('phone', 'owner-b');
+    const viewB = asB.sharedDocumentArchiveView();
+    expect({ hidden: hiddenOn(asB), waiting: [...viewB.waitingIds], restores: viewB.waitingRestores, notices: viewB.notices, next: asB.sharedDocumentArchiveNextTryInMs() })
+      .toEqual({ hidden: [], waiting: [], restores: [], notices: [], next: null });
+    await sync(asB, cloud, 'phone', 'owner-b');
+    await sync(asB, cloud, 'phone', 'owner-a'); // a pass left running for A, with B signed in
+    await asB.requestSharedDocumentArchive('doc-b', true, T('19:00:00.000'));
+    await sync(asB, cloud, 'phone', 'owner-b');
+    expect(cloud.writes.filter(write => write.id !== 'doc-b')).toEqual([]);
+    expect({ permit: archivedInCloud(cloud, PERMIT), a2: archivedInCloud(cloud, 'doc-a2'), b: archivedInCloud(cloud, 'doc-b') })
+      .toEqual({ permit: false, a2: true, b: true });
+    expect(hiddenOn(asB)).toEqual(['doc-b']);
+    await asB.sharedDocumentArchiveSettled();
+
+    cloud.state.signedIn.phone = 'owner-a';
+    const asAAgain = await start('phone', 'owner-a');
+    expect(hiddenOn(asAAgain)).toEqual([PERMIT]);
+    await sync(asAAgain, cloud, 'phone', 'owner-a');
+    expect({ permit: archivedInCloud(cloud, PERMIT), a2: archivedInCloud(cloud, 'doc-a2'), b: archivedInCloud(cloud, 'doc-b') })
+      .toEqual({ permit: true, a2: false, b: true });
+    expect(hiddenOn(asAAgain)).toEqual([PERMIT]);
+  });
+
+  it('what this batch added is per account too: A\'s line about a tap that was not sent, the card it asks to be put back, and A\'s wait after a refusal are never B\'s', async () => {
+    // The same document id in both accounts, on purpose: nothing may be shared by the id alone.
+    cloud.add(PERMIT, 'owner-b');
+    cloud.rows.filter(row => row.id === PERMIT && row.owner_id === 'owner-a')[0].archived_at = T('09:00:00.000');
+    const asA = await start('phone', 'owner-a');
+    await sync(asA, cloud, 'phone');
+    // A, with no signal: Restore, then Archive. Meanwhile it is restored on A's iPad: A's Archive will be let go.
+    cloud.state.offline.phone = true;
+    await asA.requestSharedDocumentArchive(PERMIT, false);
+    await asA.requestSharedDocumentArchive(PERMIT, true, T('09:30:00.000'), 'Grading permit');
+    cloud.rows.filter(row => row.id === PERMIT && row.owner_id === 'owner-a')[0].archived_at = null;
+    cloud.state.offline.phone = false;
+    await sync(asA, cloud, 'phone');
+    expect(asA.sharedDocumentArchiveView().notices.map(notice => notice.why)).toEqual(['restored_on_another_device']);
+    expect(asA.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]);
+    // A second document of A's is refused: it waits half a minute.
+    cloud.add('doc-a2');
+    let appHasRun = 10_000;
+    const running = () => appHasRun;
+    await asA.requestSharedDocumentArchive('doc-a2', true, T('09:40:00.000'));
+    cloud.state.failWritesWith = { code: '57014', message: 'canceling statement due to statement timeout' };
+    await sync(asA, cloud, 'phone', 'owner-a', { running });
+    expect(asA.sharedDocumentArchiveNextTryInMs(running)).toBe(30_000);
+    cloud.state.failWritesWith = null;
+
+    // B signs in on the same phone, in the same run of the app (the same copy of the service).
+    cloud.state.signedIn.phone = 'owner-b';
+    await asA.openSharedDocumentArchive('owner-b');
+    const viewB = asA.sharedDocumentArchiveView();
+    expect({ notices: viewB.notices, cardsToPutBack: viewB.restoredElsewhere, waiting: [...viewB.waitingIds], hidden: [...viewB.archivedIds], next: asA.sharedDocumentArchiveNextTryInMs(running) })
+      .toEqual({ notices: [], cardsToPutBack: [], waiting: [], hidden: [], next: null });
+    // B archives B's own document of the same id: it is sent at once (A's wait is not B's), and only B's row changes.
+    await sync(asA, cloud, 'phone', 'owner-b', { running }); // B's first answer from the cloud on this phone
+    const writesBefore = cloud.writes.length;
+    await asA.requestSharedDocumentArchive(PERMIT, true, T('10:00:00.000'));
+    await sync(asA, cloud, 'phone', 'owner-b', { running });
+    expect(cloud.writes.slice(writesBefore).map(write => write.changed)).toEqual([1]);
+    expect(cloud.rows.filter(row => row.id === PERMIT).map(row => [row.owner_id, Boolean(row.archived_at)])).toEqual([['owner-a', false], ['owner-b', true]]);
+    expect(asA.sharedDocumentArchiveView().notices).toEqual([]);
+    await asA.sharedDocumentArchiveSettled();
+    // What is saved keeps the two apart.
+    const raw = JSON.parse([...deviceStorage.phone.values()][0]).owners as Record<string, { notices: unknown[]; waiting: Array<{ documentId: string }>; marks: Record<string, string> }>;
+    expect(raw['owner-a'].notices).toHaveLength(1);
+    expect(raw['owner-a'].waiting.map(item => item.documentId)).toEqual(['doc-a2']);
+    expect(raw['owner-b'].notices).toEqual([]);
+    expect(raw['owner-b'].waiting).toEqual([]);
+    expect(Object.keys(raw['owner-b'].marks)).toEqual([PERMIT]);
+    // A is back: A's line is still there for A, and A's refused Archive goes up once its own wait is over.
+    cloud.state.signedIn.phone = 'owner-a';
+    await asA.openSharedDocumentArchive('owner-a');
+    expect(asA.sharedDocumentArchiveView().notices.map(notice => notice.why)).toEqual(['restored_on_another_device']);
+    await sync(asA, cloud, 'phone', 'owner-a', { running });
+    expect(archivedInCloud(cloud, 'doc-a2')).toBe(false); // its half minute is not over
+    appHasRun += 31_000;
+    await sync(asA, cloud, 'phone', 'owner-a', { running });
+    expect(archivedInCloud(cloud, 'doc-a2')).toBe(true);
+  });
+});
+
 /**
  * The reviewer's tables, in small. He ran 300 sequences in each cell; here 25
  * in each, because a long random run in one process crashes the test runner
