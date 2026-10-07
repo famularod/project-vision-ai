@@ -543,7 +543,8 @@ describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review as
 
   it('the web\'s review shows the check, waits for his confirmation, and sends his answers with the upload', () => {
     const shell = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
-    expect(shell).toContain('daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })');
+    // (The rows as reviewed with the role he chose: a lookahead's rows are asked about as a lookahead's, WS1 item 2.)
+    expect(shell).toContain('daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems })');
     expect(shell).toContain('<ScheduleImportPairingCheck');
     const upload = shell.slice(shell.indexOf('async function uploadPreparedDocument()'));
     const refusal = upload.indexOf('const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);');
@@ -552,7 +553,7 @@ describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review as
     // Refused while a question is unconfirmed: the notice, and nothing uploads.
     expect(upload.slice(refusal, upload.indexOf('setUploading(true);')).replace(/\s+/g, ' '))
       .toContain("if (pairingRefusal) { setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') }); return; }");
-    expect(upload).toContain('let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);');
+    expect(upload).toContain('let reviewedUpload = withScheduleImportPairingChoices(roleReviewedUpload ?? preparedUpload, pairingQuestions, pairingAnswerOf);');
     const provider = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-auth-provider.tsx'), 'utf8');
     expect(provider).toContain('importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices');
   });

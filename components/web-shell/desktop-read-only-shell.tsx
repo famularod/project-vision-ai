@@ -9,6 +9,7 @@ import {
   type ScheduleImportPairingAnswer,
 } from '../schedule-import-pairing-check';
 import type { ScheduleImportPairingQuestion } from '../../services/ScheduleImportMerge';
+import type { ScheduleImportRole, ScheduleImportRoleSuggestion } from '../../services/ScheduleLookahead';
 import {
   ActivityIndicator,
   Image,
@@ -102,6 +103,9 @@ import {
   daveWebReportSourceNotCounted,
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
+  daveWebScheduleUploadRoleRefusal,
+  daveWebScheduleUploadRoleSuggestion,
+  withDAVEWebScheduleUploadRole,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   prepareDAVEWebLinkedDocument,
@@ -126,6 +130,7 @@ import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
 import { DesktopAskECOSWorkspace } from './desktop-ask-ecos';
 import { DesktopDocumentOnboarding } from './desktop-document-onboarding';
+import { DesktopScheduleUploadRole } from './desktop-schedule-upload-role';
 import { mergeECOSDrawingIntakeSuggestion, reviewedECOSDrawingUpload, suggestECOSDrawingIntake } from '../../services/ECOSDocumentUploadIntake';
 import { validateECOSMobileDrawingControls } from '../../services/ECOSMobileDrawingOnboarding';
 import { DesktopDocumentProofPreview } from './desktop-document-proof-preview';
@@ -3810,11 +3815,27 @@ function DocumentManagementWorkspace({
   const [preparedUpload, setPreparedUpload] = useState<DAVEWebPreparedUpload | null>(null);
   // Same-named tasks whose pairing the dates cannot settle: David confirms which is which before the upload, as in
   // the phone's import review (owner answer Q30; review N1: the web's review asked nothing).
-  const pairingQuestions = useMemo(() => preparedUpload
-    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })
-    : [], [auth.snapshot, preparedUpload]);
+  // "Full schedule" or "Lookahead" (owner answer Q22), asked at this review as on the phone's (WS1 item 2). The phone's
+  // suggestion is worked out once, when the file is prepared, and stands until he picks: it must not change under him
+  // while he excludes rows. Kept per prepared file, so another file starts from its own suggestion.
+  const [roleReview, setRoleReview] = useState<Readonly<{
+    documentId: string;
+    suggestion: ScheduleImportRoleSuggestion;
+    chosen: ScheduleImportRole | null;
+  }> | null>(null);
+  const roleSuggestion = preparedUpload && roleReview?.documentId === preparedUpload.document.id ? roleReview.suggestion : null;
+  const chosenRole = roleSuggestion ? roleReview?.chosen ?? null : null;
+  const reviewedRole: ScheduleImportRole | null = roleSuggestion ? chosenRole || roleSuggestion.role : null;
+  const roleReviewedUpload = useMemo(
+    () => (preparedUpload && reviewedRole ? withDAVEWebScheduleUploadRole(preparedUpload, reviewedRole) : preparedUpload),
+    [preparedUpload, reviewedRole],
+  );
+  const pairingQuestions = useMemo(() => roleReviewedUpload
+    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems })
+    : [], [auth.snapshot, roleReviewedUpload]);
   const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
-  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${question.key}`;
+  // (An answer is for the role it was asked under: a lookahead pairs by other rules than a full schedule.)
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${reviewedRole ?? ''}|${question.key}`;
   const pairingAnswerOf = (question: ScheduleImportPairingQuestion) => pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
   const [preparedBytes, setPreparedBytes] = useState<ArrayBuffer | null>(null);
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
@@ -3997,6 +4018,8 @@ function DocumentManagementWorkspace({
             },
           }
         : preparedWithIntelligence);
+      const suggestion = daveWebScheduleUploadRoleSuggestion({ snapshot: auth.snapshot, prepared: preparedWithIntelligence });
+      setRoleReview(suggestion ? { documentId: preparedWithIntelligence.document.id, suggestion, chosen: null } : null);
       setPreparedBytes(bytes);
       setPreparedFile(file);
     } catch (error) {
@@ -4039,6 +4062,11 @@ function DocumentManagementWorkspace({
 
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
+    const roleRefusal = daveWebScheduleUploadRoleRefusal(preparedUpload, reviewedRole);
+    if (roleRefusal) {
+      setNotice({ tone: 'danger', text: roleRefusal });
+      return;
+    }
     const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (pairingRefusal) {
       setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') });
@@ -4048,7 +4076,7 @@ function DocumentManagementWorkspace({
     setUploadProgress(0);
     setNotice(null);
     try {
-      let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);
+      let reviewedUpload = withScheduleImportPairingChoices(roleReviewedUpload ?? preparedUpload, pairingQuestions, pairingAnswerOf);
       if (normalizedName(preparedUpload.document.category) === 'drawing') {
         const controls = { drawingNumber, drawingRevision, drawingDiscipline,
           drawingStatus, drawingIssuedAt, replacementDocumentId: replacementId || null };
@@ -4097,7 +4125,9 @@ function DocumentManagementWorkspace({
       setNotice({
         tone: 'good',
         text: preparedUpload.scheduleItems.length > 0
-          ? `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
+          ? reviewedRole === 'lookahead'
+            ? `Lookahead and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. It adds to the master schedule now, so there is nothing to make current.`
+            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
           : normalizedName(preparedUpload.document.category) === 'drawing'
             ? 'Drawing uploaded. Vitruvius is preparing it in the background; it will remain unavailable to Ask ECOS until preparation passes and you make this exact revision current.'
             : 'Document uploaded and classified in the shared project record.',
@@ -4595,6 +4625,14 @@ function DocumentManagementWorkspace({
               <Text style={styles.dataDetail}>{preparedUpload.document.originalFileName} · {preparedUpload.document.category} · {formatFileSize(preparedUpload.document.sizeBytes || 0)}</Text>
               {preparedFromDrive ? <Text style={styles.dataMeta}>Source: Google Drive · Original file stays in Drive</Text> : null}
               <Text style={preparedUpload.extractionStatus === 'needs_manual_review' ? styles.errorText : styles.dataMeta}>{preparedUpload.reviewMessage}</Text>
+              {roleSuggestion ? (
+                <DesktopScheduleUploadRole
+                  suggestion={roleSuggestion}
+                  chosen={chosenRole}
+                  disabled={uploading}
+                  onChoose={role => setRoleReview(current => (current ? { ...current, chosen: role } : current))}
+                />
+              ) : null}
               {preparedUpload.scheduleItems.length > 0 ? (
                 <View style={styles.list}>
                   {preparedUpload.scheduleItems.map((item, index) => (

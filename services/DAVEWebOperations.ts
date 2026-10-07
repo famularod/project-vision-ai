@@ -31,8 +31,17 @@ import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
-import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './ScheduleLookahead';
+import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions, scheduleItemsVisibleBeforeImport, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
+import {
+  scheduleDependenciesAfterScheduleDeleted,
+  scheduleItemsAfterScheduleDeleted,
+  scheduleLookaheadDeleteNote,
+  suggestScheduleImportRole,
+  withScheduleImportRole,
+  type ScheduleImportRole,
+  type ScheduleImportRoleSuggestion,
+} from './ScheduleLookahead';
+import { scheduleDocumentsAfterApproval } from './ScheduleDocumentLabels';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
@@ -383,8 +392,11 @@ export type DAVEWebScheduleImportPlan = Readonly<{
  * A snapshot read before the web kept every saved task (no
  * knownScheduleItems) pairs as before, on the tasks shown alone.
  */
+type DAVEWebImportSnapshot =
+  Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems' | 'referenceDocuments'>>;
+
 function daveWebSavedTasksForImport(
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>,
+  snapshot: DAVEWebImportSnapshot,
 ): Readonly<{
   saved: readonly Readonly<{ item: ScheduleItem; cloudUpdatedAt: string | null }>[];
   isShown: (item: ScheduleItem) => boolean;
@@ -402,12 +414,125 @@ function daveWebSavedTasksForImport(
   return { saved: [...shown, ...hidden], isShown: item => shownIds.has(item.id) };
 }
 
+/** The rows of an upload he chose "Lookahead" for: each says so (withDAVEWebScheduleUploadRole). */
+function daveWebUploadRowsAreLookahead(rows: readonly ScheduleItem[]): boolean {
+  return rows.length > 0 && rows.every(row => row.importedAsLookahead === true);
+}
+
+/**
+ * What a lookahead uploaded on the web is merged against (WS1 item 2): what
+ * the phone's approval of a lookahead is given. Every saved task as saved,
+ * and the phone's own test of which were shown before this import
+ * (scheduleItemsVisibleBeforeImport), which also tells the merge which
+ * lookahead files are still saved (review N2 F2). A snapshot without every
+ * saved task or the schedules falls back to the tasks shown.
+ */
+function daveWebSavedTasksForLookahead(
+  snapshot: DAVEWebImportSnapshot,
+  rows: readonly ScheduleItem[],
+): ReturnType<typeof daveWebSavedTasksForImport> {
+  const known = snapshot.knownScheduleItems as readonly DAVEWebScheduleItem[] | undefined;
+  const documents = snapshot.referenceDocuments;
+  if (!known || !documents) return daveWebSavedTasksForImport(snapshot);
+  const saved = known.map(item => ({ item: scheduleItemForCloud(item), cloudUpdatedAt: item.cloudUpdatedAt ?? null }));
+  const importBatchId = rows.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+  return { saved, isShown: scheduleItemsVisibleBeforeImport(saved.map(({ item }) => item), documents, importBatchId) };
+}
+
+/** The web's words for the two ways a schedule file can be used (owner answer Q22); the lookahead's are the phone's. */
+export const DAVE_WEB_SCHEDULE_ROLE_CHOICES: readonly Readonly<{ role: ScheduleImportRole; title: string; detail: string }>[] = Object.freeze([
+  Object.freeze({
+    role: 'master' as const,
+    title: 'Full schedule (replaces)',
+    detail: 'Use this file as the whole schedule for its projects. It is saved as a prior version first, and replaces the schedule in use for them when you choose Make Current Schedule.',
+  }),
+  Object.freeze({
+    role: 'lookahead' as const,
+    title: 'Lookahead / partial (adds to the master)',
+    detail: 'Keep the master schedule. A task in both files shows once, with this file’s dates and progress. Tasks only in this file are added. The master’s other tasks stay. It applies as soon as it is uploaded, and a newer lookahead for the same project replaces it.',
+  }),
+]);
+
+/**
+ * WS1 item 2 (open item, medium; 6 Oct 2026): "How should Vitruvius use this
+ * schedule?" at the web's upload review. The web could only upload a full
+ * schedule. The default is the phone's own suggestion
+ * (suggestScheduleImportRole) from the schedules and tasks saved now. Null
+ * when the upload is not a schedule with tasks to review: a lookahead with no
+ * task of its own to state would replace the lookahead in effect with nothing.
+ */
+export function daveWebScheduleUploadRoleSuggestion({
+  snapshot,
+  prepared,
+}: {
+  snapshot: DAVEWebImportSnapshot | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus'> | null | undefined;
+}): ScheduleImportRoleSuggestion | null {
+  if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
+  const { scheduleRole: _role, ...file } = prepared.document;
+  return suggestScheduleImportRole({
+    batch: { documents: [file as ReferenceDocument], items: prepared.scheduleItems.map(daveWebRowWithoutRole) },
+    documents: snapshot.referenceDocuments ?? [],
+    scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
+  });
+}
+
+function daveWebRowWithoutRole(row: ScheduleItem): ScheduleItem {
+  if (row.importedAsLookahead !== true) return row;
+  const { importedAsLookahead: _lookahead, ...rest } = row;
+  return rest as ScheduleItem;
+}
+
+export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
+  'A lookahead needs at least one task from the file. Keep a task in the list above, or choose Full schedule.';
+
+/**
+ * The reviewed upload as the role David chose (WS1 item 2). "Lookahead": the
+ * schedule file is marked as the phone's review marks it
+ * (withScheduleImportRole) and labelled with the projects its rows belong
+ * to, as the phone's approval labels it (scheduleDocumentsAfterApproval): a
+ * lookahead replaces an older lookahead only for the projects it covers
+ * (owner answer Q25), so it must not cover a project it lists no task for.
+ * Each row says it is a lookahead's, which is how the upload's planner knows
+ * (planDAVEWebScheduleImport is handed the rows, not the document), and what
+ * the phone's merge writes on the tasks a lookahead adds.
+ * "Full schedule": the upload as every schedule uploaded before.
+ */
+export function withDAVEWebScheduleUploadRole<T extends DAVEWebPreparedUpload>(prepared: T, role: ScheduleImportRole): T {
+  if (normalized(prepared.document.category) !== 'schedules') return prepared;
+  if (role !== 'lookahead') {
+    if (prepared.document.scheduleRole !== 'lookahead' && !prepared.scheduleItems.some(row => row.importedAsLookahead === true)) return prepared;
+    const { scheduleRole: _role, ...document } = prepared.document;
+    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' }, scheduleItems: prepared.scheduleItems.map(daveWebRowWithoutRole) };
+  }
+  const scheduleItems = prepared.scheduleItems.map(row => (row.importedAsLookahead === true ? row : { ...row, importedAsLookahead: true }));
+  const marked = withScheduleImportRole({ documents: [prepared.document] }, 'lookahead').documents;
+  const [document] = scheduleItems.length > 0
+    ? scheduleDocumentsAfterApproval({ documents: [], approvedDocuments: marked, approvedItems: scheduleItems, updatedAt: prepared.document.importedAt })
+    : marked;
+  return {
+    ...prepared,
+    document: { ...document, webContentReview: 'Lookahead: it adds to the master schedule and is in effect until a newer lookahead for the same project replaces it.' },
+    scheduleItems,
+  };
+}
+
+/** Why the reviewed upload cannot go up as the role chosen, or null. */
+export function daveWebScheduleUploadRoleRefusal(
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems'>,
+  role: ScheduleImportRole | null,
+): string | null {
+  return role === 'lookahead' && normalized(prepared.document.category) === 'schedules' && prepared.scheduleItems.length === 0
+    ? DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT
+    : null;
+}
+
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
   pairingChoices,
 }: {
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>;
+  snapshot: DAVEWebImportSnapshot;
   importedScheduleItems: readonly ScheduleItem[];
   /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
@@ -415,9 +540,15 @@ export function planDAVEWebScheduleImport({
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
+  // WS1 item 2: the rows of a file he chose "Lookahead" for at the review (withDAVEWebScheduleUploadRole) are merged
+  // as the phone's approval merges a lookahead: it restates the master's tasks in place, adds its own, and is in
+  // effect at once (owner answer Q22), so nothing waits for Make Current.
+  const overlay = daveWebUploadRowsAreLookahead(importedScheduleItems);
   // Every saved task, with which of them the web shows, as the phone's approval is given them (WS1 item 1): a row may
   // be a task no longer shown only by its Unique ID or by his answer at the review (scheduleTasksNoLongerShown).
-  const { saved, isShown } = daveWebSavedTasksForImport(snapshot);
+  const { saved, isShown } = overlay
+    ? daveWebSavedTasksForLookahead(snapshot, importedScheduleItems)
+    : daveWebSavedTasksForImport(snapshot);
   const merged = mergeApprovedScheduleImportItems({
     existing: saved.map(({ item }) => item),
     imported: importedScheduleItems,
@@ -425,8 +556,10 @@ export function planDAVEWebScheduleImport({
     completionMatch: (importedItem, items) => findExactScheduleTaskForCompletionClaim(importedItem, items.filter(isShown)),
     mergeCompletion: mergeReportedCompletionClaim,
     isCurrent: isShown,
-    // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
-    current: false,
+    overlay,
+    // A full schedule is uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit
+    // A5 pass 18 L3). A lookahead is in effect as soon as it is saved.
+    current: overlay,
     pairingChoices,
   });
   const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
@@ -453,10 +586,26 @@ export function daveWebScheduleImportPairingQuestions({
   snapshot,
   importedScheduleItems,
 }: {
-  snapshot: (Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>) | null | undefined;
+  snapshot: DAVEWebImportSnapshot | null | undefined;
   importedScheduleItems: readonly ScheduleItem[];
 }): ScheduleImportPairingQuestion[] {
   if (!snapshot || importedScheduleItems.length === 0) return [];
+  // WS1 item 2: a lookahead's rows are asked about as the phone's review asks about a lookahead's, by the phone's
+  // review function, from every saved task and the schedules saved now.
+  if (daveWebUploadRowsAreLookahead(importedScheduleItems)) {
+    const importBatchId = importedScheduleItems.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+    if (snapshot.knownScheduleItems && snapshot.referenceDocuments) {
+      return scheduleImportReviewPairingQuestions({
+        saved: snapshot.knownScheduleItems.map(scheduleItemForCloud),
+        documents: snapshot.referenceDocuments,
+        importBatchId,
+        imported: importedScheduleItems,
+        overlay: true,
+      });
+    }
+    const shown = daveWebSavedTasksForImport(snapshot);
+    return scheduleImportPairingQuestions({ existing: shown.saved.map(({ item }) => item), imported: importedScheduleItems, isCurrent: shown.isShown, overlay: true });
+  }
   // WS1 item 1: with the saved rows the web does not show, so a task that was on an earlier schedule and is listed
   // again is asked about ("the same task, or new work?") by the phone's own function, in the phone's own words.
   const { saved, isShown } = daveWebSavedTasksForImport(snapshot);
