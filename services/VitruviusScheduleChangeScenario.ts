@@ -44,6 +44,12 @@ export type VitruviusScheduleScenarioIssue = Readonly<{
   code: VitruviusScheduleScenarioIssueCode;
   itemId: string | null;
   message: string;
+  /**
+   * Set only on a note that does not stop the save: another task whose new
+   * dates the calculation cannot give (review pass 1, L2). It is listed so
+   * he sees it; it is not something this change did.
+   */
+  severity?: 'warning';
 }>;
 
 export type VitruviusScheduleScenarioTaskChange = Readonly<{
@@ -201,6 +207,7 @@ export function buildVitruviusScheduleChangeScenario({
     code: issue.code,
     itemId: issue.itemId,
     message: issue.message,
+    ...(issue.severity === 'warning' ? { severity: 'warning' as const } : {}),
   }));
   const criticalIssues = candidateAnalytics.criticalPath.safe
     ? []
@@ -229,8 +236,9 @@ export function buildVitruviusScheduleChangeScenario({
       proposedProjectItems,
     ),
     safety: Object.freeze({
+      // A note about another task does not stop this one from being saved.
       safeToApply:
-        issues.length === 0 &&
+        !issues.some(issue => issue.severity !== 'warning') &&
         candidateAnalytics.impactPreview.safeToApply &&
         candidateAnalytics.criticalPath.safe,
       issues: Object.freeze(issues),

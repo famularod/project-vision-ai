@@ -664,11 +664,15 @@ export function DesktopSchedulePage({
     }
     setImpactPendingItemId('all');
     setNotice(null);
+    // Tasks the calculation could not give dates to are left as they are and said so (review pass 1, L2).
+    const leftAsItIs = analysis.impactPreview.issues.filter(issue => issue.severity === 'warning').length;
     try {
       const updated = await auth.updateTasks(updates);
       setNotice({
         tone: 'good',
-        text: `${updated} calculated date change${updated === 1 ? '' : 's'} applied and synced.`,
+        text: `${updated} calculated date change${updated === 1 ? '' : 's'} applied and synced.` + (leftAsItIs > 0
+          ? ` ${leftAsItIs} task${leftAsItIs === 1 ? ' could not be calculated and was left as it is' : 's could not be calculated and were left as they are'}; see the note${leftAsItIs === 1 ? '' : 's'} in the impact preview.`
+          : ''),
       });
     } catch (error) {
       setNotice({
@@ -1504,7 +1508,9 @@ function ImpactPreviewPanel({
       ) : null}
       {analytics.impactPreview.changes.length === 0 ? (
         <Text style={styles.impactEmpty}>
-          Current task dates already satisfy the saved finish-to-start relationships.
+          {analytics.impactPreview.issues.length > 0
+            ? `No other date changes are needed. See the note${analytics.impactPreview.issues.length === 1 ? '' : 's'} above.`
+            : 'Current task dates already satisfy the saved finish-to-start relationships.'}
         </Text>
       ) : analytics.impactPreview.changes.map(change => (
         <View key={change.itemId} style={styles.impactChange}>

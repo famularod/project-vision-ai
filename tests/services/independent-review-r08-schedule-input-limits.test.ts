@@ -144,13 +144,19 @@ describe('R08: the calculation refuses a stored or imported duration beyond the 
     const { result, steps } = countingDaySteps(10_000, () => previewVitruviusFinishToStartSchedule(items));
 
     expect(steps).toBeLessThan(50);
-    expect(result.safeToApply).toBe(false);
+    // Review pass 1, L2: this pinned an error that made the whole calculation
+    // unsafe, so one long line stopped every other task's dates from being
+    // applied. It is now a note about the one task (a 'warning'), worded to
+    // say what the task needs. Still not walked, and the task still left as
+    // it was, which is what R08 was about.
+    expect(result.safeToApply).toBe(true);
     expect(result.changes).toEqual([]);
     expect(result.issues).toEqual([{
       code: 'unsupported_task_duration',
-      severity: 'error',
+      severity: 'warning',
       itemId: 'frame',
-      message: 'Frame walls is longer than the 2,600 working days the schedule supports. Correct its duration or dates before its dates can be calculated.',
+      message: 'Frame walls is longer than the 2,600 working days the schedule supports, so its dates were not calculated. ' +
+        'Its predecessors now put its start on or after 2026-07-27: move it yourself. The other date changes can still be applied.',
     }]);
     expect(result.items.find(item => item.id === 'frame')).toMatchObject({ startDate: '2026-07-20', finishDate: '2026-07-21', durationDays });
     expect(JSON.stringify(items)).toBe(before);
@@ -168,12 +174,16 @@ describe('R08: the calculation refuses a stored or imported duration beyond the 
     const items = [task('pour', { taskName: 'Pour slab', finishDate: '9999-12-30' }), successor({ durationDays: 3 })];
     const { result } = countingDaySteps(10_000, () => previewVitruviusFinishToStartSchedule(items));
     expect(result.changes).toEqual([]);
-    expect(result.safeToApply).toBe(false);
-    expect(result.issues).toEqual([expect.objectContaining({
+    // Review pass 1, L2: a note about the one task now, not an error for the
+    // whole calculation (see the case above). It still moves nothing.
+    expect(result.safeToApply).toBe(true);
+    expect(result.issues).toEqual([{
       code: 'invalid_task_date',
+      severity: 'warning',
       itemId: 'frame',
-      message: "Frame walls would be moved outside 2000 through 2100. Correct its predecessors' dates before it can be calculated.",
-    })]);
+      message: 'Frame walls would be moved to 9999-12-31, outside 2000 through 2100, so its dates were left as they are. ' +
+        "Correct its predecessors' dates. The other date changes can still be applied.",
+    }]);
   });
 
   // Guards: these already hold on 594a71d.

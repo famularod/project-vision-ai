@@ -22,6 +22,17 @@ export type VitruviusScheduleIssueCode =
   | 'completed_task_locked'
   | 'unsupported_task_duration';
 
+/**
+ * An 'error' is a fault in the plan (a circle of links, a link to a task that
+ * is gone, a date that cannot be read, completed work that would have to
+ * move): nothing calculated is applied until it is corrected.
+ *
+ * A 'warning' is a note about one task whose new dates the calculation cannot
+ * give: a line longer than the schedule walks, or a task that would land
+ * outside the years the schedule takes. That task is left as it is and named;
+ * every other change is still calculated and can be applied (review pass 1,
+ * L2: one such line made the whole page's calculation unsafe).
+ */
 export type VitruviusScheduleIssue = Readonly<{
   code: VitruviusScheduleIssueCode;
   severity: 'error' | 'warning';
@@ -47,6 +58,8 @@ export type VitruviusSchedulePreview = Readonly<{
   network: PIEScheduleDependencyNetwork;
   safeToApply: boolean;
 }>;
+
+const OTHER_CHANGES_STILL_APPLY = 'The other date changes can still be applied.';
 
 export class VitruviusScheduleCalculationError extends Error {
   constructor(message: string) {
@@ -154,12 +167,14 @@ export function previewVitruviusFinishToStartSchedule(
       const durationDays = scheduleDurationDays(item, currentStart);
       // Checked before the duration is walked day by day (independent review
       // R08: a stored or imported duration of a billion days did not finish).
+      // It is a note about this one task, which is left as it is; he did not
+      // type this value in the change being reviewed (review pass 1, L2).
       if (durationDays > SCHEDULE_MAX_DURATION_WORKING_DAYS) {
         issues.push(Object.freeze({
           code: 'unsupported_task_duration',
-          severity: 'error',
+          severity: 'warning',
           itemId,
-          message: `${item.taskName} is longer than the ${SCHEDULE_MAX_DURATION_WORKING_DAYS.toLocaleString('en-US')} working days the schedule supports. Correct its duration or dates before its dates can be calculated.`,
+          message: `${item.taskName} is longer than the ${SCHEDULE_MAX_DURATION_WORKING_DAYS.toLocaleString('en-US')} working days the schedule supports, so its dates were not calculated. Its predecessors now put its start on or after ${formatScheduleDate(requiredStart)}: move it yourself. ${OTHER_CHANGES_STILL_APPLY}`,
         }));
         return;
       }
@@ -169,9 +184,9 @@ export function previewVitruviusFinishToStartSchedule(
       if (!scheduleDayIsSupported(requiredStart) || !scheduleDayIsSupported(nextFinish)) {
         issues.push(Object.freeze({
           code: 'invalid_task_date',
-          severity: 'error',
+          severity: 'warning',
           itemId,
-          message: `${item.taskName} would be moved outside ${SCHEDULE_FIRST_YEAR} through ${SCHEDULE_LAST_YEAR}. Correct its predecessors' dates before it can be calculated.`,
+          message: `${item.taskName} would be moved to ${formatScheduleDate(requiredStart)}, outside ${SCHEDULE_FIRST_YEAR} through ${SCHEDULE_LAST_YEAR}, so its dates were left as they are. Correct its predecessors' dates. ${OTHER_CHANGES_STILL_APPLY}`,
         }));
         return;
       }
