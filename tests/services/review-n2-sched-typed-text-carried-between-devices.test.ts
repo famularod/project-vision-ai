@@ -5003,4 +5003,28 @@ describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after i
     expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad)), framingDates(webShown())]).toEqual(Array(3).fill([['10/15/2026', '10/25/2026']]));
   });
 
+  // Schedule batch S6, item 4 b (7 Oct 2026). S5 recorded "a deletion that arrives across a restart of the app" as not
+  // covered, because what the app has seen of the notes is kept in memory only. Looked at again: when the app opens
+  // it first shows the tasks it saved, with the lookahead's note still on them, and only then hears the cloud. So a
+  // delete made while the phone was closed is seen as a note gone since the last look, like one heard live, and the
+  // recompute runs. Both ways the app hears the cloud at a start are here (its startup download, and a refresh).
+  // What stays uncovered is narrower: the app closed BETWEEN hearing the task rows and hearing that the file is gone.
+  it.each([['its startup download', startup], ['a refresh', refresh]] as const)('S6 item 4 b: the phone closed and opened again before it hears of the delete, then %s brings it: Framing is on F\'s dates everywhere', async (_how, hear) => {
+    const { phone, ipad } = await underG2();
+    at('2026-09-12T09:00:00.000Z');
+    await deleteWithItems(ipad, L);
+    at('2026-09-12T10:00:00.000Z');
+    await setActiveOn(phone, F);
+    // Closed and opened again: nothing kept in memory is left. The app shows the tasks and schedules it saved.
+    relaunchModules(phone);
+    await render(phone);
+    expect([framingDates(deviceShown(phone)), Boolean(framingOf(deviceShown(phone))[0].lookaheadOverlay)]).toEqual([[['10/18/2026', '10/28/2026']], true]);
+    at('2026-09-12T11:00:00.000Z');
+    await hear(phone);
+    expect(framingDates(deviceShown(phone))).toEqual([['10/15/2026', '10/25/2026']]);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad)), framingDates(webShown())]).toEqual(Array(3).fill([['10/15/2026', '10/25/2026']]));
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  });
 });
