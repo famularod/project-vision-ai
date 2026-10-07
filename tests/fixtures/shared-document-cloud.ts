@@ -102,6 +102,8 @@ export function createSharedDocumentCloud({ installed = false }: { installed?: b
       rows.push({ id, owner_id: ownerId, name: id, category: 'Permit Card', document_data: { id, ...documentData }, updated_at: '2026-10-05T16:00:00.000Z' });
     },
     row(id: string) { return rows.find(row => row.id === id) ?? null; },
+    /** The document is deleted from all devices: its row is gone. */
+    remove(id: string) { const at = rows.findIndex(row => row.id === id); if (at >= 0) rows.splice(at, 1); },
     /** The owner pastes the database change: the column is there, empty on every row. */
     paste() {
       state.installed = true;

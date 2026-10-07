@@ -450,6 +450,111 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
   });
 });
 
+describe('L4: a document deleted from the cloud while it was archived', () => {
+  const archivedOnThePhone = async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z', 'Grading permit.pdf');
+    await sync(phone, cloud, 'phone');
+    expect(cloud.row(PERMIT)?.archived_at).toBeTruthy();
+    await phone.sharedDocumentArchiveSettled();
+  };
+  const cardAfter = (archive: Archive) => archive.withArchivedProjectDocumentsRestored(
+    [{ id: PERMIT, referenceDocumentId: PERMIT, isArchived: true }], archive.sharedDocumentArchiveView().restoredElsewhere)[0];
+
+  it('F-L4: it is not "restored on another device": the phone is not told to put its card back', async () => {
+    await archivedOnThePhone();
+    // The phone is closed. On a device still on Build 230 (which lists it) he deletes it from all devices.
+    cloud.remove(PERMIT);
+
+    const phoneNextDay = await start('phone');
+    await sync(phoneNextDay, cloud, 'phone');
+    expect(cardAfter(phoneNextDay).isArchived).toBe(true); // the archived card of a deleted document stays put away
+    expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
+    expect(hiddenOn(phoneNextDay)).toEqual([]); // the cloud's list no longer holds it
+    // It asked the cloud about that one document, and was told there is no such row.
+    expect(cloud.reads.filter(read => read.id === PERMIT)).toHaveLength(1);
+  });
+
+  it('sound: told live (the phone was open), the same deletion puts no card back', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
+    await sync(phone, cloud, 'phone');
+    cloud.remove(PERMIT);
+    await phone.noteSharedDocumentArchiveLiveRow({ ownerId: 'owner-a', eventType: 'DELETE', newRow: null, oldRow: { id: PERMIT } });
+    await sync(phone, cloud, 'phone');
+    expect(phone.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
+  });
+
+  it('a Restore made on another device is still a Restore: the row is there with its mark emptied, and the card is put back', async () => {
+    await archivedOnThePhone();
+    cloud.row(PERMIT)!.archived_at = null; // restored on the iPad
+    const phoneNextDay = await start('phone');
+    await sync(phoneNextDay, cloud, 'phone');
+    expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]);
+    expect(cardAfter(phoneNextDay).isArchived).toBe(false);
+  });
+
+  it('the device\'s own deletion history already holds it: nothing more is asked', async () => {
+    await archivedOnThePhone();
+    cloud.remove(PERMIT);
+    const phoneNextDay = await start('phone');
+    await sync(phoneNextDay, cloud, 'phone', 'owner-a', { deletedDocumentIds: async () => [PERMIT] });
+    expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
+    expect(hiddenOn(phoneNextDay)).toEqual([]);
+    expect(cloud.reads.filter(read => read.id === PERMIT)).toEqual([]);
+  });
+
+  it('when the cloud cannot be asked which it was, nothing is decided: it stays hidden, and the next pass decides', async () => {
+    await archivedOnThePhone();
+    cloud.row(PERMIT)!.archived_at = null; // restored on the iPad
+    const phoneNextDay = await start('phone');
+    const real = cloud.clientFor('phone');
+    let questions = 0;
+    const signalLostAfterTheFirstQuestion = {
+      auth: real.auth,
+      from: () => {
+        questions += 1;
+        if (questions === 1) return real.from();
+        const chain: Record<string, unknown> = {};
+        for (const method of ['select', 'eq', 'not', 'is', 'update']) chain[method] = () => chain;
+        chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve({ data: null, status: 0, error: { code: '', message: 'TypeError: Network request failed' } }).then(resolve);
+        return chain;
+      },
+    };
+    await phoneNextDay.syncSharedDocumentArchiveWithCloud({ client: signalLostAfterTheFirstQuestion as never, ownerId: 'owner-a', timeoutMs: 150 });
+    expect(hiddenOn(phoneNextDay)).toEqual([PERMIT]);
+    expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
+    await sync(phoneNextDay, cloud, 'phone');
+    expect(hiddenOn(phoneNextDay)).toEqual([]);
+    expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]);
+  });
+
+  it('an Archive still waiting for a document that has been deleted from all devices is let go, with a line, and not tried for ever', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    cloud.state.offline.phone = true;
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z', 'Grading permit.pdf');
+    cloud.remove(PERMIT); // deleted from all devices on the iPad
+    cloud.state.offline.phone = false;
+    // The phone has not heard of the deletion yet: the cloud has no such row, and the Archive waits.
+    await sync(phone, cloud, 'phone');
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
+    // Its deletion history has it now.
+    await sync(phone, cloud, 'phone', 'owner-a', { deletedDocumentIds: () => new Set([PERMIT]) });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([]);
+    expect(phone.sharedDocumentArchiveView().nextTryAt).toBeNull();
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([
+      { documentId: PERMIT, tap: 'archive', why: 'deleted_from_all_devices', name: 'Grading permit.pdf' },
+    ]);
+    expect(phone.sharedDocumentArchiveNoticeText(phone.sharedDocumentArchiveView().notices[0]))
+      .toBe('Grading permit.pdf: your Archive on this device was not sent, because the document has since been deleted from all your devices. Its card on this device stays under Archived.');
+    expect(cloud.writes).toHaveLength(1); // the one try before it knew
+  });
+});
+
 /**
  * The reviewer's random sequences on two devices, compared with one device
  * doing the same taps in order. The owner's taps are numbered in the order he

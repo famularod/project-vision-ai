@@ -1,8 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { AppState } from 'react-native';
 
 import { useNativeWorkspaceOwner } from '../components/native-workspace-owner';
 import type { DAVEOperationalRealtimePayload } from '../services/DAVEOperationalRefresh';
+import { DAVE_SYNC_TOMBSTONES_STORAGE_KEY, deletedDAVERecordIds, parseDAVESyncTombstones } from '../services/DAVESyncTombstones';
 import type { MobileArchivedDocument } from '../services/MobileDocumentWorkspace';
 import {
   consumeSharedDocumentsRestoredElsewhere,
@@ -24,6 +26,20 @@ import {
 const WAITING_RETRY_MS = 30_000;
 /** A mark the cloud has refused waits longer each time, up to this (review of D1, L3). */
 const LONGEST_RETRY_MS = 15 * 60_000;
+
+/**
+ * The shared documents this device's deletion history says were deleted from
+ * all devices (review of D1, L4): a deletion is not a Restore. Read as it is
+ * saved, changing nothing; an unreadable history says nothing.
+ */
+async function deletedSharedDocumentIds(): Promise<string[]> {
+  try {
+    const saved = await AsyncStorage.getItem(DAVE_SYNC_TOMBSTONES_STORAGE_KEY);
+    return saved ? deletedDAVERecordIds(parseDAVESyncTombstones(JSON.parse(saved)), 'reference_document') : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Owner answer Q44 (6 Oct 2026): an archived compliance document is hidden on
@@ -63,7 +79,7 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       try {
         const user = await getCurrentSessionUser();
         if (!active || !user.ok || user.data?.id !== ownerId) return;
-        await syncSharedDocumentArchiveWithCloud({ client, ownerId });
+        await syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds });
       } catch {
         // Nothing is shown: the device keeps what it last knew and tries again.
       }
@@ -81,7 +97,7 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     // opens and each time it comes back to the front, which is when the owner's database change is picked up.
     const listener = (client: Parameters<typeof syncSharedDocumentArchiveWithCloud>[0]['client'], listedFor: string) =>
       (listedFor === ownerId && sharedDocumentArchiveView().installed !== false
-        ? syncSharedDocumentArchiveWithCloud({ client, ownerId }) : Promise.resolve());
+        ? syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds }) : Promise.resolve());
     setReferenceDocumentsListedListener?.(listener as Parameters<typeof setReferenceDocumentsListedListener>[0]);
     void openSharedDocumentArchive(ownerId).then(() => sync());
     const subscription = AppState.addEventListener('change', state => { if (state === 'active') void sync(); });

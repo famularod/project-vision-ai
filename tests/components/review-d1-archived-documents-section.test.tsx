@@ -76,7 +76,7 @@ describe('review of D1, L2: the line for a Restore that was not sent', () => {
     expect(tree.getByText('Archived (1)')).toBeTruthy();
 
     await act(async () => {
-      fireEvent.press(tree.getByLabelText('OK, Grading permit stays archived'));
+      fireEvent.press(tree.getByLabelText('OK, dismiss the note about Grading permit'));
       await sharedDocumentArchiveSettled();
     });
     expect(tree.queryByTestId('archived-document-notice')).toBeNull();

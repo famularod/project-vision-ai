@@ -11,7 +11,7 @@ import { createElement, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
 import { useSharedDocumentArchive } from '../../hooks/use-shared-document-archive';
-import { sharedDocumentArchiveSettled } from '../../services/SharedDocumentArchive';
+import { sharedDocumentArchiveSettled, sharedDocumentArchiveView } from '../../services/SharedDocumentArchive';
 import { createSharedDocumentCloud, type SharedDocumentCloud } from '../fixtures/shared-document-cloud';
 
 const mockStorage = new Map<string, string>();
@@ -274,6 +274,40 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     });
     await device.quiet();
     expect(waitingNames()).toEqual(['restore:Grading permit']);
+    device.unmount();
+  });
+
+  it('review of D1, L4: deleted on another device while archived here is not a Restore: no card is put back; and the device\'s own deletion history lets a waiting Archive go, with a line', async () => {
+    const device = start();
+    await device.quiet();
+    // Archived here, and in the cloud.
+    act(() => { device.result.current.archive(PERMIT); });
+    await device.quiet();
+    expect(cloud.row(PERMIT)?.archived_at).toEqual(expect.any(String));
+    // Deleted from all devices elsewhere. The app comes back to the front.
+    cloud.remove(PERMIT);
+    await act(async () => { becameActive(); });
+    await device.quiet();
+    expect(restoreCards).not.toHaveBeenCalled();
+    expect(hidden(device)).toEqual([]);
+
+    // A second document: archived with no signal, then deleted from all devices; the phone's deletion history has it.
+    cloud.add('doc-contract', owner);
+    cloud.paste();
+    cloud.state.offline = true;
+    device.result.current.question('Site contract.pdf', 'Contract');
+    act(() => { device.result.current.archive('doc-contract'); });
+    await device.quiet();
+    cloud.remove('doc-contract');
+    mockStorage.set('@dave/sync-tombstones/v1', JSON.stringify([{ entityType: 'reference_document', recordId: 'doc-contract', deletedAt: '2026-10-06T19:00:00.000Z' }]));
+    cloud.state.offline = false;
+    await act(async () => { becameActive(); });
+    await device.quiet();
+    expect(device.result.current.waitingIds.size).toBe(0);
+    expect(cloud.requests.filter(request => request.kind === 'write_mark')).toHaveLength(1); // the first document's only
+    expect(sharedDocumentArchiveView().notices).toEqual([
+      { documentId: 'doc-contract', tap: 'archive', why: 'deleted_from_all_devices', name: 'Site contract.pdf' },
+    ]);
     device.unmount();
   });
 

@@ -97,11 +97,13 @@ type WaitingMark = Readonly<{
 export type SharedDocumentArchiveNotice = Readonly<{
   documentId: string;
   tap: 'archive' | 'restore';
-  why: 'archived_again_on_another_device';
+  why: 'archived_again_on_another_device' | 'deleted_from_all_devices';
   name?: string;
 }>;
 const NOTICE_LIMIT = 20;
 const OWN_RESTORE_LIMIT = 500;
+/** At most this many documents are asked about one by one in a pass (review of D1, L4); the rest wait for the next. */
+const GONE_QUESTION_LIMIT = 25;
 
 type OwnerRecord = Readonly<{
   /** true once the cloud answered with the column; false when it said "no such column"; null when never asked. */
@@ -223,7 +225,11 @@ function parseStored(raw: string | null): Map<string, OwnerRecord> {
         notices: (Array.isArray(record.notices) ? record.notices : []).flatMap(item => {
           const notice = (item && typeof item === 'object' ? item : {}) as Partial<SharedDocumentArchiveNotice>;
           return typeof notice.documentId === 'string' && notice.documentId && (notice.tap === 'archive' || notice.tap === 'restore')
-            ? [{ documentId: notice.documentId, tap: notice.tap, why: 'archived_again_on_another_device' as const, ...(typeof notice.name === 'string' && notice.name ? { name: notice.name } : {}) }]
+            ? [{
+                documentId: notice.documentId, tap: notice.tap,
+                why: notice.why === 'deleted_from_all_devices' ? 'deleted_from_all_devices' as const : 'archived_again_on_another_device' as const,
+                ...(typeof notice.name === 'string' && notice.name ? { name: notice.name } : {}),
+              }]
             : [];
         }),
       });
@@ -359,6 +365,9 @@ export async function dismissSharedDocumentArchiveNotices(documentIds: readonly 
 /** The line for a tap that was let go without being sent: what happened, and what the document's state is. */
 export function sharedDocumentArchiveNoticeText(notice: SharedDocumentArchiveNotice): string {
   const name = notice.name?.trim() || 'A document';
+  if (notice.why === 'deleted_from_all_devices') {
+    return `${name}: your Archive on this device was not sent, because the document has since been deleted from all your devices. Its card on this device stays under Archived.`;
+  }
   return `${name}: your Restore on this device was not sent. It was archived again on another device after you tapped Restore here, so it stays archived.`;
 }
 
@@ -378,25 +387,40 @@ export async function consumeSharedDocumentsRestoredElsewhere(documentIds: reado
  * account's documents the cloud marks archived. Never throws and shows
  * nothing: "no such column" is "not installed"; no answer leaves what the
  * device last knew.
+ *
+ * A document that was archived and is no longer in the cloud's answer was
+ * either restored on another device or deleted (review of D1, L4). Only a
+ * Restore puts this device's own card back, so the two are told apart: by
+ * the device's deletion history (`deletedDocumentIds`) where it already
+ * holds the document, and otherwise by asking the cloud for that one row. A
+ * row with its mark emptied is a Restore; no row is a deletion; no answer
+ * decides nothing, and the document stays hidden until the next pass.
  */
-export function syncSharedDocumentArchiveWithCloud(input: Readonly<{
+type SyncInput = Readonly<{
   client: SharedDocumentArchiveClient;
   ownerId: string;
   timeoutMs?: number;
   /** The device's clock (tests move it). */
   now?: () => number;
-}>): Promise<SharedDocumentArchiveCloudAnswer> {
+  /** The shared documents this device's deletion history says were deleted from all devices. */
+  deletedDocumentIds?: () => Iterable<string> | Promise<Iterable<string>>;
+}>;
+
+export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
   // One at a time: two passes would each send the same waiting mark.
   const work = cloudWork.catch(() => undefined).then(() => syncOnce(input).catch((): SharedDocumentArchiveCloudAnswer => 'unknown'));
   cloudWork = work;
   return work;
 }
 
-async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now = Date.now }: Readonly<{
-  client: SharedDocumentArchiveClient; ownerId: string; timeoutMs?: number; now?: () => number;
-}>): Promise<SharedDocumentArchiveCloudAnswer> {
+async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now = Date.now, deletedDocumentIds }: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
   await load();
   if (!ownerId || !(await signedInAs(client, ownerId))) return 'unknown';
+  // The deletion history, read once in a pass and only when something turns on it.
+  let history: Promise<ReadonlySet<string>> | null = null;
+  const deleted = () => (history ??= Promise.resolve()
+    .then(() => deletedDocumentIds?.() ?? [])
+    .then(ids => new Set(ids), () => new Set<string>()));
 
   const read = await answered(() => client.from(SHARED_DOCUMENTS_TABLE)
     .select('id, archived_at').eq('owner_id', ownerId).not('archived_at', 'is', null), timeoutMs);
@@ -416,10 +440,30 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
     const { id, archived_at: archivedAt } = (row ?? {}) as { id?: unknown; archived_at?: unknown };
     if (typeof id === 'string' && id) cloudMarks[id] = typeof archivedAt === 'string' ? archivedAt : '';
   });
+
+  // Archived when last read and not in this answer: restored on another device, or deleted (review of D1, L4)?
+  const lastKnown = recordOf(ownerId);
+  const notAsked = new Set(lastKnown.waiting.map(mark => mark.documentId));
+  const gone = lastKnown.installed === true ? Object.keys(lastKnown.marks).filter(id => !(id in cloudMarks) && !notAsked.has(id)) : [];
+  const restoredElsewhere = new Set<string>();
+  const undecided = new Set<string>(gone.slice(GONE_QUESTION_LIMIT));
+  for (const id of gone.slice(0, GONE_QUESTION_LIMIT)) {
+    if ((await deleted()).has(id)) continue; // deleted: its archived card stays put away
+    const row = await answered(() => client.from(SHARED_DOCUMENTS_TABLE).select('id, archived_at').eq('owner_id', ownerId).eq('id', id), timeoutMs);
+    if (!row || row.error || !Array.isArray(row.data)) { undecided.add(id); continue; }
+    if (row.data.length === 0) continue; // no such row any more: deleted
+    const markNow = (row.data[0] as { archived_at?: unknown } | null)?.archived_at;
+    if (typeof markNow === 'string' && markNow) cloudMarks[id] = markNow; // archived again since the first question
+    else restoredElsewhere.add(id);
+  }
+  if (gone.length > 0 && !(await signedInAs(client, ownerId))) return 'unknown';
+
   change(ownerId, record => {
     const waitingIds = new Set(record.waiting.map(mark => mark.documentId));
+    // What could not be decided is kept as it was: hidden, and asked about again at the next pass.
+    undecided.forEach(id => { if (id in record.marks && !(id in cloudMarks)) cloudMarks[id] = record.marks[id]; });
     const restored = record.installed === true
-      ? Object.keys(record.marks).filter(id => !(id in cloudMarks) && !waitingIds.has(id))
+      ? Object.keys(record.marks).filter(id => !(id in cloudMarks) && !waitingIds.has(id) && restoredElsewhere.has(id))
       : [];
     const known = Object.keys(record.marks);
     // An archive in the cloud for a document this device restored: older than that Restore, it is a tap made
@@ -442,10 +486,22 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
     const isThisTap = (item: WaitingMark) => item.documentId === id && item.at === mark.at && item.archived === mark.archived;
     const stillWaiting = () => recordOf(ownerId).waiting.some(isThisTap);
     if (!stillWaiting()) continue;
-    if ((mark.notBefore ?? 0) > now()) continue; // refused before: its wait is not over (review of D1, L3)
 
     // What the cloud says of this document now, as just read, against what he asked (review of D1, L2 and L8).
     const cloudMark: CloudMark = recordOf(ownerId).marks[id] ?? null;
+    // An Archive for a document this device's deletion history says was deleted from all devices: there is nothing
+    // to archive, so it is let go, with a line (review of D1, L4). Its card here stays put away.
+    if (mark.archived && cloudMark === null && (await deleted()).has(id)) {
+      change(ownerId, record => ({
+        ...record,
+        waiting: record.waiting.filter(item => !isThisTap(item)),
+        notices: [
+          ...record.notices.filter(notice => notice.documentId !== id),
+          { documentId: id, tap: 'archive' as const, why: 'deleted_from_all_devices' as const, ...(mark.name ? { name: mark.name } : {}) },
+        ].slice(-NOTICE_LIMIT),
+      }));
+      continue;
+    }
     // The cloud already holds an archive, and it is an older tap than this Archive: the mark takes this tap's time,
     // so that a Restore made between the two and still waiting on another device is known for the older tap it is.
     const olderArchive = mark.archived && cloudMark !== null && Date.parse(mark.at) > Date.parse(cloudMark);
@@ -474,6 +530,7 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       continue;
     }
 
+    if ((mark.notBefore ?? 0) > now()) continue; // refused before: its wait is not over (review of D1, L3)
     // The account is asked again right before each write, and the write names it.
     if (!(await signedInAs(client, ownerId))) return 'unknown';
     const value: CloudMark = mark.archived ? mark.at : null;

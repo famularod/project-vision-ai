@@ -17,9 +17,10 @@ const noticesNow = () => sharedDocumentArchiveView().notices;
  * each with Restore. Nothing is shown when the project has none. An archived
  * document is hidden, not deleted, so this is where it is brought back from.
  *
- * Above it, always open: a line for each Restore this device let go without
- * sending it, because the document was archived again on another device
- * afterwards (review of D1, L2). It stays until he taps OK.
+ * Above it, always open: a line for each tap this device let go without
+ * sending it: a Restore, because the document was archived again on another
+ * device afterwards (review of D1, L2), or an Archive, because the document
+ * has since been deleted from all devices (L4). It stays until he taps OK.
  */
 export function ArchivedDocumentsSection({ documents, onRestore }: {
   documents: readonly MobileArchivedDocument[];
@@ -38,7 +39,7 @@ export function ArchivedDocumentsSection({ documents, onRestore }: {
             <TouchableOpacity
               style={styles.photoControlButton}
               accessibilityRole="button"
-              accessibilityLabel={`OK, ${name || 'the document'} stays archived`}
+              accessibilityLabel={`OK, dismiss the note about ${name || 'the document'}`}
               onPress={() => { void dismissSharedDocumentArchiveNotices([notice.documentId]); }}
             >
               <Text style={styles.photoControlText}>OK</Text>
