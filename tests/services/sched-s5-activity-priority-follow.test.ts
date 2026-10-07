@@ -29,6 +29,7 @@ import {
   mergeApprovedScheduleImportItems,
   scheduleItemsVisibleBeforeImport,
   scheduleProgressCarriedOnActivation,
+  scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
 import {
   scheduleItemActivityWithOtherRows,
@@ -187,6 +188,16 @@ describe('S5 item 1: Set Active and Make Current, back and forth', () => {
     expect(noteIds(one(again, 'Framing'))).toEqual(['a1', 'a2', 'a3', 'a4']);
     expect(scheduleProgressCarriedOnActivation({ items: again.items, documentsBefore: again.documents, documentsAfter: scheduleDocumentsAfterActivation(F, again.documents, 'project', '2026-06-14T08:00:00.000Z'), now: '2026-06-14T08:00:00.000Z' })
       .filter(item => item.taskName === 'Framing' && JSON.stringify(noteIds(item)) !== JSON.stringify(['a1', 'a2', 'a3', 'a4']))).toEqual([]);
+  });
+
+  it('the web\'s Make Current (the same helper, handed the tasks shown before and after): the notes and the priority show on the row made current', () => {
+    const later = patch(withNote(onG, framingG, A3), framingG, { priority: 'High' }, '2026-06-09T09:05:00.000Z');
+    const documents = scheduleDocumentsAfterActivation(F, later.documents, 'project', '2026-06-10T08:00:00.000Z');
+    const saved = scheduleProgressCarriedToShownTasks({
+      before: shown(later), after: shown({ items: later.items, documents }), documentsBefore: later.documents, documentsAfter: documents, now: '2026-06-10T08:00:00.000Z',
+    });
+    const framing = saved.find(item => item.taskName === 'Framing')!;
+    expect([framing.id, noteIds(framing), framing.priority]).toEqual([framingF, ['a1', 'a2', 'a3'], 'High']);
   });
 
   it('a priority he set on the newer row stands when only the older row is stamped later for something else', () => {
