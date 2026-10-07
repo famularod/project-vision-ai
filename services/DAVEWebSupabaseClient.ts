@@ -747,7 +747,8 @@ export function createDAVEWebSupabaseGateway(
           ? readOwnerRows(client, 'project_updates', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projectUpdates ?? []),
         shouldRead('reference_documents')
-          ? readAuthorizedReferenceDocumentMetadata(client)
+          ? readAuthorizedReferenceDocumentMetadata(client).then(rows => // with the cloud's archived marks (owner answer Q44)
+              withArchivedReferenceDocumentMarks(client, userId, rows, cachedRows?.referenceDocuments ?? []))
           : Promise.resolve(cachedRows?.referenceDocuments ?? []),
         shouldRead('sync_tombstones')
           ? readOwnerRows(client, 'dave_sync_tombstones', userId, DELETION_RECORD_KEY, 'deleted_at')
@@ -2546,4 +2547,52 @@ async function readAuthorizedReferenceDocumentMetadata(
     throw new Error('Authorized reference document metadata could not be loaded.');
   }
   return Object.freeze([...data]);
+}
+
+/**
+ * Owner answer Q44 (6 Oct 2026): an archived compliance document is hidden on
+ * every device and kept in the cloud. The mark is the column
+ * reference_documents.archived_at, which the owner adds by pasting a database
+ * change. The document list above does not carry it, so the table is asked
+ * which of the account's documents have it, and each such row is given its
+ * archived_at, as a live change from the cloud already carries it.
+ *
+ * It never fails the list and shows nothing. "No such column" (before the
+ * database change): no document is archived. No answer at all (no signal, a
+ * stall, a refusal): each row keeps the mark this tab last read for it.
+ * The same rule as the phone's (services/SharedDocumentArchive.ts).
+ */
+async function withArchivedReferenceDocumentMarks(
+  client: SupabaseClient,
+  ownerId: string,
+  rows: readonly unknown[],
+  heldRows: readonly unknown[],
+): Promise<readonly unknown[]> {
+  const marked = (source: ReadonlyMap<string, string>) => Object.freeze(rows.map(row => {
+    const archivedAt = isRecord(row) ? source.get(readRawString(row, 'id')) : undefined;
+    return isRecord(row) && archivedAt ? { ...row, archived_at: archivedAt } : row;
+  }));
+  const held = () => new Map(heldRows.flatMap(row => (
+    isRecord(row) && typeof row.archived_at === 'string' && row.archived_at
+      ? [[readRawString(row, 'id'), row.archived_at] as const]
+      : [])));
+  try {
+    const { data, error } = await client
+      .from('reference_documents')
+      .select('id, archived_at')
+      .eq('owner_id', ownerId)
+      .not('archived_at', 'is', null);
+    if (error) {
+      const message = String(error.message || '').toLowerCase();
+      const noSuchColumn = message.includes('archived_at') && (error.code === '42703' || message.includes('does not exist'));
+      return noSuchColumn ? rows : marked(held());
+    }
+    if (!Array.isArray(data)) return marked(held());
+    return marked(new Map(data.flatMap(row => (
+      isRecord(row) && typeof row.id === 'string' && typeof row.archived_at === 'string' && row.archived_at
+        ? [[row.id, row.archived_at] as const]
+        : []))));
+  } catch {
+    return marked(held());
+  }
 }

@@ -49,6 +49,14 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
   referenceDocuments: readonly DAVEWebReferenceDocument[];
   /**
+   * Shared documents the cloud marks archived (owner answer Q44, 6 Oct 2026):
+   * hidden on every device, kept in the cloud. They stay in
+   * `referenceDocuments` (a schedule's tasks are worked out from every
+   * document) and are left out of the Documents list by these ids. Missing on
+   * a snapshot built before; empty until the owner's database change.
+   */
+  archivedDocumentIds?: readonly string[];
+  /**
    * Closed (archived, not deleted) project names, kept out of `projects` but
    * checked by Ask ECOS so a question naming one is refused (audit A9 pass 3 L1).
    */
@@ -165,6 +173,7 @@ export async function loadDAVEWebReadOnlySnapshot(
     knownScheduleItems: Object.freeze(reconciledScheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(referenceDocuments),
+    archivedDocumentIds: Object.freeze(archivedDocumentIdsOfRows(rows.referenceDocuments)),
     closedProjectNames: Object.freeze(closedProjectNames),
     refreshedAt: new Date().toISOString(),
   });
@@ -399,6 +408,15 @@ export function normalizeWebPhoto(value: unknown): UpdatePhoto | null {
     locationCapturedAt: readString(photo.locationCapturedAt),
     photoIntelligence,
   };
+}
+
+/** The documents whose cloud row carries the archived mark (the row's own column, never a field of the record). */
+function archivedDocumentIdsOfRows(rows: readonly unknown[]): string[] {
+  return rows.flatMap(value => {
+    const row = toRecord(value);
+    const id = readString(toRecord(row.document_data).id) ?? readString(row.id);
+    return id && readString(row.archived_at) ? [id] : [];
+  });
 }
 
 function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {

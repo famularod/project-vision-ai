@@ -216,9 +216,13 @@ describe('DAVE browser Supabase gateway', () => {
       'schedule_items',
       'project_updates',
       'dave_sync_tombstones',
+      // Owner answer Q44 (6 Oct 2026): one question of the table itself, after the list is read.
+      'reference_documents',
     ]);
-    for (const [table, query] of fixture.queries) {
-      if (table === 'reference_documents') continue;
+    // That question asks for ids and the archived mark and nothing else. The
+    // records themselves still come only through the bounded RPC.
+    expect(fixture.queries.get('reference_documents')!.select.mock.calls).toEqual([['id, archived_at']]);
+    for (const [, query] of fixture.queries) {
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
     }
     expect(fixture.rpc).toHaveBeenCalledWith('dave_list_reference_document_metadata');

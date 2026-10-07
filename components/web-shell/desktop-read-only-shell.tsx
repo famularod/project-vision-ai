@@ -43,6 +43,7 @@ import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWeb
 import {
   daveWebDocumentDeletionIsProtected,
   daveWebDocumentInEffect,
+  daveWebListedDocuments,
   groupDAVEWebDocuments,
 } from '../../services/DAVEWebDocumentManagement';
 import {
@@ -548,7 +549,7 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
         <DesktopSidebar
           pathname={pathname}
           selectedProject={selectedProject}
-          documentCount={snapshot.referenceDocuments.length}
+          documentCount={daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds).length}
         />
       ) : null}
       <ScrollView
@@ -675,7 +676,7 @@ function DesktopPageData({
         }),
       )
     : snapshot.projectUpdates;
-  const documents = snapshot.referenceDocuments.filter(document => documentMatchesProjectScope(document, selectedScopes));
+  const documents = daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds).filter(document => documentMatchesProjectScope(document, selectedScopes)); // an archived one is hidden on every device (owner answer Q44)
   const projectIdentities = snapshot.projects.flatMap(project => {
     const id = project.id?.trim() || '';
     const name = project.name?.trim() || '';
