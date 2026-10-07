@@ -159,6 +159,21 @@ describe('reading the shared-document list tells the archived-mark listener (own
     expect(result.data?.map(document => document.id)).toEqual(['doc-permit']);
   });
 
+  it('review of D1, L12: the list does not wait for the listener: it is back at once while the archive question is still out, and the listener\'s work goes on', async () => {
+    let finish: () => void = () => undefined;
+    let finished = false;
+    // A stalled connection: the question about the mark takes as long as it takes.
+    const listener = jest.fn(() => new Promise<void>(resolve => { finish = () => { finished = true; resolve(); }; }));
+    service.setReferenceDocumentsListedListener(listener);
+    const heldUp = new Promise<'held up'>(resolve => setTimeout(() => resolve('held up'), 1500));
+    const result = await Promise.race([service.listReferenceDocuments(), heldUp]);
+    expect(result).not.toBe('held up');
+    expect((result as Awaited<ReturnType<typeof service.listReferenceDocuments>>).data?.map(document => document.id)).toEqual(['doc-permit']);
+    expect(listener.mock.calls).toEqual([[mockSupabaseClient, 'owner-a']]);
+    expect(finished).toBe(false); // still out: its answer is applied when it comes
+    finish();
+  });
+
   it('a list that could not be read tells no one, and no listener is no trouble', async () => {
     const listener = jest.fn(async () => undefined);
     service.setReferenceDocumentsListedListener(listener);
