@@ -197,6 +197,7 @@ describe('the whole task record through a web edit (review pass 1, web L9)', () 
     masterDatesOfRow: { startDate: '10/22/2026', finishDate: '11/01/2026', before: [{ startDate: '10/15/2026', finishDate: '10/25/2026', replacedByMaster: 'batch-MASTER G' }] },
     progressUndone: { percentComplete: 50, confirmedAt: '2026-09-15T07:00:00.000Z' },
     priority: 'High',
+    priorityAsImported: 'Medium', // what the row's own import gave it (schedule batch S6, item 1): he set High himself
     status: 'In Progress',
     notes: 'Walls up on the east side.',
     nextAction: 'Order trusses.',
