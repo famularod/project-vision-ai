@@ -722,13 +722,11 @@ function typedTextCarriedToRevisedTasks(
       priorityAsRead(priorityLender.priority) !== priorityAsRead(record.priority) &&
       timestamp(priorityLender.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(priorityLender.priority) : null;
     // Review pass 1, P1-1 (the coordinator's decision): the mark that the priority is his goes with it, when the row
-    // it comes from has one. And where he set, on that row, the very priority this row holds as its own import's (a
-    // High on a task its newer file also marks High), the mark alone comes over, by the same rule: this row then
-    // knows the priority is his, and the next master that moves the task keeps it.
-    const lenderMark = newest && priorityLender ? schedulePriorityHeSet(priorityLender) : null;
-    const markFrom = !lenderMark ? null : priorityFrom ? lenderMark
-      : !tookPriority && !schedulePriorityIsHis(record) && priorityAsRead(priorityLender!.priority) === priorityAsRead(record.priority) &&
-        timestamp(priorityLender!.updatedAt) > timestamp(own.updatedAt) ? lenderMark : null;
+    // it comes from has one. Only with a priority this carry brings: where the two rows already hold the same priority
+    // nothing is carried here (the mark reaches this row with his edit, sent on from the row he made it on, and at
+    // Set Active and Make Current). Carried alone it wrote, and so stamped, a row nobody had changed, and what he had
+    // set on the older row before that stamp then stayed behind (the reviewer's generator, seed 4093 with masters deleted).
+    const markFrom = priorityFrom && priorityLender ? schedulePriorityHeSet(priorityLender) : null;
     const fields: CarriedField[] = [...new Set([...carried, ...filledFromEarlier]), ...(priorityFrom ? ['priority' as const] : []), ...(markFrom ? ['prioritySetByHand' as const] : []),
       ...(notes ? ['activity' as const] : [])];
     if (fields.length === 0) return record;

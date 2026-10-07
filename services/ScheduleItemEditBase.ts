@@ -862,9 +862,8 @@ export { scheduleItemActivityWithOtherRows };
 export function scheduleItemCarriedFieldsToSend(carried: readonly string[], itemData: ScheduleItem, remote: ScheduleItem): string[] {
   return carried.filter(field => field === 'activity' ? Boolean(scheduleItemActivityWithOtherRows(remote.activity, itemData.activity))
     : field === 'priority' ? priorityNotSetHere(remote) && fieldValue(remote, field) !== fieldValue(itemData, field)
-    // (The mark that the carried priority is his, review pass 1 P1-1: with the priority, or alone where the cloud's row
-    // already holds that priority as its own import's. Never over one he set there.)
-    : field === 'prioritySetByHand' ? priorityNotSetHere(remote) && Boolean(schedulePriorityHeSet(itemData)) && fieldValue(remote, field) !== fieldValue(itemData, field)
+    // (The mark that the carried priority is his, review pass 1 P1-1: it goes with the priority, and only with it.)
+    : field === 'prioritySetByHand' ? carried.includes('priority') && priorityNotSetHere(remote) && fieldValue(remote, 'priority') !== fieldValue(itemData, 'priority')
     : !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim());
 }
 
@@ -1241,8 +1240,12 @@ export function scheduleItemAsLastSetOnItsOtherRow(
   // The priority with no record at all (schedule batch S6, items 1 and 4 a; rows saved before rows said what they
   // took): one he set on the hidden row shows here when this row's is not known to be his and the hidden row was the
   // one changed later. On such rows only a Low is known to be his.
-  // (With the mark that it is his, when the hidden row has one: review pass 1, P1-1.)
-  const hisPriority = !base && hiddenLater && schedulePriorityIsHis(hidden) && !schedulePriorityIsHis(changed) ? { priority: hidden.priority, ...priorityMarkTaken(changed, hidden.priority, hidden) } : {};
+  // (With the mark that it is his, when the hidden row has one: review pass 1, P1-1. And where this row's is his too,
+  // each with its mark: his later edit of the two shows, whichever row was changed later. The web's Make Current two
+  // masters back has no record to weigh from; his older priority on the row made current, known as his by its mark,
+  // stood against the later one he had set on the task since: the reviewer's generator, seed 6183.)
+  const takesHiddenPriority = !base && schedulePriorityIsHis(hidden) && (schedulePriorityIsHis(changed) ? schedulePriorityHeSetLater(hidden, changed, false) : hiddenLater);
+  const hisPriority = takesHiddenPriority ? { priority: hidden.priority, ...priorityMarkTaken(changed, hidden.priority, hidden) } : {};
   const withText = blanks.length === 0 && !('priority' in hisPriority) ? changed : { ...changed, ...Object.fromEntries(blanks.map(field => [field, lender[field]])), ...hisPriority } as ScheduleItem;
   const controls = !hidden.projectControls ? withText.projectControls
     : withText.projectControls ? mergeProjectControlsRevisions(withText.projectControls, hidden.projectControls) : hidden.projectControls;

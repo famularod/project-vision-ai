@@ -23,7 +23,7 @@
 import { reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords, scheduleItemsTakingCarriedText } from '../../services/DAVEScheduleRecovery';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from '../../services/ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
 import { scheduleEditWithPriorityNoted } from '../../services/ScheduleDateEdit';
 import {
   scheduleItemAgainstItsTask,
@@ -589,23 +589,40 @@ describe('Review pass 1, P1-1, P1-2 and P1-9: every priority edit he makes leave
     expect(one(setActive(stampedOther, F, '2026-10-12T08:00:00.000Z'), 'Framing').priority).toBe('Low');
   });
 
-  it('the sync\'s own merge: a priority it carries to the task\'s row goes with its mark; one that equals the row\'s own is carried as the mark alone, once', () => {
+  it('the web\'s Make Current two masters back (it is not given every saved task, so no record joins the two rows): his later edit of the priority shows, not the older one he set on the row made current (the reviewer\'s generator, Unique ID profile, seed 6183)', () => {
+    const M = schedule('MASTER M', '2026-10-11T12:00:00.000Z');
+    const N = schedule('MASTER N', '2026-10-12T12:00:00.000Z');
+    // On F's row: High, then Medium (what F's file gave). M moves the task; he sets High on M's row; N moves it again.
+    const medium = sets(sets(onF, framingF, 'High', '2026-06-03T09:00:00.000Z'), framingF, 'Medium', '2026-06-04T09:00:00.000Z');
+    const onM = approve(medium, M, [FRAMING_H, ROOF]);
+    const high = sets(onM, one(onM, 'Framing').id, 'High', '2026-10-11T13:00:00.000Z');
+    const onN = approve(high, N, ['Framing,Alpha,Lot,11/12/2026,11/22/2026,,', ROOF]);
+    expect([one(onN, 'Framing').priority, one(onN, 'Framing').prioritySetByHand]).toEqual(['High', { priority: 'High', at: '2026-10-11T13:00:00.000Z' }]);
+    // Make Current on F, as the web calls the helper: the tasks shown before and after, no list of every saved task.
+    const at = '2026-10-12T14:00:00.000Z';
+    const documents = scheduleDocumentsAfterActivation(F, onN.documents, 'project', at);
+    const carried = scheduleProgressCarriedToShownTasks({ before: shown(onN), after: shown({ items: onN.items, documents }), documentsBefore: onN.documents, documentsAfter: documents, now: at }) as ScheduleItem[];
+    // (It was, with the mark alone: Medium. His older Medium on F's row, now known as his, stood against his later High.)
+    expect(carried.filter(item => item.id === framingF).map(item => [item.priority, item.prioritySetByHand])).toEqual([['High', { priority: 'High', at: '2026-10-11T13:00:00.000Z' }]]);
+    // The other way round (his later edit is on the row made current): it stands.
+    const later = sets(onN, framingF, 'Low', '2026-10-12T13:00:00.000Z');
+    const kept = scheduleProgressCarriedToShownTasks({ before: shown(later), after: shown({ items: later.items, documents }), documentsBefore: later.documents, documentsAfter: documents, now: at }) as ScheduleItem[];
+    expect(kept.filter(item => item.id === framingF).map(item => item.priority)).toEqual([]);
+  });
+
+  it('the sync\'s own merge: a priority it carries to the task\'s row goes with its mark, and both are sent together; where the two rows already hold the same priority it carries nothing', () => {
     const merge = (cloudOld: ScheduleItem) => recoverDAVEScheduleRecords({ local: onG.items, cloud: [cloudOld, row(onG, framingG)], allowCloudOnly: true });
     const low = merge(waiting(row(onG, framingF), 'Low', '2026-10-11T14:00:00.000Z').itemData);
     const framingLow = low.find(item => item.id === framingG)!;
     expect([framingLow.priority, framingLow.prioritySetByHand]).toEqual(['Low', { priority: 'Low', at: '2026-10-11T14:00:00.000Z' }]);
     expect(scheduleItemsTakingCarriedText(low).map(({ item, fields }) => [item.id, fields])).toEqual([[framingG, ['priority', 'prioritySetByHand']]]);
     expect(scheduleItemCarriedFieldsToSend(['priority', 'prioritySetByHand'], framingLow, row(onG, framingG))).toEqual(['priority', 'prioritySetByHand']);
-    // The cloud's row has one of his own by now: neither is sent over it.
+    // The cloud's row has one of his own by now, or already holds that priority: neither is sent over it.
     expect(scheduleItemCarriedFieldsToSend(['priority', 'prioritySetByHand'], framingLow, row(sets(onG, framingG, 'Medium', '2026-10-11T15:00:00.000Z'), framingG))).toEqual([]);
+    expect(scheduleItemCarriedFieldsToSend(['priority', 'prioritySetByHand'], framingLow, { ...row(onG, framingG), priority: 'Low', priorityAsImported: 'Low' } as ScheduleItem)).toEqual([]);
+    // He set High on the old row, which is what the task's row holds from its own file: the merge carries nothing and
+    // writes nothing on a row nobody changed. (The mark reaches that row with his edit, sent on, and at Set Active: above.)
     const high = merge(waiting(row(onG, framingF), 'High', '2026-10-11T14:00:00.000Z').itemData);
-    const framingHigh = high.find(item => item.id === framingG)!;
-    expect([framingHigh.priority, framingHigh.prioritySetByHand, schedulePriorityIsHis(framingHigh)]).toEqual(['High', { priority: 'High', at: '2026-10-11T14:00:00.000Z' }, true]);
-    expect(scheduleItemsTakingCarriedText(high).map(({ item, fields }) => [item.id, fields])).toEqual([[framingG, ['prioritySetByHand']]]);
-    expect(scheduleItemCarriedFieldsToSend(['prioritySetByHand'], framingHigh, row(onG, framingG))).toEqual(['prioritySetByHand']);
-    expect(scheduleItemCarriedFieldsToSend(['prioritySetByHand'], framingHigh, framingHigh)).toEqual([]);
-    // Merged again once the rows are saved so (fresh copies of them): nothing more is carried.
-    const saved = JSON.parse(JSON.stringify(high)) as ScheduleItem[];
-    expect(scheduleItemsTakingCarriedText(recoverDAVEScheduleRecords({ local: saved, cloud: JSON.parse(JSON.stringify(saved)) as ScheduleItem[], allowCloudOnly: true }))).toEqual([]);
+    expect([high.find(item => item.id === framingG), scheduleItemsTakingCarriedText(high)]).toEqual([row(onG, framingG), []]);
   });
 });
