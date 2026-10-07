@@ -1013,6 +1013,9 @@ function mergeScheduleRevisions(
     ...progressStandsSinceOfBoth(progressSource, progressSource === local ? cloud : local),
     // The highest percent a master's file stated on the row, from whichever copy knows the higher (the later, of equals).
     ...fileProgressPeakOfBoth(local, cloud),
+    // Each master's dates kept with the row, from the copy that knows more of them (Build 231, S4 item 1).
+    ...(masterDates => (masterDates ? { masterDatesOfRow: masterDates } : {}))([base, base === local ? cloud : local]
+      .map(copy => copy.masterDatesOfRow).filter(Boolean).sort((a, b) => (b!.before?.length ?? 0) - (a!.before?.length ?? 0))[0]),
   };
 }
 

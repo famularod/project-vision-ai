@@ -936,6 +936,19 @@ export type ScheduleItem = {
    */
   fileProgressPeak?: { percentComplete: number; statedAt: string } | null;
   /**
+   * The dates each master that shares this row gives it, kept with the row
+   * once its lookahead note is gone (Build 231, S4 item 1): the newest
+   * master's dates, and the dates held before each master replaced them
+   * with that master's import (the note's masterStartDate / masterFinishDate
+   * and masterDatesBefore, as they were). Master F 10/15, a lookahead 10/18,
+   * master G on the lookahead's dates; back on F with the lookahead deleted
+   * the task is on 10/15 and the note is gone; making G current again left
+   * 10/15, though G lists 10/18. Set Active and Make Current read it
+   * (scheduleNotedMasterDates): the dates of the master in effect, either
+   * way. Missing on a row saved before, which keeps its dates as before.
+   */
+  masterDatesOfRow?: { startDate: string; finishDate: string; before: Array<{ startDate: string; finishDate: string; replacedByMaster: string | true }> } | null;
+  /**
    * The percent Talk wrote on this task that its Undo took back, and when
    * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
    * device may still hold that entry, or a floor made from it, and neither

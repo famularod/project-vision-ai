@@ -640,9 +640,55 @@ describe('S3 item 3: a lookahead note gives the dates of the master in effect, n
     expect(copies(deleteWithItems(mixed, L1, GONE), 'Framing')).toEqual([F_DATES]);
   });
 
-  // Left open, said in the notes: once the last lookahead is deleted the note is gone, and with it G's dates. Framing is
-  // then on F's dates; making G current again leaves it there, though G lists 10/18. The row would have to keep each
-  // master's dates itself, not only its lookahead note.
-  // (No test is kept skipped for it: it is described in notes/impl-sched3/NOTES.txt, S3.)
+  /*
+   * Build 231, S4 item 1 (the way back S3 left open): once the last lookahead is deleted the note is gone, and G's
+   * dates went with it, so making G current again left Framing on F's dates. The row now keeps each master's dates
+   * itself (masterDatesOfRow).
+   */
+  describe('S4 item 1: the row keeps each master\'s dates once its note is gone', () => {
+    /** Back on F, L1 deleted with its items: Framing on F's dates, no note left. */
+    const onF = () => deleteWithItems(setActive(underG(), F, BACK), L1, GONE);
+    const LATER = '2026-09-13T10:00:00.000Z';
+
+    it.each(HOWS)('%s of G again: G\'s 10/18-10/28 (it stayed on F\'s); and of F once more: F\'s 10/15-10/25', (_how, activate) => {
+      const state = onF();
+      expect([copies(state, 'Framing'), named(state, 'Framing')[0].lookaheadOverlay]).toEqual([[F_DATES], undefined]);
+      const onG = activate(state, G, LATER);
+      expect(copies(onG, 'Framing')).toEqual([L1_DATES]);
+      expect(copies(activate(onG, F, '2026-09-14T10:00:00.000Z'), 'Framing')).toEqual([F_DATES]);
+    });
+
+    it('dates he moved by hand since are left alone; a row saved before (Build 229 / 230: nothing kept) stays as it was', () => {
+      const state = onF();
+      const byHand: State = { ...state, items: state.items.map(item => (item.taskName === 'Framing' ? { ...item, startDate: '10/16/2026', finishDate: '10/26/2026' } : item)) };
+      expect(copies(setActive(byHand, G, LATER), 'Framing')).toEqual([['10/16/2026', '10/26/2026', 0]]);
+      const saved230: State = { ...state, items: state.items.map(item => (({ masterDatesOfRow: _none, ...rest }) => rest)(item) as ScheduleItem) };
+      expect(copies(setActive(saved230, G, LATER), 'Framing')).toEqual([F_DATES]);
+    });
+
+    it('a newer master that lists it on the dates shown: its dates under it, G\'s under G', () => {
+      const H = doc('MASTER H', '2026-09-15T12:00:00.000Z');
+      const underH = approve(onF(), H, [F_ROW, SURVEY]);
+      expect(copies(underH, 'Framing')).toEqual([F_DATES]);
+      const onG = setActive(underH, G, '2026-09-16T10:00:00.000Z');
+      expect(copies(onG, 'Framing')).toEqual([L1_DATES]);
+      expect(copies(setActive(onG, H, '2026-09-17T10:00:00.000Z'), 'Framing')).toEqual([F_DATES]);
+    });
+
+    it('two copies of the row: the record that knows more masters is kept, whichever copy is the device\'s', () => {
+      const row = named(onF(), 'Framing')[0];
+      const { masterDatesOfRow: record, ...without } = row;
+      const longer = { ...row, masterDatesOfRow: { ...record!, before: [...record!.before, { startDate: '10/20/2026', finishDate: '10/30/2026', replacedByMaster: 'batch-MASTER H' }] } };
+      const kept = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0].masterDatesOfRow;
+      expect([kept(without as ScheduleItem, row), kept(row, without as ScheduleItem), kept(row, longer), kept(longer, row)]).toEqual([record, record, longer.masterDatesOfRow, longer.masterDatesOfRow]);
+    });
+
+    it('a new lookahead on such a row, deleted under G: G\'s dates, not F\'s', () => {
+      const L3 = doc('LOOKAHEAD L3', '2026-09-13T12:00:00.000Z', 'lookahead');
+      const withL3 = approve(onF(), L3, [framing('10/21/2026', '10/31/2026')], true);
+      const onG = setActive(withL3, G, '2026-09-14T10:00:00.000Z');
+      expect(copies(deleteWithItems(onG, L3, '2026-09-14T11:00:00.000Z'), 'Framing')).toEqual([L1_DATES]);
+    });
+  });
 });
 

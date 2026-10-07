@@ -128,7 +128,24 @@ function overlayOf(item: ScheduleItem): ScheduleLookaheadOverlay | null {
 
 function withOverlay(item: ScheduleItem, overlay: ScheduleLookaheadOverlay | null): ScheduleItem {
   const { lookaheadOverlay: _previous, ...rest } = item;
-  return overlay && overlay.lookaheads.length > 0 ? { ...rest, lookaheadOverlay: overlay } : rest;
+  if (overlay && overlay.lookaheads.length > 0) return { ...rest, lookaheadOverlay: overlay };
+  // The note goes with its last lookahead; what it knew of each master's dates stays with the row (Build 231, S4 item 1).
+  const kept = overlay && Array.isArray(overlay.masterDatesBefore) && overlay.masterDatesBefore.length > 0
+    ? { masterDatesOfRow: { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate, before: overlay.masterDatesBefore } } : {};
+  return { ...rest, ...kept };
+}
+
+/** A row's own record of each master's dates (masterDatesOfRow), read as a note's: for scheduleNotedMasterDates. */
+function rowMasterDatesAsNote(task: ScheduleItem): ScheduleLookaheadOverlay | null {
+  const chain = task.masterDatesOfRow;
+  if (!chain || !Array.isArray(chain.before) || chain.before.length === 0) return null;
+  return { masterStartDate: chain.startDate, masterFinishDate: chain.finishDate, masterDatesBefore: chain.before, masterPercentComplete: 0, lookaheads: [] } as unknown as ScheduleLookaheadOverlay;
+}
+
+/** Whether the row is on dates its own record holds (not dates he moved by hand). */
+function onRowMasterDates(task: ScheduleItem): boolean {
+  const chain = task.masterDatesOfRow;
+  return Boolean(chain) && (sameDates(task, chain!) || chain!.before.some(entry => sameDates(task, entry)));
 }
 
 /**
@@ -309,6 +326,9 @@ export function scheduleTaskRestatedByLookahead(
     ...(previous || {
       masterStartDate: task.startDate,
       masterFinishDate: task.finishDate,
+      // A row that kept each master's dates from an earlier note gives them to the new one (Build 231, S4 item 1).
+      ...(rowMasterDatesAsNote(task) && onRowMasterDates(task)
+        ? { masterStartDate: task.masterDatesOfRow!.startDate, masterFinishDate: task.masterDatesOfRow!.finishDate, masterDatesBefore: task.masterDatesOfRow!.before } : {}),
       ...managersStatement(task),
       // The master file's own percent, unless the manager's stands over it.
       masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
@@ -411,7 +431,14 @@ export function scheduleTaskMasterRestated(
   olderThanMaster: (entry: LookaheadEntry) => boolean = () => true,
 ): ScheduleItem {
   const overlay = overlayOf(task);
-  if (!overlay) return task;
+  if (!overlay) {
+    // No note, but the row keeps each master's dates (Build 231, S4 item 1): this master's are the newest now.
+    const chain = task.masterDatesOfRow;
+    const by = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
+    if (!chain || !by || !key(row.startDate) || !key(row.finishDate) || sameDates(chain, row)) return task;
+    return { ...task, masterDatesOfRow: { startDate: row.startDate, finishDate: row.finishDate,
+      before: [...chain.before, { startDate: chain.startDate, finishDate: chain.finishDate, replacedByMaster: by }].slice(-MASTER_DATES_KEPT) } };
+  }
   // Whole-app audit A5 pass 18 L2 (1 Oct 2026): a master row with blank dates
   // noted blank master dates, so deleting the lookahead gave the task none. A
   // date the row leaves blank says nothing: the note keeps the master's.
@@ -755,6 +782,16 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
   return after.flatMap(task => {
     const overlay = overlayOf(task);
     const owned = key(task.importBatchId) || key(task.sourceDocumentId) || key(task.importedFrom);
+    // Build 231, S4 item 1 (S3 item 3's way back): a row with no note left that keeps each master's dates takes the
+    // dates of the master made current, in either direction, unless he moved its dates by hand since.
+    const kept = !overlay && owned ? rowMasterDatesAsNote(task) : null;
+    if (kept) {
+      const scope = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
+      const made = currentAfter.get(scope);
+      if (!made || currentBefore.get(scope)?.id === made.id || !onRowMasterDates(task)) return [];
+      const dates = scheduleNotedMasterDates(kept, documentsAfter, made);
+      return sameDates(task, dates) || !key(dates.startDate) || !key(dates.finishDate) ? [] : [{ ...task, startDate: dates.startDate, finishDate: dates.finishDate, updatedAt: now }];
+    }
     if (!overlay || !owned || !overlay.lookaheads.some(entry => typeof entry.datesReplacedByMaster === 'string')) return [];
     const project = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
     const was = currentBefore.get(project);

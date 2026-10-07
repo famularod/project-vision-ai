@@ -68,7 +68,7 @@ export type ScheduleItemEditBase = Readonly<{
  */
 const FIELDS_NEVER_ASKED: ReadonlySet<string> = new Set<string>([
   'id', 'createdAt', 'updatedAt', 'projectId', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds',
-  'alsoImportedSourceRow', 'projectControls', 'activity', 'progressUndone', 'fileProgressPeak', ...SCHEDULE_CARRIED_PROGRESS_FIELDS,
+  'alsoImportedSourceRow', 'projectControls', 'activity', 'progressUndone', 'fileProgressPeak', 'masterDatesOfRow', ...SCHEDULE_CARRIED_PROGRESS_FIELDS,
   // What a schedule's import keeps about the task, under the imports' own rules (with owner answers Q29 and Q30: the
   // file's unique id, the rows David said are not revisions of each other), and the shown copy's lookahead dates,
   // never saved.
