@@ -2135,7 +2135,13 @@ async function retireProjectOpeningThatCanNeverArrive(
     const nextQueue = current.filter(candidate => !retired.has(candidate.id));
     return { nextQueue, result: true, persist: nextQueue.length !== current.length };
   });
-  return removedForItsAccount && !passAccountChanged(itsAccount) ? verdict : 'account_changed';
+  if (!removedForItsAccount || passAccountChanged(itsAccount)) return 'account_changed';
+  // Review pass 1, sync F3 (wording; caused by this function's own commit). The cloud has the name as a CLOSED
+  // project, this phone's create of it waits, and so does his own REOPEN of it (he heard it was closed and tapped
+  // Reopen). The create is taken off the queue as above, but the save then said "not an open project ... reopen it
+  // on Overview", which he has just done: the reopen lands at the next pass and the task goes up right after it.
+  // What is true in that state is what the save said before: the project is on its way.
+  return verdict === 'closed' && openings.some(opening => opening.operation === 'update') ? null : verdict;
 }
 
 /**

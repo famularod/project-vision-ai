@@ -317,3 +317,81 @@ describe('review pass 1, sync F2: the save decides only for the account that que
   });
 });
 
+describe('F3: one account. A create AND a reopen of the same project wait; the cloud has it closed (caused by f60e191)', () => {
+  it('his reopen is on its way, so the save does not say "other devices will not get this task ... reopen it on Overview"', async () => {
+    // With no signal he added "Main St"; meanwhile the iPad added "Main St" and closed it. The phone heard of the
+    // closed project at a refresh and he tapped Reopen; neither change has gone up yet (weak signal).
+    mockCloudOf['account-a'].closed.push({ id: mockMainStId, name: 'Main St' });
+    mockOnline = false;
+    await queueProjectCreate('Main St');
+    await queueProjectUpdate({ previousName: 'Main St', archived: false });
+    await uploadPendingChanges();
+    mockOnline = true;
+    const app = compileApp({ projects: ['Main St'], closedProjects: [] });
+
+    await app.addTask('Main St');
+
+    // The reopen still waits and will land at the next pass, with the task right after it.
+    expect((await queued()).filter(line => line.startsWith('project:update'))).toEqual(['project:update:account-a']);
+    // FAILS on d0b60c7: it says DEVICE_ONLY ("other devices will not get this task ... reopen it on Overview if it
+    // was closed") though he has reopened it and the task goes up two passes later. On 594a71d it said ON_ITS_WAY.
+    expect(app.alert).toHaveBeenCalledWith('Task saved on this device', ON_ITS_WAY('Main St'));
+    expect(app.alert).not.toHaveBeenCalledWith('Task saved on this device only', DEVICE_ONLY('Main St'));
+  });
+
+  it('and it does go up: two ordinary passes later nothing is left waiting', async () => {
+    mockCloudOf['account-a'].closed.push({ id: mockMainStId, name: 'Main St' });
+    mockOnline = false;
+    await queueProjectCreate('Main St');
+    await queueProjectUpdate({ previousName: 'Main St', archived: false });
+    await uploadPendingChanges();
+    mockOnline = true;
+    const app = compileApp({ projects: ['Main St'], closedProjects: [] });
+    await app.addTask('Main St');
+    // The stand-in's updateProject does not move the project between its lists; the cloud does. Do it here.
+    mockCloudOf['account-a'].open.push(...mockCloudOf['account-a'].closed.splice(0));
+    for (let pass = 1; pass <= 3; pass += 1) await uploadPendingChanges();
+    expect((await queued()).filter(line => line.startsWith('schedule_item'))).toEqual([]);
+    expect(mockUpsertScheduleItem).toHaveBeenLastCalledWith(expect.objectContaining({ projectName: 'Main St', projectId: mockMainStId }), { onlyIfAbsent: true });
+  });
+});
+
+describe('review pass 1, sync F3: what else is true in that state', () => {
+  it('the create is still taken off the queue (the cloud has that name, closed: no second copy), and only his reopen and the task wait', async () => {
+    mockCloudOf['account-a'].closed.push({ id: mockMainStId, name: 'Main St' });
+    mockOnline = false;
+    await queueProjectCreate('Main St');
+    await queueProjectUpdate({ previousName: 'Main St', archived: false });
+    await uploadPendingChanges();
+    mockOnline = true;
+    const app = compileApp({ projects: ['Main St'], closedProjects: [] });
+    await app.addTask('Main St');
+    expect(await queued()).toEqual(['project:update:account-a', 'schedule_item:update:account-a']);
+    expect(mockCreateProject).not.toHaveBeenCalled();
+  });
+
+  it('with no reopen waiting the save says what sync batch Y4 made it say: not an open project, reopen it on Overview', async () => {
+    mockCloudOf['account-a'].closed.push({ id: mockMainStId, name: 'Main St' });
+    mockOnline = false;
+    await queueProjectCreate('Main St');
+    await uploadPendingChanges();
+    mockOnline = true;
+    const app = compileApp({ projects: ['Main St'], closedProjects: [] });
+    await app.addTask('Main St');
+    expect(app.alert).toHaveBeenCalledWith('Task saved on this device only', DEVICE_ONLY('Main St'));
+    expect(await queued()).toEqual(['schedule_item:update:account-a']);
+  });
+
+  it('a deletion record of the name outranks his reopen: both waiting changes and the task are taken off the queue, and the save says it was deleted', async () => {
+    mockCloudOf['account-a'].deletions.push({ entityType: 'project', recordId: 'Main St', deletedAt: '2026-10-01T10:00:00.000Z' });
+    mockOnline = false;
+    await queueProjectCreate('Main St');
+    await queueProjectUpdate({ previousName: 'Main St', archived: false });
+    await uploadPendingChanges();
+    mockOnline = true;
+    const app = compileApp({ projects: ['Main St'], closedProjects: [] });
+    await app.addTask('Main St');
+    expect(await queued()).toEqual([]);
+    expect(app.alert).toHaveBeenCalledWith('Task saved on this device only', '“Main St” has been deleted, so this task was not sent and other devices will not get it.');
+  });
+});
