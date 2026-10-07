@@ -805,9 +805,15 @@ export function compareDAVEReportSnapshots({
   // the lookahead's row and is a master's task now, so the rule let go, the name was the only Paint in both
   // reports, and the same period then read "Paint moved from 60% to 0% complete." and "owner changed from Sam to
   // unassigned." So too when the master listed it on the lookahead's own days: the lookahead's row itself became
-  // the master's task. A task shown whose row a lookahead added, or that answers to such a row, pairs by name as
-  // that row did. (Read from the saved rows handed over, for the tasks of this report only: nothing is kept in a
-  // saved report for it.)
+  // the master's task. The list had not carried what he set: his 60% and his owner stayed on the dropped row. A
+  // task shown whose row a lookahead added, or that answers to such a row, is not read as a master's task of the
+  // earlier report when that reading would say he LOST something he had set (progress gone back, or an owner, an
+  // approval asked for or a schedule impact gone): the dropped task is said removed and this one added. Where
+  // nothing he had set is lost the two still read as one task, as before: the same name was in his list at both
+  // reports, and "removed" and "added" would be noise (the reviewer's text driver, Set Active profiles: five of
+  // the six sequences that reach this have nothing lost, and one has "moved from 50% to 0%").
+  // (Read from the saved rows handed over, for the tasks of this report only: nothing is kept in a saved report
+  // for it.)
   const earlierRowsOf = new Map<string, DAVEReportTaskEarlierRow[]>();
   earlierRows.forEach(row => earlierRowsOf.set(row.taskId, [...(earlierRowsOf.get(row.taskId) || []), row]));
   const ownRowAddedByLookahead = new Set(lookaheadAddedTaskIds);
@@ -817,9 +823,9 @@ export function compareDAVEReportSnapshots({
   /** Of this report's tasks: a lookahead's detail row, or a task that began as one. */
   const isLookaheadRowNow = (task: DAVEReportSnapshotTask) => isLookaheadDetail(task) || beganOnLookahead(task);
   const revisions = new Map([
-    ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadRowNow(task))),
-    ...pairRevisedTasks(unpairedBefore.filter(isLookaheadDetail), unpairedNow.filter(isLookaheadRowNow)),
-  ]);
+    ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
+    ...pairRevisedTasks(unpairedBefore.filter(isLookaheadDetail), unpairedNow.filter(isLookaheadDetail)),
+  ].filter(([task, prior]) => !(beganOnLookahead(task) && !isLookaheadDetail(prior) && saysWhatHeSetIsLost(prior, task))));
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
   const addedTasks: DAVEReportSnapshotTask[] = [];
@@ -1134,6 +1140,21 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
     ));
   }
   return changes;
+}
+
+/**
+ * Whether reading `task` as the earlier report's `prior` would say he lost
+ * something he had set on it (R5 item 1, the recorded case): its progress
+ * gone back, or its owner, an approval he asked for or its schedule impact
+ * gone. A date that moved, or anything he set since, is no loss.
+ */
+function saysWhatHeSetIsLost(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): boolean {
+  const asked = (approval: string | null) => Boolean(normalized(approval)) && normalized(approval) !== 'not required';
+  return (snapshotTaskIsComplete(prior) && !snapshotTaskIsComplete(task)) ||
+    task.percentComplete < prior.percentComplete ||
+    (Boolean(normalized(prior.owner)) && !normalized(task.owner)) ||
+    (asked(prior.approvalStatus) && !asked(task.approvalStatus)) ||
+    (prior.estimatedScheduleImpactDays !== null && task.estimatedScheduleImpactDays === null);
 }
 
 export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {

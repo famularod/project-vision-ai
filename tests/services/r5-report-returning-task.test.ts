@@ -343,6 +343,27 @@ describe('R5 item 1: the recorded case, a lookahead lists the dropped task as it
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
 
+  it('guard: where nothing he had set is lost (he had set nothing on the dropped Paint), the two read as one task, as before', () => {
+    let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [...OTHERS, PAINT]);
+    const first = report(state, null, '2026-09-08T15:00:00.000Z');
+    state = approve(state, schedule('MASTER 2', '2026-09-09T12:00:00.000Z'), [...OTHERS]);
+    state = approve(state, schedule('LOOKAHEAD 1', '2026-09-10T12:00:00.000Z', 'lookahead'), ['Paint,Alpha,Lot,10/02/2026,10/06/2026,']);
+    state = approve(state, schedule('MASTER 3', '2026-09-11T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/05/2026,10/09/2026,']);
+    expect(one(state, 'Paint').map(item => [item.id, item.revisedFromTaskIds])).toEqual([['MASTER 3-4', ['LOOKAHEAD 1-1']]]);
+    // Paint was in his list at both reports, with nothing on it: only its finish moved. No "removed" and "added".
+    const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
+    expect(next.paint).toEqual(['Paint finish changed from 10/05/2026 to 10/09/2026.']);
+    sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
+    // What he sets on it since is said as his, against the earlier report.
+    state = set(state, 'Paint', { percentComplete: 30, owner: 'Dana' }, '2026-09-12T16:00:00.000Z');
+    const worked = report(state, first.sent, '2026-09-12T17:00:00.000Z');
+    expect(worked.paint).toEqual([
+      'Paint moved from 0% to 30% complete.', 'Paint changed from Not Started to In Progress.',
+      'Paint finish changed from 10/05/2026 to 10/09/2026.', 'Paint owner changed from unassigned to Dana.',
+    ]);
+    sameOnTheWeb(state, first.sent, '2026-09-12T17:00:00.000Z', worked);
+  });
+
   it('guard: with Unique IDs the next master brings the dropped Paint back with his 60%, and only its finish is said', () => {
     const { state: out, first, lines } = paintLeftOut(WITH_IDS);
     let state = approve(out, schedule('LOOKAHEAD 1', '2026-09-10T12:00:00.000Z', 'lookahead'), ['9,Paint,Alpha,Lot,10/02/2026,10/06/2026,'], WITH_IDS);
@@ -478,6 +499,33 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
     // Never by a row a lookahead added, and never with no time on the row.
     expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { addedByLookahead: true })])).toEqual([ADDED]);
     expect(linesOf(current, lastReport, [{ ...row('new', 'old', ''), savedAt: null }])).toEqual([ADDED]);
+  });
+
+  it('a task that began as a lookahead\'s own row and a master\'s task of the last report: apart only where he would be said to have lost what he set', () => {
+    const was = (change: Partial<DAVEReportSnapshotTask>) => saved('2026-09-09T15:00:00.000Z', [other, task('dropped', { owner: null, status: 'Not Started', percentComplete: 0, ...change })]);
+    const now = (change: Partial<DAVEReportSnapshotTask>) => [task('listed', { earlierTaskIds: ['lookahead-row'], owner: null, status: 'Not Started', percentComplete: 0, ...change })];
+    const began = [row('listed', 'lookahead-row', '2026-09-09T16:00:00.000Z', { addedByLookahead: true })];
+    const APART = [ADDED, REMOVED];
+    // Progress gone back, or a completion undone.
+    expect(linesOf(now({}), was({ status: 'In Progress', percentComplete: 60 }), began)).toEqual(APART);
+    expect(linesOf(now({ status: 'In Progress', percentComplete: 90 }), was({ status: 'Complete', percentComplete: 100 }), began)).toEqual(APART);
+    // An owner, an approval he asked for, a schedule impact gone.
+    expect(linesOf(now({}), was({ owner: 'Sam' }), began)).toEqual(APART);
+    expect(linesOf(now({}), was({ approvalStatus: 'Pending' }), began)).toEqual(APART);
+    expect(linesOf(now({}), was({ estimatedScheduleImpactDays: 2 }), began)).toEqual(APART);
+    // Nothing lost: one task, with what changed. "Not Required" is no approval he asked for.
+    expect(linesOf(now({ finishDate: '10/09/2026' }), was({}), began)).toEqual(['Paint finish changed from 10/05/2026 to 10/09/2026.']);
+    expect(linesOf(now({ status: 'In Progress', percentComplete: 75, owner: 'Dana' }), was({ approvalStatus: 'Not Required' }), began))
+      .toEqual(['Paint moved from 0% to 75% complete.', 'Paint changed from Not Started to In Progress.', 'Paint owner changed from unassigned to Dana.', 'Paint approval changed from Not Required to not set.']);
+    // The owner changed to another is his doing, not a loss.
+    expect(linesOf(now({ owner: 'Dana' }), was({ owner: 'Sam' }), began)).toEqual(['Paint owner changed from Sam to Dana.']);
+    // And a task with no lookahead's row behind it reads as before, whatever it lost (review N6).
+    expect(linesOf(now({}), was({ status: 'In Progress', percentComplete: 60 }), [])).toEqual(['Paint moved from 60% to 0% complete.', 'Paint changed from In Progress to Not Started.']);
+    // The same for a task whose own row a lookahead added.
+    expect(compareDAVEReportSnapshots({
+      current: saved('2026-09-10T15:00:00.000Z', [other, task('lookahead-row', { owner: null, status: 'Not Started', percentComplete: 0 })]),
+      previous: was({ status: 'In Progress', percentComplete: 60 }), lookaheadAddedTaskIds: ['lookahead-row'],
+    }).changes.map(change => change.summary)).toEqual(APART);
   });
 
   it('guard: a task the last report has under its name alone is still that task, whatever rows it has been through (review N6)', () => {

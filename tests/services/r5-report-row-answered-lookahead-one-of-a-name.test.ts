@@ -173,6 +173,18 @@ describe('R5 item 4: he answered "this row is the lookahead\'s task", and each r
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
 
+  it('where he had set nothing on the master\'s Pour slab, nothing of his is lost, and the one Pour slab of each report reads as one task, as before', () => {
+    let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [FRAMING, pour('10/05/2026', '10/09/2026')]);
+    const first = report(state, null, '2026-09-08T15:00:00.000Z');
+    state = approve(state, schedule('LOOKAHEAD 1', '2026-09-09T12:00:00.000Z', 'lookahead'), [pour('10/06/2026', '10/10/2026'), pour('10/20/2026', '10/24/2026')]);
+    state = approve(state, schedule('MASTER 2', '2026-09-10T12:00:00.000Z'), [FRAMING, pour('10/21/2026', '10/25/2026')], PLAIN, THE_LOOKAHEADS);
+    state = approve(state, schedule('LOOKAHEAD 2', '2026-09-11T12:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,09/16/2026,09/26/2026,']);
+    expect(one(state, 'Pour slab').map(item => [item.id, item.revisedFromTaskIds])).toEqual([['MASTER 2-2', ['LOOKAHEAD 1-2']]]);
+    const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
+    expect(next.pour).toEqual(['Pour slab finish changed from 10/09/2026 to 10/25/2026.']);
+    sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
+  });
+
   it('guard: answered the other way (the row is the master\'s own Pour slab, moved), it is that task: its finish changed, and nothing is added or removed', () => {
     const { state, first } = untilMasterTwo(THE_MASTERS);
     expect(one(state, 'Pour slab').map(item => [item.id, item.revisedFromTaskIds, item.percentComplete, item.owner || ''])).toEqual([['MASTER 2-2', ['MASTER 1-2'], 60, 'Sam']]);
