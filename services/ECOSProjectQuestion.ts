@@ -84,7 +84,25 @@ export class ECOSProjectQuestionError extends Error {
     super(message);
     this.name = 'ECOSProjectQuestionError';
   }
+
+  /**
+   * The server gave up waiting on its own side and said nothing about the
+   * question itself. True exactly when the sentence shown is the one that
+   * says "Your question is still here — try again." The conversation then
+   * stands (ecosAskConversationStands in ECOSAskWait; review pass 1, L4).
+   */
+  get serverRanOutOfTime(): boolean {
+    return this.message === ECOS_ASK_SERVER_RAN_OUT_OF_TIME_MESSAGE;
+  }
 }
+
+/**
+ * What the app says when the server gave up waiting: the live gateway
+ * answers 504 "agent_gateway_timed_out" after 125 s (Build 231 E1 item 3).
+ */
+export const ECOS_ASK_SERVER_RAN_OUT_OF_TIME_MESSAGE =
+  'ECOS ran out of time before it finished this question, so it stopped. ' +
+  'No answer has been verified. Your question is still here — try again.';
 
 /**
  * The closed projects Ask ECOS checks a question against: archived names that
@@ -512,8 +530,7 @@ function projectQuestionErrorMessage(
   // The server gave up waiting on its own side: the live gateway answers 504
   // "agent_gateway_timed_out" after 125 s (Build 231 E1 item 3).
   if (status === 504 || code.endsWith('_timed_out')) {
-    return 'ECOS ran out of time before it finished this question, so it stopped. ' +
-      'No answer has been verified. Your question is still here — try again.';
+    return ECOS_ASK_SERVER_RAN_OUT_OF_TIME_MESSAGE;
   }
   if (code === 'answer_research_unavailable') {
     return 'ECOS could not complete the project evidence search because a required service failed. This does not mean your documents are missing. Please try again shortly.';

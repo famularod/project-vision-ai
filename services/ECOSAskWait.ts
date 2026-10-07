@@ -44,6 +44,25 @@ export function isECOSAskStopped(error: unknown): boolean {
   return code === 'question_timed_out' || code === 'question_cancelled' || code === 'owner_check_timed_out';
 }
 
+/**
+ * Whether the conversation stands after a question failed, so that asking
+ * again sends the same question after the same earlier turn.
+ *
+ * It stands when the app stopped waiting (isECOSAskStopped): nothing came
+ * back. And it stands when the server ran out of time (review pass 1, L4):
+ * the screen says "Your question is still here — try again", but Try Again
+ * sent a follow-up as a new conversation with no earlier turn, so "And on
+ * the south side?" went out as a question on its own. The request code marks
+ * that failure (ECOSProjectQuestionError.serverRanOutOfTime).
+ *
+ * After any other failure the next question starts a new conversation, as
+ * before.
+ */
+export function ecosAskConversationStands(error: unknown): boolean {
+  return isECOSAskStopped(error) ||
+    (error as { serverRanOutOfTime?: unknown } | null | undefined)?.serverRanOutOfTime === true;
+}
+
 /** Whether the server refused because it is still working on this same question from an earlier ask. */
 export function isECOSAskStillInProgress(error: unknown): boolean {
   return (error as { code?: unknown } | null | undefined)?.code === 'question_in_progress';
