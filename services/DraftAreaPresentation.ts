@@ -60,6 +60,13 @@ export type DraftLocationNoticeKind =
 
 export type DraftLocationNoticeDetail = Readonly<{
   kind: DraftLocationNoticeKind;
+  /**
+   * The reason was kept from before the app was closed, for an update that
+   * is being resumed. It is then said of when the update was started, not as
+   * if it were so now: the setting may have been put right since (review
+   * pass 1, L8).
+   */
+  resumed?: boolean;
   /** The area GPS may place you in ('unconfirmed'), or the nearest ('no-area'). */
   areaName?: string | null;
   accuracyMeters?: number | null;
@@ -77,7 +84,13 @@ export type DraftCaptureNoticeKind = 'capturing' | 'denied' | 'failed' | 'precis
  * landed after its save began, and showed again when that update was
  * reopened).
  */
-export type DraftLocationNotice = Readonly<{ draftId: string; generation: number; kind: DraftCaptureNoticeKind }>;
+export type DraftLocationNotice = Readonly<{
+  draftId: string;
+  generation: number;
+  kind: DraftCaptureNoticeKind;
+  /** Kept from before the app was closed (DraftLocationNoticeStore); see DraftLocationNoticeDetail.resumed. */
+  resumed?: boolean;
+}>;
 
 /** The capture outcome that belongs to this draft's latest capture, if any. */
 export function currentDraftLocationNotice(input: Readonly<{
@@ -157,6 +170,19 @@ export function currentDraftLocationNoticeView(input: Readonly<{
 export const PRECISE_LOCATION_OFF_DRAFT_MESSAGE =
   `${PRECISE_LOCATION_OFF_TITLE}. Vitruvius only gets an approximate location, which cannot place you in a work area, so this update has no GPS. Turn on Precise Location for Vitruvius in Settings; your next update will use it.`;
 
+/**
+ * The same two reasons for an update being resumed after the app was closed
+ * (review pass 1, L8). The update still has no GPS for that reason, and a
+ * resumed update is never given a new fix, so the reason is kept. But "is
+ * denied" and "is off" were true when the update was started; he may have
+ * put the setting right since, and the sentence went on saying it had not
+ * been. These say when, which stays true either way.
+ */
+export const LOCATION_NOT_ALLOWED_RESUMED_DRAFT_MESSAGE =
+  'Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.';
+export const PRECISE_LOCATION_OFF_RESUMED_DRAFT_MESSAGE =
+  'Precise Location was off when this update was started. Vitruvius only got an approximate location, which cannot place you in a work area, so this update has no GPS. If it is still off, turn on Precise Location for Vitruvius in Settings; your next update will use it.';
+
 export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): string {
   const accuracy = formatGpsAccuracy(notice.accuracyMeters);
   const gps = accuracy ? `GPS (${accuracy})` : 'GPS';
@@ -164,11 +190,13 @@ export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): stri
     case 'capturing':
       return 'Capturing GPS...';
     case 'denied':
-      return 'Location permission denied. Choose Project Area manually.';
+      return notice.resumed
+        ? LOCATION_NOT_ALLOWED_RESUMED_DRAFT_MESSAGE
+        : 'Location permission denied. Choose Project Area manually.';
     case 'failed':
       return 'GPS could not be captured. Choose Project Area manually.';
     case 'precise-off':
-      return PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
+      return notice.resumed ? PRECISE_LOCATION_OFF_RESUMED_DRAFT_MESSAGE : PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
     case 'no-mapped-areas':
       return 'This project has no work area with a saved GPS point yet, so GPS cannot suggest one. Choose the project area.';
     case 'unconfirmed':

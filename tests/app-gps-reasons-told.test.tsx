@@ -423,6 +423,11 @@ describe('3. an unfinished update resumed after the app was closed says why it h
   const DENIED = 'Location permission denied. Choose Project Area manually.';
   const FAILED = 'GPS could not be captured. Choose Project Area manually.';
   const PRECISE_OFF = /^Precise Location is off\. Vitruvius only gets an approximate location/;
+  // Review pass 1, L8: a resumed update says the same reason of when the
+  // update was started. These cases pinned the present-tense sentences
+  // after the relaunch, which stop being true once the setting is put right.
+  const DENIED_WHEN_STARTED = 'Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.';
+  const PRECISE_OFF_WHEN_STARTED = /^Precise Location was off when this update was started\. Vitruvius only got an approximate location/;
   const UNCERTAIN = 'Location is uncertain. Choose the project area before relying on this recommendation.';
 
   beforeEach(async () => {
@@ -465,8 +470,25 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     await keepAndCloseApp(first);
 
     const again = await reopenAndResume();
-    expect(again.getByText(DENIED)).toBeTruthy();
+    expect(again.getByText(DENIED_WHEN_STARTED)).toBeTruthy();
+    expect(again.queryByText(DENIED)).toBeNull();
     expect(again.queryByText(UNCERTAIN)).toBeNull();
+    again.unmount();
+  });
+
+  it('location not allowed, then allowed in Settings before the app is opened again: the resumed update does not say it is denied now', async () => {
+    mockLocation.granted = false;
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    // He sets Location to While Using in iOS Settings, then opens the app.
+    mockLocation.granted = true;
+    const again = await reopenAndResume();
+    expect(again.queryByText(DENIED)).toBeNull();
+    // Why this update has no GPS is still said, and is still true.
+    expect(again.getByText(DENIED_WHEN_STARTED)).toBeTruthy();
     again.unmount();
   });
 
@@ -478,8 +500,11 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     await waitFor(() => expect(first.getByText(PRECISE_OFF)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
+    // He turns Precise Location on in iOS Settings, then opens the app.
+    mockLocation.precise = true;
     const again = await reopenAndResume();
-    expect(again.getByText(PRECISE_OFF)).toBeTruthy();
+    expect(again.getByText(PRECISE_OFF_WHEN_STARTED)).toBeTruthy();
+    expect(again.queryByText(PRECISE_OFF)).toBeNull();
     again.unmount();
   });
 

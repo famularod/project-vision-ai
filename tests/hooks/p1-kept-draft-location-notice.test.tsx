@@ -73,7 +73,8 @@ describe('the kept reason across a relaunch', () => {
     const hook = mount({ ready: false, draft: { id: 'blank', gpsLatitude: null, gpsLongitude: null }, generation: 0 });
     // The stored update arrives in the same render that says it has been read.
     hook.rerender({ ready: true, draft, generation: 0 });
-    await waitFor(() => expect(hook.result.current.notice).toEqual({ draftId: 'draft-1', generation: 0, kind: 'precise-off' }));
+    // Review pass 1, L8: marked as kept from before, so it is worded of when the update was started.
+    await waitFor(() => expect(hook.result.current.notice).toEqual({ draftId: 'draft-1', generation: 0, kind: 'precise-off', resumed: true }));
     await settle();
     expect(await kept()).toEqual({ version: 1, draftId: 'draft-1', kind: 'precise-off' });
     hook.unmount();

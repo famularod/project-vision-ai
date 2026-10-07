@@ -61,8 +61,9 @@ describe('what a resumed update shows', () => {
   const kept = { draftId: 'draft-1', kind: 'denied' } as const;
 
   it('the reason kept for this update, as the newest capture outcome', () => {
+    // Review pass 1, L8: marked as kept from before, so it is worded of when the update was started.
     expect(resumedDraftLocationNotice({ kept, draft: noGps, generation: 0 }))
-      .toEqual({ draftId: 'draft-1', generation: 0, kind: 'denied' });
+      .toEqual({ draftId: 'draft-1', generation: 0, kind: 'denied', resumed: true });
   });
 
   it('nothing for another update', () => {
@@ -79,9 +80,13 @@ describe('what a resumed update shows', () => {
     expect(resumedDraftLocationNotice({ kept: null, draft: noGps, generation: 0 })).toBeNull();
   });
 
-  it('reads on Add Photos exactly as it did before the app was closed', () => {
+  // Review pass 1, L8: this pinned "exactly as it did before the app was
+  // closed". For "not allowed" that was the present tense ("Location
+  // permission denied."), which stops being true once the setting is put
+  // right. A resumed update now says it of when the update was started.
+  it('reads on Add Photos as the same reason, said of when the update was started', () => {
     const wording = {
-      denied: 'Location permission denied. Choose Project Area manually.',
+      denied: 'Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.',
       failed: 'GPS could not be captured. Choose Project Area manually.',
     } as const;
     for (const kind of ['denied', 'failed'] as const) {

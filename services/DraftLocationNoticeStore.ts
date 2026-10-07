@@ -54,7 +54,8 @@ export function parseKeptDraftLocationNotice(raw: string | null | undefined): Ke
 
 /**
  * The notice a resumed update shows: the reason kept for this very update,
- * and only while it has no GPS of its own. `generation` is the capture
+ * and only while it has no GPS of its own. It is worded of when the update
+ * was started (review pass 1, L8). `generation` is the capture
  * count now (DraftFixTracker), so a later capture replaces it as it
  * replaces any notice.
  */
@@ -66,7 +67,9 @@ export function resumedDraftLocationNotice(input: Readonly<{
   const { kept, draft } = input;
   if (!kept || kept.draftId !== draft.id) return null;
   if (typeof draft.gpsLatitude === 'number' && typeof draft.gpsLongitude === 'number') return null;
-  return { draftId: draft.id, generation: input.generation, kind: kept.kind };
+  // Marked as kept from before: it is said of when the update was started,
+  // since the setting may have been put right since (review pass 1, L8).
+  return { draftId: draft.id, generation: input.generation, kind: kept.kind, resumed: true };
 }
 
 export async function readKeptDraftLocationNotice(): Promise<KeptDraftLocationNotice | null> {
