@@ -5280,6 +5280,8 @@ export async function synchronizeLocalData(
       try {
         authoritativeDocument = await prepareReferenceDocumentForCloud(
           authoritativeDocument,
+          // The file leaves as the account this sync began with, asked again when it is ready to go (review pass 1, sync G2).
+          file => asItsAccount({ account: owner }, () => uploadPhoto(file)),
         );
       } catch {
         errors.push(
@@ -7966,7 +7968,12 @@ async function uploadQueueItem(
       try {
         // The file is sent by the document store's own code: not once the account has changed (sync batch Y4).
         if (passAccountChanged(context)) return CLOUD_ACCOUNT_CHANGED_MESSAGE;
-        authoritative = await prepareReferenceDocumentForCloud(authoritative);
+        // And when it is ready to go, after it has been measured and hashed, it leaves as the account it was
+        // queued under, or not at all (review pass 1, sync G2).
+        authoritative = await prepareReferenceDocumentForCloud(
+          authoritative,
+          file => asItsAccount(context, () => uploadPhoto(file), item.ownerId),
+        );
       } catch {
         return 'The document file could not be prepared for protected cloud storage.';
       }

@@ -6,7 +6,7 @@ import {
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
 import { accountDisplayNameForMetadata } from './AccountProfile';
-import { CLOUD_ACCOUNT_CHANGED, CLOUD_ACCOUNT_CHANGED_MESSAGE, callAsCloudOwner, cloudOwnerExpectedForThisCall, currentCloudOwner, noteSignedInOwner } from './CloudOwnerBinding';
+import { CLOUD_ACCOUNT_CHANGED, CLOUD_ACCOUNT_CHANGED_MESSAGE, CLOUD_REQUEST_ACCOUNT_HEADER, callAsCloudOwner, cloudOwnerExpectedForThisCall, currentCloudOwner, noteSignedInOwner } from './CloudOwnerBinding';
 import { ownerWorkspaceAuthDecision } from './OwnerWorkspaceAuthDecision';
 import { AppState } from 'react-native';
 import {
@@ -522,7 +522,9 @@ export function cloudRequestNamesAnotherAccount(
   headers: unknown,
   knownOwnerId: string | null | undefined,
 ): Readonly<{ named: string; signedIn: string }> | null {
-  const named = ownerNamedByRequest(url, body);
+  // Review pass 1, sync G1, G2 and G4: a request that carries the account it is sent for (a file, a document's
+  // search index: they name no account in themselves) is judged by that, wherever it goes.
+  const named = requestHeader(headers, CLOUD_REQUEST_ACCOUNT_HEADER) || ownerNamedByRequest(url, body);
   if (!named) return null;
   const signedIn = accountOfBearer(headers) ?? knownOwnerId;
   if (typeof signedIn !== 'string' || !signedIn || signedIn === named) return null;
@@ -542,6 +544,38 @@ function ownerNamedByRequest(url: string, body: unknown): string | null {
   }
   if (typeof body !== 'string') return null;
   return /"owner_id"\s*:\s*"([^"\\]+)"/.exec(body)?.[1] ?? null;
+}
+
+/** One header of a request, whichever way its headers are held; null when it has none of that name. */
+function requestHeader(headers: unknown, name: string): string | null {
+  try {
+    if (!headers) return null;
+    if (typeof (headers as Headers).get === 'function') return (headers as Headers).get(name) || null;
+    const wanted = name.toLowerCase();
+    const found = Object.entries(headers as Record<string, unknown>).find(([key]) => key.toLowerCase() === wanted)?.[1];
+    return typeof found === 'string' && found ? found : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The request as it is sent: without the account it is sent for (see CLOUD_REQUEST_ACCOUNT_HEADER). That name is
+ * for the last look above and goes no further than this phone.
+ */
+function withoutAccountSentFor(init: Parameters<typeof fetch>[1]): Parameters<typeof fetch>[1] {
+  const headers: unknown = init?.headers;
+  if (!init || !headers || requestHeader(headers, CLOUD_REQUEST_ACCOUNT_HEADER) === null) return init;
+  if (typeof (headers as Headers).get === 'function') {
+    const sent = new Headers(headers as Headers);
+    sent.delete(CLOUD_REQUEST_ACCOUNT_HEADER);
+    return { ...init, headers: sent };
+  }
+  return {
+    ...init,
+    headers: Object.fromEntries(Object.entries(headers as Record<string, string>)
+      .filter(([key]) => key.toLowerCase() !== CLOUD_REQUEST_ACCOUNT_HEADER)),
+  };
 }
 
 /** The account inside a request's sign-in token; undefined when the token names none or cannot be read. */
@@ -568,6 +602,7 @@ function fetchObservingSignInRefresh(
   const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
   const refusal = refusedForAnotherAccount(url, init);
   if (refusal) return Promise.resolve(refusal);
+  init = withoutAccountSentFor(init);
   const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
   const signedOutHere = refresh ? refreshTokenSignedOutHere(init?.body) : () => false;
   // Each attempt starts unknown: an earlier failure says nothing about a
@@ -1496,11 +1531,20 @@ export async function uploadPhoto({
   if (!client) return notConfiguredResult<UploadedPhoto>();
   // A file sent for one account is not sent once another has signed in (sync batch Y4, the account boundary). Asked
   // only when the caller named the account, and before the file is read: every other upload is made as it always was.
+  //
+  // Review pass 1, sync G1 (older; owner answer Q45, 6 Oct 2026). It was asked here only. Measuring a file, reading
+  // it and (for a large one) hashing it take seconds, and when the account changed meanwhile the file left with the
+  // next account's sign-in. It is asked again after each of those waits, and the request itself says which account
+  // the file is sent for, so the last look where it leaves refuses it under any other sign-in. A large file goes
+  // up with the sign-in read here, which is checked to be that account's own.
   const asOwner = cloudOwnerExpectedForThisCall();
-  if (asOwner) {
+  const refusedUnderAnotherAccount = async (): Promise<SupabaseServiceResult<UploadedPhoto> | null> => {
+    if (!asOwner) return null;
     const owner = await requireAuthenticatedOwnerId(client, asOwner);
-    if (!owner.ok || !owner.data) return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
-  }
+    return owner.ok && owner.data ? null : errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  };
+  const refusedAtStart = await refusedUnderAnotherAccount();
+  if (refusedAtStart) return refusedAtStart;
 
   let verifiedSizeBytes: number;
   try {
@@ -1524,6 +1568,9 @@ export async function uploadPhoto({
     );
   }
 
+  const refusedAfterMeasuring = await refusedUnderAnotherAccount();
+  if (refusedAfterMeasuring) return refusedAfterMeasuring;
+
   if (verifiedSizeBytes > RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
     const configuration = getSupabaseConfigurationStatus();
     const { data: sessionData, error: sessionError } = await client.auth.getSession();
@@ -1534,6 +1581,10 @@ export async function uploadPhoto({
         'missing_upload_session',
       );
     }
+    // The large file goes up with this sign-in and no other: it must be the account's own.
+    if (asOwner && sessionData.session.user?.id !== asOwner) {
+      return errorResult(CLOUD_ACCOUNT_CHANGED_MESSAGE, 409, CLOUD_ACCOUNT_CHANGED);
+    }
 
     try {
       const integrity = await hashExpoFileSha256({
@@ -1541,6 +1592,8 @@ export async function uploadPhoto({
         reportedSizeBytes: verifiedSizeBytes,
         ...(maxBytes !== undefined ? { maxBytes } : {}),
       });
+      const refusedAfterHashing = await refusedUnderAnotherAccount();
+      if (refusedAfterHashing) return refusedAfterHashing;
       const uploaded = await uploadFileResumably({
         projectUrl: configuration.projectUrl || '',
         accessToken: sessionData.session.access_token,
@@ -1595,6 +1648,9 @@ export async function uploadPhoto({
     );
   }
 
+  const refusedAfterReading = await refusedUnderAnotherAccount();
+  if (refusedAfterReading) return refusedAfterReading;
+
   onProgress?.(0);
   const { data, error } = await client.storage
     .from(bucket)
@@ -1602,6 +1658,7 @@ export async function uploadPhoto({
       cacheControl,
       contentType,
       upsert,
+      ...(asOwner ? { headers: { [CLOUD_REQUEST_ACCOUNT_HEADER]: asOwner } } : {}),
     });
 
   if (error) {
@@ -2449,6 +2506,14 @@ export async function upsertReferenceDocument(
   document: ReferenceDocument,
   { existing = false }: Readonly<{ existing?: boolean }> = {},
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
+  // Review pass 1, sync G4 (older; owner answer Q45, 6 Oct 2026). The account this document is sent for holds for
+  // everything this call sends: its record, and then its search index (the page text) and the request to prepare
+  // it. Those two went out after the record as whoever was signed in by then, in requests that named no account.
+  // Now: the account is asked again once the record has answered; if it has changed, the index is not sent and the
+  // answer says the account changed, so the document stays waiting for its own account, which sends the record
+  // (by its id) and the index again; and both requests say which account they are sent for, so the last look where
+  // they leave refuses them under any other sign-in.
+  const asOwner = cloudOwnerExpectedForThisCall();
   const compactDocument = compactECOSDocumentIndexForCloud(document);
   const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
   const payload = {
@@ -2478,8 +2543,13 @@ export async function upsertReferenceDocument(
       });
   const client = getSupabaseClient();
   if (result.ok && client) {
-    await replaceECOSDocumentCloudIndex({ client, document });
-    await enqueueECOSHostedIndex({ client, documentId: document.id });
+    if (asOwner) {
+      const owner = await requireAuthenticatedOwnerId(client, asOwner);
+      if (!owner.ok || !owner.data) return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+    }
+    const sentFor = asOwner ? { [CLOUD_REQUEST_ACCOUNT_HEADER]: asOwner } : undefined;
+    await replaceECOSDocumentCloudIndex({ client, document, requestHeaders: sentFor });
+    await enqueueECOSHostedIndex({ client, documentId: document.id, requestHeaders: sentFor });
   }
   return result;
 }

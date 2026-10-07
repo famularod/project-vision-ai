@@ -83,3 +83,12 @@ export function callAsCloudOwner<T>(ownerId: string | null | undefined, call: ()
 export function cloudOwnerExpectedForThisCall(): string | null {
   return expectedForThisCall;
 }
+
+/**
+ * Review pass 1, sync G1, G2 and G4 (owner answer Q45, 6 Oct 2026). A request to the database names its account in
+ * its own filter or in the row it writes, and the last look before it leaves reads it there. A file sent to
+ * storage, and a document's search index, name no account in themselves. Such a request carries the account it is
+ * sent for under this name, for the app's own last look only: the name is read and taken off where every request
+ * leaves (SupabaseService), and is never sent to the cloud.
+ */
+export const CLOUD_REQUEST_ACCOUNT_HEADER = 'x-vitruvius-sent-for-account';

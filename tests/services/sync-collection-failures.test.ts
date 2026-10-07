@@ -257,6 +257,8 @@ describe('downloadCloudChanges collection failure propagation', () => {
         projectName: null,
         projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
       }),
+      // Review pass 1, sync G2: and the upload its file is to be sent with, begun as this sync's account.
+      expect.any(Function),
     );
     expect(mockWrites.document).toHaveBeenCalledWith(
       expect.objectContaining({

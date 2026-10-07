@@ -67,17 +67,22 @@ export type ECOSCurrentReferenceActivationResult = Readonly<{
 export async function enqueueECOSHostedIndex({
   client,
   documentId,
+  requestHeaders,
 }: {
   client: SupabaseClient;
   documentId: string;
+  /** Put on the request as it is built: the phone's upload names the account the document is sent for (review pass 1, sync G4). */
+  requestHeaders?: Readonly<Record<string, string>>;
 }): Promise<ECOSHostedEnqueueResult> {
   const normalizedDocumentId = documentId.trim();
   if (!normalizedDocumentId) {
     return Object.freeze({ status: 'failed', jobId: null, message: 'The project document identity is missing.' });
   }
-  const { data, error } = await client.rpc('ecos_enqueue_hosted_index', {
+  const request = client.rpc('ecos_enqueue_hosted_index', {
     p_document_id: normalizedDocumentId,
   });
+  Object.entries(requestHeaders ?? {}).forEach(([name, value]) => request.setHeader(name, value));
+  const { data, error } = await request;
   if (error) {
     const unavailable = rpcUnavailable(error);
     return Object.freeze({
