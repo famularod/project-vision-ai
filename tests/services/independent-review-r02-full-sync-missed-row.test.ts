@@ -1218,7 +1218,10 @@ describe('sync batch Y1 (item 1): Full Sync does not make a second copy of a pro
     const fullSyncSource = SYNC.slice(SYNC.indexOf('export async function synchronizeLocalData('), SYNC.indexOf('\nexport ', SYNC.indexOf('export async function synchronizeLocalData(') + 10));
     expect(fullSyncSource).toContain('await cloudProjectNameExists(normalizedName)');
     expect(fullSyncSource).not.toContain('listArchivedProjects(');
-    expect(SYNC.split('listArchivedProjects()').length - 1).toBe(2); // the name check, and a field update's closed project
+    // Three known places ask the cloud for closed projects: the name check, a field update's closed project, and
+    // (sync batch Y4, item 3) what to tell him when the project his new task belongs to was closed elsewhere while
+    // this phone's create waited. A fourth would be a copy: use one of these.
+    expect(SYNC.split('listArchivedProjects()').length - 1).toBe(3);
   });
 });
 
