@@ -492,6 +492,15 @@ export function buildDAVEWebScheduleItem({
     ...(current?.fileProgressPeak ? { fileProgressPeak: current.fileProgressPeak } : {}),
     ...(current?.fileProgressLast ? { fileProgressLast: current.fileProgressLast } : {}),
     ...(current?.masterDatesOfRow ? { masterDatesOfRow: current.masterDatesOfRow } : {}),
+    // Review pass 1, web L9 (6 Oct 2026): two more marks the phone's rules read, dropped until now by any web edit.
+    // The row a sync carried the task's percent from (A7 pass 28): it goes with the percent, so a percent entered
+    // here leaves it behind. Without it a device still holding that percent read it as his own word on this row, and
+    // its Sync Now sent the old copy over a newer lookahead's dates and percent.
+    ...(current?.progressCarriedFrom && !progressEditedHere ? { progressCarriedFrom: current.progressCarriedFrom } : {}),
+    // The percent Talk wrote that its Undo took back (A5 pass 26): the note goes with the task whatever is edited,
+    // since another device may still hold that entry. Without it such a device kept Talk's undone percent as his
+    // latest entry under a file's percent, and a lookahead that stated less showed it.
+    ...(current?.progressUndone ? { progressUndone: current.progressUndone } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
