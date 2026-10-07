@@ -802,6 +802,17 @@ type ScheduleItemRecordPayload = {
    * discard; a later Keep Cloud undoes the one that landed.
    */
   withdrawnEdits?: SyncQueueItem[];
+  /**
+   * Sync batch Y4, item 2: which of `withdrawnEdits` never left this phone,
+   * each as its JSON text. A Keep Cloud that cannot finish leaves on the card
+   * every edit it took off the queue. One it took off while the card stayed
+   * open cannot be in the cloud's row (a landing closes the card); only the
+   * others may be. A later Keep Cloud looked for all of them in the row, and
+   * "undid" a progress edit that had never been sent wherever the row held its
+   * values: another device's 60% went back as "Not Started". An edit with no
+   * mark (a card an earlier build saved) is read as before: it may have landed.
+   */
+  withdrawnEditsNeverSent?: string[];
 };
 
 type ReferenceDocumentRecordPayload = {
@@ -6374,14 +6385,21 @@ function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueIt
  * put back on the queue, the next automatic pass sent them (tasks have no
  * hold), undoing the choice. An edit made since stays queued, as any is.
  */
-async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonly SyncQueueItem[]): Promise<void> {
+async function putBackTaskConflictAsItWas(
+  conflict: SyncConflict,
+  edits: readonly SyncQueueItem[],
+  /** Those of `edits` that never left this phone, as JSON text (sync batch Y4, item 2). */
+  neverSent: ReadonlySet<string> = new Set(),
+): Promise<void> {
   const unique = edits.filter((edit, index) =>
     edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
+  const marks = unique.map(edit => JSON.stringify(edit)).filter(text => neverSent.has(text));
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const open = conflicts.find(item => item.entity === conflict.entity && item.localId === conflict.localId);
     const base = open ?? conflict;
-    const saved = { ...base, localPayload: { ...(base.localPayload as ScheduleItemRecordPayload), withdrawnEdits: unique } };
+    const { withdrawnEditsNeverSent: _marksBefore, ...payload } = base.localPayload as ScheduleItemRecordPayload;
+    const saved = { ...base, localPayload: { ...payload, withdrawnEdits: unique, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } };
     await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved]);
   });
 }
@@ -6446,9 +6464,11 @@ async function weighTaskEditsWaitingBesideCard(
       const conflicts = await readSyncConflictsUnsafe();
       await writeSyncConflicts(conflicts.map(item => {
         if (item.id !== conflict.id) return item;
-        const { withdrawnEdits, ...payload } = item.localPayload as ScheduleItemRecordPayload;
+        const { withdrawnEdits, withdrawnEditsNeverSent, ...payload } = item.localPayload as ScheduleItemRecordPayload;
         const left = (withdrawnEdits ?? []).filter(edit => !held.includes(edit) && !held.some(known => JSON.stringify(known) === JSON.stringify(edit)));
-        return { ...item, localPayload: left.length > 0 ? { ...payload, withdrawnEdits: left } : payload };
+        // The marks of the edits that stay on the card stay with them (sync batch Y4, item 2).
+        const marks = (withdrawnEditsNeverSent ?? []).filter(text => left.some(edit => JSON.stringify(edit) === text));
+        return { ...item, localPayload: left.length > 0 ? { ...payload, withdrawnEdits: left, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } : payload };
       }));
     });
   }
@@ -6712,11 +6732,24 @@ async function chooseScheduleItemSyncConflictCopy(
       await putTaskEditsBackOnSyncQueue(conflict.localId, withdrawn);
       throw new Error('sync_conflict_save_failed');
     }
-    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) || closedDuringChoice;
+    // Sync batch Y4, item 2: of the edits an earlier Keep Cloud left on the card, the ones it had taken off the queue
+    // while the card stayed open never left the phone, and it marked them so. They are given up with the rest (the
+    // card shows them), but none can be in the row, so none is looked for there. An edit with no mark may have landed.
+    const neverSentBefore = new Set(localPayload.withdrawnEditsNeverSent ?? []);
+    const leftOnCardThatMayHaveLanded = (localPayload.withdrawnEdits ?? []).filter(edit => !neverSentBefore.has(JSON.stringify(edit)));
+    const phoneEditMayHaveLanded = leftOnCardThatMayHaveLanded.length > 0 || closedDuringChoice;
     // Still open: only an edit waiting on the conflict can be in the row (A7
     // pass 17 L-2). Every edit was undone by value, a progress edit that
     // never left the phone too, and the web's 60% went back as "Not Started".
-    const editsThatMayHaveLanded = closedDuringChoice ? phoneEdits : localPayload.withdrawnEdits ?? [];
+    const editsThatMayHaveLanded = closedDuringChoice
+      ? phoneEdits.filter(edit => !neverSentBefore.has(JSON.stringify(edit)))
+      : leftOnCardThatMayHaveLanded;
+    // What this choice took off the queue while the card stayed open never left the phone either: if the choice
+    // cannot finish, it waits on the card marked so. Only what was taken off the queue itself: an edit that was
+    // waiting when he chose and was gone before it could be taken off (an upload had it) gets no mark. Nor does one
+    // whose text an unmarked edit on the card shares: the two are kept as one, and that one may have landed.
+    const neverSent = new Set([...neverSentBefore, ...(closedDuringChoice ? [] : withdrawn.map(edit => JSON.stringify(edit)))]
+      .filter(text => !leftOnCardThatMayHaveLanded.some(edit => JSON.stringify(edit) === text)));
     // Read again now: an edit from another device that landed meanwhile is
     // the cloud's too.
     const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
@@ -6772,7 +6805,7 @@ async function chooseScheduleItemSyncConflictCopy(
         cloudNow = rowNow;
       }
     } catch (error) {
-      await putBackTaskConflictAsItWas(conflict, phoneEdits);
+      await putBackTaskConflictAsItWas(conflict, phoneEdits, neverSent);
       throw error;
     }
     await clearScheduleItemSyncConflicts(conflict.localId);
