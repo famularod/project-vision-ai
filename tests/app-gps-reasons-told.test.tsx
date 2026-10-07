@@ -1,0 +1,290 @@
+/**
+ * P1 part B (6 Oct 2026): three places where the phone or iPad said nothing,
+ * or something untrue, about GPS or the work area. Each is opened here in
+ * the real app, as the manager reaches it.
+ *
+ * 1. After he deletes the area his open update was in, the Current Area card
+ *    said "Why: This is your current confirmed selection." under "Unassigned
+ *    / Unknown Area". Nothing had been selected.
+ */
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Dimensions } from 'react-native';
+import { NativeRoot } from '../entry';
+import { getCurrentSessionUser } from '../services/SupabaseService';
+
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const values = new Map<string, string>();
+  return {
+    getItem: async (key: string) => values.get(key) ?? null,
+    setItem: async (key: string, value: string) => { values.set(key, value); },
+    removeItem: async (key: string) => { values.delete(key); },
+    getAllKeys: async () => [...values.keys()],
+    multiGet: async (keys: string[]) => keys.map(key => [key, values.get(key) ?? null]),
+    multiSet: async (entries: [string, string][]) => {
+      entries.forEach(([key, value]) => values.set(key, value));
+    },
+    multiRemove: async (keys: string[]) => { keys.forEach(key => values.delete(key)); },
+    clear: async () => values.clear(),
+  };
+});
+
+// SafeAreaProvider measures insets via onLayout, which never fires under jest,
+// so it renders no children and the whole shell looks empty. Standard mock.
+jest.mock('react-native-safe-area-context', () => {
+  const React = require('react');
+  const inset = { top: 0, right: 0, bottom: 0, left: 0 };
+  return {
+    SafeAreaProvider: ({ children }: { children: unknown }) => children,
+    SafeAreaView: ({ children }: { children: unknown }) => children,
+    SafeAreaInsetsContext: React.createContext(inset),
+    useSafeAreaInsets: () => inset,
+    useSafeAreaFrame: () => ({ x: 0, y: 0, width: 390, height: 844 }),
+    initialWindowMetrics: { insets: inset, frame: { x: 0, y: 0, width: 390, height: 844 } },
+  };
+});
+
+// expo-audio has no working jest-expo mock and throws at import time. Mocked at
+// the native-module boundary so the real component tree still renders.
+jest.mock('expo-audio', () => ({
+  RecordingPresets: { HIGH_QUALITY: {} },
+  requestRecordingPermissionsAsync: jest.fn(async () => ({ granted: false })),
+  setAudioModeAsync: jest.fn(async () => undefined),
+  useAudioRecorder: () => ({
+    record: jest.fn(), stop: jest.fn(async () => undefined),
+    prepareToRecordAsync: jest.fn(async () => undefined), uri: null, isRecording: false,
+  }),
+  useAudioRecorderState: () => ({ isRecording: false, durationMillis: 0, metering: 0 }),
+  useAudioPlayer: () => ({ play: jest.fn(), pause: jest.fn(), remove: jest.fn() }),
+  useAudioPlayerStatus: () => ({ playing: false, didJustFinish: false }),
+  AudioModule: {},
+}));
+
+jest.mock('expo-contacts', () => ({
+  requestPermissionsAsync: jest.fn(async () => ({ status: 'denied' })),
+  getPermissionsAsync: jest.fn(async () => ({ status: 'denied' })),
+  getContactsAsync: jest.fn(async () => ({ data: [] })),
+  Fields: { Name: 'name', Emails: 'emails', PhoneNumbers: 'phoneNumbers' },
+}));
+jest.mock('expo-clipboard', () => ({
+  setStringAsync: jest.fn(async () => true),
+  getStringAsync: jest.fn(async () => ''),
+}));
+jest.mock('expo-document-picker', () => ({
+  getDocumentAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+}));
+jest.mock('expo-image-picker', () => ({
+  requestCameraPermissionsAsync: jest.fn(async () => ({ status: 'denied' })),
+  requestMediaLibraryPermissionsAsync: jest.fn(async () => ({ status: 'denied' })),
+  launchCameraAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+  launchImageLibraryAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+  MediaTypeOptions: { Images: 'Images' },
+}));
+// Location, as each test sets it (mockLocation): allowed or not, precise or
+// approximate, and whether a fix can be taken.
+const mockLocation: { granted: boolean; precise: boolean; failsWith: string | null } =
+  { granted: false, precise: true, failsWith: null };
+jest.mock('expo-location', () => ({
+  requestForegroundPermissionsAsync: jest.fn(async () => ({
+    status: mockLocation.granted ? 'granted' : 'denied',
+    granted: mockLocation.granted,
+    ios: { accuracy: mockLocation.precise ? 'full' : 'reduced' },
+  })),
+  getForegroundPermissionsAsync: jest.fn(async () => ({
+    status: mockLocation.granted ? 'granted' : 'denied',
+    granted: mockLocation.granted,
+  })),
+  getCurrentPositionAsync: jest.fn(async () => {
+    if (mockLocation.failsWith) throw new Error(mockLocation.failsWith);
+    // An approximate fix is good to a kilometre or more.
+    return { coords: { latitude: 37.5, longitude: -122.2, accuracy: mockLocation.precise ? 5 : 2400 } };
+  }),
+  Accuracy: { Balanced: 3, High: 4, Highest: 5 },
+}));
+jest.mock('expo-mail-composer', () => ({
+  isAvailableAsync: jest.fn(async () => false),
+  composeAsync: jest.fn(async () => ({ status: 'cancelled' })),
+  MailComposerStatus: {
+    SENT: 'sent', CANCELLED: 'cancelled', SAVED: 'saved', UNDETERMINED: 'undetermined',
+  },
+}));
+jest.mock('expo-sharing', () => ({
+  isAvailableAsync: jest.fn(async () => false),
+  shareAsync: jest.fn(async () => undefined),
+}));
+jest.mock('expo-sms', () => ({
+  isAvailableAsync: jest.fn(async () => false),
+  sendSMSAsync: jest.fn(async () => ({ result: 'cancelled' })),
+}));
+jest.mock('expo-linear-gradient', () => {
+  const { View } = require('react-native');
+  return { LinearGradient: View };
+});
+jest.mock('expo-file-system/legacy', () => ({
+  documentDirectory: 'file:///test/',
+  cacheDirectory: 'file:///cache/',
+  getInfoAsync: jest.fn(async () => ({ exists: false })),
+  readAsStringAsync: jest.fn(async () => ''),
+  writeAsStringAsync: jest.fn(async () => undefined),
+  deleteAsync: jest.fn(async () => undefined),
+  makeDirectoryAsync: jest.fn(async () => undefined),
+  copyAsync: jest.fn(async () => undefined),
+  readDirectoryAsync: jest.fn(async () => []),
+  EncodingType: { UTF8: 'utf8', Base64: 'base64' },
+}));
+
+// No cloud: the shell must boot from local storage alone. Shipped code imports
+// 60 names from this module, so the real module is spread and only the auth and
+// network entry points are overridden. Pure helpers and normalizers stay real.
+jest.mock('../services/SupabaseService', () => {
+  const actual = jest.requireActual('../services/SupabaseService');
+  const none = async () => [];
+  const nothing = async () => null;
+  return {
+    ...actual,
+    isSupabaseConfigured: jest.fn(() => false),
+    getSupabaseClient: jest.fn(() => null),
+    getCurrentSessionUser: jest.fn(),
+    getCurrentUser: jest.fn(async () => ({ ok: true, data: { id: 'owner-smoke' } })),
+    getCurrentSessionAccessToken: jest.fn(async () => null),
+    subscribeToAuthStateChange: jest.fn(() => () => undefined),
+    // Real callers await this and then call the returned unsubscribe, so it
+    // must resolve to a function, not be one.
+    subscribeToDAVEOperationalChanges: jest.fn(async () => () => undefined),
+    verifyDAVEAppOwner: jest.fn(async () => false),
+    testSupabaseConnection: jest.fn(async () => ({ ok: false, status: 'offline' })),
+    signIn: jest.fn(), signOut: jest.fn(), signUp: jest.fn(),
+    listProjects: jest.fn(none), listProjectUpdates: jest.fn(none),
+    listProjectAreas: jest.fn(none), listScheduleItems: jest.fn(none),
+    listReferenceDocuments: jest.fn(none), listArchivedProjects: jest.fn(none),
+    listDAVESyncTombstones: jest.fn(none), listDAVEStorageCleanupIntents: jest.fn(none),
+    listPIEDecisionRecords: jest.fn(none), listPIEExecutiveJudgmentsCloud: jest.fn(none),
+    countCloudProjects: jest.fn(async () => 0),
+    loadPIERealityModelCloud: jest.fn(nothing),
+    loadLatestDAVEProjectTruthSnapshotCloud: jest.fn(nothing),
+    getProjectUpdateSyncMetadata: jest.fn(nothing),
+    accountDisplayNameForUser: jest.fn(() => null),
+  };
+});
+
+// Talk is the shell's assistant for audiences without Ask ECOS; the owner
+// build shows Ask ECOS there, so the gate is opened to reach Talk.
+jest.mock('../services/VitruviusBetaAuthorization', () => ({
+  ...jest.requireActual('../services/VitruviusBetaAuthorization'),
+  vitruviusAudienceCanAccessAskEcos: () => false,
+}));
+
+const session = jest.mocked(getCurrentSessionUser);
+jest.setTimeout(240_000);
+const COLD = { timeout: 90_000 } as const;
+const PHONE = { width: 390, height: 844, scale: 3, fontScale: 1 } as const;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+type AlertButton = { text?: string; style?: string; onPress?: () => void };
+type ShownAlert = { title: string; message: string; buttons: AlertButton[] };
+let alerts: ShownAlert[] = [];
+
+// What the app logs as an error or a warning is kept, not thrown away: no
+// test here may leave React saying a change happened outside act(), or log
+// after it has finished.
+const logged: string[] = [];
+const keep = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+beforeAll(() => { console.error = keep; console.warn = keep; });
+afterAll(() => {
+  console.error = originalError;
+  console.warn = originalWarn;
+  const phrases = ['not wrapped in act(', 'Cannot log after tests are done', 'torn down', 'unhandled promise rejection'];
+  expect(logged.filter(line => phrases.some(phrase => line.toLowerCase().includes(phrase.toLowerCase())))).toEqual([]);
+});
+beforeEach(async () => {
+  session.mockResolvedValue({ ok: true, data: { id: 'owner-p1-gps' } } as never);
+  mockLocation.granted = false;
+  mockLocation.precise = true;
+  mockLocation.failsWith = null;
+  alerts = [];
+  const { Alert } = require('react-native');
+  jest.spyOn(Alert, 'alert').mockImplementation((...args: unknown[]) => {
+    const [title, message, buttons] = args as [string, string, AlertButton[] | undefined];
+    alerts.push({ title, message: message || '', buttons: buttons || [] });
+  });
+  await AsyncStorage.clear();
+  act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
+});
+afterEach(() => { jest.restoreAllMocks(); });
+
+const area = (id: string, name: string, projectName: string, withPoint = false) => ({
+  id, name, projectName, latitude: withPoint ? 37.5 : 0, longitude: withPoint ? -122.2 : 0, radiusFeet: 150,
+  locationCapturedAt: withPoint ? '2026-10-01T15:00:00.000Z' : null,
+  locationAccuracyMeters: withPoint ? 5 : null,
+  locationAccuracyCapturedAt: withPoint ? '2026-10-01T15:00:00.000Z' : null,
+});
+
+/** An unfinished update as the phone stores it: a note typed, no photo, no GPS. */
+function storedDraft(fields: Record<string, unknown>) {
+  return JSON.stringify({
+    savedAt: '2026-10-06T16:00:00.000Z',
+    draft: {
+      id: 'draft-p1', projectName: 'Lot 9', date: '2026-10-06', photos: [], documents: [], notes: 'Pad graded to line.',
+      recipients: { contactIds: [], manualEmails: [], manualPhones: [] },
+      selectedAreaId: null, selectedAreaName: 'Unassigned / Unknown Area', areaStatus: 'unknown',
+      status: 'draft', ...fields,
+    },
+  });
+}
+
+async function launch() {
+  const tree = render(<NativeRoot />);
+  await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+  return tree;
+}
+
+async function press(tree: ReturnType<typeof render>, target: Parameters<typeof fireEvent.press>[0]) {
+  await act(async () => { fireEvent.press(target); });
+}
+
+async function answerAlert(title: string, button: string) {
+  const shown = alerts.find(item => item.title === title);
+  if (!shown) throw new Error(`No "${title}" alert was shown. Shown: ${alerts.map(item => item.title).join(', ') || 'none'}`);
+  const choice = shown.buttons.find(item => item.text === button);
+  if (!choice?.onPress) throw new Error(`"${title}" has no "${button}" button.`);
+  await act(async () => { choice.onPress?.(); });
+}
+
+describe('1. the Current Area card after the update\'s area is deleted', () => {
+  it('says no area has been chosen, where it said "your current confirmed selection"', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['Lot 9', 'Main St']));
+    await AsyncStorage.setItem('projectPhotoUpdate.projectAreas.v1', JSON.stringify([
+      area('area-north', 'North Pad', 'Lot 9'), area('area-roof', 'Roof Deck', 'Main St'),
+    ]));
+    await AsyncStorage.setItem('projectPhotoUpdate.activeDraft.v2', storedDraft({
+      selectedAreaId: 'area-north', selectedAreaName: 'North Pad', areaStatus: 'confirmed',
+    }));
+    const tree = await launch();
+
+    // His update is in North Pad, which he picked: the line is true.
+    await press(tree, await tree.findByText('Resume Draft', {}, COLD));
+    await waitFor(() => expect(tree.getByText('Current Area')).toBeTruthy(), COLD);
+    expect(tree.getAllByText('North Pad').length).toBeGreaterThan(0);
+    expect(tree.getByText('Why: This is your current confirmed selection.')).toBeTruthy();
+
+    // He deletes North Pad from the project's Locations & GPS.
+    await press(tree, tree.getAllByLabelText('Overview')[0]);
+    const lot9 = await tree.findAllByText('Lot 9', {}, COLD);
+    await press(tree, lot9[lot9.length - 1]);
+    await press(tree, await tree.findByText(/^Locations & GPS/, {}, COLD));
+    await press(tree, await tree.findByText('North Pad', {}, COLD));
+    await press(tree, await tree.findByText('Delete', {}, COLD));
+    await answerAlert('Delete project area?', 'Delete');
+    await waitFor(() => expect(tree.queryByText('North Pad')).toBeNull(), COLD);
+
+    // Back in the update: no area, and no claim that he selected that.
+    await press(tree, tree.getAllByLabelText('Overview')[0]);
+    await press(tree, await tree.findByText('Resume Draft', {}, COLD));
+    await waitFor(() => expect(tree.getByText('Current Area')).toBeTruthy(), COLD);
+    expect(tree.getAllByText('Unassigned / Unknown Area').length).toBeGreaterThan(0);
+    expect(tree.queryByText('Why: This is your current confirmed selection.')).toBeNull();
+    expect(tree.getByText('Why: No area has been chosen for this update yet.')).toBeTruthy();
+    tree.unmount();
+  });
+});

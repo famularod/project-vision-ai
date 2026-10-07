@@ -184,6 +184,14 @@ function formatFeet(value: number): string {
   return `${Math.round(value).toLocaleString('en-US')} ft`;
 }
 
+/**
+ * The card's reason when the update names no area and none was chosen: a
+ * new update, or one whose area was deleted (P1 part B item 1, 6 Oct 2026:
+ * it said "This is your current confirmed selection." under "Unassigned /
+ * Unknown Area", which nobody had selected).
+ */
+export const NO_AREA_CHOSEN_REASON = 'No area has been chosen for this update yet.';
+
 /** Notices about where GPS thinks you are; moot once an area is named. */
 const PLACEMENT_NOTICES: ReadonlySet<DraftLocationNoticeKind> = new Set(['no-mapped-areas', 'unconfirmed', 'no-area']);
 
@@ -258,7 +266,12 @@ export function draftAreaPresentation(input: Readonly<{
         : 'unknown',
     locationSource,
     confidenceScore: Math.max(0, baseScore - (input.correctionPenalty || 0)),
-    reason: locationReason(locationSource, pendingSuggestion),
+    // "Your confirmed selection" only for something he selected: an area, a
+    // task's named location, or Unassigned when he picked it (the name is
+    // then null). The placeholder name means no choice has been made.
+    reason: locationSource === 'last-active-area' && input.selectedAreaName !== null && !namedAreaOrNull(areaName)
+      ? NO_AREA_CHOSEN_REASON
+      : locationReason(locationSource, pendingSuggestion),
     locationNotice,
   };
 }
