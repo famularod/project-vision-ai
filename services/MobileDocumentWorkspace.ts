@@ -18,12 +18,15 @@ export type MobileDocumentArchive = Readonly<{
   installed?: boolean | null;
   archivedIds: ReadonlySet<string>;
   waitingIds?: ReadonlySet<string>;
+  /** Waiting, and the cloud has answered and not taken it (review of D1, L3). */
+  refusedIds?: ReadonlySet<string>;
 }>;
 
 /**
  * A document under "Archived (n)" on a project's Documents screen, with
  * Restore. `scope`: hidden on every device (the cloud carries the mark), on
- * this device and waiting to reach the cloud, or on this device only (the
+ * this device and waiting to reach the cloud, on this device while the cloud
+ * keeps refusing it (it is tried again; review of D1, L3), or on this device only (the
  * mark is not installed, the device has never been able to ask, or the card
  * was archived without the mark: none of those is sent anywhere later).
  */
@@ -33,7 +36,7 @@ export type MobileArchivedDocument = Readonly<{
   cardId: string | null;
   /** The shared copy, when there is one. */
   sharedDocumentId: string | null;
-  scope: 'everywhere' | 'waiting' | 'this_device';
+  scope: 'everywhere' | 'waiting' | 'refused' | 'this_device';
 }>;
 
 const NOTHING_ARCHIVED: ReadonlySet<string> = new Set<string>();
@@ -105,12 +108,13 @@ export function buildMobileArchivedDocuments<T extends Attachment>(input: {
   projectIdentities: readonly { id?: string | null; name: string }[];
   archive: MobileDocumentArchive;
 }): MobileArchivedDocument[] {
-  const { archivedIds, waitingIds = NOTHING_ARCHIVED, installed = null } = input.archive;
+  const { archivedIds, waitingIds = NOTHING_ARCHIVED, refusedIds = NOTHING_ARCHIVED, installed = null } = input.archive;
   const scopeOf = (sharedId: string | null): MobileArchivedDocument['scope'] => {
     if (!sharedId || !archivedIds.has(sharedId)) return 'this_device';
     if (!waitingIds.has(sharedId)) return 'everywhere';
     // Not yet told to the cloud. (Only a device that knows the mark is installed has anything waiting.)
-    return installed === true ? 'waiting' : 'this_device';
+    if (installed !== true) return 'this_device';
+    return refusedIds.has(sharedId) ? 'refused' : 'waiting';
   };
   const sharedById = new Set(input.referenceDocuments.map(reference => reference.id));
   const entries: MobileArchivedDocument[] = [];
@@ -152,5 +156,7 @@ export function mobileArchivedDocumentScopeText(scope: MobileArchivedDocument['s
   if (scope === 'everywhere') return 'Hidden on all your devices. Kept in the cloud.';
   // True with no signal and while the request is on its way (review of D1, L9).
   if (scope === 'waiting') return 'Hidden on this device. Your other devices follow as soon as this one reaches the cloud.';
+  // Never given up without a word (review of D1, L3).
+  if (scope === 'refused') return 'Hidden on this device only, for now: the cloud has not accepted this yet. This device keeps trying.';
   return 'Hidden on this device.';
 }

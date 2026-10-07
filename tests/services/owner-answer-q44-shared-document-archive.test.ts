@@ -219,7 +219,8 @@ describe('after the paste', () => {
     expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual(['doc-new']);
     cloud.add('doc-new');
     cloud.paste();
-    await sync(phone, cloud);
+    // It is tried again half a minute after the cloud had no such row (review of D1, L3: kept, with a growing wait).
+    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, now: () => Date.now() + 31_000 });
     expect(cloud.row('doc-new')?.archived_at).toBe(ARCHIVED_AT);
     expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);
   });

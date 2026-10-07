@@ -164,6 +164,37 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     device.unmount();
   });
 
+  it('review of D1, L3: a refused Archive is kept and tried again after its wait, which grows: half a minute, then a minute', async () => {
+    jest.useFakeTimers();
+    const device = start();
+    await device.quiet();
+    cloud.state.refuseMarkWritesWith = { code: '', message: 'upstream connect error or disconnect/reset before headers' };
+    const refusals = () => cloud.requests.filter(request => request.kind === 'write_mark').length;
+    act(() => { device.result.current.archive(PERMIT); });
+    await device.quiet();
+    expect(refusals()).toBe(1);
+    expect([...device.result.current.refusedIds]).toEqual([PERMIT]);
+    expect([...device.result.current.waitingIds]).toEqual([PERMIT]);
+
+    await act(async () => { jest.advanceTimersByTime(29_000); });
+    await device.quiet();
+    expect(refusals()).toBe(1);
+    await act(async () => { jest.advanceTimersByTime(2_000); });
+    await device.quiet();
+    expect(refusals()).toBe(2);
+    // The second wait is a minute: nothing is sent at the half minute.
+    await act(async () => { jest.advanceTimersByTime(45_000); });
+    await device.quiet();
+    expect(refusals()).toBe(2);
+    cloud.state.refuseMarkWritesWith = null;
+    await act(async () => { jest.advanceTimersByTime(20_000); });
+    await device.quiet();
+    expect(cloud.row(PERMIT)?.archived_at).toEqual(expect.any(String));
+    expect(device.result.current.refusedIds.size).toBe(0);
+    expect(device.result.current.waitingIds.size).toBe(0);
+    device.unmount();
+  });
+
   it('every time the document list is read from the cloud, and when the app comes back to the front, the mark is read too', async () => {
     const device = start();
     await device.quiet();

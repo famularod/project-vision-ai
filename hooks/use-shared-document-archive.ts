@@ -22,6 +22,8 @@ import {
 
 /** While a mark is waiting and the cloud could take it, it is tried again this often. */
 const WAITING_RETRY_MS = 30_000;
+/** A mark the cloud has refused waits longer each time, up to this (review of D1, L3). */
+const LONGEST_RETRY_MS = 15 * 60_000;
 
 /**
  * Owner answer Q44 (6 Oct 2026): an archived compliance document is hidden on
@@ -32,7 +34,8 @@ const WAITING_RETRY_MS = 30_000;
  *   cloud has the column) every time the shared-document list is read from
  *   the cloud (a refresh, Sync Now);
  * - straight after an Archive or a Restore, and again every half minute
- *   while one is still waiting for signal.
+ *   while one is still waiting for signal (one the cloud has refused is
+ *   kept too, and tried after a wait that grows to a quarter of an hour).
  * Before the owner's database change there is nothing in the cloud to follow:
  * archiving stays on the one device, and nothing is shown about that.
  *
@@ -68,7 +71,10 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       if (retry) clearTimeout(retry);
       retry = undefined;
       const now = sharedDocumentArchiveView();
-      if (now.waitingIds.size > 0 && now.installed !== false) retry = setTimeout(() => { void sync(); }, WAITING_RETRY_MS);
+      if (now.waitingIds.size > 0 && now.installed !== false) {
+        const wait = Math.min(LONGEST_RETRY_MS, Math.max(WAITING_RETRY_MS, (now.nextTryAt ?? 0) - Date.now()));
+        retry = setTimeout(() => { void sync(); }, wait);
+      }
     };
     syncRef.current = sync;
     // While the cloud has said "no such column" a list read does not ask again: the question is put when the app
@@ -103,6 +109,7 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     installed: view.installed,
     archivedIds: view.archivedIds,
     waitingIds: view.waitingIds,
+    refusedIds: view.refusedIds,
     /** The owner archived this shared document on this device. */
     archive: (documentId: string) => ask(documentId, true),
     /** Restore, from "Archived (n)": this device's card comes back and the cloud's mark is emptied. */

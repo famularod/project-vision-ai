@@ -104,3 +104,93 @@ describe('L9: before the database change is installed the app does what the last
     expect(cloud.row(PERMIT)?.archived_at).toBeNull();
   });
 });
+
+describe('L3: the cloud refuses the write for a reason that is not "no such column"', () => {
+  const REFUSAL = { code: '', message: 'upstream connect error or disconnect/reset before headers' };
+  const MINUTE = 60_000;
+
+  it('F-L3: thirty refusals and the Archive is still waiting, is said to be refused, and reaches the cloud once it takes it', async () => {
+    let clock = Date.parse('2026-10-06T18:00:00.000Z');
+    const now = () => clock;
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
+    cloud.state.failWritesWith = REFUSAL;
+    for (let pass = 0; pass < 30; pass += 1) {
+      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      clock += 20 * MINUTE; // longer than the longest wait between tries
+    }
+    expect(cloud.writes).toHaveLength(30);
+    // Never given up without a word: it still waits, and the device knows the cloud refused it.
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect([...phone.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]);
+    expect(hiddenOn(phone)).toEqual([PERMIT]);
+    await phone.sharedDocumentArchiveSettled();
+
+    // Kept through closing the app. The service is back: the archive he made reaches the cloud.
+    const phoneLater = await start('phone');
+    expect([...phoneLater.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]);
+    cloud.state.failWritesWith = null;
+    await sync(phoneLater, cloud, 'phone', 'owner-a', { now });
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
+    expect(phoneLater.sharedDocumentArchiveView().waitingIds.size).toBe(0);
+    expect(phoneLater.sharedDocumentArchiveView().refusedIds.size).toBe(0);
+    expect(phoneLater.sharedDocumentArchiveView().nextTryAt).toBeNull();
+  });
+
+  it('a refused write is not sent again until its wait is over: half a minute, doubling, a quarter of an hour at most', async () => {
+    let clock = Date.parse('2026-10-06T18:00:00.000Z');
+    const now = () => clock;
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
+    expect(phone.sharedDocumentArchiveView().nextTryAt).toBe(0); // due now
+    cloud.state.failWritesWith = REFUSAL;
+    const waits: number[] = [];
+    for (let refusal = 1; refusal <= 8; refusal += 1) {
+      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      expect(cloud.writes).toHaveLength(refusal);
+      const next = phone.sharedDocumentArchiveView().nextTryAt as number;
+      waits.push((next - clock) / 1000);
+      // Inside the wait a pass asks what is archived and sends nothing.
+      clock = next - 1;
+      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      expect(cloud.writes).toHaveLength(refusal);
+      clock = next;
+    }
+    expect(waits).toEqual([30, 60, 120, 240, 480, 900, 900, 900]);
+    // A new tap on the document is his word now: it is sent at once.
+    cloud.state.failWritesWith = null;
+    await phone.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T19:00:00.000Z');
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T19:00:05.000Z');
+    clock += 1000;
+    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T19:00:05.000Z');
+  });
+
+  it('no signal between the question and the write is not a refusal: it is tried at the very next pass and nothing says "refused"', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
+    const real = cloud.clientFor('phone');
+    const signalLostBeforeTheWrite = {
+      auth: real.auth,
+      from: () => {
+        const chain = real.from() as Record<string, unknown>;
+        chain.update = () => {
+          chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve({
+            data: null, status: 0, error: { code: '', message: 'TypeError: Network request failed' },
+          }).then(resolve);
+          return chain;
+        };
+        return chain;
+      },
+    };
+    await phone.syncSharedDocumentArchiveWithCloud({ client: signalLostBeforeTheWrite as never, ownerId: 'owner-a', timeoutMs: 150 });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect(phone.sharedDocumentArchiveView().refusedIds.size).toBe(0);
+    expect(phone.sharedDocumentArchiveView().nextTryAt).toBe(0);
+    await sync(phone, cloud, 'phone');
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
+  });
+});

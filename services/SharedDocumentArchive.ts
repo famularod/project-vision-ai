@@ -40,11 +40,24 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const SHARED_DOCUMENT_ARCHIVE_STORAGE_KEY = 'projectPhotoUpdate.sharedDocumentArchive.v1';
 const SHARED_DOCUMENTS_TABLE = 'reference_documents';
 const WAITING_LIMIT = 500;
-/** A mark the cloud has no row for (not uploaded yet, or deleted) is tried this many times, then let go. */
-const ATTEMPT_LIMIT = 30;
 const REQUEST_TIMEOUT_MS = 6000;
+/**
+ * A tap the cloud answered and did not take (a refusal, or no such row yet)
+ * is never given up (review of D1, L3). It is tried again after a wait that
+ * doubles from half a minute to a quarter of an hour, and the device says
+ * plainly that the cloud has not accepted it.
+ */
+const RETRY_FIRST_WAIT_MS = 30_000;
+const RETRY_LONGEST_WAIT_MS = 15 * 60_000;
+const retryWaitMs = (refusals: number) => Math.min(RETRY_LONGEST_WAIT_MS, RETRY_FIRST_WAIT_MS * 2 ** Math.min(Math.max(refusals, 1) - 1, 10));
 
-type WaitingMark = Readonly<{ documentId: string; archived: boolean; at: string; attempts: number }>;
+type WaitingMark = Readonly<{
+  documentId: string; archived: boolean; at: string;
+  /** How many times the cloud has answered and not taken it. */
+  attempts: number;
+  /** Refused before: not sent again until this time (milliseconds, the device's clock). */
+  notBefore?: number;
+}>;
 
 type OwnerRecord = Readonly<{
   /** true once the cloud answered with the column; false when it said "no such column"; null when never asked. */
@@ -62,13 +75,17 @@ export type SharedDocumentArchiveView = Readonly<{
   archivedIds: ReadonlySet<string>;
   /** Archived here, not yet told to the cloud. */
   waitingIds: ReadonlySet<string>;
+  /** Waiting, and the cloud has answered and not taken it: said plainly, and tried again (review of D1, L3). */
+  refusedIds: ReadonlySet<string>;
+  /** When what waits is next due to be sent (milliseconds; 0 = now), or null when nothing waits. */
+  nextTryAt: number | null;
   restoredElsewhere: readonly string[];
 }>;
 
 export type SharedDocumentArchiveCloudAnswer = 'installed' | 'not_installed' | 'unknown';
 
 type CloudError = Readonly<{ code?: string | null; message?: string | null }>;
-type CloudAnswer = Readonly<{ data?: unknown; error?: CloudError | null }>;
+type CloudAnswer = Readonly<{ data?: unknown; error?: CloudError | null; status?: number }>;
 /** The part of the cloud client this file uses. */
 export type SharedDocumentArchiveClient = Readonly<{
   from: (table: string) => any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -77,7 +94,8 @@ export type SharedDocumentArchiveClient = Readonly<{
 
 const EMPTY_RECORD: OwnerRecord = Object.freeze({ installed: null, archivedIds: [], waiting: [], restoredElsewhere: [] });
 const EMPTY_VIEW: SharedDocumentArchiveView = Object.freeze({
-  installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), restoredElsewhere: Object.freeze([]) as readonly string[],
+  installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), refusedIds: new Set<string>(), nextTryAt: null,
+  restoredElsewhere: Object.freeze([]) as readonly string[],
 });
 
 let records = new Map<string, OwnerRecord>();
@@ -122,7 +140,10 @@ function parseStored(raw: string | null): Map<string, OwnerRecord> {
         waiting: (Array.isArray(record.waiting) ? record.waiting : []).flatMap(item => {
           const mark = (item && typeof item === 'object' ? item : {}) as Partial<WaitingMark>;
           return typeof mark.documentId === 'string' && mark.documentId && typeof mark.archived === 'boolean' && typeof mark.at === 'string'
-            ? [{ documentId: mark.documentId, archived: mark.archived, at: mark.at, attempts: typeof mark.attempts === 'number' ? mark.attempts : 0 }]
+            ? [{
+                documentId: mark.documentId, archived: mark.archived, at: mark.at, attempts: typeof mark.attempts === 'number' ? mark.attempts : 0,
+                ...(typeof mark.notBefore === 'number' ? { notBefore: mark.notBefore } : {}),
+              }]
             : [];
         }),
         restoredElsewhere: ids(record.restoredElsewhere),
@@ -162,6 +183,8 @@ function publish(): void {
       installed: record.installed,
       archivedIds: new Set([...record.archivedIds, ...waitingArchive].filter(id => !waitingRestore.has(id))),
       waitingIds: new Set(waitingArchive.filter(id => !record.archivedIds.includes(id))),
+      refusedIds: new Set(record.waiting.filter(mark => mark.attempts > 0).map(mark => mark.documentId)),
+      nextTryAt: record.waiting.length > 0 ? Math.min(...record.waiting.map(mark => mark.notBefore ?? 0)) : null,
       restoredElsewhere: record.restoredElsewhere,
     });
   }
@@ -236,6 +259,8 @@ export function syncSharedDocumentArchiveWithCloud(input: Readonly<{
   client: SharedDocumentArchiveClient;
   ownerId: string;
   timeoutMs?: number;
+  /** The device's clock (tests move it). */
+  now?: () => number;
 }>): Promise<SharedDocumentArchiveCloudAnswer> {
   // One at a time: two passes would each send the same waiting mark.
   const work = cloudWork.catch(() => undefined).then(() => syncOnce(input).catch((): SharedDocumentArchiveCloudAnswer => 'unknown'));
@@ -243,8 +268,8 @@ export function syncSharedDocumentArchiveWithCloud(input: Readonly<{
   return work;
 }
 
-async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS }: Readonly<{
-  client: SharedDocumentArchiveClient; ownerId: string; timeoutMs?: number;
+async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now = Date.now }: Readonly<{
+  client: SharedDocumentArchiveClient; ownerId: string; timeoutMs?: number; now?: () => number;
 }>): Promise<SharedDocumentArchiveCloudAnswer> {
   await load();
   if (!ownerId || !(await signedInAs(client, ownerId))) return 'unknown';
@@ -282,6 +307,7 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS }: Rea
   for (const mark of recordOf(ownerId).waiting) {
     const stillWaiting = () => recordOf(ownerId).waiting.some(item => item.documentId === mark.documentId && item.at === mark.at && item.archived === mark.archived);
     if (!stillWaiting()) continue;
+    if ((mark.notBefore ?? 0) > now()) continue; // refused before: its wait is not over (review of D1, L3)
     // The account is asked again right before each write, and the write names it.
     if (!(await signedInAs(client, ownerId))) return 'unknown';
     const written = await answered(() => client.from(SHARED_DOCUMENTS_TABLE)
@@ -296,9 +322,10 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS }: Rea
       if (!stillWaiting()) return record;
       const others = record.waiting.filter(item => item !== mark && !(item.documentId === mark.documentId && item.at === mark.at));
       if (!reached) {
-        // Refused, or the cloud has no such document yet: tried again, and let go in the end.
-        return mark.attempts + 1 >= ATTEMPT_LIMIT ? { ...record, waiting: others }
-          : { ...record, waiting: record.waiting.map(item => (item.documentId === mark.documentId && item.at === mark.at ? { ...item, attempts: item.attempts + 1 } : item)) };
+        // Refused, or the cloud has no such document yet: it keeps waiting, however often (review of D1, L3), and
+        // is tried again after a wait that grows.
+        return { ...record, waiting: record.waiting.map(item => (item.documentId === mark.documentId && item.at === mark.at
+          ? { ...item, attempts: item.attempts + 1, notBefore: now() + retryWaitMs(item.attempts + 1) } : item)) };
       }
       const withoutIt = record.archivedIds.filter(id => id !== mark.documentId);
       return { ...record, waiting: others, archivedIds: mark.archived ? [...withoutIt, mark.documentId] : withoutIt };
@@ -390,6 +417,12 @@ async function signedInAs(client: SharedDocumentArchiveClient, ownerId: string):
   }
 }
 
+/** The data API's own shape for "the request failed on the way": an error with no code from the cloud, and no HTTP status. */
+function requestNeverArrived(answer: CloudAnswer): boolean {
+  if (!answer.error || answer.error.code) return false;
+  return answer.status === 0 || /network request failed|failed to fetch|load failed|network error|fetch failed/i.test(String(answer.error.message || ''));
+}
+
 /** The cloud's answer, or null when there was none in time (no signal, a stall, a client that cannot ask). */
 async function answered(request: () => PromiseLike<CloudAnswer>, timeoutMs: number): Promise<CloudAnswer | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -398,7 +431,8 @@ async function answered(request: () => PromiseLike<CloudAnswer>, timeoutMs: numb
       Promise.resolve(request()),
       new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); }),
     ]);
-    return answer && typeof answer === 'object' ? answer : null;
+    // A request that never reached the cloud is no answer, and so no refusal (review of D1, L3).
+    return answer && typeof answer === 'object' && !requestNeverArrived(answer) ? answer : null;
   } catch {
     return null;
   } finally {

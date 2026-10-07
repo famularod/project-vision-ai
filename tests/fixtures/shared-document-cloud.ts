@@ -30,6 +30,8 @@ export function createSharedDocumentCloud({ installed = false }: { installed?: b
     /** Every request is held until release() (a slow connection). */
     held: [] as Array<() => void>,
     holding: false,
+    /** Every write of the mark is refused with this error (a refusal that is not "no such column"). */
+    refuseMarkWritesWith: null as CloudError | null,
   };
   const requests: Array<{ kind: 'read_marks' | 'write_mark' | 'write_record'; detail: unknown }> = [];
 
@@ -54,6 +56,7 @@ export function createSharedDocumentCloud({ installed = false }: { installed?: b
         const writesMark = Object.prototype.hasOwnProperty.call(patch, 'archived_at');
         requests.push({ kind: writesMark ? 'write_mark' : 'write_record', detail: clone(patch) });
         if (writesMark && !state.installed) return { data: null, error: missingColumn(true), status: 400 };
+        if (writesMark && state.refuseMarkWritesWith) return { data: null, error: state.refuseMarkWritesWith, status: 503 };
         const changed = visible();
         // Only the columns the write names change.
         changed.forEach(row => Object.assign(row, clone(patch)));

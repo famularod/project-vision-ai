@@ -80,6 +80,19 @@ describe('"Archived (n)" under a project\'s Documents', () => {
     expect(mobileArchivedDocumentScopeText('this_device')).toBe('Hidden on this device.');
   });
 
+  it('review of D1, L3: an Archive the cloud has refused says so plainly, and only where the mark is installed', () => {
+    const documents = [card('waiting', { isArchived: true }), card('refused', { isArchived: true })];
+    const referenceDocuments = [shared('waiting'), shared('refused')];
+    const scopes = (installed: boolean | null) => buildMobileArchivedDocuments({
+      documents, referenceDocuments, ...projects,
+      archive: { installed, archivedIds: marked('waiting', 'refused'), waitingIds: marked('waiting', 'refused'), refusedIds: marked('refused') },
+    }).map(entry => `${entry.cardId}:${entry.scope}`);
+    expect(scopes(true)).toEqual(['waiting:waiting', 'refused:refused']);
+    expect(scopes(false)).toEqual(['waiting:this_device', 'refused:this_device']);
+    expect(mobileArchivedDocumentScopeText('refused'))
+      .toBe('Hidden on this device only, for now: the cloud has not accepted this yet. This device keeps trying.');
+  });
+
   it('a project with nothing archived has no such list', () => {
     expect(buildMobileArchivedDocuments({
       documents: [card('active')], referenceDocuments: [shared('active'), shared('listed')], ...projects,
