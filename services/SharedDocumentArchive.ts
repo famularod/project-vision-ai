@@ -585,11 +585,12 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       const left = item.sent.filter((_value, index) => index !== at);
       return left.length > 0 ? { ...rest, sent: left } : rest;
     };
-    if (written.error && markColumnMissing(written.error)) {
-      change(ownerId, record => ({ ...record, installed: false, marks: {}, waiting: record.waiting.map(notSent) }));
-      return 'not_installed';
-    }
     const reached = !written.error && Array.isArray(written.data) && written.data.length > 0;
+    // "Column not in the schema cache" on a write, when the question just before was answered with the column: the
+    // column is there and the data API has not caught up yet (its state for a moment after the owner's database
+    // change). It is a refusal like any other: nothing the cloud just said is forgotten, the mark stays installed,
+    // and the tap is tried again (review of D1, L6). Only the question's own "no such column" says not installed.
+    const apiNotCaughtUp = Boolean(written.error && markColumnMissing(written.error));
     change(ownerId, record => {
       if (!reached) {
         // Refused, or no such row with that mark (not uploaded yet, or changed in between): it keeps waiting,
@@ -606,6 +607,7 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
         ownRestores: value === null && !mark.again ? withOwnRestore(record.ownRestores, id, mark.at) : record.ownRestores,
       };
     });
+    if (apiNotCaughtUp) return 'installed'; // the others would be answered the same: they wait for the next pass
   }
   return 'installed';
 }

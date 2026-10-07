@@ -608,6 +608,61 @@ describe('L5: a Restore made with no signal', () => {
   });
 });
 
+describe('L6: the data API has not yet reloaded after the paste (a write is answered "column not in the schema cache", a read is answered)', () => {
+  it('F-L6: what the cloud just said is archived is not forgotten, the mark stays "installed", and the waiting Archive is tried again', async () => {
+    cloud.add('doc-contract');
+    cloud.row('doc-contract')!.archived_at = '2026-10-06T12:00:00.000Z'; // archived from the iPad
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    cloud.state.offline.phone = true;
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
+    cloud.state.offline.phone = false;
+    // The read is answered (the column exists); the write is answered PGRST204 (the API's cache is old).
+    const realClient = cloud.clientFor('phone');
+    const staleCacheClient = {
+      auth: realClient.auth,
+      from: () => {
+        const chain = realClient.from() as Record<string, unknown>;
+        const update = chain.update as (values: unknown) => unknown;
+        chain.update = (values: unknown) => {
+          update(values);
+          chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve({
+            data: null, status: 400,
+            error: { code: 'PGRST204', message: "Could not find the 'archived_at' column of 'reference_documents' in the schema cache" },
+          }).then(resolve);
+          return chain;
+        };
+        return chain;
+      },
+    };
+    let clock = Date.parse('2026-10-06T18:00:10.000Z');
+    await expect(phone.syncSharedDocumentArchiveWithCloud({ client: staleCacheClient as never, ownerId: 'owner-a', timeoutMs: 150, now: () => clock }))
+      .resolves.toBe('installed');
+    expect(hiddenOn(phone)).toEqual(['doc-contract', PERMIT]); // the iPad's archived document stays hidden here
+    expect(phone.sharedDocumentArchiveView().installed).toBe(true);
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
+
+    // Half a minute later the API has caught up: the Archive goes up.
+    clock += 31_000;
+    await phone.syncSharedDocumentArchiveWithCloud({ client: realClient as never, ownerId: 'owner-a', timeoutMs: 150, now: () => clock });
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
+    expect(hiddenOn(phone)).toEqual(['doc-contract', PERMIT]);
+    expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);
+  });
+
+  it('the question itself answered "no such column" is still what says the mark is not installed', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T12:00:00.000Z';
+    const ipad = await start('ipad');
+    await sync(ipad, cloud, 'ipad');
+    expect(hiddenOn(ipad)).toEqual([PERMIT]);
+    cloud.state.installed = false; // the database change undone
+    await expect(sync(ipad, cloud, 'ipad')).resolves.toBe('not_installed');
+    expect(ipad.sharedDocumentArchiveView().installed).toBe(false);
+    expect(hiddenOn(ipad)).toEqual([]);
+  });
+});
+
 /**
  * The reviewer's random sequences on two devices, compared with one device
  * doing the same taps in order. The owner's taps are numbered in the order he
