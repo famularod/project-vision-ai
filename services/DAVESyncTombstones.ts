@@ -25,6 +25,9 @@ export const DAVE_SYNC_TOMBSTONES_QUARANTINE_PREFIX =
 
 let mutationTail: Promise<void> = Promise.resolve();
 let synchronizationInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
+/** The order of calls and starts, counted (no clock): which came first, a caller or the synchronization under way. */
+let synchronizationCalls = 0;
+let synchronizationInFlightSince = 0;
 let operationalRefreshInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
 
 export type DAVESyncTombstoneSyncResult = {
@@ -166,11 +169,26 @@ export async function recordDAVESyncTombstones(
   return validTombstones;
 }
 
-export async function synchronizeDAVESyncTombstones(): Promise<DAVESyncTombstoneSyncResult> {
-  if (synchronizationInFlight) return synchronizationInFlight;
+/**
+ * `beganAfterThisCall` (sync batch Y3, item 7): the caller records how far this device has caught up from the
+ * moment it was asked to sync, so the history it uses must have been read after that moment. Settings' Sync Now
+ * was handed a synchronization already under way, whose read of the cloud began before he pressed it: a deletion
+ * made on another device between that read and the press was not in it, yet Reports was told this device had
+ * caught up to the press. One already under way is waited for (two never run at once), and then the history is
+ * read again; one that began after this call is as good as its own. Every other caller shares, as before.
+ */
+export async function synchronizeDAVESyncTombstones(
+  { beganAfterThisCall = false }: Readonly<{ beganAfterThisCall?: boolean }> = {},
+): Promise<DAVESyncTombstoneSyncResult> {
+  const calledAt = synchronizationCalls += 1;
+  while (synchronizationInFlight) {
+    if (!beganAfterThisCall || synchronizationInFlightSince > calledAt) return synchronizationInFlight;
+    await synchronizationInFlight.catch(() => undefined);
+  }
 
   const task = performTombstoneSynchronization();
   synchronizationInFlight = task;
+  synchronizationInFlightSince = synchronizationCalls += 1;
 
   try {
     return await task;

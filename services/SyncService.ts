@@ -4673,7 +4673,9 @@ export async function synchronizeLocalData(
   }
 
   progress('Checking cross-device deletion history');
-  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  // Read after this sync was asked for, never one already under way (sync batch Y3, item 7): what Settings records
+  // as caught up counts from the moment Sync Now was pressed.
+  const tombstoneSync = await synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
   if (!tombstoneSync.cloudAuthoritative) {
     return {
       configured: true,
