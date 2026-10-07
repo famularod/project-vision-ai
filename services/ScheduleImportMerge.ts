@@ -22,6 +22,9 @@ import {
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
+  scheduleManagersOwnPercent,
+  scheduleProgressFlooredAtManagers,
+  scheduleProgressLeftStanding,
   scheduleProgressIsManagers,
   scheduleProgressJudgedAt,
   scheduleRowAsTask,
@@ -1385,6 +1388,26 @@ function scheduleTextCarriedToShownTask(
   return scheduleItemAsLastSetOnItsOtherRow(hidden, shown, row, now, known);
 }
 
+/**
+ * Build 231, S3 item 1 (the A5 recorded Low; the independent review's F02):
+ * G uploaded at 40%, David's 60% entered after it, H approved at 70% (above
+ * his, so H's row shows the file's 70% with his 60% kept under it), then G
+ * made current again showed G's 40%: the activation weighed only the row it
+ * hides, and H's row holds a file's percent. The percent David entered
+ * himself that the hidden row keeps under its file's (owner answer Q22's
+ * floor) is his latest word on the task: a row made current whose own file
+ * stated less, before he entered it, is floored at it, as a lookahead is.
+ * Read from the hidden row alone, never by following the task's earlier
+ * rows, which two devices can link differently.
+ */
+function scheduleProgressUnderHiddenFileCarried(hidden: ScheduleItem, shown: ScheduleItem, now: string): ScheduleItem | null {
+  if (scheduleProgressIsManagers(hidden) || scheduleProgressIsManagers(shown)) return null;
+  const his = scheduleManagersOwnPercent(hidden);
+  if (!his || !his.judgedAt || timeOf(his.judgedAt) <= Math.max(timeOf(shown.progressConfirmedAt), timeOf(shown.importedAt || shown.createdAt))) return null;
+  const floored = scheduleProgressFlooredAtManagers(shown, his.percent, his.judgedAt);
+  return floored ? { ...shown, ...floored, updatedAt: now } : null;
+}
+
 function progressCarried(
   before: readonly ScheduleItem[],
   after: readonly ScheduleItem[],
@@ -1400,7 +1423,9 @@ function progressCarried(
     pairs,
     carried: nowShown.flatMap(shown => {
       const hidden = pairs.get(shown);
-      const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
+      if (!hidden) return [];
+      const carried = scheduleProgressCarriedFrom(hidden, shown, now) ?? scheduleProgressUnderHiddenFileCarried(hidden, shown, now) ??
+        scheduleProgressLeftStanding(hidden, shown, now);
       return carried ? [carried] : [];
     }),
   };

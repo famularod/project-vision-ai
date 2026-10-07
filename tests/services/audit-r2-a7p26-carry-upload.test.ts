@@ -178,7 +178,7 @@ jest.mock('../../services/SupabaseService', () => {
 // The app's background upload is run by the rig, right after each action that requests it.
 jest.mock('../../services/BackgroundTaskGuard', () => ({ startGuardedBackgroundTask: () => undefined }));
 
-import { daveScheduleItemsNeedingCloudUpload, isDAVESafeCloudScheduleRecord, reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords, scheduleItemsAfterCloudDeletion } from '../../services/DAVEScheduleRecovery';
+import { clearDeletedScheduleRowsHeld, daveScheduleItemsNeedingCloudUpload, isDAVESafeCloudScheduleRecord, reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords, scheduleItemsAfterCloudDeletion, scheduleItemsAfterCloudRowHeard } from '../../services/DAVEScheduleRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from '../../services/DAVECloudRecovery';
 import { createDAVEOperationalRealtimeApplier } from '../../services/DAVEOperationalRealtimeApplication';
 import { deletedDAVERecordIds, loadDAVEOperationalTombstones, recordDAVESyncTombstones, synchronizeDAVESyncTombstones } from '../../services/DAVESyncTombstones';
@@ -197,7 +197,7 @@ import {
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
-import { scheduleManagersOwnPercent, scheduleManagersPercentUnderFileOfBoth, scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
+import { scheduleManagersOwnPercent, scheduleManagersPercentUnderFileOfBoth, scheduleProgressLeftStanding, scheduleProgressStandsSince, scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
@@ -547,6 +547,7 @@ function resetRig() {
   heardTombstones.clear();
   cloudDocuments = [];
   deletedDocuments.clear();
+  clearDeletedScheduleRowsHeld();
   mockDevice = 'phone';
 }
 
@@ -1397,7 +1398,7 @@ describe('A7 p27 M: an old master deleted on the phone, heard over realtime, kee
   // before the tasks waiting on its queue), no row on the iPad answers to F's yet, so F's row goes with nothing to lend to,
   // and G's row then arrives at 0%. Holding the deleted row until a row that answers to it arrives needs state the
   // realtime applier does not keep.
-  it.skip('the deletion heard before G\'s row (open): 30% everywhere', async () => {
+  it('the deletion heard before G\'s row (open): 30% everywhere', async () => {
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
     setOnline(phone, false);
     at(G.importedAt!);
@@ -1660,7 +1661,7 @@ describe('A5 p24 L1: a master stating exactly David\'s percent has not taken it 
   // it would mean re-confirming his 70% at the activation, which would outrank a newer percent he entered offline on that
   // row before it (the A5 pass 12 L class). A mark at the activation for a file's percent (L2, also left open, below)
   // would not apply here either: here the activation lets his own percent stand.
-  it.skip('L1 (b), open: Make Current F after G\'s take-over, then H at 30% on the phone: 70% everywhere', async () => {
+  it('L1 (b), open: Make Current F after G\'s take-over, then H at 30% on the phone: 70% everywhere', async () => {
     const G2 = scheduleDoc('MASTER G', '2026-09-13T00:00:00.000Z');
     const H2 = scheduleDoc('MASTER H', '2026-09-15T00:00:00.000Z');
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
@@ -1722,7 +1723,7 @@ describe('Left open: Set Active and Make Current (A5 p24 L2, A5 recorded Low)', 
   // under it) fixes this case, but the A5 p24 generator found the mark's manager rank making the marked copy outrank the
   // other device's later lookahead on that row in the sync merge, losing the lookahead's dates (its seeds 2203 and 3097).
   // A mark that only the carry reads needs a new task field. Built and measured, then left out (1 Oct).
-  it.skip('L2, open: phone G 70% (moved), Set Active F, David 60%, Set Active G (70%), H (moved) 40%: 40% after a refresh, on the iPad and the web', async () => {
+  it('L2, open: phone G 70% (moved), Set Active F, David 60%, Set Active G (70%), H (moved) 40%: 40% after a refresh, on the iPad and the web', async () => {
     const G1 = scheduleDoc('MASTER G', '2026-09-08T09:00:00.000Z');
     const H1 = scheduleDoc('MASTER H', '2026-09-12T09:00:00.000Z');
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
@@ -1745,7 +1746,7 @@ describe('Left open: Set Active and Make Current (A5 p24 L2, A5 recorded Low)', 
   // approved on a device with a stale view answers to a row one device would not link, so the activation gave David's
   // percent where one device keeps the file's (the A5 p24 generator's seed 20077, and 1224 and 2070). Built and
   // measured, then left out (1 Oct).
-  it.skip('A5 recorded Low, open: phone Set Active back to G after H: his later 60% everywhere, as without H', async () => {
+  it('A5 recorded Low, open: phone Set Active back to G after H: his later 60% everywhere, as without H', async () => {
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
     const G1 = webUpload('WEB G', '2026-09-08T09:00:00.000Z', ['Framing,Alpha,Lot,10/22/2026,11/01/2026,40', SURVEY]);
     await refresh(phone);
@@ -2363,3 +2364,137 @@ describe('A5 p26 L1: after a Talk Undo, the percent it undid is not David\'s lat
     expect(scheduleManagersPercentUnderFileOfBoth(hFloor, { ...ownBack, progressUndone: undefined } as ScheduleItem).managersPercentUnderFile).toBe(50);
   });
 });
+
+/*
+ * Build 231, schedule batch S3, item 1 (the independent review's F02): the rules behind the tests un-skipped above,
+ * on the records alone. A task saved by Build 229 / 230 has no progressStandsSince: it is weighed as before.
+ */
+describe('S3 item 1: when a schedule was made current with a percent left standing, kept with the task', () => {
+  const davids = (row: ScheduleItem, percent: number, at: string) => ({ ...row, percentComplete: percent, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: at, updatedAt: at }) as ScheduleItem;
+  const fRow = () => rowsOf(F, [F_ROW])[0];
+  const gRow = (percent: number, importedAt: string) => ({ ...rowsOf(scheduleDoc('MASTER G', importedAt), [G_ROW(String(percent))])[0], revisedFromTaskIds: ['MASTER F-1'] }) as ScheduleItem;
+  const hRow = (percent: number, importedAt: string) => ({ ...rowsOf(scheduleDoc('MASTER H', importedAt), [`Framing,Alpha,Lot,10/25/2026,11/04/2026,${percent}`])[0], revisedFromTaskIds: ['MASTER F-1', 'MASTER G-1'] }) as ScheduleItem;
+  const merged = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: rows, cloud: rows, allowCloudOnly: true }).find(item => item.id === 'MASTER H-1')!.percentComplete;
+  const MARK = '2026-09-10T09:00:00.000Z';
+
+  it('the activation marks the row it shows when that row\'s percent is left standing against a later one on the row it hides, and only then', () => {
+    const his = davids(fRow(), 60, '2026-09-09T09:00:00.000Z');
+    const files = gRow(70, '2026-09-08T09:00:00.000Z');
+    // G made current: its file's 70% stands over the 60% he entered since under F.
+    expect(scheduleProgressLeftStanding(his, files, MARK)).toEqual({ ...files, progressStandsSince: { at: MARK, percentComplete: 70 }, updatedAt: MARK });
+    // F made current again: his 70% stands though G's file stated 80% after it.
+    const took = gRow(80, '2026-09-13T00:00:00.000Z');
+    const seventy = davids(fRow(), 70, '2026-09-10T21:00:00.000Z');
+    expect(scheduleProgressLeftStanding(took, seventy, '2026-09-14T09:00:00.000Z')!.progressStandsSince).toEqual({ at: '2026-09-14T09:00:00.000Z', percentComplete: 70 });
+    // Nothing to mark: the file stated before... and he entered his percent after the file's (the carry gives it); a file's lower percent; his own on both.
+    expect(scheduleProgressLeftStanding(davids(fRow(), 60, '2026-09-07T13:00:00.000Z'), files, MARK)).toBeNull();
+    expect(scheduleProgressLeftStanding(his, gRow(50, '2026-09-08T09:00:00.000Z'), MARK)).toBeNull();
+    expect(scheduleProgressLeftStanding(gRow(60, '2026-09-08T09:00:00.000Z'), seventy, MARK)).toBeNull();
+    expect(scheduleProgressLeftStanding(his, davids(files, 70, '2026-09-08T10:00:00.000Z'), MARK)).toBeNull();
+    // The same activation heard twice marks once.
+    expect(scheduleProgressLeftStanding(his, scheduleProgressLeftStanding(his, files, MARK)!, MARK)).toBeNull();
+  });
+
+  it('the mark goes with the percent: it counts while the row still holds that percent, and a task saved before has none', () => {
+    const files = gRow(70, '2026-09-08T09:00:00.000Z');
+    expect(scheduleProgressStandsSince({ ...files, progressStandsSince: { at: MARK, percentComplete: 70 } })).toBe(Date.parse(MARK));
+    expect(scheduleProgressStandsSince({ ...files, percentComplete: 75, progressStandsSince: { at: MARK, percentComplete: 70 } })).toBe(0);
+    expect(scheduleProgressStandsSince(files)).toBe(0);
+  });
+
+  it('the sync\'s carry (L2): a file\'s percent left standing at Set Active counts from then; with no mark (Build 229 / 230) his 60% is carried as before, never less', () => {
+    const his = davids(fRow(), 60, '2026-09-09T09:00:00.000Z');
+    const g = gRow(70, '2026-09-08T09:00:00.000Z');
+    const h = hRow(40, '2026-09-12T09:00:00.000Z');
+    expect(merged([his, g, h])).toBe(60);
+    expect(merged([his, { ...g, progressStandsSince: { at: MARK, percentComplete: 70 } }, h])).toBe(40);
+    // A mark made for a percent the row no longer holds counts for nothing.
+    expect(merged([his, { ...g, progressStandsSince: { at: MARK, percentComplete: 65 } }, h])).toBe(60);
+    // A percent he entered after that activation is carried as before.
+    expect(merged([davids(fRow(), 60, '2026-09-11T09:00:00.000Z'), { ...g, progressStandsSince: { at: MARK, percentComplete: 70 } }, h])).toBe(60);
+  });
+
+  it('the sync\'s carry (L1 b): his percent on a row made current again is not taken over by what a row between stated before; with no mark, as before', () => {
+    const his = davids(fRow(), 70, '2026-09-10T21:00:00.000Z');
+    const g = gRow(80, '2026-09-13T00:00:00.000Z');
+    const h = hRow(30, '2026-09-15T00:00:00.000Z');
+    expect(merged([his, g, h])).toBe(30);
+    expect(merged([{ ...his, progressStandsSince: { at: '2026-09-14T09:00:00.000Z', percentComplete: 70 } }, g, h])).toBe(70);
+    // G made current once more after that (its file's 80% stands from then): G has taken it over again.
+    expect(merged([{ ...his, progressStandsSince: { at: '2026-09-14T09:00:00.000Z', percentComplete: 70 } }, { ...g, progressStandsSince: { at: '2026-09-14T12:00:00.000Z', percentComplete: 80 } }, h])).toBe(30);
+  });
+
+  it('two copies of a row: the later mark that goes with the percent kept, from whichever copy has it', () => {
+    const g = gRow(70, '2026-09-08T09:00:00.000Z');
+    const marked = { ...g, progressStandsSince: { at: MARK, percentComplete: 70 }, updatedAt: MARK };
+    const later = { ...g, progressStandsSince: { at: '2026-09-11T09:00:00.000Z', percentComplete: 70 } };
+    const mark = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0].progressStandsSince;
+    expect([mark(g, marked), mark(marked, g), mark(marked, later), mark(later, marked)]).toEqual([marked.progressStandsSince, marked.progressStandsSince, later.progressStandsSince, later.progressStandsSince]);
+    // The other copy's mark was for another percent: not kept.
+    expect(mark(g, { ...g, progressStandsSince: { at: MARK, percentComplete: 65 } })).toBeUndefined();
+  });
+
+  it('Set Active back to an older master (the A5 recorded Low): a row whose file stated less before he entered his percent is floored at the percent the hidden row keeps under its file\'s', () => {
+    const g = gRow(40, '2026-09-08T09:00:00.000Z');
+    const h = { ...hRow(70, '2026-09-10T09:00:00.000Z'), managersPercentUnderFile: 60, managersPercentUnderFileJudgedAt: '2026-09-09T09:00:00.000Z' } as ScheduleItem;
+    const at = '2026-09-11T09:00:00.000Z';
+    const shownAfter = (hidden: ScheduleItem, shown: ScheduleItem) => scheduleProgressCarriedToShownTasks({ before: [hidden], after: [shown], now: at })
+      .map(item => [item.percentComplete, item.progressSource ?? null, item.managersPercentUnderFile, item.managersPercentUnderFileJudgedAt]);
+    expect(shownAfter(h, g)).toEqual([[60, null, 60, '2026-09-09T09:00:00.000Z']]);
+    // He entered it before G's file stated its percent: G's stands (its import weighed his). No floor kept (a task saved before): as before.
+    expect(shownAfter({ ...h, managersPercentUnderFileJudgedAt: '2026-09-08T08:00:00.000Z' }, g)).toEqual([]);
+    expect(shownAfter(hRow(70, '2026-09-10T09:00:00.000Z'), g)).toEqual([]);
+    // A file that stated more than his percent stands.
+    expect(shownAfter(h, gRow(65, '2026-09-08T09:00:00.000Z'))).toEqual([]);
+  });
+
+  it('a row deleted over the live connection before the row that answers to it is heard waits for it, lends once that row is heard, and then stops waiting', () => {
+    clearDeletedScheduleRowsHeld();
+    const his = davids(fRow(), 30, AFTER_G);
+    const moved = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: [his.id] } as ScheduleItem;
+    expect(scheduleItemsAfterCloudDeletion([his], his.id)).toEqual([]);
+    const heardOnce = scheduleItemsAfterCloudRowHeard([moved], moved.id);
+    expect(heardOnce.map(item => [item.id, item.percentComplete, item.progressCarriedFrom])).toEqual([[moved.id, 30, { taskId: his.id, judgedAt: AFTER_G }]]);
+    // The cloud's row heard again as it was, before the carried percent has gone up: lent again.
+    expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)[0].percentComplete).toBe(30);
+    // Heard with the percent: nothing more to take, and the deleted row stops waiting.
+    expect(scheduleItemsAfterCloudRowHeard(heardOnce, moved.id)).toBe(heardOnce);
+    expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)[0].percentComplete).toBe(0);
+  });
+
+  it('two devices: heard over the live connection alone, with no refresh: 30% on the iPad at once, and in the cloud after its upload', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(phone, false);
+    at(G.importedAt!); await approve(phone, G, [G_ROW(), SURVEY]);
+    at('2026-09-14T13:00:00.000Z'); await deleteWithItems(phone, F);
+    at(AFTER_G); await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(phone, true); shareDocuments(phone);
+    await fullSync(phone);
+    await tombstoneEchoes(ipad);
+    expect(ipad.state.map(item => item.id)).not.toContain('MASTER F-1');
+    await echoes(ipad);
+    expect(onDevice(ipad)).toEqual([['10/22/2026', '11/01/2026', 30, '', '']]);
+    await backgroundUpload(ipad);
+    expect([onWeb(), await queueOf(ipad)]).toEqual([[['10/22/2026', '11/01/2026', 30, '', '']], []]);
+  });
+
+  it('...a refresh or Full Sync that brings the row lends it too; a deleted row with nothing of his is not held; a device with no tasks holds nothing', () => {
+    clearDeletedScheduleRowsHeld();
+    const his = davids(fRow(), 30, AFTER_G);
+    const moved = { ...rowsOf(G, [G_ROW()])[0], revisedFromTaskIds: [his.id] } as ScheduleItem;
+    const survey = rowsOf(F, [F_ROW, SURVEY])[1];
+    scheduleItemsAfterCloudDeletion([his, survey], his.id);
+    expect(recoverDAVEScheduleRecords({ local: [survey], cloud: [survey, moved], deletedIds: [his.id], allowCloudOnly: true }).find(item => item.id === moved.id)!.percentComplete).toBe(30);
+    expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)[0].percentComplete).toBe(0);
+    // Nothing of his on the deleted row: nothing waits.
+    scheduleItemsAfterCloudDeletion([fRow()], 'MASTER F-1');
+    expect(clearDeletedScheduleRowsHeld()).toBe(0);
+    expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)).toEqual([moved]);
+    // Held, then the device starts over with no tasks: nothing is lent.
+    scheduleItemsAfterCloudDeletion([his], his.id);
+    recoverDAVEScheduleRecords({ local: [], cloud: [], allowCloudOnly: true });
+    expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)[0].percentComplete).toBe(0);
+  });
+});
+

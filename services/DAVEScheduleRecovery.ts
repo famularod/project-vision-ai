@@ -12,6 +12,7 @@ import {
   scheduleProgressFlooredAtManagers,
   scheduleProgressIsManagers,
   scheduleProgressJudgedAt,
+  scheduleProgressStandsSince,
 } from './ScheduleProgressSource';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
@@ -123,6 +124,8 @@ export function recoverDAVEScheduleRecords({
 }): ScheduleItem[] {
   const deleted = new Set(deletedIds.map(normalized).filter(Boolean));
   const localRecords = local.filter(record => !deleted.has(normalized(record.id)));
+  // A device with no tasks holds no deleted row of one (Build 231, S3 item 1).
+  if (local.length === 0) deletedRowsWaitingForTheirNewRow.clear();
   if (!allowCloudOnly) return reconcileDAVEScheduleRecords(localRecords);
 
   const combined = new Map<string, ScheduleItem>();
@@ -140,7 +143,8 @@ export function recoverDAVEScheduleRecords({
     }
     combined.set(id, mergedWithCarriedProgressWeighedAgain(record, cloudRecord, copies, deleted));
   });
-  const dropped = deletedRowsHeld(local, cloud, deleted);
+  // With the rows deleted over the live connection that waited for a row to answer to them (Build 231, S3 item 1).
+  const dropped = [...deletedRowsHeld(local, cloud, deleted), ...deletedRowsHeldFor([...combined.values()], true)];
   return typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(reconcileDAVEScheduleRecords([...combined.values()]), dropped), dropped,
     new Map(cloud.map(record => [normalized(record.id), record] as const)));
 }
@@ -386,7 +390,9 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
       timestamp(scheduleProgressJudgedAt(row)) > timestamp(scheduleProgressJudgedAt(earlier)))) return record;
     // A file that stated more than his percent after he judged it took the task over, row by row (A5 pass 23 L1, A5 pass 24 L1),
     // as did one whose percent replaced it, or a later one of his, there or on this row (A5 pass 25 L1).
-    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined &&
+    // What a row between stated before the schedule showing his percent was made current again took nothing over, and
+    // a file's percent left standing when its schedule was made current counts from then (Build 231, S3 item 1).
+    const takenOver = rowsBetween(earlier, record, known).some(row => row !== undefined && !setAsideSince(row, earlier) &&
       (fileStatedAbove(row, earlier) || keepsHisPercentUnderFile(row, earlier))) || keepsHisPercentUnderFile(record, earlier);
     // A row no file restated since its own import holds what that import gave: weighed as the import weighs it.
     const carriedFrom = !noWordOfHis && !takenOver && scheduleProgressCarriedFrom(earlier, record, record.updatedAt ?? '', {
@@ -449,8 +455,72 @@ export function scheduleItemsAfterCloudDeletion(items: readonly ScheduleItem[], 
   const removed = items.filter(item => normalized(item.id) === id);
   const kept = items.filter(item => normalized(item.id) !== id);
   if (removed.length === 0 || !id) return kept;
+  // No row kept answers to it yet: it waits for one (below).
+  if (!kept.some(row => scheduleTaskEarlierIds(row).some(earlier => normalized(earlier) === id))) holdDeletedRowForItsNewRow(removed[0]);
   const lent = typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks(kept, removed), removed);
   return lent.map((row, index) => scheduleTaskEarlierIds(kept[index]).some(earlier => normalized(earlier) === id) ? row : kept[index]);
+}
+
+/**
+ * Build 231, S3 item 1 (the A7 pass 27 M case left open; the independent
+ * review's F02): the phone, offline, approved master G and deleted F with
+ * its items, while David's 30% on F's row went up from the iPad. When the
+ * deletion reached the iPad over the live connection BEFORE G's row did, no
+ * row answered to F's yet: F's row went with nothing to lend to, G's row
+ * then arrived at 0%, and the 30% was gone everywhere, with no notice.
+ *
+ * A row deleted over the live connection that holds a percent David entered
+ * (or an owner, contractor, note, next step or milestone he typed) and that
+ * no row answers to yet is held, in memory, until a row that answers to it
+ * is heard (scheduleItemsAfterCloudRowHeard) or a refresh or Full Sync
+ * brings one (recoverDAVEScheduleRecords): that row is then lent what the
+ * deleted one held, by the rule the deletion itself uses, and the app sends
+ * it up as a carried percent. The deleted row never comes back. Held only
+ * while the app runs: closing the app in between leaves it as before.
+ */
+const deletedRowsWaitingForTheirNewRow = new Map<string, ScheduleItem>();
+const DELETED_ROWS_HELD = 200;
+
+function holdDeletedRowForItsNewRow(row: ScheduleItem): void {
+  if (!scheduleProgressIsManagers(row) && !TYPED_TEXT_FIELDS.some(field => typeof row[field] === 'string' && (row[field] as string).trim())) return;
+  deletedRowsWaitingForTheirNewRow.delete(normalized(row.id));
+  deletedRowsWaitingForTheirNewRow.set(normalized(row.id), row);
+  while (deletedRowsWaitingForTheirNewRow.size > DELETED_ROWS_HELD) {
+    deletedRowsWaitingForTheirNewRow.delete(deletedRowsWaitingForTheirNewRow.keys().next().value as string);
+  }
+}
+
+/** The deleted rows held that these rows answer to; with `done`, they stop waiting. */
+function deletedRowsHeldFor(rows: readonly ScheduleItem[], done: boolean): ScheduleItem[] {
+  if (deletedRowsWaitingForTheirNewRow.size === 0) return [];
+  const ids = new Set(rows.flatMap(scheduleTaskEarlierIds).map(normalized));
+  const held = [...deletedRowsWaitingForTheirNewRow.entries()].filter(([id]) => ids.has(id));
+  if (done) held.forEach(([id]) => deletedRowsWaitingForTheirNewRow.delete(id));
+  return held.map(([, row]) => row);
+}
+
+/** The tasks after a row was heard over the live connection: a row that answers to a deleted row held is lent what it held. */
+export function scheduleItemsAfterCloudRowHeard(items: readonly ScheduleItem[], heardId: string): ScheduleItem[] {
+  const id = normalized(heardId);
+  const index = items.findIndex(item => normalized(item.id) === id);
+  if (index < 0) return items as ScheduleItem[];
+  const held = deletedRowsHeldFor([items[index]], false);
+  if (held.length === 0) return items as ScheduleItem[];
+  const lent = typedTextCarriedToRevisedTasks(progressCarriedToRevisedTasks([...items], held), held);
+  // The cloud's row is heard again, as it was, until this device's carried percent has gone up: the deleted row lends
+  // each time, and stops waiting once the row heard has nothing more to take from it (or a refresh has weighed it).
+  if (JSON.stringify(lent[index]) === JSON.stringify(items[index])) {
+    deletedRowsHeldFor([items[index]], true);
+    return items as ScheduleItem[];
+  }
+  return items.map((row, position) => (position === index ? lent[position] : row));
+}
+
+/** For tests: nothing held any more; how many rows were. */
+export function clearDeletedScheduleRowsHeld(): number {
+  const held = deletedRowsWaitingForTheirNewRow.size;
+  deletedRowsWaitingForTheirNewRow.clear();
+  return held;
 }
 
 /** What David types on a task that a schedule file may also state (next step and milestone: review N3 C). */
@@ -756,8 +826,24 @@ function fileStatedAbove(row: ScheduleItem, earlier: ScheduleItem): boolean {
   const notedIsDavids = note?.masterProgressSource === 'project_manager' && note.masterProgressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER;
   const stated = note && restated && !notedIsDavids ? notedPercent : boundedPercent(Number(row.percentComplete));
   if (stated <= boundedPercent(Number(earlier.percentComplete))) return false;
-  const statedAt = Math.max(timestamp(row.progressConfirmedAt), timestamp(row.importedAt || row.createdAt));
+  const statedAt = Math.max(timestamp(row.progressConfirmedAt), timestamp(row.importedAt || row.createdAt), scheduleProgressStandsSince(row));
   return statedAt > timestamp(scheduleProgressJudgedAt(earlier));
+}
+
+/**
+ * Build 231, S3 item 1 (A5 pass 24 L1 b; the independent review's F02):
+ * David's 70% on F's row; G moved Framing at 80% (above his: G took it
+ * over); F was made current again, which shows his 70%; H then moved the
+ * task at 30%. One device pairs H with F's row and keeps his 70%; the sync
+ * read G's 80%, stated after his 70% on a row between, as a take-over and
+ * showed 30%. The row holding his percent now says when its schedule was
+ * made current again with that percent standing (progressStandsSince): what
+ * a row between stated before then was set aside with its schedule.
+ */
+function setAsideSince(row: ScheduleItem, earlier: ScheduleItem): boolean {
+  const since = scheduleProgressStandsSince(earlier);
+  if (!since || !scheduleProgressIsManagers(earlier)) return false;
+  return Math.max(timestamp(row.progressConfirmedAt), timestamp(row.importedAt || row.createdAt), scheduleProgressStandsSince(row)) < since;
 }
 
 /**
@@ -892,7 +978,7 @@ function mergeScheduleRevisions(
   const revisedFromTaskIds = scheduleTaskEarlierIdsOfBoth(base, base === local ? cloud : local);
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   // The row a carried percent came from goes with that percent, last, as the carry adds it (A7 pass 28 L).
-  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, ...baseRecord } = base;
+  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, progressStandsSince: _baseStandsSince, ...baseRecord } = base;
   // What a master said under a lookahead, from the copy that has it (A7 pass 24 L-3).
   // With David's own later percent on the other copy's task (A6 pass 22 L1).
   const lookaheadOverlay = lookaheadNoteWithPercentOf(lookaheadNoteOfBoth(base, base === local ? cloud : local), base, base === local ? cloud : local);
@@ -916,7 +1002,17 @@ function mergeScheduleRevisions(
     ...(alsoImportedSourceRow ? { alsoImportedSourceRow } : {}),
     ...(revisedFromTaskIds.length > 0 ? { revisedFromTaskIds } : {}),
     ...(progressSource.progressCarriedFrom ? { progressCarriedFrom: progressSource.progressCarriedFrom } : {}),
+    // When its schedule was made current with this percent left standing, from whichever copy knows the later time (Build 231, S3 item 1).
+    ...progressStandsSinceOfBoth(progressSource, progressSource === local ? cloud : local),
   };
+}
+
+/** The later mark of two copies of a row that goes with the percent kept (progressStandsSince); none: the field is left out. */
+function progressStandsSinceOfBoth(progress: ScheduleItem, other: ScheduleItem): Pick<ScheduleItem, 'progressStandsSince'> {
+  const marks = [progress, other].map(copy => copy.progressStandsSince)
+    .filter((mark): mark is NonNullable<ScheduleItem['progressStandsSince']> => Boolean(mark) && scheduleProgressStandsSince({ progressStandsSince: mark, percentComplete: progress.percentComplete }) > 0);
+  if (marks.length === 0) return {};
+  return { progressStandsSince: marks.reduce((later, mark) => (timestamp(mark.at) > timestamp(later.at) ? mark : later)) };
 }
 
 /**

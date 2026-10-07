@@ -896,6 +896,20 @@ export type ScheduleItem = {
    */
   progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
   /**
+   * When the schedule that shows this row was last made current (Set Active,
+   * Make Current) with this row's percent LEFT STANDING against a percent
+   * stated later on the row it hid, and the percent that stood (Build 231,
+   * S3 item 1; the independent review's F02): a file's higher percent over
+   * the percent David entered since under another master, or David's own
+   * percent after a newer master's file had taken it over. Only the sync's
+   * carry reads it (DAVEScheduleRecovery): what was stated before that time
+   * on the rows set aside did not take this percent over, and this percent
+   * stands over what he entered before it. It goes with the percent and
+   * stops counting once the percent changes. Kept in the task's JSON record;
+   * missing on a task saved before, which is weighed as before.
+   */
+  progressStandsSince?: { at: string; percentComplete: number } | null;
+  /**
    * The percent Talk wrote on this task that its Undo took back, and when
    * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
    * device may still hold that entry, or a floor made from it, and neither

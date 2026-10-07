@@ -261,6 +261,36 @@ export function scheduleProgressFlooredAtManagers(
  * and a merge keeps his latest entry either copy knows
  * (scheduleManagersPercentUnderFileOfBoth).
  */
+/**
+ * Build 231, S3 item 1 (the independent review's F02): when the schedule
+ * showing this row was last made current with the row's percent left
+ * standing (progressStandsSince), while the row still holds that percent;
+ * else 0. A task saved before has none.
+ */
+export function scheduleProgressStandsSince(item: Pick<ScheduleItem, 'progressStandsSince' | 'percentComplete'>): number {
+  const mark = item.progressStandsSince;
+  return mark && typeof mark.at === 'string' && percentOf({ percentComplete: mark.percentComplete }) === percentOf(item) ? timeOf(mark.at) : 0;
+}
+
+/**
+ * The row an activation shows, marked when its percent is left standing
+ * against a percent stated later on the row it hides (scheduleProgressStandsSince):
+ * a file's higher percent over the lower one David entered since on the
+ * hidden row, or David's own percent where the hidden row's file had stated
+ * more after he judged it (a take-over the activation undoes). Null when the
+ * activation changes nothing of that kind.
+ */
+export function scheduleProgressLeftStanding(hidden: ScheduleItem, shown: ScheduleItem, now: string): ScheduleItem | null {
+  const filesOverHisLater = scheduleProgressIsManagers(hidden) && !scheduleProgressIsManagers(shown) &&
+    percentOf(hidden) < percentOf(shown) && progressStatedAt(hidden) > progressStatedAt(shown);
+  const hisAfterTakeOver = scheduleProgressIsManagers(shown) && !scheduleProgressIsManagers(hidden) &&
+    percentOf(hidden) > percentOf(shown) && progressStatedAt(hidden) > progressStatedAt(shown);
+  if (!filesOverHisLater && !hisAfterTakeOver) return null;
+  if (scheduleProgressStandsSince(shown) >= timeOf(now)) return null;
+  // Saved and sent as the activation's other changes are (scheduleProgressCarriedFrom): stamped at the activation.
+  return { ...shown, progressStandsSince: { at: now, percentComplete: percentOf(shown) }, updatedAt: now };
+}
+
 export function scheduleManagersOwnPercent(item: ScheduleItem): Readonly<{ percent: number; judgedAt: string | null }> | null {
   if (scheduleProgressIsManagers(item)) return { percent: percentOf(item), judgedAt: scheduleProgressJudgedAt(item) };
   const floor = item.managersPercentUnderFile;
@@ -331,7 +361,7 @@ export function scheduleEntryUndone(
  */
 export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
   'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
-  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt', 'progressCarriedFrom',
+  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt', 'progressCarriedFrom', 'progressStandsSince',
 ] as const satisfies ReadonlyArray<keyof ScheduleItem>;
 
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
