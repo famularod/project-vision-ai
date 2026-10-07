@@ -83,10 +83,17 @@ const listeners = new Set<() => void>();
 let storageWrite: Promise<unknown> = Promise.resolve();
 let cloudWork: Promise<unknown> = Promise.resolve();
 
-function load(): Promise<void> {
-  if (!loaded) {
-    loaded = AsyncStorage.getItem(SHARED_DOCUMENT_ARCHIVE_STORAGE_KEY)
-      // Nothing changes the copy before it has been read: every change waits for this.
+/**
+ * Reads the saved copy. Every change waits for it, so nothing is changed
+ * before it has been read. It is read again each time a workspace opens: an
+ * account switch puts that account's own saved copy in place of the last
+ * one's, and what is in memory must never be written over it.
+ */
+function load(again = false): Promise<void> {
+  if (!loaded || again) {
+    loaded = Promise.resolve(loaded)
+      .then(() => storageWrite)
+      .then(() => AsyncStorage.getItem(SHARED_DOCUMENT_ARCHIVE_STORAGE_KEY))
       .then(raw => { records = parseStored(raw); })
       .catch(() => undefined)
       .then(() => { publish(); });
@@ -160,7 +167,7 @@ function publish(): void {
 export async function openSharedDocumentArchive(ownerId: string | null): Promise<void> {
   activeOwnerId = ownerId;
   publish();
-  await load();
+  await load(true);
 }
 
 export function sharedDocumentArchiveView(): SharedDocumentArchiveView {

@@ -100,6 +100,7 @@ import { AppShellFrame } from './components/app-shell-frame';
 import { OverlayErrorBoundary } from './components/overlay-error-boundary';
 import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
 import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
+import { useSharedDocumentArchive } from './hooks/use-shared-document-archive'; import { ArchivedDocumentsSection } from './components/archived-documents-section'; import { withArchivedProjectDocumentsRestored } from './services/SharedDocumentArchive';
 import { useProjectDocumentSharedRecordSync } from './hooks/use-project-document-shared-record-sync';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
@@ -150,7 +151,7 @@ import {
 } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { SharedReferenceDocumentCard } from './components/shared-reference-document-card';
-import { buildMobileDocumentWorkspace, type MobileDocumentWorkspaceEntry } from './services/MobileDocumentWorkspace';
+import { buildMobileArchivedDocuments, buildMobileDocumentWorkspace, type MobileDocumentWorkspaceEntry } from './services/MobileDocumentWorkspace';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { ProjectDocumentCard } from './components/project-document-card';
@@ -5082,6 +5083,7 @@ function AppShell() {
 
   const [projectDocumentsLoaded, setProjectDocumentsLoaded] =
     useState(false);
+  const sharedDocumentArchive = useSharedDocumentArchive({ cardsLoaded: projectDocumentsLoaded, restoreCards: ids => setProjectDocuments(prev => withArchivedProjectDocumentsRestored(prev, ids)) }); // archived = hidden on every device, kept in the cloud (owner answer Q44)
 
   const [scheduleItemsLoaded, setScheduleItemsLoadedState] =
     useState(false);
@@ -6460,6 +6462,7 @@ useEffect(() => {
     let realtimeUnsubscribe: () => void = () => undefined;
     void subscribeToDAVEOperationalChanges({
       onChange: (entity, collections, payload) => {
+        sharedDocumentArchive.noteLiveChange(entity, payload); // another device archived or restored a document (owner answer Q44)
         void applyRealtimeOperationalPayload(entity, payload)
           .then(applied => {
             if (!applied) {
@@ -11533,6 +11536,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectDocumentsCurrentRef.current = removeCard(projectDocumentsCurrentRef.current); // an upload finishing meanwhile saves the list without it (audit A8 pass 3 L3)
       setProjectDocuments(removeCard);
       if (!sensitive && sharedRecord) hiddenSharedDocuments.hide(sharedRecord.id); // no card comes back here (audit A8)
+      if (sensitive && sharedRecord && !sharedWithAnotherDocument) sharedDocumentArchive.archive(sharedRecord.id); // hidden on every device, kept in the cloud (owner answer Q44)
       if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
         bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
         remainingDocuments: projectDocumentsCurrentRef.current.filter(item => item.id !== documentId),
@@ -11569,7 +11573,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
     };
 
-    Alert.alert(title, message, sensitive
+    Alert.alert(title, sensitive && sharedRecord && !sharedWithAnotherDocument ? sharedDocumentArchive.question(document.name, document.category) : message, sensitive // every device, once the cloud keeps the mark (owner answer Q44)
       ? [
           { text: 'Cancel', style: 'cancel' },
           { text: `Archive ${document.category}`, style: 'destructive', onPress: () => void removeFromDevice() },
@@ -13352,7 +13356,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
     const talkDocuments = await loadECOSTalkReferenceDocuments({
       client: getSupabaseClient(),
-      documents: referenceDocuments,
+      documents: referenceDocuments.filter(document => !sharedDocumentArchive.archivedIds.has(document.id)), // an archived document answers nothing (owner answer Q44)
       question: context.status === 'resolved_follow_up' ? context.effectiveQuestion : transcript,
       projectName,
     });
@@ -13927,6 +13931,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 .some(name => projectDocumentMatchesProject(document, name) ||
                   projectRecords.some(project => project.name === name && project.id === document.projectId)))}
               referenceDocuments={referenceDocuments.filter(document => !hiddenSharedDocuments.hidden.has(document.id))}
+              archive={sharedDocumentArchive}
               projectNames={workspaceScopeNames(selectedWorkspaceProject)}
               projectIdentities={projectRecords}
               onOpenReference={openReferenceDocument}
@@ -17896,7 +17901,7 @@ function ProjectDocumentsScreen({
   contentStyle,
   projectName,
   documents,
-  referenceDocuments,
+  referenceDocuments, archive,
   projectNames,
   projectIdentities,
   onOpenReference,
@@ -17916,7 +17921,7 @@ function ProjectDocumentsScreen({
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
   documents: ProjectDocument[];
-  referenceDocuments: ReferenceDocument[];
+  referenceDocuments: ReferenceDocument[]; archive: ReturnType<typeof useSharedDocumentArchive>;
   projectNames: string[];
   projectIdentities: readonly { id?: string | null; name: string }[];
   onOpenReference: (document: ReferenceDocument) => void;
@@ -17937,7 +17942,7 @@ function ProjectDocumentsScreen({
   const [categoryFilter, setCategoryFilter] =
     useState<ProjectDocumentCategory | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
-  const workspaceDocuments = buildMobileDocumentWorkspace({ documents, referenceDocuments, projectNames, projectIdentities });
+  const workspaceDocuments = buildMobileDocumentWorkspace({ documents, referenceDocuments, projectNames, projectIdentities, archivedSharedDocumentIds: archive.archivedIds });
   const visibleDocuments = filterDAVEDocumentWorkspace({
     documents: workspaceDocuments,
     category: categoryFilter,
@@ -17975,7 +17980,7 @@ function ProjectDocumentsScreen({
     );
   };
 
-  const listHeader = (
+  const listHeader = (<>
     <ProjectDocumentsHeader
       projectName={projectName}
       categories={PROJECT_DOCUMENT_CATEGORIES}
@@ -17986,7 +17991,8 @@ function ProjectDocumentsScreen({
       onTakePhoto={onTakePhoto}
       showActions={sizeClass !== 'wide'}
     />
-  );
+    <ArchivedDocumentsSection documents={buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive })} onRestore={archive.restore} />
+  </>);
   const emptyState = workspaceDocuments.length === 0 ? (
     <EmptyState
       title="No documents yet — upload your first document."

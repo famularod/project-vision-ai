@@ -2478,6 +2478,18 @@ export async function getProjectAreasByIds(
   }), result.status);
 }
 
+/**
+ * Told each time the shared-document list has been read from the cloud, with
+ * the account it was read for (owner answer Q44, 6 Oct 2026): the archived
+ * marks are read then too, by services/SharedDocumentArchive.ts. The list
+ * waits for it and is never changed or failed by it.
+ */
+type ReferenceDocumentsListedListener = (client: SupabaseClient, ownerId: string) => Promise<unknown>;
+let referenceDocumentsListedListener: ReferenceDocumentsListedListener | null = null;
+export function setReferenceDocumentsListedListener(listener: ReferenceDocumentsListedListener | null): void {
+  referenceDocumentsListedListener = listener;
+}
+
 export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<ReferenceDocument[]>();
@@ -2499,6 +2511,7 @@ export async function listReferenceDocuments(): Promise<SupabaseServiceResult<Re
       error?.code,
     );
   }
+  try { await referenceDocumentsListedListener?.(client, owner.data); } catch { /* the list is what was asked for */ }
   const documents = data
     .map(value => {
       const row = toRecord(value);

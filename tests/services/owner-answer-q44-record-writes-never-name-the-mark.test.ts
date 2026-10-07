@@ -12,6 +12,7 @@
  */
 const mockWrites: Array<{ how: 'upsert' | 'update'; table: string; payload: Record<string, unknown> }> = [];
 let mockSession: Record<string, unknown> | null = null;
+let mockListAnswer: { data: unknown; error: { message: string } | null; status: number } = { data: [], error: null, status: 200 };
 
 const mockSupabaseClient = {
   auth: {
@@ -20,7 +21,9 @@ const mockSupabaseClient = {
     startAutoRefresh: jest.fn(),
     stopAutoRefresh: jest.fn(),
   },
-  rpc: jest.fn(async () => ({ data: null, error: null, status: 200 })),
+  rpc: jest.fn(async (name: string) => (name === 'dave_list_reference_document_metadata'
+    ? mockListAnswer
+    : { data: null, error: null, status: 200 })),
   from: jest.fn((table: string) => {
     const builder: Record<string, jest.Mock> = {};
     builder.upsert = jest.fn(async (payload: Record<string, unknown>) => {
@@ -115,5 +118,55 @@ describe('a save of a shared document never names the archived mark (owner answe
     await service.upsertReferenceDocument(carrying, { existing: true });
     expect(recordWrites()).toHaveLength(2);
     for (const write of recordWrites()) expect(Object.keys(write.payload).filter(column => /archiv/i.test(column))).toEqual([]);
+  });
+});
+
+describe('reading the shared-document list tells the archived-mark listener (owner answer Q44)', () => {
+  const originalUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const originalAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  let service: typeof import('../../services/SupabaseService');
+  const listed = [{ id: 'doc-permit', updated_at: '2026-10-05T16:00:01.000Z', document_data: { ...permit, cloudUpdatedAt: undefined } }];
+
+  beforeAll(() => {
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = 'test-anon-key';
+    service = require('../../services/SupabaseService');
+  });
+  afterAll(() => {
+    process.env.EXPO_PUBLIC_SUPABASE_URL = originalUrl;
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = originalAnonKey;
+  });
+  beforeEach(() => {
+    mockListAnswer = { data: listed, error: null, status: 200 };
+    mockSession = { access_token: 'session-token', user: { id: 'owner-a' }, expires_at: Math.floor(Date.now() / 1000) + 3600 };
+  });
+  afterEach(() => { service.setReferenceDocumentsListedListener(null); });
+
+  it('after the list is read, with the cloud connection and the account it was read for', async () => {
+    const listener = jest.fn(async () => undefined);
+    service.setReferenceDocumentsListedListener(listener);
+    const result = await service.listReferenceDocuments();
+    expect(result.data?.map(document => document.id)).toEqual(['doc-permit']);
+    expect(listener.mock.calls).toEqual([[mockSupabaseClient, 'owner-a']]);
+  });
+
+  it('the list is what was asked for: a listener that fails, either way, changes nothing', async () => {
+    service.setReferenceDocumentsListedListener(jest.fn(async () => { throw new Error('the mark could not be read'); }));
+    expect((await service.listReferenceDocuments()).data?.map(document => document.id)).toEqual(['doc-permit']);
+    service.setReferenceDocumentsListedListener(jest.fn(() => { throw new Error('the mark could not be read'); }) as never);
+    const result = await service.listReferenceDocuments();
+    expect(result.ok).toBe(true);
+    expect(result.data?.map(document => document.id)).toEqual(['doc-permit']);
+  });
+
+  it('a list that could not be read tells no one, and no listener is no trouble', async () => {
+    const listener = jest.fn(async () => undefined);
+    service.setReferenceDocumentsListedListener(listener);
+    mockListAnswer = { data: null, error: { message: 'Network request failed' }, status: 0 };
+    expect((await service.listReferenceDocuments()).ok).toBe(false);
+    expect(listener).not.toHaveBeenCalled();
+    service.setReferenceDocumentsListedListener(null);
+    mockListAnswer = { data: listed, error: null, status: 200 };
+    expect((await service.listReferenceDocuments()).ok).toBe(true);
   });
 });
