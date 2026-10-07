@@ -16,6 +16,7 @@ import {
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
   daveWebNewTaskProjectId,
   daveWebPercentFromBox,
+  daveWebTaskProjectRepairedNotice,
   daveWebScheduleDateForSave,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -372,6 +373,7 @@ export function DesktopSchedulePage({
         id: editingTask?.id || createDAVEWebTaskId(),
         now,
         actor: auth.userEmail || 'Project manager',
+        projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
@@ -379,7 +381,7 @@ export function DesktopSchedulePage({
       setNotice({
         tone: 'good',
         text: editingTask
-          ? 'Schedule item updated and synced.'
+          ? `Schedule item updated and synced.${daveWebTaskProjectRepairedNotice(editingTask, item)}`
           : 'Schedule item created and synced.',
       });
     } catch (error) {
@@ -473,6 +475,7 @@ export function DesktopSchedulePage({
         id: latest.id,
         now,
         actor,
+        projects: auth.snapshot,
       });
       await auth.updateTask(item);
       closeEditor();

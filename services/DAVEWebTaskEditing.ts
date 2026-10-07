@@ -143,6 +143,56 @@ function projectIdentityKey(value: string | null | undefined): string {
   return (value || '').trim().toLocaleLowerCase('en-US');
 }
 
+/**
+ * Open item, web batch WS1 item 6 (6 Oct 2026). Before whole-app audit A3
+ * pass 9 M1 the Tasks page could save a task under another project's name
+ * with its own project's cloud id, and before A12 pass 5 M1 the Schedule
+ * Builder copied such an id onto new items. Those saves were stopped, but
+ * the tasks already saved that way stayed as they were: the phone refuses
+ * every upload of one ("project name and cloud identity disagree"), and Ask
+ * ECOS counts it under the project of its id while the web lists it under
+ * its name.
+ *
+ * The repair, made when the web next saves that task: its project NAME is
+ * put back to the name of the project its cloud id names. Never the other
+ * way (a project is never chosen from a name: that would move the task's
+ * cloud row to another project), and only when the id names exactly one
+ * open cloud project. An id that names none (the project was closed or
+ * deleted), or a list that gives it two names, repairs nothing. The
+ * schedule-scope name is repaired with it only when it carried the same
+ * wrong name (the old save wrote both); a schedule's own root name stays.
+ *
+ * Null when there is nothing to repair.
+ */
+export function daveWebTaskProjectRepair(
+  current: Pick<ScheduleItem, 'projectId' | 'projectName' | 'scheduleProjectName'> | null | undefined,
+  listing: DAVEWebProjectListing | null | undefined,
+): Readonly<{ projectName: string; scheduleProjectName: string }> | null {
+  const projectId = current?.projectId?.trim() || '';
+  if (!current || !projectId || !listing) return null;
+  const rows: DAVEWebProjectListing['projects'] = listing.openCloudProjects ?? listing.projects ?? [];
+  const names = new Map(rows
+    .filter(row => !row.archived && (row.id?.trim() || '') === projectId && row.name.trim())
+    .map(row => [projectIdentityKey(row.name), row.name.trim()] as const));
+  if (names.size !== 1) return null;
+  const [projectName] = [...names.values()];
+  if (projectIdentityKey(current.projectName) === projectIdentityKey(projectName)) return null;
+  const scope = current.scheduleProjectName || '';
+  return {
+    projectName,
+    scheduleProjectName: !scope.trim() || projectIdentityKey(scope) === projectIdentityKey(current.projectName) ? projectName : scope,
+  };
+}
+
+/** What he is told after a save made that repair, or '' (WS1 item 6). */
+export function daveWebTaskProjectRepairedNotice(
+  before: Pick<ScheduleItem, 'projectName'> | null | undefined,
+  saved: Pick<ScheduleItem, 'projectName'>,
+): string {
+  if (!before || projectIdentityKey(before.projectName) === projectIdentityKey(saved.projectName)) return '';
+  return ` This task was saved under “${(before.projectName || '').trim()}” by mistake: it belongs to “${saved.projectName}” in the cloud, so it is now listed under “${saved.projectName}” and your iPhone and iPad can sync it again.`;
+}
+
 /** Why a web form's Percent complete box cannot be saved. */
 export const DAVE_WEB_PERCENT_RANGE_TEXT = 'Enter a percent from 0 to 100.';
 
@@ -196,12 +246,19 @@ export function buildDAVEWebScheduleItem({
   id,
   now,
   actor,
+  projects = null,
 }: {
   draft: DAVEWebTaskDraft;
   current?: DAVEWebScheduleItem | null;
   id: string;
   now: string;
   actor: string;
+  /**
+   * The web's project list, when the page has it: a task saved earlier under
+   * a project name that is not its cloud id's is repaired by this save
+   * (daveWebTaskProjectRepair, WS1 item 6).
+   */
+  projects?: DAVEWebProjectListing | null;
 }): DAVEWebScheduleItem {
   const taskName = requiredText(draft.taskName, 'Task name');
   const projectName = requiredText(draft.projectName, 'Project');
@@ -247,12 +304,16 @@ export function buildDAVEWebScheduleItem({
     throw new DAVEWebTaskValidationError(DAVE_WEB_TASK_PROJECT_FIXED_TEXT);
   }
   const keepsCurrentProject = Boolean(current) && namesCurrentProject;
-  const projectNameForRecord = current && keepsCurrentProject
-    ? current.projectName
-    : projectName;
-  const scheduleProjectNameForRecord = current && keepsCurrentProject
-    ? current.scheduleProjectName || current.projectName
-    : projectName;
+  // A task saved earlier under a name that is not its cloud id's project is put back under that project (WS1 item 6).
+  const repaired = daveWebTaskProjectRepair(current, projects);
+  const projectNameForRecord = repaired ? repaired.projectName
+    : current && keepsCurrentProject
+      ? current.projectName
+      : projectName;
+  const scheduleProjectNameForRecord = repaired ? repaired.scheduleProjectName
+    : current && keepsCurrentProject
+      ? current.scheduleProjectName || current.projectName
+      : projectName;
   // The progress is marked as the project manager's only when this save
   // changes its percent or status, as on the phone. Every web save had
   // marked it, so changing only the area of an imported 100% task made the

@@ -52,6 +52,7 @@ import {
   DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
   daveWebNewTaskProjectId,
+  daveWebTaskProjectRepairedNotice,
   daveWebPercentFromBox,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -1261,6 +1262,7 @@ function TaskEditingWorkspace({
         id: editingTask?.id ?? createDAVEWebTaskId(),
         now: new Date().toISOString(),
         actor: auth.userEmail || 'Project manager',
+        projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
@@ -1270,7 +1272,7 @@ function TaskEditingWorkspace({
       setConflictDraft(null);
       setNotice({
         tone: 'good',
-        text: editingTask ? 'Task updated and synced to the cloud.' : 'Task created and synced to the cloud.',
+        text: editingTask ? `Task updated and synced to the cloud.${daveWebTaskProjectRepairedNotice(editingTask, item)}` : 'Task created and synced to the cloud.',
       });
     } catch (error) {
       if (
@@ -1363,6 +1365,7 @@ function TaskEditingWorkspace({
         id: latest.id,
         now,
         actor,
+        projects: auth.snapshot,
       });
       await auth.updateTask(item);
       setSelectedTaskId(item.id);
