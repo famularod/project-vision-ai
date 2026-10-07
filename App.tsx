@@ -11799,7 +11799,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
         const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors, projectStillUploading: result.projectStillUploading, projectDeletedInCloud: result.projectDeletedInCloud }); // not "still retrying" when its project is not open, nor "device only" while it is on its way (audit A3 pass 6 M1, pass 7 L1)
-        Alert.alert(notice.title, notice.message);
+        if (!result.accountChangedDuringSave) Alert.alert(notice.title, notice.message); // said to nobody when the account changed while the save asked (review pass 1, sync F2)
       }
       return false;
     } catch {

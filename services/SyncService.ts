@@ -285,6 +285,12 @@ export type SyncUploadResult = {
    * nor the task can arrive. Both were taken off the queue.
    */
   projectDeletedInCloud?: boolean;
+  /**
+   * A task save only (review pass 1, sync F2): the account changed while the
+   * save asked the cloud about the task's project. Nothing was decided and
+   * nothing is said: the answer would be about another account's project.
+   */
+  accountChangedDuringSave?: boolean;
 };
 
 export type SyncItemOutcome =
@@ -2050,6 +2056,7 @@ export async function runScheduleItemCloudSync(
     errors: itemErrors,
     ...(projectOnItsWay && !neverArrives ? { projectStillUploading: true } : {}),
     ...(neverArrives === 'deleted' ? { projectDeletedInCloud: true } : {}),
+    ...(neverArrives === 'account_changed' ? { accountChangedDuringSave: true } : {}),
   };
 }
 
@@ -2080,13 +2087,25 @@ function projectOpeningsQueued(queue: readonly SyncQueueItem[], key: string): Sy
  *   - closed in the cloud (a create only; a reopen of a closed project is what he asked for): the create is taken off
  *     the queue, as the next pass would. The task waits, and the save says it uploads once the project is open.
  * When either cannot be read just then nothing is decided, and the save says what it said.
+ *
+ * Review pass 1, sync F2 (caused by this function's own commit; owner answer Q45, 6 Oct 2026). Its reads were made
+ * as whoever was signed in by then, and its removal looked at the account not at all: with account A signed out and
+ * B signed in during the first read, B's closed (or deleted) project of the same name took A's waiting create off
+ * the queue, and the save said of A's project what was true only of B's. It now decides for the account that
+ * queued the create, and only while that account stays signed in: the account is taken in the same instant the
+ * waiting changes are chosen, each read is made as it (the closed list through the rule every read of the queue
+ * goes through, the deletion history by its own), and it is looked at again after each answer and inside the
+ * removal itself. Once it has changed nothing is removed and nothing is decided ('account_changed'), and the save
+ * says nothing: what it would say is about another account's project.
  */
 async function retireProjectOpeningThatCanNeverArrive(
   queue: readonly SyncQueueItem[],
   projectName: string | null | undefined,
   taskQueueItemId: string,
-): Promise<'deleted' | 'closed' | null> {
+): Promise<'deleted' | 'closed' | 'account_changed' | null> {
   const key = normalizedProjectArchiveName(projectName);
+  // The account whose waiting changes these are: read in the same instant as they are chosen.
+  const itsAccount = { account: currentCloudOwner() };
   const openings = projectOpeningsQueued(queue, key);
   if (openings.length === 0) return null;
   let verdict: 'deleted' | 'closed' | null = null;
@@ -2094,23 +2113,29 @@ async function retireProjectOpeningThatCanNeverArrive(
     // The two things the pass itself reads before it sends a project change (queuedProjectChangeWasDeleted, and
     // the deletion history).
     const deletedHere = (await loadLegacyDeletedProjectNames()).has(key);
+    if (passAccountChanged(itsAccount)) return 'account_changed';
     const history = deletedHere ? null : await loadDAVEOperationalTombstones();
+    if (passAccountChanged(itsAccount)) return 'account_changed';
     if (deletedHere || openings.some(opening => queueItemMatchesDAVESyncTombstone(opening, history?.tombstones ?? []))) verdict = 'deleted';
   } catch {
     // Not known just now.
   }
-  if (!verdict && openings.some(opening => opening.operation === 'create')) {
-    const closed = await listArchivedProjects().catch(() => null);
+  const create = verdict ? undefined : openings.find(opening => opening.operation === 'create');
+  if (create) {
+    const closed = await asItsAccount(itsAccount, () => listArchivedProjects(), create.ownerId).catch(() => null);
     if (closed?.ok && !closed.stubbed && (closed.data || []).some(project => normalizedProjectArchiveName(project.name) === key)) verdict = 'closed';
   }
+  if (passAccountChanged(itsAccount)) return 'account_changed';
   if (!verdict) return null;
   const retired = new Set(openings.filter(opening => verdict === 'deleted' || opening.operation === 'create').map(opening => opening.id));
   if (verdict === 'deleted') retired.add(taskQueueItemId);
-  await mutateOfflineQueue(current => {
+  const removedForItsAccount = await mutateOfflineQueue(current => {
+    // Looked at once more where the queue is changed: by now it may be another account's queue.
+    if (passAccountChanged(itsAccount)) return { nextQueue: current, result: false, persist: false };
     const nextQueue = current.filter(candidate => !retired.has(candidate.id));
-    return { nextQueue, result: undefined, persist: nextQueue.length !== current.length };
+    return { nextQueue, result: true, persist: nextQueue.length !== current.length };
   });
-  return verdict;
+  return removedForItsAccount && !passAccountChanged(itsAccount) ? verdict : 'account_changed';
 }
 
 /**
