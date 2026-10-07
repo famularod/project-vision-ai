@@ -25,8 +25,10 @@ export type RecoveryRecordNoticeAlert = (
 ) => void;
 
 export const RESTORE_RECORD_SET_ASIDE_TITLE = 'Restore not finished';
+// Review pass 1, sync (the reviewer's remark on this sentence): "left as they are" may be a MIX. Each of the lists a
+// restore writes is by then wholly the backup's or wholly the one from before it, and he cannot tell which.
 export const RESTORE_RECORD_SET_ASIDE_MESSAGE =
-  'A restore that was interrupted could not be finished because its record on this device could not be read, so your saved records were left as they are: restore the backup again if anything is missing.';
+  'A restore that was interrupted could not be finished because its record on this device could not be read, so your saved records were left as they are, which may be a mix of what the backup held and what was here before it: restore the backup again if anything is missing.';
 export const FIELD_UPDATE_RECORD_SET_ASIDE_TITLE = 'Update save not finished';
 export const FIELD_UPDATE_RECORD_SET_ASIDE_MESSAGE =
   'A field update that was being saved when the app closed could not be finished because its record on this device could not be read, so your draft and your saved updates were left as they are: check the last update you sent, and send it again if it is missing.';

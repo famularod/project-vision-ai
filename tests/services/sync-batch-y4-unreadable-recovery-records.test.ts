@@ -348,7 +348,8 @@ describe('sync batch Y4, item 1: he is told once, in one plain sentence', () => 
 
     expect(said.map(entry => [entry.title, entry.message])).toEqual([[
       'Restore not finished',
-      'A restore that was interrupted could not be finished because its record on this device could not be read, so your saved records were left as they are: restore the backup again if anything is missing.',
+      // Review pass 1, sync: the lists left may be a mix (each one wholly the backup's or wholly the one from before it), and the sentence now says so.
+      'A restore that was interrupted could not be finished because its record on this device could not be read, so your saved records were left as they are, which may be a mix of what the backup held and what was here before it: restore the backup again if anything is missing.',
     ]]);
     said[0].ok();
     await flush();
