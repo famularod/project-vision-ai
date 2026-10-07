@@ -485,6 +485,13 @@ export function buildDAVEWebScheduleItem({
     // What a master's new row took from the task's earlier row (review N3 R3). Dropped by a save here, an owner cleared
     // on this page read as a blank nobody had typed, and an edit from a device that had not heard went over it unasked.
     ...(current?.textFromTask ? { textFromTask: current.textFromTask } : {}),
+    // Kept on a web edit (Build 231, S4 item 4), or the phone's rules that read them fall back to how they were: when
+    // the row's schedule was made current with its percent left standing (it goes with the percent), the highest
+    // percent a master's file stated on the row and the last, and each master's dates for the row.
+    ...(current?.progressStandsSince && !progressEditedHere ? { progressStandsSince: current.progressStandsSince } : {}),
+    ...(current?.fileProgressPeak ? { fileProgressPeak: current.fileProgressPeak } : {}),
+    ...(current?.fileProgressLast ? { fileProgressLast: current.fileProgressLast } : {}),
+    ...(current?.masterDatesOfRow ? { masterDatesOfRow: current.masterDatesOfRow } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,

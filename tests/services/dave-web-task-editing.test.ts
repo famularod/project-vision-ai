@@ -90,6 +90,28 @@ describe('DAVE desktop task editing model', () => {
     expect(updated.cloudUpdatedAt).toBe('2026-07-18T18:00:01.000Z');
   });
 
+  test('a web edit keeps what the phone saved about the row: when its schedule was made current, the highest file percent, each master\'s dates (Build 231, S4 item 4)', () => {
+    const kept = {
+      progressStandsSince: { at: '2026-09-10T09:00:00.000Z', percentComplete: 40 },
+      fileProgressPeak: { percentComplete: 60, statedAt: '2026-09-14T12:00:00.000Z' },
+      fileProgressLast: { percentComplete: 30, statedAt: '2026-09-21T12:00:00.000Z' },
+      masterDatesOfRow: { startDate: '10/18/2026', finishDate: '10/28/2026', before: [{ startDate: '10/15/2026', finishDate: '10/25/2026', replacedByMaster: 'batch-G' }] },
+    };
+    const current: DAVEWebScheduleItem = {
+      ...buildDAVEWebScheduleItem({ draft: { ...BASE_DRAFT, status: 'In Progress', percentComplete: 40 }, id: 'task-kept', now: '2026-07-18T18:00:00.000Z', actor: 'pm@example.com' }),
+      importBatchId: 'batch-1', sourceDocumentId: 'document-1', ...kept,
+    };
+    const edit = (draft: Partial<typeof BASE_DRAFT>) => buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, status: 'In Progress', percentComplete: 40, ...draft }, current, id: current.id, now: '2026-07-19T18:00:00.000Z', actor: 'pm@example.com',
+    });
+    // A note typed on the web: all three stay.
+    const noted = edit({ notes: 'Walls up' });
+    expect([noted.progressStandsSince, noted.fileProgressPeak, noted.fileProgressLast, noted.masterDatesOfRow]).toEqual([kept.progressStandsSince, kept.fileProgressPeak, kept.fileProgressLast, kept.masterDatesOfRow]);
+    // A percent entered on the web: the time goes with the percent it was for; the other two stay.
+    const percent = edit({ percentComplete: 55 });
+    expect([percent.progressStandsSince, percent.fileProgressPeak, percent.fileProgressLast, percent.masterDatesOfRow]).toEqual([undefined, kept.fileProgressPeak, kept.fileProgressLast, kept.masterDatesOfRow]);
+  });
+
   test('reopens a completed task when only its status is changed', () => {
     const current = buildDAVEWebScheduleItem({
       draft: { ...BASE_DRAFT, status: 'Complete', percentComplete: 100 },
