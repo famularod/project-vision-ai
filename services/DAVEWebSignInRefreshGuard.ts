@@ -86,6 +86,23 @@
  * is how auth-js keeps a sign-in and tries again; and until the time the
  * server asked for has passed (a minute when it names none) the tab's
  * refreshes are answered here, so its retries do not add to the count.
+ *
+ * Review pass 1 of the web area, L3 (6 Oct 2026): during that wait Sign Out
+ * of This Computer was refused in the tab. auth-js refreshes a run-out
+ * hourly token before it signs out, the refresh was answered here with
+ * "wait", auth-js tried for half a minute and gave up, and the sign-out
+ * failed with the sign-in still in the tab. A sign-out made in this tab
+ * now runs inside `signingOut`:
+ * - its own refresh is sent to the server once even inside the wait, as
+ *   the build before the wait sent it (one request, not auth-js's seven);
+ * - for This Computer, a refresh that cannot be done just now (the server
+ *   says "too many requests" again, cannot be reached, or does not answer
+ *   in five seconds) is answered here as final, so auth-js stops at once
+ *   instead of trying for half a minute, and the sign-out request itself is
+ *   not waited on for longer than those five seconds. The web client then
+ *   takes the sign-in out of this tab whatever the server could be told.
+ * All Devices still needs the server (owner answer Q21): it is not cut
+ * short, and is refused, as before, when the server cannot do it.
  */
 
 /** The browser profile's storage, shared by its tabs (localStorage). */
@@ -118,6 +135,10 @@ export const DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE = 'refresh_token_replaced_in_a
 export const DAVE_WEB_REFRESH_WAIT_MS = 60_000;
 /** The longest wait the server may ask for. */
 const REFRESH_WAIT_LIMIT_MS = 10 * 60_000;
+/** What a refresh that Sign Out of This Computer does not wait for is answered with. */
+export const DAVE_WEB_SIGN_OUT_WITHOUT_REFRESH_CODE = 'sign_out_without_refresh';
+/** The longest Sign Out of This Computer waits for the sign-in server, from the click. */
+export const DAVE_WEB_SIGN_OUT_HERE_LIMIT_MS = 5_000;
 /** How many replaced tokens of one sign-in are remembered (one an hour: over a week). */
 const TOKENS_REMEMBERED = 200;
 /** How many sign-ins are remembered. */
@@ -156,6 +177,14 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * tab of that sign-in again, nor after this tab is given tokens itself.
    */
   vouchedFor: (lapsed: () => void) => boolean;
+  /**
+   * A sign-out made in this tab runs inside this ('here': Sign Out of This
+   * Computer; 'everywhere': Sign Out of All Devices). Its own refresh is not
+   * held back by a "too many requests" wait, and for 'here' nothing the
+   * server does or fails to do keeps `work` waiting for more than a few
+   * seconds. Resolves or rejects as `work` does.
+   */
+  signingOut: <T>(where: 'here' | 'everywhere', work: () => Promise<T>) => Promise<T>;
 }>;
 
 function pathOf(input: RequestInfo | URL): URL | null {
@@ -241,6 +270,8 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   let gaveWayFor: { name: string; tokens: readonly string[]; until: number } | null = null;
   /** Ends the watch `vouchedFor` started, without telling the page anything. */
   let stopWatching: (() => void) | null = null;
+  /** The sign-out under way in this tab: whether it is of this computer only, until when the server is waited for, and whether its one refresh has gone out. */
+  let leaving: { here: boolean; until: number; refreshSent: boolean } | null = null;
   /** Until when the sign-in server asked this tab not to refresh. */
   let refreshWaitsUntil = 0;
   /** The tab's key as it was last made ready for use. */
@@ -250,6 +281,35 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   const askedToWait = () => new Response(JSON.stringify({
     message: 'The sign-in server asked this tab to wait before it refreshes again.',
   }), { status: 503, headers: { 'content-type': 'application/json' } });
+
+  /** auth-js takes this for the server's last word on the refresh, and does not try again. */
+  const signOutWithoutRefresh = () => new Response(JSON.stringify({
+    code: DAVE_WEB_SIGN_OUT_WITHOUT_REFRESH_CODE,
+    error_code: DAVE_WEB_SIGN_OUT_WITHOUT_REFRESH_CODE,
+    message: 'This tab is signing out; its sign-in could not be refreshed first.',
+  }), { status: 400, headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' } });
+
+  /** The server's answer, or null when Sign Out of This Computer has waited for it as long as it will. Rejects as the request does. */
+  function answeredWhileSigningOut(until: number, request: Promise<Response>): Promise<Response | null> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(null), Math.max(0, until - Date.now()));
+      (timer as unknown as { unref?: () => void }).unref?.();
+      request.then(
+        response => { clearTimeout(timer); resolve(response); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
+  }
+
+  async function signingOut<T>(where: 'here' | 'everywhere', work: () => Promise<T>): Promise<T> {
+    const mine = { here: where === 'here', until: Date.now() + DAVE_WEB_SIGN_OUT_HERE_LIMIT_MS, refreshSent: false };
+    leaving = mine;
+    try {
+      return await work();
+    } finally {
+      if (leaving === mine) leaving = null;
+    }
+  }
 
   function sharedStorage(): DAVEWebSharedStorage | null {
     try {
@@ -525,7 +585,13 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   async function guardedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     if (pathOf(input)?.pathname.endsWith('/auth/v1/logout')) {
       const sessionId = sessionIdOf(bearerOf(init));
-      const response = await options.fetch(input, init);
+      // Sign Out of This Computer does not wait on a server that does not answer (review pass 1, web L3): the
+      // request stays sent, and auth-js is told the server is not reachable just now.
+      const response = leaving?.here
+        ? await answeredWhileSigningOut(leaving.until, options.fetch(input, init)) ?? new Response(JSON.stringify({
+            message: 'The sign-in server did not answer the sign-out in time.',
+          }), { status: 503, headers: { 'content-type': 'application/json' } })
+        : await options.fetch(input, init);
       // auth-js takes the sign-in out of this tab on these answers (the others it reports as a failure).
       if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
         gaveWay = false;
@@ -566,12 +632,30 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       // as before the Duplicate Tab fix (review pass 1, web L1).
       hold(mine);
     }
-    if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil) return askedToWait();
-    const response = await options.fetch(input, init);
+    /** The sign-out this refresh is part of, if one is under way in this tab (review pass 1, web L3). */
+    const signOut = grant === 'refresh_token' ? leaving : null;
+    /** What a refresh that cannot be done just now is answered with: final for Sign Out of This Computer. */
+    const notNow = () => (signOut?.here ? signOutWithoutRefresh() : askedToWait());
+    // Inside the wait the server asked for, only a sign-out's own refresh goes out, and only once.
+    if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil && (!signOut || signOut.refreshSent)) return notNow();
+    if (signOut) signOut.refreshSent = true;
+    let response: Response;
+    if (signOut?.here) {
+      try {
+        const answered = await answeredWhileSigningOut(signOut.until, options.fetch(input, init));
+        if (!answered) return notNow();
+        response = answered;
+      } catch {
+        return notNow();
+      }
+      if ([502, 503, 504].includes(response.status)) return notNow();
+    } else {
+      response = await options.fetch(input, init);
+    }
     if (grant === 'refresh_token' && response.status === 429) {
       const asked = Number(response.headers.get('retry-after')) * 1_000;
       refreshWaitsUntil = Date.now() + (asked > 0 ? Math.min(asked, REFRESH_WAIT_LIMIT_MS) : DAVE_WEB_REFRESH_WAIT_MS);
-      return askedToWait();
+      return notNow();
     }
     if (grant === 'refresh_token' && !response.ok && ![502, 503, 504].includes(response.status)) {
       // The server refused this tab's token (auth-js takes every answer but these for a refusal): the sign-in
@@ -618,5 +702,5 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     // Nothing noted, nothing removed: every token is sent as before.
   }
 
-  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor });
+  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor, signingOut });
 }

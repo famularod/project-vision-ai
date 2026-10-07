@@ -297,7 +297,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor'>>) | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
@@ -672,15 +672,54 @@ export function createDAVEWebSupabaseGateway(
       return { ok: true, session: data.session };
     },
 
-    /** This computer only unless 'global' is asked for (owner answer Q21). */
+    /**
+     * This computer only unless 'global' is asked for (owner answer Q21).
+     *
+     * Review pass 1 of the web area, L3 (6 Oct 2026): Sign Out of This
+     * Computer always signs this tab out, at once. It had been refused,
+     * with the sign-in left in the tab, whenever auth-js could not finish:
+     * for up to ten minutes after the server had answered "too many
+     * requests" to a refresh (batch W1 made the tab wait then, and a
+     * run-out hourly token is refreshed before a sign-out), and whenever
+     * the sign-in server could not be reached. The server is still told
+     * when it can be: auth-js asks it first, for a few seconds at most
+     * (the guard sees to that). Whatever comes of that, the sign-in then
+     * leaves this tab, with the rows read, the account's report periods and
+     * the Duplicate Tab note, as its warning says. A sign-in the server was
+     * not told of stays good only in a tab that was closed or asleep, which
+     * the sign-out choice already says.
+     *
+     * All Devices is unchanged: only the server can sign the other devices
+     * out, so without it nothing is signed out and he is told (Q21).
+     */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
       if (!client) return;
       const ending = browserTabStoredSignIn();
-      const { error } = await client.auth.signOut({ scope });
-      if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
-        throw new DAVEWebSignOutNeedsConnectionError();
+      const askAuth = () => client.auth.signOut({ scope });
+      if (scope === 'global') {
+        // The sign-out's own refresh is not held back by a "too many requests" wait.
+        const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('everywhere', askAuth) : askAuth());
+        if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
+        if (error) throw new Error('The desktop session could not be closed.');
+      } else {
+        try {
+          await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+        } catch {
+          // Whatever auth-js left in this tab is looked at below.
+        }
+        // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
+        // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
+        // when another tab's sign-out is heard.
+        const stored = browserTabStoredSignIn();
+        const anotherSignIn = stored !== null && ending !== null &&
+          stored.sessionId !== null && ending.sessionId !== null &&
+          (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
+        if (stored && ending && !anotherSignIn) {
+          forgetBrowserTabSignIn();
+          // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
+          await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
+        }
       }
-      if (error) throw new Error('The desktop session could not be closed.');
       forgetSignedInReads();
       // The account's report periods leave this browser with its sign-in (review N1).
       if (ending) forgetDAVEWebReportPeriods(ending.userId);

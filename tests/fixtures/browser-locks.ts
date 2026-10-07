@@ -116,8 +116,8 @@ export function createBrowserLocks() {
           };
           signal?.addEventListener('abort', onAbort);
           queueFor(name).push(request);
-          // Granted a moment later, never inside the call itself.
-          queueMicrotask(() => grant(name));
+          // Granted a moment later, never inside the call itself (and not on a test's own clock).
+          void Promise.resolve().then(() => grant(name));
         });
       },
       async query() {
