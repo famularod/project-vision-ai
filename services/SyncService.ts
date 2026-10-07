@@ -3814,6 +3814,13 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
+    if (resultCode === QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE) {
+      // Deleted on another device since this pass read the deletion history (schedule batch S3, item 4).
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
     if (resultCode === 'conflict') {
       itemOutcomes[item.id] = 'conflict';
       resolvedIds.add(item.id);
@@ -4380,6 +4387,9 @@ async function recordsDeletedInCloudNow(
     return 'The cloud did not answer.';
   }
 }
+
+/** A queued new task the cloud holds a deletion record for by now (schedule batch S3, item 4): retired, not sent. */
+const QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE = 'deleted-in-cloud-meanwhile';
 
 const DELETION_NOT_CHECKED_BEFORE_SENDING =
   'Whether it was deleted on another device could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
@@ -6760,6 +6770,8 @@ type QueueUploadContext = {
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
   scheduleItemsReadByIdError?: string;
+  /** Of the queued tasks the cloud has no row for, the ones it holds a deletion record for now (schedule batch S3, item 4), asked once in a pass. */
+  scheduleItemsDeletedNow?: Promise<Set<string> | string>;
   /** Queued records read again and weighed again after a refused write, and how many times (pass 2, item 1). */
   recordsWeighedAgain?: Map<string, number>;
   referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
@@ -7187,6 +7199,19 @@ async function uploadQueueItem(
     }
     // The cloud had no row for this task when it was read by its id.
     const newToCloud = !remote;
+    // Schedule batch S3, item 4 (the window sync batch Y1, item 2, left in this upload): the deletion history was read
+    // when this pass started. A task deleted on another device in the seconds since has no row any more and no deletion
+    // record this pass has heard of, so it read as new to the cloud and was sent back once. The history is asked once
+    // more, as Full Sync asks it (recordsDeletedInCloudNow): one request for all the queued tasks the cloud has no row
+    // for. A task deleted meanwhile is not sent: its queued copy is retired, as one whose deletion the pass knew of at
+    // its start, and the next refresh takes the task off this device. When the question cannot be asked the task goes
+    // up as before: this upload runs on weak signal all day, and an approval's new rows must not wait on it.
+    if (newToCloud) {
+      context.scheduleItemsDeletedNow ??= recordsDeletedInCloudNow('schedule_item', [...new Set([payload.id, ...(context.queuedScheduleItemIds ?? [])])]
+        .filter(id => id === payload.id || (!context.scheduleItemsById?.has(id) && context.scheduleItemsReadById?.get(id) === null)));
+      const deletedNow = await context.scheduleItemsDeletedNow;
+      if (typeof deletedNow !== 'string' && deletedNow.has(cloudRecordKey(payload.id))) return QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE;
+    }
     // Review N3 R3, review P4 F1: a master's new row first goes up weighed against the cloud's row of the task it
     // replaces, field by field, from what it took of that row (scheduleItemAgainstItsTask): the approval may have had
     // no signal, and the device may not have heard what was set on the task elsewhere. His text and his controls alike,

@@ -2560,3 +2560,66 @@ describe('S3 item 1: the highest percent a master\'s file stated on a row, kept 
   });
 });
 
+/*
+ * Build 231, schedule batch S3, item 4 (the window sync batch Y1, item 2, left in the automatic upload): a task
+ * deleted on another device just after this device's upload pass read the deletion history was sent back once.
+ */
+describe('S3 item 4: the automatic upload does not send back a task deleted on another device since its pass read the deletion history', () => {
+  /**
+   * The deletion of F's Framing row lands in the cloud (the row dropped, the deletion record kept) at the moment the
+   * next upload pass lists the cloud's tasks: after that pass has read the deletion history. Returns the undo.
+   */
+  function deletionLandsDuringTheNextPass(): () => void {
+    const rows = mockCloud.rows;
+    const values = rows.values.bind(rows);
+    let landed = false;
+    rows.values = (() => {
+      if (!landed) {
+        landed = true;
+        mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: 'MASTER F-1', deletedAt: new Date(Date.now()).toISOString() });
+        rows.delete('MASTER F-1');
+      }
+      return values();
+    }) as typeof rows.values;
+    return () => { rows.values = values as typeof rows.values; };
+  }
+  /** His 30% entered on the offline iPad, waiting to go up. */
+  async function percentWaitingOnTheIpad() {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(ipad, false);
+    at(AFTER_G);
+    await edit(ipad, 'MASTER F-1', { percentComplete: 30 });
+    expect((await queueOf(ipad)).length).toBe(1);
+    at('2026-09-15T08:00:00.000Z');
+    setOnline(ipad, true);
+    return { phone, ipad };
+  }
+
+  it('not sent back: the cloud keeps no row for it, the queued copy is retired, and the task leaves the iPad at its next refresh', async () => {
+    const { ipad } = await percentWaitingOnTheIpad();
+    const undo = deletionLandsDuringTheNextPass();
+    try { await backgroundUpload(ipad); } finally { undo(); }
+    // (It was: the row back in the cloud at 30%, on every device again until the next sync took it away.)
+    expect([cloudRow('MASTER F-1'), mockCloud.tombstones.map(tombstone => tombstone.recordId), await queueOf(ipad)]).toEqual([undefined, ['MASTER F-1'], []]);
+    await refresh(ipad);
+    expect(ipad.state.map(item => item.id)).not.toContain('MASTER F-1');
+    expect(onWeb()).toEqual([]);
+  });
+
+  it('unchanged: with no deletion a task the cloud has no row for goes up; and when the deletion history cannot be asked again, the task goes up as before', async () => {
+    const { ipad } = await percentWaitingOnTheIpad();
+    mockCloud.rows.delete('MASTER F-1'); // the cloud lost the row, and has no deletion record for it
+    await backgroundUpload(ipad);
+    expect([cloudRow('MASTER F-1')?.percentComplete, await queueOf(ipad)]).toEqual([30, []]);
+
+    resetRig();
+    const again = await percentWaitingOnTheIpad();
+    const cloudService = jest.requireMock('../../services/SupabaseService') as { listDAVESyncTombstonesForRecords: unknown };
+    const ask = cloudService.listDAVESyncTombstonesForRecords;
+    cloudService.listDAVESyncTombstonesForRecords = async () => mockDown();
+    const undo = deletionLandsDuringTheNextPass();
+    try { await backgroundUpload(again.ipad); } finally { undo(); cloudService.listDAVESyncTombstonesForRecords = ask; }
+    expect(cloudRow('MASTER F-1')?.percentComplete).toBe(30);
+  });
+});
+
