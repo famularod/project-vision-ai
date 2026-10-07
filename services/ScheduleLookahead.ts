@@ -436,6 +436,11 @@ export function scheduleTaskMasterRestated(
     masterFinishDate: days.finishDate,
     ...percent,
     ...(stated !== null && overlay.masterFilePercentComplete !== undefined ? { masterFilePercentComplete: stated } : {}),
+    // The master dates it replaces stay known, with which master replaced them (Build 231, S3 item 3).
+    ...(datesChanged ? {
+      masterDatesBefore: [...(overlay.masterDatesBefore ?? []), { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate, replacedByMaster: replacedBy as string | true }]
+        .slice(-MASTER_DATES_KEPT),
+    } : {}),
     // The lookaheads' dates this master replaced (A6 pass 19 M1).
     ...(datesChanged ? {
       lookaheads: overlay.lookaheads.map(entry => entry.datesReplacedByMaster || !olderThanMaster(entry)
@@ -451,6 +456,42 @@ export function scheduleTaskMasterRestated(
     next.masterFilePercentComplete === overlay.masterFilePercentComplete
   ) return task;
   return withOverlay(task, next);
+}
+
+/** How many earlier master dates a note keeps (the latest). */
+const MASTER_DATES_KEPT = 8;
+
+/**
+ * Build 231, S3 item 3: the master's dates a task's lookahead note gives
+ * while `shown` is the master current for its project. The note's own
+ * (the newest master's that restated the task), unless the master that put
+ * them there is not in effect: not saved any more, or newer than the master
+ * current and not it. Then the dates the note held before that master, and
+ * so on back. Master F 10/15, lookahead L1 10/18, master G on L1's dates;
+ * with F current again (Set Active, the web's Make Current) or G deleted
+ * with its items, deleting L1 gives F's 10/15, not G's 10/18. The same for
+ * a task he entered by hand that L1 moved and G then listed. With the
+ * schedules unknown, or a note saved before (no earlier dates kept), the
+ * note's own dates, as before.
+ */
+export function scheduleNotedMasterDates(
+  overlay: ScheduleLookaheadOverlay,
+  documents: readonly ReferenceDocument[] | undefined,
+  shown: ReferenceDocument | undefined,
+): Pick<ScheduleItem, 'startDate' | 'finishDate'> {
+  let dates = { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+  const before = overlay.masterDatesBefore;
+  if (!documents || !Array.isArray(before)) return dates;
+  for (let index = before.length - 1; index >= 0; index -= 1) {
+    const by = before[index]?.replacedByMaster;
+    if (typeof by !== 'string') break;
+    const master = documents.find(saved => key(saved.importBatchId) === key(by));
+    const inEffect = Boolean(master) && (!shown || shown.id === master!.id || !timeOf(shown.importedAt) || !timeOf(master!.importedAt) ||
+      timeOf(shown.importedAt) >= timeOf(master!.importedAt));
+    if (inEffect) break;
+    dates = { startDate: before[index].startDate, finishDate: before[index].finishDate };
+  }
+  return dates;
 }
 
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
@@ -518,6 +559,9 @@ function tasksAfterLookaheadDeleted(
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
   const replaced = datesReplacedAtDelete(items, documents);
+  // The master current for each project once this lookahead is gone: whose dates the note gives (Build 231, S3 item 3).
+  const after = documents?.filter(saved => saved.id !== document.id);
+  const current = after ? currentScheduleDocumentsByProject(after) : null;
   return items.flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
@@ -532,7 +576,7 @@ function tasksAfterLookaheadDeleted(
     // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2), nor
     // one whose file is gone unless its dates were kept when it was deleted alone while in effect (fileGoneUnkept).
     const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item) && !fileGoneUnkept(entry, documents)) ||
-      { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+      scheduleNotedMasterDates(overlay, after, current?.get(scheduleProjectScopeKey(item.projectName || item.scheduleProjectName || '')));
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
     // A later lookahead that states the same percent still gives it (A5 pass 6 M1): the task keeps it.
@@ -654,7 +698,7 @@ function notedDatesWhileCurrent(
   return [...overlay.lookaheads].reverse().find(entry => {
     const by = entry.datesReplacedByMaster;
     return !by || (by !== true && (!documents.some(saved => key(saved.importBatchId) === key(by)) || !markedMasterInEffect(by, documents, shown)));
-  }) || { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+  }) || scheduleNotedMasterDates(overlay, documents, shown);
 }
 
 /**
@@ -718,6 +762,7 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
     if (!is || was?.id === is.id) return [];
     // On dates the note holds, not dates David moved by hand.
     const onNoted = sameDates(task, { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }) ||
+      (overlay.masterDatesBefore ?? []).some(entry => sameDates(task, entry)) ||
       overlay.lookaheads.some(entry => sameDates(task, entry));
     const to = notedDatesWhileCurrent(overlay, documentsAfter, is);
     if (!onNoted || sameDates(task, to) || !key(to.startDate) || !key(to.finishDate)) return [];
@@ -726,7 +771,8 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
     if (to.batchId === undefined) {
       const imports = scheduleItemImportBatchIds(task).map(key);
       const listsTask = imports.includes(key(is.importBatchId));
-      const newerMaster = documentsAfter.some(master => imports.includes(key(master.importBatchId)) &&
+      // (A note that kept its earlier master dates gives the dates under the master made current itself: Build 231, S3 item 3.)
+      const newerMaster = !Array.isArray(overlay.masterDatesBefore) && documentsAfter.some(master => imports.includes(key(master.importBatchId)) &&
         !scheduleDocumentAddsToMaster(master) && timeOf(master.importedAt) > timeOf(is.importedAt));
       if (!listsTask || newerMaster) return [];
     }

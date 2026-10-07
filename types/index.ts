@@ -738,6 +738,18 @@ export type ScheduleLookaheadOverlay = {
   /** The task's dates and percent before the first lookahead changed it. */
   masterStartDate: string;
   masterFinishDate: string;
+  /**
+   * The master dates this note held before each master that restated the
+   * task replaced them, oldest first, each with the import of the master
+   * that replaced it (Build 231, S3 item 3). The note kept one master's
+   * dates only: after master G listed the task on a lookahead's dates, the
+   * dates master F gives it were kept nowhere, so with F current again (or G
+   * deleted) deleting the lookahead left the task on G's dates. Read with
+   * the schedules saved: a master not in effect, or no longer saved,
+   * replaced nothing (scheduleNotedMasterDates). Missing on a note saved
+   * before, which reads as before.
+   */
+  masterDatesBefore?: Array<{ startDate: string; finishDate: string; replacedByMaster: string | true }>;
   masterPercentComplete: number;
   /**
    * Who stated masterPercentComplete (whole-app audit A5 pass 6 M2, 30 Sep

@@ -566,3 +566,83 @@ describe('A6 p22 L1: after Full Sync, deleting a lookahead gives David\'s latest
     });
   });
 });
+
+/*
+ * Build 231, schedule batch S3, item 3: the lookahead note kept only one master's dates. Master F lists Framing
+ * 10/15-10/25, lookahead L1 moves it to 10/18-10/28, master G lists it on L1's dates (G restates the row in place and
+ * the note's master dates become G's). Going back to F and then deleting L1 with its items left Framing on G's dates,
+ * which no schedule in effect gives. The note now keeps the dates it held before each master replaced them
+ * (masterDatesBefore), and gives the dates of the master in effect.
+ */
+describe('S3 item 3: a lookahead note gives the dates of the master in effect, not only the newest master\'s', () => {
+  const F = doc('MASTER F', '2026-09-07T12:00:00.000Z');
+  const L1 = doc('LOOKAHEAD L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const G = doc('MASTER G', '2026-09-11T12:00:00.000Z');
+  const SURVEY = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,';
+  const framing = (start: string, finish: string) => `Framing,Alpha,Lot,${start},${finish},`;
+  const F_ROW = framing('10/15/2026', '10/25/2026');
+  const L1_ROW = framing('10/18/2026', '10/28/2026');
+  const F_DATES = ['10/15/2026', '10/25/2026', 0];
+  const L1_DATES = ['10/18/2026', '10/28/2026', 0];
+  /** F, L1 moving Framing, G listing it on L1's dates. */
+  const underG = () => approve(approve(approve(EMPTY, F, [F_ROW, SURVEY]), L1, [L1_ROW], true), G, [L1_ROW, SURVEY]);
+  const BACK = '2026-09-12T10:00:00.000Z';
+  const GONE = '2026-09-12T11:00:00.000Z';
+
+  it.each(HOWS)('%s of F, then L1 deleted with its items: F\'s 10/15-10/25 (it stayed on G\'s 10/18-10/28)', (_how, activate) => {
+    const back = activate(underG(), F, BACK);
+    // L1 is newer than F: its dates stand while it is there.
+    expect(copies(back, 'Framing')).toEqual([L1_DATES]);
+    expect(copies(deleteWithItems(back, L1, GONE), 'Framing')).toEqual([F_DATES]);
+  });
+
+  it('G deleted with its items, then L1: F\'s dates (G\'s went with G)', () => {
+    const noG = deleteWithItems(underG(), G, BACK);
+    expect(copies({ ...deleteWithItems(noG, L1, GONE), documents: [F] }, 'Framing')).toEqual([F_DATES]);
+  });
+
+  it('a task he entered by hand on 10/15-10/25 that L1 moved and G then listed: his own dates again under F', () => {
+    const base = approve(EMPTY, F, [SURVEY]);
+    const hand = { ...rows(F, [F_ROW])[0], id: 'hand-1', importBatchId: undefined, sourceDocumentId: undefined, importedFrom: undefined, importedAt: undefined } as unknown as ScheduleItem;
+    const state = approve(approve({ items: [hand, ...base.items], documents: base.documents }, L1, [L1_ROW], true), G, [L1_ROW, SURVEY]);
+    expect(copies(deleteWithItems(setActive(state, F, BACK), L1, GONE), 'Framing')).toEqual([F_DATES]);
+  });
+
+  it('unchanged: with G still current, deleting L1 gives G\'s 10/18-10/28; three masters deep, back to the middle one gives its dates', () => {
+    expect(copies(deleteWithItems(underG(), L1, GONE), 'Framing')).toEqual([L1_DATES]);
+    const L2 = doc('LOOKAHEAD L2', '2026-09-13T12:00:00.000Z', 'lookahead');
+    const H = doc('MASTER H', '2026-09-15T12:00:00.000Z');
+    const L2_ROW = framing('10/20/2026', '10/30/2026');
+    const underH = approve(approve(underG(), L2, [L2_ROW], true), H, [L2_ROW, SURVEY]);
+    // Back to G, then L2 (newer than G) deleted: G lists 10/18; back to F, then L1 deleted too: F lists 10/15.
+    const onG = deleteWithItems(setActive(underH, G, '2026-09-16T10:00:00.000Z'), L2, '2026-09-16T11:00:00.000Z');
+    expect(copies(onG, 'Framing')).toEqual([L1_DATES]);
+    expect(copies(deleteWithItems(setActive(onG, F, '2026-09-17T10:00:00.000Z'), L1, '2026-09-17T11:00:00.000Z'), 'Framing')).toEqual([F_DATES]);
+  });
+
+  it.each(HOWS)('H current, L2 deleted there (H\'s 10/20-10/30 stand), then %s of G: G\'s 10/18-10/28 (it stayed on H\'s)', (_how, activate) => {
+    const L2 = doc('LOOKAHEAD L2', '2026-09-13T12:00:00.000Z', 'lookahead');
+    const H = doc('MASTER H', '2026-09-15T12:00:00.000Z');
+    const L2_ROW = framing('10/20/2026', '10/30/2026');
+    const underH = deleteWithItems(approve(approve(underG(), L2, [L2_ROW], true), H, [L2_ROW, SURVEY]), L2, '2026-09-16T10:00:00.000Z');
+    expect(copies(underH, 'Framing')).toEqual([['10/20/2026', '10/30/2026', 0]]);
+    expect(copies(activate(underH, G, '2026-09-17T10:00:00.000Z'), 'Framing')).toEqual([L1_DATES]);
+  });
+
+  it('a note saved before (Build 229 / 230: no earlier master dates kept) reads as before: the note\'s own dates', () => {
+    const back = setActive(underG(), F, BACK);
+    const saved230: State = { ...back, items: back.items.map(item => (item.lookaheadOverlay
+      ? { ...item, lookaheadOverlay: (({ masterDatesBefore: _none, ...note }) => note)(item.lookaheadOverlay) as ScheduleItem['lookaheadOverlay'] } : item)) };
+    expect(copies(deleteWithItems(saved230, L1, GONE), 'Framing')).toEqual([L1_DATES]);
+    // An older note a master restates on this build: its old marks still read as replaced, and the master dates are F's under F.
+    const mixed: State = { ...back, items: back.items.map(item => (item.lookaheadOverlay
+      ? { ...item, lookaheadOverlay: { ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(entry => ({ ...entry, datesReplacedByMaster: true as const })) } } : item)) };
+    expect(copies(deleteWithItems(mixed, L1, GONE), 'Framing')).toEqual([F_DATES]);
+  });
+
+  // Left open, said in the notes: once the last lookahead is deleted the note is gone, and with it G's dates. Framing is
+  // then on F's dates; making G current again leaves it there, though G lists 10/18. The row would have to keep each
+  // master's dates itself, not only its lookahead note.
+  // (No test is kept skipped for it: it is described in notes/impl-sched3/NOTES.txt, S3.)
+});
+
