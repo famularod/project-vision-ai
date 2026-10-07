@@ -152,7 +152,7 @@ export function buildVitruviusScheduleChangeScenario({
   // The draft's limits are checked before anything is calculated
   // (independent review R08: validation came after the analytics, so a
   // duration of a billion days was walked day by day first).
-  const limitIssues = draftLimitIssues(draftedItem);
+  const limitIssues = draftLimitIssues(draftedItem, editedItem);
   if (limitIssues.length > 0) {
     return Object.freeze({
       editedItemId: itemId,
@@ -276,9 +276,20 @@ function predecessorsFiledElsewhere(
   return [...elsewhere.values()];
 }
 
-/** What the draft asks for beyond what the schedule supports: nothing is calculated for it. */
+/**
+ * What the draft asks for beyond what the schedule supports: nothing is
+ * calculated for it.
+ *
+ * A date is judged only when the draft changes it (review pass 1, L1). A task
+ * already stored with a date outside 2000 through 2100 (an old file, a year
+ * mistyped on another device or an earlier build) was judged here every time
+ * its editor was open, so it could not be saved for any change, not even a
+ * rename, until its date was changed. A milestone's finish is its start and
+ * is not judged apart from it.
+ */
 function draftLimitIssues(
   item: ScheduleItem,
+  stored: ScheduleItem,
 ): VitruviusScheduleScenarioIssue[] {
   const issues: VitruviusScheduleScenarioIssue[] = [];
   if (!item.isMilestone && !scheduleDurationIsSupported(item.durationDays)) {
@@ -288,9 +299,14 @@ function draftLimitIssues(
       message: SCHEDULE_DURATION_RANGE_TEXT,
     }));
   }
-  ([['Start date', item.startDate], ['Finish date', item.finishDate]] as const).forEach(([label, value]) => {
+  ([
+    ['Start date', item.startDate, stored.startDate],
+    ...(item.isMilestone ? [] : [['Finish date', item.finishDate, stored.finishDate] as const]),
+  ] as const).forEach(([label, value, storedValue]) => {
     const day = parseVitruviusScheduleDate(value);
-    if (day && !scheduleDayIsSupported(day)) {
+    const storedDay = parseVitruviusScheduleDate(storedValue);
+    const changed = !day || !storedDay || day.getTime() !== storedDay.getTime();
+    if (day && changed && !scheduleDayIsSupported(day)) {
       issues.push(Object.freeze({
         code: 'date_out_of_range',
         itemId: item.id,
