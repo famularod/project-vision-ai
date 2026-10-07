@@ -220,7 +220,8 @@ describe('after the paste', () => {
     cloud.add('doc-new');
     cloud.paste();
     // It is tried again half a minute after the cloud had no such row (review of D1, L3: kept, with a growing wait).
-    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, now: () => Date.now() + 31_000 });
+    // CHANGED (second review, P2-L2): the half minute is counted in time the app has been running, not read off the clock.
+    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, running: () => performance.now() + 31_000 });
     expect(cloud.row('doc-new')?.archived_at).toBe(ARCHIVED_AT);
     expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);
   });

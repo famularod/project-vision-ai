@@ -11,6 +11,7 @@ import {
   noteSharedDocumentArchiveLiveRow,
   openSharedDocumentArchive,
   requestSharedDocumentArchive,
+  sharedDocumentArchiveNextTryInMs,
   sharedDocumentArchiveQuestion,
   sharedDocumentArchiveView,
   sharedDocumentCardChange,
@@ -105,11 +106,11 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       followRef.current(); // cards put in place since (a backup restored) follow too
       if (retry) clearTimeout(retry);
       retry = undefined;
-      const now = sharedDocumentArchiveView();
-      // Whatever still waits, an Archive or a Restore (review of D1, L5), is tried again.
-      if (now.nextTryAt !== null && now.installed !== false) {
-        const wait = Math.min(LONGEST_RETRY_MS, Math.max(WAITING_RETRY_MS, (now.nextTryAt ?? 0) - Date.now()));
-        retry = setTimeout(() => { void sync(); }, wait);
+      // Whatever still waits, an Archive or a Restore (review of D1, L5), is tried again. How long from now is
+      // counted in time the app has been running; the device's clock is not read (second review, P2-L2).
+      const nextTryInMs = sharedDocumentArchiveNextTryInMs();
+      if (nextTryInMs !== null && sharedDocumentArchiveView().installed !== false) {
+        retry = setTimeout(() => { void sync(); }, Math.min(LONGEST_RETRY_MS, Math.max(WAITING_RETRY_MS, nextTryInMs)));
       }
     };
     syncRef.current = sync;

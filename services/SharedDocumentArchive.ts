@@ -96,10 +96,40 @@ const REQUEST_TIMEOUT_MS = 6000;
  * is never given up (review of D1, L3). It is tried again after a wait that
  * doubles from half a minute to a quarter of an hour, and the device says
  * plainly that the cloud has not accepted it.
+ *
+ * The wait is counted in time the app has been running, not read off the
+ * device's clock (second review, P2-L2): a clock set forward or back, by
+ * hand or by the network, neither cuts a wait short nor stretches it (a tap
+ * refused while the clock was a day fast used to sit unsent for a day after
+ * the clock was put right). The waits are kept in memory only, so after the
+ * app has been closed and opened every waiting tap is tried at once.
  */
 const RETRY_FIRST_WAIT_MS = 30_000;
 const RETRY_LONGEST_WAIT_MS = 15 * 60_000;
 const retryWaitMs = (refusals: number) => Math.min(RETRY_LONGEST_WAIT_MS, RETRY_FIRST_WAIT_MS * 2 ** Math.min(Math.max(refusals, 1) - 1, 10));
+
+/**
+ * How long this app has been running, in milliseconds: a count that setting the device's clock does not move. Null
+ * where a device has no such count: then no wait is kept here at all, and the half-minute timer of the hook is what
+ * spaces the tries.
+ */
+export type RunningTime = () => number | null;
+const appRunningMs: RunningTime = () => {
+  const counter = (globalThis as { performance?: { now?: () => number } }).performance;
+  return typeof counter?.now === 'function' ? counter.now() : null;
+};
+/** When each refused tap may next be tried, in running time, by account and document. In memory only. */
+const retryNotBefore = new Map<string, number>();
+const retryKey = (ownerId: string, documentId: string) => `${ownerId}\n${documentId}`;
+/** How long a refused tap still has to wait: 0 when it is due, when nothing is kept for it, or when the count is not to be trusted. */
+function retryWaitLeftMs(ownerId: string, documentId: string, running: RunningTime): number {
+  const notBefore = retryNotBefore.get(retryKey(ownerId, documentId));
+  const now = running();
+  if (notBefore === undefined || now === null) return 0;
+  const left = notBefore - now;
+  // Never longer than the longest wait there is, whatever the count says.
+  return left > RETRY_LONGEST_WAIT_MS ? 0 : Math.max(0, left);
+}
 
 /** The cloud's mark on a document: the time it was archived, or null for "not archived". */
 type CloudMark = string | null;
@@ -113,10 +143,8 @@ type WaitingMark = Readonly<{
   at?: string;
   /** Which of this device's taps this is, counted on this device: his taps are applied in the order he made them. */
   tap: number;
-  /** How many times the cloud has answered and not taken it. */
+  /** How many times the cloud has answered and not taken it. (When it is next tried is not saved: see retryNotBefore.) */
   attempts: number;
-  /** Refused before: not sent again until this time (milliseconds, the device's clock). */
-  notBefore?: number;
   /** The cloud's mark for the document as this device last knew it when he tapped (second review, P2-M1). */
   seen?: CloudMark;
   /** Marks this device has sent for the document and has not heard back about: one may be in the cloud (review of D1, L8). */
@@ -234,7 +262,6 @@ function parseStored(raw: string | null): Map<string, OwnerRecord> {
           documentId: mark.documentId, archived: mark.archived, ...(mark.archived ? { at: mark.at } : {}),
           tap: typeof mark.tap === 'number' ? mark.tap : index + 1,
           attempts: typeof mark.attempts === 'number' ? mark.attempts : 0,
-          ...(typeof mark.notBefore === 'number' ? { notBefore: mark.notBefore } : {}),
           seen: isMark(mark.seen) ? mark.seen : null,
           ...(Array.isArray(mark.sent) && mark.sent.length > 0 ? { sent: mark.sent.filter(isMark) } : {}),
           ...(typeof mark.name === 'string' && mark.name ? { name: mark.name } : {}),
@@ -311,13 +338,23 @@ function publish(): void {
       archivedIds: new Set([...Object.keys(record.marks), ...waitingArchive].filter(id => !waitingRestore.has(id))),
       waitingIds: new Set(waitingArchive.filter(id => !(id in record.marks))),
       refusedIds: new Set(record.waiting.filter(mark => mark.attempts > 0).map(mark => mark.documentId)),
-      nextTryAt: record.waiting.length > 0 ? Math.min(...record.waiting.map(mark => mark.notBefore ?? 0)) : null,
       restoredElsewhere: record.restoredElsewhere,
       notices: record.notices,
       waitingRestores: record.waiting.filter(mark => !mark.archived && mark.held)
         .map((mark): SharedDocumentRestoreWaiting => ({ documentId: mark.documentId, ...(mark.name ? { name: mark.name } : {}), refused: mark.attempts > 0 })),
     }));
   }
+}
+
+/**
+ * How long until what waits for the open account is next due to be sent: 0 = now, null = nothing waits. Worked out
+ * when asked, from the time the app has been running; the device's clock is not read (second review, P2-L2).
+ */
+export function sharedDocumentArchiveNextTryInMs(running: RunningTime = appRunningMs): number | null {
+  const ownerId = activeOwnerId;
+  const waiting = ownerId ? recordOf(ownerId).waiting : [];
+  if (!ownerId || waiting.length === 0) return null;
+  return Math.min(...waiting.map(mark => retryWaitLeftMs(ownerId, mark.documentId, running)));
 }
 
 /** Opens the signed-in account's copy; the lists then follow it. */
@@ -361,6 +398,7 @@ export async function requestSharedDocumentArchive(
   const id = documentId.trim();
   if (!ownerId || !id) return;
   await load();
+  retryNotBefore.delete(retryKey(ownerId, id)); // his newest tap is tried at once, whatever an older one was waiting for
   change(ownerId, record => {
     const earlier = record.waiting.find(mark => mark.documentId === id);
     const others = record.waiting.filter(mark => mark.documentId !== id);
@@ -447,8 +485,8 @@ type SyncInput = Readonly<{
   client: SharedDocumentArchiveClient;
   ownerId: string;
   timeoutMs?: number;
-  /** The device's clock (tests move it). */
-  now?: () => number;
+  /** How long the app has been running (tests move it). Never the device's clock. */
+  running?: RunningTime;
   /** The shared documents this device's deletion history says were deleted from all devices. */
   deletedDocumentIds?: () => Iterable<string> | Promise<Iterable<string>>;
 }>;
@@ -471,7 +509,7 @@ export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<Sh
   return work;
 }
 
-async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now = Date.now, deletedDocumentIds }: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
+async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, running = appRunningMs, deletedDocumentIds }: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
   await load();
   if (!ownerId || !(await signedInAs(client, ownerId))) return 'unknown';
   // The deletion history, read once in a pass and only when something turns on it.
@@ -603,7 +641,7 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       continue;
     }
 
-    if ((mark.notBefore ?? 0) > now()) continue; // refused before: its wait is not over (review of D1, L3)
+    if (retryWaitLeftMs(ownerId, id, running) > 0) continue; // refused before: its wait is not over (review of D1, L3)
     // The account is asked again right before each write, and the write names it.
     if (!(await signedInAs(client, ownerId))) return 'unknown';
     const value: CloudMark = mark.archived ? mark.at ?? null : null;
@@ -637,12 +675,19 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
     // change). It is a refusal like any other: nothing the cloud just said is forgotten, the mark stays installed,
     // and the tap is tried again (review of D1, L6). Only the question's own "no such column" says not installed.
     const apiNotCaughtUp = Boolean(written.error && markColumnMissing(written.error));
+    if (!reached && stillWaiting()) {
+      // Its wait, counted from now in running time; where there is no such count, none is kept.
+      const now = running();
+      if (now === null) retryNotBefore.delete(retryKey(ownerId, id));
+      else retryNotBefore.set(retryKey(ownerId, id), now + retryWaitMs(mark.attempts + 1));
+    }
+    if (reached) retryNotBefore.delete(retryKey(ownerId, id));
     change(ownerId, record => {
       if (!reached) {
         // Refused, or no such row with that mark (not uploaded yet, or changed in between): it keeps waiting,
         // however often (review of D1, L3), and is tried again after a wait that grows.
         return { ...record, waiting: (didNotLand ? record.waiting.map(notSent) : record.waiting).map(item => (isThisTap(item)
-          ? { ...item, attempts: item.attempts + 1, notBefore: now() + retryWaitMs(item.attempts + 1) } : item)) };
+          ? { ...item, attempts: item.attempts + 1 } : item)) };
       }
       // It landed. The cloud's mark is now this one, whether or not he has tapped again since: a newer tap on the
       // document keeps waiting and is judged against it at the next pass.

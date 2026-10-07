@@ -197,6 +197,37 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     device.unmount();
   });
 
+  it('second review, P2-L2: the device\'s clock is put back a day after a refusal (it had been a day fast): the tap is still tried again half a minute later, and a minute after that', async () => {
+    jest.useFakeTimers();
+    const device = start();
+    await device.quiet();
+    cloud.state.refuseMarkWritesWith = { code: '57014', message: 'canceling statement due to statement timeout' };
+    const tries = () => cloud.requests.filter(request => request.kind === 'write_mark').length;
+    act(() => { device.result.current.archive(PERMIT); });
+    await device.quiet();
+    expect(tries()).toBe(1);
+    expect([...device.result.current.refusedIds]).toEqual([PERMIT]);
+
+    jest.setSystemTime(Date.now() - 24 * 3600_000); // he puts the clock right
+    await act(async () => { jest.advanceTimersByTime(29_000); });
+    await device.quiet();
+    expect(tries()).toBe(1); // its half minute is not over
+    await act(async () => { jest.advanceTimersByTime(2_000); });
+    await device.quiet();
+    expect(tries()).toBe(2); // and it was not left for a day
+    jest.setSystemTime(Date.now() + 3 * 24 * 3600_000); // and set forward: the next wait, a minute, is not cut short
+    await act(async () => { jest.advanceTimersByTime(45_000); });
+    await device.quiet();
+    expect(tries()).toBe(2);
+    cloud.state.refuseMarkWritesWith = null;
+    await act(async () => { jest.advanceTimersByTime(20_000); });
+    await device.quiet();
+    expect(tries()).toBe(3);
+    expect(cloud.row(PERMIT)?.archived_at).toEqual(expect.any(String));
+    expect(device.result.current.refusedIds.size).toBe(0);
+    device.unmount();
+  });
+
   it('every time the document list is read from the cloud, and when the app comes back to the front, the mark is read too', async () => {
     const device = start();
     await device.quiet();

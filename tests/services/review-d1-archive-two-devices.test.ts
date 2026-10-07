@@ -116,15 +116,18 @@ describe('L3: the cloud refuses the write for a reason that is not "no such colu
   const REFUSAL = { code: '', message: 'upstream connect error or disconnect/reset before headers' };
   const MINUTE = 60_000;
 
+  // CHANGED (second review, P2-L2), here and in the cases below that move time: the waits used to be read off the
+  // device's clock (`now`), and a clock that had been wrong left a refused tap unsent for as long as it had been
+  // ahead. They are now counted in time the app has been running (`running`), which setting the clock does not move.
   it('F-L3: thirty refusals and the Archive is still waiting, is said to be refused, and reaches the cloud once it takes it', async () => {
-    let clock = Date.parse('2026-10-06T18:00:00.000Z');
-    const now = () => clock;
+    let clock = 5_000; // the app has been running five seconds
+    const running = () => clock;
     const phone = await start('phone');
-    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
     cloud.state.failWritesWith = REFUSAL;
     for (let pass = 0; pass < 30; pass += 1) {
-      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      await sync(phone, cloud, 'phone', 'owner-a', { running });
       clock += 20 * MINUTE; // longer than the longest wait between tries
     }
     expect(cloud.writes).toHaveLength(30);
@@ -138,32 +141,32 @@ describe('L3: the cloud refuses the write for a reason that is not "no such colu
     const phoneLater = await start('phone');
     expect([...phoneLater.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]);
     cloud.state.failWritesWith = null;
-    await sync(phoneLater, cloud, 'phone', 'owner-a', { now });
+    await sync(phoneLater, cloud, 'phone', 'owner-a', { running });
     expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
     expect(phoneLater.sharedDocumentArchiveView().waitingIds.size).toBe(0);
     expect(phoneLater.sharedDocumentArchiveView().refusedIds.size).toBe(0);
-    expect(phoneLater.sharedDocumentArchiveView().nextTryAt).toBeNull();
+    expect(phoneLater.sharedDocumentArchiveNextTryInMs(running)).toBeNull();
   });
 
   it('a refused write is not sent again until its wait is over: half a minute, doubling, a quarter of an hour at most', async () => {
-    let clock = Date.parse('2026-10-06T18:00:00.000Z');
-    const now = () => clock;
+    let clock = 5_000; // how long the app has been running
+    const running = () => clock;
     const phone = await start('phone');
-    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z');
-    expect(phone.sharedDocumentArchiveView().nextTryAt).toBe(0); // due now
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(0); // due now
     cloud.state.failWritesWith = REFUSAL;
     const waits: number[] = [];
     for (let refusal = 1; refusal <= 8; refusal += 1) {
-      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      await sync(phone, cloud, 'phone', 'owner-a', { running });
       expect(cloud.writes).toHaveLength(refusal);
-      const next = phone.sharedDocumentArchiveView().nextTryAt as number;
-      waits.push((next - clock) / 1000);
+      const wait = phone.sharedDocumentArchiveNextTryInMs(running) as number;
+      waits.push(wait / 1000);
       // Inside the wait a pass asks what is archived and sends nothing.
-      clock = next - 1;
-      await sync(phone, cloud, 'phone', 'owner-a', { now });
+      clock += wait - 1;
+      await sync(phone, cloud, 'phone', 'owner-a', { running });
       expect(cloud.writes).toHaveLength(refusal);
-      clock = next;
+      clock += 1;
     }
     expect(waits).toEqual([30, 60, 120, 240, 480, 900, 900, 900]);
     // A new tap on the document is his word now: it is sent at once.
@@ -171,7 +174,7 @@ describe('L3: the cloud refuses the write for a reason that is not "no such colu
     await phone.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T19:00:00.000Z');
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T19:00:05.000Z');
     clock += 1000;
-    await sync(phone, cloud, 'phone', 'owner-a', { now });
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
     expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T19:00:05.000Z');
   });
 
@@ -196,7 +199,7 @@ describe('L3: the cloud refuses the write for a reason that is not "no such colu
     await phone.syncSharedDocumentArchiveWithCloud({ client: signalLostBeforeTheWrite as never, ownerId: 'owner-a', timeoutMs: 150 });
     expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
     expect(phone.sharedDocumentArchiveView().refusedIds.size).toBe(0);
-    expect(phone.sharedDocumentArchiveView().nextTryAt).toBe(0);
+    expect(phone.sharedDocumentArchiveNextTryInMs()).toBe(0);
     await sync(phone, cloud, 'phone');
     expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
   });
@@ -384,7 +387,7 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     await sync(ipad, cloud, 'ipad');
     expect(cloud.writes.filter(write => write.device === 'ipad')).toEqual([]);
     expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
-    expect(ipad.sharedDocumentArchiveView().nextTryAt).toBeNull();
+    expect(ipad.sharedDocumentArchiveNextTryInMs()).toBeNull();
     expect(hiddenOn(ipad)).toEqual([]);
   });
 
@@ -460,7 +463,7 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:30:00.000Z'); // not emptied
     expect(cloud.writes.filter(write => write.device === 'ipad').map(write => write.changed)).toEqual([0]);
     // At its next pass the iPad sees the newer Archive and lets its Restore go, with the line.
-    await ipad.syncSharedDocumentArchiveWithCloud({ client: real as never, ownerId: 'owner-a', timeoutMs: 150, now: () => Date.now() + 60_000 });
+    await ipad.syncSharedDocumentArchiveWithCloud({ client: real as never, ownerId: 'owner-a', timeoutMs: 150, running: () => performance.now() + 60_000 });
     expect(hiddenOn(ipad)).toEqual([PERMIT]);
     expect(ipad.sharedDocumentArchiveView().notices.map(notice => notice.tap)).toEqual(['restore']);
   });
@@ -561,7 +564,7 @@ describe('L4: a document deleted from the cloud while it was archived', () => {
     // Its deletion history has it now.
     await sync(phone, cloud, 'phone', 'owner-a', { deletedDocumentIds: () => new Set([PERMIT]) });
     expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([]);
-    expect(phone.sharedDocumentArchiveView().nextTryAt).toBeNull();
+    expect(phone.sharedDocumentArchiveNextTryInMs()).toBeNull();
     expect(phone.sharedDocumentArchiveView().notices).toEqual([
       { documentId: PERMIT, tap: 'archive', why: 'deleted_from_all_devices', name: 'Grading permit.pdf' },
     ]);
@@ -583,7 +586,7 @@ describe('L5: a Restore made with no signal', () => {
     expect(cloud.row(PERMIT)?.archived_at).toBeTruthy(); // still hidden everywhere else
     // The device knows it, and says it: what the screen shows and what the half-minute timer follows.
     expect(ipad.sharedDocumentArchiveView().waitingRestores).toEqual([{ documentId: PERMIT, name: 'Grading permit', refused: false }]);
-    expect(ipad.sharedDocumentArchiveView().nextTryAt).toBe(0);
+    expect(ipad.sharedDocumentArchiveNextTryInMs()).toBe(0);
     await ipad.sharedDocumentArchiveSettled();
 
     // Kept through closing the app; sent when the iPad has signal; then nothing waits.
@@ -593,7 +596,7 @@ describe('L5: a Restore made with no signal', () => {
     await sync(ipadLater, cloud, 'ipad');
     expect(cloud.row(PERMIT)?.archived_at).toBeNull();
     expect(ipadLater.sharedDocumentArchiveView().waitingRestores).toEqual([]);
-    expect(ipadLater.sharedDocumentArchiveView().nextTryAt).toBeNull();
+    expect(ipadLater.sharedDocumentArchiveNextTryInMs()).toBeNull();
   });
 
   it('tapped with signal it is sent at once and is never said to be waiting', async () => {
@@ -651,8 +654,8 @@ describe('L6: the data API has not yet reloaded after the paste (a write is answ
         return chain;
       },
     };
-    let clock = Date.parse('2026-10-06T18:00:10.000Z');
-    await expect(phone.syncSharedDocumentArchiveWithCloud({ client: staleCacheClient as never, ownerId: 'owner-a', timeoutMs: 150, now: () => clock }))
+    let clock = 10_000; // how long the app has been running
+    await expect(phone.syncSharedDocumentArchiveWithCloud({ client: staleCacheClient as never, ownerId: 'owner-a', timeoutMs: 150, running: () => clock }))
       .resolves.toBe('installed');
     expect(hiddenOn(phone)).toEqual(['doc-contract', PERMIT]); // the iPad's archived document stays hidden here
     expect(phone.sharedDocumentArchiveView().installed).toBe(true);
@@ -661,7 +664,7 @@ describe('L6: the data API has not yet reloaded after the paste (a write is answ
 
     // Half a minute later the API has caught up: the Archive goes up.
     clock += 31_000;
-    await phone.syncSharedDocumentArchiveWithCloud({ client: realClient as never, ownerId: 'owner-a', timeoutMs: 150, now: () => clock });
+    await phone.syncSharedDocumentArchiveWithCloud({ client: realClient as never, ownerId: 'owner-a', timeoutMs: 150, running: () => clock });
     expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T18:00:00.000Z');
     expect(hiddenOn(phone)).toEqual(['doc-contract', PERMIT]);
     expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);

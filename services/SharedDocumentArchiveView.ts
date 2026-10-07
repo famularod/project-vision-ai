@@ -36,8 +36,6 @@ export type SharedDocumentArchiveView = Readonly<{
   waitingIds: ReadonlySet<string>;
   /** Waiting, and the cloud has answered and not taken it: said plainly, and tried again (review of D1, L3). */
   refusedIds: ReadonlySet<string>;
-  /** When what waits is next due to be sent (milliseconds; 0 = now), or null when nothing waits. */
-  nextTryAt: number | null;
   restoredElsewhere: readonly string[];
   /** Taps that were let go without being sent, until the owner dismisses each line (review of D1, L2). */
   notices: readonly SharedDocumentArchiveNotice[];
@@ -53,7 +51,7 @@ export type SharedDocumentArchiveView = Readonly<{
 export const NO_SHARED_DOCUMENT_ARCHIVE_NOTICES: readonly SharedDocumentArchiveNotice[] = Object.freeze([]);
 /** Nothing known: no account open, or nothing read yet. */
 export const EMPTY_SHARED_DOCUMENT_ARCHIVE_VIEW: SharedDocumentArchiveView = Object.freeze({
-  installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), refusedIds: new Set<string>(), nextTryAt: null,
+  installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), refusedIds: new Set<string>(),
   restoredElsewhere: Object.freeze([]) as readonly string[], notices: NO_SHARED_DOCUMENT_ARCHIVE_NOTICES,
   waitingRestores: Object.freeze([]) as readonly SharedDocumentRestoreWaiting[],
 });

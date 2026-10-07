@@ -496,6 +496,180 @@ describe('a line about a tap that was not sent stays only while it is true', () 
   });
 });
 
+describe('P2-L1: a Restore that is not sent is told in a line that is true whichever tap came first', () => {
+  it('the reviewer\'s case: the phone\'s clock a day fast; the iPad, with no signal, taps Restore AFTER the phone archived again: the line does not say which came first, and a second Restore works', async () => {
+    const dayFast = (trueClock: string) => new Date(Date.parse(T(trueClock)) + 24 * 3600_000).toISOString();
+    const phone = await start('phone');
+    const ipad = await start('ipad');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, dayFast('09:00:00.000'));
+    await sync(phone, cloud, 'phone');
+    await sync(ipad, cloud, 'ipad'); // the iPad sees it archived
+    cloud.state.offline.ipad = true;
+    // 10:00 phone: Restore, then Archive again.
+    await phone.requestSharedDocumentArchive(PERMIT, false, dayFast('10:00:00.000'));
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, dayFast('10:00:30.000'));
+    await sync(phone, cloud, 'phone');
+    // 11:00 iPad, no signal: Restore. This is his last tap, made against an Archive the iPad had not heard of.
+    await ipad.requestSharedDocumentArchive(PERMIT, false, T('11:00:00.000'), 'Grading permit');
+    await sync(ipad, cloud, 'ipad');
+    cloud.state.offline.ipad = false;
+    await sync(ipad, cloud, 'ipad');
+    const said = ipad.sharedDocumentArchiveView().notices.map(notice => ipad.sharedDocumentArchiveNoticeText(notice));
+    // The reviewer asked for one of two things: the Restore is sent, or he is told something true. By the
+    // coordinator's decision it is the second: the cloud's state stands and the line says so.
+    expect(archivedInCloud(cloud, PERMIT)).toBe(true);
+    expect(said).toEqual(['Grading permit: your Restore on this device was not sent, because it was archived again on another device before this device could send it. It is still archived; tap Restore again if you still want it back.']);
+    expect(said[0]).not.toMatch(/after you tapped/i); // the untrue sentence of the last batch
+    expect(hiddenOn(ipad)).toEqual([PERMIT]);
+    // "tap Restore again": it works.
+    await ipad.requestSharedDocumentArchive(PERMIT, false, T('11:05:00.000'), 'Grading permit');
+    await sync(ipad, cloud, 'ipad');
+    expect(archivedInCloud(cloud, PERMIT)).toBe(false);
+    expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
+  });
+
+  it('the same steps with every clock right, and with the iPad\'s clock a day slow, end the same way and say the same thing', async () => {
+    const outcomes: string[] = [];
+    for (const [phoneOffset, ipadOffset] of [[0, 0], [0, -24 * 60], [24 * 60, 0], [-90, 45]]) {
+      resetDevices();
+      cloud = createCloud();
+      cloud.add(PERMIT);
+      const at = (trueClock: string, offsetMinutes: number) => new Date(Date.parse(T(trueClock)) + offsetMinutes * 60_000).toISOString();
+      const phone = await start('phone');
+      const ipad = await start('ipad');
+      await sync(phone, cloud, 'phone');
+      await phone.requestSharedDocumentArchive(PERMIT, true, at('09:00:00.000', phoneOffset));
+      await sync(phone, cloud, 'phone');
+      await sync(ipad, cloud, 'ipad');
+      cloud.state.offline.ipad = true;
+      await phone.requestSharedDocumentArchive(PERMIT, false, at('10:00:00.000', phoneOffset));
+      await sync(phone, cloud, 'phone');
+      await phone.requestSharedDocumentArchive(PERMIT, true, at('10:00:30.000', phoneOffset));
+      await sync(phone, cloud, 'phone');
+      await ipad.requestSharedDocumentArchive(PERMIT, false, at('11:00:00.000', ipadOffset), 'Grading permit');
+      cloud.state.offline.ipad = false;
+      await sync(ipad, cloud, 'ipad');
+      outcomes.push(JSON.stringify({
+        cloud: archivedInCloud(cloud, PERMIT), ipad: hiddenOn(ipad),
+        said: ipad.sharedDocumentArchiveView().notices.map(notice => ipad.sharedDocumentArchiveNoticeText(notice)),
+        writes: cloud.writes.map(write => `${write.device}:${write.archived_at === null ? 'restore' : 'archive'}:${write.changed}`),
+      }));
+    }
+    expect(new Set(outcomes).size).toBe(1);
+  });
+});
+
+describe('P2-L2: a refused tap is tried again after its wait, whatever is done to the device\'s clock', () => {
+  const REFUSAL = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const MINUTE = 60_000;
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  it('the reviewer\'s case: refused while the clock was a day fast; the clock is put right; sixteen minutes later the cloud is fine: it is sent', async () => {
+    const right = Date.parse(T('18:00:00.000'));
+    const deviceClock = jest.spyOn(Date, 'now').mockReturnValue(right + 24 * 3600_000); // a day fast
+    let appHasRun = 40_000;
+    const running = () => appHasRun;
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    await phone.requestSharedDocumentArchive(PERMIT, true, new Date(right + 24 * 3600_000).toISOString());
+    cloud.state.failWritesWith = REFUSAL;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect([...phone.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]);
+    cloud.state.failWritesWith = null;
+    deviceClock.mockReturnValue(right + 16 * MINUTE); // he corrects the clock; sixteen minutes pass
+    appHasRun += 16 * MINUTE;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(archivedInCloud(cloud, PERMIT)).toBe(true);
+    expect(phone.sharedDocumentArchiveView().refusedIds.size).toBe(0);
+  });
+
+  it('half a minute after the refusal is enough, with the clock put back a day or forward a year in between; a second less is not', async () => {
+    const right = Date.parse(T('18:00:00.000'));
+    const deviceClock = jest.spyOn(Date, 'now').mockReturnValue(right);
+    let appHasRun = 1_000;
+    const running = () => appHasRun;
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    await phone.requestSharedDocumentArchive(PERMIT, true, T('18:00:00.000'));
+    cloud.state.failWritesWith = REFUSAL;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(cloud.writes).toHaveLength(1);
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(30_000);
+    cloud.state.failWritesWith = null;
+    deviceClock.mockReturnValue(right + 365 * 24 * 3600_000); // set forward a year: the wait is not cut short
+    appHasRun += 29_000;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(cloud.writes).toHaveLength(1);
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(1_000);
+    deviceClock.mockReturnValue(right - 24 * 3600_000); // set back a day: the wait is not stretched
+    appHasRun += 1_000;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(cloud.writes).toHaveLength(2);
+    expect(archivedInCloud(cloud, PERMIT)).toBe(true);
+  });
+
+  it('a pass to the cloud never reads the device\'s clock: not to ask, not to send, not after a refusal, not to say when the next try is', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, T('18:00:00.000'));
+    cloud.add('doc-contract');
+    cloud.row('doc-contract')!.archived_at = T('12:00:00.000');
+    const deviceClock = jest.spyOn(Date, 'now');
+    cloud.state.failWritesWith = REFUSAL;
+    await sync(phone, cloud, 'phone');
+    expect(phone.sharedDocumentArchiveNextTryInMs()).toBeGreaterThan(29_000);
+    cloud.state.failWritesWith = null;
+    await sync(phone, cloud, 'phone', 'owner-a', { running: () => performance.now() + MINUTE });
+    await phone.requestSharedDocumentArchive('doc-contract', false);
+    await sync(phone, cloud, 'phone');
+    expect(cloud.writes.map(write => write.changed)).toEqual([0, 1, 1]);
+    expect(deviceClock).not.toHaveBeenCalled();
+  });
+
+  it('after the app has been closed and opened, a tap that was refused a moment before is tried at once', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    await phone.requestSharedDocumentArchive(PERMIT, true, T('18:00:00.000'));
+    cloud.state.failWritesWith = REFUSAL;
+    let appHasRun = 2_000;
+    const running = () => appHasRun;
+    for (let pass = 0; pass < 6; pass += 1) {
+      await sync(phone, cloud, 'phone', 'owner-a', { running });
+      if (pass < 5) appHasRun += 20 * MINUTE;
+    }
+    expect(cloud.writes).toHaveLength(6);
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(15 * MINUTE); // its sixth wait is a quarter of an hour
+    await phone.sharedDocumentArchiveSettled();
+    cloud.state.failWritesWith = null;
+    const reopened = await start('phone');
+    expect([...reopened.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]); // it still says the cloud has not accepted it
+    expect(reopened.sharedDocumentArchiveNextTryInMs(running)).toBe(0);
+    await sync(reopened, cloud, 'phone', 'owner-a', { running });
+    expect(archivedInCloud(cloud, PERMIT)).toBe(true);
+  });
+
+  it('a wait is never longer than a quarter of an hour, whatever the count of running time does; and a device with no such count keeps no wait at all', async () => {
+    let appHasRun: number | null = 1_000_000_000;
+    const running = () => appHasRun;
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    await phone.requestSharedDocumentArchive(PERMIT, true, T('18:00:00.000'));
+    cloud.state.failWritesWith = REFUSAL;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    appHasRun = 5; // the count began again
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(0);
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(cloud.writes).toHaveLength(2);
+    appHasRun = null; // no count on this device
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    expect(cloud.writes).toHaveLength(4);
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBe(0);
+  });
+});
+
 /**
  * The reviewer's tables, in small. He ran 300 sequences in each cell; here 25
  * in each, because a long random run in one process crashes the test runner
