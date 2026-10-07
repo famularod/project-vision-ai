@@ -906,7 +906,10 @@ export type ScheduleItem = {
    * percent, and stops counting once the percent changes. Kept in the task's
    * JSON record.
    */
-  progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
+  // besideAnotherRow (review pass 1, P1-12): the carry gave it to this row as one of two or more rows that answer to
+  // that row (two schedules each moved the task; Build 231, S4 item 2 a). Such a percent does not outrank a lookahead's
+  // later, higher statement on this row when two copies of the row meet.
+  progressCarriedFrom?: { taskId: string; judgedAt: string | null; besideAnotherRow?: true } | null;
   /**
    * When the schedule that shows this row was last made current (Set Active,
    * Make Current) with this row's percent LEFT STANDING against a percent

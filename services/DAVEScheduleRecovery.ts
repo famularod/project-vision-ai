@@ -184,7 +184,7 @@ function mergedWithCarriedProgressWeighedAgain(
 ): ScheduleItem {
   // A copy changed here since the cloud's (a percent given back, an edit) is his word, weighed alone (A7 pass 29 L1).
   const carried = !changedHereSince(record, cloudRecord) && carriedProgressHeld(record, copies, deleted);
-  if (!carried) return mergeScheduleRevisions(record, cloudRecord);
+  if (!carried) return carriedBesideAnotherRowWeighedAgain(record, cloudRecord) ?? mergeScheduleRevisions(record, cloudRecord);
   const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, cloudRecord[field]]));
   const own = { ...record, ...progress } as ScheduleItem;
   // With the same progress, the copy edited later leads; the cloud's when neither was.
@@ -197,6 +197,42 @@ function mergedWithCarriedProgressWeighedAgain(
   const weighed = !keepsHisPercentUnderFile(merged, record) &&
     scheduleProgressCarriedFrom(record, merged, merged.updatedAt ?? '', { fileProgressDated: restatedSinceImport(merged) });
   return weighed ? { ...weighed, progressCarriedFrom: record.progressCarriedFrom } : lookaheadFlooredAtManagersPercentOf(record, merged) ?? merged;
+}
+
+/**
+ * Review pass 1 of Build 231's schedule round, P1-12 (7 Oct 2026; Low, a rare
+ * shape; caused by S4 item 2 a, found by bisect; the reviewer's seed 7060).
+ * Since S4 the carry gives David's percent to EACH of two rows that answer to
+ * the row he entered it on (two schedules that both moved the task). Master I
+ * moved Survey; master F was made current again and he entered 30% there; a
+ * third master was uploaded on the web and not made current, so the carry
+ * gave I's row and that master's row his 30%. The phone, with no signal and
+ * still under master I, then approved a lookahead stating 70% on I's row.
+ * When the phone's copy met the cloud's, the carried 30%, his by rank,
+ * outranked the lookahead's later statement: I's row showed 30% under a
+ * lookahead in effect that states more (Build 230, which carried nothing to
+ * such a row, showed 70%).
+ *
+ * A percent the cloud's copy holds because the carry gave it to the row as
+ * one of two or more (the carry's mark says so) is that earlier row's, not a
+ * statement on this row. Met by this device's copy changed since, whose
+ * percent is a file's, it is weighed by the carry's own rule, as the carry
+ * would have weighed it had it met that copy (scheduleProgressCarriedFrom:
+ * never over a higher percent a file gave). Where that rule lets his percent
+ * stand (the file states less; the copy is not this device's later word),
+ * null: the two copies are merged as before. A percent carried to the one row
+ * that answers is left as it was (the same on Build 230).
+ */
+function carriedBesideAnotherRowWeighedAgain(record: ScheduleItem, cloudRecord: ScheduleItem): ScheduleItem | null {
+  const mark = cloudRecord.progressCarriedFrom;
+  if (!mark || mark.besideAnotherRow !== true || !scheduleProgressIsManagers(cloudRecord) ||
+    timestamp(mark.judgedAt) !== timestamp(scheduleProgressJudgedAt(cloudRecord))) return null;
+  if (!changedHereSince(record, cloudRecord) || scheduleProgressIsManagers(record)) return null;
+  if (scheduleProgressCarriedFrom(cloudRecord, record, record.updatedAt ?? '', { fileProgressDated: restatedSinceImport(record) })) return null;
+  // This copy's own progress stands; everything else of the two copies is merged as ever.
+  const progress = Object.fromEntries(SCHEDULE_CARRIED_PROGRESS_FIELDS.map(field => [field, record[field]]));
+  const merged = mergeScheduleRevisions(record, { ...cloudRecord, ...progress } as ScheduleItem);
+  return lookaheadFlooredAtManagersPercentOf(cloudRecord, merged) ?? merged;
 }
 
 /**
@@ -371,11 +407,14 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
   // Each row's latest David percent from the rows it answers to (it alone, as the newest row of the task).
   const known = new Map([...records, ...deleted].map(record => [normalized(record.id), record] as const));
   const from = new Map<ScheduleItem, ScheduleItem>();
+  // The rows given a percent as one of two or more that answer to the row it is on (review pass 1, P1-12).
+  const besideAnotherRow = new Set<ScheduleItem>();
   [...records, ...deleted].forEach(earlier => {
     const moved = scheduleProgressIsManagers(earlier) ? answering.get(normalized(earlier.id)) : undefined;
     if (!moved) return;
     const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
     const newest = moved.filter(record => !superseded.has(normalized(record.id)));
+    if (newest.length > 1) newest.forEach(row => besideAnotherRow.add(row));
     // Build 231, S4 item 2 (a): EACH row that answers to it and that no other such row answers to. Two schedules that
     // both moved the task (a master approved on each of two devices; one approved on the phone and one uploaded on the
     // web) each have its newest row. With two such rows the carry was skipped for both, so the row shown kept an older
@@ -409,7 +448,7 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
       fileProgressDated: restatedSinceImport(record),
     });
     // The row given his percent says where it came from, also once that row is deleted (A7 pass 28 L).
-    const carried = (carriedFrom && { ...carriedFrom, progressCarriedFrom: { taskId: earlier.id, judgedAt: scheduleProgressJudgedAt(earlier) } }) ||
+    const carried = (carriedFrom && { ...carriedFrom, progressCarriedFrom: { taskId: earlier.id, judgedAt: scheduleProgressJudgedAt(earlier), ...(besideAnotherRow.has(record) ? { besideAnotherRow: true as const } : {}) } }) ||
       lookaheadFlooredAtManagersPercentOf(earlier, record);
     if (!carried) return record;
     const stamped = withOwnStamp(carried, record);

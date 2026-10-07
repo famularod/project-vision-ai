@@ -2651,6 +2651,24 @@ function heldAsTheAppHoldsThem(device: Device) {
   setter(device)(device.state.map(appNormalize));
   device.ref.current = device.state;
 }
+/** A master uploaded on the web desktop and not made current (the web's own plan, its rows written as planned). */
+function webUploads(id: string, lines: string[]): ReferenceDocument {
+  const { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } = require('../../services/DAVEWebOperations');
+  const when = new Date().toISOString();
+  const prepared = prepareDAVEWebDocumentUpload({
+    fileName: `${id}.csv`, mimeType: 'text/csv', sizeBytes: 300, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+    contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), fingerprint: 'd'.repeat(64), now: when,
+  } as never);
+  const document = { ...(prepared.document as ReferenceDocument), id, importBatchId: `batch-${id}` } as ReferenceDocument;
+  const rows = (prepared.scheduleItems as ScheduleItem[]).map((row, index) => ({ ...row, id: `${id}-${index + 1}`, importBatchId: document.importBatchId, sourceDocumentId: id }));
+  const plan = planDAVEWebScheduleImport({ snapshot: { scheduleItems: webShown().map(item => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null })) } as never, importedScheduleItems: rows });
+  const plain = (item: ScheduleItem) => { const { cloudUpdatedAt: _cloud, ...rest } = item as ScheduleItem & { cloudUpdatedAt?: unknown }; return rest as ScheduleItem; };
+  plan.additions.forEach((item: ScheduleItem) => webWrite(plain(item)));
+  plan.revisions.forEach((revision: { item: ScheduleItem }) => webWrite(plain(revision.item)));
+  cloudDocuments = [...cloudDocuments, document];
+  mockCloud.documents = cloudDocuments;
+  return document;
+}
 /** A master uploaded on the web desktop and made current there (the web's own plan and activation, its rows written as planned). */
 function webUploadsAndMakesCurrent(id: string, lines: string[]): ReferenceDocument {
   const { planDAVEWebScheduleImport, prepareDAVEWebDocumentUpload } = require('../../services/DAVEWebOperations');
@@ -5275,6 +5293,129 @@ describe('Review pass 1, P1-1 and P1-2: a priority he sets that is also what a r
     // (It was: Medium, M's own, on the phone, the iPad and the web.)
     expect([theRow(phone).id, theRow(ipad).id, await priorities(phone, ipad)]).toEqual([middleId, middleId, ['High', 'High', 'High']]);
     await nothingWaits(phone, ipad);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1 of Build 231's schedule round, P1-12 (7 Oct 2026; Low, a rare shape; caused by "S4 item 2 (a): the
+ * carry reaches each of two rows that answer to the old row", found by bisect; the reviewer's generator seed 7060).
+ * Master I moved Framing. Master F is made current again and he enters 30% there. A third master is uploaded on the
+ * web and not made current, so two rows now answer to F's row, and the sync's carry gives each of them his 30%. The
+ * phone, with no signal and still under master I, approves a lookahead that states 70% for Framing. Build 230 showed
+ * the lookahead's 70% on master I's row; this round showed 30%: the carried percent, his by rank, outranked the
+ * lookahead's later statement when the two copies of the row met.
+ */
+describe('Review pass 1, P1-12 (caused by S4 item 2 a): his percent carried to a second row that answers to the old row, and a lookahead approved with no signal that states more', () => {
+  const I = scheduleDoc('MASTER I', '2026-09-10T18:00:00.000Z');
+  const LOOK = scheduleDoc('LOOKAHEAD P12', '2026-09-14T09:00:00.000Z', 'lookahead');
+  /**
+   * Master I moves Framing; the phone loses signal; F is made current again on the iPad, and he enters 30% there. With
+   * `sibling`, master J is then uploaded on the web and not made current: two rows answer to F's. The iPad's refresh
+   * carries his 30% to the row (or rows) that answer to F's row, and sends it.
+   */
+  async function carriedUnderF(sibling: boolean) {
+    const { phone, ipad } = await start();
+    const rowF = theRow(phone).id;
+    at(I.importedAt!);
+    await approve(phone, I, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    const rowI = theRow(phone).id;
+    setOnline(phone, false);
+    at('2026-09-11T09:00:00.000Z');
+    await setActiveOn(ipad, F);
+    await backgroundUpload(ipad);
+    expect(theRow(ipad).id).toBe(rowF);
+    at('2026-09-11T12:00:00.000Z');
+    await edit(ipad, rowF, { percentComplete: 30 });
+    await backgroundUpload(ipad);
+    at('2026-09-12T12:00:00.000Z');
+    if (sibling) webUploads('MASTER J', ['Framing,Alpha,Lot,10/27/2026,11/06/2026,', SURVEY]);
+    await refresh(ipad);
+    await backgroundUpload(ipad);
+    return { phone, ipad, rowF, rowI };
+  }
+  /** The phone, with no signal and still under master I, approves a lookahead stating `percent` for Framing; then everything syncs. */
+  async function lookaheadWithNoSignal(phone: Device, ipad: Device, percent: string) {
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, [`Framing,Alpha,Lot,10/22/2026,11/01/2026,${percent}`], true);
+    at('2026-09-15T09:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    for (let round = 0; round < 2; round += 1) {
+      await settle(phone, ipad);
+      for (const device of [phone, ipad]) { shareDocuments(device); await fullSync(device); }
+    }
+  }
+  const cardsOf = async (phone: Device, ipad: Device) => [...await conflictsOf(phone), ...await conflictsOf(ipad)];
+
+  it('P1-12: the lookahead\'s 70% shows on master I\'s row, on its dates, and his 30% stays on the row he entered it on', async () => {
+    const { phone, ipad, rowF, rowI } = await carriedUnderF(true);
+    expect([cloudRow(rowI)!.percentComplete, cloudRow('MASTER J-1')!.percentComplete, cloudRow(rowF)!.percentComplete]).toEqual([30, 30, 30]);
+    await lookaheadWithNoSignal(phone, ipad, '70');
+    // (It was: 30% on master I's row, though the lookahead in effect there states more than he entered.)
+    expect([cloudRow(rowI)!.startDate, cloudRow(rowI)!.percentComplete]).toEqual(['10/22/2026', 70]);
+    expect([cloudRow(rowF)!.percentComplete, cloudRow('MASTER J-1')!.percentComplete]).toEqual([30, 30]);
+    expect([phone.state.find(item => item.id === rowI)!.percentComplete, ipad.state.find(item => item.id === rowI)!.percentComplete]).toEqual([70, 70]);
+    expect(await cardsOf(phone, ipad)).toEqual([]);
+    // Nothing more is written: the carry does not put the 30% back.
+    const writes = cloudWrites();
+    await settle(phone, ipad); await fullSync(phone); await fullSync(ipad);
+    expect([cloudWrites(), cloudRow(rowI)!.percentComplete]).toEqual([writes, 70]);
+  });
+
+  it('guard: a lookahead that states less than he entered is still floored at his 30% (owner answer Q22)', async () => {
+    const { phone, ipad, rowI } = await carriedUnderF(true);
+    await lookaheadWithNoSignal(phone, ipad, '20');
+    expect([cloudRow(rowI)!.startDate, cloudRow(rowI)!.percentComplete]).toEqual(['10/22/2026', 30]);
+    expect(await cardsOf(phone, ipad)).toEqual([]);
+  });
+
+  it('guard, not changed (a recorded limit, older, the same on Build 230): with ONE row answering to F\'s row, his carried 30% still stands over the lookahead\'s 70%', async () => {
+    const { phone, ipad, rowI } = await carriedUnderF(false);
+    expect(cloudRow(rowI)!.percentComplete).toBe(30);
+    await lookaheadWithNoSignal(phone, ipad, '70');
+    expect(cloudRow(rowI)!.percentComplete).toBe(30);
+  });
+
+  it('the rule on the records alone: the carry says when it gave a row his percent as one of two; such a percent does not outrank a lookahead\'s later, higher statement', () => {
+    const T30 = '2026-09-11T12:00:00.000Z';
+    const row = (id: string, change: Partial<ScheduleItem> = {}) => ({
+      id, taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/20/2026', finishDate: '10/30/2026', milestone: '', owner: '', contractor: '',
+      percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', importBatchId: `batch-${id}`, importedAt: '2026-09-10T18:00:00.000Z',
+      createdAt: '2026-09-10T18:00:00.000Z', revisedFromTaskIds: ['MASTER F-1'], ...change,
+    }) as ScheduleItem;
+    const his = row('MASTER F-1', { revisedFromTaskIds: undefined, importedAt: '2026-09-07T12:00:00.000Z', createdAt: '2026-09-07T12:00:00.000Z', percentComplete: 30, status: 'In Progress',
+      progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: T30, updatedAt: T30 });
+    // Two rows answer to F's row: each takes his 30%, and says it took it beside another row. One row alone says nothing of the kind.
+    const two = recoverDAVEScheduleRecords({ local: [his, row('MASTER I-1'), row('MASTER J-1')], cloud: [his, row('MASTER I-1'), row('MASTER J-1')], allowCloudOnly: true });
+    expect(two.map(item => [item.id, item.percentComplete, item.progressCarriedFrom])).toEqual([
+      ['MASTER F-1', 30, undefined], ['MASTER I-1', 30, { taskId: 'MASTER F-1', judgedAt: T30, besideAnotherRow: true }], ['MASTER J-1', 30, { taskId: 'MASTER F-1', judgedAt: T30, besideAnotherRow: true }]]);
+    const one = recoverDAVEScheduleRecords({ local: [his, row('MASTER I-1')], cloud: [his, row('MASTER I-1')], allowCloudOnly: true });
+    expect(one.map(item => [item.id, item.percentComplete, item.progressCarriedFrom])).toEqual([['MASTER F-1', 30, undefined], ['MASTER I-1', 30, { taskId: 'MASTER F-1', judgedAt: T30 }]]);
+    const carriedBeside = two.find(item => item.id === 'MASTER I-1')!;
+    const carriedAlone = one.find(item => item.id === 'MASTER I-1')!;
+    /** This device's copy of I's row: a lookahead approved with no signal restated it, stating `percent`. */
+    const lookahead = (percent: number, updatedAt = '2026-09-14T09:00:00.000Z') => row('MASTER I-1', {
+      startDate: '10/22/2026', finishDate: '11/01/2026', percentComplete: percent, status: 'In Progress', alsoImportedInBatchIds: ['batch-L'], updatedAt,
+      lookaheadOverlay: { masterStartDate: '10/20/2026', masterFinishDate: '10/30/2026', masterPercentComplete: 0, masterStatus: 'Not Started', masterFilePercentComplete: 0,
+        lookaheads: [{ batchId: 'batch-L', startDate: '10/22/2026', finishDate: '11/01/2026', percentComplete: percent, importedAt: '2026-09-14T09:00:00.000Z' }] },
+    });
+    const met = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0];
+    // (It was: 30.) The lookahead's 70% stands, and the row no longer says its percent was carried.
+    expect([met(lookahead(70), carriedBeside).percentComplete, met(lookahead(70), carriedBeside).progressCarriedFrom]).toEqual([70, undefined]);
+    // A lookahead that states less than he entered: his percent stands, as before (owner answer Q22).
+    expect(met(lookahead(20), carriedBeside).percentComplete).toBe(30);
+    // The one row that answers: as before.
+    expect(met(lookahead(70), carriedAlone).percentComplete).toBe(30);
+    // A copy that is not this device's later word (an old copy of a lookahead since gone, never changed here since): his stands.
+    expect(met(lookahead(70, '2026-09-11T10:00:00.000Z'), carriedBeside).percentComplete).toBe(30);
+    // His own percent on this device's copy is ordered by when he judged it, as ever: the later of the two.
+    const hisOwn = (at: string) => row('MASTER I-1', { percentComplete: 45, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: at, updatedAt: at });
+    expect([met(hisOwn('2026-09-14T09:00:00.000Z'), carriedBeside).percentComplete, met(hisOwn('2026-09-11T08:00:00.000Z'), carriedBeside).percentComplete]).toEqual([45, 30]);
   });
 });
 
