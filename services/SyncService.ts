@@ -702,6 +702,11 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    */
   keepCloudChoice?: true;
   /**
+   * Keep Cloud's copy only (sync batch Y2, item 5): the stamp of the cloud's copy Keep Cloud read and built it from.
+   * Whether the cloud's copy changed under it is told by that version, not by either device's clock.
+   */
+  chosenOverCloudStamp?: string;
+  /**
    * Keep Cloud's copy only: the document changes and analysis results it
    * took in while Keep Cloud tried (whole-app audit A4 pass 21 F1), which go
    * onto the phone's work it puts back when Keep Cloud fails.
@@ -4053,6 +4058,20 @@ const keepCloudChoicesMetNewerCloudCopy = new Set<string>();
 const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Cloud was saving it.';
 
 /**
+ * Whether the cloud's copy of a field update is newer than a queued copy of it. By the two stamps, as before, except
+ * for Keep Cloud's own copy (sync batch Y2, item 5): that copy is the cloud's copy as Keep Cloud read it, so the
+ * cloud's is newer exactly when it is no longer that version. By the clocks, a cloud copy stamped by a device whose
+ * clock is ahead read as newer than Keep Cloud's copy every time, and Keep Cloud said "review again" until this
+ * phone's clock had passed that stamp; and a save made during Keep Cloud by a device whose clock is behind did not
+ * read as newer at all. A stamp that cannot be read as a time is compared by the clocks, as before.
+ */
+function cloudCopyNewerThanQueuedCopy(payload: ProjectUpdateRecordPayload, cloudStamp: string, queuedAt: string): boolean {
+  const chosenOver = payload.keepCloudChoice ? Date.parse(payload.chosenOverCloudStamp ?? '') : NaN;
+  const cloudAt = Date.parse(cloudStamp);
+  return Number.isFinite(chosenOver) && Number.isFinite(cloudAt) ? cloudAt !== chosenOver : isRemoteNewer(cloudStamp, queuedAt);
+}
+
+/**
  * Keep Cloud's copy found an iPad save newer than it (whole-app audit A4
  * pass 22 L1): the conflict it was chosen over, while open, takes that cloud
  * copy, as Review Conflicts' own read does. False when that conflict is gone.
@@ -5462,6 +5481,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       // cloud can be reached, and stands in when this one fails.
       const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
       const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
+      const currentStamp = (reread?.ok && !reread.stubbed ? reread : current).data?.updatedAt;
       const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
         sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
         ? currentCopy : cloudUpdate;
@@ -5502,6 +5522,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           // landed, the card still held the discarded edit, and a document
           // upload or analysis result finishing then queued that edit whole.
           keepCloudChoice: true,
+          ...(typeof currentStamp === 'string' && currentStamp ? { chosenOverCloudStamp: currentStamp } : {}),
         } satisfies ProjectUpdateRecordPayload<TUpdate>,
         createdAt: queuedAt, changedAt: queuedAt, retryCount: 0, lastError: null,
         ...(ownerId ? { ownerId } : {}),
@@ -7870,7 +7891,7 @@ async function uploadProjectUpdateQueueItem(
     !judgedByStartingCopy &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
-    isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
+    cloudCopyNewerThanQueuedCopy(payload, remoteMetadata.data.updatedAt, item.changedAt)
   ) {
     if (projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)) {
       await clearConflictsForLocalRecord('project_update', payload.id);

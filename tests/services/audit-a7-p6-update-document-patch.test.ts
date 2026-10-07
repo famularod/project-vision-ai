@@ -5261,6 +5261,47 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
     expect(await getSyncConflicts()).toEqual([]);
   });
 
+  // Sync batch Y2 (item 5): whether the cloud's copy changed under Keep Cloud's own copy was told by the two clocks:
+  // the cloud copy's stamp against the time this phone queued Keep Cloud's copy.
+  it('the iPad\'s clock is an hour ahead and a photo result of the phone\'s waits: Keep Cloud goes through at the first tap (sync batch Y2, item 5)', async () => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    // The iPad's save, as its clock stamped it: an hour after this phone's "now". Nothing else about it is different.
+    mockCloud.set('u1', { ...mockCloud.get('u1')!, updatedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
+
+    // It said "The cloud copy changed — review again", at this tap and at every tap for the next hour.
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(result);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('the iPad saves while Keep Cloud\'s copy uploads, its clock an hour BEHIND: still "review again", and nothing is sent over that save (sync batch Y2, item 5)', async () => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    const [before] = await getSyncConflicts();
+    const saves = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    const ran = whileKeepCloudRuns('its upload', async () => {
+      putInCloud({ ...inCloud(), notes: IPAD_SECOND_NOTE }, new Date(Date.now() - 60 * 60 * 1000).toISOString());
+    });
+
+    // By the clocks that save read as older than Keep Cloud's copy, which then went up over it.
+    expect(await chooseInSettingsExpectingFailure(phone, before, 'keep_cloud')).toEqual(['Cloud copy changed']);
+
+    expect(ran()).toBe(true);
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(saves);
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({
+      id: before.id, remotePayload: expect.objectContaining({ notes: IPAD_SECOND_NOTE }) })]);
+  });
+
   it('L3: a result Keep Cloud\'s copy took in before the app was killed does not win over a newer one the next, failing, Keep Cloud took in', async () => {
     const { phone } = await offlineEditInConflictWhileAnalysing();
     const older = { ...finishedAnalysis(), currentObservation: 'Older result' };
