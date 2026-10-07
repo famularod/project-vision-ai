@@ -91,7 +91,12 @@ type WaitingMark = Readonly<{
   name?: string;
   /** This device's own earlier Restore, made once more against an older archive that arrived late: not remembered again. */
   again?: true;
+  /** A pass to the cloud has come and gone and it is still here (no signal, or a refusal): said to be waiting (review of D1, L5). */
+  held?: true;
 }>;
+
+/** A Restore made on this device that the cloud has not been told yet (review of D1, L5). */
+export type SharedDocumentRestoreWaiting = Readonly<{ documentId: string; name?: string; refused: boolean }>;
 
 /** A tap that was let go without being sent, to be told to the owner in a line he dismisses (review of D1, L2). */
 export type SharedDocumentArchiveNotice = Readonly<{
@@ -136,6 +141,13 @@ export type SharedDocumentArchiveView = Readonly<{
   restoredElsewhere: readonly string[];
   /** Taps that were let go without being sent, until the owner dismisses each line (review of D1, L2). */
   notices: readonly SharedDocumentArchiveNotice[];
+  /**
+   * Restores made here that a pass to the cloud has not been able to send:
+   * the document is listed on this device and still hidden on the others
+   * (review of D1, L5). One tapped with signal is sent at once and is never
+   * in this list.
+   */
+  waitingRestores: readonly SharedDocumentRestoreWaiting[];
 }>;
 
 export type SharedDocumentArchiveCloudAnswer = 'installed' | 'not_installed' | 'unknown';
@@ -154,7 +166,7 @@ const EMPTY_RECORD: OwnerRecord = Object.freeze({
 });
 const EMPTY_VIEW: SharedDocumentArchiveView = Object.freeze({
   installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), refusedIds: new Set<string>(), nextTryAt: null,
-  restoredElsewhere: Object.freeze([]) as readonly string[], notices: NO_NOTICES,
+  restoredElsewhere: Object.freeze([]) as readonly string[], notices: NO_NOTICES, waitingRestores: Object.freeze([]) as readonly SharedDocumentRestoreWaiting[],
 });
 
 /** Two marks are the same mark: both empty, or the same moment (the cloud and the device write a time differently). */
@@ -218,6 +230,7 @@ function parseStored(raw: string | null): Map<string, OwnerRecord> {
                 ...(Array.isArray(mark.sent) && mark.sent.length > 0 ? { sent: mark.sent.filter(isMark) } : {}),
                 ...(typeof mark.name === 'string' && mark.name ? { name: mark.name } : {}),
                 ...(mark.again === true ? { again: true as const } : {}),
+                ...(mark.held === true ? { held: true as const } : {}),
               }]
             : [];
         }),
@@ -272,6 +285,8 @@ function publish(): void {
       nextTryAt: record.waiting.length > 0 ? Math.min(...record.waiting.map(mark => mark.notBefore ?? 0)) : null,
       restoredElsewhere: record.restoredElsewhere,
       notices: record.notices,
+      waitingRestores: record.waiting.filter(mark => !mark.archived && mark.held)
+        .map(mark => ({ documentId: mark.documentId, ...(mark.name ? { name: mark.name } : {}), refused: mark.attempts > 0 })),
     });
   }
   listeners.forEach(listener => listener());
@@ -362,6 +377,14 @@ export async function dismissSharedDocumentArchiveNotices(documentIds: readonly 
     : record));
 }
 
+/** The line for a Restore made on this device that the cloud has not been told yet (review of D1, L5). */
+export function sharedDocumentRestoreWaitingText(waiting: SharedDocumentRestoreWaiting): string {
+  const name = waiting.name?.trim() || 'A document';
+  return waiting.refused
+    ? `${name}: restored on this device only, for now: the cloud has not accepted this yet. This device keeps trying.`
+    : `${name}: restored on this device. Your other devices show it again as soon as this one reaches the cloud.`;
+}
+
 /** The line for a tap that was let go without being sent: what happened, and what the document's state is. */
 export function sharedDocumentArchiveNoticeText(notice: SharedDocumentArchiveNotice): string {
   const name = notice.name?.trim() || 'A document';
@@ -408,7 +431,18 @@ type SyncInput = Readonly<{
 
 export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
   // One at a time: two passes would each send the same waiting mark.
-  const work = cloudWork.catch(() => undefined).then(() => syncOnce(input).catch((): SharedDocumentArchiveCloudAnswer => 'unknown'));
+  const work = cloudWork.catch(() => undefined).then(async () => {
+    await load();
+    const before = recordOf(input.ownerId).waiting;
+    const answer = await syncOnce(input).catch((): SharedDocumentArchiveCloudAnswer => 'unknown');
+    // What was waiting when this pass began and still is has been held up (no signal, or a refusal): it is said
+    // to be waiting from now on (review of D1, L5). A tap made with signal never gets this far.
+    const waitedThrough = (mark: WaitingMark) => !mark.held && before.some(item => item.documentId === mark.documentId && item.at === mark.at && item.archived === mark.archived);
+    change(input.ownerId, record => (record.waiting.some(waitedThrough)
+      ? { ...record, waiting: record.waiting.map(mark => (waitedThrough(mark) ? { ...mark, held: true as const } : mark)) }
+      : record));
+    return answer;
+  });
   cloudWork = work;
   return work;
 }

@@ -50,7 +50,7 @@ async function deletedSharedDocumentIds(): Promise<string[]> {
  *   cloud has the column) every time the shared-document list is read from
  *   the cloud (a refresh, Sync Now);
  * - straight after an Archive or a Restore, and again every half minute
- *   while one is still waiting for signal (one the cloud has refused is
+ *   while either is still waiting for signal (one the cloud has refused is
  *   kept too, and tried after a wait that grows to a quarter of an hour).
  * Before the owner's database change there is nothing in the cloud to follow:
  * archiving stays on the one device, and nothing is shown about that.
@@ -87,7 +87,8 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       if (retry) clearTimeout(retry);
       retry = undefined;
       const now = sharedDocumentArchiveView();
-      if (now.waitingIds.size > 0 && now.installed !== false) {
+      // Whatever still waits, an Archive or a Restore (review of D1, L5), is tried again.
+      if (now.nextTryAt !== null && now.installed !== false) {
         const wait = Math.min(LONGEST_RETRY_MS, Math.max(WAITING_RETRY_MS, (now.nextTryAt ?? 0) - Date.now()));
         retry = setTimeout(() => { void sync(); }, wait);
       }

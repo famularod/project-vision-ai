@@ -5,11 +5,13 @@ import {
   dismissSharedDocumentArchiveNotices,
   sharedDocumentArchiveNoticeText,
   sharedDocumentArchiveView,
+  sharedDocumentRestoreWaitingText,
   subscribeSharedDocumentArchive,
 } from '../services/SharedDocumentArchive';
 import { styles } from './app-shell-theme';
 
 const noticesNow = () => sharedDocumentArchiveView().notices;
+const waitingRestoresNow = () => sharedDocumentArchiveView().waitingRestores;
 
 /**
  * "Archived (2)" under a project's Documents header (owner answer Q44, 6 Oct
@@ -21,6 +23,9 @@ const noticesNow = () => sharedDocumentArchiveView().notices;
  * sending it: a Restore, because the document was archived again on another
  * device afterwards (review of D1, L2), or an Archive, because the document
  * has since been deleted from all devices (L4). It stays until he taps OK.
+ * And a line for each Restore made here that has not reached the cloud yet
+ * (L5): the document is back in this device's list and still hidden on the
+ * others. That line goes by itself once the Restore has been sent.
  */
 export function ArchivedDocumentsSection({ documents, onRestore }: {
   documents: readonly MobileArchivedDocument[];
@@ -28,9 +33,15 @@ export function ArchivedDocumentsSection({ documents, onRestore }: {
 }) {
   const [open, setOpen] = useState(false);
   const notices = useSyncExternalStore(subscribeSharedDocumentArchive, noticesNow, noticesNow);
-  if (documents.length === 0 && notices.length === 0) return null;
+  const waitingRestores = useSyncExternalStore(subscribeSharedDocumentArchive, waitingRestoresNow, waitingRestoresNow);
+  if (documents.length === 0 && notices.length === 0 && waitingRestores.length === 0) return null;
   return (
     <View testID="archived-documents-section">
+      {waitingRestores.map(waiting => (
+        <View key={`restore:${waiting.documentId}`} style={styles.photoCard} testID="archived-document-restore-waiting">
+          <Text selectable style={styles.locationDetailText}>{sharedDocumentRestoreWaitingText(waiting)}</Text>
+        </View>
+      ))}
       {notices.map(notice => {
         const name = notice.name || documents.find(document => document.sharedDocumentId === notice.documentId)?.name;
         return (

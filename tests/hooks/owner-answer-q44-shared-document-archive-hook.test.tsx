@@ -311,6 +311,37 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     device.unmount();
   });
 
+  it('review of D1, L5: a Restore made with no signal is tried again half a minute later, as an Archive is', async () => {
+    cloud.row(PERMIT)!.archived_at = AT;
+    jest.useFakeTimers();
+    const device = start();
+    await device.quiet();
+    expect(hidden(device)).toEqual([PERMIT]);
+    cloud.state.offline = true;
+    act(() => {
+      device.result.current.restore({ key: 'reference:doc-permit', name: 'Grading permit', category: 'Permit Card', cardId: null, sharedDocumentId: PERMIT, scope: 'everywhere' });
+    });
+    await device.quiet();
+    expect(hidden(device)).toEqual([]);
+    expect(cloud.row(PERMIT)?.archived_at).toBe(AT);
+    expect(sharedDocumentArchiveView().waitingRestores.map(waiting => waiting.documentId)).toEqual([PERMIT]);
+
+    cloud.state.offline = false;
+    await act(async () => { jest.advanceTimersByTime(29_000); });
+    await device.quiet();
+    expect(cloud.row(PERMIT)?.archived_at).toBe(AT); // not yet
+    await act(async () => { jest.advanceTimersByTime(1_000); });
+    await device.quiet();
+    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
+    expect(sharedDocumentArchiveView().waitingRestores).toEqual([]);
+    // And once it has arrived nothing is asked on a timer any more.
+    const asked = cloud.requests.length;
+    await act(async () => { jest.advanceTimersByTime(10 * 60_000); });
+    await device.quiet();
+    expect(cloud.requests.length).toBe(asked);
+    device.unmount();
+  });
+
   it('asks the cloud nothing when cloud sync is not set up, or when the sign-in is another account\'s', async () => {
     cloud.row(PERMIT)!.archived_at = AT;
     mockCloudService.client = null;

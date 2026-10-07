@@ -1,9 +1,10 @@
 /**
- * Review of D1 (independent review P5, pass 1), L2: a Restore this device let
- * go without sending it (the document was archived again on another device
- * afterwards) is said in a line under the project's Documents header, which
- * stays until the owner taps OK. The real section and the real service,
- * against a stand-in for the cloud's table.
+ * Review of D1 (independent review P5, pass 1): the lines above "Archived
+ * (n)" under a project's Documents header. L2: a Restore this device let go
+ * without sending it (the document was archived again on another device
+ * afterwards), until the owner taps OK. L5: a Restore made with no signal,
+ * until it has been sent. The real section and the real service, against a
+ * stand-in for the cloud's table.
  */
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { ArchivedDocumentsSection } from '../../components/archived-documents-section';
@@ -66,8 +67,8 @@ async function aRestoreLetGo(name?: string) {
   await sharedDocumentArchiveSettled();
 }
 
-describe('review of D1, L2: the line for a Restore that was not sent', () => {
-  it('is shown above "Archived (1)" with what happened and the document\'s state, and goes when he taps OK', async () => {
+describe('review of D1: the lines above "Archived (n)"', () => {
+  it('L2: a Restore that was not sent is said above "Archived (1)", with what happened and the document\'s state, and goes when he taps OK', async () => {
     await aRestoreLetGo('Grading permit');
     expect(sharedDocumentArchiveView().notices).toHaveLength(1);
     const onRestore = jest.fn();
@@ -86,7 +87,7 @@ describe('review of D1, L2: the line for a Restore that was not sent', () => {
     tree.unmount();
   });
 
-  it('takes the name from the archived list when the tap did not carry one, and is shown even where the project lists nothing archived', async () => {
+  it('L2: the line takes the name from the archived list when the tap did not carry one, and is shown even where the project lists nothing archived', async () => {
     await aRestoreLetGo();
     const named = render(<ArchivedDocumentsSection documents={[archivedCard]} onRestore={jest.fn()} />);
     expect(named.getByText(/^Grading permit: your Restore on this device was not sent\./)).toBeTruthy();
@@ -95,6 +96,22 @@ describe('review of D1, L2: the line for a Restore that was not sent', () => {
     expect(otherProject.getByText(/^A document: your Restore on this device was not sent\./)).toBeTruthy();
     expect(otherProject.queryByText(/^Archived \(/)).toBeNull();
     otherProject.unmount();
+  });
+
+  it('L5: a Restore made with no signal is said to be waiting, where nothing is archived any more, until it has been sent', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T09:00:00.000Z';
+    await reach();
+    cloud.state.offline = true;
+    await requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:10:00.000Z', 'Grading permit');
+    await reach();
+    const tree = render(<ArchivedDocumentsSection documents={[]} onRestore={jest.fn()} />);
+    expect(tree.getByText('Grading permit: restored on this device. Your other devices show it again as soon as this one reaches the cloud.')).toBeTruthy();
+    expect(tree.queryByText(/^Archived \(/)).toBeNull();
+
+    cloud.state.offline = false;
+    await act(async () => { await reach(); await sharedDocumentArchiveSettled(); });
+    expect(tree.queryByTestId('archived-documents-section')).toBeNull();
+    tree.unmount();
   });
 
   it('with nothing archived and nothing to say, nothing is shown', () => {

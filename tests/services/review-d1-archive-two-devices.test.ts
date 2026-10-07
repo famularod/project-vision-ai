@@ -555,6 +555,59 @@ describe('L4: a document deleted from the cloud while it was archived', () => {
   });
 });
 
+describe('L5: a Restore made with no signal', () => {
+  it('F-L5: it is waiting to be sent, the device says so, and it is due to be tried again like an Archive', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T17:00:00.000Z';
+    const ipad = await start('ipad');
+    await sync(ipad, cloud, 'ipad');
+    cloud.state.offline.ipad = true;
+    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T18:00:00.000Z', 'Grading permit');
+    await sync(ipad, cloud, 'ipad');
+    expect(hiddenOn(ipad)).toEqual([]); // shown on the iPad
+    expect(cloud.row(PERMIT)?.archived_at).toBeTruthy(); // still hidden everywhere else
+    // The device knows it, and says it: what the screen shows and what the half-minute timer follows.
+    expect(ipad.sharedDocumentArchiveView().waitingRestores).toEqual([{ documentId: PERMIT, name: 'Grading permit', refused: false }]);
+    expect(ipad.sharedDocumentArchiveView().nextTryAt).toBe(0);
+    await ipad.sharedDocumentArchiveSettled();
+
+    // Kept through closing the app; sent when the iPad has signal; then nothing waits.
+    const ipadLater = await start('ipad');
+    expect(ipadLater.sharedDocumentArchiveView().waitingRestores.map(waiting => waiting.documentId)).toEqual([PERMIT]);
+    cloud.state.offline.ipad = false;
+    await sync(ipadLater, cloud, 'ipad');
+    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
+    expect(ipadLater.sharedDocumentArchiveView().waitingRestores).toEqual([]);
+    expect(ipadLater.sharedDocumentArchiveView().nextTryAt).toBeNull();
+  });
+
+  it('tapped with signal it is sent at once and is never said to be waiting', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T17:00:00.000Z';
+    const ipad = await start('ipad');
+    await sync(ipad, cloud, 'ipad');
+    const said: number[] = [];
+    const stop = ipad.subscribeSharedDocumentArchive(() => { said.push(ipad.sharedDocumentArchiveView().waitingRestores.length); });
+    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T18:00:00.000Z', 'Grading permit');
+    await sync(ipad, cloud, 'ipad');
+    stop();
+    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
+    expect(said.every(count => count === 0)).toBe(true);
+  });
+
+  it('a Restore the cloud has refused says so too', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T17:00:00.000Z';
+    const ipad = await start('ipad');
+    await sync(ipad, cloud, 'ipad');
+    cloud.state.failWritesWith = { code: '', message: 'upstream connect error or disconnect/reset before headers' };
+    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T18:00:00.000Z', 'Grading permit');
+    await sync(ipad, cloud, 'ipad');
+    expect(ipad.sharedDocumentArchiveView().waitingRestores).toEqual([{ documentId: PERMIT, name: 'Grading permit', refused: true }]);
+    expect(ipad.sharedDocumentRestoreWaitingText({ documentId: PERMIT, name: 'Grading permit', refused: false }))
+      .toBe('Grading permit: restored on this device. Your other devices show it again as soon as this one reaches the cloud.');
+    expect(ipad.sharedDocumentRestoreWaitingText({ documentId: PERMIT, name: 'Grading permit', refused: true }))
+      .toBe('Grading permit: restored on this device only, for now: the cloud has not accepted this yet. This device keeps trying.');
+  });
+});
+
 /**
  * The reviewer's random sequences on two devices, compared with one device
  * doing the same taps in order. The owner's taps are numbered in the order he
