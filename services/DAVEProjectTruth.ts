@@ -235,8 +235,51 @@ export type DAVEProjectTruth = {
    * 2026). Left out of the report's fingerprint.
    */
   lookaheadReplacement?: DAVELookaheadReplacementTruth;
+  /**
+   * Only on a truth built for a report, from every saved task: the earlier
+   * rows of the tasks shown (R5 item 1, the returning task). Left out of the
+   * report's fingerprint: they say which task a row is and how it last
+   * stood, not what the project's facts are now.
+   */
+  earlierRows?: DAVETaskEarlierRowTruth[];
+  /**
+   * Only on a truth built for a report: the tasks shown whose own row a
+   * lookahead added (importedAsLookahead), whether or not a master lists it
+   * now (R5 item 1). Such a task began as a lookahead's own row. Left out of
+   * the report's fingerprint.
+   */
+  lookaheadAddedTaskIds?: string[];
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
+};
+
+/**
+ * R5 item 1 (the returning task, report side). An earlier row of a task
+ * shown: a saved row the task answers to (revisedFromTaskIds) that is not
+ * shown now, as it was last saved. Since schedule batch S2 a task one master
+ * leaves out and a later master lists again is the same task, on a new row
+ * that answers to the row it left on. A report made while it was out said
+ * "removed"; the next one must read the task as back, against how it last
+ * stood, and the last report no longer has it. The row it left on is still
+ * saved, with what he had set on it.
+ */
+export type DAVETaskEarlierRowTruth = {
+  /** The task shown now that answers to this row. */
+  taskId: string;
+  /** The earlier row. */
+  earlierTaskId: string;
+  /** When the row came in: its import, or else when it was made. */
+  savedAt: string | null;
+  /** A row a lookahead added (no master had listed it): the task began as a lookahead's own row. */
+  addedByLookahead?: true;
+  taskName: string;
+  areaName: string | null;
+  owner: string | null;
+  status: string;
+  percentComplete: number;
+  finishDate: string | null;
+  approvalStatus: string | null;
+  estimatedScheduleImpactDays: number | null;
 };
 
 /**
@@ -413,6 +456,13 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const lookaheadReplacement = input.reportLookaheadReplacement && input.knownScheduleItems
     ? tasksLeftByLookaheadReplacement(input, projectKey, scheduleItems)
     : null;
+  // The earlier rows of the tasks shown, for a task a report said was removed that is back (R5 item 1).
+  const earlierRows = input.reportLookaheadReplacement && input.knownScheduleItems
+    ? earlierRowsOfTasksShown(input, projectKey, scheduleItems)
+    : [];
+  const lookaheadAddedTaskIds = input.reportLookaheadReplacement && input.knownScheduleItems
+    ? scheduleItems.filter(item => item.importedAsLookahead === true).map(item => item.id)
+    : [];
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -441,6 +491,8 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     reasoning,
     schedule,
     ...(lookaheadReplacement ? { lookaheadReplacement } : {}),
+    ...(earlierRows.length > 0 ? { earlierRows } : {}),
+    ...(lookaheadAddedTaskIds.length > 0 ? { lookaheadAddedTaskIds } : {}),
     verificationQueue,
     briefing,
   });
@@ -639,6 +691,52 @@ function tasksLeftByLookaheadReplacement(
     replaced: uniqueText([...replaced.map(keyOf), ...tasksLeft.map(task => task.lookahead)]).sort(),
     tasksLeft,
   };
+}
+
+/**
+ * The saved rows the tasks shown answer to, oldest first for each task (R5
+ * item 1): this project's own rows only, read from the saved tasks as the
+ * shown list is, with nothing written. A row deleted since is not here, and
+ * the task then has nothing earlier to be compared with.
+ */
+function earlierRowsOfTasksShown(
+  input: BuildDAVEProjectTruthInput,
+  projectKey: string,
+  shown: readonly ScheduleItem[],
+): DAVETaskEarlierRowTruth[] {
+  const idOf = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const shownIds = new Set(shown.map(item => idOf(item.id)));
+  const wanted = new Set(shown.flatMap(item => scheduleTaskEarlierIds(item)).filter(id => !shownIds.has(id)));
+  if (wanted.size === 0) return [];
+  const saved = (input.knownScheduleItems ?? []).filter(item => wanted.has(idOf(item.id)));
+  if (saved.length === 0) return [];
+  // The row's own project decides, as when the shown list is worked out.
+  const ofProject = new Map(canonicalizeDAVEScheduleItems([...saved], {
+    projectNames: Array.from(new Set([
+      input.projectName,
+      ...saved.flatMap(item => [item.scheduleProjectName || '', item.projectName]),
+    ].filter(Boolean))),
+    projectAreas: input.projectAreas || [],
+  }).items.filter(item => scheduleMatchesProject(projectKey, item)).map(item => [idOf(item.id), item] as const));
+  return shown.flatMap(task => scheduleTaskEarlierIds(task).flatMap((id): DAVETaskEarlierRowTruth[] => {
+    const row = ofProject.get(id);
+    if (!row) return [];
+    const controls = row.projectControls;
+    return [{
+      taskId: task.id,
+      earlierTaskId: id,
+      savedAt: validDate(clean(row.importedAt) || clean(row.createdAt) || undefined),
+      ...(row.importedAsLookahead === true ? { addedByLookahead: true as const } : {}),
+      taskName: row.taskName,
+      areaName: clean(row.locationName),
+      owner: clean(row.owner) || clean(row.contractor),
+      status: row.status,
+      percentComplete: row.percentComplete,
+      finishDate: clean(row.finishDate),
+      approvalStatus: clean(controls?.approvalStatus),
+      estimatedScheduleImpactDays: finiteNumber(controls?.estimatedScheduleImpactDays),
+    }];
+  }));
 }
 
 function buildEvidenceLedger(

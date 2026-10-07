@@ -396,10 +396,13 @@ describe('L3: a note on a task the earlier report did not have (an older master 
     return { r1, r2, r3, state };
   };
 
-  it('Cleanup\'s note made after R1 is said in R3 with "added" (R2, under F, did not have Cleanup)', () => {
+  // R5 item 1 (the returning task): a task a report said was removed, that is in the list again on the row the
+  // report before had, reads "is back in the project plan" (it read "was added to the project plan"); pins updated
+  // deliberately. What this test is for, the note, is as it was.
+  it('Cleanup\'s note made after R1 is said in R3 with "is back" (R2, under F, did not have Cleanup)', () => {
     const { r2, r3, state } = run(false);
     expect(r2.lines).toEqual(['Alpha: Cleanup was removed from the current project plan.']);
-    expect([...r3.lines].sort()).toEqual(['Alpha: Cleanup was added to the project plan.', 'Alpha: Cleanup — Dumpster ordered.']);
+    expect([...r3.lines].sort()).toEqual(['Alpha: Cleanup is back in the project plan.', 'Alpha: Cleanup — Dumpster ordered.']);
     // Said once: the next report does not repeat it.
     expect(send(r3.sent, noted(state, named(state, 'Framing')[0].id, 'Inspector called.', '2026-09-21T12:00:00.000Z'), '2026-09-22T09:00:00.000Z').lines)
       .toEqual(['Alpha: Framing — Inspector called.']);
@@ -408,7 +411,7 @@ describe('L3: a note on a task the earlier report did not have (an older master 
   it('a note R1 already said is not said again when the task comes back', () => {
     const { r1, r3 } = run(true);
     expect(r1.lines).toEqual(expect.arrayContaining(['Alpha: Cleanup — Dumpster ordered.']));
-    expect(r3.lines).toEqual(['Alpha: Cleanup was added to the project plan.']);
+    expect(r3.lines).toEqual(['Alpha: Cleanup is back in the project plan.']);
   });
 });
 

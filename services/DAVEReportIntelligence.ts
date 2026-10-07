@@ -13,6 +13,8 @@ import {
   rememberLegacyReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
+  reportTaskEarlierRows,
+  reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
@@ -269,6 +271,9 @@ export function buildDAVEReportBriefing({
     previous: previousSnapshot,
     // The detail tasks a replaced lookahead took with it are not said (owner answer 3 Oct 2026).
     tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    // How a task that is back last stood, and which tasks began as a lookahead's own row (R5 item 1).
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
@@ -1357,6 +1362,10 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
   // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced): where a task's dates come from and
   // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
   'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
+  // R5 item 1 (the returning task): the earlier rows of the tasks shown, and which tasks' own rows a lookahead
+  // added. Which task a row is and how it last stood; the tasks shown and what each says are in the fingerprint
+  // themselves.
+  'earlierRows', 'lookaheadAddedTaskIds',
 ]);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {
