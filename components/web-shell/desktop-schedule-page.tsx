@@ -1642,23 +1642,38 @@ function ScheduleEditor({
   // already has is always listed, so it can always be removed; and so is one he has ticked in this form that the
   // schedule, refreshed under the open editor, now shows coming after the item (the other link was just made
   // elsewhere): it had dropped out of the list while still ticked.
-  const circlePredecessors = editingTask
+  const notOffered = editingTask
     ? projectTasks.filter(item =>
         item.id !== editingTask.id &&
         (openedPredecessorIds.includes(item.id) || state.predecessorItemIds.includes(item.id)) &&
         !eligiblePredecessors.some(option => option.id === item.id))
     : [];
+  // Review pass 1, web L4 (6 Oct 2026; caused by WS1 item 7): every one of those was labelled "(circular link)",
+  // with the line "... is set to finish before this item and also to start after it. That is a circle ...". The
+  // editor does not offer two kinds of task: one that comes after the item (a circle if it is also a predecessor),
+  // and a phase. A task that starts after a phase is in no circle. Only a task that comes after the item is called
+  // a circle now; a phase is called a phase, with its own line.
+  const comesAfter = editingTask ? scheduleSuccessorIds(editingTask.id, projectTasks) : new Set<string>();
+  const circlePredecessors = notOffered.filter(item => comesAfter.has(item.id));
   const predecessorOptions = [
     ...eligiblePredecessors,
     ...linksElsewhere.filter(item =>
       (editingTask?.dependencies || []).some(dependency => dependency.predecessorItemId === item.id),
     ),
-    ...circlePredecessors,
+    ...notOffered,
   ];
   const inCircle = (item: ScheduleItem) => circlePredecessors.some(link => link.id === item.id);
+  /** A predecessor that is a phase, and in no circle (L4). */
+  const isPhaseLink = (item: ScheduleItem) => item.isSummary === true && !inCircle(item);
   const buildingLabel = (item: ScheduleItem) =>
     inCircle(item) ? ' (circular link)'
       : linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
+  /** What follows a predecessor's name in the list: a circle, a phase (with its building when it is in another), or its building. */
+  const predecessorLabel = (item: ScheduleItem) => {
+    if (!isPhaseLink(item)) return buildingLabel(item);
+    const building = linksElsewhere.some(link => link.id === item.id) ? taskProjectName(item) : '';
+    return ` (a phase${building ? `, ${building}` : ''})`;
+  };
   // A circle through a task filed under another schedule name is a circle all the same (M1): named with the others,
   // and it holds the save while it is ticked. The calculation holds the save for a circle within the item's own
   // schedule; it takes a task filed elsewhere on the dates it has, and so cannot see a circle through one.
@@ -1673,6 +1688,13 @@ function ScheduleEditor({
     normalize(taskProjectName(item)) === normalize(state.projectName)
       ? item.scheduleProjectName?.trim() || taskProjectName(item)
       : taskProjectName(item);
+  // The phases this item is ticked to start after, wherever they are listed (L4), for the line that names them. The
+  // web's schedule places an item after tasks and milestones only (its critical path leaves phases out), so the
+  // calculation holds the save while one is ticked: what the line says.
+  const phasesTicked = [
+    ...predecessorOptions.filter(item => isPhaseLink(item) && state.predecessorItemIds.includes(item.id)),
+    ...predecessorsElsewhere.filter(link => link.item.isSummary === true && !link.circular && state.predecessorItemIds.includes(link.id)).map(link => link.item),
+  ];
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
@@ -1787,6 +1809,11 @@ function ScheduleEditor({
               {`${circleNames.join(' and ')} ${circleNames.length === 1 ? 'is' : 'are'} set to finish before this item and also to start after it. That is a circle, and the schedule cannot place it. Untick ${circleNames.length === 1 ? 'it' : 'one'} below, then save.`}
             </Text>
           ) : null}
+          {phasesTicked.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`${phasesTicked.map(item => `“${item.taskName}”`).join(' and ')} ${phasesTicked.length === 1 ? 'is a phase' : 'are phases'}, and this schedule can only place an item after tasks and milestones: it cannot place this item while it starts after a phase. Untick ${phasesTicked.length === 1 ? 'it' : 'them'} below, then save. To keep the order, tick the ${phasesTicked.length === 1 ? 'task' : 'tasks'} this item should follow instead.`}
+            </Text>
+          ) : null}
           {missingPredecessorIds.length > 0 ? (
             <Text style={styles.scenarioIssue} accessibilityRole="alert">
               {`This item is set to start after ${missingPredecessorIds.length === 1 ? 'a task that is' : `${missingPredecessorIds.length} tasks that are`} no longer in the schedule (deleted, or on a schedule that is not the current one). The schedule cannot place it until ${missingPredecessorIds.length === 1 ? 'that link is' : 'those links are'} removed. Untick ${missingPredecessorIds.length === 1 ? 'it' : 'them'} below, then save.`}
@@ -1833,7 +1860,8 @@ function ScheduleEditor({
                       : [...state.predecessorItemIds, item.id],
                   )}
                   accessibilityRole="checkbox"
-                  {...(inCircle(item) ? { accessibilityLabel: `${item.taskName}, circular link` } : {})}
+                  {...(inCircle(item) ? { accessibilityLabel: `${item.taskName}, circular link` }
+                    : isPhaseLink(item) ? { accessibilityLabel: `${item.taskName}, a phase` } : {})}
                   accessibilityState={{ checked: selected }}
                 >
                   <Ionicons
@@ -1842,7 +1870,7 @@ function ScheduleEditor({
                     color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
                   />
                   <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
-                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{buildingLabel(item)}
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{predecessorLabel(item)}
                   </Text>
                 </Pressable>
               );
@@ -1850,6 +1878,7 @@ function ScheduleEditor({
             {predecessorsElsewhere.map(({ id, item, circular }) => {
               // In the schedule, outside these lists (M1): by name, with where it is filed. Ticked by the id the link names.
               const selected = state.predecessorItemIds.includes(id);
+              const phase = item.isSummary === true && !circular; // a phase is called a phase here too (L4)
               return (
                 <Pressable
                   key={`elsewhere-${id}`}
@@ -1859,7 +1888,8 @@ function ScheduleEditor({
                     selected ? state.predecessorItemIds.filter(other => other !== id) : [...state.predecessorItemIds, id],
                   )}
                   accessibilityRole="checkbox"
-                  {...(circular ? { accessibilityLabel: `${item.taskName}, circular link` } : {})}
+                  {...(circular ? { accessibilityLabel: `${item.taskName}, circular link` }
+                    : phase ? { accessibilityLabel: `${item.taskName}, a phase` } : {})}
                   accessibilityState={{ checked: selected }}
                 >
                   <Ionicons
@@ -1868,7 +1898,7 @@ function ScheduleEditor({
                     color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
                   />
                   <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
-                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{circular ? ' (circular link)' : ` (${filedUnder(item)})`}
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{circular ? ' (circular link)' : ` (${phase ? 'a phase, ' : ''}${filedUnder(item)})`}
                   </Text>
                 </Pressable>
               );
