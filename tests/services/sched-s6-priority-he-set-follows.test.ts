@@ -32,6 +32,8 @@ import {
   scheduleItemEditBase,
   scheduleItemRecordAfterTheSyncWrote,
   scheduleItemTextEditOnRow,
+  scheduleItemWholeCopyAgainstCloud,
+  scheduleItemWholeCopyBase,
 } from '../../services/ScheduleItemEditBase';
 import { schedulePriorityIsHis, schedulePriorityIsItsImports, schedulePriorityItsImportGave } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
@@ -587,6 +589,36 @@ describe('Review pass 1, P1-1, P1-2 and P1-9: every priority edit he makes leave
     const other = sets(sets(onG, framingG, 'Medium', '2026-10-11T13:00:00.000Z'), framingF, 'Low', '2026-10-11T14:00:00.000Z');
     const stampedOther = patch(other, framingG, { percentComplete: 10 }, '2026-10-11T15:00:00.000Z');
     expect(one(setActive(stampedOther, F, '2026-10-12T08:00:00.000Z'), 'Framing').priority).toBe('Low');
+  });
+
+  it('...and with the newer row the one shown: the older edit on the older row does not come over his later one, though that row was stamped later', () => {
+    const low = sets(onG, framingF, 'Low', '2026-10-11T13:00:00.000Z');
+    const medium = sets(low, framingG, 'Medium', '2026-10-11T14:00:00.000Z');
+    const stamped = patch(medium, framingF, { percentComplete: 10 }, '2026-10-11T15:00:00.000Z');
+    // F is the master in effect (as a device that only heard the schedules sees it); then Set Active on G.
+    const underF: State = { items: stamped.items, documents: scheduleDocumentsAfterActivation(F, stamped.documents, 'project', '2026-10-11T16:00:00.000Z') };
+    expect(one(underF, 'Framing').id).toBe(framingF);
+    const onGAgain = setActive(underF, G, '2026-10-12T08:00:00.000Z');
+    // (By the row changed later it was Low: the older row had been stamped after, for its percent.)
+    expect([one(onGAgain, 'Framing').id, one(onGAgain, 'Framing').priority]).toEqual([framingG, 'Medium']);
+  });
+
+  it('two copies of one row that hold the same priority: the later mark of the two stands, in the sync\'s merge and where a whole copy is weighed against the cloud\'s row', () => {
+    const plain = row(onG, framingG);
+    const at = (when: string) => ({ priority: 'High' as const, at: when });
+    const marked = (when: string, updatedAt?: string) => ({ ...plain, prioritySetByHand: at(when), ...(updatedAt ? { updatedAt } : {}) }) as ScheduleItem;
+    const merged = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0].prioritySetByHand;
+    // The copy the merge ranks second holds the mark (the other was stamped later, for a note): the mark is kept.
+    const noted = { ...plain, notes: 'Crew short', updatedAt: '2026-10-11T16:00:00.000Z' } as ScheduleItem;
+    expect([merged(marked('2026-10-11T14:00:00.000Z', '2026-10-11T14:00:00.000Z'), noted), merged(noted, marked('2026-10-11T14:00:00.000Z', '2026-10-11T14:00:00.000Z'))])
+      .toEqual([at('2026-10-11T14:00:00.000Z'), at('2026-10-11T14:00:00.000Z')]);
+    // Both hold one: the later.
+    expect(merged(marked('2026-10-11T14:00:00.000Z', '2026-10-11T14:00:00.000Z'), { ...noted, prioritySetByHand: at('2026-10-11T15:00:00.000Z') } as ScheduleItem)).toEqual(at('2026-10-11T15:00:00.000Z'));
+    // A whole copy (Set Active brought the mark alone to the row shown) against the cloud's row, which has none or an older one.
+    const base = scheduleItemWholeCopyBase(plain);
+    const weigh = (local: ScheduleItem, cloud: ScheduleItem) => scheduleItemWholeCopyAgainstCloud(cloud, local, base, cloud).itemData.prioritySetByHand;
+    expect([weigh(marked('2026-10-11T14:00:00.000Z'), plain), weigh(marked('2026-10-11T14:00:00.000Z'), marked('2026-10-11T13:00:00.000Z')), weigh(marked('2026-10-11T13:00:00.000Z'), marked('2026-10-11T14:00:00.000Z')), weigh(plain, plain)])
+      .toEqual([at('2026-10-11T14:00:00.000Z'), at('2026-10-11T14:00:00.000Z'), at('2026-10-11T14:00:00.000Z'), undefined]);
   });
 
   it('the web\'s Make Current two masters back (it is not given every saved task, so no record joins the two rows): his later edit of the priority shows, not the older one he set on the row made current (the reviewer\'s generator, Unique ID profile, seed 6183)', () => {
