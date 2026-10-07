@@ -20,9 +20,12 @@ const waitingRestoresNow = () => sharedDocumentArchiveView().waitingRestores;
  * document is hidden, not deleted, so this is where it is brought back from.
  *
  * Above it, always open: a line for each tap this device let go without
- * sending it: a Restore, because the document was archived again on another
- * device afterwards (review of D1, L2), or an Archive, because the document
- * has since been deleted from all devices (L4). It stays until he taps OK.
+ * sending it, because the cloud no longer held what this device last knew
+ * when he tapped (second review, P2-M1): a Restore, because the document
+ * was archived again on another device; an Archive, because it was restored
+ * on another device, or deleted. The line says what the document's state
+ * now is. It stays until he taps OK, taps on that document again, or the
+ * state it speaks of changes.
  * And a line for each Restore made here that has not reached the cloud yet
  * (L5): the document is back in this device's list and still hidden on the
  * others. That line goes by itself once the Restore has been sent.

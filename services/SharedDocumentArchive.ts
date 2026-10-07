@@ -55,28 +55,35 @@ export {
  * saved items are checked by a fixed rule in every build, and a document item
  * there carries a whole record, which an older build would send.
  *
- * Whose tap counts (review of D1, L2 and L8): the latest tap by the owner
- * wins.
- * - On one device his taps on a document are applied in order: the newest is
- *   the one that waits, and it remembers what this device has itself sent
- *   and not yet heard back about, so a write still on its way is never
- *   mistaken for another device's doing.
- * - A waiting tap is sent only while the cloud's mark is still what this
- *   device was showing him when he tapped (or what it sent itself). The
- *   write carries the mark just read as its condition, so one that changes
- *   between the question and the write is not written over.
- * - A waiting Restore that finds a different archive in the cloud: an
- *   archive carries the time of its tap, so a Restore tapped here after it
- *   is still the latest tap and is sent. One tapped before it is the older
- *   tap: the cloud's newer state stands, the Restore is let go, and the
- *   device says so in a line the owner dismisses.
- * - A waiting Archive always starts from "not archived", which is what the
- *   cloud then shows, so it is sent, carrying the time he tapped (and where
- *   the cloud holds an older archive, the mark takes the newer tap's time). The cloud
- *   keeps no time for a Restore, so the device that made a Restore keeps
- *   its time itself: if it later reads an archive older than its own
- *   Restore (a tap made earlier that reached the cloud late), it restores
- *   once more. That is how the later of the two taps wins there too.
+ * Whose tap counts (second review, P2-M1; the coordinator's decision). No
+ * device's clock has any part in it: two devices' clocks need not agree, and
+ * a rule that compares them undoes a later tap without a word.
+ * - On one device his taps on a document are applied in the order he made
+ *   them: the newest is the one that waits. It remembers what this device
+ *   has itself sent and not yet heard back about, so a write still on its
+ *   way is never mistaken for another device's doing.
+ * - A waiting tap is sent only if the cloud's mark for the document is still
+ *   the one this device last knew when he tapped (or one this device sent
+ *   itself). The write carries that mark as its condition, so the cloud
+ *   checks it again in the same request: a mark that changes between the
+ *   question and the write is not written over.
+ * - If the cloud already says what he asked for, nothing is sent and there
+ *   is nothing to tell. One case is sent all the same: an Archive tapped
+ *   while the cloud still holds the very Archive he was shown (he restored
+ *   and archived again before the Restore went). It writes its own mark over
+ *   the old one, so a Restore made elsewhere against the old mark is let go
+ *   with a line instead of undoing it without a word.
+ * - Otherwise the mark was changed on another device and this device had
+ *   not heard: the cloud's state stands, the waiting tap is let go, and a
+ *   line on this device says so, with what the document's state now is, so
+ *   that he can tap again if he still wants it. A Restore let go this way
+ *   leaves the document archived here too; an Archive let go this way puts
+ *   this device's card back.
+ * So the cloud always ends as the last tap to REACH it asked, and a tap that
+ * did not take effect always leaves a line on the device it was made on.
+ * The time an Archive writes into the mark is the time he tapped. It is the
+ * mark itself and is only ever compared for "the same mark or not", never
+ * for earlier or later. A Restore keeps no time at all.
  */
 
 // Owner-sensitive prefix: an account switch moves it with that owner's data.
@@ -98,25 +105,29 @@ const retryWaitMs = (refusals: number) => Math.min(RETRY_LONGEST_WAIT_MS, RETRY_
 type CloudMark = string | null;
 
 type WaitingMark = Readonly<{
-  documentId: string; archived: boolean; at: string;
+  documentId: string; archived: boolean;
+  /**
+   * An Archive only: the time he tapped, which is what is written into the cloud's mark. It is the mark itself,
+   * compared only for "the same mark or not" and never for earlier or later. A Restore writes no time and keeps none.
+   */
+  at?: string;
+  /** Which of this device's taps this is, counted on this device: his taps are applied in the order he made them. */
+  tap: number;
   /** How many times the cloud has answered and not taken it. */
   attempts: number;
   /** Refused before: not sent again until this time (milliseconds, the device's clock). */
   notBefore?: number;
-  /** The mark this device was showing for the document when he tapped Restore (review of D1, L2). */
+  /** The cloud's mark for the document as this device last knew it when he tapped (second review, P2-M1). */
   seen?: CloudMark;
   /** Marks this device has sent for the document and has not heard back about: one may be in the cloud (review of D1, L8). */
   sent?: readonly CloudMark[];
   /** The document's name, when the screen that took the tap had it: for the line that says a tap was not sent. */
   name?: string;
-  /** This device's own earlier Restore, made once more against an older archive that arrived late: not remembered again. */
-  again?: true;
   /** A pass to the cloud has come and gone and it is still here (no signal, or a refusal): said to be waiting (review of D1, L5). */
   held?: true;
 }>;
 
 const NOTICE_LIMIT = 20;
-const OWN_RESTORE_LIMIT = 500;
 /** At most this many documents are asked about one by one in a pass (review of D1, L4); the rest wait for the next. */
 const GONE_QUESTION_LIMIT = 25;
 
@@ -129,13 +140,8 @@ type OwnerRecord = Readonly<{
   /** Archived when last read, no longer, and not by this device: its card here is put back. */
   restoredElsewhere: readonly string[];
   notices: readonly SharedDocumentArchiveNotice[];
-  /**
-   * When this device itself last restored each document (review of D1, L2):
-   * the cloud keeps no time for a Restore, so only this device can tell that
-   * an archive it reads later is an older tap. Forgotten once used, and when
-   * a newer archive is seen or made.
-   */
-  ownRestores: Readonly<Record<string, string>>;
+  /** How many taps this device has taken for this account: each waiting tap carries its number. */
+  taps: number;
 }>;
 
 export type SharedDocumentArchiveCloudAnswer = 'installed' | 'not_installed' | 'unknown';
@@ -149,14 +155,36 @@ export type SharedDocumentArchiveClient = Readonly<{
 }>;
 
 const EMPTY_RECORD: OwnerRecord = Object.freeze({
-  installed: null, marks: Object.freeze({}), waiting: [], restoredElsewhere: [], notices: NO_NOTICES, ownRestores: Object.freeze({}),
+  installed: null, marks: Object.freeze({}), waiting: [], restoredElsewhere: [], notices: NO_NOTICES, taps: 0,
 });
-/** Two marks are the same mark: both empty, or the same moment (the cloud and the device write a time differently). */
+/**
+ * Two marks are the same mark: both empty, or the same moment. The cloud and the device write one moment differently
+ * ("2026-10-06T18:00:00.5+00:00" and "2026-10-06T18:00:00.500Z"), so the text is not compared as it stands. The moment
+ * is worked out here from the digits, not left to the device's own reading of a date, which is not the same on every
+ * device. Only "the same or not" is ever asked of two marks: never which is earlier.
+ */
 function sameMark(one: CloudMark | undefined, other: CloudMark | undefined): boolean {
   const first = one ?? null;
   const second = other ?? null;
   if (first === null || second === null) return first === second;
-  return first === second || Date.parse(first) === Date.parse(second);
+  if (first === second) return true;
+  const firstMoment = markMoment(first);
+  const secondMoment = markMoment(second);
+  if (firstMoment !== null && secondMoment !== null) return firstMoment === secondMoment;
+  const parsed = Date.parse(first);
+  return !Number.isNaN(parsed) && parsed === Date.parse(second);
+}
+
+const MARK_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,9}))?\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/i;
+
+/** A mark's moment as "whole seconds since 1970, and millionths": the same for every way of writing that moment; null when it is not such a time. */
+function markMoment(mark: string): string | null {
+  const parts = MARK_TIME.exec(mark.trim());
+  if (!parts) return null;
+  const [, year, month, day, hour, minute, second, fraction = '', zone = 'Z'] = parts;
+  const offset = /^z$/i.test(zone) ? 0 : (zone[0] === '-' ? -1 : 1) * (Number(zone.slice(1, 3)) * 60 + Number(zone.replace(':', '').slice(3, 5) || 0));
+  const seconds = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)) / 1000 - offset * 60;
+  return Number.isFinite(seconds) ? `${seconds}.${fraction.padEnd(6, '0').slice(0, 6)}` : null;
 }
 
 let records = new Map<string, OwnerRecord>();
@@ -196,31 +224,35 @@ function parseStored(raw: string | null): Map<string, OwnerRecord> {
       const isMark = (value: unknown): value is CloudMark => value === null || typeof value === 'string';
       const times = (value: unknown) => Object.fromEntries(Object.entries(value && typeof value === 'object' ? value as Record<string, unknown> : {})
         .filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string'));
+      const waiting = (Array.isArray(record.waiting) ? record.waiting : []).flatMap((item, index): WaitingMark[] => {
+        const mark = (item && typeof item === 'object' ? item : {}) as Partial<WaitingMark>;
+        // An Archive carries the time it writes into the mark. A Restore carries none (one saved with a time, by an
+        // earlier form of this file, is read without it: no tap's time is kept for a decision; second review, P2-M1).
+        if (typeof mark.documentId !== 'string' || !mark.documentId || typeof mark.archived !== 'boolean') return [];
+        if (mark.archived && typeof mark.at !== 'string') return [];
+        return [{
+          documentId: mark.documentId, archived: mark.archived, ...(mark.archived ? { at: mark.at } : {}),
+          tap: typeof mark.tap === 'number' ? mark.tap : index + 1,
+          attempts: typeof mark.attempts === 'number' ? mark.attempts : 0,
+          ...(typeof mark.notBefore === 'number' ? { notBefore: mark.notBefore } : {}),
+          seen: isMark(mark.seen) ? mark.seen : null,
+          ...(Array.isArray(mark.sent) && mark.sent.length > 0 ? { sent: mark.sent.filter(isMark) } : {}),
+          ...(typeof mark.name === 'string' && mark.name ? { name: mark.name } : {}),
+          ...(mark.held === true ? { held: true as const } : {}),
+        }];
+      });
       found.set(ownerId, {
         installed: record.installed === true ? true : record.installed === false ? false : null,
         marks: times(record.marks),
-        ownRestores: times(record.ownRestores),
-        waiting: (Array.isArray(record.waiting) ? record.waiting : []).flatMap(item => {
-          const mark = (item && typeof item === 'object' ? item : {}) as Partial<WaitingMark>;
-          return typeof mark.documentId === 'string' && mark.documentId && typeof mark.archived === 'boolean' && typeof mark.at === 'string'
-            ? [{
-                documentId: mark.documentId, archived: mark.archived, at: mark.at, attempts: typeof mark.attempts === 'number' ? mark.attempts : 0,
-                ...(typeof mark.notBefore === 'number' ? { notBefore: mark.notBefore } : {}),
-                seen: isMark(mark.seen) ? mark.seen : null,
-                ...(Array.isArray(mark.sent) && mark.sent.length > 0 ? { sent: mark.sent.filter(isMark) } : {}),
-                ...(typeof mark.name === 'string' && mark.name ? { name: mark.name } : {}),
-                ...(mark.again === true ? { again: true as const } : {}),
-                ...(mark.held === true ? { held: true as const } : {}),
-              }]
-            : [];
-        }),
+        waiting,
+        taps: Math.max(typeof record.taps === 'number' ? record.taps : 0, ...waiting.map(mark => mark.tap)),
         restoredElsewhere: ids(record.restoredElsewhere),
         notices: (Array.isArray(record.notices) ? record.notices : []).flatMap(item => {
           const notice = (item && typeof item === 'object' ? item : {}) as Partial<SharedDocumentArchiveNotice>;
           return typeof notice.documentId === 'string' && notice.documentId && (notice.tap === 'archive' || notice.tap === 'restore')
             ? [{
                 documentId: notice.documentId, tap: notice.tap,
-                why: notice.why === 'deleted_from_all_devices' ? 'deleted_from_all_devices' as const : 'archived_again_on_another_device' as const,
+                why: notice.why === 'deleted_from_all_devices' || notice.why === 'restored_on_another_device' ? notice.why : 'archived_again_on_another_device' as const,
                 ...(typeof notice.name === 'string' && notice.name ? { name: notice.name } : {}),
               }]
             : [];
@@ -239,14 +271,30 @@ function recordOf(ownerId: string): OwnerRecord {
 
 function change(ownerId: string, next: (record: OwnerRecord) => OwnerRecord): void {
   const before = recordOf(ownerId);
-  const after = next(before);
-  if (after === before) return;
+  const changed = next(before);
+  if (changed === before) return;
+  const after = withLinesStillTrue(changed);
   records.set(ownerId, after);
   const saved = JSON.stringify({ version: 1, owners: Object.fromEntries(records) });
   storageWrite = storageWrite
     .then(() => AsyncStorage.setItem(SHARED_DOCUMENT_ARCHIVE_STORAGE_KEY, saved))
     .catch(() => undefined);
   if (ownerId === activeOwnerId) publish();
+}
+
+/**
+ * A line about a tap that was not sent says what the document's state is (second review, P2-M1 and P2-L1). It is kept
+ * only while that is still so, and only until he taps on that document again on this device: a line that has stopped
+ * being true is taken away, not left for him to act on.
+ */
+function withLinesStillTrue(record: OwnerRecord): OwnerRecord {
+  if (record.notices.length === 0) return record;
+  const tappedAgain = new Set(record.waiting.map(mark => mark.documentId));
+  const stillTrue = record.notices.filter(notice => !tappedAgain.has(notice.documentId) && (
+    notice.why === 'archived_again_on_another_device' ? notice.documentId in record.marks
+      : notice.why === 'restored_on_another_device' ? !(notice.documentId in record.marks)
+        : true));
+  return stillTrue.length === record.notices.length ? record : { ...record, notices: stillTrue };
 }
 
 function publish(): void {
@@ -299,9 +347,12 @@ export async function sharedDocumentArchiveSettled(): Promise<void> {
  * waiting (review of D1, L8). It is kept even when the cloud, as far as this
  * device knows, already says the same: what this device knows may be old, or
  * a write of its own may still be on its way, and only the next question to
- * the cloud settles which. Then it is sent, or found already done, or let go
- * with a line saying so. `name` is the document's name where the screen has
- * it, for that line.
+ * the cloud settles which. It goes with the cloud's mark as this device knows
+ * it at this moment: that is what the cloud must still hold for the tap to be
+ * sent (second review, P2-M1). Then it is sent, or found already done, or
+ * let go with a line saying so. `at` is the time an Archive writes into the
+ * mark (a Restore keeps none). `name` is the document's name where the
+ * screen has it, for that line.
  */
 export async function requestSharedDocumentArchive(
   documentId: string, archived: boolean, at: string = new Date().toISOString(), name?: string,
@@ -314,13 +365,15 @@ export async function requestSharedDocumentArchive(
     const earlier = record.waiting.find(mark => mark.documentId === id);
     const others = record.waiting.filter(mark => mark.documentId !== id);
     if (record.installed !== true) return earlier ? { ...record, waiting: others } : record;
-    // What this device has sent and not heard back about goes with the newest tap; so does what it showed before that.
+    // What this device has sent and not heard back about goes with the newest tap.
     const sent = earlier?.sent ?? [];
-    const seen = earlier && sent.length > 0 ? earlier.seen ?? null : record.marks[id] ?? null;
     const label = name?.trim() || earlier?.name;
-    const mark: WaitingMark = { documentId: id, archived, at, attempts: 0, seen, ...(sent.length > 0 ? { sent } : {}), ...(label ? { name: label } : {}) };
-    // An Archive here is a newer tap than any Restore this device remembers making.
-    return { ...record, waiting: [...others, mark].slice(-WAITING_LIMIT), ownRestores: archived ? withoutKey(record.ownRestores, id) : record.ownRestores };
+    const tap = record.taps + 1;
+    const mark: WaitingMark = {
+      documentId: id, archived, ...(archived ? { at } : {}), tap, attempts: 0, seen: record.marks[id] ?? null,
+      ...(sent.length > 0 ? { sent } : {}), ...(label ? { name: label } : {}),
+    };
+    return { ...record, taps: tap, waiting: [...others, mark].slice(-WAITING_LIMIT) };
   });
 }
 
@@ -328,13 +381,6 @@ function withoutKey<T>(values: Readonly<Record<string, T>>, key: string): Readon
   if (!(key in values)) return values;
   const { [key]: _gone, ...rest } = values;
   return rest;
-}
-
-/** This device restored the document at `at`: kept, newest first, for the archive that may still arrive late. */
-function withOwnRestore(ownRestores: OwnerRecord['ownRestores'], id: string, at: string): OwnerRecord['ownRestores'] {
-  const earlier = ownRestores[id];
-  if (earlier && Date.parse(earlier) >= Date.parse(at)) return ownRestores;
-  return Object.fromEntries([[id, at], ...Object.entries(withoutKey(ownRestores, id))].slice(0, OWN_RESTORE_LIMIT));
 }
 
 /** The owner has read these lines (review of D1, L2): they are not shown again. */
@@ -356,13 +402,20 @@ export function sharedDocumentRestoreWaitingText(waiting: SharedDocumentRestoreW
     : `${name}: restored on this device. Your other devices show it again as soon as this one reaches the cloud.`;
 }
 
-/** The line for a tap that was let go without being sent: what happened, and what the document's state is. */
+/**
+ * The line for a tap that was let go without being sent: what happened, what the document's state now is, and what he
+ * can do. Each is true whichever of the two taps was made first: the device cannot know that, and does not say
+ * (second review, P2-M1 and P2-L1).
+ */
 export function sharedDocumentArchiveNoticeText(notice: SharedDocumentArchiveNotice): string {
   const name = notice.name?.trim() || 'A document';
   if (notice.why === 'deleted_from_all_devices') {
     return `${name}: your Archive on this device was not sent, because the document has since been deleted from all your devices. Its card on this device stays under Archived.`;
   }
-  return `${name}: your Restore on this device was not sent. It was archived again on another device after you tapped Restore here, so it stays archived.`;
+  if (notice.why === 'restored_on_another_device') {
+    return `${name}: your Archive on this device was not sent, because it was restored on another device before this device could send it. It is in Documents again; archive it again if you still want it hidden.`;
+  }
+  return `${name}: your Restore on this device was not sent, because it was archived again on another device before this device could send it. It is still archived; tap Restore again if you still want it back.`;
 }
 
 /** The cards put back for these documents are saved: they are not asked for again. */
@@ -408,7 +461,7 @@ export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<Sh
     const answer = await syncOnce(input).catch((): SharedDocumentArchiveCloudAnswer => 'unknown');
     // What was waiting when this pass began and still is has been held up (no signal, or a refusal): it is said
     // to be waiting from now on (review of D1, L5). A tap made with signal never gets this far.
-    const waitedThrough = (mark: WaitingMark) => !mark.held && before.some(item => item.documentId === mark.documentId && item.at === mark.at && item.archived === mark.archived);
+    const waitedThrough = (mark: WaitingMark) => !mark.held && before.some(item => item.documentId === mark.documentId && item.tap === mark.tap);
     change(input.ownerId, record => (record.waiting.some(waitedThrough)
       ? { ...record, waiting: record.waiting.map(mark => (waitedThrough(mark) ? { ...mark, held: true as const } : mark)) }
       : record));
@@ -426,6 +479,14 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
   const deleted = () => (history ??= Promise.resolve()
     .then(() => deletedDocumentIds?.() ?? [])
     .then(ids => new Set(ids), () => new Set<string>()));
+  /** One document's row as the cloud holds it now: its mark; 'gone' when there is no such row; null when the cloud gave no answer. */
+  const rowNow = async (id: string): Promise<Readonly<{ mark: CloudMark }> | 'gone' | null> => {
+    const row = await answered(() => client.from(SHARED_DOCUMENTS_TABLE).select('id, archived_at').eq('owner_id', ownerId).eq('id', id), timeoutMs);
+    if (!row || row.error || !Array.isArray(row.data)) return null;
+    if (row.data.length === 0) return 'gone';
+    const mark = (row.data[0] as { archived_at?: unknown } | null)?.archived_at;
+    return { mark: typeof mark === 'string' && mark ? mark : null };
+  };
 
   const read = await answered(() => client.from(SHARED_DOCUMENTS_TABLE)
     .select('id, archived_at').eq('owner_id', ownerId).not('archived_at', 'is', null), timeoutMs);
@@ -454,11 +515,10 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
   const undecided = new Set<string>(gone.slice(GONE_QUESTION_LIMIT));
   for (const id of gone.slice(0, GONE_QUESTION_LIMIT)) {
     if ((await deleted()).has(id)) continue; // deleted: its archived card stays put away
-    const row = await answered(() => client.from(SHARED_DOCUMENTS_TABLE).select('id, archived_at').eq('owner_id', ownerId).eq('id', id), timeoutMs);
-    if (!row || row.error || !Array.isArray(row.data)) { undecided.add(id); continue; }
-    if (row.data.length === 0) continue; // no such row any more: deleted
-    const markNow = (row.data[0] as { archived_at?: unknown } | null)?.archived_at;
-    if (typeof markNow === 'string' && markNow) cloudMarks[id] = markNow; // archived again since the first question
+    const row = await rowNow(id);
+    if (row === null) { undecided.add(id); continue; }
+    if (row === 'gone') continue; // no such row any more: deleted
+    if (row.mark !== null) cloudMarks[id] = row.mark; // archived again since the first question
     else restoredElsewhere.add(id);
   }
   if (gone.length > 0 && !(await signedInAs(client, ownerId))) return 'unknown';
@@ -471,79 +531,90 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       ? Object.keys(record.marks).filter(id => !(id in cloudMarks) && !waitingIds.has(id) && restoredElsewhere.has(id))
       : [];
     const known = Object.keys(record.marks);
-    // An archive in the cloud for a document this device restored: older than that Restore, it is a tap made
-    // before it that reached the cloud late, and this device restores once more (it waits like any tap); newer,
-    // it is the later tap. Either way the Restore's time has done its work (review of D1, L2).
-    const remembered = Object.keys(record.ownRestores).filter(id => id in cloudMarks);
-    const again = remembered.filter(id => !waitingIds.has(id) && Date.parse(record.ownRestores[id]) > Date.parse(cloudMarks[id]));
-    const unchanged = record.installed === true && restored.length === 0 && remembered.length === 0 &&
+    const unchanged = record.installed === true && restored.length === 0 &&
       known.length === Object.keys(cloudMarks).length && known.every(id => id in cloudMarks && sameMark(record.marks[id], cloudMarks[id]));
     return unchanged ? record : {
       ...record, installed: true, marks: cloudMarks,
       restoredElsewhere: [...new Set([...record.restoredElsewhere, ...restored])],
-      ownRestores: Object.fromEntries(Object.entries(record.ownRestores).filter(([id]) => !remembered.includes(id))),
-      waiting: [...record.waiting, ...again.map(id => ({ documentId: id, archived: false, at: record.ownRestores[id], attempts: 0, seen: cloudMarks[id], again: true as const }))].slice(-WAITING_LIMIT),
     };
   });
 
   for (const mark of recordOf(ownerId).waiting) {
     const id = mark.documentId;
-    const isThisTap = (item: WaitingMark) => item.documentId === id && item.at === mark.at && item.archived === mark.archived;
+    const isThisTap = (item: WaitingMark) => item.documentId === id && item.tap === mark.tap;
     const stillWaiting = () => recordOf(ownerId).waiting.some(isThisTap);
     if (!stillWaiting()) continue;
+    /**
+     * This tap is let go without being sent, with a line on this device saying why and what the document's state is.
+     * `putCardBack`: the cloud says the document is not archived, so this device's own card, put away when he
+     * tapped Archive, is put back.
+     */
+    const letGo = (why: SharedDocumentArchiveNotice['why'], putCardBack = false) => change(ownerId, record => (record.waiting.some(isThisTap) ? {
+      ...record,
+      waiting: record.waiting.filter(item => !isThisTap(item)),
+      restoredElsewhere: putCardBack ? [...new Set([...record.restoredElsewhere, id])] : record.restoredElsewhere,
+      notices: [
+        ...record.notices.filter(notice => notice.documentId !== id),
+        { documentId: id, tap: mark.archived ? 'archive' as const : 'restore' as const, why, ...(mark.name ? { name: mark.name } : {}) },
+      ].slice(-NOTICE_LIMIT),
+    } : record));
 
-    // What the cloud says of this document now, as just read, against what he asked (review of D1, L2 and L8).
+    // What the cloud says of this document now, as just read, against what he asked.
     const cloudMark: CloudMark = recordOf(ownerId).marks[id] ?? null;
     // An Archive for a document this device's deletion history says was deleted from all devices: there is nothing
     // to archive, so it is let go, with a line (review of D1, L4). Its card here stays put away.
     if (mark.archived && cloudMark === null && (await deleted()).has(id)) {
-      change(ownerId, record => ({
-        ...record,
-        waiting: record.waiting.filter(item => !isThisTap(item)),
-        notices: [
-          ...record.notices.filter(notice => notice.documentId !== id),
-          { documentId: id, tap: 'archive' as const, why: 'deleted_from_all_devices' as const, ...(mark.name ? { name: mark.name } : {}) },
-        ].slice(-NOTICE_LIMIT),
-      }));
+      letGo('deleted_from_all_devices');
       continue;
     }
-    // The cloud already holds an archive, and it is an older tap than this Archive: the mark takes this tap's time,
-    // so that a Restore made between the two and still waiting on another device is known for the older tap it is.
-    const olderArchive = mark.archived && cloudMark !== null && Date.parse(mark.at) > Date.parse(cloudMark);
-    if ((cloudMark !== null) === mark.archived && !olderArchive) {
-      // Already as he asked (this device's own write whose answer was lost, or the same tap made elsewhere).
-      change(ownerId, record => ({
-        ...record, waiting: record.waiting.filter(item => !isThisTap(item)),
-        ownRestores: mark.archived || mark.again ? record.ownRestores : withOwnRestore(record.ownRestores, id, mark.at),
-      }));
+    // The rule (second review, P2-M1): it is sent only if the cloud's mark is still the one this device last knew
+    // when he tapped, or one this device sent itself. No clock is asked which tap came first.
+    const stillAsHeSawIt = sameMark(cloudMark, mark.seen) || (mark.sent ?? []).some(value => sameMark(value, cloudMark));
+    // Already as he asked: a Restore, and the cloud holds no mark; or an Archive, and the cloud holds this very
+    // Archive (its own write, whose answer was lost) or one made on another device that this device had not seen.
+    // Nothing is sent and there is nothing to tell.
+    // NOT so for an Archive when the cloud still holds the mark he was shown (he restored and archived again before
+    // the Restore was sent): that one is sent like any other, and writes its own mark over the old one. A Restore
+    // made on another device against the old mark then finds the mark changed, and is let go with a line there,
+    // where it would otherwise undo his Archive without a word.
+    const alreadySo = (cloudMark !== null) === mark.archived && (!mark.archived || sameMark(cloudMark, mark.at) || !stillAsHeSawIt);
+    if (alreadySo) {
+      change(ownerId, record => ({ ...record, waiting: record.waiting.filter(item => !isThisTap(item)) }));
       continue;
     }
-    // An Archive is sent: it starts from "not archived" (or from an older archive). A Restore is sent while the
-    // archive in the cloud is the one this device was showing (or sent itself), or an older tap than this Restore.
-    // A newer archive from another device stands, and this Restore is let go with a line saying so.
-    const sendable = mark.archived || sameMark(cloudMark, mark.seen) ||
-      (mark.sent ?? []).some(value => sameMark(value, cloudMark)) || (cloudMark !== null && Date.parse(mark.at) > Date.parse(cloudMark));
-    if (!sendable) {
-      change(ownerId, record => ({
-        ...record,
-        waiting: record.waiting.filter(item => !isThisTap(item)),
-        notices: [
-          ...record.notices.filter(notice => notice.documentId !== id),
-          { documentId: id, tap: 'restore' as const, why: 'archived_again_on_another_device' as const, ...(mark.name ? { name: mark.name } : {}) },
-        ].slice(-NOTICE_LIMIT),
-      }));
+    if (!stillAsHeSawIt) {
+      // Changed on another device, and this device had not heard: the cloud's state stands.
+      if (!mark.archived) {
+        // A Restore, and the cloud holds another Archive than the one he was shown: it stays archived, here too.
+        letGo('archived_again_on_another_device');
+        continue;
+      }
+      // An Archive, and the mark he was shown has been emptied: restored on another device, unless the document
+      // itself is gone, which only its own row can say.
+      const row = await rowNow(id);
+      if (!(await signedInAs(client, ownerId))) return 'unknown';
+      if (row === null) continue; // no answer: nothing is decided, and it is asked again at the next pass
+      if (row === 'gone') letGo('deleted_from_all_devices');
+      else if (row.mark === null) letGo('restored_on_another_device', true);
+      else { // archived again in the moment between the two questions: the next pass finds it already as he asked
+        const markNow = row.mark;
+        change(ownerId, record => ({ ...record, marks: { ...withoutKey(record.marks, id), [id]: markNow } }));
+      }
       continue;
     }
 
     if ((mark.notBefore ?? 0) > now()) continue; // refused before: its wait is not over (review of D1, L3)
     // The account is asked again right before each write, and the write names it.
     if (!(await signedInAs(client, ownerId))) return 'unknown';
-    const value: CloudMark = mark.archived ? mark.at : null;
+    const value: CloudMark = mark.archived ? mark.at ?? null : null;
+    if (mark.archived && value === null) { change(ownerId, record => ({ ...record, waiting: record.waiting.filter(item => !isThisTap(item)) })); continue; }
     // Remembered before it goes: until the cloud answers, this write may or may not be there (review of D1, L8).
-    change(ownerId, record => ({ ...record, waiting: record.waiting.map(item => (isThisTap(item) ? { ...item, sent: [...(item.sent ?? []), value] } : item)) }));
+    change(ownerId, record => ({ ...record, waiting: record.waiting.map(item => (isThisTap(item) && !(item.sent ?? []).some(sentValue => sameMark(sentValue, value))
+      ? { ...item, sent: [...(item.sent ?? []), value] } : item)) }));
     const written = await answered(() => {
       const write = client.from(SHARED_DOCUMENTS_TABLE).update({ archived_at: value }).eq('id', id).eq('owner_id', ownerId);
-      // Only while the mark is still the one just read: a change in between is not written over (review of D1, L2).
+      // Only while the mark is still the one just read: the cloud checks it in the same request, so a change in
+      // between is not written over (review of D1, L2; second review, P2-M1).
       return (cloudMark === null ? write.is('archived_at', null) : write.eq('archived_at', cloudMark)).select('id');
     }, timeoutMs);
     if (!written) return 'installed'; // no answer: it waits for the next pass, which finds out whether it landed
@@ -557,6 +628,10 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       return left.length > 0 ? { ...rest, sent: left } : rest;
     };
     const reached = !written.error && Array.isArray(written.data) && written.data.length > 0;
+    // Known not to have landed: the cloud changed no row, or the database or its data API refused it by name (a
+    // code). A refusal with no code came from something in between, and the write may have landed all the same: it
+    // stays counted as possibly there, so that this device still knows its own mark when it next reads it.
+    const didNotLand = !reached && (!written.error || Boolean(written.error.code));
     // "Column not in the schema cache" on a write, when the question just before was answered with the column: the
     // column is there and the data API has not caught up yet (its state for a moment after the owner's database
     // change). It is a refusal like any other: nothing the cloud just said is forgotten, the mark stays installed,
@@ -566,7 +641,7 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       if (!reached) {
         // Refused, or no such row with that mark (not uploaded yet, or changed in between): it keeps waiting,
         // however often (review of D1, L3), and is tried again after a wait that grows.
-        return { ...record, waiting: record.waiting.map(notSent).map(item => (isThisTap(item)
+        return { ...record, waiting: (didNotLand ? record.waiting.map(notSent) : record.waiting).map(item => (isThisTap(item)
           ? { ...item, attempts: item.attempts + 1, notBefore: now() + retryWaitMs(item.attempts + 1) } : item)) };
       }
       // It landed. The cloud's mark is now this one, whether or not he has tapped again since: a newer tap on the
@@ -575,7 +650,6 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, now =
       return {
         ...record, waiting: record.waiting.filter(item => !isThisTap(item)),
         marks: value === null ? withoutIt : { ...withoutIt, [id]: value },
-        ownRestores: value === null && !mark.again ? withOwnRestore(record.ownRestores, id, mark.at) : record.ownRestores,
       };
     });
     if (apiNotCaughtUp) return 'installed'; // the others would be answered the same: they wait for the next pass

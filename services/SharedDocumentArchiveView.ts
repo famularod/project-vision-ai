@@ -15,11 +15,16 @@
 /** A Restore made on this device that the cloud has not been told yet (review of D1, L5). */
 export type SharedDocumentRestoreWaiting = Readonly<{ documentId: string; name?: string; refused: boolean }>;
 
-/** A tap that was let go without being sent, to be told to the owner in a line he dismisses (review of D1, L2). */
+/**
+ * A tap that was let go without being sent, told to the owner in a line (review of D1, L2; second review, P2-M1).
+ * `why` is also what the document's state now is: archived again on another device (still archived), restored on
+ * another device (in Documents again), or deleted. The line stays until he taps OK, taps on that document again
+ * here, or the state it speaks of changes.
+ */
 export type SharedDocumentArchiveNotice = Readonly<{
   documentId: string;
   tap: 'archive' | 'restore';
-  why: 'archived_again_on_another_device' | 'deleted_from_all_devices';
+  why: 'archived_again_on_another_device' | 'restored_on_another_device' | 'deleted_from_all_devices';
   name?: string;
 }>;
 

@@ -3,10 +3,17 @@
  * document (owner answer Q44, 6 Oct 2026), on two devices against a stand-in
  * for the cloud's table. The reviewer's failing cases are brought in here as
  * each is fixed; a case's name starts with the finding it answers.
+ *
+ * CHANGED BY THE SECOND REVIEW (P2-M1, the coordinator's decision): the cases
+ * below that pinned "the latest tap wins, by each device's clock" now pin the
+ * rule that replaced it: a waiting tap is sent only if the cloud's mark is
+ * still what this device last knew when he tapped; otherwise the cloud's
+ * state stands and a line says so. Each changed case says why beside it. The
+ * cases for the new rule itself are in review-d2-archive-no-clock.test.ts.
  */
 jest.mock('@react-native-async-storage/async-storage', () => require('../fixtures/shared-document-two-devices').mockDeviceStorageModule());
 
-import { createCloud, hiddenOn, resetDevices, start, sync, tick, type Archive, type Cloud, type DeviceName } from '../fixtures/shared-document-two-devices';
+import { createCloud, hiddenOn, resetDevices, runRandomTaps, start, sync, tick, type Archive, type Cloud } from '../fixtures/shared-document-two-devices';
 
 const PERMIT = 'doc-permit';
 let cloud: Cloud;
@@ -318,8 +325,10 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     expect(ipad.sharedDocumentArchiveView().notices).toEqual([
       { documentId: PERMIT, tap: 'restore', why: 'archived_again_on_another_device', name: 'Grading permit' },
     ]);
+    // CHANGED (second review, P2-L1): the line no longer says which tap came first ("after you tapped Restore here"):
+    // the device cannot know that, and with one clock wrong it said it of an Archive made BEFORE his tap.
     expect(ipad.sharedDocumentArchiveNoticeText(ipad.sharedDocumentArchiveView().notices[0]))
-      .toBe('Grading permit: your Restore on this device was not sent. It was archived again on another device after you tapped Restore here, so it stays archived.');
+      .toBe('Grading permit: your Restore on this device was not sent, because it was archived again on another device before this device could send it. It is still archived; tap Restore again if you still want it back.');
     // He reads it and taps OK: it is not shown again, here or after the app is closed and opened.
     await ipad.dismissSharedDocumentArchiveNotices([PERMIT]);
     expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
@@ -327,7 +336,11 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     expect((await start('ipad')).sharedDocumentArchiveView().notices).toEqual([]);
   });
 
-  it('the latest tap wins the other way too: a Restore tapped on the iPad after the phone\'s newer Archive is sent, though the iPad had not heard of it', async () => {
+  // CHANGED (second review, P2-M1). This case was "the latest tap wins the other way too: a Restore tapped on the
+  // iPad after the phone's newer Archive is sent, though the iPad had not heard of it". Which tap was "after" was
+  // read off two devices' clocks, and one clock a little wrong silently undid a later tap. Now no clock is asked:
+  // the iPad's Restore was made against an Archive it had not heard of, so it is not sent, and the iPad says so.
+  it('a Restore tapped on the iPad against an Archive it had not yet heard of is not sent: the cloud\'s state stands, the iPad says so, and a second Restore works', async () => {
     const { phone, ipad } = await setUp();
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:00:00.000Z');
     await sync(phone, cloud, 'phone');
@@ -337,16 +350,25 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     await sync(phone, cloud, 'phone');
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:30:00.000Z');
     await sync(phone, cloud, 'phone');
-    // The iPad, with no signal, still shows the first Archive. He taps Restore there: his last word.
+    // The iPad, with no signal, still shows the first Archive. He taps Restore there.
     await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:40:00.000Z', 'Grading permit');
     cloud.state.offline.ipad = false;
     await sync(ipad, cloud, 'ipad');
     await sync(phone, cloud, 'phone');
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:30:00.000Z');
+    expect(cloud.writes.filter(write => write.device === 'ipad')).toEqual([]);
+    expect(hiddenOn(ipad)).toEqual([PERMIT]);
+    expect(hiddenOn(phone)).toEqual([PERMIT]);
+    expect(phone.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
+    expect(ipad.sharedDocumentArchiveView().notices).toEqual([
+      { documentId: PERMIT, tap: 'restore', why: 'archived_again_on_another_device', name: 'Grading permit' },
+    ]);
+    // He still wants it back: the iPad now shows the Archive the cloud holds, so this Restore is sent, and the line goes.
+    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:50:00.000Z', 'Grading permit');
+    expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
+    await sync(ipad, cloud, 'ipad');
     expect(cloud.row(PERMIT)?.archived_at).toBeNull();
     expect(hiddenOn(ipad)).toEqual([]);
-    expect(hiddenOn(phone)).toEqual([]);
-    expect(phone.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]); // the phone puts its card back
-    expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
   });
 
   it('the cloud already says what the waiting tap asked for: nothing is sent and nothing needs saying', async () => {
@@ -366,61 +388,55 @@ describe('L2: a tap made with no signal and a newer tap made on another device',
     expect(hiddenOn(ipad)).toEqual([]);
   });
 
-  it('an Archive that waited while the iPad restored, tapped AFTER the iPad\'s Restore: the phone\'s Archive is the latest tap and stands', async () => {
+  // CHANGED (second review, P2-M1). These were two cases: "an Archive that waited while the iPad restored, tapped
+  // AFTER the iPad's Restore: the phone's Archive is the latest tap and stands", and "the same, tapped BEFORE the
+  // iPad's Restore: the iPad knows when it restored, sees an older archive arrive, and restores once more". Both
+  // turned on comparing the phone's clock with the iPad's. Now the two orders end the same way, whatever the
+  // clocks say: the cloud is no longer what the phone last knew, so its waiting Archive is let go, its card is put
+  // back, and the phone says so. Nothing is "restored once more" by a device nobody tapped.
+  it.each([
+    ['tapped AFTER the iPad\'s Restore', '2026-10-06T09:20:00.000Z', '2026-10-06T09:30:00.000Z'],
+    ['tapped BEFORE the iPad\'s Restore', '2026-10-06T09:30:00.000Z', '2026-10-06T09:20:00.000Z'],
+  ])('an Archive that waited on the phone while the iPad restored, %s: it is not sent, the phone says so and puts its card back', async (_order, ipadRestoreAt, phoneArchiveAt) => {
     const { phone, ipad } = await setUp();
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:00:00.000Z');
     await sync(phone, cloud, 'phone');
     await sync(ipad, cloud, 'ipad');
-    // The phone, with no signal: Restore (never sent).
+    // The phone, with no signal: Restore (never sent), then Archive again.
     cloud.state.offline.phone = true;
     await phone.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:10:00.000Z');
-    // The iPad restores it.
-    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:20:00.000Z');
-    await sync(ipad, cloud, 'ipad');
-    // The phone, still with no signal: Archive. His last word.
-    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:30:00.000Z');
-    cloud.state.offline.phone = false;
-    await sync(phone, cloud, 'phone');
-    await sync(ipad, cloud, 'ipad');
-    await sync(phone, cloud, 'phone');
-    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:30:00.000Z'); // the time he tapped, not the time it arrived
-    expect(hiddenOn(phone)).toEqual([PERMIT]);
-    expect(hiddenOn(ipad)).toEqual([PERMIT]);
-    expect(phone.sharedDocumentArchiveView().restoredElsewhere).toEqual([]);
-  });
-
-  it('the same, tapped BEFORE the iPad\'s Restore: the iPad knows when it restored, sees an older archive arrive, and restores once more', async () => {
-    const { phone, ipad } = await setUp();
-    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:00:00.000Z');
-    await sync(phone, cloud, 'phone');
-    await sync(ipad, cloud, 'ipad');
-    // The phone, with no signal: Restore, then Archive again (neither is sent yet).
-    cloud.state.offline.phone = true;
-    await phone.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:10:00.000Z');
-    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:20:00.000Z');
-    // The iPad restores it, later than both. His last word.
-    await ipad.requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:30:00.000Z');
+    await phone.requestSharedDocumentArchive(PERMIT, true, phoneArchiveAt, 'Grading permit.pdf');
+    // The iPad restores it, with signal.
+    await ipad.requestSharedDocumentArchive(PERMIT, false, ipadRestoreAt);
     await sync(ipad, cloud, 'ipad');
     await ipad.sharedDocumentArchiveSettled();
-    // The phone gets signal: its Archive of 09:20 reaches the cloud, late.
+    // The phone gets signal.
     cloud.state.offline.phone = false;
     await sync(phone, cloud, 'phone');
-    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:20:00.000Z');
-    // The iPad is opened again: the archive it reads is older than its own Restore, so it restores once more.
     const ipadLater = await start('ipad');
     await sync(ipadLater, cloud, 'ipad');
-    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
-    expect(hiddenOn(ipadLater)).toEqual([]);
     await sync(phone, cloud, 'phone');
+    expect(cloud.row(PERMIT)?.archived_at).toBeNull();
+    expect(cloud.writes.map(write => `${write.device}:${write.archived_at === null ? 'restore' : 'archive'}`)).toEqual(['phone:archive', 'ipad:restore']);
     expect(hiddenOn(phone)).toEqual([]);
+    expect(hiddenOn(ipadLater)).toEqual([]);
     expect(phone.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]); // the phone's card comes back
-    // Once only: a new Archive made after that stands.
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([
+      { documentId: PERMIT, tap: 'archive', why: 'restored_on_another_device', name: 'Grading permit.pdf' },
+    ]);
+    expect(phone.sharedDocumentArchiveNoticeText(phone.sharedDocumentArchiveView().notices[0]))
+      .toBe('Grading permit.pdf: your Archive on this device was not sent, because it was restored on another device before this device could send it. It is in Documents again; archive it again if you still want it hidden.');
+    expect(ipadLater.sharedDocumentArchiveView().notices).toEqual([]);
+    // He still wants it hidden: a new Archive on the phone is sent and stands, whatever its clock says.
     await phone.consumeSharedDocumentsRestoredElsewhere([PERMIT]);
-    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:25:00.000Z'); // a phone whose clock runs behind
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:05:00.000Z', 'Grading permit.pdf'); // a phone whose clock runs behind
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
     await sync(phone, cloud, 'phone');
     await sync(ipadLater, cloud, 'ipad');
-    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:25:00.000Z');
+    await sync(phone, cloud, 'phone');
+    expect(cloud.row(PERMIT)?.archived_at).toBe('2026-10-06T09:05:00.000Z');
     expect(hiddenOn(ipadLater)).toEqual([PERMIT]);
+    expect(hiddenOn(phone)).toEqual([PERMIT]);
   });
 
   it('the write itself is guarded: a mark that changes between the question and the write is not written over', async () => {
@@ -664,120 +680,37 @@ describe('L6: the data API has not yet reloaded after the paste (a write is answ
 });
 
 /**
- * The reviewer's random sequences on two devices, compared with one device
- * doing the same taps in order. The owner's taps are numbered in the order he
- * made them; the document's right final state is his last tap on it. Each
- * device only offers the tap its own screen would offer (Archive on the
- * phone, which holds the card, when it lists the document; Restore where
- * "Archived (n)" lists it).
+ * The reviewer's random sequences on two devices, compared with his taps in
+ * order (the generator is his, step for step and seed for seed; it is in the
+ * fixture since his second pass).
  *
- * The generator is his, step for step and seed for seed. One thing is added,
- * which the coordinator's decision on L9 requires: each device reaches the
- * cloud once before the first tap (a tap made by a device that has never had
- * an answer is, by that decision, that device's own and is not sent).
+ * CHANGED (second review, P2-M1). These two cases used to require that every
+ * sequence "ends as his last tap left it". That was the promise of the clock
+ * rule, and it only held while both clocks were right. The rule now is: the
+ * cloud ends as the last tap to REACH it asked, and a tap that did not take
+ * effect leaves a line on the device it was made on. So a sequence may end
+ * different from his last tap, but never without that line, and every device
+ * always ends showing what the cloud holds.
  */
-function random(seed: number) {
-  let state = seed >>> 0;
-  return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 0x100000000; };
-}
-
-async function runSequence(seed: number, { signalDrops }: { signalDrops: boolean }) {
-  resetDevices();
-  const world = createCloud();
-  const docs = ['doc-1', 'doc-2'];
-  docs.forEach(id => world.add(id));
-  const next = random(seed);
-  const devices: Record<DeviceName, Archive> = { phone: await start('phone'), ipad: await start('ipad') };
-  /** The phone's own cards (the iPad has none). */
-  const card: Record<string, boolean> = { 'doc-1': false, 'doc-2': false }; // isArchived
-  const lastTap: Record<string, 'archive' | 'restore' | null> = { 'doc-1': null, 'doc-2': null };
-  const log: string[] = [];
-  let clock = Date.parse('2026-10-06T08:00:00.000Z');
-  const at = () => new Date(clock += 60_000).toISOString();
-
-  const heard = async (name: DeviceName) => {
-    // The hook's effect: a document restored elsewhere has its card put back on the phone.
-    const ids = devices[name].sharedDocumentArchiveView().restoredElsewhere;
-    if (ids.length === 0) return;
-    if (name === 'phone') ids.forEach(id => { if (id in card) card[id] = false; });
-    await devices[name].consumeSharedDocumentsRestoredElsewhere(ids);
-  };
-  const reach = async (name: DeviceName) => {
-    if (world.state.offline[name]) return;
-    await sync(devices[name], world, name, 'owner-a', { now: () => clock });
-    await heard(name);
-  };
-  const archivedOn = (name: DeviceName, id: string) =>
-    devices[name].sharedDocumentArchiveView().archivedIds.has(id) || (name === 'phone' && card[id]);
-
-  await reach('phone'); // each device has been opened with signal once (see above)
-  await reach('ipad');
-  for (let step = 0; step < 14; step += 1) {
-    const name: DeviceName = next() < 0.5 ? 'phone' : 'ipad';
-    const id = docs[Math.floor(next() * docs.length)];
-    const roll = next();
-    if (signalDrops && roll < 0.25) {
-      world.state.offline[name] = !world.state.offline[name];
-      log.push(`${name} ${world.state.offline[name] ? 'loses signal' : 'has signal again'}`);
-      await reach(name);
-    } else if (roll < 0.4) {
-      await devices[name].sharedDocumentArchiveSettled();
-      devices[name] = await start(name);
-      log.push(`${name} is closed and opened`);
-      await reach(name);
-    } else if (archivedOn(name, id)) {
-      if (name === 'phone') card[id] = false;
-      await devices[name].requestSharedDocumentArchive(id, false, at());
-      lastTap[id] = 'restore';
-      log.push(`${name} Restore ${id}`);
-      await reach(name);
-    } else if (name === 'phone') {
-      card[id] = true;
-      await devices[name].requestSharedDocumentArchive(id, true, at());
-      lastTap[id] = 'archive';
-      log.push(`phone Archive ${id}`);
-      await reach(name);
-    } else {
-      log.push(`ipad opens Documents`);
-      await reach(name);
-    }
-  }
-  // Everything has signal again and each device is opened twice.
-  world.state.offline.phone = false;
-  world.state.offline.ipad = false;
-  clock += 60 * 60_000;
-  for (const name of ['phone', 'ipad', 'phone', 'ipad'] as const) await reach(name);
-  const dropped = (devices.phone.sharedDocumentArchiveView().notices ?? []).length + (devices.ipad.sharedDocumentArchiveView().notices ?? []).length;
-
-  const wrong = docs.flatMap(id => {
-    if (lastTap[id] === null) return [];
-    const want = lastTap[id] === 'archive';
-    const got = { cloud: Boolean(world.row(id)?.archived_at), phone: archivedOn('phone', id), ipad: archivedOn('ipad', id) };
-    return got.cloud === want && got.phone === want && got.ipad === want
-      ? [] : [`${id}: his last tap was ${lastTap[id]}; cloud archived=${got.cloud}, phone hides it=${got.phone}, iPad hides it=${got.ipad}`];
-  });
-  return { wrong, log, dropped };
-}
-
 describe('L2: the reviewer\'s random sequences on two devices, compared with his taps in order', () => {
-  it('sound: both devices with signal throughout, 300 sequences: every one ends as his last tap left it', async () => {
-    const failures: string[] = [];
+  it.each([
+    ['both devices with signal throughout', false],
+    ['with signal coming and going (F-L2)', true],
+  ])('%s, 300 sequences: none ends different from his last tap without a line on the device whose tap was not sent', async (_label, signalDrops) => {
+    const silent: string[] = [];
+    const unsettled: number[] = [];
+    let differ = 0;
     for (let seed = 1; seed <= 300; seed += 1) {
-      const { wrong, log } = await runSequence(seed, { signalDrops: false });
-      if (wrong.length) failures.push(`seed ${seed}: ${wrong.join('; ')}\n    ${log.join(' | ')}`);
-    }
-    expect(failures.slice(0, 3)).toEqual([]);
-  }, 120_000);
-
-  it('F-L2: with signal coming and going, 300 sequences: every one ends as his last tap left it', async () => {
-    const failures: string[] = [];
-    for (let seed = 1; seed <= 300; seed += 1) {
-      const { wrong, log } = await runSequence(seed, { signalDrops: true });
-      if (wrong.length) failures.push(`seed ${seed}: ${wrong.join('; ')}\n    ${log.join(' | ')}`);
+      const { differs, settled, log } = await runRandomTaps(seed, { signalDrops });
+      if (!settled) unsettled.push(seed);
+      if (differs.length) differ += 1;
+      const untold = differs.filter(item => !item.toldWhereHeTapped);
+      if (untold.length) silent.push(`seed ${seed}: ${untold.map(item => item.text).join('; ')}\n    ${log.join(' | ')}`);
     }
     // eslint-disable-next-line no-console
-    if (failures.length) console.log(`F-L2: ${failures.length} of 300 sequences end wrong. The shortest:\n` +
-      [...failures].sort((a, b) => a.length - b.length).slice(0, 4).join('\n'));
-    expect(failures.length).toBe(0);
+    if (silent.length) console.log(`${silent.length} of 300 sequences end different from his last tap with no line where he tapped. The shortest:\n` +
+      [...silent].sort((a, b) => a.length - b.length).slice(0, 4).join('\n'));
+    expect({ silent: silent.length, unsettled }).toEqual({ silent: 0, unsettled: [] });
+    expect(differ).toBeLessThan(40); // told each time; it is not the common case
   }, 120_000);
 });

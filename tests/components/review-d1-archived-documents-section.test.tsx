@@ -73,7 +73,9 @@ describe('review of D1: the lines above "Archived (n)"', () => {
     expect(sharedDocumentArchiveView().notices).toHaveLength(1);
     const onRestore = jest.fn();
     const tree = render(<ArchivedDocumentsSection documents={[archivedCard]} onRestore={onRestore} />);
-    expect(tree.getByText('Grading permit: your Restore on this device was not sent. It was archived again on another device after you tapped Restore here, so it stays archived.')).toBeTruthy();
+    // CHANGED (second review, P2-L1): the line no longer says "after you tapped Restore here". The device cannot know
+    // which tap came first, and with one clock wrong it said so of an Archive made before his tap.
+    expect(tree.getByText('Grading permit: your Restore on this device was not sent, because it was archived again on another device before this device could send it. It is still archived; tap Restore again if you still want it back.')).toBeTruthy();
     expect(tree.getByText('Archived (1)')).toBeTruthy();
 
     await act(async () => {
@@ -90,12 +92,33 @@ describe('review of D1: the lines above "Archived (n)"', () => {
   it('L2: the line takes the name from the archived list when the tap did not carry one, and is shown even where the project lists nothing archived', async () => {
     await aRestoreLetGo();
     const named = render(<ArchivedDocumentsSection documents={[archivedCard]} onRestore={jest.fn()} />);
-    expect(named.getByText(/^Grading permit: your Restore on this device was not sent\./)).toBeTruthy();
+    expect(named.getByText(/^Grading permit: your Restore on this device was not sent, /)).toBeTruthy();
     named.unmount();
     const otherProject = render(<ArchivedDocumentsSection documents={[]} onRestore={jest.fn()} />);
-    expect(otherProject.getByText(/^A document: your Restore on this device was not sent\./)).toBeTruthy();
+    expect(otherProject.getByText(/^A document: your Restore on this device was not sent, /)).toBeTruthy();
     expect(otherProject.queryByText(/^Archived \(/)).toBeNull();
     otherProject.unmount();
+  });
+
+  it('second review, P2-M1: an Archive that was not sent because the document was restored on another device is said too, with its state, until he taps OK', async () => {
+    cloud.row(PERMIT)!.archived_at = '2026-10-06T09:00:00.000Z';
+    await reach();
+    cloud.state.offline = true;
+    await requestSharedDocumentArchive(PERMIT, false);
+    await requestSharedDocumentArchive(PERMIT, true, '2026-10-06T09:20:00.000Z', 'Grading permit');
+    cloud.row(PERMIT)!.archived_at = null; // restored on the iPad meanwhile
+    cloud.state.offline = false;
+    await reach();
+    await sharedDocumentArchiveSettled();
+    const tree = render(<ArchivedDocumentsSection documents={[]} onRestore={jest.fn()} />);
+    expect(tree.getByText('Grading permit: your Archive on this device was not sent, because it was restored on another device before this device could send it. It is in Documents again; archive it again if you still want it hidden.')).toBeTruthy();
+    expect(tree.queryByText(/^Archived \(/)).toBeNull();
+    await act(async () => {
+      fireEvent.press(tree.getByLabelText('OK, dismiss the note about Grading permit'));
+      await sharedDocumentArchiveSettled();
+    });
+    expect(tree.queryByTestId('archived-documents-section')).toBeNull();
+    tree.unmount();
   });
 
   it('L5: a Restore made with no signal is said to be waiting, where nothing is archived any more, until it has been sent', async () => {
