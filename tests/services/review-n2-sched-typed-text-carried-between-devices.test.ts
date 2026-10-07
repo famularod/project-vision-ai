@@ -2461,15 +2461,19 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
       const ALL_BLANK = { owner: '', contractor: '', notes: '', nextAction: '', milestone: '' };
       const row = movedBy(task({ notes: NOTE, owner: 'Mike' }));
       expect(row).toMatchObject({ notes: NOTE, owner: 'Mike' });
-      // (And the task's priority, which the row always takes: schedule batch S5, item 1.)
-      expect(row.textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, notes: NOTE, owner: 'Mike', dependencies: [], priority: 'Medium' });
+      // (Not the task's priority, which he never set: schedule batch S6, item 1. S5 had the row always take it; one he
+      // set is taken and named, at the end.)
+      expect(row.textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, notes: NOTE, owner: 'Mike', dependencies: [] });
       const fileNamesTheOwner = movedBy(task({ notes: NOTE, owner: 'Mike' }), { owner: 'Acme Framing' });
       const { owner: _owner, ...unsetByTheFile } = ALL_BLANK;
-      expect([fileNamesTheOwner.owner, fileNamesTheOwner.textFromTask]).toEqual(['Acme Framing', { taskId: 'F-1', ...unsetByTheFile, notes: NOTE, dependencies: [], priority: 'Medium' }]);
+      expect([fileNamesTheOwner.owner, fileNamesTheOwner.textFromTask]).toEqual(['Acme Framing', { taskId: 'F-1', ...unsetByTheFile, notes: NOTE, dependencies: [] }]);
       // Review P4 F1: also when it took nothing. (It kept no record then, and its first upload had nothing to weigh it against.)
-      expect(movedBy(task({})).textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, dependencies: [], priority: 'Medium' });
+      expect(movedBy(task({})).textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, dependencies: [] });
       // A value the file states stands as the file's even when the task had the same: it is not his to follow.
-      expect(movedBy(task({ owner: 'Mike' }), { owner: 'Mike' }).textFromTask).toEqual({ taskId: 'F-1', ...unsetByTheFile, dependencies: [], priority: 'Medium' });
+      expect(movedBy(task({ owner: 'Mike' }), { owner: 'Mike' }).textFromTask).toEqual({ taskId: 'F-1', ...unsetByTheFile, dependencies: [] });
+      // Schedule batch S6, item 1: a priority he had set on the task (a Low: no import gives one) is taken, and named.
+      const lowered = movedBy(task({ priority: 'Low' }));
+      expect([lowered.priority, lowered.priorityAsImported, lowered.textFromTask]).toEqual(['Low', 'Medium', { taskId: 'F-1', ...ALL_BLANK, dependencies: [], priority: 'Low' }]);
     });
 
     it('first sent, a field still as taken takes what the cloud\'s row of the task has now, a clear too, and the row is stamped after all its own times', () => {
@@ -4750,6 +4754,127 @@ describe('S5 item 1: activity notes and the priority follow a task a master move
     await settle(phone, ipad);
     expect((await historyEverywhere(phone, ipad)).map(shown => shown[0])).toEqual(Array(3).fill(['n1', 'n2', 'n3']));
     await nothingWaits(phone, ipad);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule batch S6, item 1 (7 Oct 2026; puts S5 item 1 right). S5 made the priority follow a moved task always: a
+ * task David never touched no longer turned High when a master moved it into the coming week. Decided: only a
+ * priority he SET follows; one he never set is the new row's own, as before S5. Master N is imported six days before
+ * Framing's new finish, so the import marks its row High.
+ */
+describe('S6 item 1: only a priority he set follows a task a master moved, between two devices and the web', () => {
+  const N = scheduleDoc('MASTER N', '2026-10-24T12:00:00.000Z');
+  const priorities = async (phone: Device, ipad: Device) => {
+    await refresh(phone); await refresh(ipad);
+    return [theRow(phone).priority, theRow(ipad).priority, framingOf(webShown())[0].priority];
+  };
+  const nothingWaits = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const approveN = async (device: Device) => { at(N.importedAt!); await approve(device, N, [G_ROW, SURVEY]); shareDocuments(device); };
+
+  it('he never touched it and the master moves it into the coming week: High on the phone, the iPad and the web, as before S5', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    expect(theRow(phone).priority).toBe('Medium');
+    await approveN(phone);
+    await backgroundUpload(phone);
+    expect([theRow(phone).id === oldId, theRow(phone).priority]).toEqual([false, 'High']);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['High', 'High', 'High']);
+    // The old row keeps its own, hidden; nothing was carried either way.
+    expect(cloudRow(oldId)!.priority).toBe('Medium');
+    await nothingWaits(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad); await fullSync(phone); await fullSync(ipad);
+    expect([cloudWrites(), await priorities(phone, ipad)]).toEqual([writes, ['High', 'High', 'High']]);
+  });
+
+  it('he set it Low; the master moves it into the coming week: Low on the phone, the iPad and the web, nothing asked', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T07:05:00.000Z');
+    await edit(phone, oldId, { priority: 'Low' });
+    await backgroundUpload(phone);
+    await refresh(ipad);
+    await approveN(phone);
+    await backgroundUpload(phone);
+    expect([theRow(phone).id === oldId, theRow(phone).priority, theRow(phone).priorityAsImported]).toEqual([false, 'Low', 'High']);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Low', 'Low', 'Low']);
+    await nothingWaits(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad); await fullSync(phone); await fullSync(ipad);
+    expect([cloudWrites(), await priorities(phone, ipad)]).toEqual([writes, ['Low', 'Low', 'Low']]);
+  });
+
+  it('he set it Low on the iPad, which had not heard of the master: it goes on to the task\'s row over that row\'s own High, with nothing asked', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(ipad, false);
+    await approveN(phone);
+    await backgroundUpload(phone);
+    const newId = theRow(phone).id;
+    expect([theRow(phone).priority, theRow(ipad).id]).toEqual(['High', oldId]);
+    at('2026-10-24T13:00:00.000Z');
+    await edit(ipad, oldId, { priority: 'Low' });
+    at('2026-10-24T14:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Low', 'Low', 'Low']);
+    // The task's row says the Low is his from then on.
+    expect([cloudRow(newId)!.priority, cloudRow(newId)!.textFromTask?.priority]).toEqual(['Low', 'Low']);
+    await nothingWaits(phone, ipad);
+  });
+
+  it('the phone, with no signal and not having heard that he set it Low on the iPad, approves the master: the new row goes up Low', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(phone, false);
+    at('2026-09-09T09:05:00.000Z');
+    await edit(ipad, oldId, { priority: 'Low' });
+    await backgroundUpload(ipad);
+    await approveN(phone);
+    const newId = theRow(phone).id;
+    // On the phone, which has not heard: the new row's own High for now.
+    expect(theRow(phone).priority).toBe('High');
+    at('2026-10-24T14:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect([cloudRow(newId)!.priority, cloudRow(newId)!.priorityAsImported]).toEqual(['Low', 'High']);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Low', 'Low', 'Low']);
+    await nothingWaits(phone, ipad);
+  });
+
+  it('set on both rows apart (Low on the old row by the iPad that had not heard, Medium on the new row on the phone): Review Conflicts asks once', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(ipad, false);
+    await approveN(phone);
+    await backgroundUpload(phone);
+    const newId = theRow(phone).id;
+    at('2026-10-24T12:30:00.000Z');
+    await edit(phone, newId, { priority: 'Medium' });
+    await backgroundUpload(phone);
+    at('2026-10-24T13:00:00.000Z');
+    await edit(ipad, oldId, { priority: 'Low' });
+    at('2026-10-24T14:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    const cards = [...await conflictsOf(phone), ...await conflictsOf(ipad)];
+    expect(cards).toHaveLength(1);
+    // Until he chooses, the task's row keeps the one set on it.
+    expect(cloudRow(newId)!.priority).toBe('Medium');
   });
 });
 

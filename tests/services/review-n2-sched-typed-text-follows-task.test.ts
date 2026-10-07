@@ -145,8 +145,8 @@ describe('Review N3 C: what else he sets on a task goes with it to the row a mas
     expect([dates(framing), ...controlsOf(framing), framing.nextAction, framing.milestone]).toEqual(['10/05/2026-10/15/2026', 'Pending', 5, 'Lee', 'Order rebar', 'Slab pour']);
     // The row says which task's row it replaces (review N3 R3) and what that row had of his text, a blank too (review P4 F1).
     // (And the hand links it was made with, none here: review P5-2.)
-    // (And the task's priority, which the row always takes: schedule batch S5, item 1.)
-    expect(framing.textFromTask).toEqual({ taskId: framingF, owner: '', contractor: '', notes: '', nextAction: 'Order rebar', milestone: 'Slab pour', dependencies: [], priority: one(withControls, 'Framing').priority });
+    // (Not the task's priority, which he never set: schedule batch S6, item 1. S5 had the row always take it.)
+    expect(framing.textFromTask).toEqual({ taskId: framingF, owner: '', contractor: '', notes: '', nextAction: 'Order rebar', milestone: 'Slab pour', dependencies: [] });
   });
 
   it('with only controls to take, the row still says which row it took from; a task with none set gives none', () => {
@@ -155,7 +155,7 @@ describe('Review N3 C: what else he sets on a task goes with it to the row a mas
     const plain = one(approve(onF, G, [FRAMING_G, ROOF]), 'Framing');
     // (Review P4 F1: the row says which row it replaces even so, and that it took nothing: it is weighed from that.)
     expect([plain.projectControls ?? null, plain.textFromTask]).toEqual([one(onF, 'Framing').projectControls ?? null,
-      { taskId: framingF, owner: '', contractor: '', notes: '', nextAction: '', milestone: '', dependencies: [], priority: one(onF, 'Framing').priority }]);
+      { taskId: framingF, owner: '', contractor: '', notes: '', nextAction: '', milestone: '', dependencies: [] }]);
   });
 
   it('a file states no controls: a row that arrives with the blank set every task starts with takes the task\'s as they are', () => {

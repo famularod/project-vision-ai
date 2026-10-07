@@ -2,7 +2,7 @@ import { PROJECT_ITEM_TYPES, SCHEDULE_PRIORITIES, type ProjectItemActivity, type
 import { projectTimeZoneOrDefault } from './ProjectDateTime';
 import { scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
-import { scheduleItemActivityWithOtherRows, scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
+import { scheduleItemActivityWithOtherRows, schedulePriorityIsHis, schedulePriorityIsItsImports, schedulePriorityItsImportGave, scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import {
@@ -810,6 +810,20 @@ const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'priority'
  */
 export const SCHEDULE_FIELDS_TAKEN_FROM_TASK = [...SCHEDULE_TYPED_TEXT_FIELDS, 'priority'] as const;
 
+/**
+ * Schedule batch S6, item 1 (7 Oct 2026; puts S5 item 1 right): the row took
+ * the task's priority only when it was one David had set
+ * (schedulePriorityIsHis, ScheduleTaskRevisions). A row whose record names no
+ * priority started with what its own import gave it (the file's Critical
+ * column, the dates), as before S5, and that is weighed too wherever two
+ * rows of the task meet: such a row takes the other row's priority when that
+ * one is his and this one's is not; his on both, to different values, is
+ * asked about or goes by the later row, as for a recorded field.
+ */
+const tookNoPriority = (record: unknown) => !record || !Object.prototype.hasOwnProperty.call(record, 'priority');
+/** The priority this row holds was not set on it: still as it took it, or, with no entry, still its own import's. */
+const priorityNotSetHere = (row: ScheduleItem) => (tookNoPriority(row.textFromTask) ? !schedulePriorityIsHis(row) : scheduleItemHoldsAsTaken(row, 'priority'));
+
 /** One of those fields as a row takes it from another: his text or a blank; the priority as the app reads it. */
 function valueTaken(source: unknown, field: string): unknown {
   const value = source && typeof source === 'object' ? (source as Record<string, unknown>)[field] : undefined;
@@ -829,7 +843,7 @@ export { scheduleItemActivityWithOtherRows };
  */
 export function scheduleItemCarriedFieldsToSend(carried: readonly string[], itemData: ScheduleItem, remote: ScheduleItem): string[] {
   return carried.filter(field => field === 'activity' ? Boolean(scheduleItemActivityWithOtherRows(remote.activity, itemData.activity))
-    : field === 'priority' ? scheduleItemHoldsAsTaken(remote, field) && fieldValue(remote, field) !== fieldValue(itemData, field)
+    : field === 'priority' ? priorityNotSetHere(remote) && fieldValue(remote, field) !== fieldValue(itemData, field)
     : !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim());
 }
 
@@ -941,6 +955,18 @@ export function scheduleItemAgainstItsTask(
     }
     next[field] = valueTaken(task, field);
   });
+  // Schedule batch S6, item 1: a row that took no priority (the task's was not his when the row was made) takes the
+  // one he has set on the task's row since, or had set where the approving device had not heard; the record then
+  // says so. His on both rows, to different values: as above.
+  // (A row saved before rows kept their import's priority may hold one of his unknown to the app: it stands like his.)
+  const ownImports = tookNoPriority(taken) ? schedulePriorityItsImportGave(row) : null;
+  if (ownImports && schedulePriorityIsHis(task)) {
+    const same = fieldValue(task, 'priority') === fieldValue(row, 'priority');
+    const setHere = !schedulePriorityIsItsImports(row);
+    const stands = !same && setHere && bothChanged === 'row';
+    if (!same && setHere && bothChanged === 'ask') asked.push('priority');
+    if (!stands) next.priority = valueTaken(task, 'priority');
+  }
   let linksStamp: Partial<Pick<ScheduleItem, 'dependenciesUpdatedAt'>> = {};
   if (taskOf && Object.prototype.hasOwnProperty.call(taken, 'dependencies')) {
     const [here, theirs, was] = [row, task, taken].map(source => scheduleItemLinksKey(source, taskOf));
@@ -963,7 +989,7 @@ export function scheduleItemAgainstItsTask(
       updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
     } as ScheduleItem,
     asked,
-    base: { updatedAt: null, fields: Object.fromEntries(asked.map(field => [field, taken[field as keyof typeof taken] ?? ''])) },
+    base: { updatedAt: null, fields: Object.fromEntries(asked.map(field => [field, field === 'priority' && ownImports ? ownImports : taken[field as keyof typeof taken] ?? ''])) },
   };
 }
 
@@ -1100,6 +1126,10 @@ export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleIte
     if (here !== fieldValue(taken, field) && !newRowLater) return;
     next[field] = valueTaken(newRow, field);
   });
+  // Schedule batch S6, item 1: the newer row took no priority and holds one he set since: it shows here too, unless
+  // this row's is his as well and this row was the one changed later.
+  if (tookNoPriority(taken) && schedulePriorityIsHis(newRow) && fieldValue(newRow, 'priority') !== fieldValue(row, 'priority') &&
+    (newRowLater || schedulePriorityIsItsImports(row))) next.priority = valueTaken(newRow, 'priority');
   return Object.keys(next).length === 0 ? row : { ...row, ...next } as ScheduleItem;
 }
 
@@ -1156,7 +1186,11 @@ export function scheduleItemAsLastSetOnItsOtherRow(
   // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
   // and the later entry stands.
   const blanks = hiddenLater ? SCHEDULE_TYPED_TEXT_FIELDS.filter(field => isBlank(fieldValue(changed, field)) && !isBlank(fieldValue(lender, field))) : [];
-  const withText = blanks.length === 0 ? changed : { ...changed, ...Object.fromEntries(blanks.map(field => [field, lender[field]])) } as ScheduleItem;
+  // The priority with no record at all (schedule batch S6, items 1 and 4 a; rows saved before rows said what they
+  // took): one he set on the hidden row shows here when this row's is not known to be his and the hidden row was the
+  // one changed later. On such rows only a Low is known to be his.
+  const hisPriority = !base && hiddenLater && schedulePriorityIsHis(hidden) && !schedulePriorityIsHis(changed) ? { priority: hidden.priority } : {};
+  const withText = blanks.length === 0 && !('priority' in hisPriority) ? changed : { ...changed, ...Object.fromEntries(blanks.map(field => [field, lender[field]])), ...hisPriority } as ScheduleItem;
   const controls = !hidden.projectControls ? withText.projectControls
     : withText.projectControls ? mergeProjectControlsRevisions(withText.projectControls, hidden.projectControls) : hidden.projectControls;
   const withControls = JSON.stringify(controls ?? null) === JSON.stringify(withText.projectControls ?? null) ? withText : { ...withText, projectControls: controls } as ScheduleItem;
@@ -1240,7 +1274,11 @@ export function scheduleItemTextEditOnRow(
     // (A field goes with its stamp: his links with when he changed them.)
     itemData: { ...row, ...Object.fromEntries(scheduleItemFieldsWithCompanions(typed).map(field => [field, (edit.itemData as unknown as Record<string, unknown>)[field]])), ...(notes ? { activity: notes } : {}) } as ScheduleItem,
     changedFields: [...scheduleItemFieldsWithCompanions(typed), ...(notes ? ['activity'] : []), 'updatedAt'],
-    base: { updatedAt: base.updatedAt, fields: { ...Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])), ...(notes ? { activity: row.activity ?? [] } : {}) } },
+    // (The priority of a row that took none is weighed from what that row's own import gave it, schedule batch S6 item
+    // 1. Still holding that, it is the copy his edit goes over, with nothing asked. Set there too, the two differ and
+    // he is asked: also when it was set to the very value the old row had, which read as the copy his edit started from.)
+    base: { updatedAt: base.updatedAt, fields: { ...Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field]
+      : field === 'priority' && tookNoPriority(row.textFromTask) ? schedulePriorityItsImportGave(row) : base.fields[field]])), ...(notes ? { activity: row.activity ?? [] } : {}) } },
     // (Only for the row that replaced the very row he typed on: that row holds his value too now, so the two agree
     // again. Sent on past a row in between, which is not written, the newest row's record stays what that row had:
     // an owner cleared so, two masters on, read as "a blank it took", and the row in between gave the owner back.)
@@ -1266,7 +1304,9 @@ export function scheduleItemRecordAfterTheSyncWrote(
   fields: readonly string[],
 ): Partial<Pick<ScheduleItem, 'textFromTask'>> {
   const taken = row.textFromTask;
-  const synced = taken ? SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(taken, field)) : [];
+  // (A priority the sync writes on the row is his, sent on or carried: the record says so from then on, also on a
+  // row that took none when it was made. Schedule batch S6, item 1.)
+  const synced = taken ? SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => fields.includes(field) && (field === 'priority' || Object.prototype.hasOwnProperty.call(taken, field))) : [];
   return taken && synced.length > 0 ? { textFromTask: { ...taken, ...Object.fromEntries(synced.map(field => [field, valueTaken(written, field)])) } as ScheduleItem['textFromTask'] } : {};
 }
 

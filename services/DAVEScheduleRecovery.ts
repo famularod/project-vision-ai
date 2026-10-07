@@ -1,6 +1,6 @@
 import type { ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
-import { scheduleItemActivityWithOtherRows, scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityIsHis, scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
@@ -666,12 +666,18 @@ function typedTextCarriedToRevisedTasks(
       ...scheduleTaskEarlierIds(record).map(id => (byId.get(normalized(id)) ?? deletedById.get(normalized(id)))?.activity)) : null;
     // The priority, by the row's record alone (as a blank it took, above): the row still holds the priority it took,
     // the cloud's copy of the very row it took it from holds another now, and that row was changed after this one.
-    // (As the app reads a priority back: Medium for none. Read here, not through ScheduleItemEditBase: this module is
-    // loaded on its own by the check scripts, and must not need that one.)
-    const priorityAsRead = (value: unknown) => (value === 'Low' || value === 'High' ? value : 'Medium');
-    const priorityFrom = newest && replaced && cloud!.has(normalized(replaced.id)) && Object.prototype.hasOwnProperty.call(took, 'priority') &&
-      priorityAsRead(record.priority) === priorityAsRead(took!.priority) && priorityAsRead(replaced.priority) !== priorityAsRead(record.priority) &&
-      timestamp(replaced.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(replaced.priority) as ScheduleItem['priority'] : null;
+    // (As the app reads a priority back: Medium for none. Read through ScheduleTaskRevisions, not ScheduleItemEditBase:
+    // this module is loaded on its own by the check scripts, and must not need that one.)
+    // Schedule batch S6, item 1: a row that took no priority (the task's was not his when the row was made) takes one
+    // he has set on that row since, while its own is not his. And item 4 a, a row a master made before rows said what
+    // they took: from the row it answers to that was changed last, by the same rule (there only a Low is known his).
+    const priorityAsRead = schedulePriorityAsRead;
+    const tookPriority = Boolean(took) && Object.prototype.hasOwnProperty.call(took, 'priority');
+    const priorityLender = replaced && cloud!.has(normalized(replaced.id)) ? replaced : took ? undefined : earlier;
+    const priorityFrom = newest && priorityLender &&
+      (tookPriority ? priorityAsRead(record.priority) === priorityAsRead(took!.priority) : !schedulePriorityIsHis(record) && schedulePriorityIsHis(priorityLender)) &&
+      priorityAsRead(priorityLender.priority) !== priorityAsRead(record.priority) &&
+      timestamp(priorityLender.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(priorityLender.priority) : null;
     const fields: CarriedField[] = [...new Set([...carried, ...filledFromEarlier]), ...(priorityFrom ? ['priority' as const] : []), ...(notes ? ['activity' as const] : [])];
     if (fields.length === 0) return record;
     const fromEarlier = Object.fromEntries(filledFromEarlier.map(field => [field, lent.get(field)![field] ?? '']));

@@ -501,6 +501,8 @@ export function buildDAVEWebScheduleItem({
     // since another device may still hold that entry. Without it such a device kept Talk's undone percent as his
     // latest entry under a file's percent, and a lookahead that stated less showed it.
     ...(current?.progressUndone ? { progressUndone: current.progressUndone } : {}),
+    // And the priority the row's own import gave it (schedule batch S6, item 1): without it a priority set here reads as not his.
+    ...(current?.priorityAsImported ? { priorityAsImported: current.priorityAsImported } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,

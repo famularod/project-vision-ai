@@ -969,6 +969,16 @@ export type ScheduleItem = {
    */
   progressUndone?: { percentComplete: number; confirmedAt: string | null } | null;
   priority: SchedulePriority;
+  /**
+   * The priority this row's own import gave it (schedule batch S6, item 1, 7
+   * Oct 2026): High when the file marks the row critical or its finish was
+   * within a week of the import, else Medium. Written once, on every row an
+   * import adds, and never changed: a priority that reads otherwise is one
+   * David set, and only that follows the task to the row a newer master
+   * moves it to. Kept in the task's JSON record. Missing on a row saved
+   * before, where only a Low is known to be his (no import gives one).
+   */
+  priorityAsImported?: SchedulePriority | null;
   status: ScheduleStatus;
   notes: string;
   /** Smallest accountable step expected next. */
@@ -1037,9 +1047,10 @@ export type ScheduleItem = {
    * cloud's row of that task says what he did to the field last
    * (SyncService). Only fields taken from the task: none the file stated.
    * Kept in the task's JSON record. Missing on a row saved before.
-   * priority (schedule batch S5, item 1): the priority the row took with
-   * them. No schedule file states one for a task he already has, so the new
-   * row always takes the task's; missing on a row saved before.
+   * priority (schedule batch S5, item 1; put right in S6, item 1): the
+   * priority the row took with them, only when it was one David had set on
+   * the task (schedulePriorityIsHis). A task whose priority he never set
+   * gets no entry: its new row keeps what its own import gave it.
    */
   textFromTask?: {
     taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string;

@@ -11,6 +11,8 @@ import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import {
+  schedulePriorityAsRead,
+  schedulePriorityIsHis,
   scheduleTaskEarlierIds,
   scheduleTaskLinksFollowingShownTasks,
   scheduleTaskLinkTargets,
@@ -308,12 +310,12 @@ function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<Schedul
  */
 function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
   const unset = TYPED_TEXT_FIELDS.filter(field => !key(row[field]));
-  // Schedule batch S5, item 1 (Medium; older, the same on Build 229): and the task's priority. An import works a
-  // priority out for every row (High when the finish is within a week of the import), which is a start for a task
-  // new to the list and no word about one he already has: a task left on its dates has always kept its own. The
-  // moved task now keeps it too, and the row says it took it, so it is weighed like the rest wherever rows meet.
-  const priority = scheduleItemFieldAsRead('priority', task.priority) as ScheduleItem['priority'];
-  return { ...filled, priority, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), priority } };
+  // Schedule batch S5, item 1 (Medium; older, the same on Build 229): and the task's priority, when it is one he set
+  // (schedule batch S6, item 1: schedulePriorityIsHis). The row then says it took it, so it is weighed like the rest
+  // wherever rows meet. A task whose priority he never set gets the row's own, as before S5: the file's Critical
+  // column, or High when the finish is within a week of the import.
+  const his = schedulePriorityIsHis(task) ? { priority: scheduleItemFieldAsRead('priority', task.priority) as ScheduleItem['priority'] } : {};
+  return { ...filled, ...his, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), ...his } };
 }
 
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
@@ -1762,10 +1764,15 @@ export function mergeApprovedScheduleImportItems({
   const withLinksTakenNoted = (item: ScheduleItem): ScheduleItem => (item.textFromTask && !fileStatesLinks.has(item.id)
     ? { ...item, textFromTask: { ...item.textFromTask, dependencies: scheduleTaskLinksOf(item) } } : item);
 
+  // Schedule batch S6, item 1: every row an import adds keeps the priority its own import gave it (priorityAsImported),
+  // also the row that took one he had set: what reads otherwise later is his, and the file's word is not lost.
+  const asImported = new Map(imported.map(item => [item.id, schedulePriorityAsRead(item.priority)]));
+  const withPriorityAsImported = (item: ScheduleItem): ScheduleItem => ({ ...item, priorityAsImported: asImported.get(item.id) ?? schedulePriorityAsRead(item.priority) });
+
   // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
   const unchanged = new Set(existing);
   return {
     next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
-    additions: additions.map(withLinksTakenNoted).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+    additions: additions.map(withLinksTakenNoted).map(withPriorityAsImported).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
   };
 }

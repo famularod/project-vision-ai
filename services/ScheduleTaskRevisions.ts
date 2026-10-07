@@ -1,4 +1,4 @@
-import type { ProjectItemActivity, ReferenceDocument, ScheduleDependency, ScheduleItem } from '../types';
+import type { ProjectItemActivity, ReferenceDocument, ScheduleDependency, ScheduleItem, SchedulePriority } from '../types';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
@@ -854,4 +854,52 @@ export function scheduleItemActivityWithOtherRows(
   const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
   return [...mine, ...lacking].map((entry, index) => ({ entry, index }))
     .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index).map(({ entry }) => entry);
+}
+
+/**
+ * Schedule batch S6, item 1 (7 Oct 2026; puts S5 item 1 right). S5 made a
+ * task's priority follow it to the row a newer master moves it to, always. So
+ * a task David never touched no longer turned High when a master moved it
+ * into the coming week, and a file's Critical column no longer raised it.
+ * Decided: only a priority he SET follows; one he never set is the new row's
+ * own, as before S5.
+ *
+ * How the app tells. No stamp says who set a priority, so a row keeps what
+ * its own import gave it (priorityAsImported, written once on every row an
+ * import adds). The priority is his when
+ *  - the row says it took it from the task with his text (textFromTask): it
+ *    was his there, and whatever the row holds since was set on it; or
+ *  - it reads otherwise than its own import gave it; or
+ *  - the row was saved before rows kept that word, and it is Low: no import
+ *    gives a Low. A Medium or a High there cannot be told from the file's.
+ */
+export function schedulePriorityAsRead(value: unknown): SchedulePriority {
+  return value === 'Low' || value === 'High' ? value : 'Medium';
+}
+
+type PriorityRecord = Pick<ScheduleItem, 'priority' | 'priorityAsImported' | 'textFromTask'>;
+
+/** What the row's own import gave it; for a row saved before that was kept, what it holds (Medium under a Low, which no import gives). */
+export function schedulePriorityItsImportGave(row: PriorityRecord): SchedulePriority {
+  const recorded = row.priorityAsImported;
+  if (recorded === 'Low' || recorded === 'Medium' || recorded === 'High') return recorded;
+  const held = schedulePriorityAsRead(row.priority);
+  return held === 'Low' ? 'Medium' : held;
+}
+
+/** Whether the row's priority is one David set (above): only that follows the task. */
+export function schedulePriorityIsHis(row: PriorityRecord | null | undefined): boolean {
+  if (!row) return false;
+  if (row.textFromTask && Object.prototype.hasOwnProperty.call(row.textFromTask, 'priority')) return true;
+  return schedulePriorityAsRead(row.priority) !== schedulePriorityItsImportGave(row);
+}
+
+/**
+ * Whether the row's priority is known to be its own import's, never set by
+ * David: the row keeps what its import gave it and still holds that. A row
+ * saved before rows kept that word is not known either way (unless Low).
+ */
+export function schedulePriorityIsItsImports(row: PriorityRecord | null | undefined): boolean {
+  const recorded = row?.priorityAsImported;
+  return Boolean(row) && (recorded === 'Low' || recorded === 'Medium' || recorded === 'High') && !schedulePriorityIsHis(row);
 }

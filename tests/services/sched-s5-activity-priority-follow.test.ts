@@ -142,16 +142,20 @@ describe('S5 item 1: a master that moves a task takes its activity notes and its
     expect([framing.startDate, noteIds(framing), framing.priority]).toEqual(['10/09/2026', ['a1', 'a2', 'a3'], 'Low']);
   });
 
-  it('the import\'s own "due within a week" High is not a word about a task he already has: the moved task keeps its priority, as one left on its dates always did', () => {
+  // Schedule batch S6, item 1 (7 Oct 2026): S5 had every moved task keep its priority, set by him or not, and this
+  // test pinned "a task he never touched keeps the priority it had" (Medium). Decided since: only a priority he SET
+  // follows; one he never set is the new row's own, as before S5. The scenario is untouched; that one line now
+  // expects the import's High for the moved task he never touched. (sched-s6-priority-he-set-follows has the rest.)
+  it('the import\'s own "due within a week" High does not go over a priority he set; a moved task he never touched takes it, as before S5', () => {
     // G is imported four days before the task's new finish: the import marks its row High.
     const late = schedule('MASTER G', '2026-10-11T12:00:00.000Z');
     jest.setSystemTime(Date.parse(late.importedAt as string));
     try {
       expect(rows(late, [FRAMING_G]).map(item => item.priority)).toEqual(['High']);
       expect(one(approve(withHistory, late, [FRAMING_G, ROOF]), 'Framing').priority).toBe('Low');
-      // A task he never touched keeps the priority it had, moved or not.
+      // A task he never touched: moved, it takes the new row's own; left on its dates, it is the same row as it was.
       const untouched = approve(onF, late, [FRAMING_G, ROOF]);
-      expect([one(untouched, 'Framing').priority, one(untouched, 'Roof').priority]).toEqual(['Medium', 'Medium']);
+      expect([one(untouched, 'Framing').priority, one(untouched, 'Roof').priority]).toEqual(['High', 'Medium']);
       // A task new to the list starts with the import's.
       expect(one(approve(onF, late, [FRAMING_G, ROOF, 'Paint,Alpha,Lot,10/10/2026,10/14/2026,']), 'Paint').priority).toBe('High');
     } finally { jest.setSystemTime(Date.parse('2026-06-01T12:00:00.000Z')); }
@@ -207,11 +211,15 @@ describe('S5 item 1: Set Active and Make Current, back and forth', () => {
     expect(one(setActive(setActive(stamped, F, '2026-06-10T08:00:00.000Z'), G, '2026-06-11T08:00:00.000Z'), 'Framing').priority).toBe('High');
   });
 
-  it('a row a master made before this build keeps no word about its priority: it stays as it is (recorded limit)', () => {
+  // Schedule batch S6, items 1 and 4 a: S5 recorded this as a limit ("it stays as it is": Medium). A Low is known to be
+  // his on any row (no import gives one), so the Low he set on the old row now comes to the task's row; a Medium or a
+  // High on such an old row still stays behind (sched-s6-priority-he-set-follows). The scenario is untouched, with
+  // the new word of this build (what the row's import gave it) taken off the row too, as a row saved before has none.
+  it('a row a master made before this build keeps no word about its priority: the Low he set on the old row still comes to it', () => {
     const { priority: _taken, ...record } = one(onG, 'Framing').textFromTask as NonNullable<ScheduleItem['textFromTask']>;
-    const asBefore = { ...onG, items: onG.items.map(item => (item.id === framingG ? { ...item, priority: 'Medium', textFromTask: record } as ScheduleItem : item)) };
+    const asBefore = { ...onG, items: onG.items.map(item => (item.id === framingG ? { ...item, priority: 'Medium', priorityAsImported: undefined, textFromTask: record } as ScheduleItem : item)) };
     const backAndForth = setActive(setActive(asBefore, F, '2026-06-10T08:00:00.000Z'), G, '2026-06-11T08:00:00.000Z');
-    expect(one(backAndForth, 'Framing').priority).toBe('Medium');
+    expect(one(backAndForth, 'Framing').priority).toBe('Low');
     // Its activity notes need no record: they come all the same.
     const without = { ...asBefore, items: asBefore.items.map(item => (item.id === framingG ? { ...item, activity: [] } as ScheduleItem : item)) };
     expect(noteIds(one(setActive(setActive(without, F, '2026-06-10T08:00:00.000Z'), G, '2026-06-11T08:00:00.000Z'), 'Framing'))).toEqual(['a1', 'a2']);

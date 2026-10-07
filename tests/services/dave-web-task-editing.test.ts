@@ -112,6 +112,20 @@ describe('DAVE desktop task editing model', () => {
     expect([percent.progressStandsSince, percent.fileProgressPeak, percent.fileProgressLast, percent.masterDatesOfRow]).toEqual([undefined, kept.fileProgressPeak, kept.fileProgressLast, kept.masterDatesOfRow]);
   });
 
+  test('schedule batch S6 item 1: a web edit keeps the priority the row\'s own import gave it, so a priority set on the web reads as his', () => {
+    const current: DAVEWebScheduleItem = {
+      ...buildDAVEWebScheduleItem({ draft: { ...BASE_DRAFT, priority: 'High' }, id: 'task-priority', now: '2026-07-18T18:00:00.000Z', actor: 'pm@example.com' }),
+      importBatchId: 'batch-1', sourceDocumentId: 'document-1', priorityAsImported: 'High',
+    };
+    const edit = (draft: Partial<typeof BASE_DRAFT>) => buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, priority: 'High', ...draft }, current, id: current.id, now: '2026-07-19T18:00:00.000Z', actor: 'pm@example.com',
+    });
+    expect([edit({ notes: 'Walls up' }).priority, edit({ notes: 'Walls up' }).priorityAsImported]).toEqual(['High', 'High']);
+    expect([edit({ priority: 'Low' }).priority, edit({ priority: 'Low' }).priorityAsImported]).toEqual(['Low', 'High']);
+    // A task typed in on the web has no import, and gets no such word.
+    expect(buildDAVEWebScheduleItem({ draft: BASE_DRAFT, id: 'task-by-hand', now: '2026-07-18T18:00:00.000Z', actor: 'pm@example.com' }).priorityAsImported).toBeUndefined();
+  });
+
   test('reopens a completed task when only its status is changed', () => {
     const current = buildDAVEWebScheduleItem({
       draft: { ...BASE_DRAFT, status: 'Complete', percentComplete: 100 },
