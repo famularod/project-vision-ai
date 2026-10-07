@@ -101,9 +101,12 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     void consumeSharedDocumentsRestoredElsewhere(view.restoredElsewhere);
   }, [cardsLoaded, view.restoredElsewhere]);
 
-  const ask = useCallback((documentId: string, archived: boolean) => {
-    void requestSharedDocumentArchive(documentId, archived).then(() => syncRef.current());
+  const ask = useCallback((documentId: string, archived: boolean, name?: string) => {
+    void requestSharedDocumentArchive(documentId, archived, undefined, name).then(() => syncRef.current());
   }, []);
+  // The document he was last asked about before archiving: its name goes with the tap, for the line that says so
+  // if the tap is ever let go without being sent (review of D1, L2).
+  const askedAboutRef = useRef<string | undefined>(undefined);
 
   return useMemo(() => ({
     installed: view.installed,
@@ -111,15 +114,18 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     waitingIds: view.waitingIds,
     refusedIds: view.refusedIds,
     /** The owner archived this shared document on this device. */
-    archive: (documentId: string) => ask(documentId, true),
+    archive: (documentId: string) => ask(documentId, true, askedAboutRef.current),
     /** Restore, from "Archived (n)": this device's card comes back and the cloud's mark is emptied. */
     restore: (document: MobileArchivedDocument) => {
       const ids = [document.cardId, document.sharedDocumentId].filter((id): id is string => Boolean(id));
       restoreCardsRef.current(ids);
-      if (document.sharedDocumentId) ask(document.sharedDocumentId, false);
+      if (document.sharedDocumentId) ask(document.sharedDocumentId, false, document.name);
     },
     /** What the owner is asked before archiving, true to what will happen. */
-    question: (name: string, category: string) => sharedDocumentArchiveQuestion(name, category, view.installed),
+    question: (name: string, category: string) => {
+      askedAboutRef.current = name;
+      return sharedDocumentArchiveQuestion(name, category, view.installed);
+    },
     /** A live change to a shared document, as the cloud sent it. */
     noteLiveChange: (entity: string, payload?: DAVEOperationalRealtimePayload) => {
       if (entity !== 'reference_document' || !payload) return;

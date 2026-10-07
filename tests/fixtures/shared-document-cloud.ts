@@ -74,6 +74,12 @@ export function createSharedDocumentCloud({ installed = false }: { installed?: b
         if (operator === 'is' && value === null) filters.push(row => row[column] !== null && row[column] !== undefined);
         return chain;
       },
+      /** "where the column is empty": the condition on a waiting tap's write (review of D1, L2). */
+      is(column: string, value: unknown) {
+        if (column === 'archived_at') namesMark = true;
+        if (value === null) filters.push(row => row[column] === null || row[column] === undefined);
+        return chain;
+      },
       order() { return chain; },
       limit() { return chain; },
       update(values: Record<string, unknown>) { patch = values; return chain; },

@@ -256,6 +256,27 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     device.unmount();
   });
 
+  it('review of D1, L2: the document\'s name goes with a waiting tap, for the line that says so if it is ever let go', async () => {
+    const device = start();
+    await device.quiet();
+    cloud.state.offline = true;
+    const waitingNames = () => (JSON.parse(mockStorage.get('projectPhotoUpdate.sharedDocumentArchive.v1') || '{}') as {
+      owners?: Record<string, { waiting?: Array<{ archived: boolean; name?: string }> }>;
+    }).owners?.[owner]?.waiting?.map(mark => `${mark.archived ? 'archive' : 'restore'}:${mark.name}`);
+    // Archive: the name he was asked about just before.
+    device.result.current.question('Grading permit.pdf', 'Permit Card');
+    act(() => { device.result.current.archive(PERMIT); });
+    await device.quiet();
+    expect(waitingNames()).toEqual(['archive:Grading permit.pdf']);
+    // Restore: the name on the archived line he tapped.
+    act(() => {
+      device.result.current.restore({ key: 'reference:doc-permit', name: 'Grading permit', category: 'Permit Card', cardId: null, sharedDocumentId: PERMIT, scope: 'waiting' });
+    });
+    await device.quiet();
+    expect(waitingNames()).toEqual(['restore:Grading permit']);
+    device.unmount();
+  });
+
   it('asks the cloud nothing when cloud sync is not set up, or when the sign-in is another account\'s', async () => {
     cloud.row(PERMIT)!.archived_at = AT;
     mockCloudService.client = null;
