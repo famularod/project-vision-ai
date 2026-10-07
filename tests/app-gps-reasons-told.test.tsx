@@ -6,6 +6,10 @@
  * 1. After he deletes the area his open update was in, the Current Area card
  *    said "Why: This is your current confirmed selection." under "Unassigned
  *    / Unknown Area". Nothing had been selected.
+ * 2. "The home screen shows the project picker with no reason when Precise
+ *    Location is off." It does not, in this build: nothing on the home
+ *    screen opens the picker at all. Pinned here, not changed (see the
+ *    notes for the decision this leaves).
  * 3. An unfinished update with no GPS said why on the day (location not
  *    allowed, Precise Location off, no fix), but after the app was closed
  *    and opened again the resumed update said nothing about it.
@@ -289,6 +293,129 @@ describe('1. the Current Area card after the update\'s area is deleted', () => {
     expect(tree.queryByText('Why: This is your current confirmed selection.')).toBeNull();
     expect(tree.getByText('Why: No area has been chosen for this update yet.')).toBeTruthy();
     tree.unmount();
+  });
+});
+
+describe('2. the home screen and the project picker, with Precise Location off', () => {
+  const WIDE = { width: 1194, height: 834, scale: 2, fontScale: 1 } as const;
+  const task = (id: string, taskName: string, projectName: string, locationName: string) => ({
+    id, taskName, projectName, status: 'In Progress', percentComplete: 20, priority: 'Medium',
+    startDate: '09/28/2026', finishDate: '10/30/2026', owner: '', contractor: '', locationName, notes: '',
+  });
+
+  beforeEach(async () => {
+    // Two projects, each with a mapped area, so GPS has a choice to make; an
+    // approximate fix (Precise Location off) cannot make it.
+    mockLocation.granted = true;
+    mockLocation.precise = false;
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['Lot 9', 'Main St']));
+    await AsyncStorage.setItem('projectPhotoUpdate.projectAreas.v1', JSON.stringify([
+      area('area-north', 'North Pad', 'Lot 9', true), area('area-roof', 'Roof Deck', 'Main St', true),
+    ]));
+    await AsyncStorage.setItem('projectPhotoUpdate.scheduleItems.v1', JSON.stringify([
+      task('task-lot9', 'Grade pad', 'Lot 9', 'North Pad'), task('task-main', 'Seal roof', 'Main St', 'Roof Deck'),
+    ]));
+  });
+
+  /** One thing to tap for each different action on the screen. */
+  function tapTargets(tree: ReturnType<typeof render>) {
+    const actions = new Set<unknown>();
+    const targets: Parameters<typeof fireEvent.press>[0][] = [];
+    for (const node of tree.UNSAFE_root.findAll(candidate => typeof candidate.props?.onPress === 'function')) {
+      if (actions.has(node.props.onPress)) continue;
+      actions.add(node.props.onPress);
+      const host = typeof node.type === 'string' ? node : node.findAll(child => typeof child.type === 'string')[0];
+      if (host) targets.push(host);
+    }
+    return targets;
+  }
+
+  const pickerIsOpen = (tree: ReturnType<typeof render>) =>
+    tree.queryByText('Select Project') !== null || tree.queryByText('Choose the job this update belongs to.') !== null;
+
+  async function launchAt(window: typeof PHONE | typeof WIDE, shell: 'app-bottom-tabs' | 'app-rail-brand') {
+    act(() => { Dimensions.set({ window, screen: window }); });
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId(shell)).toBeTruthy(), COLD);
+    // The home screen's GPS check has run, and could not choose.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    return tree;
+  }
+
+  it.each([
+    ['a phone', PHONE, 'app-bottom-tabs'],
+    ['an iPad', WIDE, 'app-rail-brand'],
+  ] as const)('on %s, no single tap on the home screen opens the project picker', async (_device, window, shell) => {
+    const first = await launchAt(window, shell);
+    const count = tapTargets(first).length;
+    expect(pickerIsOpen(first)).toBe(false);
+    first.unmount();
+    // Enough actions that this is the real home screen, not an empty shell.
+    expect(count).toBeGreaterThan(12);
+
+    const opened: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const tree = await launchAt(window, shell);
+      const target = tapTargets(tree)[index];
+      if (target) {
+        await act(async () => { fireEvent.press(target); });
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+        if (pickerIsOpen(tree)) opened.push(index);
+      }
+      tree.unmount();
+    }
+    expect(opened).toEqual([]);
+  });
+
+  it('every place that starts a new update names its project, so the picker has nothing to open it', () => {
+    // Read from App.tsx's structure. If a way to the picker is ever added
+    // (a New Update with no project), this and the two cases above fail,
+    // and the picker then needs its one sentence (notes, P1 part B item 2).
+    const ts = jest.requireActual('typescript') as typeof import('typescript');
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const path = jest.requireActual('path') as typeof import('path');
+    const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
+    const tree = ts.createSourceFile('App.tsx', app, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    type Node = import('typescript').Node;
+    const find = <T extends Node>(start: Node, test: (node: Node) => node is T): T[] => {
+      const found: T[] = [];
+      const visit = (node: Node) => { if (test(node)) found.push(node); ts.forEachChild(node, visit); };
+      visit(start);
+      return found;
+    };
+    const callsOf = (start: Node, name: string) => find(start, (node): node is import('typescript').CallExpression =>
+      ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name);
+    const component = (name: string) => {
+      const matches = tree.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+      expect(matches).toHaveLength(1);
+      return matches[0];
+    };
+    const namesAProject = (call: import('typescript').CallExpression) =>
+      call.arguments.length === 1 && call.arguments[0].getText(tree) !== 'undefined';
+
+    // The picker is opened in one place only: New Update with no project it is sure of.
+    expect(app.split("setScreen('SelectProject')").length - 1).toBe(1);
+    expect(app).toContain("openProjectPicker: () => setScreen('SelectProject'),");
+    // The picker, as it is: a title and one line, no reason.
+    expect(app).toContain('subtitle="Choose the job this update belongs to."');
+
+    // New Update is called, or handed on, in exactly these places.
+    const direct = callsOf(tree, 'createNewUpdate');
+    expect(direct.map(call => call.getText(tree))).toEqual(['createNewUpdate(projectName)']);
+    const handedOn = find(tree, (node): node is import('typescript').JsxAttribute =>
+      ts.isJsxAttribute(node) &&
+      Boolean(node.initializer) &&
+      ts.isJsxExpression(node.initializer!) &&
+      node.initializer!.expression?.getText(tree) === 'createNewUpdate')
+      .map(attribute => `${attribute.parent.parent.tagName.getText(tree)}.${attribute.name.getText(tree)}`);
+    expect(handedOn.sort()).toEqual(['HomeScreen.onNewUpdate', 'ProjectWorkspaceScreen.onNewFieldUpdate']);
+
+    // The home screen and a project's page each call it with their project's name.
+    const fromHome = callsOf(component('HomeScreen'), 'onNewUpdate');
+    expect(fromHome.map(call => call.getText(tree))).toEqual(['onNewUpdate(liveAuthority.projectTruth.projectName)']);
+    const fromProjectPage = callsOf(component('ProjectWorkspaceScreen'), 'onNewFieldUpdate');
+    expect(fromProjectPage.map(call => call.getText(tree))).toEqual(['onNewFieldUpdate(projectName)']);
+    expect([...direct, ...fromHome, ...fromProjectPage].every(namesAProject)).toBe(true);
   });
 });
 
