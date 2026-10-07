@@ -852,7 +852,11 @@ export function compareDAVEReportSnapshots({
   //    and the task is new to the reader: "added".
   // A task that comes back on its own row after more than one report (he answered "The same task" for a row on the
   // days it had, or Set Active went back) has no earlier row to tell it by, and still reads "added".
-  const noPriorNow = new Set(current.tasks.filter(task =>
+  // Third part (found by the text driver taught this rule, 1 of 1,600 sequences): never a task that is a lookahead's
+  // detail row NOW. No master has listed it, so no report said it was removed: it can only have left with a replaced
+  // lookahead. A report saved by a build before detail rows were marked has the row without the mark, and a later
+  // lookahead that listed it again read "Detail walk is back in the project plan." It reads "added", as before.
+  const noPriorNow = new Set(current.tasks.filter(task => !isLookaheadDetail(task) &&
     !previousById.has(task.taskId) && !linked.pairs.has(task) && !revisions.has(task) && !linked.current.has(task)));
   const linkedBefore = reportBefore ? linkTasksById(reportBefore.tasks, [...noPriorNow]) : null;
   const earlierReportMade = Date.parse(previous.capturedAt);

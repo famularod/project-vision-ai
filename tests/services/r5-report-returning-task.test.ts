@@ -487,6 +487,27 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
     expect(linesOf([task('old', { lookaheadDetail: true })], saved('2026-09-09T15:00:00.000Z', [other], detailBefore))).toEqual([ADDED]);
   });
 
+  it('guard: nor is it back when a master lists it now: the master\'s task is added, since nothing said the detail row was removed', () => {
+    const detailBefore = saved('2026-09-08T15:00:00.000Z', [other, task('old', { lookaheadDetail: true })]);
+    const lastReport = saved('2026-09-09T15:00:00.000Z', [other], detailBefore);
+    // The lookahead's row itself became the master's task; or the master made a new row that answers to it.
+    expect(linesOf([task('old')], lastReport)).toEqual([ADDED]);
+    expect(linesOf([task('listed', { earlierTaskIds: ['old'] })], lastReport)).toEqual([ADDED]);
+  });
+
+  it('nor when the report that listed it was saved by a build that did not yet mark a lookahead\'s detail rows (found by the taught text driver)', () => {
+    // The same detail row, in a report saved before the mark existed: it left with its lookahead, nothing was said,
+    // and a later lookahead lists it again on the row it had.
+    const unmarkedBefore = saved('2026-09-08T15:00:00.000Z', [other, task('old', { finishDate: '10/11/2026' })]);
+    expect(linesOf([task('old', { lookaheadDetail: true, finishDate: '09/19/2026' })], saved('2026-09-09T15:00:00.000Z', [other], unmarkedBefore))).toEqual([ADDED]);
+    // Nor by a row it answers to, nor by a saved row handed over.
+    expect(linesOf([task('again', { lookaheadDetail: true, earlierTaskIds: ['old'] })], saved('2026-09-09T15:00:00.000Z', [other], unmarkedBefore))).toEqual([ADDED]);
+    expect(linesOf([task('again', { lookaheadDetail: true, earlierTaskIds: ['old'] })], saved('2026-09-09T15:00:00.000Z', [other]), [row('again', 'old', '2026-09-07T12:00:00.000Z')])).toEqual([ADDED]);
+    // Guard: a master's task on that same unmarked report is back, as before.
+    expect(linesOf([task('old', { percentComplete: 70 })], saved('2026-09-09T15:00:00.000Z', [other], unmarkedBefore)))
+      .toEqual([BACK, 'Paint moved from 60% to 70% complete.', 'Paint finish changed from 10/11/2026 to 10/05/2026.']);
+  });
+
   it('with no report kept that has it: back by the row it left on, only when that row was already saved when the last report was made', () => {
     const lastReport = saved('2026-09-09T15:00:00.000Z', [other]);
     const current = [task('new', { earlierTaskIds: ['old'], percentComplete: 70 })];
