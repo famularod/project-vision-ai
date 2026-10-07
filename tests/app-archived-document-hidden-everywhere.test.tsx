@@ -409,7 +409,7 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     await reachTheCloud(); // tried, with no signal
     expect(cloud.row('doc-permit')?.archived_at).toBeNull();
     await press(tree, tree.getByText('Archived (1)'));
-    expect(tree.getByText('Hidden on this device. Your other devices follow when this one is back online.')).toBeTruthy();
+    expect(tree.getByText('Hidden on this device. Your other devices follow as soon as this one reaches the cloud.')).toBeTruthy();
 
     cloud.state.offline = false;
     await reachTheCloud();

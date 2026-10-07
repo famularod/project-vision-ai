@@ -102,7 +102,9 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     expect(device.result.current.installed).toBe(false);
     act(() => { device.result.current.archive(PERMIT); });
     await device.quiet();
-    expect(hidden(device)).toEqual([PERMIT]); // hidden on this device, as archiving always was
+    // The phone's own card carries the archive, as archiving always did; the mark's list holds nothing (review of D1, L9).
+    expect(hidden(device)).toEqual([]);
+    expect(device.result.current.waitingIds.size).toBe(0);
     // Nothing is tried again on a timer: the cloud is not asked while the app just sits open.
     const asked = cloud.requests.length;
     await act(async () => { jest.advanceTimersByTime(10 * 60_000); });
@@ -119,7 +121,9 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     await act(async () => { becameActive(); });
     await device.quiet();
     expect(device.result.current.installed).toBe(true);
-    expect(cloud.row(PERMIT)?.archived_at).toEqual(expect.any(String)); // the archive that was waiting has gone up
+    // The archive made before the database change does not travel: the paste hides nothing (review of D1, L9).
+    expect(cloud.requests.filter(request => request.kind === 'write_mark')).toEqual([]);
+    expect(cloud.row(PERMIT)?.archived_at ?? null).toBeNull();
     device.unmount();
   });
 

@@ -62,7 +62,7 @@ describe('"Archived (n)" under a project\'s Documents', () => {
     ]);
   });
 
-  it('says where each one is hidden: every device, this device until it is back online, or this device', () => {
+  it('says where each one is hidden: every device, this device until it reaches the cloud, or this device', () => {
     const documents = [card('sent', { isArchived: true }), card('waiting', { isArchived: true }), card('old', { isArchived: true }), card('local', { isArchived: true, referenceDocumentId: null })];
     const referenceDocuments = [shared('sent'), shared('waiting'), shared('old')];
     const scopes = (installed: boolean | null) => buildMobileArchivedDocuments({
@@ -73,8 +73,10 @@ describe('"Archived (n)" under a project\'s Documents', () => {
     expect(scopes(true)).toEqual(['sent:everywhere', 'waiting:waiting', 'old:this_device', 'local:this_device']);
     // Before the database change nothing waits on signal: it is hidden here, and that is all that is said.
     expect(scopes(false)).toEqual(['sent:everywhere', 'waiting:this_device', 'old:this_device', 'local:this_device']);
+    // A device that has never had an answer says the same (review of D1, L9).
+    expect(scopes(null)).toEqual(['sent:everywhere', 'waiting:this_device', 'old:this_device', 'local:this_device']);
     expect(mobileArchivedDocumentScopeText('everywhere')).toBe('Hidden on all your devices. Kept in the cloud.');
-    expect(mobileArchivedDocumentScopeText('waiting')).toBe('Hidden on this device. Your other devices follow when this one is back online.');
+    expect(mobileArchivedDocumentScopeText('waiting')).toBe('Hidden on this device. Your other devices follow as soon as this one reaches the cloud.');
     expect(mobileArchivedDocumentScopeText('this_device')).toBe('Hidden on this device.');
   });
 

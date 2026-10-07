@@ -16,13 +16,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  *
  * The column is there only once the owner has pasted the database change.
  * Until then the cloud answers "no such column": that is taken, quietly, as
- * "not installed", and archiving stays on the one device, as before.
+ * "not installed", and archiving stays on the one device, as before. A
+ * device that has never had an answer (no signal since it was installed)
+ * treats the mark as not installed too. Nothing is put on the waiting list
+ * in either state, so pasting the database change hides nothing by itself
+ * (review of D1, L9).
  *
  * This file is the device's side of it:
  * - what the cloud last said is archived, kept on the device (per account)
  *   so it holds at the next launch with no signal;
- * - a waiting list of this device's own archive and restore, sent when the
- *   cloud can be reached, by the account that asked and no other;
+ * - a waiting list of this device's own archive and restore, made while the
+ *   device knows the mark is installed and cannot reach the cloud, and sent
+ *   when it can, by the account that asked and no other;
  * - the one rule every list uses: archived = the cloud's answer, plus what
  *   this device is waiting to archive, minus what it is waiting to restore.
  *
@@ -191,6 +196,10 @@ export async function sharedDocumentArchiveSettled(): Promise<void> {
  * device. It is hidden, or shown again, here at once; the cloud is told when
  * it can be reached. Asking back what the cloud already says, as far as this
  * device knows, leaves nothing to send.
+ *
+ * Until this device knows the cloud keeps the mark there is nothing to tell
+ * it: the archive is this device's own, on its own card, as in every build
+ * before, and nothing waits to be sent later (review of D1, L9).
  */
 export async function requestSharedDocumentArchive(documentId: string, archived: boolean, at: string = new Date().toISOString()): Promise<void> {
   const ownerId = activeOwnerId;
@@ -200,7 +209,7 @@ export async function requestSharedDocumentArchive(documentId: string, archived:
   change(ownerId, record => {
     const others = record.waiting.filter(mark => mark.documentId !== id);
     const markedInCloud = record.installed === true && record.archivedIds.includes(id);
-    const needed = archived ? !markedInCloud : markedInCloud || record.installed === null;
+    const needed = record.installed === true && archived !== markedInCloud;
     if (!needed && others.length === record.waiting.length) return record;
     return { ...record, waiting: needed ? [...others, { documentId: id, archived, at, attempts: 0 }].slice(-WAITING_LIMIT) : others };
   });
@@ -245,9 +254,11 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS }: Rea
   if (!read) return 'unknown';
   if (read.error) {
     if (!markColumnMissing(read.error)) return 'unknown';
-    // No column: nothing is archived in the cloud. What waits here keeps waiting.
-    change(ownerId, record => (record.installed === false && record.archivedIds.length === 0
-      ? record : { ...record, installed: false, archivedIds: [] }));
+    // No column: nothing is archived in the cloud, and nothing waits for a column that is not there. A tap that
+    // was waiting (the column was there, and has been removed again) stays this device's own, as before the change:
+    // adding the column a second time sends nothing (review of D1, L9).
+    change(ownerId, record => (record.installed === false && record.archivedIds.length === 0 && record.waiting.length === 0
+      ? record : { ...record, installed: false, archivedIds: [], waiting: [] }));
     return 'not_installed';
   }
   if (!Array.isArray(read.data) || !(await signedInAs(client, ownerId))) return 'unknown';

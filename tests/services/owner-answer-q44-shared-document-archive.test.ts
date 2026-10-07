@@ -68,12 +68,14 @@ describe('before the owner pastes the database change', () => {
     expect(listed(phone)).toEqual([]);
   });
 
-  it('an archive is hidden on this device and waits: nothing is written to the cloud, the row is as it was', async () => {
+  it('an archive is this device\'s own, as in the last build: nothing waits, nothing is written to the cloud, the row is as it was', async () => {
     const before = JSON.stringify(cloud.row(PERMIT));
     const phone = await device();
     await sync(phone, cloud);
     await phone.requestSharedDocumentArchive(PERMIT, true, ARCHIVED_AT);
-    expect(listed(phone)).toEqual([PERMIT]);
+    // The phone's own card carries the archive; the mark's list and its waiting list hold nothing (review of D1, L9).
+    expect(listed(phone)).toEqual([]);
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([]);
     await sync(phone, cloud);
     await sync(phone, cloud);
     expect(marksWritten(cloud)).toEqual([]);
@@ -121,7 +123,7 @@ describe('after the paste', () => {
     expect(marksWritten(cloud)).toHaveLength(1);
   });
 
-  it('an archive made before the paste goes up the first time the device finds the column', async () => {
+  it('an archive made before the paste does not travel: the paste itself hides nothing on any device (review of D1, L9)', async () => {
     cloud.state.installed = false;
     const phone = await device();
     await sync(phone, cloud);
@@ -130,7 +132,9 @@ describe('after the paste', () => {
     expect(cloud.row(PERMIT)?.archived_at ?? null).toBeNull();
     cloud.paste();
     await sync(phone, cloud);
-    expect(cloud.row(PERMIT)?.archived_at).toBe(ARCHIVED_AT);
+    await sync(phone, cloud);
+    expect(marksWritten(cloud)).toEqual([]);
+    expect(cloud.row(PERMIT)?.archived_at ?? null).toBeNull();
   });
 
   it('every other device then leaves it out, and still does at its next launch with no signal', async () => {
@@ -223,8 +227,9 @@ describe('after the paste', () => {
   it('a mark waiting for one account is never sent by another, and the other account sees none of it', async () => {
     cloud.add('doc-b', 'owner-b');
     cloud.paste();
-    cloud.state.offline = true;
     const phone = await device('phone', 'owner-a');
+    await sync(phone, cloud, 'owner-a'); // A's phone knows the mark is installed (only then does a tap wait: review of D1, L9)
+    cloud.state.offline = true;
     await phone.requestSharedDocumentArchive(PERMIT, true, ARCHIVED_AT);
     await phone.sharedDocumentArchiveSettled();
 
