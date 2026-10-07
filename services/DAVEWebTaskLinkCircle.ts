@@ -23,6 +23,18 @@ import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
  * hidden row still holds is not the task's. Round through any number of
  * tasks. Only a link this save adds: a circle already saved is not this
  * save's doing, and the editor lets him remove it.
+ *
+ * Second review of the web area, F7, the sentence only (7 Oct 2026). The
+ * refusal always said the other links were made "on another device or in
+ * another browser tab". That is not always so: with a project chosen at
+ * the top, the Schedule editor works out "comes after" within the tasks it
+ * is handed, so it can offer a task that already comes after the item
+ * THROUGH a task filed under another schedule name. Every link of that
+ * circle is in the schedule this very tab shows. The save is now told
+ * what this tab's schedule holds, and blames another device or tab only
+ * for a circle that schedule does not hold; otherwise it says the reason
+ * and names the same tasks. Whether a save is refused is decided as
+ * before, by what the cloud holds, and what the editor offers is unchanged.
  */
 export type DAVEWebLinkCircle = Readonly<{
   /** The task being saved. */
@@ -85,15 +97,34 @@ export function daveWebLinkCircleClosedBy({
   return null;
 }
 
-/** What he is told when the save is refused. */
-export function daveWebLinkCircleText(circle: DAVEWebLinkCircle): string {
+/**
+ * Whether every link of the circle is one the tasks given hold too: the predecessor waits for the first task
+ * in between, each of those for the next, and the last for the task being saved. By task, as the list shows
+ * links (a link that names a row a master has since replaced is the row shown for that task).
+ */
+function circleStandsIn(circle: DAVEWebLinkCircle, tasks: CloudTasks): boolean {
+  const shown = tasks.scheduleItems as readonly ScheduleItem[];
+  const target = scheduleTaskLinkTargets(shown, tasks.knownScheduleItems ?? shown);
+  const shownIdOf = (id: string) => target(id)?.id ?? id.trim();
+  const byId = new Map(shown.map(task => [task.id, task] as const));
+  const chain = [circle.predecessor, ...circle.through, circle.task].map(task => shownIdOf(task.id));
+  return chain.slice(0, -1).every((id, index) =>
+    normalizeScheduleDependencies(byId.get(id)?.dependencies).some(link => shownIdOf(link.predecessorItemId) === chain[index + 1]));
+}
+
+/**
+ * What he is told when the save is refused. `inThisSchedule`: every link of the circle is in the schedule
+ * this tab shows, so nothing is said of another device or tab (second review, web F7).
+ */
+export function daveWebLinkCircleText(circle: DAVEWebLinkCircle, { inThisSchedule = false }: { inThisSchedule?: boolean } = {}): string {
   const task = circle.task.taskName.trim();
   const predecessor = circle.predecessor.taskName.trim();
   const through = circle.through.map(step => `“${step.taskName.trim()}”`);
   const already = through.length === 0
     ? `“${predecessor}” is already set to start after “${task}”`
     : `“${predecessor}” already comes after “${task}” (through ${through.join(', ')})`;
-  return `Not saved. ${already}, on another device or in another browser tab. Making “${task}” start after “${predecessor}” as well would put them in a circle, and the schedule could not place either one. Untick “${predecessor}” and save again, or remove the other link first.`;
+  const where = inThisSchedule ? '' : ', on another device or in another browser tab';
+  return `Not saved. ${already}${where}. Making “${task}” start after “${predecessor}” as well would put them in a circle, and the schedule could not place either one. Untick “${predecessor}” and save again, or remove the other link first.`;
 }
 
 export const DAVE_WEB_LINK_CHECK_FAILED_TEXT =
@@ -108,10 +139,17 @@ export async function daveWebLinkCircleRefusal({
   item,
   opened,
   shownIdOf = id => id,
+  here,
   load = loadDAVEWebReadOnlySnapshot,
 }: {
   item: ScheduleItem;
   opened: Pick<ScheduleItem, 'dependencies'> | null | undefined;
+  /**
+   * The schedule this tab shows, whatever is chosen at the top of the page: the tasks shown, and every saved row.
+   * Only for the sentence: a circle whose links are all in it was not made on another device or in another tab.
+   * A caller that does not say gets the sentence as it was.
+   */
+  here?: CloudTasks | null;
   /**
    * The row this tab shows for a link's predecessor id. The editor saves a link that named a row a master has since
    * replaced as the row shown (owner answer Q29): that is the same link, not one this save adds, and asks nothing.
@@ -131,5 +169,5 @@ export async function daveWebLinkCircleRefusal({
     return DAVE_WEB_LINK_CHECK_FAILED_TEXT;
   }
   const circle = daveWebLinkCircleClosedBy({ item, opened, cloud });
-  return circle ? daveWebLinkCircleText(circle) : null;
+  return circle ? daveWebLinkCircleText(circle, { inThisSchedule: Boolean(here) && circleStandsIn(circle, here as CloudTasks) }) : null;
 }

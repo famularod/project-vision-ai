@@ -125,6 +125,8 @@ export function DesktopSchedulePage({
   const linkTarget = useMemo(() => scheduleTaskLinkTargets(scheduleTasks, knownTasks ?? []), [scheduleTasks, knownTasks]);
   /** The row shown for a link's predecessor id: a link the editor re-points there is not a new link (WS1 item 7). */
   const shownLinkId = (predecessorId: string) => linkTarget(predecessorId)?.id ?? predecessorId;
+  /** The schedule this tab shows, for the sentence of a refused link: a circle all in it was not made elsewhere (second review, F7). */
+  const scheduleHere = { scheduleItems: scheduleTasks as DAVEWebScheduleItem[], knownScheduleItems: (knownTasks ?? scheduleTasks) as DAVEWebScheduleItem[] };
   const [editor, setEditor] = useState<ScheduleEditorState | null>(null);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('builder');
@@ -436,7 +438,7 @@ export function DesktopSchedulePage({
       });
       // A predecessor added here that already comes after this item in the cloud (linked the other way on another
       // device or in another tab) would close a circle: refused, with what he typed kept (WS1 item 7).
-      const circle = editingTask ? await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId }) : null;
+      const circle = editingTask ? await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId, here: scheduleHere }) : null;
       if (circle) {
         setNotice({ tone: 'danger', text: circle });
         return;
@@ -544,7 +546,7 @@ export function DesktopSchedulePage({
         projects: auth.snapshot,
       });
       // As in Save: a link this adds must not close a circle with what the cloud holds now (WS1 item 7).
-      const circle = await daveWebLinkCircleRefusal({ item, opened: latest, shownIdOf: shownLinkId });
+      const circle = await daveWebLinkCircleRefusal({ item, opened: latest, shownIdOf: shownLinkId, here: scheduleHere });
       if (circle) {
         setNotice({ tone: 'danger', text: circle });
         return;
