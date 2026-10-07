@@ -13,6 +13,14 @@
  *
  * These cases pin what happens today, on the real screens. They change
  * nothing. The notes say what would close it.
+ *
+ * D1 (6 Oct 2026, owner answer Q44): it is closed by a mark the cloud keeps,
+ * which needs a database change the owner pastes himself. These four cases
+ * are unchanged, and are now the pin for the state BEFORE that paste, where
+ * archiving must behave exactly as it always has (the app in these tests has
+ * never been told the mark exists). The same cases turned round, for the
+ * state after the paste: tests/app-archived-document-hidden-everywhere.test.tsx
+ * and tests/services/owner-answer-q44-web-archived-documents.test.ts.
  */
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
