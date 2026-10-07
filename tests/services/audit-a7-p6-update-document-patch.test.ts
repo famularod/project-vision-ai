@@ -3202,6 +3202,154 @@ describe('a late photo analysis on an update in conflict reaches the cloud (audi
 });
 
 /**
+ * Sync batch Y3, item 4 (6 Oct 2026). Open item: "A late photo result can be
+ * missing from a conflict's review copy when the sync read the edit just
+ * before the result arrived." The tests above have the result finish AFTER
+ * the conflict was found. Here it finishes while the pass that finds the
+ * conflict is reading the cloud's copy: the pass has read the phone's edit
+ * already, and no conflict is recorded yet. The edit carries its project's
+ * cloud id, as an edit of a synced project does, so nothing in the pass
+ * writes the queued record again before the conflict is recorded.
+ */
+describe('a photo result that finishes while the sync is finding the conflict (sync batch Y3, item 4)', () => {
+  const cloudRead = () => (jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock })
+    .getProjectUpdateSyncMetadata;
+  /** Sent while its photo was analysed, edited offline, the iPad's edit after it; reconnected, and `meanwhile` happens during the pass's read of the cloud. */
+  async function conflictFoundWhile(meanwhile: (phone: Device) => Promise<void>) {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT, projectId: CLOUD_PROJECT_ID } as Partial<Update>);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    const read = cloudRead().getMockImplementation()!;
+    let reads = 0;
+    cloudRead().mockImplementation(async (...args: unknown[]) => {
+      const answer = await read(...args);
+      reads += 1;
+      if (reads === 1) await meanwhile(phone);
+      return answer;
+    });
+    try {
+      await waitingUpdateSync(phone);
+    } finally {
+      cloudRead().mockImplementation(read);
+    }
+    expect(reads).toBe(1); // the pass read the cloud once, and the change arrived during that read
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({ localId: 'u1' })]);
+    return phone;
+  }
+  const resultArrives = async (phone: Device) => {
+    lateAnalysisFinishes(phone, finishedAnalysis());
+    await phone.settle();
+    expect(await getSyncConflicts()).toEqual([]); // no conflict yet: the result went into the queued copy
+    expect(((await queuedFor())!.payload as { documentPatches?: unknown }).documentPatches).toBeUndefined();
+  };
+  const conflictCopy = async () => ((await getSyncConflicts())[0].localPayload as { updateData: Update }).updateData;
+  const laterChangeOfHis = async () => Boolean(newerPhoneEditForFieldUpdateConflict((await getSyncConflicts())[0], await getOfflineQueue()));
+
+  it("the conflict's copy has the result, Review Conflicts shows no later change of his, and the result waits as its own change", async () => {
+    await conflictFoundWhile(resultArrives);
+    expect(await conflictCopy()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(await conflictCopy())).toMatchObject({ status: 'analysis_complete' });
+    expect(await laterChangeOfHis()).toBe(false); // was true: "Includes a change you made after the conflict was found."
+    expect((await getOfflineQueue()).map(item => item.payload)).toEqual([expect.objectContaining({
+      id: 'u1', documentPatches: [expect.objectContaining({ photoId: analyzingPhoto.id })],
+    })]);
+  });
+
+  it('Keep Phone sends his copy with the result in the one tap; nothing is left waiting', async () => {
+    const phone = await conflictFoundWhile(resultArrives);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' }); // was "analyzing" until a later sync
+    expect(phone.saved()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('left for review: the result reaches the cloud copy at the next pass, so the iPad stops showing Analyzing; his edit still waits for his choice', async () => {
+    await conflictFoundWhile(resultArrives);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(await getSyncConflicts()).toHaveLength(1);
+    expect(await conflictCopy()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it("Keep Cloud keeps the iPad's note, with the result", async () => {
+    const phone = await conflictFoundWhile(resultArrives);
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_cloud');
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE, pieStatus: 'complete' });
+    expect(firstPhotoAnalysis(inCloud())).toMatchObject({ status: 'analysis_complete' });
+    expect(phone.saved()).toMatchObject({ notes: IPAD_NOTE, status: 'sent' });
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('an edit he saves in that same moment is still his later change: shown as one, and held as it is for his choice', async () => {
+    const LATER = 'Pour, 44 yards (typed while the sync ran)';
+    await conflictFoundWhile(async device => {
+      await editAndSave(device, { notes: LATER });
+    });
+    expect(await conflictCopy()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(await laterChangeOfHis()).toBe(true);
+    expect(((await queuedFor())!.payload as { updateData: Update; documentPatches?: unknown })).toMatchObject({ updateData: { notes: LATER } });
+    expect(((await queuedFor())!.payload as { documentPatches?: unknown }).documentPatches).toBeUndefined();
+    await uploadPendingChanges(); // nothing automatic sends it
+    expect(inCloud()).toMatchObject({ notes: IPAD_NOTE });
+    expect(await laterChangeOfHis()).toBe(true);
+  });
+
+  it('a result AND a document he takes off in that moment: nothing is folded; the removal stays in the waiting copy, as before', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await editAndSave(phone, { notes: RETRY_SYNC_OFFLINE_EDIT, projectId: CLOUD_PROJECT_ID, documents: [uploaded('permit')] } as Partial<Update>);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await iPadEditsNow(IPAD_NOTE);
+    await uploadPendingChanges();
+    const read = cloudRead().getMockImplementation()!;
+    let reads = 0;
+    cloudRead().mockImplementation(async (...args: unknown[]) => {
+      const answer = await read(...args);
+      reads += 1;
+      if (reads === 1) {
+        lateAnalysisFinishes(phone, finishedAnalysis());
+        await phone.settle();
+        await queueProjectUpdateDocumentChange({ ...phone.saved()!, documents: [] }, 'permit'); // into the waiting copy, which keeps its time
+      }
+      return answer;
+    });
+    try {
+      await waitingUpdateSync(phone);
+    } finally {
+      cloudRead().mockImplementation(read);
+    }
+    expect(documentIds(await conflictCopy())).toEqual(['permit']);
+    expect(firstPhotoAnalysis(await conflictCopy())).toMatchObject({ status: 'analyzing' });
+    const waiting = (await queuedFor())!.payload as { updateData: Update; documentPatches?: unknown };
+    expect(waiting.documentPatches).toBeUndefined();
+    expect(documentIds(waiting.updateData)).toEqual([]);
+    expect(waiting.updateData).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT, pieStatus: 'complete' });
+    expect(await laterChangeOfHis()).toBe(true);
+  });
+
+  it('a result AND an edit of his in that moment: nothing is folded; the copy with both is his later change, as before', async () => {
+    const LATER = 'Pour, 44 yards (typed while the sync ran)';
+    await conflictFoundWhile(async device => {
+      lateAnalysisFinishes(device, finishedAnalysis());
+      await device.settle();
+      await editAndSave(device, { notes: LATER });
+    });
+    expect(await conflictCopy()).toMatchObject({ notes: RETRY_SYNC_OFFLINE_EDIT });
+    expect(firstPhotoAnalysis(await conflictCopy())).toMatchObject({ status: 'analyzing' });
+    expect(await laterChangeOfHis()).toBe(true);
+    expect(((await queuedFor())!.payload as { updateData: Update })).toMatchObject({ updateData: { notes: LATER, pieStatus: 'complete' } });
+  });
+});
+
+/**
  * A4 pass 15 H1 (A7 pass 13; caused by 139b0bb): since 139b0bb any phone copy
  * of an update in conflict that was not exactly the conflict's own copy
  * counted as a "newer edit". The conflict's own queue item is dropped when the

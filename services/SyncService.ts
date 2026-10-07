@@ -3901,10 +3901,14 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   // Reconcile against the queue as it stands right now, not the snapshot
   // read at the top of this function - anything enqueued while the uploads
   // above were in flight needs to survive this write.
+  const lateResults = await lateResultsOntoConflictCopies(attemptedItemsById, itemOutcomes);
   const remaining = await mutateOfflineQueue(currentQueue => {
     const nextQueue = currentQueue.flatMap(item => {
       const attempted = attemptedItemsById.get(item.id);
       if (!attempted || !sameQueueRevision(item, attempted)) {
+        // A photo result alone reached the copy this pass has just recorded a conflict for (sync batch Y3, item 4).
+        const lateResult = lateResults.get(item.id);
+        if (lateResult && lateResult.queuedAs === JSON.stringify(item)) return [lateResult.asItsOwnChange];
         // A newer task edit merged in while this one went up starts from what landed (owner answer Q28).
         return [attempted && itemOutcomes[item.id] === 'uploaded' ? scheduleItemQueuedAfterLanding(item, attempted) : item];
       }
@@ -3959,6 +3963,73 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     heldErrorCount,
     itemErrors,
   };
+}
+
+/**
+ * Sync batch Y3, item 4 (open item: "A late photo result can be missing from a conflict's review copy when the sync
+ * read the edit just before the result arrived"). A photo result that finishes while an update is in conflict goes
+ * into the copy recorded with the conflict and waits as a change of its own for the cloud's copy (A4 pass 14 #4).
+ * One that finished while the pass that FOUND the conflict was still working on the update saw no conflict yet, and
+ * went into the queued copy the pass had already read. The conflict was then recorded without it, and the queued
+ * copy, different from the conflict's by that result alone, was taken for an edit he made afterwards: Review
+ * Conflicts said "Includes a change you made after the conflict was found", and Keep Phone sent the copy without
+ * the result, so the cloud read "Analyzing" until some later sync.
+ *
+ * Here, at the end of that pass, it is put as it would have been a moment later: the conflict's copy takes the
+ * result, and what waits in the queue is the result as its own change. Only when the queued record is the one the
+ * pass read in everything but photo results; any other difference is an edit of his and stays as it is. The
+ * conflict is written first: an app closed between the two writes leaves the queued copy equal to the conflict's,
+ * which is no newer edit either.
+ */
+async function lateResultsOntoConflictCopies(
+  attemptedItemsById: ReadonlyMap<string, SyncQueueItem>,
+  itemOutcomes: Readonly<Record<string, SyncItemOutcome>>,
+): Promise<Map<string, { queuedAs: string; asItsOwnChange: SyncQueueItem }>> {
+  const late = new Map<string, { queuedAs: string; asItsOwnChange: SyncQueueItem }>();
+  const inConflictNow = [...attemptedItemsById.values()].filter(item =>
+    item.entity === 'project_update' && item.operation !== 'delete' && itemOutcomes[item.id] === 'conflict');
+  if (inConflictNow.length === 0) return late;
+  const queue = await getOfflineQueue();
+  const now = new Date().toISOString();
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const next = conflicts.map(conflict => {
+      const attempted = conflict.entity === 'project_update'
+        ? inConflictNow.find(item => (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId) : undefined;
+      const current = attempted && queue.find(item => item.id === attempted.id);
+      const local = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+      if (!attempted || !current || sameQueueRevision(current, attempted) || !isRecord(local?.updateData)) return conflict;
+      const { updateData: read, ...readRest } = attempted.payload as ProjectUpdateRecordPayload;
+      const { updateData: queued, ...queuedRest } = current.payload as ProjectUpdateRecordPayload;
+      if (!isRecord(read) || !isRecord(queued) || current.operation !== attempted.operation ||
+        current.createdAt !== attempted.createdAt || current.changedAt !== attempted.changedAt ||
+        JSON.stringify(queuedRest) !== JSON.stringify(readRest) ||
+        !sameProjectUpdateContent(local!.updateData, read as unknown as ProjectUpdate) ||
+        !sameProjectUpdateContent(withoutPhotoAnalysis(queued), withoutPhotoAnalysis(read) as ProjectUpdate)) return conflict;
+      const resultOf = (copy: unknown, photoId: string) => JSON.stringify(
+        ((copy as { photos?: Array<{ id: string; photoIntelligence?: unknown }> }).photos || [])
+          .find(photo => photo?.id === photoId)?.photoIntelligence ?? null);
+      const patches = ((queued as { photos?: Array<{ id: string }> }).photos || [])
+        .filter(photo => isRecord(photo) && resultOf(queued, photo.id) !== resultOf(read, photo.id))
+        .map(photo => fieldUpdatePhotoAnalysisPatchFor(read, queued, photo.id));
+      if (patches.length === 0) return conflict;
+      const payload = current.payload as ProjectUpdateRecordPayload;
+      late.set(current.id, {
+        queuedAs: JSON.stringify(current),
+        asItsOwnChange: {
+          id: current.id, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          payload: {
+            id: payload.id, projectId: payload.projectId, projectName: payload.projectName, selectedAreaName: payload.selectedAreaName,
+            updateData: queued, documentPatches: patches, pendingPhotoAssetIds: payload.pendingPhotoAssetIds || [],
+          },
+          ...(current.ownerId ? { ownerId: current.ownerId } : {}),
+        },
+      });
+      return { ...conflict, localPayload: { ...local, updateData: queued } };
+    });
+    if (late.size > 0) await writeSyncConflicts(next);
+  });
+  return late;
 }
 
 /**
