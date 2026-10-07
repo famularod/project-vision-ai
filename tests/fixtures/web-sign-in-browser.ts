@@ -28,6 +28,7 @@ import {
 } from '../../services/DAVEWebSignInRefreshGuard';
 import { createDAVEWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { supabaseSecureAuthStorage } from '../../services/SupabaseAuthStorage.web';
+import { createBrowserLocks, type BrowserPage } from './browser-locks';
 import {
   TAB_STORAGE_KEY,
   closeTabClient,
@@ -52,6 +53,8 @@ export type WebSignInTab = {
   /** The app's gateway, in the app's own tab. */
   gateway: ReturnType<typeof createDAVEWebSupabaseGateway> | null;
   stopListening: () => void;
+  /** The tab's page, as the browser's Web Locks know it. */
+  page: BrowserPage;
 };
 
 /** `document` and the two storages a browser gives a page; restored after the file's tests. */
@@ -70,10 +73,10 @@ export function useBrowserGlobals() {
       if (String(args[0]).includes('Multiple GoTrueClient instances')) return;
       originalWarn(...args);
     });
-    // auth-js logs each refused refresh before answering it as an error.
+    // auth-js logs each refused refresh, and each request that could not be sent, before answering it as an error.
     jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       const text = String(args[0]);
-      if (text.includes('Invalid Refresh Token') || text.includes('AuthApiError')) return;
+      if (text.includes('Invalid Refresh Token') || text.includes('AuthApiError') || text.includes('Failed to fetch')) return;
       originalError(...args);
     });
   });
@@ -97,25 +100,29 @@ export function createWebSignInBrowser(
   profile.setItem(WEB_SIGN_IN_PERIOD_KEY, '{"scopeKey":"x"}');
   const cloud = withRefreshTokenRule(wrapCloud(createTabCloud()));
   const tabs: WebSignInTab[] = [];
-  const state = { profileStorageWorks: true, tabStorageWorks: true };
+  /** The browser's Web Locks, shared by its tabs. */
+  const locks = createBrowserLocks();
+  const state = { profileStorageWorks: true, tabStorageWorks: true, webLocksWork: true };
   forgetDAVEWebReportTabMemory();
   forgetDAVEWebOwnReportSends();
 
-  function guardFor(storage: TabStorage) {
+  function guardFor(storage: TabStorage, page: BrowserPage) {
     return createDAVEWebSignInRefreshGuard({
       fetch: cloud.fetch as never,
       shared: () => (state.profileStorageWorks ? profile : null),
       tab: () => (state.tabStorageWorks ? storage : null),
+      locks: () => (state.webLocksWork ? page.locks : null),
     });
   }
 
   /** A tab of the browser over its own storage: a real client, its requests going through the guard. */
   function openTab(storage: TabStorage): WebSignInTab {
-    const guard = guardFor(storage);
+    const page = locks.page();
+    const guard = guardFor(storage, page);
     const heard: string[] = [];
     const client = createTabClient(tabAuthStorage(storage), { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
     client.auth.onAuthStateChange(event => { if (event !== 'INITIAL_SESSION') heard.push(event); });
-    const tab: WebSignInTab = { storage, client, guard, heard, gateway: null, stopListening: () => undefined };
+    const tab: WebSignInTab = { storage, client, guard, heard, gateway: null, stopListening: () => undefined, page };
     tabs.push(tab);
     return tab;
   }
@@ -127,10 +134,11 @@ export function createWebSignInBrowser(
   function openAppTab(storage: TabStorage, { listening = true }: { listening?: boolean } = {}): WebSignInTab {
     Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: storage });
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: profile });
-    const guard = guardFor(storage);
+    const page = locks.page();
+    const guard = guardFor(storage, page);
     const client = createTabClient(supabaseSecureAuthStorage, { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
     const gateway = createDAVEWebSupabaseGateway(client, guard);
-    const tab: WebSignInTab = { storage, client, guard, heard: [], gateway, stopListening: () => undefined };
+    const tab: WebSignInTab = { storage, client, guard, heard: [], gateway, stopListening: () => undefined, page };
     tabs.push(tab);
     if (listening) pageListens(tab);
     return tab;
@@ -142,11 +150,15 @@ export function createWebSignInBrowser(
     });
   }
 
-  /** The tab is closed (or its page reloaded): nothing of its page runs on. Its storage is the test's to reuse. */
+  /**
+   * The tab is closed (or its page reloaded): nothing of its page runs on, and the browser lets go of the
+   * locks it held. Its storage is the test's to reuse (Reopen Closed Tab, or the page that loads next).
+   */
   function closeTab(tab: WebSignInTab) {
     tab.stopListening();
     tab.stopListening = () => undefined;
     closeTabClient(tab.client);
+    tab.page.gone();
     const index = tabs.indexOf(tab);
     if (index >= 0) tabs.splice(index, 1);
   }
@@ -155,6 +167,7 @@ export function createWebSignInBrowser(
     profile,
     cloud,
     state,
+    locks,
     openTab,
     openAppTab,
     pageListens,
@@ -197,7 +210,7 @@ export function createWebSignInBrowser(
     note: () => JSON.parse(String(profile.getItem(DAVE_WEB_SIGN_IN_TURNS_KEY) ?? '{}')) as Record<string, { until: number; tokens: string[] }>,
     /** What the guard keeps in a tab's own storage; null when nothing. */
     tabItem: (storage: TabStorage) =>
-      JSON.parse(String(storage.getItem(DAVE_WEB_SIGN_IN_TAB_KEY) ?? 'null')) as { key?: string; holds?: string } | null,
+      JSON.parse(String(storage.getItem(DAVE_WEB_SIGN_IN_TAB_KEY) ?? 'null')) as { key?: string; signIn?: string; holds?: string } | null,
     /** The phone's "Sign Out of All Devices": the server ends the sign-in this access token belongs to. */
     async serverEndsSignInOf(accessToken: string | null) {
       await cloud.fetch('https://browser-tabs.supabase.co/auth/v1/logout?scope=global', {

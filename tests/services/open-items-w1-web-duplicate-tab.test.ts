@@ -13,6 +13,7 @@ import {
 } from '../../services/DAVEWebSignInRefreshGuard';
 import { createDAVEWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { supabaseSecureAuthStorage } from '../../services/SupabaseAuthStorage.web';
+import { createBrowserLocks, type BrowserLocks } from '../fixtures/browser-locks';
 import {
   TAB_ACCOUNTS,
   TAB_STORAGE_KEY,
@@ -67,6 +68,8 @@ let cloud: Cloud;
 let profile: TabStorage;
 /** Whether the profile's storage can be used at all. */
 let profileStorageWorks = true;
+/** The browser's Web Locks: how a tab tells that another tab is open now (review pass 1, web L1). */
+let browserLocks: BrowserLocks;
 let tabs: Tab[] = [];
 let gateway: ReturnType<typeof createDAVEWebSupabaseGateway>;
 let stopListening: () => void = () => undefined;
@@ -102,6 +105,7 @@ const periodKeys = () => [...profile.values.keys()].filter(key => key.startsWith
 beforeEach(() => {
   profile = createTabStorage();
   profileStorageWorks = true;
+  browserLocks = createBrowserLocks();
   profile.setItem(PERIOD_KEY, '{"scopeKey":"x"}');
   cloud = withRefreshTokenRule(createTabCloud());
   tabs = [];
@@ -117,11 +121,14 @@ afterEach(async () => {
 
 /** A tab of the browser over its own storage: a real client, its requests going through the guard. */
 function openTab(storage: TabStorage): Tab {
+  const page = browserLocks.page();
   const guard = createDAVEWebSignInRefreshGuard({
     fetch: cloud.fetch as never,
     shared: () => (profileStorageWorks ? profile : null),
     // The tab's own storage, where the key of its fingerprints is kept (review pass 1, web L2).
     tab: () => storage,
+    // Every tab here stays open to the end of its test.
+    locks: () => page.locks,
   });
   const heard: string[] = [];
   const client = createTabClient(tabAuthStorage(storage), { ...cloud, fetch: guard.fetch } as unknown as TabCloud);
@@ -139,11 +146,14 @@ function openTab(storage: TabStorage): Tab {
 function openTheAppsTab(storage: TabStorage, { listening = true }: { listening?: boolean } = {}): Tab {
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: storage });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: profile });
+  const page = browserLocks.page();
   const guard = createDAVEWebSignInRefreshGuard({
     fetch: cloud.fetch as never,
     shared: () => (profileStorageWorks ? profile : null),
     // The tab's own storage, where the key of its fingerprints is kept (review pass 1, web L2).
     tab: () => storage,
+    // Every tab here stays open to the end of its test.
+    locks: () => page.locks,
   });
   const heard: string[] = [];
   const client = createTabClient(supabaseSecureAuthStorage, { ...cloud, fetch: guard.fetch } as unknown as TabCloud);

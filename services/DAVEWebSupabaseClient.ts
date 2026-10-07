@@ -236,6 +236,17 @@ const browserSignInGuard = SUPABASE_URL && SUPABASE_ANON_KEY
           return null;
         }
       },
+      // How a tab tells that another tab is open now and holds a newer token (review pass 1, web L1).
+      locks: () => {
+        try {
+          const locks = typeof navigator === 'undefined' ? null : navigator.locks;
+          return locks
+            ? { request: (name, options, held) => locks.request(name, options, held), query: () => locks.query() }
+            : null;
+        } catch {
+          return null;
+        }
+      },
     })
   : null;
 
@@ -286,7 +297,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver'>>) | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
@@ -381,6 +392,17 @@ export function createDAVEWebSupabaseGateway(
    * still signed in in the working tab, which uses these same report
    * periods: they stay.
    *
+   * Review pass 1 of the web area, L1 (6 Oct 2026): they stayed whenever
+   * the tab gave way, also after the phone's "Sign Out of All Devices",
+   * and also when the tab it gave way to had since been closed: nobody
+   * asked the server, and the periods were left in the browser for good.
+   * Giving way is not the server's answer. A tab now gives way only to a
+   * tab that is open (the guard), and the periods stay only while that
+   * sign-in can still be taken as good: its newest hourly token has not
+   * run out, the tab given way to is still there, and the sign-in has not
+   * ended. When any of that stops, this tab removes them, as a sign-in
+   * the server ended does.
+   *
    * Open item W1-2 (6 Oct 2026): either way this tab then showed the
    * sign-in page but went on holding, in memory, the rows it had loaded
    * (and the photo and document addresses it had checked) until the page
@@ -394,7 +416,12 @@ export function createDAVEWebSupabaseGateway(
     tabSignInSeen = browserTabStoredSignIn();
     if (!mayHaveEnded || !held || tabSignInSeen) return;
     forgetSignedInReads();
-    if (signInGuard?.gaveWay()) return;
+    if (signInGuard?.gaveWay()) {
+      const account = held.userId;
+      const stay = signInGuard.vouchedFor?.(() => forgetDAVEWebReportPeriods(account)) ?? false;
+      if (!stay) forgetDAVEWebReportPeriods(account);
+      return;
+    }
     forgetDAVEWebReportPeriods(held.userId);
     // The note the Duplicate Tab guard keeps for that sign-in leaves this browser with it (review pass 1, web L2).
     void signInGuard?.signInOver?.(held.sessionId);

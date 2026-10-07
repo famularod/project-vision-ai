@@ -58,6 +58,26 @@
  *   safe: a token that is not listed is SENT, and the server answers, as on
  *   the build before the fix. It can never make a tab keep quiet.
  *
+ * Review pass 1 of the web area, L1 (6 Oct 2026): a tab gave way on the
+ * note alone, so it also gave way to a tab that had been CLOSED, and after
+ * the phone's "Sign Out of All Devices" nobody asked the server: the
+ * account's report periods stayed in the browser, where the build before
+ * the fix removed them. Two rules now:
+ *
+ * - A tab gives way only to a tab that is OPEN NOW and holds a token of
+ *   that sign-in the server would take (the newest or the one before).
+ *   Every open tab says which token it was last given by holding a browser
+ *   lock named after its fingerprint (Web Locks; in memory only, and let go
+ *   by the browser itself when the tab is closed, reloaded or discarded).
+ *   When no such tab is there, the stale tab presents its token and the
+ *   server answers, as before the fix. So does a browser without Web Locks.
+ * - Giving way is not the server's answer. The tab that gave way tells its
+ *   page (`vouchedFor`) whether the sign-in can still be taken as good: only
+ *   while the hourly token that came with the newest refresh has not run
+ *   out, and only until the tab it gave way to has gone, or that sign-in
+ *   has ended, or that hour is over without the server having been asked
+ *   again. Then its page is told, once, and removes what it kept.
+ *
  * Open item W1-3 (6 Oct 2026): "too many requests" is not an ended
  * sign-in. When the sign-in server answered a routine refresh with 429,
  * auth-js took it for a refusal: with the hourly token run out the tab
@@ -72,6 +92,19 @@
 export type DAVEWebSharedStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 /** This tab's own storage (sessionStorage), where its sign-in is kept. */
 export type DAVEWebTabStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+/** The browser's Web Locks (navigator.locks), as far as the guard uses them. */
+export type DAVEWebTabLocks = Readonly<{
+  request: (
+    name: string,
+    options: { mode: 'shared' | 'exclusive'; signal?: AbortSignal },
+    held: () => Promise<unknown>,
+  ) => Promise<unknown>;
+  query: () => Promise<{
+    held?: ReadonlyArray<{ name?: string; mode?: string }>;
+    pending?: ReadonlyArray<{ name?: string; mode?: string }>;
+  }>;
+}>;
 
 /** The note, in the shared storage. */
 export const DAVE_WEB_SIGN_IN_TURNS_KEY = 'vitruvius.web.sign-in-turns.v2';
@@ -89,6 +122,8 @@ const REFRESH_WAIT_LIMIT_MS = 10 * 60_000;
 const TOKENS_REMEMBERED = 200;
 /** How many sign-ins are remembered. */
 const SIGN_INS_REMEMBERED = 8;
+/** What the lock an open tab holds for its token is called, before the token's fingerprint. */
+const SIGN_IN_LOCK_PREFIX = 'vitruvius.web.sign-in.';
 /** The longest an hourly token is taken to last. */
 const REFRESH_PERIOD_MS = 60 * 60_000;
 /** A sign-in nobody refreshed for this long is dropped from the note. */
@@ -111,6 +146,16 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * key are removed. Not for a tab that only gave way. Never throws.
    */
   signInOver: (sessionId: string | null) => Promise<void>;
+  /**
+   * For a tab that gave way: whether the sign-in it gave way for can still
+   * be taken as good without asking the server. True only when the hourly
+   * token that came with that sign-in's newest refresh has not run out.
+   * `lapsed` then runs once, as soon as that stops being so: the tab it gave
+   * way to is gone, or the sign-in ended, or the hour ran out and the server
+   * was not asked again. It never runs once the server has said "good" to a
+   * tab of that sign-in again, nor after this tab is given tokens itself.
+   */
+  vouchedFor: (lapsed: () => void) => boolean;
 }>;
 
 function pathOf(input: RequestInfo | URL): URL | null {
@@ -186,8 +231,16 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   shared: () => DAVEWebSharedStorage | null;
   /** This tab's own storage; null when the browser blocks it (nothing is noted then). */
   tab?: () => DAVEWebTabStorage | null;
+  /** The browser's Web Locks; null when it has none (a tab then never gives way). */
+  locks?: () => DAVEWebTabLocks | null;
 }>): DAVEWebSignInRefreshGuard {
   let gaveWay = false;
+  /** The lock this tab holds for the token it was last given, so that other tabs can tell it is open and holds it. */
+  let held: { token: string; letGo: () => void } | null = null;
+  /** After this tab gave way: the sign-in it gave way for, as the note had it at that moment. */
+  let gaveWayFor: { name: string; tokens: readonly string[]; until: number } | null = null;
+  /** Ends the watch `vouchedFor` started, without telling the page anything. */
+  let stopWatching: (() => void) | null = null;
   /** Until when the sign-in server asked this tab not to refresh. */
   let refreshWaitsUntil = 0;
   /** The tab's key as it was last made ready for use. */
@@ -214,11 +267,64 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     }
   }
 
-  /** What this tab keeps in its own storage: its key, and the keyed name of the sign-in it was last given tokens for. */
-  function tabItem(): { key: string; signIn: string | null } | null {
+  function tabLocks(): DAVEWebTabLocks | null {
+    try {
+      return options.locks?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * What this tab keeps in its own storage: its key, the keyed name of the sign-in it was last given
+   * tokens for, and the fingerprint of the token it was given (so a reloaded tab can say what it holds).
+   */
+  function tabItem(): { key: string; signIn: string | null; holds: string | null } | null {
     const kept = parsed(tabStorage()?.getItem(DAVE_WEB_SIGN_IN_TAB_KEY));
     const key = textField(kept, 'key');
-    return key && bytesOfKey(key) ? { key, signIn: textField(kept, 'signIn') } : null;
+    return key && bytesOfKey(key) ? { key, signIn: textField(kept, 'signIn'), holds: textField(kept, 'holds') } : null;
+  }
+
+  /**
+   * This tab holds the token with this fingerprint (null: none the server would take). While it is open,
+   * the browser shows that to the other tabs as a lock; nothing is written anywhere.
+   */
+  function hold(token: string | null) {
+    if ((held?.token ?? null) === token) return;
+    const before = held;
+    held = null;
+    const locks = tabLocks();
+    if (token && locks) {
+      let letGo: () => void = () => undefined;
+      const untilLetGo = new Promise<void>(resolve => { letGo = resolve; });
+      held = { token, letGo };
+      try {
+        void Promise.resolve(locks.request(`${SIGN_IN_LOCK_PREFIX}${token}`, { mode: 'shared' }, () => untilLetGo))
+          .catch(() => undefined);
+      } catch {
+        held = null;
+      }
+    }
+    // Let go only after the new one was asked for: the browser never sees this tab holding neither.
+    before?.letGo();
+  }
+
+  /** The first of these tokens that a tab other than this one, open now, holds; null when none does. */
+  async function someoneElseHolds(tokens: readonly string[]): Promise<string | null> {
+    try {
+      const locks = tabLocks();
+      if (!locks) return null;
+      const state = await locks.query();
+      // Waiting for it counts too: that tab is open and holds the token. A tab watching (below) asks 'exclusive'.
+      const shared = [...(state.held ?? []), ...(state.pending ?? [])].filter(lock => lock.mode === 'shared');
+      for (const token of tokens) {
+        const holders = shared.filter(lock => lock.name === `${SIGN_IN_LOCK_PREFIX}${token}`).length;
+        if (holders - (held?.token === token ? 1 : 0) > 0) return token;
+      }
+    } catch {
+      // The browser cannot say who is open: nobody is taken to be.
+    }
+    return null;
   }
 
   /** The key this tab's fingerprints are made with; made now when the tab has none. Null: nothing is noted. */
@@ -238,13 +344,30 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     }
   }
 
-  /** This tab was given tokens for the sign-in `name`. */
-  function noteTabSignIn(key: string, name: string) {
+  /** This tab was given the token `holds` for the sign-in `name`. */
+  function noteTabSignIn(key: string, name: string, holds: string) {
     try {
-      if (tabItem()?.signIn !== name) tabStorage()?.setItem(DAVE_WEB_SIGN_IN_TAB_KEY, JSON.stringify({ key, signIn: name }));
+      tabStorage()?.setItem(DAVE_WEB_SIGN_IN_TAB_KEY, JSON.stringify({ key, signIn: name, holds }));
     } catch {
       // The tab's storage is full: its key stays as it was.
     }
+  }
+
+  /** This tab holds no token the server would take any more; its key stays. */
+  function noteTabHoldsNothing() {
+    hold(null);
+    try {
+      const kept = tabItem();
+      if (kept?.holds) tabStorage()?.setItem(DAVE_WEB_SIGN_IN_TAB_KEY, JSON.stringify({ key: kept.key, ...(kept.signIn ? { signIn: kept.signIn } : {}) }));
+    } catch {
+      // As it was: the lock is let go either way.
+    }
+  }
+
+  /** This tab's key goes (its sign-in is over), and it holds nothing. */
+  function forgetTabKey() {
+    hold(null);
+    tabStorage()?.removeItem(DAVE_WEB_SIGN_IN_TAB_KEY);
   }
 
   /** A keyed fingerprint of a token, or the keyed name of a sign-in. Null: it cannot be made here. */
@@ -347,10 +470,56 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       const over = await fingerprintOf(kept.key, 'sign-in', sessionId);
       if (over) forgetTurns(name => name === over);
       const now = tabItem();
-      if (now?.key === kept.key && (!now.signIn || now.signIn === over)) tabStorage()?.removeItem(DAVE_WEB_SIGN_IN_TAB_KEY);
+      if (now?.key === kept.key && (!now.signIn || now.signIn === over)) forgetTabKey();
     } catch {
       // Never in the way of a sign-out.
     }
+  }
+
+  function vouchedFor(lapsed: () => void): boolean {
+    const watched = gaveWayFor;
+    if (!gaveWay || !watched || Date.now() >= watched.until) return false;
+    stopWatching?.();
+    let over = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const withdrawn = typeof AbortController === 'function' ? new AbortController() : null;
+    const end = (lapse: boolean) => {
+      if (over) return;
+      over = true;
+      if (timer) clearTimeout(timer);
+      if (stopWatching === stop) stopWatching = null;
+      withdrawn?.abort();
+      if (!lapse) return;
+      try {
+        lapsed();
+      } catch {
+        // The page's own affair.
+      }
+    };
+    const stop = () => end(false);
+    stopWatching = stop;
+    /** A tab of that sign-in was given tokens since: the server said "good" again, and that tab carries it now. */
+    const answeredSince = () => (readTurns()[watched.name]?.until ?? 0) > watched.until;
+    // The hour ran out: the tab given way to has not asked the server again (hidden, asleep or gone).
+    timer = setTimeout(() => end(!answeredSince()), Math.max(0, watched.until - Date.now()));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    void (async () => {
+      const locks = tabLocks();
+      while (!over && locks) {
+        if (answeredSince()) {
+          end(false);
+          return;
+        }
+        const there = await someoneElseHolds(watched.tokens);
+        if (over) return;
+        if (!there) break;
+        // Granted once every tab holding that token has let go of it: it was closed, or given a newer token,
+        // or its sign-in ended. Asked 'exclusive', so this request never counts as a tab holding the token.
+        await locks.request(`${SIGN_IN_LOCK_PREFIX}${there}`, { mode: 'exclusive', signal: withdrawn?.signal }, async () => undefined);
+      }
+      end(!answeredSince());
+    })().catch(() => undefined); // Withdrawn, or the browser cannot say: the hour still ends it.
+    return true;
   }
 
   async function guardedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -360,6 +529,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       // auth-js takes the sign-in out of this tab on these answers (the others it reports as a failure).
       if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
         gaveWay = false;
+        stopWatching?.();
         await signInOver(sessionId);
       }
       return response;
@@ -372,15 +542,29 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     const presented = grant === 'refresh_token' ? textField(parsed(init?.body), 'refresh_token') : null;
     const mine = await fingerprintOf(key, 'token', presented);
     if (mine) {
-      // Replaced twice or more by tabs of this browser: presenting it would end the sign-in for all of them.
-      if (Object.values(readTurns()).some(turn => turn.tokens.indexOf(mine) >= 2)) {
-        gaveWay = true;
-        return new Response(JSON.stringify({
-          code: DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE,
-          error_code: DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE,
-          message: 'This tab’s sign-in was refreshed in another tab; this tab did not present its older token.',
-        }), { status: 400, headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' } });
+      for (let look = 0; look < 3; look += 1) {
+        // Replaced twice or more by tabs of this browser: presenting it would end the sign-in for all of them…
+        const replaced = Object.entries(readTurns()).find(([, turn]) => turn.tokens.indexOf(mine) >= 2);
+        if (!replaced) break;
+        // …for all of them that are still there. Is a tab open now that holds the newest token, or the one before?
+        const current = replaced[1].tokens.slice(0, 2);
+        if (await someoneElseHolds(current)) {
+          gaveWay = true;
+          gaveWayFor = { name: replaced[0], tokens: current, until: replaced[1].until };
+          stopWatching?.();
+          noteTabHoldsNothing();
+          return new Response(JSON.stringify({
+            code: DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE,
+            error_code: DAVE_WEB_REFRESH_TOKEN_REPLACED_CODE,
+            message: 'This tab’s sign-in was refreshed in another tab; this tab did not present its older token.',
+          }), { status: 400, headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' } });
+        }
+        // Nobody is, unless a tab was given a newer token while the browser was being asked: then look again.
+        if ((readTurns()[replaced[0]]?.tokens[0] ?? current[0]) === current[0]) break;
       }
+      // The tabs that were given the newer tokens are gone. The token is presented and the server answers,
+      // as before the Duplicate Tab fix (review pass 1, web L1).
+      hold(mine);
     }
     if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil) return askedToWait();
     const response = await options.fetch(input, init);
@@ -393,10 +577,12 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       // The server refused this tab's token (auth-js takes every answer but these for a refusal): the sign-in
       // has ended, for every tab holding it. Its note goes, and this tab's key with it.
       gaveWay = false;
+      stopWatching?.();
       try {
         if (mine) forgetTurns((_name, tokens) => tokens.includes(mine));
         const now = tabItem();
-        if (now && now.key === key && now.signIn === signInAtStart) tabStorage()?.removeItem(DAVE_WEB_SIGN_IN_TAB_KEY);
+        if (now && now.key === key && now.signIn === signInAtStart) forgetTabKey();
+        else if (held?.token === mine) hold(null);
       } catch {
         // Not removed: it expires.
       }
@@ -407,7 +593,12 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       const given = await fingerprintOf(key, 'token', textField(tokens, 'refresh_token'));
       if (key && name && given) {
         gaveWay = false;
-        noteTabSignIn(key, name);
+        gaveWayFor = null;
+        stopWatching?.();
+        noteTabSignIn(key, name, given);
+        // The lock for the new token is asked for before the note says it is the newest, and the one for the
+        // old token is let go after: a tab reading the note always finds this tab holding one of the two.
+        hold(given);
         const lasts = Number((tokens as { expires_in?: unknown } | null)?.expires_in) * 1_000;
         noteTurn(name, given, mine, Date.now() + (lasts > 0 ? Math.min(lasts, REFRESH_PERIOD_MS) : REFRESH_PERIOD_MS));
       }
@@ -419,11 +610,13 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   // refresh must carry it), what expired leaves the note, and so does the note as it was first written.
   try {
     tabKey();
+    // A tab that was reloaded, or copied by Duplicate Tab, holds the token its storage says it was given.
+    hold(tabItem()?.holds ?? null);
     FORMER_SIGN_IN_TURNS_KEYS.forEach(former => sharedStorage()?.removeItem(former));
     forgetTurns(() => false);
   } catch {
     // Nothing noted, nothing removed: every token is sent as before.
   }
 
-  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver });
+  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor });
 }
