@@ -85,3 +85,43 @@ export function sharedDocumentsListed<L extends readonly Readonly<{ id: string }
   if (archivedIds.size === 0 || !documents.some(document => archivedIds.has(document.id))) return documents;
   return documents.filter(document => !archivedIds.has(document.id)) as unknown as L;
 }
+
+/**
+ * An update that is still being written: the documents it is shown with,
+ * and sent with (second review, P2-L5; the coordinator's decision).
+ *
+ * Nothing is taken off any record because of an archive (review of D1, M1),
+ * and a SENT update keeps showing a document it was sent with, as the record
+ * of what was sent. But an unsent update has not been sent yet: while a
+ * document on it is archived, the document is not shown on it and does not
+ * go out with it. The update's own record still holds it, so if he restores
+ * the document before sending, it is on the update again and is sent.
+ *
+ * A document is archived when this phone's own card for it is put away (the
+ * only way before the database change is installed), or when the device
+ * knows its shared copy is archived. With none of them archived the very
+ * same update comes back.
+ *
+ * Call this for an update that is being written or about to be sent, never
+ * for one that has been sent.
+ */
+export function unsentUpdateWithoutArchivedDocuments<U extends Readonly<{
+  documents?: readonly Readonly<{ id: string; referenceDocumentId?: string | null }>[];
+}>>(
+  update: U,
+  cards: readonly Readonly<{ id: string; referenceDocumentId?: string | null; isArchived?: boolean }>[],
+  archivedIds: ReadonlySet<string>,
+): U {
+  const documents = update.documents;
+  if (!documents || documents.length === 0) return update;
+  if (archivedIds.size === 0 && !cards.some(card => card.isArchived)) return update;
+  const cardById = new Map(cards.map(card => [card.id, card] as const));
+  const isArchived = (document: Readonly<{ id: string; referenceDocumentId?: string | null }>) => {
+    const card = cardById.get(document.id);
+    if (card?.isArchived) return true;
+    return [document.id, document.referenceDocumentId, card?.referenceDocumentId]
+      .some(id => { const sharedId = id?.trim(); return Boolean(sharedId) && archivedIds.has(sharedId as string); });
+  };
+  if (!documents.some(isArchived)) return update;
+  return { ...update, documents: documents.filter(document => !isArchived(document)) };
+}

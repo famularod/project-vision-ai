@@ -424,6 +424,23 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     device.unmount();
   });
 
+  it('second review, P2-L5: an update he is still writing follows what the device knows: an archived document leaves it, and is on it again once restored', async () => {
+    const device = start();
+    await device.quiet();
+    const draft = { id: 'draft-1', documents: [{ id: 'card-permit', referenceDocumentId: PERMIT }, { id: 'card-plan', referenceDocumentId: 'doc-plan' }] };
+    const cards = [{ id: 'card-permit', referenceDocumentId: PERMIT, isArchived: false }, { id: 'card-plan', referenceDocumentId: 'doc-plan', isArchived: false }];
+    expect(device.result.current.unsentUpdate(draft, cards)).toBe(draft); // nothing archived: the very same update
+
+    act(() => { device.result.current.archive(PERMIT); });
+    await device.quiet();
+    expect(device.result.current.unsentUpdate(draft, cards).documents).toEqual([{ id: 'card-plan', referenceDocumentId: 'doc-plan' }]);
+
+    act(() => { device.result.current.restore({ key: 'attachment:card-permit', name: 'Grading permit', category: 'Permit Card', cardId: 'card-permit', sharedDocumentId: PERMIT, scope: 'everywhere' }); });
+    await device.quiet();
+    expect(device.result.current.unsentUpdate(draft, cards)).toBe(draft);
+    device.unmount();
+  });
+
   it('asks the cloud nothing when cloud sync is not set up, or when the sign-in is another account\'s', async () => {
     cloud.row(PERMIT)!.archived_at = AT;
     mockCloudService.client = null;

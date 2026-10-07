@@ -19,6 +19,7 @@ import {
   subscribeSharedDocumentArchive,
   syncSharedDocumentArchiveWithCloud,
 } from '../services/SharedDocumentArchive';
+import { unsentUpdateWithoutArchivedDocuments } from '../services/SharedDocumentArchiveView';
 import {
   getCurrentSessionUser,
   getSupabaseClient,
@@ -164,6 +165,13 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       restoreCardsRef.current(ids);
       if (document.sharedDocumentId) ask(document.sharedDocumentId, false, document.name);
     },
+    /**
+     * An update he is still writing, as it is shown and as it is sent: without a document that is archived now
+     * (second review, P2-L5). `cards` are this phone's own document cards. The update's record is not changed, so
+     * a document he restores before sending is on it again; and a sent update is never passed through this.
+     */
+    unsentUpdate: <U extends Parameters<typeof unsentUpdateWithoutArchivedDocuments>[0]>(update: U, cards: Parameters<typeof unsentUpdateWithoutArchivedDocuments>[1]): U =>
+      unsentUpdateWithoutArchivedDocuments(update, cards, view.archivedIds),
     /** What the owner is asked before archiving, true to what will happen. */
     question: (name: string, category: string) => {
       askedAboutRef.current = name;

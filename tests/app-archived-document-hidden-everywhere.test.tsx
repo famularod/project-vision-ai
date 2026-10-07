@@ -438,7 +438,11 @@ async function openLot9DocumentsPastUpdateCards(tree: ReturnType<typeof render>)
 }
 
 describe('review of D1, M1: an archive removes nothing from any record', () => {
-  it('Archive, then Restore: the field update the document was attached to lists it throughout, and so does the unsent draft', async () => {
+  // CHANGED (second review, P2-L5), the name only: "and so does the unsent draft" is still true of the draft's own
+  // RECORD, which is what this case reads (nothing is taken off any record because of an archive). What the draft
+  // SHOWS and SENDS while the document is archived is the coordinator's decision of that review, and is in the
+  // cases under "second review, P2-L5" below.
+  it('Archive, then Restore: the field update the document was attached to lists it throughout, and the unsent draft\'s own record keeps it', async () => {
     await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
     await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard]));
     await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
@@ -491,6 +495,161 @@ describe('review of D1, M1: an archive removes nothing from any record', () => {
     expect(await attachedTo('update-with-permit')).toEqual(['doc-permit']);
     expect(await onTheDraft()).toEqual(['doc-permit']);
     expect((await getOfflineQueue()).filter(item => JSON.stringify(item).includes('update-with-permit'))).toEqual([]);
+    tree.unmount();
+  });
+});
+
+describe('second review, P2-L5: an update he is still writing, and a document on it that is archived', () => {
+  const draftWithPermit = {
+    savedAt: '2026-10-06T09:00:00.000Z',
+    draft: {
+      id: 'draft-with-permit', projectName: 'Lot 9', date: '2026-10-06T09:00:00.000Z', notes: 'Inspector asked to see the permit',
+      status: 'draft', photos: [], isArchived: false, archivedAt: null, documents: [permitCard],
+    },
+  };
+  const sentWithPermit = {
+    id: 'update-with-permit', projectName: 'Lot 9', date: '2026-10-05T17:00:00.000Z', notes: 'Permit posted at the gate', status: 'sent',
+    photos: [], isArchived: false, archivedAt: null, documents: [permitCard],
+  };
+  const documentsOf = async (updateId: string) => (await stored<{ id: string; documents?: Array<{ id: string }> }>(UPDATES))
+    .find(update => update.id === updateId)?.documents?.map(document => document.id) ?? null;
+  const onTheDraftRecord = async () => (JSON.parse((await AsyncStorage.getItem(DRAFT)) || '{}') as { draft?: { documents?: Array<{ id: string }> } })
+    .draft?.documents?.map(document => document.id) ?? null;
+  const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 1500)); }); // the draft is saved 750 ms after a change
+  // Saving an update needs a real id for its save record; the test runner's stand-in for the device's id maker gives none.
+  beforeEach(() => { jest.spyOn(require('expo-crypto'), 'randomUUID').mockImplementation(() => require('crypto').randomUUID()); });
+  /** What is waiting to go to the cloud for this update: for each such item, whether the permit is anywhere in it. */
+  const waitingToBeSentWithThePermit = async (updateId: string) => (await getOfflineQueue())
+    .filter(item => JSON.stringify(item).includes(updateId))
+    .map(item => JSON.stringify(item).includes('doc-permit'));
+  async function openTheDraft(tree: ReturnType<typeof render>) {
+    await press(tree, tree.getAllByLabelText('Overview')[0]);
+    await press(tree, await tree.findByText('Resume Draft', {}, COLD));
+    await waitFor(() => expect(tree.getByText('Current Area')).toBeTruthy(), COLD);
+  }
+  async function saveTheUpdate(tree: ReturnType<typeof render>) {
+    await press(tree, await tree.findByText('Save Field Update', {}, COLD));
+    await waitFor(() => expect(alerts.map(item => item.title)).toContain('Field update saved'), COLD);
+    await settle();
+  }
+
+  it('archived on another device while he is writing: it leaves the draft, the update goes out without it, and the update he sent before still shows it', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard]));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    await AsyncStorage.setItem(UPDATES, JSON.stringify([sentWithPermit]));
+    await AsyncStorage.setItem(DRAFT, JSON.stringify(draftWithPermit));
+    const tree = await launch();
+    await reachTheCloud();
+    await openTheDraft(tree);
+    // Not archived: it is on the update he is writing.
+    expect(tree.getAllByText('Grading permit.pdf').length).toBeGreaterThan(0);
+    expect(tree.queryByText('Continue Without Photos')).toBeNull();
+
+    // He archives it on the iPad. This phone hears of it.
+    cloud.row('doc-permit')!.archived_at = '2026-10-06T18:00:00.000Z';
+    await reachTheCloud();
+    await waitFor(() => expect(tree.queryAllByText('Grading permit.pdf').length).toBe(0), COLD);
+    expect(tree.getByText('Continue Without Photos')).toBeTruthy(); // the draft now shows no photo and no document
+    await settle();
+    expect(await onTheDraftRecord()).toEqual(['doc-permit']); // nothing was taken off the draft's own record
+
+    // He sends the update.
+    await press(tree, tree.getByText('Continue Without Photos'));
+    await waitFor(() => expect(tree.getByText('Save Field Update')).toBeTruthy(), COLD);
+    expect(tree.queryByText(/^Documents \(/)).toBeNull();
+    await saveTheUpdate(tree);
+    expect(await documentsOf('draft-with-permit')).toEqual([]); // what was saved to be sent does not carry the permit
+    expect(await waitingToBeSentWithThePermit('draft-with-permit')).toEqual([false]);
+    // The update he sent yesterday is the record of what was sent: it still lists it.
+    expect(await documentsOf('update-with-permit')).toEqual(['doc-permit']);
+    tree.unmount();
+  });
+
+  it('restored before he sends: it is on the draft again, and goes out with the update', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard]));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    await AsyncStorage.setItem(DRAFT, JSON.stringify(draftWithPermit));
+    cloud.row('doc-permit')!.archived_at = '2026-10-06T18:00:00.000Z'; // archived on the iPad before this phone was opened
+    const tree = await launch();
+    await reachTheCloud();
+    await openTheDraft(tree);
+    await waitFor(() => expect(tree.queryAllByText('Grading permit.pdf').length).toBe(0), COLD);
+    expect(tree.getByText('Continue Without Photos')).toBeTruthy();
+
+    // He brings it back from the project's Documents.
+    await press(tree, tree.getAllByLabelText('Overview')[0]);
+    await openLot9DocumentsPastUpdateCards(tree);
+    await press(tree, await tree.findByText('Archived (1)', {}, COLD));
+    await press(tree, tree.getByLabelText('Restore Grading permit.pdf'));
+    await waitFor(() => expect(tree.queryByText(/^Archived \(/)).toBeNull(), COLD);
+    await reachTheCloud();
+    expect(cloud.row('doc-permit')?.archived_at).toBeNull();
+
+    // It is on the update he is writing again, and is sent with it.
+    await openTheDraft(tree);
+    await waitFor(() => expect(tree.getAllByText('Grading permit.pdf').length).toBeGreaterThan(0), COLD);
+    await press(tree, tree.getByText('Continue'));
+    await waitFor(() => expect(tree.getByText('Save Field Update')).toBeTruthy(), COLD);
+    expect(tree.getByText('Documents (1)')).toBeTruthy();
+    await saveTheUpdate(tree);
+    expect(await documentsOf('draft-with-permit')).toEqual(['doc-permit']);
+    expect(await waitingToBeSentWithThePermit('draft-with-permit')).toEqual([true]);
+    tree.unmount();
+  });
+
+  it('archived while he is looking at the review of an update that holds nothing else: Save says the update is blank and saves nothing; restored, it is sent with the document', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard]));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    await AsyncStorage.setItem(DRAFT, JSON.stringify({ ...draftWithPermit, draft: { ...draftWithPermit.draft, notes: '' } })); // the permit is all there is on it
+    const tree = await launch();
+    await reachTheCloud();
+    await openTheDraft(tree);
+    await press(tree, tree.getByText('Continue'));
+    await waitFor(() => expect(tree.getByText('Save Field Update')).toBeTruthy(), COLD);
+    expect(tree.getByText('Documents (1)')).toBeTruthy();
+
+    // Archived on the iPad while he reads the review.
+    cloud.row('doc-permit')!.archived_at = '2026-10-06T18:00:00.000Z';
+    await reachTheCloud();
+    await waitFor(() => expect(tree.queryByText(/^Documents \(/)).toBeNull(), COLD);
+    await press(tree, tree.getByText('Save Field Update'));
+    await waitFor(() => expect(alerts.map(item => item.title)).toContain('Update is blank'), COLD);
+    await settle();
+    expect(alerts.map(item => item.title)).not.toContain('Field update saved');
+    expect(await documentsOf('draft-with-permit')).toBeNull(); // no such update was saved
+    expect(await waitingToBeSentWithThePermit('draft-with-permit')).toEqual([]);
+    expect(await onTheDraftRecord()).toEqual(['doc-permit']); // and the draft still holds what he attached
+
+    // Restored on the iPad: it is on the review again, and Save sends it.
+    cloud.row('doc-permit')!.archived_at = null;
+    await reachTheCloud();
+    await waitFor(() => expect(tree.queryAllByText('Documents (1)').length).toBe(1), COLD);
+    await saveTheUpdate(tree);
+    expect(await documentsOf('draft-with-permit')).toEqual(['doc-permit']);
+    expect(await waitingToBeSentWithThePermit('draft-with-permit')).toEqual([true]);
+    tree.unmount();
+  });
+
+  it('before the database change is installed, a document archived on this phone leaves the draft and the update that is sent just the same', async () => {
+    cloud.state.installed = false;
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([{ ...permitCard, isArchived: true, archivedAt: '2026-10-06T08:00:00.000Z' }]));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    await AsyncStorage.setItem(DRAFT, JSON.stringify(draftWithPermit));
+    const tree = await launch();
+    await reachTheCloud();
+    expect(sharedDocumentArchiveView().installed).toBe(false);
+    await openTheDraft(tree);
+    expect(tree.queryAllByText('Grading permit.pdf').length).toBe(0);
+    await press(tree, tree.getByText('Continue Without Photos'));
+    await waitFor(() => expect(tree.getByText('Save Field Update')).toBeTruthy(), COLD);
+    await saveTheUpdate(tree);
+    expect(await documentsOf('draft-with-permit')).toEqual([]);
+    expect(await waitingToBeSentWithThePermit('draft-with-permit')).toEqual([false]);
+    expect(cloud.requests.filter(request => request.kind !== 'read_marks')).toEqual([]); // and nothing was written to the cloud's table
     tree.unmount();
   });
 });

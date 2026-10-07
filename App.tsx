@@ -7746,6 +7746,7 @@ useEffect(() => {
       );
       return;
     }
+    if (!hasSavableUpdate(sharedDocumentArchive.unsentUpdate(draftSnapshot, projectDocumentsCurrentRef.current))) return void Alert.alert('Update is blank', 'Add a photo, update notes, field note, or action information before saving.'); // only a document archived since was on it (second review, P2-L5)
 
     const invalidDueDateIndex = findInvalidDueDatePhoto(draftSnapshot);
     if (invalidDueDateIndex >= 0) {
@@ -7767,7 +7768,7 @@ useEffect(() => {
       draftSnapshot.stableSendId || `send-${draftSnapshot.id}`;
     const sendAttempts = (draftSnapshot.sendAttempts || 0) + 1;
     const baseUpdate: ProjectUpdate = {
-      ...draftSnapshot,
+      ...sharedDocumentArchive.unsentUpdate(draftSnapshot, projectDocumentsCurrentRef.current), // a document archived now does not go out with it (second review, P2-L5)
       status: 'ready_to_send',
       stableSendId: idempotencyKey,
       idempotencyKey,
@@ -13724,7 +13725,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'AddPhotos' && (
             <AddPhotosScreen
               contentStyle={contentStyle}
-              update={draft}
+              update={sharedDocumentArchive.unsentUpdate(draft, projectDocuments)}
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
@@ -13760,7 +13761,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'BuildUpdate' && (
             <ScreenScroll contentStyle={contentStyle}>
               <BuildUpdateScreen
-                update={draft}
+                update={sharedDocumentArchive.unsentUpdate(draft, projectDocuments)}
                 selectedArea={currentDraftArea}
                 draftSavedAt={draftSavedAt}
                 pieStatus={draftPIEStatus}
