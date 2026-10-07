@@ -86,6 +86,8 @@ type ScheduleEditorState = Readonly<{
   owner: string;
   contractor: string;
   percentComplete: string;
+  /** He typed in the Percent complete box and it holds something (WS1 item 5): his own entry. */
+  percentEntered?: boolean;
   status: ScheduleStatus;
   notes: string;
 }>;
@@ -313,6 +315,7 @@ export function DesktopSchedulePage({
         owner: form.owner,
         contractor: form.contractor,
         percentComplete,
+        percentEntered: form.percentEntered === true && Boolean(form.percentComplete.trim()),
         priority: opened?.priority || 'Medium',
         status: form.status,
         notes: form.notes,
@@ -1691,7 +1694,13 @@ function ScheduleEditor({
 
       <View style={styles.formGrid}>
         <EditorField label="Contractor" value={state.contractor} onChange={value => update('contractor', value)} />
-        <EditorField label="Percent complete" value={state.percentComplete} onChange={value => update('percentComplete', value)} numeric />
+        <EditorField
+          label="Percent complete"
+          value={state.percentComplete}
+          // He typed it: his own entry, also when it is the percent a schedule file gave (WS1 item 5).
+          onChange={value => onChange({ ...state, percentComplete: value, percentEntered: Boolean(value.trim()) })}
+          numeric
+        />
       </View>
       <View style={styles.relationshipSection}>
         <Text style={styles.fieldLabel}>Status</Text>

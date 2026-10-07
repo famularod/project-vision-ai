@@ -20,6 +20,7 @@ import {
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
+import { scheduleProgressIsManagers } from './ScheduleProgressSource';
 import {
   SCHEDULE_DURATION_RANGE_TEXT,
   scheduleDateRangeText,
@@ -49,6 +50,13 @@ export type DAVEWebTaskDraft = Readonly<{
   owner: string;
   contractor: string;
   percentComplete: number | string;
+  /**
+   * He typed in the form's Percent complete box, and it holds a number (WS1
+   * item 5): what it holds is his own entry, also when it is the percent the
+   * task already had from a schedule file. Absent or false: the box was left
+   * as it opened, or emptied.
+   */
+  percentEntered?: boolean;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
@@ -257,9 +265,19 @@ export function buildDAVEWebScheduleItem({
   const storedProgress = current
     ? reconcileScheduleProgress(current.status, current.percentComplete)
     : null;
-  const progressEditedHere = !storedProgress ||
+  const progressChangedHere = !storedProgress ||
     storedProgress.status !== progress.status ||
     storedProgress.percentComplete !== progress.percentComplete;
+  // Open item, web batch WS1 item 5 (6 Oct 2026): a percent he typed that is the percent the task already held from a
+  // schedule file (a master's 60% over his 30%, "Schedule update"; a lookahead's; an import's) was no change, so it
+  // stayed the file's: the next file could lower it, and deleting that lookahead with its tasks put his older 30%
+  // back, though he had entered 60% himself. A percent he typed is his entry, at the time he saved it. Only when he
+  // typed in the box (percentEntered): a save that changes something else still leaves the file's percent the file's
+  // (A12 pass 4 M1), and so does an emptied box (A12 pass 5 L1). His own percent typed again is left as it was, with
+  // its time; a close or reopen is the workflow's.
+  const percentEnteredOverAFiles = Boolean(current) && !progressChangedHere && draft.percentEntered === true &&
+    !draft.workflowAction && Number.isFinite(draftPercentNumber) && !scheduleProgressIsManagers(current!);
+  const progressEditedHere = progressChangedHere || percentEnteredOverAFiles;
   const progressMarking: Pick<
     ScheduleItem,
     'progressSource' | 'progressConfirmedAt' | 'progressConfirmedBy' | 'progressJudgment'
@@ -527,6 +545,12 @@ export function mergeDAVEWebConflictDraft({
     percentComplete: minePercent === null || minePercent === base.percentComplete
       ? latest.percentComplete
       : draft.percentComplete,
+    // A percent he typed that is the one he opened (WS1 item 5) is his entry only while the other device left the
+    // percent alone: over a percent that device changed, the newer value stays, and it is not marked as his.
+    percentEntered: draft.percentEntered === true && minePercent !== null && minePercent === base.percentComplete &&
+      latest.percentComplete !== base.percentComplete
+      ? false
+      : draft.percentEntered,
     priority: draft.priority === (base.priority ?? 'Medium')
       ? latest.priority ?? 'Medium'
       : draft.priority,

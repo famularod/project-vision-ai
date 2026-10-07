@@ -2236,6 +2236,7 @@ function TaskEditor({
         return {
           ...previous,
           percentComplete: '',
+          percentEntered: false,
           status: previous.status === 'Waiting' && storedPercent < 100
             ? 'Waiting'
             : automaticTaskStatus(storedPercent),
@@ -2248,6 +2249,8 @@ function TaskEditor({
       return {
         ...previous,
         percentComplete: normalizedValue,
+        // He typed it: his own entry, also when it is the percent a schedule file gave (WS1 item 5).
+        percentEntered: true,
         status: previous.status === 'Waiting' && percentComplete < 100
           ? 'Waiting'
           : automaticTaskStatus(percentComplete),
