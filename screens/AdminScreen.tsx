@@ -1253,7 +1253,8 @@ export function AdminScreen({
       (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '') +
       (keptRecording ? 'The recording waiting for signal will be discarded. ' : '') +
       // Review pass 1, L8: the optional verification note typed on a task and not yet used goes too, and is named.
-      (unusedScheduleVerificationNoteExists() ? 'The verification note you have typed will be discarded. ' : '');
+      // Second review, F6: this account's own note only; another account's kept note is neither named nor discarded.
+      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.

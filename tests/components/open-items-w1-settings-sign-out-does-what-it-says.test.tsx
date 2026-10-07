@@ -17,6 +17,7 @@
  * the cloud and the phone's storage and files are stand-ins. Synthetic data.
  */
 import { act, cleanup, fireEvent, render, renderHook, waitFor } from '@testing-library/react-native';
+import type { ReactNode } from 'react';
 import { Alert } from 'react-native';
 
 const mockPhone = new Map<string, string>();
@@ -456,5 +457,89 @@ describe('review pass 1, L8: the verification note typed on a task is named in t
     await act(flush);
 
     expect(whatTheFieldShows()).toBe('Looks done from the lift');
+  });
+});
+
+// Second review of the web area, F6 (7 Oct 2026; caused by the L8 fix above). The warning is about the account
+// Settings shows, and the sign-out discards that account's work. A verification note was taken to be "of
+// whoever is signed in now" until the app heard a sign-out with the account known, so another account's
+// warning could name a note that account never typed, and its Sign Out discarded it. A note now belongs to the
+// account whose workspace it was typed in. (The rule itself, and the whole app, are in
+// tests/hooks/review-p5-web-pass2-f6-verification-note-own-account.test.tsx and
+// tests/review-p5-web-pass2-f6-verification-note-whole-app.test.tsx.)
+describe('second review, web F6: the warning names a verification note only for the account Settings shows, and the sign-out discards only that account’s', () => {
+  const VERIFICATION_NOTE_LINE = 'The verification note you have typed will be discarded. ';
+  const REPORT = {
+    reportedAt: '2026-10-05T15:00:00.000Z',
+    reportedBy: 'Crew lead',
+    evidence: [{ id: 'completion-evidence:email:1', kind: 'email' as const, sourceRecordId: 'record-1', sourceName: 'Crew lead', summary: 'Level 2 framing is complete.', recordedAt: '2026-10-05T15:00:00.000Z' }],
+  };
+  /** A task row as the phone draws it: inside the workspace of the account signed in. */
+  const rowIn = (owner: string) => renderHook(() => useScheduleVerificationNoteDraft('task-1', REPORT), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <NativeWorkspaceOwnerContext.Provider value={owner}>{children}</NativeWorkspaceOwnerContext.Provider>
+    ),
+  });
+  const typesInTheWorkspaceOf = (owner: string, text: string) => {
+    const row = rowIn(owner);
+    act(() => row.result.current[1](text));
+    row.unmount();
+  };
+  const whatTheFieldShowsIn = (owner: string) => {
+    const row = rowIn(owner);
+    const shown = row.result.current[0];
+    row.unmount();
+    return shown;
+  };
+  afterEach(() => act(() => clearScheduleProgressDraftsForTests()));
+
+  it('the reviewer’s order: David’s note typed before the app had heard the account, his sign-in ends unasked, the other account signs in: its warning names no verification note, and its Sign Out leaves David’s', async () => {
+    typesInTheWorkspaceOf(DAVID, 'Looks done from the lift');
+    act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null));
+    act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, OTHER));
+    theAppHasHeard = OTHER;
+
+    const warning = await signsOutThroughSettings(renderSettings(OTHER));
+    await act(flush);
+
+    expect(warning).not.toContain('verification note');
+    expect(whatTheFieldShowsIn(DAVID)).toBe('Looks done from the lift');
+  });
+
+  it('David’s workspace closed without the app hearing any sign-out, and the other account’s workspace is open: its warning names no verification note, and its Sign Out leaves David’s', async () => {
+    typesInTheWorkspaceOf(DAVID, 'Looks done from the lift');
+    // The other account's app was opened afresh and has heard nothing yet.
+    theAppHasHeard = undefined;
+
+    const warning = await signsOutThroughSettings(renderSettings(OTHER));
+    await act(flush);
+
+    expect(warning).not.toContain('verification note');
+    expect(whatTheFieldShowsIn(DAVID)).toBe('Looks done from the lift');
+    expect(unusedScheduleVerificationNoteExists(DAVID)).toBe(true);
+  });
+
+  it('David is back after a sign-in that ended unasked: his own warning names the note again, and his Sign Out discards it', async () => {
+    typesInTheWorkspaceOf(DAVID, 'Looks done from the lift');
+    act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', DAVID, null));
+    // He signs in again: the app is opened afresh, and has heard nothing yet.
+    theAppHasHeard = undefined;
+
+    const warning = await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(warning).toContain(VERIFICATION_NOTE_LINE);
+    expect(whatTheFieldShowsIn(DAVID)).toBe('');
+    expect(unusedScheduleVerificationNoteExists(DAVID)).toBe(false);
+  });
+
+  it('guard: a note typed in the workspace of the account Settings shows is named, and goes with its sign-out', async () => {
+    typesInTheWorkspaceOf(DAVID, 'Looks done from the lift');
+
+    const warning = await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(warning).toContain(VERIFICATION_NOTE_LINE);
+    expect(whatTheFieldShowsIn(DAVID)).toBe('');
   });
 });

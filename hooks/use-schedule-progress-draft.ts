@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useRef, useSyncExternalStore } from 'react';
+import { NativeWorkspaceOwnerContext } from '../components/native-workspace-owner';
 import type { CanonicalScheduleProgress } from '../services/ScheduleProgressInvariant';
 import type { DAVECompletionVerification } from '../types';
 
@@ -103,17 +104,51 @@ export function useScheduleProgressDraft(
  *   sign-out not asked for here sets it aside for its account, as the
  *   unsaved field note is: it is off the screen, no other account is shown
  *   it or loses it, and it is back when that account signs in again.
+ *
+ * Second review of the web area, F6 (7 Oct 2026). "Its account" was the
+ * account the app had HEARD was signed in. Typed before the app had heard
+ * any (opened with no signal), with that sign-in then ending unasked, the
+ * note was set aside for "whoever signs in next": the next account's Sign
+ * Out warning named a note that account never typed, and its Sign Out
+ * discarded the first account's note. And on the phone a note set aside was
+ * never back for its own account either: the app is opened afresh for each
+ * sign-in, and a freshly opened app is not told of that sign-in as a change
+ * of account.
+ *
+ * A note now belongs to the account that typed it, from the moment it is
+ * typed: the account whose workspace its task row is drawn in. On the phone
+ * a task row is only ever drawn inside one account's workspace (entry.ts),
+ * so that account is always known, whatever the app has heard. Each account
+ * has its own notes, also for a task with the same id. A row shows, drops
+ * and replaces only its own account's note; a warning names only the note
+ * of the account Settings shows; a Sign Out discards only that account's.
+ * A sign-out not asked for removes nothing: the note stays kept for its
+ * account, and is in its field again when that account's workspace shows
+ * the task.
+ *
+ * Outside a workspace (a test of this rule alone) a row goes by the account
+ * the app has heard. A note typed there before the app had heard any is the
+ * account's the app hears next, when no sign-out came in between. When that
+ * sign-in ends unasked with the app still not told whose it was, the note
+ * is dropped: there is no account to keep it for, and keeping it for the
+ * next one was the fault.
  */
 type CompletionReport = Pick<DAVECompletionVerification, 'reportedAt' | 'reportedBy' | 'evidence'>;
 type VerificationNote = Readonly<{
+  itemId: string;
   text: string;
   /** The report it was typed about. */
   report: string;
-  /** Null: of the account signed in now. Otherwise the account it is set aside for ('': not known which). */
-  setAsideFor: string | null;
+  /** The account that typed it. Null: typed outside a workspace before the app had heard which account is signed in. */
+  account: string | null;
 }>;
 
+/** By account and task. */
 const verificationNotes = new Map<string, VerificationNote>();
+/** The account the app has heard is signed in now (null: none): what a row outside a workspace goes by. */
+let accountHeard: string | null = null;
+
+const verificationNoteKey = (account: string | null, itemId: string) => JSON.stringify([account, itemId]);
 
 /** What tells one completion report of a task from the next one. */
 function completionReportKey(report: CompletionReport): string {
@@ -127,64 +162,85 @@ export function useScheduleVerificationNoteDraft(
   awaiting: CompletionReport | null | undefined,
 ): [string, (note: string) => void] {
   const report = awaiting ? completionReportKey(awaiting) : null;
-  const kept = useSyncExternalStore(subscribe, () => verificationNotes.get(itemId));
-  const note = kept && kept.setAsideFor === null && kept.report === report ? kept.text : '';
+  // The account whose workspace this row is drawn in (as Settings and the Project Walk memory name it).
+  const workspace = useContext(NativeWorkspaceOwnerContext);
+  const account = useSyncExternalStore(subscribe, () => (workspace === undefined ? accountHeard : workspace ?? 'local-device'));
+  const key = verificationNoteKey(account, itemId);
+  const kept = useSyncExternalStore(subscribe, () => verificationNotes.get(key));
+  const note = kept && kept.report === report ? kept.text : '';
 
   useEffect(() => {
-    const current = verificationNotes.get(itemId);
+    const current = verificationNotes.get(key);
     // Typed about a report that is settled, or that another report has taken the place of.
-    if (current && current.setAsideFor === null && current.report !== report && verificationNotes.delete(itemId)) notify();
-  }, [itemId, report]);
+    if (current && current.report !== report && verificationNotes.delete(key)) notify();
+  }, [key, report]);
 
   const setNote = useCallback((next: string) => {
-    if (report === null || !next) verificationNotes.delete(itemId);
-    else verificationNotes.set(itemId, { text: next, report, setAsideFor: null });
+    if (report === null || !next) verificationNotes.delete(key);
+    else verificationNotes.set(key, { itemId, text: next, report, account });
     notify();
-  }, [itemId, report]);
+  }, [itemId, key, report, account]);
 
   return [note, setNote];
 }
 
-/** Whether a verification note is typed and not yet used, for Settings' Sign Out warning. */
-export function unusedScheduleVerificationNoteExists(): boolean {
-  return [...verificationNotes.values()].some(note => note.setAsideFor === null && note.text.trim().length > 0);
+/**
+ * Whether `account` has a verification note typed and not yet used, for its Settings' Sign Out warning.
+ * With no account named: the account the app has heard is signed in.
+ */
+export function unusedScheduleVerificationNoteExists(account?: string | null): boolean {
+  const whose = account || accountHeard;
+  return [...verificationNotes.values()].some(note =>
+    (note.account === null || note.account === whose) && note.text.trim().length > 0);
+}
+
+/** A note typed before the app knew the account is `account`'s from here on; with none known it is dropped. */
+function settleNotesOfNoKnownAccount(account: string | null | undefined): boolean {
+  let changed = false;
+  [...verificationNotes].forEach(([key, note]) => {
+    if (note.account !== null) return;
+    verificationNotes.delete(key);
+    if (account) verificationNotes.set(verificationNoteKey(account, note.itemId), { ...note, account });
+    changed = true;
+  });
+  return changed;
 }
 
 /**
- * A sign-out not asked for here, or another account taking over: the notes
- * on screen are set aside for the account they were typed under (not known
- * when the app had heard none).
+ * A sign-out not asked for here: `account` is the one the app had heard was signed in (none when it had
+ * heard none). Every account's notes stay kept for it. No account is signed in now.
  */
 export function setAsideScheduleVerificationNotes(account: string | null | undefined) {
-  let changed = false;
-  verificationNotes.forEach((note, itemId) => {
-    if (note.setAsideFor !== null) return;
-    verificationNotes.set(itemId, { ...note, setAsideFor: account || '' });
-    changed = true;
-  });
-  if (changed) notify();
-}
-
-/** `account` signed in: what was set aside for it is its again, and what was set aside when no account was known. */
-export function bringBackScheduleVerificationNotes(account: string) {
-  let changed = false;
-  verificationNotes.forEach((note, itemId) => {
-    if (note.setAsideFor !== account && note.setAsideFor !== '') return;
-    verificationNotes.set(itemId, { ...note, setAsideFor: null });
-    changed = true;
-  });
-  if (changed) notify();
+  const changed = settleNotesOfNoKnownAccount(account);
+  if (accountHeard === null && !changed) return;
+  accountHeard = null;
+  notify();
 }
 
 /**
- * Settings' Sign Out, after its warning: the notes on screen go, and what
- * was set aside for the account signing out. Another account's stay.
+ * `account` signed in, after `previous` when the app had heard one and no sign-out in between (another
+ * account taking over). A note typed before the app knew the account was typed under the account it had
+ * heard, or, with none heard, under the one it hears now: this is the app learning whose it is.
+ */
+export function bringBackScheduleVerificationNotes(account: string, previous?: string | null) {
+  const changed = settleNotesOfNoKnownAccount(previous || account);
+  if (accountHeard === account && !changed) return;
+  accountHeard = account;
+  notify();
+}
+
+/**
+ * Settings' Sign Out, after its warning: the notes of the account signing out go (with none named, of the
+ * account the app has heard), and a note typed before the app knew the account, which only the account
+ * signing out can have typed. Another account's stay.
  */
 export function forgetScheduleVerificationNotes(account?: string | null) {
-  let changed = false;
-  verificationNotes.forEach((note, itemId) => {
-    if (note.setAsideFor !== null && !(account && note.setAsideFor === account)) return;
-    verificationNotes.delete(itemId);
+  const whose = account || accountHeard;
+  let changed = accountHeard !== null;
+  accountHeard = null;
+  [...verificationNotes].forEach(([key, note]) => {
+    if (note.account !== null && note.account !== whose) return;
+    verificationNotes.delete(key);
     changed = true;
   });
   if (changed) notify();
@@ -194,5 +250,6 @@ export function forgetScheduleVerificationNotes(account?: string | null) {
 export function clearScheduleProgressDraftsForTests() {
   drafts.clear();
   verificationNotes.clear();
+  accountHeard = null;
   notify();
 }

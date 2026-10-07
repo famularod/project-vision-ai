@@ -41,6 +41,15 @@ import {
  * discards it. A sign-out not asked for sets it aside for its account, and
  * it is back when that account signs in again; no other account is shown
  * it, and no other account's Sign Out removes it.
+ *
+ * Second review of the web area, F6 (7 Oct 2026): "its account" was the
+ * account this rule had been told of. A verification note typed before the
+ * app had heard which account is signed in was, at a sign-out not asked
+ * for, set aside for whoever signed in next, whose warning then named it
+ * and whose Sign Out discarded it. The note now carries the account whose
+ * workspace it was typed in (hooks/use-schedule-progress-draft.ts), so a
+ * sign-out not asked for has nothing to decide for it: it stays that
+ * account's, whatever this rule was told.
  */
 let setAside: Readonly<{ userId: string | null }> | null = null;
 
@@ -60,11 +69,9 @@ export function settleUnsavedDraftsOnAccountChange(
   }
   const back = setAside;
   setAside = null;
-  // An account that signs in has its own set-aside verification notes again (review pass 1, L8).
-  if (userId) {
-    setAsideScheduleVerificationNotes(previousUserId);
-    bringBackScheduleVerificationNotes(userId);
-  }
+  // An account that signs in has its own verification notes again (review pass 1, L8); the account before
+  // it, when another takes over with no sign-out heard, keeps its own (second review, F6).
+  if (userId) bringBackScheduleVerificationNotes(userId, previousUserId);
   // The account they were set aside for (or, not known, whichever signs in: another account cannot read them).
   if (back && userId && (!back.userId || back.userId === userId)) return;
   if (event === 'SIGNED_OUT') {
