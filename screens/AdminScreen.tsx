@@ -1276,7 +1276,17 @@ export function AdminScreen({
       // Open item W1-6: for the account the warning above was about, and for as long as the
       // sign-out takes (it counted as asked for two minutes from the tap only).
       noteSignOutAskedHere(fieldNoteOwnerKey);
-      const result = await signOut(scope);
+      let result: Awaited<ReturnType<typeof signOut>>;
+      try {
+        result = await signOut(scope);
+      } catch {
+        // Review pass 1, L7: a sign-out whose call threw is not one he asked for that then happened. It
+        // stood as "asked for here" with no limit, and a sign-in ending by itself hours later discarded
+        // his unsaved work unasked. Unless the sign-out was already heard (then it did happen, and his
+        // work went as he was told), he is told it did not finish, as when it answers that it failed.
+        if (clearSignOutAskedHere()) Alert.alert('Sign Out did not finish', 'Try Sign Out again.');
+        return;
+      }
       if (result.ok) noteAskedSignOutAnswered();
       else clearSignOutAskedHere();
       if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {

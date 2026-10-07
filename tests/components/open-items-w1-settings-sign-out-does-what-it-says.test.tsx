@@ -302,3 +302,87 @@ describe('a sign-out he did not ask for still keeps his work for his account (ev
     await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
   });
 });
+
+// Review pass 1 of the web area, L7 (6 Oct 2026; caused by open item W1-6). A Settings Sign Out whose call
+// THREW (it did not answer "failed": for example the phone refusing to remove the saved sign-in) left "asked
+// for here" standing with no time limit. A sign-in that ended on its own hours later was then taken for the
+// sign-out he had asked for, and his unsaved note, memory and kept recording were discarded with no warning.
+// The last build let the mark lapse two minutes after the tap. A sign-out that threw is not one he asked for
+// that then happened: the mark is cleared, and he is told. And the mark has a limit in every case: a
+// sign-out still under way counts as asked for fifteen minutes from the tap, far longer than one that is
+// going to be answered takes.
+describe('review pass 1, L7: a Settings Sign Out that threw, or never answered, is not asked for for ever', () => {
+  it('the sign-out call throws: he is told it did not finish, and his sign-in ending elsewhere five hours later is not taken for it: his work is kept', async () => {
+    const davidsAudio = await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(async () => { throw new Error('The saved sign-in could not be removed.'); });
+
+    await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+    expect(Alert.alert).toHaveBeenCalledWith('Sign Out did not finish', 'Try Sign Out again.');
+
+    clock += 5 * 60 * MINUTE;
+    await act(async () => { theAppHearsTheSignOut(); await flush(); });
+
+    await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
+  });
+
+  it('…nor is one that ends elsewhere five seconds later', async () => {
+    const davidsAudio = await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(async () => { throw new Error('The saved sign-in could not be removed.'); });
+    await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    clock += 5_000;
+    await act(async () => { theAppHearsTheSignOut(); await flush(); });
+
+    await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
+  });
+
+  it('the call throws AFTER the sign-out was heard: it did happen, his work went as he was told, and nothing says it did not finish', async () => {
+    const davidsAudio = await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(async () => {
+      theAppHearsTheSignOut();
+      throw new Error('A later step failed.');
+    });
+
+    await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    await expect(keptFor(DAVID)).resolves.toEqual(NOTHING);
+    expect(mockFiles.has(davidsAudio)).toBe(false);
+    expect(Alert.alert).not.toHaveBeenCalledWith('Sign Out did not finish', expect.any(String));
+  });
+
+  it('the call never answers: a sign-in that ends on its own twenty minutes after the tap is not taken for it: his work is kept', async () => {
+    const davidsAudio = await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(() => new Promise(() => undefined));
+    await signsOutThroughSettings(renderSettings(DAVID));
+
+    clock += 20 * MINUTE;
+    await act(async () => { theAppHearsTheSignOut(); await flush(); });
+
+    await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
+  });
+
+  it('guard: the call has not answered yet and the sign-out is heard fourteen minutes after the tap: it is the one he asked for', async () => {
+    await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(() => new Promise(() => undefined));
+    await signsOutThroughSettings(renderSettings(DAVID));
+
+    clock += 14 * MINUTE;
+    await act(async () => { theAppHearsTheSignOut(); await flush(); });
+
+    await expect(keptFor(DAVID)).resolves.toEqual(NOTHING);
+  });
+
+  it('the phone’s clock is set back while the sign-out is still under way: it cannot be told how long ago he asked, so his work is kept', async () => {
+    const davidsAudio = await unsavedWorkOf(DAVID);
+    cloud.signOut.mockImplementation(() => new Promise(() => undefined));
+    await signsOutThroughSettings(renderSettings(DAVID));
+
+    clock -= 30 * MINUTE;
+    await act(async () => { theAppHearsTheSignOut(); await flush(); });
+
+    await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
+  });
+});
