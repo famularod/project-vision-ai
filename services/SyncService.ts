@@ -6558,6 +6558,51 @@ export function newerPhoneCopyForScheduleItemConflict(conflict: SyncConflict, qu
     : kept;
 }
 
+/**
+ * Review pass 1, sync F4 (wording; caused by sync batch Y2 (1) on top of Y1 (5)). What Keep Cloud will do with the
+ * changes he made to a task after its conflict was found, for the question it asks before he confirms:
+ *   'discarded'  they are given up with the phone's copy (what the question has always said);
+ *   'sent'       they change another part of the task than the card is about, so Keep Cloud does not give them up:
+ *                each goes up by itself first (and is weighed there like any waiting edit);
+ *   'both'       some of each; null: there is no such change.
+ * On a card about the whole task the card shows such a change either way ("Includes a change you made after the
+ * conflict was found"), and the question said it "will also be discarded" for both: since Y2 (1) an owner set while
+ * the card showed two notes is sent and kept. Decided by the choice's own rule (taskEditWaitsBesideCard), on the
+ * copies the card shows. On a card of fields a change to another field is no part of what the card shows, and
+ * nothing is said of it, as before.
+ */
+export function keepCloudOnNewerPhoneTaskEdits(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+): 'discarded' | 'sent' | 'both' | null {
+  if (conflict.entity !== 'schedule_item' || !isRecord(conflict.localPayload)) return null;
+  const payload = conflict.localPayload as Partial<ScheduleItemRecordPayload>;
+  if (!isRecord(payload.itemData)) return null;
+  const cardFields = scheduleItemConflictFields(conflict.localPayload).length > 0 && Array.isArray(payload.changedFields)
+    ? new Set(payload.changedFields.map(String)) : null;
+  const wholeTaskDifference = !cardFields && isRecord(conflict.remotePayload)
+    ? taskFieldsInDispute(payload.itemData, conflict.remotePayload) : null;
+  const besideCard = taskEditWaitsBesideCard(cardFields, wholeTaskDifference);
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  const sentFirst = cardFields === null && queue.some(item => item.id === queueItemId && besideCard(item));
+  const discarded = newerPhoneCopyForScheduleItemConflict(conflict, queue.filter(item => item.id !== queueItemId || !besideCard(item))) !== null;
+  return discarded && sentFirst ? 'both' : discarded ? 'discarded' : sentFirst ? 'sent' : null;
+}
+
+/**
+ * The waiting edits of a task that a choice on its card does not decide: each goes through the ordinary upload
+ * first (independent review pass 4; sync batch Y2, item 1). One rule for the choice and for what Keep Cloud's
+ * question says of it (review pass 1, sync F4).
+ */
+function taskEditWaitsBesideCard(
+  cardFields: ReadonlySet<string> | null,
+  wholeTaskDifference: ReadonlySet<string> | null,
+): (edit: SyncQueueItem) => boolean {
+  return edit => cardFields !== null
+    ? taskEditChangesBeyond(edit, cardFields)
+    : wholeTaskDifference !== null && taskFieldEditWeighedByItsStart(edit) && taskEditChangesBeyond(edit, wholeTaskDifference);
+}
+
 /** Takes a task's waiting edits off the queue; the edits taken. One that `stays` is left waiting. */
 function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQueueItem) => boolean = () => false): Promise<SyncQueueItem[]> {
   const queueItemId = scheduleItemQueueItemId(itemId);
@@ -6882,9 +6927,7 @@ async function chooseScheduleItemSyncConflictCopy(
   // before; the card shows it (sync batch Y1, item 5).
   const wholeTaskDifference = resolution === 'keep_cloud' && !cardFields && isRecord(localItem) && isRecord(shown)
     ? taskFieldsInDispute(localItem, shown) : null;
-  const besideCard = (edit: SyncQueueItem) => cardFields !== null
-    ? taskEditChangesBeyond(edit, cardFields)
-    : wholeTaskDifference !== null && taskFieldEditWeighedByItsStart(edit) && taskEditChangesBeyond(edit, wholeTaskDifference);
+  const besideCard = taskEditWaitsBesideCard(cardFields, wholeTaskDifference);
   const decidedAfterWhatWaitsBesideCard = async (): Promise<ScheduleItem | null> => {
     if ((!cardFields && !wholeTaskDifference) || weighedBesideCard !== undefined) return null;
     let beside: Awaited<ReturnType<typeof weighTaskEditsWaitingBesideCard>>;

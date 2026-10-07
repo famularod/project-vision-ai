@@ -74,6 +74,7 @@ import {
   refreshFieldUpdateConflictCloudCopies,
   refreshScheduleItemConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
+  keepCloudOnNewerPhoneTaskEdits,
   newerPhoneCopyForScheduleItemConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
@@ -925,8 +926,11 @@ export function AdminScreen({
   function confirmConflictResolution(
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
-    /** Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1). */
-    newerPhoneEdit = false,
+    /**
+     * Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1).
+     * For a task, what Keep Cloud will really do with it (review pass 1, sync F4): see keepCloudOnNewerPhoneTaskEdits.
+     */
+    newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both' = false,
   ) {
     const update = conflictUpdate(conflict, resolution);
     const task = conflictScheduleItem(conflict, resolution);
@@ -934,7 +938,7 @@ export function AdminScreen({
     const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
     const message = resolution === 'keep_local'
       ? `The version saved on this phone for ${recordName} will replace the cloud copy.`
-      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
+      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${newerPhoneEdit === 'sent' ? CONFLICT_NEWER_PHONE_EDIT_SENT : newerPhoneEdit === 'both' ? CONFLICT_NEWER_PHONE_EDIT_SOME_OF_EACH : CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
 
     Alert.alert(title, message, [
       { text: 'Cancel', style: 'cancel' },
@@ -1529,7 +1533,7 @@ function SyncConflictReviewModal({
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
   /** `newerPhoneEdit`: the phone side shown is an edit saved during the conflict, which Keep Cloud discards too. */
-  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both') => void;
   onClose: () => void;
 }) {
   return (
@@ -1589,7 +1593,7 @@ function SyncConflictReviewList({
   conflicts: SyncConflict[];
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
-  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both') => void;
 }) {
   const queue = useSyncExternalStore(subscribeToQueuedDocumentChanges, queuedDocumentChangesSnapshot);
   return (
@@ -1650,7 +1654,7 @@ function SyncConflictReviewList({
               <SecondaryButton
                 label={resolving ? 'Saving…' : 'Keep Cloud'}
                 icon="cloud-outline"
-                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate || newerPhoneTask))}
+                onPress={() => onKeepCloud(conflict, newerPhoneTask ? keepCloudOnNewerPhoneTaskEdits(conflict, queue) ?? true : Boolean(newerPhoneUpdate))}
                 disabled={Boolean(resolvingConflictId)}
                 compact
               />
@@ -1668,6 +1672,9 @@ type ArchivableUpdate = ProjectUpdate & { isArchived?: boolean; archivedAt?: str
 const CONFLICT_NEWER_PHONE_EDIT_NOTE = 'Includes a change you made after the conflict was found.';
 /** Keep Cloud withdraws every copy of the update waiting on this phone, that edit too, and the card takes the cloud's copy. */
 const CONFLICT_NEWER_PHONE_EDIT_DISCARDED = 'The change you made after the conflict was found will also be discarded.';
+/** A task only (review pass 1, sync F4): that change is to another part of the task than the card is about, and Keep Cloud does not give it up. */
+const CONFLICT_NEWER_PHONE_EDIT_SENT = 'The change you made after the conflict was found is to another part of this task: it will be sent first, not discarded.';
+const CONFLICT_NEWER_PHONE_EDIT_SOME_OF_EACH = 'Of the changes you made after the conflict was found, what changes the part this card shows will also be discarded; what changes another part of this task will be sent first, not discarded.';
 
 /** The field update edit saved on this phone during the conflict that Keep Phone sends last, if any (A4 pass 15b F1). */
 function conflictNewerPhoneUpdate(

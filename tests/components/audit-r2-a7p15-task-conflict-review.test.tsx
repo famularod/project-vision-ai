@@ -336,6 +336,22 @@ describe('a task in Review Conflicts: the phone\'s side is what Keep Phone sends
     expect(await getSyncConflicts()).toEqual([]);
   });
 
+  it('review pass 1, sync F4: a newer edit of ANOTHER part of the task (an owner) waits: the card shows it and says so, and Keep Cloud\'s question says it will be sent, not discarded', async () => {
+    await offlineEditInConflictWithWeb();
+    await queueScheduleItemRecord({ ...phoneTask, owner: 'Ana', updatedAt: '2026-09-30T10:00:00.000Z' }, false, ['owner', 'updatedAt'], phoneTask);
+    renderSettings();
+    await openReviewConflicts();
+    await waitFor(() => expect(screen.getByText(NOTE_LINE)).toBeTruthy());
+
+    fireEvent.press(screen.getByText('Keep Cloud'));
+
+    expect(lastConfirmation()[0]).toBe('Keep Cloud Copy?');
+    // It said "The change you made after the conflict was found will also be discarded.", and then sent and kept it.
+    expect(lastConfirmation()[1]).toBe('The cloud version for Pour slab will replace the copy saved on this phone. The change you made after the conflict was found is to another part of this task: it will be sent first, not discarded.');
+    await act(async () => { proceedWithLastConfirmation(); });
+    await waitFor(() => expect(inCloud()).toMatchObject({ owner: 'Ana' }));
+  });
+
   it('nothing newer waits: the Phone line is the conflict\'s own copy, with no such note, and Keep Cloud\'s question is as it was', async () => {
     await offlineEditInConflictWithWeb();
     renderSettings();
