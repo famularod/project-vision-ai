@@ -101,6 +101,7 @@ import {
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
   daveWebReportSourceNotCounted,
+  DAVE_WEB_DELETE_WITH_CHANGES_LABEL,
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
@@ -3880,6 +3881,13 @@ function DocumentManagementWorkspace({
   const linkedTasksAreRevisionSafe = Boolean(
     deleteCandidate?.linkedScheduleItems.every(item => Boolean(item.cloudUpdatedAt)),
   );
+  // WS1 item 4: a replaced lookahead with no task of its own still changed the master's tasks. What its delete can put
+  // back, in the phone's sentence; empty when nothing goes back, and then one button is enough, as before. A lookahead
+  // in effect is never deleted here (protectedCurrentDocument).
+  const lookaheadChangesNote = deleteCandidate && !protectedCurrentDocument &&
+    scheduleDocumentAddsToMaster(deleteCandidate) && deleteCandidate.linkedScheduleItems.length === 0
+    ? daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })
+    : '';
 
   const clearDocumentProofRoute = () => {
     router.setParams({
@@ -4449,12 +4457,15 @@ function DocumentManagementWorkspace({
     try {
       await auth.deleteDocument(deleteCandidate, deleteLinkedTasks);
       const taskCount = deleteLinkedTasks ? deleteCandidate.linkedScheduleItems.length : 0;
+      const changesPutBack = deleteLinkedTasks && taskCount === 0 && scheduleDocumentAddsToMaster(deleteCandidate);
       if (selectedDocumentId === deleteCandidate.id) setSelectedDocumentId(null);
       setDeleteCandidateId(null);
       setNotice({
         tone: 'good',
         text: taskCount > 0
           ? `Document and ${taskCount} linked task${taskCount === 1 ? '' : 's'} deleted and protected from returning.`
+          : changesPutBack
+            ? 'Lookahead deleted, and what it had changed on the master schedule\'s tasks was put back. It is protected from returning on another device.'
           : deleteCandidate.sourceProvider === 'google_drive'
             ? 'Document removed from Vitruvius and protected from returning on another device. The original Google Drive file was not deleted.'
             : 'Document and its managed ECOS index were deleted and protected from returning on another device.',
@@ -4741,6 +4752,7 @@ function DocumentManagementWorkspace({
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
                   : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
+                {lookaheadChangesNote ? ' Delete Document Only leaves those tasks as they show now.' : ''}
               </Text>
             )}
           </View>
@@ -4765,8 +4777,18 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 ? 'Delete Document Only' : 'Delete Document'}
+                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 || lookaheadChangesNote ? 'Delete Document Only' : 'Delete Document'}
                 </Text>
+              </Pressable>
+            ) : null}
+            {!protectedCurrentDocument && lookaheadChangesNote ? (
+              <Pressable
+                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                onPress={() => { void confirmDelete(true); }}
+                disabled={deleting}
+                accessibilityRole="button"
+              >
+                <Text style={styles.primaryButtonText}>{DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
               </Pressable>
             ) : null}
             {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (

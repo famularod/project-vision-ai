@@ -689,10 +689,19 @@ export function planDAVEWebScheduleDocumentDelete({
  * the same helper, with the web's button): " Delete Document + 2 Tasks also
  * puts back the earlier progress of 1 task this lookahead changed." The
  * dialog said nothing, and that button lowers a percent the lookahead's file
- * gave. Empty for a schedule that is not a lookahead, for one with no linked
- * task (only "Delete Document" is offered, which keeps the percent), and when
- * nothing goes back.
+ * gave. Empty for a schedule that is not a lookahead and when nothing goes
+ * back.
+ *
+ * WS1 item 4 (open item; 6 Oct 2026): a replaced lookahead with no task of
+ * its own (it only re-dated or re-stated the master's tasks) was offered
+ * "Delete Document" alone, which keeps the dates and percent it gave; the
+ * web had no button that puts them back, where the phone offers "Delete PDF
+ * + Items" for the same lookahead. The same sentence is now given for it,
+ * with the web's button for that ("Delete Document + Its Changes"), and the
+ * dialog offers that button whenever the sentence says something goes back.
  */
+export const DAVE_WEB_DELETE_WITH_CHANGES_LABEL = 'Delete Document + Its Changes';
+
 export function daveWebScheduleDocumentDeleteNote({
   snapshot,
   document,
@@ -701,7 +710,7 @@ export function daveWebScheduleDocumentDeleteNote({
   document: DAVEWebReferenceDocument;
 }): string {
   const count = document.linkedScheduleItems.length;
-  if (count === 0 || !scheduleDocumentAddsToMaster(document)) return '';
+  if (!scheduleDocumentAddsToMaster(document)) return '';
   const saved = snapshot.knownScheduleItems ?? snapshot.scheduleItems;
   const linked = new Set(document.linkedScheduleItems.map(item => item.id));
   return scheduleLookaheadDeleteNote(
@@ -709,7 +718,7 @@ export function daveWebScheduleDocumentDeleteNote({
     document,
     saved.filter(item => linked.has(item.id)),
     snapshot.referenceDocuments,
-    `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
+    count === 0 ? DAVE_WEB_DELETE_WITH_CHANGES_LABEL : `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
   );
 }
 
