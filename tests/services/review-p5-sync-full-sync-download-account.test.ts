@@ -167,6 +167,24 @@ describe('Full Sync\'s download, and the account changes while it is under way',
     expect(Object.values(download.collectionErrors)).toEqual(Array(5).fill('The account changed during sync. Work not yet sent waits for the account that saved it.'));
   });
 
+  it('the download on its own, handed a deletion history that was read earlier (as Sync Now hands it one): the account changes while a list is read, and it still answers with no records', async () => {
+    const { sync } = startApp();
+    mockChange.whenAnswering = 1; // the second of the five lists; no deletion history is read by this call
+
+    const download = await sync.downloadCloudChanges({
+      tombstones: [{ entityType: 'schedule_item', recordId: 'old-task-of-a', deletedAt: '2026-09-01T00:00:00.000Z' }],
+      cloudAuthoritative: true,
+      cloudError: null,
+    });
+
+    expect(mockChange.made).toBe(true);
+    expect(mockCalls.map(call => call.name)).not.toContain('listDAVESyncTombstones');
+    expect([download.projects, download.projectNames, download.updates, download.projectAreas, download.scheduleItems, download.referenceDocuments, download.tombstones])
+      .toEqual([[], [], [], [], [], [], []]);
+    expect(download.tombstonesAuthoritative).toBe(false);
+    expect(Object.values(download.collectionErrors)).toEqual(Array(5).fill('The account changed during sync. Work not yet sent waits for the account that saved it.'));
+  });
+
   it('one account only: a token refresh in the middle of the download (the same account told again) changes nothing', async () => {
     const learn = startApp();
     await syncNow(learn.sync);

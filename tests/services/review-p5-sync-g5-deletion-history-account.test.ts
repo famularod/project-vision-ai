@@ -266,6 +266,54 @@ describe('G5: every step is for the account that began it', () => {
     expect(savedOnPhone()).toEqual(['schedule_item:task-of-b']);
   });
 
+  it('wherever among the phone\'s own reads and saves the account changes during a sync: nothing is saved after it, and none of the first account\'s records is handed back or uploaded as B', async () => {
+    const AsyncStorage = (jest.requireMock('@react-native-async-storage/async-storage') as { default: { getItem: jest.Mock; setItem: jest.Mock } }).default;
+    /** One sync of account A; the account changes as the phone's n-th read or save answers. */
+    const run = async (changeAt: number) => {
+      mockStorage.clear();
+      mockSignedIn = 'account-a';
+      noteSignedInOwner('account-a');
+      mockWrites.length = 0;
+      mockCloudHistory['account-a'] = [record('project', 'Lot 9')];
+      mockCloudHistory['account-b'] = [];
+      mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify([record('schedule_item', 'task-1')]));
+      let steps = 0;
+      let changed = false;
+      const savedAfter: string[] = [];
+      const step = () => {
+        steps += 1;
+        if (steps === changeAt) {
+          changed = true;
+          accountChangesToB();
+        }
+      };
+      AsyncStorage.getItem.mockImplementation(async (key: string) => {
+        const value = mockStorage.get(key) ?? null;
+        step();
+        return value;
+      });
+      AsyncStorage.setItem.mockImplementation(async (key: string, value: string) => {
+        if (changed) savedAfter.push(key);
+        mockStorage.set(key, value);
+        step();
+      });
+      const answer = await synchronizeDAVESyncTombstones();
+      return { steps, changed, savedAfter, handedBack: keys(answer.tombstones), asB: mockWrites.filter(write => write.as === 'account-b') };
+    };
+    try {
+      const whole = await run(-1);
+      expect(whole.handedBack).toEqual(['project:Lot 9', 'schedule_item:task-1']);
+      expect(whole.steps).toBeGreaterThanOrEqual(4); // the list, the marks (read, decided, saved), the list saved
+      for (let at = 1; at <= whole.steps; at += 1) {
+        const cut = await run(at);
+        expect([at, cut.changed, cut.savedAfter, cut.handedBack, cut.asB]).toEqual([at, true, [], [], []]);
+      }
+    } finally {
+      AsyncStorage.getItem.mockImplementation(async (key: string) => mockStorage.get(key) ?? null);
+      AsyncStorage.setItem.mockImplementation(async (key: string, value: string) => { mockStorage.set(key, value); });
+    }
+  });
+
   it('150 deletions made at once on this phone (a schedule and its tasks): the account changes while the first hundred go up, and the rest are not uploaded as B', async () => {
     mockUpload.hold = true;
     const made = recordDAVESyncTombstones(Array.from({ length: 150 }, (_, index) => ({ entityType: 'schedule_item' as const, recordId: `task-${index}` })));
