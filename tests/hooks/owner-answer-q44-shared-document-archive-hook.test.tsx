@@ -111,6 +111,15 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     expect(cloud.requests.filter(request => request.kind === 'write_mark')).toEqual([]);
     expect(device.result.current.question('Grading permit.pdf', 'Permit Card'))
       .toBe('Grading permit.pdf is categorized as Permit Card. It will be hidden from active project documents.');
+    // Nor on every refresh of the document list: the cloud is not asked again for a column it has said it lacks...
+    await act(async () => { await mockCloudService.listener!(cloud.client, owner); });
+    expect(cloud.requests.length).toBe(asked);
+    // ...until the app comes back to the front, which is when the owner's database change is found.
+    cloud.paste();
+    await act(async () => { becameActive(); });
+    await device.quiet();
+    expect(device.result.current.installed).toBe(true);
+    expect(cloud.row(PERMIT)?.archived_at).toEqual(expect.any(String)); // the archive that was waiting has gone up
     device.unmount();
   });
 

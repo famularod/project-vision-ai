@@ -28,8 +28,9 @@ const WAITING_RETRY_MS = 30_000;
  * every device and kept in the cloud. This gives the app shell what the
  * device knows of the mark (services/SharedDocumentArchive.ts), keeps it in
  * step with the cloud, and sends this device's own Archive and Restore:
- * - when the app opens, when it comes back to the front, and every time the
- *   shared-document list is read from the cloud (a refresh, Sync Now);
+ * - when the app opens, when it comes back to the front, and (once the
+ *   cloud has the column) every time the shared-document list is read from
+ *   the cloud (a refresh, Sync Now);
  * - straight after an Archive or a Restore, and again every half minute
  *   while one is still waiting for signal.
  * Before the owner's database change there is nothing in the cloud to follow:
@@ -70,8 +71,11 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
       if (now.waitingIds.size > 0 && now.installed !== false) retry = setTimeout(() => { void sync(); }, WAITING_RETRY_MS);
     };
     syncRef.current = sync;
+    // While the cloud has said "no such column" a list read does not ask again: the question is put when the app
+    // opens and each time it comes back to the front, which is when the owner's database change is picked up.
     const listener = (client: Parameters<typeof syncSharedDocumentArchiveWithCloud>[0]['client'], listedFor: string) =>
-      (listedFor === ownerId ? syncSharedDocumentArchiveWithCloud({ client, ownerId }) : Promise.resolve());
+      (listedFor === ownerId && sharedDocumentArchiveView().installed !== false
+        ? syncSharedDocumentArchiveWithCloud({ client, ownerId }) : Promise.resolve());
     setReferenceDocumentsListedListener?.(listener as Parameters<typeof setReferenceDocumentsListedListener>[0]);
     void openSharedDocumentArchive(ownerId).then(() => sync());
     const subscription = AppState.addEventListener('change', state => { if (state === 'active') void sync(); });
