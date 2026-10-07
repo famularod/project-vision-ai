@@ -3873,7 +3873,7 @@ function DocumentManagementWorkspace({
     [preparedUpload, reviewedRole],
   );
   const pairingQuestions = useMemo(() => roleReviewedUpload
-    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems })
+    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })
     : [], [auth.snapshot, roleReviewedUpload]);
   const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
   // (An answer is for the role it was asked under: a lookahead pairs by other rules than a full schedule.)

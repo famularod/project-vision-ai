@@ -211,7 +211,8 @@ describe('the web upload review offers Lookahead (WS1 item 2)', () => {
     const prepared = mockAuth.uploadDocument.mock.calls[0][0];
     expect(prepared.document.scheduleRole).toBe('lookahead');
     expect(prepared.document.projectNames).toEqual(['Alpha']);
-    expect(prepared.scheduleItems.map(item => [item.taskName, item.importedAsLookahead])).toEqual([['Framing', true], ['Rough-in inspection', true]]);
+    // The file carries the role; the rows are not marked (WS2, decision 4).
+    expect(prepared.scheduleItems.map(item => [item.taskName, item.importedAsLookahead ?? null])).toEqual([['Framing', null], ['Rough-in inspection', null]]);
     expect(screen.getByText('Lookahead and 2 reviewed schedule tasks uploaded. It adds to the master schedule now, so there is nothing to make current.')).toBeTruthy();
   });
 

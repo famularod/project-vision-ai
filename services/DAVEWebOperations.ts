@@ -416,9 +416,12 @@ function daveWebSavedTasksForImport(
   return { saved: [...shown, ...hidden], isShown: item => shownIds.has(item.id) };
 }
 
-/** The rows of an upload he chose "Lookahead" for: each says so (withDAVEWebScheduleUploadRole). */
-function daveWebUploadRowsAreLookahead(rows: readonly ScheduleItem[]): boolean {
-  return rows.length > 0 && rows.every(row => row.importedAsLookahead === true);
+/** The schedule file an upload brings, as far as the planner reads it. */
+export type DAVEWebUploadDocument = Pick<ReferenceDocument, 'scheduleRole' | 'category' | 'name' | 'originalFileName' | 'notes' | 'importBatchId'>;
+
+/** An upload he chose "Lookahead" for: its file says so (withDAVEWebScheduleUploadRole), as a saved lookahead does. */
+function daveWebUploadIsLookahead(document: DAVEWebUploadDocument | null | undefined): boolean {
+  return Boolean(document) && scheduleDocumentAddsToMaster(document as ReferenceDocument);
 }
 
 /**
@@ -432,12 +435,14 @@ function daveWebUploadRowsAreLookahead(rows: readonly ScheduleItem[]): boolean {
 function daveWebSavedTasksForLookahead(
   snapshot: DAVEWebImportSnapshot,
   rows: readonly ScheduleItem[],
+  document?: DAVEWebUploadDocument | null,
 ): ReturnType<typeof daveWebSavedTasksForImport> {
   const known = snapshot.knownScheduleItems as readonly DAVEWebScheduleItem[] | undefined;
   const documents = snapshot.referenceDocuments;
   if (!known || !documents) return daveWebSavedTasksForImport(snapshot);
   const saved = known.map(item => ({ item: scheduleItemForCloud(item), cloudUpdatedAt: item.cloudUpdatedAt ?? null }));
-  const importBatchId = rows.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+  const importBatchId = (document?.importBatchId || '').trim() ||
+    rows.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
   return { saved, isShown: scheduleItemsVisibleBeforeImport(saved.map(({ item }) => item), documents, importBatchId) };
 }
 
@@ -473,16 +478,10 @@ export function daveWebScheduleUploadRoleSuggestion({
   if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
   const { scheduleRole: _role, ...file } = prepared.document;
   return suggestScheduleImportRole({
-    batch: { documents: [file as ReferenceDocument], items: prepared.scheduleItems.map(daveWebRowWithoutRole) },
+    batch: { documents: [file as ReferenceDocument], items: [...prepared.scheduleItems] },
     documents: snapshot.referenceDocuments ?? [],
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
-}
-
-function daveWebRowWithoutRole(row: ScheduleItem): ScheduleItem {
-  if (row.importedAsLookahead !== true) return row;
-  const { importedAsLookahead: _lookahead, ...rest } = row;
-  return rest as ScheduleItem;
 }
 
 export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
@@ -495,27 +494,28 @@ export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
  * to, as the phone's approval labels it (scheduleDocumentsAfterApproval): a
  * lookahead replaces an older lookahead only for the projects it covers
  * (owner answer Q25), so it must not cover a project it lists no task for.
- * Each row says it is a lookahead's, which is how the upload's planner knows
- * (planDAVEWebScheduleImport is handed the rows, not the document), and what
- * the phone's merge writes on the tasks a lookahead adds.
+ * The rows are not marked (WS2, the coordinator's decision 4): the planner
+ * is handed the file itself and reads its role. (The mark a task a
+ * lookahead ADDS carries once saved, importedAsLookahead, stays: the phone's
+ * merge writes it, because such a task outlives its file, which can be
+ * deleted on its own while the task is kept.)
  * "Full schedule": the upload as every schedule uploaded before.
  */
 export function withDAVEWebScheduleUploadRole<T extends DAVEWebPreparedUpload>(prepared: T, role: ScheduleImportRole): T {
   if (normalized(prepared.document.category) !== 'schedules') return prepared;
   if (role !== 'lookahead') {
-    if (prepared.document.scheduleRole !== 'lookahead' && !prepared.scheduleItems.some(row => row.importedAsLookahead === true)) return prepared;
+    if (prepared.document.scheduleRole !== 'lookahead') return prepared;
     const { scheduleRole: _role, ...document } = prepared.document;
-    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' }, scheduleItems: prepared.scheduleItems.map(daveWebRowWithoutRole) };
+    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
   }
-  const scheduleItems = prepared.scheduleItems.map(row => (row.importedAsLookahead === true ? row : { ...row, importedAsLookahead: true }));
+  const scheduleItems = prepared.scheduleItems;
   const marked = withScheduleImportRole({ documents: [prepared.document] }, 'lookahead').documents;
   const [document] = scheduleItems.length > 0
-    ? scheduleDocumentsAfterApproval({ documents: [], approvedDocuments: marked, approvedItems: scheduleItems, updatedAt: prepared.document.importedAt })
+    ? scheduleDocumentsAfterApproval({ documents: [], approvedDocuments: marked, approvedItems: [...scheduleItems], updatedAt: prepared.document.importedAt })
     : marked;
   return {
     ...prepared,
     document: { ...document, webContentReview: 'Lookahead: it adds to the master schedule and is in effect until a newer lookahead for the same project replaces it.' },
-    scheduleItems,
   };
 }
 
@@ -533,23 +533,29 @@ export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
   pairingChoices,
+  document,
 }: {
   snapshot: DAVEWebImportSnapshot;
   importedScheduleItems: readonly ScheduleItem[];
   /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
+  /**
+   * The schedule file being uploaded, as reviewed (WS2, the coordinator's decision 4): its role says whether the
+   * rows are a lookahead's. Without it the rows are a full schedule's, as before the web could upload a lookahead.
+   */
+  document?: DAVEWebUploadDocument | null;
 }): DAVEWebScheduleImportPlan {
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
   // WS1 item 2: the rows of a file he chose "Lookahead" for at the review (withDAVEWebScheduleUploadRole) are merged
   // as the phone's approval merges a lookahead: it restates the master's tasks in place, adds its own, and is in
-  // effect at once (owner answer Q22), so nothing waits for Make Current.
-  const overlay = daveWebUploadRowsAreLookahead(importedScheduleItems);
+  // effect at once (owner answer Q22), so nothing waits for Make Current. The file's own role says so (WS2).
+  const overlay = daveWebUploadIsLookahead(document);
   // Every saved task, with which of them the web shows, as the phone's approval is given them (WS1 item 1): a row may
   // be a task no longer shown only by its Unique ID or by his answer at the review (scheduleTasksNoLongerShown).
   const { saved, isShown } = overlay
-    ? daveWebSavedTasksForLookahead(snapshot, importedScheduleItems)
+    ? daveWebSavedTasksForLookahead(snapshot, importedScheduleItems, document)
     : daveWebSavedTasksForImport(snapshot);
   const merged = mergeApprovedScheduleImportItems({
     existing: saved.map(({ item }) => item),
@@ -587,15 +593,19 @@ export function planDAVEWebScheduleImport({
 export function daveWebScheduleImportPairingQuestions({
   snapshot,
   importedScheduleItems,
+  document,
 }: {
   snapshot: DAVEWebImportSnapshot | null | undefined;
   importedScheduleItems: readonly ScheduleItem[];
+  /** The file as reviewed: a lookahead's rows are asked about as a lookahead's (WS2, decision 4). */
+  document?: DAVEWebUploadDocument | null;
 }): ScheduleImportPairingQuestion[] {
   if (!snapshot || importedScheduleItems.length === 0) return [];
   // WS1 item 2: a lookahead's rows are asked about as the phone's review asks about a lookahead's, by the phone's
   // review function, from every saved task and the schedules saved now.
-  if (daveWebUploadRowsAreLookahead(importedScheduleItems)) {
-    const importBatchId = importedScheduleItems.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+  if (daveWebUploadIsLookahead(document)) {
+    const importBatchId = (document?.importBatchId || '').trim() ||
+      importedScheduleItems.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
     if (snapshot.knownScheduleItems && snapshot.referenceDocuments) {
       return scheduleImportReviewPairingQuestions({
         saved: snapshot.knownScheduleItems.map(scheduleItemForCloud),

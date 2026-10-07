@@ -544,7 +544,7 @@ describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review as
   it('the web\'s review shows the check, waits for his confirmation, and sends his answers with the upload', () => {
     const shell = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
     // (The rows as reviewed with the role he chose: a lookahead's rows are asked about as a lookahead's, WS1 item 2.)
-    expect(shell).toContain('daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems })');
+    expect(shell).toContain('daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })');
     expect(shell).toContain('<ScheduleImportPairingCheck');
     const upload = shell.slice(shell.indexOf('async function uploadPreparedDocument()'));
     const refusal = upload.indexOf('const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);');

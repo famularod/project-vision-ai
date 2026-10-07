@@ -165,12 +165,12 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const roleRefusal = daveWebScheduleUploadRoleRefusal(prepared, reviewedRole);
     if (roleRefusal) return { id: null, suggestion, refusal: roleRefusal, prepared };
     const withRole = reviewedRole ? withDAVEWebScheduleUploadRole(prepared, reviewedRole) : prepared;
-    const questions = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: withRole.scheduleItems });
+    const questions = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: withRole.scheduleItems, document: withRole.document });
     const answers = (question: (typeof questions)[number]) => ({ ...scheduleImportPairingGuess(question), confirmed: true });
     expect(scheduleImportPairingRefusal(questions, answers)).toBeNull();
     const reviewed = withScheduleImportPairingChoices(withRole, questions, answers);
-    // As the provider plans it: from the snapshot, the rows and his answers.
-    const plan = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: reviewed.scheduleItems, pairingChoices: reviewed.pairingChoices });
+    // As the provider plans it: from the snapshot, the rows, his answers and the file as reviewed.
+    const plan = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: reviewed.scheduleItems, pairingChoices: reviewed.pairingChoices, document: reviewed.document });
     await gateway.uploadAuthorizedReferenceDocument({
       document: reviewed.document,
       bytes: new Uint8Array([1, 2, 3]).buffer,
@@ -285,7 +285,7 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const documents = [...before.referenceDocuments, prepared.document as ReferenceDocument];
     const phone = mergeApprovedScheduleImportItems({
       existing: saved,
-      imported: prepared.scheduleItems.map(({ importedAsLookahead: _mark, ...row }) => row as ScheduleItem),
+      imported: prepared.scheduleItems,
       completionMatch: () => null,
       mergeCompletion: item => item,
       isCurrent: scheduleItemsVisibleBeforeImport(saved, documents, prepared.document.importBatchId || ''),
@@ -293,7 +293,7 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     });
     const phoneShown = selectAuthoritativeScheduleItems({ scheduleItems: [...phone.additions, ...phone.next], scheduleDocuments: documents });
 
-    const plan = planDAVEWebScheduleImport({ snapshot: before, importedScheduleItems: prepared.scheduleItems });
+    const plan = planDAVEWebScheduleImport({ snapshot: before, importedScheduleItems: prepared.scheduleItems, document: prepared.document });
     const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
     const webShown = selectAuthoritativeScheduleItems({
       scheduleItems: [...plan.additions, ...saved.map(item => revised.get(item.id) || item)],
@@ -316,12 +316,12 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const prepared = withDAVEWebScheduleUploadRole(prepare(name, lines), 'lookahead');
     const saved = before.knownScheduleItems!.map(scheduleItemForCloud);
     const documents = [...before.referenceDocuments, prepared.document as ReferenceDocument];
-    const rows = prepared.scheduleItems.map(({ importedAsLookahead: _mark, ...row }) => row as ScheduleItem);
+    const rows = prepared.scheduleItems;
     const phone = mergeApprovedScheduleImportItems({
       existing: saved, imported: rows, completionMatch: () => null, mergeCompletion: item => item,
       isCurrent: scheduleItemsVisibleBeforeImport(saved, documents, prepared.document.importBatchId || ''), overlay: true,
     });
-    const plan = planDAVEWebScheduleImport({ snapshot: before, importedScheduleItems: prepared.scheduleItems });
+    const plan = planDAVEWebScheduleImport({ snapshot: before, importedScheduleItems: prepared.scheduleItems, document: prepared.document });
     const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
     return { before, prepared, rows, phone: phone.next, web: saved.map(item => revised.get(item.id) || item) };
   }
@@ -375,12 +375,29 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
       imported: prepared.scheduleItems,
       overlay,
     });
-    const asLookahead = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: lookahead.scheduleItems });
-    const asFullSchedule = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: prepared.scheduleItems });
+    const asLookahead = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: lookahead.scheduleItems, document: lookahead.document });
+    const asFullSchedule = daveWebScheduleImportPairingQuestions({ snapshot, importedScheduleItems: prepared.scheduleItems, document: prepared.document });
     expect(said(asLookahead)).toEqual(said(phone(true)));
     // The two roles read this file differently, so the comparison above means something.
     expect(said(phone(true))).not.toEqual(said(phone(false)));
     expect(said(asFullSchedule)).not.toEqual(said(asLookahead));
+  });
+
+  it('the planner reads the role from the file, not from the rows: the same rows with a full schedule\'s file wait for Make Current (WS2)', async () => {
+    await masterInEffect();
+    const snapshot = await loadDAVEWebReadOnlySnapshot();
+    const prepared = prepare('Alpha 3 Week Lookahead', L1);
+    const lookahead = withDAVEWebScheduleUploadRole(prepared, 'lookahead');
+    const asLookahead = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: lookahead.scheduleItems, document: lookahead.document });
+    const asFullSchedule = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: prepared.scheduleItems, document: prepared.document });
+    const noFile = planDAVEWebScheduleImport({ snapshot, importedScheduleItems: lookahead.scheduleItems });
+    // A lookahead restates Framing in place and adds its own task, marked as a lookahead's by the merge itself.
+    expect(asLookahead.revisions.map(revision => revision.item.taskName)).toEqual(['Framing']);
+    expect(asLookahead.additions.map(item => [item.taskName, item.importedAsLookahead])).toEqual([['Rough-in inspection', true]]);
+    // A full schedule's rows come in as its own rows, none of them a lookahead's.
+    expect(asFullSchedule.additions.map(item => item.taskName).sort()).toEqual(['Framing', 'Rough-in inspection']);
+    expect(asFullSchedule.additions.some(item => item.importedAsLookahead)).toBe(false);
+    expect(noFile.additions.map(item => item.taskName).sort()).toEqual(['Framing', 'Rough-in inspection']);
   });
 
   it('a newer lookahead replaces the older one for that project: its own task leaves, and a task it moved goes back to the master\'s dates', async () => {
@@ -438,7 +455,8 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const prepared = prepare('Alpha master', MASTER);
     const lookahead = withDAVEWebScheduleUploadRole(prepared, 'lookahead');
     expect(lookahead.document.scheduleRole).toBe('lookahead');
-    expect(lookahead.scheduleItems.every(row => row.importedAsLookahead === true)).toBe(true);
+    // The rows are not marked: the planner reads the file's role (WS2, decision 4).
+    expect(lookahead.scheduleItems).toBe(prepared.scheduleItems);
     const back = withDAVEWebScheduleUploadRole(lookahead, 'master');
     expect(back.document.scheduleRole).toBeUndefined();
     expect(back.document.webContentReview).toBe(prepared.document.webContentReview);
