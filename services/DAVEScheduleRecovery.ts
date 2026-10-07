@@ -1,5 +1,6 @@
 import type { ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
+import { scheduleItemActivityWithOtherRows, scheduleItemFieldAsRead } from './ScheduleItemEditBase';
 import { scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
@@ -489,7 +490,9 @@ const deletedRowsWaitingForTheirNewRow = new Map<string, ScheduleItem>();
 const DELETED_ROWS_HELD = 200;
 
 function holdDeletedRowForItsNewRow(row: ScheduleItem): void {
-  if (!scheduleProgressIsManagers(row) && !TYPED_TEXT_FIELDS.some(field => typeof row[field] === 'string' && (row[field] as string).trim())) return;
+  // (Or an activity note: schedule batch S5, item 1.)
+  if (!scheduleProgressIsManagers(row) && !TYPED_TEXT_FIELDS.some(field => typeof row[field] === 'string' && (row[field] as string).trim()) &&
+    !(Array.isArray(row.activity) && row.activity.length > 0)) return;
   deletedRowsWaitingForTheirNewRow.delete(normalized(row.id));
   deletedRowsWaitingForTheirNewRow.set(normalized(row.id), row);
   while (deletedRowsWaitingForTheirNewRow.size > DELETED_ROWS_HELD) {
@@ -539,11 +542,13 @@ type TypedTextField = typeof TYPED_TEXT_FIELDS[number];
  * row of their task, each with the fields filled: the app sends each to the
  * cloud as those fields alone (ScheduleProgressCarryUpload).
  */
-const rowsTakingCarriedText = new WeakMap<ScheduleItem, readonly TypedTextField[]>();
+const rowsTakingCarriedText = new WeakMap<ScheduleItem, readonly CarriedField[]>();
+/** His text, and since schedule batch S5 (item 1) the task's priority and its activity notes. */
+type CarriedField = TypedTextField | 'priority' | 'activity';
 
 export function scheduleItemsTakingCarriedText(
   items: readonly ScheduleItem[],
-): Array<Readonly<{ item: ScheduleItem; fields: readonly TypedTextField[] }>> {
+): Array<Readonly<{ item: ScheduleItem; fields: readonly CarriedField[] }>> {
   return items.flatMap(item => {
     const fields = rowsTakingCarriedText.get(item);
     return fields ? [{ item, fields }] : [];
@@ -608,6 +613,7 @@ function typedTextCarriedToRevisedTasks(
     if (!taken || timestamp(earlier.updatedAt) > timestamp(taken.updatedAt)) from.set(newest[0], earlier);
   });
   const byId = new Map(records.map(record => [normalized(record.id), record] as const));
+  const deletedById = new Map(deleted.map(record => [normalized(record.id), record] as const));
   return records.map(record => {
     // As the row was before a percent carried in this same merge stamped it (withOwnStamp).
     const own = rowsTakingCarriedProgress.get(record) ?? record;
@@ -653,14 +659,27 @@ function typedTextCarriedToRevisedTasks(
     const carried = earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt)
       ? TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !recorded(field))
       : [];
-    const fields = [...new Set([...carried, ...filledFromEarlier])];
+    // Schedule batch S5, item 1 (Medium; older): the task's activity notes and its priority follow it the same way.
+    // The notes: the newest row of a task takes every note the rows it answers to hold that it lacks (a row this sync
+    // drops too), each once and in the order of their dates. A note is only ever added, so there is no clear to mistake.
+    const newest = !answering.has(normalized(record.id));
+    const notes = newest ? scheduleItemActivityWithOtherRows(record.activity,
+      ...scheduleTaskEarlierIds(record).map(id => (byId.get(normalized(id)) ?? deletedById.get(normalized(id)))?.activity)) : null;
+    // The priority, by the row's record alone (as a blank it took, above): the row still holds the priority it took,
+    // the cloud's copy of the very row it took it from holds another now, and that row was changed after this one.
+    const priorityAsRead = (value: unknown) => scheduleItemFieldAsRead('priority', value);
+    const priorityFrom = newest && replaced && cloud!.has(normalized(replaced.id)) && Object.prototype.hasOwnProperty.call(took, 'priority') &&
+      priorityAsRead(record.priority) === priorityAsRead(took!.priority) && priorityAsRead(replaced.priority) !== priorityAsRead(record.priority) &&
+      timestamp(replaced.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(replaced.priority) as ScheduleItem['priority'] : null;
+    const fields: CarriedField[] = [...new Set([...carried, ...filledFromEarlier]), ...(priorityFrom ? ['priority' as const] : []), ...(notes ? ['activity' as const] : [])];
     if (fields.length === 0) return record;
     const fromEarlier = Object.fromEntries(filledFromEarlier.map(field => [field, lent.get(field)![field] ?? '']));
     // What it has from the very row it replaces is again a copy of what that row has: the record follows it, so a clear
     // he types here later reads as his. (Not what came through a row in between: the record is of that row, still blank.)
-    const fromReplaced = Object.fromEntries(filledFromEarlier.filter(field => lent.get(field) === replaced).map(field => [field, replaced![field] ?? '']));
+    const fromReplaced = { ...Object.fromEntries(filledFromEarlier.filter(field => lent.get(field) === replaced).map(field => [field, replaced![field] ?? ''])), ...(priorityFrom ? { priority: priorityFrom } : {}) };
     const filled = {
       ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, earlier![field]])),
+      ...(notes ? { activity: notes } : {}),
       ...(took && Object.keys(fromReplaced).length > 0 ? { textFromTask: { ...took, ...fromReplaced } } : {}),
     } as ScheduleItem;
     const percentBefore = rowsTakingCarriedProgress.get(record);

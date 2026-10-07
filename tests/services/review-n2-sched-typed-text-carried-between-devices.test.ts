@@ -2434,14 +2434,15 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
       const ALL_BLANK = { owner: '', contractor: '', notes: '', nextAction: '', milestone: '' };
       const row = movedBy(task({ notes: NOTE, owner: 'Mike' }));
       expect(row).toMatchObject({ notes: NOTE, owner: 'Mike' });
-      expect(row.textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, notes: NOTE, owner: 'Mike', dependencies: [] });
+      // (And the task's priority, which the row always takes: schedule batch S5, item 1.)
+      expect(row.textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, notes: NOTE, owner: 'Mike', dependencies: [], priority: 'Medium' });
       const fileNamesTheOwner = movedBy(task({ notes: NOTE, owner: 'Mike' }), { owner: 'Acme Framing' });
       const { owner: _owner, ...unsetByTheFile } = ALL_BLANK;
-      expect([fileNamesTheOwner.owner, fileNamesTheOwner.textFromTask]).toEqual(['Acme Framing', { taskId: 'F-1', ...unsetByTheFile, notes: NOTE, dependencies: [] }]);
+      expect([fileNamesTheOwner.owner, fileNamesTheOwner.textFromTask]).toEqual(['Acme Framing', { taskId: 'F-1', ...unsetByTheFile, notes: NOTE, dependencies: [], priority: 'Medium' }]);
       // Review P4 F1: also when it took nothing. (It kept no record then, and its first upload had nothing to weigh it against.)
-      expect(movedBy(task({})).textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, dependencies: [] });
+      expect(movedBy(task({})).textFromTask).toEqual({ taskId: 'F-1', ...ALL_BLANK, dependencies: [], priority: 'Medium' });
       // A value the file states stands as the file's even when the task had the same: it is not his to follow.
-      expect(movedBy(task({ owner: 'Mike' }), { owner: 'Mike' }).textFromTask).toEqual({ taskId: 'F-1', ...unsetByTheFile, dependencies: [] });
+      expect(movedBy(task({ owner: 'Mike' }), { owner: 'Mike' }).textFromTask).toEqual({ taskId: 'F-1', ...unsetByTheFile, dependencies: [], priority: 'Medium' });
     });
 
     it('first sent, a field still as taken takes what the cloud\'s row of the task has now, a clear too, and the row is stamped after all its own times', () => {
@@ -2514,7 +2515,9 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
 
     it('an edit typed on the old row, as an edit of the task\'s new row: his values, from the copy his edit started from; nothing for a field with no such copy or the same value', () => {
       const newRow = task({ id: 'G-1', notes: NOTE, owner: 'Mike' });
-      const edit = { itemData: task({ notes: '', owner: 'Mike', priority: 'High' }), changedFields: ['notes', 'priority', 'updatedAt'], base: { updatedAt: null, fields: { notes: NOTE, priority: 'Medium' } } };
+      // (The field with no part in this was the priority until schedule batch S5, item 1, which makes it follow the task:
+      // the milestone flag stands in for it here, and the priority has its own line at the end.)
+      const edit = { itemData: task({ notes: '', owner: 'Mike', isMilestone: true }), changedFields: ['notes', 'isMilestone', 'updatedAt'], base: { updatedAt: null, fields: { notes: NOTE, isMilestone: false } } };
       expect(scheduleItemTextEditOnRow(edit, edit.changedFields, newRow)).toEqual({
         id: 'G-1', itemData: { ...newRow, notes: '' }, changedFields: ['notes', 'updatedAt'], base: { updatedAt: null, fields: { notes: NOTE } }, sentOn: [],
       });
@@ -2525,9 +2528,12 @@ describe('Review N3 R3: what follows a task to its new row is what he last did t
       expect(scheduleItemTextEditOnRow({ ...edit, id: 'E-1' }, edit.changedFields, replacesIt)!.sentOn).toEqual([]);
       expect(scheduleItemTextEditOnRow({ ...edit, base: undefined }, edit.changedFields, newRow)).toBeNull();
       expect(scheduleItemTextEditOnRow(edit, edit.changedFields, { ...newRow, notes: '' })).toBeNull();
-      expect(scheduleItemTextEditOnRow(edit, ['priority', 'updatedAt'], newRow)).toBeNull();
+      expect(scheduleItemTextEditOnRow(edit, ['isMilestone', 'updatedAt'], newRow)).toBeNull();
       // Nor a field the edit holds as it started (typed and typed back): no change of his to send on, whatever that row has.
-      expect(scheduleItemTextEditOnRow({ ...edit, base: { updatedAt: null, fields: { notes: '', priority: 'Medium' } } }, edit.changedFields, newRow)).toBeNull();
+      expect(scheduleItemTextEditOnRow({ ...edit, base: { updatedAt: null, fields: { notes: '', isMilestone: false } } }, edit.changedFields, newRow)).toBeNull();
+      // Schedule batch S5, item 1: a priority he set on the old row does go on to the task's row, as his edit.
+      const priority = { itemData: task({ notes: NOTE, owner: 'Mike', priority: 'High' }), changedFields: ['priority', 'updatedAt'], base: { updatedAt: null, fields: { priority: 'Medium' } } };
+      expect(scheduleItemTextEditOnRow(priority, priority.changedFields, newRow)).toMatchObject({ id: 'G-1', itemData: { priority: 'High' }, changedFields: ['priority', 'updatedAt'], base: { fields: { priority: 'Medium' } } });
     });
 
     it('review P4 F3: nor a field whose value in the edit is the very value the new row says it took from the row he typed on: that row was made after the edit, from it', () => {
@@ -4553,5 +4559,169 @@ describe('Review P4: what he has set on a task that a master moves, whatever the
       expect(framingEverywhere(phone, ipad).map(row => row[0])).toEqual(Array(3).fill('10/24/2026'));
       await noCards(phone, ipad);
     });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule batch S5, item 1 (7 Oct 2026; Medium, older: the same on Build 229). A task's activity notes (its dated
+ * history lines) and its priority stayed on the hidden old row when a master moved the task. They follow it now by
+ * the rule his owner and note follow by, on the same paths: the approval, the new row's first upload, an edit typed
+ * on the replaced row, and the sync's own merge. The rule on the records alone: sched-s5-activity-priority-follow.
+ */
+describe('S5 item 1: activity notes and the priority follow a task a master moved, between two devices', () => {
+  const entry = (id: string, createdAt: string) => ({ id, message: `Note ${id}`, author: 'David', createdAt });
+  const N1 = entry('n1', '2026-09-08T07:00:00.000Z');
+  const N2 = entry('n2', '2026-09-11T09:00:00.000Z');
+  const history = (item: ScheduleItem | undefined) => [(item?.activity ?? []).map(line => line.id), item?.priority];
+  const historyEverywhere = async (phone: Device, ipad: Device) => {
+    await refresh(phone); await refresh(ipad);
+    return [history(theRow(phone)), history(theRow(ipad)), history(framingOf(webShown())[0])];
+  };
+  const nothingWaits = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+
+  it('a note added and the priority set on the iPad, which had not heard of the master: both show on the task everywhere, the note once, nothing asked, and more syncing writes nothing', async () => {
+    const { phone, ipad, oldId, newId } = await typedOnTheOldRow(async (ipad, oldId) => {
+      await edit(ipad, oldId, { activity: [N2] });
+      at('2026-09-11T09:05:00.000Z');
+      await edit(ipad, oldId, { priority: 'High' });
+    });
+    await settle(phone, ipad);
+    expect(await historyEverywhere(phone, ipad)).toEqual(Array(3).fill([['n2'], 'High']));
+    expect([history(cloudRow(newId)), history(cloudRow(oldId))]).toEqual([[['n2'], 'High'], [['n2'], 'High']]);
+    await nothingWaits(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    await fullSync(phone);
+    await fullSync(ipad);
+    expect(cloudWrites()).toBe(writes);
+    expect(await historyEverywhere(phone, ipad)).toEqual(Array(3).fill([['n2'], 'High']));
+  });
+
+  it('a note and a priority he had before the master go with the task at the approval; a note added since on the device that had not heard joins them, in date order', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T07:00:00.000Z');
+    await edit(phone, oldId, { activity: [N1] });
+    at('2026-09-08T07:05:00.000Z');
+    await edit(phone, oldId, { priority: 'Low' });
+    await backgroundUpload(phone);
+    await refresh(ipad);
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(ipad, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect([theRow(phone).id === oldId, history(theRow(phone))]).toEqual([false, [['n1'], 'Low']]);
+    at('2026-09-11T09:00:00.000Z');
+    await edit(ipad, oldId, { activity: [N1, N2] });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await historyEverywhere(phone, ipad)).toEqual(Array(3).fill([['n1', 'n2'], 'Low']));
+    await nothingWaits(phone, ipad);
+  });
+
+  it('through Sync Now on the iPad instead of the automatic upload', async () => {
+    const { phone, ipad } = await typedOnTheOldRow(async (ipad, oldId) => {
+      await edit(ipad, oldId, { activity: [N2] });
+      at('2026-09-11T09:05:00.000Z');
+      await edit(ipad, oldId, { priority: 'High' });
+    }, null, false);
+    await fullSync(ipad);
+    await settle(phone, ipad);
+    expect(await historyEverywhere(phone, ipad)).toEqual(Array(3).fill([['n2'], 'High']));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+  });
+
+  it('the phone, with no signal and not having heard, approves the master; the note and priority set on the iPad meanwhile are on the new row when it first goes up', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(phone, false);
+    at('2026-09-09T09:00:00.000Z');
+    await edit(ipad, oldId, { activity: [N1] });
+    at('2026-09-09T09:05:00.000Z');
+    await edit(ipad, oldId, { priority: 'High' });
+    await backgroundUpload(ipad);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    const newId = theRow(phone).id;
+    expect(history(theRow(phone))).toEqual([[], 'Medium']);
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect(history(cloudRow(newId))).toEqual([['n1'], 'High']);
+    await settle(phone, ipad);
+    expect(await historyEverywhere(phone, ipad)).toEqual(Array(3).fill([['n1'], 'High']));
+    await nothingWaits(phone, ipad);
+  });
+
+  it('a row a master saved before this build (it says nothing of what it took): both devices bring the notes forward, one writes them, and each note is there once', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(phone, false);
+    at('2026-09-09T09:00:00.000Z');
+    await edit(ipad, oldId, { activity: [N1] });
+    at('2026-09-09T09:05:00.000Z');
+    await edit(ipad, oldId, { activity: [N1, N2] });
+    await backgroundUpload(ipad);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    masterRowsAsBuild229SavedThem(phone);
+    const newId = theRow(phone).id;
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect(history(cloudRow(newId))[0]).toEqual([]);
+    const writes = cloudWrites();
+    await refresh(ipad, false);
+    await refresh(phone, false);
+    expect([history(theRow(phone))[0], history(theRow(ipad))[0]]).toEqual([['n1', 'n2'], ['n1', 'n2']]);
+    await backgroundUpload(ipad);
+    await backgroundUpload(phone);
+    expect(mockCloud.writes.slice(writes).filter(write => write.endsWith(`:${newId}`))).toEqual([`ipad:${newId}`]);
+    await settle(phone, ipad);
+    expect(history(cloudRow(newId))[0]).toEqual(['n1', 'n2']);
+    expect((await historyEverywhere(phone, ipad)).map(shown => shown[0])).toEqual(Array(3).fill(['n1', 'n2']));
+    await nothingWaits(phone, ipad);
+    const after = cloudWrites();
+    await settle(phone, ipad);
+    expect(cloudWrites()).toBe(after);
+  });
+
+  it('the task\'s new row is given a note of its own in the cloud between the iPad\'s merge and its upload: the notes brought forward join it, none lost and none twice', async () => {
+    const N3 = entry('n3', '2026-09-12T09:00:00.000Z');
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(phone, false);
+    at('2026-09-09T09:00:00.000Z');
+    await edit(ipad, oldId, { activity: [N1, N2] });
+    await backgroundUpload(ipad);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    masterRowsAsBuild229SavedThem(phone);
+    const newId = theRow(phone).id;
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await refresh(ipad, false);
+    expect(history(theRow(ipad))[0]).toEqual(['n1', 'n2']);
+    at('2026-09-12T09:00:00.000Z');
+    webWrite({ ...cloudRow(newId)!, activity: [N3], updatedAt: '2026-09-12T09:00:00.000Z' } as ScheduleItem);
+    await backgroundUpload(ipad);
+    expect(history(cloudRow(newId))[0]).toEqual(['n1', 'n2', 'n3']);
+    await settle(phone, ipad);
+    expect((await historyEverywhere(phone, ipad)).map(shown => shown[0])).toEqual(Array(3).fill(['n1', 'n2', 'n3']));
+    await nothingWaits(phone, ipad);
   });
 });

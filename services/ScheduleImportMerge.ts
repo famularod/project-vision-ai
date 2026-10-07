@@ -38,7 +38,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
-import { scheduleItemAsLastSetOnItsOtherRow, scheduleTaskOfRowId } from './ScheduleItemEditBase';
+import { scheduleItemActivityWithOtherRows, scheduleItemAsLastSetOnItsOtherRow, scheduleItemFieldAsRead, scheduleTaskOfRowId } from './ScheduleItemEditBase';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
@@ -308,7 +308,12 @@ function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<Schedul
  */
 function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
   const unset = TYPED_TEXT_FIELDS.filter(field => !key(row[field]));
-  return { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])) } };
+  // Schedule batch S5, item 1 (Medium; older, the same on Build 229): and the task's priority. An import works a
+  // priority out for every row (High when the finish is within a week of the import), which is a start for a task
+  // new to the list and no word about one he already has: a task left on its dates has always kept its own. The
+  // moved task now keeps it too, and the row says it took it, so it is weighed like the rest wherever rows meet.
+  const priority = scheduleItemFieldAsRead('priority', task.priority) as ScheduleItem['priority'];
+  return { ...filled, priority, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), priority } };
 }
 
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
@@ -1605,7 +1610,9 @@ export function mergeApprovedScheduleImportItems({
     const revision = (row: ScheduleItem): ScheduleItem => {
       if (!paired || paired.id === row.id) return row;
       const moved = withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired);
-      const withHis = withControlsOf(moved, paired, true);
+      // And its activity notes, each once (schedule batch S5, item 1): no file states any.
+      const notes = scheduleItemActivityWithOtherRows(moved.activity, paired.activity);
+      const withHis = withControlsOf(notes ? { ...moved, activity: notes } : moved, paired, true);
       return withHis === moved || withHis.textFromTask ? withHis : { ...withHis, textFromTask: { taskId: paired.id } };
     };
     if (duplicate) {

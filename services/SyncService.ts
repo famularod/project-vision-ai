@@ -77,7 +77,7 @@ import {
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemChangedSinceMade, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
-  scheduleItemEditBaseOverTextBroughtForward,
+  scheduleItemEditBaseOverTextBroughtForward, scheduleItemActivityWithOtherRows, scheduleItemCarriedFieldsToSend,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -7463,9 +7463,12 @@ async function uploadQueueItem(
     const ownFields = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
     // A carried owner, contractor or note only fills a blank in the cloud's row (review N2 P1): over a value the cloud
     // holds, the cloud's stands, with nothing asked and, when that leaves nothing to send, nothing written.
+    // (Schedule batch S5, item 1: a carried priority only while the cloud's row still holds the one it took; carried
+    // activity notes only when the cloud's row lacks one: scheduleItemCarriedFieldsToSend.)
     const carriedText = remote && ownFields ? (payload.carriedText ?? []) as string[] : [];
+    const carriedToSend = carriedText.length > 0 ? scheduleItemCarriedFieldsToSend(carriedText, payload.itemData, remote!) : [];
     const changedFields = ownFields && carriedText.length > 0
-      ? ownFields.filter(field => !carriedText.includes(field) || !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim())
+      ? ownFields.filter(field => !carriedText.includes(field) || carriedToSend.includes(field))
       : ownFields;
     if (carriedText.length > 0 && changedFields!.every(field => field === 'updatedAt')) return 'uploaded';
     // Review N3 R3 (Medium, caused by c3899ef): his owner, contractor or note typed on a row a newer master has since
@@ -7594,6 +7597,9 @@ async function uploadQueueItem(
                     remote.projectControls,
                   ),
                 }
+              // Carried activity notes join the ones the cloud's row holds, each once (schedule batch S5, item 1).
+              : field === 'activity' && (sent.carriedText ?? []).includes(field)
+              ? { ...merged, activity: scheduleItemActivityWithOtherRows(remote.activity, sent.itemData.activity) ?? remote.activity }
               : {
                   ...merged,
                   [field]: sent.itemData[field],

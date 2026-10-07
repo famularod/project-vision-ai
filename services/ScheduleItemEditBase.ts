@@ -794,7 +794,68 @@ export const SCHEDULE_TYPED_TEXT_FIELDS = ['owner', 'contractor', 'notes', 'next
  */
 // (And his hand links, review P5-2: one more thing he sets on a task. Weighed as a set of links, by the task each
 // names: scheduleItemLinksKey.)
-const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'projectControls', 'dependencies'] as const;
+const SCHEDULE_SET_FIELDS_FOLLOWING = [...SCHEDULE_TYPED_TEXT_FIELDS, 'priority', 'projectControls', 'dependencies'] as const;
+
+/**
+ * Schedule batch S5, item 1 (7 Oct 2026, Medium; older, the same on Build
+ * 229): the task's PRIORITY and its ACTIVITY NOTES (the dated history lines)
+ * stayed on the hidden old row when a newer master moved the task. Both now
+ * follow by the rule above, with nothing new beside it.
+ *
+ * The priority is one more field the new row's record answers for
+ * (textFromTask.priority): the row takes the task's priority and says so, and
+ * wherever two rows of the task meet it is weighed like his owner or note
+ * (still as taken: a copy; anything else: set on this row). A row saved
+ * before keeps no entry for it, and its priority stays where it is.
+ */
+export const SCHEDULE_FIELDS_TAKEN_FROM_TASK = [...SCHEDULE_TYPED_TEXT_FIELDS, 'priority'] as const;
+
+/** One of those fields as a row takes it from another: his text or a blank; the priority as the app reads it. */
+function valueTaken(source: unknown, field: string): unknown {
+  const value = source && typeof source === 'object' ? (source as Record<string, unknown>)[field] : undefined;
+  return field === 'priority' ? scheduleItemFieldAsRead(field, value) : value ?? '';
+}
+
+/**
+ * Schedule batch S5, item 1: a row's activity notes with those another row of
+ * the same task holds that it lacks. A note is appended once and never
+ * changed, and carries its own id, so two rows of one task are put together
+ * as two copies of one row are (scheduleItemActivityOfBoth): every note of
+ * both, each once. In the order of their dates, as the task's history reads
+ * (the app shows the last three). Null when the row lacks none, so a row
+ * that already holds them is never rewritten: two devices that each bring
+ * the same notes forward end with each note once.
+ */
+export function scheduleItemActivityWithOtherRows(
+  own: readonly ProjectItemActivity[] | null | undefined,
+  ...others: Array<readonly ProjectItemActivity[] | null | undefined>
+): ProjectItemActivity[] | null {
+  const mine = Array.isArray(own) ? own : [];
+  const known = new Set(mine.map(entry => entry?.id));
+  const lacking: ProjectItemActivity[] = [];
+  others.forEach(list => (Array.isArray(list) ? list : []).forEach(entry => {
+    if (!entry || typeof entry.id !== 'string' || !entry.id || known.has(entry.id)) return;
+    known.add(entry.id);
+    lacking.push(entry);
+  }));
+  if (lacking.length === 0) return null;
+  const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
+  return [...mine, ...lacking].map((entry, index) => ({ entry, index }))
+    .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index).map(({ entry }) => entry);
+}
+
+/**
+ * Schedule batch S5, item 1: of the fields the sync merge carried to a task's
+ * newest row (review N2 P1), those still to send over the cloud's row as it
+ * is now. His text only fills a blank there, as before. The priority only
+ * while the cloud's row still holds it as taken (one set there stands). The
+ * activity notes only when the cloud's row lacks one of them.
+ */
+export function scheduleItemCarriedFieldsToSend(carried: readonly string[], itemData: ScheduleItem, remote: ScheduleItem): string[] {
+  return carried.filter(field => field === 'activity' ? Boolean(scheduleItemActivityWithOtherRows(remote.activity, itemData.activity))
+    : field === 'priority' ? scheduleItemHoldsAsTaken(remote, field) && fieldValue(remote, field) !== fieldValue(itemData, field)
+    : !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim());
+}
 
 /**
  * Review P5-2 (6 Oct 2026, Medium; older, the same on 1fb4166): a task's hand
@@ -893,7 +954,7 @@ export function scheduleItemAgainstItsTask(
   if (!taken || !task) return none;
   const next: Record<string, unknown> = {};
   const asked: string[] = [];
-  SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
+  SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
     const here = fieldValue(row, field);
     const theirs = fieldValue(task, field);
     if (theirs === here) return;
@@ -902,7 +963,7 @@ export function scheduleItemAgainstItsTask(
       if (theirs === fieldValue(taken, field) || bothChanged === 'row') return;
       if (bothChanged === 'ask') asked.push(field);
     }
-    next[field] = task[field] ?? '';
+    next[field] = valueTaken(task, field);
   });
   let linksStamp: Partial<Pick<ScheduleItem, 'dependenciesUpdatedAt'>> = {};
   if (taskOf && Object.prototype.hasOwnProperty.call(taken, 'dependencies')) {
@@ -916,10 +977,12 @@ export function scheduleItemAgainstItsTask(
   }
   const controls = task.projectControls ? mergeProjectControlsRevisions(row.projectControls, task.projectControls) : row.projectControls;
   const controlsChanged = fieldValue({ projectControls: controls }, 'projectControls') !== fieldValue(row, 'projectControls');
-  if (Object.keys(next).length === 0 && !controlsChanged) return none;
+  // The task's activity notes this row lacks, each once (schedule batch S5, item 1): never asked about.
+  const activity = scheduleItemActivityWithOtherRows(row.activity, task.activity);
+  if (Object.keys(next).length === 0 && !controlsChanged && !activity) return none;
   return {
     row: {
-      ...row, ...next, ...linksStamp, ...(controlsChanged ? { projectControls: controls } : {}), textFromTask: { ...taken, ...next },
+      ...row, ...next, ...linksStamp, ...(controlsChanged ? { projectControls: controls } : {}), ...(activity ? { activity } : {}), textFromTask: { ...taken, ...next },
       // (After the row's own import time too: a row is ranked by the latest of its times.)
       updatedAt: scheduleItemStampAfter(row.updatedAt, row.importedAt, row.createdAt, task.updatedAt),
     } as ScheduleItem,
@@ -1012,7 +1075,7 @@ export function scheduleItemNewRowMetAgain(
   // (With the record, a value of his the cloud's row already holds is left out: his first write put it there, and
   // nothing more is written for it.)
   const toSend = (field: string) => !tracked || fieldValue(waiting, field) !== fieldValue(remote, field);
-  const text = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => recorded(field) && !scheduleItemHoldsAsTaken(waiting, field) && toSend(field));
+  const text = SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => recorded(field) && !scheduleItemHoldsAsTaken(waiting, field) && toSend(field));
   const links = recorded('dependencies') && scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(taken, taskOf()) &&
     (!tracked || scheduleItemLinksKey(waiting, taskOf()) !== scheduleItemLinksKey(remote, taskOf())) ? scheduleItemFieldsWithCompanions(['dependencies']) : [];
   const merged = waiting.projectControls && remote.projectControls ? mergeProjectControlsRevisions(waiting.projectControls, remote.projectControls) : waiting.projectControls ?? remote.projectControls;
@@ -1055,11 +1118,11 @@ export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleIte
   const taken = newRow.textFromTask;
   if (!taken || taken.taskId !== row.id) return row;
   const next: Record<string, unknown> = {};
-  SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
+  SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
     const here = fieldValue(row, field);
     if (scheduleItemHoldsAsTaken(newRow, field) || fieldValue(newRow, field) === here) return;
     if (here !== fieldValue(taken, field) && !newRowLater) return;
-    next[field] = newRow[field] ?? '';
+    next[field] = valueTaken(newRow, field);
   });
   return Object.keys(next).length === 0 ? row : { ...row, ...next } as ScheduleItem;
 }
@@ -1120,7 +1183,10 @@ export function scheduleItemAsLastSetOnItsOtherRow(
   const withText = blanks.length === 0 ? changed : { ...changed, ...Object.fromEntries(blanks.map(field => [field, lender[field]])) } as ScheduleItem;
   const controls = !hidden.projectControls ? withText.projectControls
     : withText.projectControls ? mergeProjectControlsRevisions(withText.projectControls, hidden.projectControls) : hidden.projectControls;
-  const filled = JSON.stringify(controls ?? null) === JSON.stringify(withText.projectControls ?? null) ? withText : { ...withText, projectControls: controls } as ScheduleItem;
+  const withControls = JSON.stringify(controls ?? null) === JSON.stringify(withText.projectControls ?? null) ? withText : { ...withText, projectControls: controls } as ScheduleItem;
+  // And the activity notes the hidden row holds that this one lacks (schedule batch S5, item 1), whichever row is the newer.
+  const activity = scheduleItemActivityWithOtherRows(withControls.activity, hidden.activity);
+  const filled = activity ? { ...withControls, activity } as ScheduleItem : withControls;
   return filled === row || JSON.stringify({ ...filled, updatedAt: row.updatedAt }) === JSON.stringify(row) ? null : { ...filled, updatedAt: now };
 }
 
@@ -1184,7 +1250,11 @@ export function scheduleItemTextEditOnRow(
   const typed = SCHEDULE_SET_FIELDS_FOLLOWING.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(base.fields, field) &&
     value(edit.itemData, field) !== value(row, field) && value(edit.itemData, field) !== value(base.fields, field) &&
     !madeFromThisEdit(field));
-  if (typed.length === 0) return null;
+  // Schedule batch S5, item 1: an activity note added on the replaced row goes on to the task's row too, with every
+  // note of that row the task's row lacks, each once. Never asked about: the task's row as it is counts as the copy.
+  const notes = fields.includes('activity') && Object.prototype.hasOwnProperty.call(base.fields, 'activity')
+    ? scheduleItemActivityWithOtherRows(row.activity, edit.itemData.activity) : null;
+  if (typed.length === 0 && !notes) return null;
   const asTaken = (held: ScheduleItem, field: string) => (held.textFromTask && Object.prototype.hasOwnProperty.call(held.textFromTask, field)
     ? scheduleItemHoldsAsTaken(held, field) || (field === 'dependencies' && Boolean(taskOf) && value(held, field) === value(held.textFromTask, field))
     : isBlank(fieldValue(held, field)));
@@ -1192,9 +1262,9 @@ export function scheduleItemTextEditOnRow(
   return {
     id: row.id,
     // (A field goes with its stamp: his links with when he changed them.)
-    itemData: { ...row, ...Object.fromEntries(scheduleItemFieldsWithCompanions(typed).map(field => [field, (edit.itemData as unknown as Record<string, unknown>)[field]])) } as ScheduleItem,
-    changedFields: [...scheduleItemFieldsWithCompanions(typed), 'updatedAt'],
-    base: { updatedAt: base.updatedAt, fields: Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])) },
+    itemData: { ...row, ...Object.fromEntries(scheduleItemFieldsWithCompanions(typed).map(field => [field, (edit.itemData as unknown as Record<string, unknown>)[field]])), ...(notes ? { activity: notes } : {}) } as ScheduleItem,
+    changedFields: [...scheduleItemFieldsWithCompanions(typed), ...(notes ? ['activity'] : []), 'updatedAt'],
+    base: { updatedAt: base.updatedAt, fields: { ...Object.fromEntries(typed.map(field => [field, stillAsTaken(field) ? row[field] : base.fields[field]])), ...(notes ? { activity: row.activity ?? [] } : {}) } },
     // (Only for the row that replaced the very row he typed on: that row holds his value too now, so the two agree
     // again. Sent on past a row in between, which is not written, the newest row's record stays what that row had:
     // an owner cleared so, two masters on, read as "a blank it took", and the row in between gave the owner back.)
@@ -1220,8 +1290,8 @@ export function scheduleItemRecordAfterTheSyncWrote(
   fields: readonly string[],
 ): Partial<Pick<ScheduleItem, 'textFromTask'>> {
   const taken = row.textFromTask;
-  const synced = taken ? SCHEDULE_TYPED_TEXT_FIELDS.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(taken, field)) : [];
-  return taken && synced.length > 0 ? { textFromTask: { ...taken, ...Object.fromEntries(synced.map(field => [field, written[field] ?? ''])) } } : {};
+  const synced = taken ? SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => fields.includes(field) && Object.prototype.hasOwnProperty.call(taken, field)) : [];
+  return taken && synced.length > 0 ? { textFromTask: { ...taken, ...Object.fromEntries(synced.map(field => [field, valueTaken(written, field)])) } as ScheduleItem['textFromTask'] } : {};
 }
 
 /**

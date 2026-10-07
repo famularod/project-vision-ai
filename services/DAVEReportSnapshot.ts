@@ -792,9 +792,12 @@ export function compareDAVEReportSnapshots({
     // earlier ids; M's row had no note, so F's old note read as new. A row
     // paired across a master change is checked against the report before the
     // earlier one (A6 pass 16 L1), and failing that keeps the time rule.
+    // Schedule batch S5, item 1 (7 Oct 2026): a task's activity notes follow it from row to row now (a master that
+    // moves it, Set Active, Make Current), so the row the earlier report had for this task can hold the very note this
+    // row shows. That note was there for the earlier report: it is not said again.
     const activity = prior.taskId === task.taskId
       ? activityAgainstOwnRow(prior, task)
-      : activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
+      : activityFollowedTheTask(prior, task) ?? activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
     if (activity) (activity === 'new' ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
     changes.push(...changesBetween(prior, task));
   }
@@ -1187,6 +1190,11 @@ function activityAgainstReportBefore(
   if (againstOwnRow) return againstOwnRow;
   const before = validDate(reportBefore.capturedAt);
   return before && activityAfter(task, before) ? 'new' : null;
+}
+
+/** A task that has a latest activity, and the other row the earlier report had for it saved that very one (S5 item 1). */
+function activityFollowedTheTask(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): 'same' | null {
+  return validDate(task.activityAt) && typeof prior.activityKey === 'string' && prior.activityKey === task.activityKey ? 'same' : null;
 }
 
 /** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */

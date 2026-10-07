@@ -1037,9 +1037,13 @@ export type ScheduleItem = {
    * cloud's row of that task says what he did to the field last
    * (SyncService). Only fields taken from the task: none the file stated.
    * Kept in the task's JSON record. Missing on a row saved before.
+   * priority (schedule batch S5, item 1): the priority the row took with
+   * them. No schedule file states one for a task he already has, so the new
+   * row always takes the task's; missing on a row saved before.
    */
   textFromTask?: {
     taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string;
+    priority?: SchedulePriority;
     /** Review P5-2: the hand links the row was made with (taken from that task's row, none included), when its file stated none. */
     dependencies?: ScheduleDependency[];
   } | null;
