@@ -23,6 +23,25 @@ function queryWithRows(rows: unknown[]) {
   return query;
 }
 
+/**
+ * The table itself, asked "which of the account's documents carry the
+ * archived mark?" (owner answer Q44). That question is awaited as it stands,
+ * after its filters, so this query answers when awaited (review of D1: the
+ * mock had no "not", so the question threw inside the gateway and was
+ * swallowed, and the test could not tell a working question from a broken
+ * one).
+ */
+function archivedMarksQuery(marks: () => unknown[]) {
+  const query: Record<string, jest.Mock> = {};
+  for (const method of ['select', 'eq', 'not', 'order']) {
+    query[method] = jest.fn(() => query);
+  }
+  query.range = jest.fn(async () => ({ data: [], error: null, status: 200, count: 0 }));
+  query.then = jest.fn((resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+    Promise.resolve({ data: marks(), error: null, status: 200 }).then(resolve, reject));
+  return query;
+}
+
 function cleanupQueryWithRows(rows: unknown[] = []) {
   const query: Record<string, jest.Mock> = {};
   for (const method of ['select', 'eq', 'in', 'order']) {
@@ -34,11 +53,12 @@ function cleanupQueryWithRows(rows: unknown[] = []) {
 
 function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
   let referenceDocumentRows: unknown[] = [];
+  let archivedMarks: unknown[] = [];
   const queries = new Map([
     ['projects', queryWithRows([{ id: 'p1' }])],
     ['schedule_items', queryWithRows([])],
     ['project_updates', queryWithRows([])],
-    ['reference_documents', queryWithRows([])],
+    ['reference_documents', archivedMarksQuery(() => archivedMarks)],
     ['dave_sync_tombstones', queryWithRows([])],
   ]);
   const cleanupQuery = cleanupQueryWithRows();
@@ -74,6 +94,10 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
     cleanupQuery,
     setReferenceDocumentRows(rows: unknown[]) {
       referenceDocumentRows = rows;
+    },
+    /** What the table answers to "which documents carry the archived mark?". */
+    setArchivedMarks(marks: unknown[]) {
+      archivedMarks = marks;
     },
     createSignedUrl,
     storageFrom,
@@ -206,7 +230,13 @@ describe('DAVE browser Supabase gateway', () => {
       owner_id: 'owner-1',
       name: 'A101',
       document_data: { id: 'document-1', name: 'A101' },
+    }, {
+      id: 'document-2',
+      owner_id: 'owner-1',
+      name: 'Grading permit',
+      document_data: { id: 'document-2', name: 'Grading permit' },
     }]);
+    fixture.setArchivedMarks([{ id: 'document-2', archived_at: '2026-10-06T18:00:00.000Z' }]);
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
     const rows = await gateway.loadAuthorizedRows();
@@ -221,14 +251,24 @@ describe('DAVE browser Supabase gateway', () => {
     ]);
     // That question asks for ids and the archived mark and nothing else. The
     // records themselves still come only through the bounded RPC.
-    expect(fixture.queries.get('reference_documents')!.select.mock.calls).toEqual([['id, archived_at']]);
+    const marksQuestion = fixture.queries.get('reference_documents')!;
+    expect(marksQuestion.select.mock.calls).toEqual([['id, archived_at']]);
     for (const [, query] of fixture.queries) {
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
     }
+    // Review of D1: the question is really put and really answered here. It asks only for the rows that carry
+    // the mark, for this account, once, and never pages through the table.
+    expect(marksQuestion.eq.mock.calls).toEqual([['owner_id', 'owner-1']]);
+    expect(marksQuestion.not.mock.calls).toEqual([['archived_at', 'is', null]]);
+    expect(marksQuestion.then).toHaveBeenCalledTimes(1);
+    expect(marksQuestion.range).not.toHaveBeenCalled();
     expect(fixture.rpc).toHaveBeenCalledWith('dave_list_reference_document_metadata');
+    // Its answer is what marks a listed row as archived; a row it does not name carries no mark.
     expect(rows.referenceDocuments).toEqual([
       expect.objectContaining({ id: 'document-1', name: 'A101' }),
+      expect.objectContaining({ id: 'document-2', name: 'Grading permit', archived_at: '2026-10-06T18:00:00.000Z' }),
     ]);
+    expect(rows.referenceDocuments[0]).not.toHaveProperty('archived_at');
   });
 
   test('fails closed when bounded reference document metadata cannot be loaded', async () => {
